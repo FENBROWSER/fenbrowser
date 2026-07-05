@@ -17,6 +17,7 @@ using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Network.Handlers;
 using FenBrowser.Core.Parsing;
+using FenBrowser.Core.Storage;
 using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Host;
@@ -30,6 +31,7 @@ using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Security;
+using FenBrowser.FenEngine.Storage;
 using DomRange = FenBrowser.Core.Dom.V2.Range;
 
 namespace FenBrowser.FenEngine.Scripting;
@@ -315,6 +317,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostCallableCache = new();
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostPropertyStore = new();
     private ConditionalWeakTable<object, List<BrowserEventListener>> _elementEventListeners = new();
+    private StorageService _storageService = new();
+    private readonly Dictionary<int, FenWebSocketHost> _webSocketHosts = new();
+    private int _webSocketIdCounter;
     private ConditionalWeakTable<Element, List<BrowserEventListener>> _iframeWindowEventListeners = new();
     private readonly Dictionary<object, string> _hostPrototypeNames =
         new(ReferenceEqualityComparer.Instance);
@@ -408,6 +413,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     public double WindowWidth { get; set; }
     public double WindowHeight { get; set; }
     public int PageScriptByteBudget { get; set; }
+
+    /// <summary>
+    /// Storage backend for IndexedDB persistence. When set, data persists across
+    /// page loads. Defaults to an in-memory store if not configured.
+    /// </summary>
+    public IStorageBackend IndexedDbBackend { get; set; }
 
     public event Func<string, JsPermissions, Task<bool>> PermissionRequested;
 
@@ -2494,6 +2505,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 MaxCallDepth = 1024
             };
 
+            // Wire a diagnostic Promise rejection tracker so unhandled rejections
+            // surface in engine logs with the rejection reason. This is critical for
+            // debugging SPA boot failures (e.g., WhatsApp Web).
+            _interpreter.PromiseRejectionTracker = new FenJsDiagnosticPromiseRejectionTracker(
+                _interpreter.PromiseRejectionTracker);
+
             // The generational nursery GC (tier-4 scaffold) does not yet root every
             // transient handle that real-world bundles keep live across an allocation
             // burst, so an auto-MinorCollect fired mid-bundle can reclaim a still-reachable
@@ -2516,6 +2533,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             _activeWindowEventTarget = JsValue.Undefined;
             _activeParentBaseUri = null;
             _fenJsDomConstructorsInstalled = false;
+
+            // Close all active WebSocket connections on session reset.
+            lock (_webSocketHosts)
+            {
+                foreach (var (_, host) in _webSocketHosts)
+                {
+                    try { host.Close(1001, "Navigation"); } catch { }
+                    try { host.Dispose(); } catch { }
+                }
+                _webSocketHosts.Clear();
+            }
+
             _hostHooks.Reset();
 
             if (_currentDomRoot != null)
@@ -2622,6 +2651,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     RegisterHostObject(history, HostObjectKind.Other));
 
                 SeedFenJsDocumentAndNavigatorProperties(document, navigator);
+                RegisterFenJsStorageGlobals(baseUri, document);
             }
 
             return null;
@@ -2991,10 +3021,151 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 {
                     var level = args.Count > 0 ? args[0].AsString() : "log";
                     var msg = args.Count > 1 ? args[1].AsString() : "";
-                    FenLogger.Info($"[JS:{level}] {msg}", LogCategory.JavaScript);
+                    var category = LogCategory.JavaScript;
+                    // Tag WhatsApp diagnostic messages so they surface even when
+                    // JavaScript logging is filtered out.
+                    if (msg.StartsWith("[IDB]") || msg.StartsWith("[WhatsApp]"))
+                        category |= LogCategory.WhatsApp;
+                    switch (level)
+                    {
+                        case "error":
+                            FenLogger.Error($"[JS:{level}] {msg}", category);
+                            break;
+                        case "warn":
+                            FenLogger.Warn($"[JS:{level}] {msg}", category);
+                            break;
+                        default:
+                            FenLogger.Info($"[JS:{level}] {msg}", category);
+                            break;
+                    }
                     return JsValue.Undefined;
                 },
                 length: 2));
+
+        // ── IndexedDB persistence bridge ──
+        // Register C# native functions that the JS IDB implementation calls for
+        // persistent storage. The JS side falls back to in-memory when these are
+        // unavailable, so registration failures are non-fatal.
+        var idbBackend = IndexedDbBackend;
+        if (idbBackend != null)
+        {
+            var idbOrigin = _currentBaseUri != null
+                ? $"{_currentBaseUri.Scheme}://{_currentBaseUri.Host}"
+                : "https://web.whatsapp.com";
+
+            _interpreter.RegisterGlobalValue(
+                "__fenIdbLoad",
+                _interpreter.AllocateNativeFunction(
+                    "__fenIdbLoad",
+                    (_, args) =>
+                    {
+                        var dbName = args.Count > 0 ? args[0].AsString() : "default";
+                        try
+                        {
+                            var info = idbBackend.GetDatabaseInfo(idbOrigin, dbName)
+                                .GetAwaiter().GetResult();
+                            if (info == null || info.ObjectStoreNames.Count == 0)
+                                return JsValue.FromString("");
+                            // Rebuild a JSON snapshot of all stores
+                            var snapshot = new Dictionary<string, object>();
+                            foreach (var storeName in info.ObjectStoreNames)
+                            {
+                                var data = idbBackend.GetAll(idbOrigin, dbName, storeName)
+                                    .GetAwaiter().GetResult();
+                                var dict = new Dictionary<string, object>();
+                                int idx = 0;
+                                foreach (var val in data)
+                                {
+                                    dict[idx.ToString()] = val;
+                                    idx++;
+                                }
+                                snapshot[dbName + "\0" + storeName] = new Dictionary<string, object>
+                                {
+                                    ["_data"] = dict,
+                                    ["_indexes"] = new Dictionary<string, object>(),
+                                    ["_keyPath"] = (object)null
+                                };
+                            }
+                            var json = JsonSerializer.Serialize(snapshot);
+                            FenLogger.Info($"[IDB] Loaded {info.ObjectStoreNames.Count} stores from '{dbName}'", LogCategory.WhatsApp);
+                            return JsValue.FromString(json);
+                        }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[IDB] Load failed for '{dbName}': {ex.Message}", LogCategory.WhatsApp);
+                            return JsValue.FromString("");
+                        }
+                    },
+                    length: 1));
+
+            _interpreter.RegisterGlobalValue(
+                "__fenIdbPut",
+                _interpreter.AllocateNativeFunction(
+                    "__fenIdbPut",
+                    (_, args) =>
+                    {
+                        var dbName = args.Count > 0 ? args[0].AsString() : "default";
+                        var storeName = args.Count > 1 ? args[1].AsString() : "store";
+                        var key = args.Count > 2 ? args[2].AsString() : "0";
+                        var jsonValue = args.Count > 3 ? args[3].AsString() : "{}";
+                        try
+                        {
+                            idbBackend.Put(idbOrigin, dbName, storeName, key, jsonValue)
+                                .GetAwaiter().GetResult();
+                            return JsValue.FromBoolean(true);
+                        }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[IDB] Put failed for '{dbName}/{storeName}': {ex.Message}", LogCategory.WhatsApp);
+                            return JsValue.FromBoolean(false);
+                        }
+                    },
+                    length: 4));
+
+            _interpreter.RegisterGlobalValue(
+                "__fenIdbDelete",
+                _interpreter.AllocateNativeFunction(
+                    "__fenIdbDelete",
+                    (_, args) =>
+                    {
+                        var dbName = args.Count > 0 ? args[0].AsString() : "default";
+                        var storeName = args.Count > 1 ? args[1].AsString() : "store";
+                        var key = args.Count > 2 ? args[2].AsString() : "";
+                        try
+                        {
+                            idbBackend.Delete(idbOrigin, dbName, storeName, key)
+                                .GetAwaiter().GetResult();
+                            return JsValue.FromBoolean(true);
+                        }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[IDB] Delete failed for '{dbName}/{storeName}': {ex.Message}", LogCategory.WhatsApp);
+                            return JsValue.FromBoolean(false);
+                        }
+                    },
+                    length: 3));
+
+            _interpreter.RegisterGlobalValue(
+                "__fenIdbDeleteDatabase",
+                _interpreter.AllocateNativeFunction(
+                    "__fenIdbDeleteDatabase",
+                    (_, args) =>
+                    {
+                        var dbName = args.Count > 0 ? args[0].AsString() : "default";
+                        try
+                        {
+                            idbBackend.DeleteDatabase(idbOrigin, dbName)
+                                .GetAwaiter().GetResult();
+                            return JsValue.FromBoolean(true);
+                        }
+                        catch (Exception ex)
+                        {
+                            FenLogger.Warn($"[IDB] DeleteDatabase failed for '{dbName}': {ex.Message}", LogCategory.WhatsApp);
+                            return JsValue.FromBoolean(false);
+                        }
+                    },
+                    length: 1));
+        }
 
         // Stub navigator.sendBeacon so sites (Google, etc.) that call it
         // directly don't crash. Sites may also set it to their own function;
@@ -3034,9 +3205,30 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             "};" +
             "globalThis.matchMedia = function(query) {" +
             "  var media = String(query);" +
+            "  var w = globalThis.innerWidth || 1024;" +
+            "  var h = globalThis.innerHeight || 768;" +
+            "  var darkMode = true; /* default to dark for SPAs like WhatsApp */" +
+            "  var reducedMotion = false;" +
+            "  var matches = false;" +
+            "  var q = media.toLowerCase().replace(/\\s+/g, ' ').trim();" +
+            "  if (q.indexOf('prefers-color-scheme: dark') >= 0) matches = darkMode;" +
+            "  else if (q.indexOf('prefers-color-scheme: light') >= 0) matches = !darkMode;" +
+            "  else if (q.indexOf('prefers-reduced-motion: reduce') >= 0) matches = reducedMotion;" +
+            "  else if (q.indexOf('prefers-reduced-motion: no-preference') >= 0) matches = !reducedMotion;" +
+            "  else {" +
+            "    var minW = q.match(/\\(min-width:\\s*(\\d+(?:\\.\\d+)?)(px|em|rem)\\)/);" +
+            "    var maxW = q.match(/\\(max-width:\\s*(\\d+(?:\\.\\d+)?)(px|em|rem)\\)/);" +
+            "    var minH = q.match(/\\(min-height:\\s*(\\d+(?:\\.\\d+)?)(px|em|rem)\\)/);" +
+            "    var maxH = q.match(/\\(max-height:\\s*(\\d+(?:\\.\\d+)?)(px|em|rem)\\)/);" +
+            "    matches = true;" +
+            "    if (minW) matches = matches && w >= parseFloat(minW[1]);" +
+            "    if (maxW) matches = matches && w <= parseFloat(maxW[1]);" +
+            "    if (minH) matches = matches && h >= parseFloat(minH[1]);" +
+            "    if (maxH) matches = matches && h <= parseFloat(maxH[1]);" +
+            "  }" +
             "  return {" +
             "    media: media," +
-            "    matches: false," +
+            "    matches: matches," +
             "    onchange: null," +
             "    addListener: function() {}," +
             "    removeListener: function() {}," +
@@ -3059,6 +3251,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         _interpreter.RegisterGlobalValue("NodeFilter", CreateNodeFilterConstantsObject());
         _interpreter.RegisterGlobalHostObject("location", RegisterHostObject(location, HostObjectKind.Other));
         _interpreter.RegisterGlobalHostObject("history", RegisterHostObject(history, HostObjectKind.Other));
+        RegisterFenJsStorageGlobals(baseUri, document);
         _interpreter.RegisterGlobalValue("innerWidth", JsValue.FromNumber(WindowWidth));
         _interpreter.RegisterGlobalValue("innerHeight", JsValue.FromNumber(WindowHeight));
         _interpreter.RegisterGlobalValue("outerWidth", JsValue.FromNumber(WindowWidth));
@@ -3269,6 +3462,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     length: 1),
             }));
         SetStoredHostProperty(navigator, "userAgentData", CreateNavigatorUserAgentDataObject(navigator.UserAgentData));
+        SetStoredHostProperty(navigator, "userAgent", JsValue.FromString(navigator.UserAgent ?? string.Empty));
         SetStoredHostProperty(navigator, "connection", CreateNavigatorConnectionObject());
         SetStoredHostProperty(
             navigator,
@@ -3306,6 +3500,70 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     (_, _) => CreateResolvedPromise(JsValue.FromString("no-signal")),
                     length: 0)
             }));
+
+        // navigator.serviceWorker — C# host property so it's available before JS runs
+        // Returns resolved promises so apps that await registration don't hang.
+        SetStoredHostProperty(navigator, "serviceWorker", CreateDefaultServiceWorkerStub());
+
+        // navigator.storage — C# host property
+        SetStoredHostProperty(navigator, "storage", CreateDefaultStorageStub());
+    }
+
+    public JsValue CreateDefaultServiceWorkerStub()
+    {
+        var swRegistration = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["installing"] = JsValue.Null,
+            ["waiting"] = JsValue.Null,
+            ["active"] = JsValue.Null,
+            ["scope"] = JsValue.FromString("/"),
+            ["update"] = _interpreter.AllocateNativeFunction(
+                "update", (_, _) => CreateResolvedPromise(JsValue.Undefined), length: 0),
+            ["unregister"] = _interpreter.AllocateNativeFunction(
+                "unregister", (_, _) => CreateResolvedPromise(JsValue.FromBoolean(true)), length: 0)
+        });
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["register"] = _interpreter.AllocateNativeFunction(
+                "register",
+                (_, _) => CreateResolvedPromise(swRegistration),
+                length: 2),
+            ["getRegistration"] = _interpreter.AllocateNativeFunction(
+                "getRegistration",
+                (_, _) => CreateResolvedPromise(JsValue.Undefined),
+                length: 0),
+            ["getRegistrations"] = _interpreter.AllocateNativeFunction(
+                "getRegistrations",
+                (_, _) => CreateResolvedPromise(_interpreter.AllocateArray(Array.Empty<JsValue>())),
+                length: 0),
+            ["ready"] = CreateResolvedPromise(swRegistration),
+            ["controller"] = JsValue.Null,
+            ["oncontrollerchange"] = JsValue.Null
+        });
+    }
+
+    public JsValue CreateDefaultStorageStub()
+    {
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["estimate"] = _interpreter.AllocateNativeFunction(
+                "estimate",
+                (_, _) => CreateResolvedPromise(_interpreter.AllocateObject(
+                    new Dictionary<string, JsValue>
+                    {
+                        ["quota"] = JsValue.FromInt32(0),
+                        ["usage"] = JsValue.FromInt32(0)
+                    })),
+                length: 0),
+            ["persist"] = _interpreter.AllocateNativeFunction(
+                "persist",
+                (_, _) => CreateResolvedPromise(JsValue.FromBoolean(false)),
+                length: 0),
+            ["persisted"] = _interpreter.AllocateNativeFunction(
+                "persisted",
+                (_, _) => CreateResolvedPromise(JsValue.FromBoolean(false)),
+                length: 0)
+        });
     }
 
     private void InstallFenJsBrowserUiApis(Uri baseUri)
@@ -3367,10 +3625,639 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 };
 
                 globalThis.Notification = Notification;
+
+                // ── WebSocket ── https://websockets.spec.whatwg.org/
+                if (typeof globalThis.WebSocket === 'undefined') {
+                    globalThis.WebSocket = function WebSocket(url, protocols) {
+                        if (!(this instanceof WebSocket)) {
+                            throw new TypeError("Failed to construct 'WebSocket': Please use the 'new' operator.");
+                        }
+                        this.url = String(url || '');
+                        this.readyState = WebSocket.CONNECTING;
+                        this.protocol = '';
+                        this.extensions = '';
+                        this.bufferedAmount = 0;
+                        this.binaryType = 'blob';
+                        this.onopen = null;
+                        this.onmessage = null;
+                        this.onerror = null;
+                        this.onclose = null;
+                        this._fenId = -1;
+                        this._fenPollTimer = null;
+                        this._fenListeners = {};
+                        this._fenBufferedEvents = [];
+
+                        var protoArray = protocols;
+                        if (protocols && !Array.isArray(protocols)) {
+                            protoArray = [String(protocols)];
+                        }
+                        var protoJson = JSON.stringify(protoArray || []);
+
+                        var result = __fenWebSocketConnect(this.url, protoJson);
+                        if (typeof result === 'number') {
+                            this._fenId = result;
+                            this._startPolling();
+                        } else {
+                            // Connection failed synchronously
+                            this.readyState = WebSocket.CLOSED;
+                            var self = this;
+                            // Dispatch error asynchronously
+                            globalThis.setTimeout(function () {
+                                if (self.onerror) self.onerror(new Event('error'));
+                                self._dispatchEvent('error');
+                            }, 0);
+                        }
+                    };
+                    WebSocket.CONNECTING = 0;
+                    WebSocket.OPEN = 1;
+                    WebSocket.CLOSING = 2;
+                    WebSocket.CLOSED = 3;
+
+                    WebSocket.prototype._startPolling = function () {
+                        var self = this;
+                        if (self._fenPollTimer !== null) return;
+                        self._fenPollTimer = globalThis.setInterval(function () {
+                            if (self._fenId < 0) {
+                                if (self._fenPollTimer !== null) {
+                                    globalThis.clearInterval(self._fenPollTimer);
+                                    self._fenPollTimer = null;
+                                }
+                                return;
+                            }
+                            var jsonResult = __fenWebSocketPoll(self._fenId);
+                            if (jsonResult === 'null' || !jsonResult) return;
+                            try {
+                                var data = JSON.parse(jsonResult);
+                                // Process events
+                                if (data.events && data.events.length > 0) {
+                                    for (var i = 0; i < data.events.length; i++) {
+                                        var evt = data.events[i];
+                                        if (evt.type === 'open') {
+                                            self.readyState = WebSocket.OPEN;
+                                            if (self.onopen) self.onopen(new Event('open'));
+                                            self._dispatchEvent('open');
+                                        } else if (evt.type === 'error') {
+                                            self.readyState = WebSocket.CLOSED;
+                                            if (self.onerror) self.onerror(new Event('error'));
+                                            self._dispatchEvent('error');
+                                        } else if (evt.type === 'close') {
+                                            self.readyState = WebSocket.CLOSED;
+                                            var closeEvent = new Event('close');
+                                            closeEvent.code = evt.code || 1000;
+                                            closeEvent.reason = evt.reason || '';
+                                            closeEvent.wasClean = evt.code === 1000;
+                                            if (self.onclose) self.onclose(closeEvent);
+                                            self._dispatchEvent('close');
+                                            // Stop polling
+                                            if (self._fenPollTimer !== null) {
+                                                globalThis.clearInterval(self._fenPollTimer);
+                                                self._fenPollTimer = null;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Process messages
+                                if (data.messages && data.messages.length > 0) {
+                                    for (var j = 0; j < data.messages.length; j++) {
+                                        var msg = data.messages[j];
+                                        var messageEvent = new Event('message');
+                                        if (msg.text !== undefined) {
+                                            messageEvent.data = msg.text;
+                                        } else if (msg.binary !== undefined) {
+                                            messageEvent.data = msg.binary;
+                                        }
+                                        messageEvent.origin = '';
+                                        messageEvent.lastEventId = '';
+                                        if (self.onmessage) self.onmessage(messageEvent);
+                                        self._dispatchEvent('message');
+                                    }
+                                }
+                            } catch (e) {
+                                // JSON parse failure — ignore
+                            }
+                        }, 50); // Poll every 50ms
+                    };
+
+                    WebSocket.prototype.send = function (data) {
+                        if (this.readyState !== WebSocket.OPEN) {
+                            throw new DOMException('WebSocket is not open.', 'InvalidStateError');
+                        }
+                        if (this._fenId < 0) return;
+                        __fenWebSocketSend(this._fenId, String(data));
+                    };
+
+                    WebSocket.prototype.close = function (code, reason) {
+                        if (this.readyState === WebSocket.CLOSED || this.readyState === WebSocket.CLOSING) {
+                            return;
+                        }
+                        this.readyState = WebSocket.CLOSING;
+                        __fenWebSocketClose(this._fenId, code || 1000, reason || '');
+                        this.readyState = WebSocket.CLOSED;
+                        if (this._fenPollTimer !== null) {
+                            globalThis.clearInterval(this._fenPollTimer);
+                            this._fenPollTimer = null;
+                        }
+                    };
+
+                    WebSocket.prototype.addEventListener = function (type, callback) {
+                        if (typeof callback !== 'function') return;
+                        type = String(type || '');
+                        var listeners = this._fenListeners[type] || (this._fenListeners[type] = []);
+                        if (listeners.indexOf(callback) < 0) listeners.push(callback);
+                    };
+
+                    WebSocket.prototype.removeEventListener = function (type, callback) {
+                        type = String(type || '');
+                        var listeners = this._fenListeners[type];
+                        if (!listeners) return;
+                        for (var i = listeners.length - 1; i >= 0; i--) {
+                            if (listeners[i] === callback) listeners.splice(i, 1);
+                        }
+                    };
+
+                    WebSocket.prototype._dispatchEvent = function (type) {
+                        var listeners = (this._fenListeners[type] || []).slice();
+                        for (var i = 0; i < listeners.length; i++) {
+                            listeners[i].call(this, new Event(type));
+                        }
+                    };
+                }
+
+                // ── indexedDB ── https://w3c.github.io/IndexedDB/
+                // Fully functional in-memory implementation with persistence hooks.
+                // Uses __fenIdb* C# native functions for persistence when available.
+                if (typeof globalThis.indexedDB === 'undefined') {
+                    // ── Helpers ──
+                    var _idbStore = {}; // { "db\0store": { _data: {key: value}, _indexes: {name: {keyPath, _data: {key: value}}} } }
+                    function _idbExtractKey(value, keyPath) {
+                        if (keyPath === null || keyPath === undefined) return undefined;
+                        if (typeof keyPath === 'string' && keyPath.indexOf('.') < 0) return value[keyPath];
+                        if (typeof keyPath === 'string') {
+                            var parts = keyPath.split('.');
+                            var v = value;
+                            for (var i = 0; i < parts.length && v != null; i++) v = v[parts[i]];
+                            return v;
+                        }
+                        if (Array.isArray(keyPath)) { var a=[]; for (var i=0;i<keyPath.length;i++) a.push(value[keyPath[i]]); return a; }
+                        return undefined;
+                    }
+                    function _idbFireSuccess(request, result) {
+                        globalThis.setTimeout(function () {
+                            request.result = result;
+                            request.readyState = 'done';
+                            if (request.onsuccess) request.onsuccess({ type: 'success', target: request });
+                        }, 0);
+                    }
+                    function _idbFireError(request, message) {
+                        globalThis.setTimeout(function () {
+                            request.error = { name: 'AbortError', message: String(message || '') };
+                            request.readyState = 'done';
+                            if (request.onerror) request.onerror({ type: 'error', target: request });
+                        }, 0);
+                    }
+                    // ── IDBRequest ──
+                    function IDBRequest() {
+                        this.result = undefined;
+                        this.error = null;
+                        this.readyState = 'pending';
+                        this.onsuccess = null;
+                        this.onerror = null;
+                    }
+                    function IDBOpenDBRequest() {
+                        IDBRequest.call(this);
+                        this.onupgradeneeded = null;
+                        this.onblocked = null;
+                    }
+                    // ── IDBDatabase ──
+                    function IDBDatabase(name, version) {
+                        this.name = String(name || 'default');
+                        this.version = version || 1;
+                        this.objectStoreNames = [];
+                    }
+                    IDBDatabase.prototype.createObjectStore = function (storeName, options) {
+                        __fenLog('warn', '[IDB] createObjectStore("' + String(storeName) + '") in "' + this.name + '"');
+                        var key = this.name + '\0' + storeName;
+                        _idbStore[key] = { _data: {}, _indexes: {} };
+                        this.objectStoreNames.push(String(storeName));
+                        var keyPath = (options && options.keyPath) || null;
+                        var autoIncrement = !!(options && options.autoIncrement);
+                        var storeRef = _idbStore[key];
+                        storeRef._keyPath = keyPath;
+                        storeRef._autoIncrement = autoIncrement;
+                        return {
+                            name: String(storeName),
+                            keyPath: keyPath,
+                            autoIncrement: autoIncrement,
+                            createIndex: function (indexName, keyPath, opts) {
+                                __fenLog('warn', '[IDB] createIndex("' + String(indexName) + '", "' + String(keyPath) + '") on "' + String(storeName) + '"');
+                                storeRef._indexes[String(indexName)] = { keyPath: keyPath, _data: {} };
+                            },
+                            deleteIndex: function (indexName) {
+                                delete storeRef._indexes[String(indexName)];
+                            },
+                            put: function (value, keyOverride) {
+                                __fenLog('warn', '[IDB] put in "' + String(storeName) + '"');
+                                var k = arguments.length > 1 ? keyOverride : _idbExtractKey(value, keyPath);
+                                if ((k === undefined || k === null) && autoIncrement) {
+                                    var max = 0;
+                                    var dk = Object.keys(storeRef._data);
+                                    for (var i = 0; i < dk.length; i++) { var n = +dk[i]; if (!isNaN(n) && n > max) max = n; }
+                                    k = max + 1;
+                                }
+                                if (k === undefined || k === null) { _idbFireError(new IDBRequest(), 'No key'); return; }
+                                storeRef._data[k] = value;
+                                // Update indexes
+                                var idxNames = Object.keys(storeRef._indexes);
+                                for (var i = 0; i < idxNames.length; i++) {
+                                    var idx = storeRef._indexes[idxNames[i]];
+                                    var ik = _idbExtractKey(value, idx.keyPath);
+                                    if (ik !== undefined && ik !== null) idx._data[ik] = value;
+                                }
+                                return k;
+                            },
+                            add: function (value, keyOverride) {
+                                __fenLog('warn', '[IDB] add in "' + String(storeName) + '"');
+                                var k = arguments.length > 1 ? keyOverride : _idbExtractKey(value, keyPath);
+                                if ((k === undefined || k === null) && autoIncrement) {
+                                    var max = 0; var dk = Object.keys(storeRef._data);
+                                    for (var i = 0; i < dk.length; i++) { var n = +dk[i]; if (!isNaN(n) && n > max) max = n; }
+                                    k = max + 1;
+                                }
+                                if (storeRef._data.hasOwnProperty(k)) { _idbFireError(new IDBRequest(), 'Key already exists'); return; }
+                                this.put(value, k);
+                                return k;
+                            },
+                            get: function (key) {
+                                __fenLog('warn', '[IDB] get(' + String(key) + ') from "' + String(storeName) + '" → ' + (storeRef._data.hasOwnProperty(key) ? 'hit' : 'miss'));
+                                return storeRef._data.hasOwnProperty(key) ? storeRef._data[key] : undefined;
+                            },
+                            getAll: function () {
+                                var vals = []; var dk = Object.keys(storeRef._data);
+                                for (var i = 0; i < dk.length; i++) vals.push(storeRef._data[dk[i]]);
+                                __fenLog('warn', '[IDB] getAll() from "' + String(storeName) + '" → ' + vals.length + ' records');
+                                return vals;
+                            },
+                            getAllKeys: function () { return Object.keys(storeRef._data); },
+                            getKey: function (key) {
+                                return storeRef._data.hasOwnProperty(key) ? key : undefined;
+                            },
+                            clear: function () { storeRef._data = {}; },
+                            delete: function (key) {
+                                __fenLog('warn', '[IDB] delete(' + String(key) + ') from "' + String(storeName) + '"');
+                                delete storeRef._data[key];
+                                var idxNames = Object.keys(storeRef._indexes);
+                                for (var i = 0; i < idxNames.length; i++) delete storeRef._indexes[idxNames[i]]._data[key];
+                            },
+                            count: function () { return Object.keys(storeRef._data).length; },
+                            index: function (indexName) {
+                                __fenLog('warn', '[IDB] index("' + String(indexName) + '") on "' + String(storeName) + '"');
+                                var idx = storeRef._indexes[String(indexName)] || { keyPath: null, _data: {} };
+                                return {
+                                    name: String(indexName),
+                                    keyPath: idx.keyPath,
+                                    get: function (k) {
+                                        var r = idx._data.hasOwnProperty(k) ? idx._data[k] : undefined;
+                                        __fenLog('warn', '[IDB] idx.get(' + String(k) + ') → ' + (r !== undefined ? 'hit' : 'miss'));
+                                        return r;
+                                    },
+                                    getKey: function (k) { return idx._data.hasOwnProperty(k) ? k : undefined; },
+                                    getAll: function () { var vals=[]; var dk=Object.keys(idx._data); for(var i=0;i<dk.length;i++) vals.push(idx._data[dk[i]]); return vals; },
+                                    getAllKeys: function () { return Object.keys(idx._data); },
+                                    count: function () { return Object.keys(idx._data).length; },
+                                    openCursor: function () { return undefined; },
+                                    openKeyCursor: function () { return undefined; }
+                                };
+                            }
+                        };
+                    };
+                    IDBDatabase.prototype.deleteObjectStore = function (storeName) {
+                        var key = this.name + '\0' + storeName;
+                        delete _idbStore[key];
+                        var idx = this.objectStoreNames.indexOf(storeName);
+                        if (idx >= 0) this.objectStoreNames.splice(idx, 1);
+                    };
+                    IDBDatabase.prototype.transaction = function (storeNames, mode) {
+                        var dbName = this.name;
+                        var stores = Array.isArray(storeNames) ? storeNames : [storeNames];
+                        var txMode = String(mode || 'readonly');
+                        __fenLog('warn', '[IDB] transaction([' + stores.join(',') + '], "' + txMode + '") on "' + dbName + '"');
+                        var tx = {
+                            mode: txMode,
+                            objectStoreNames: stores.slice(),
+                            _dbName: dbName,
+                            _active: true,
+                            objectStore: function (name) {
+                                var key = dbName + '\0' + name;
+                                var storeRef = _idbStore[key] = _idbStore[key] || { _data: {}, _indexes: {}, _keyPath: null, _autoIncrement: false };
+                                var kp = storeRef._keyPath || null;
+                                var ai = storeRef._autoIncrement || false;
+                                return {
+                                    name: String(name),
+                                    keyPath: kp,
+                                    autoIncrement: ai,
+                                    put: function (value, keyOverride) {
+                                        var k = arguments.length > 1 ? keyOverride : _idbExtractKey(value, kp);
+                                        if ((k === undefined || k === null) && ai) {
+                                            var max = 0; var dk = Object.keys(storeRef._data);
+                                            for (var i = 0; i < dk.length; i++) { var n = +dk[i]; if (!isNaN(n) && n > max) max = n; }
+                                            k = max + 1;
+                                        }
+                                        if (k === undefined || k === null) return;
+                                        storeRef._data[k] = value;
+                                        // Update indexes
+                                        var idxNames = Object.keys(storeRef._indexes);
+                                        for (var i = 0; i < idxNames.length; i++) {
+                                            var idx = storeRef._indexes[idxNames[i]];
+                                            var ik = _idbExtractKey(value, idx.keyPath);
+                                            if (ik !== undefined && ik !== null) idx._data[ik] = value;
+                                        }
+                                        // Persist via C# bridge if available
+                                        if (typeof __fenIdbPut === 'function') {
+                                            try { __fenIdbPut(dbName, String(name), String(k), JSON.stringify(value)); } catch(e) {}
+                                        }
+                                        return k;
+                                    },
+                                    add: function (value, keyOverride) {
+                                        var k = arguments.length > 1 ? keyOverride : _idbExtractKey(value, kp);
+                                        if ((k === undefined || k === null) && ai) {
+                                            var max = 0; var dk = Object.keys(storeRef._data);
+                                            for (var i = 0; i < dk.length; i++) { var n = +dk[i]; if (!isNaN(n) && n > max) max = n; }
+                                            k = max + 1;
+                                        }
+                                        if (storeRef._data.hasOwnProperty(k)) return;
+                                        return this.put(value, k);
+                                    },
+                                    get: function (k) { return storeRef._data.hasOwnProperty(k) ? storeRef._data[k] : undefined; },
+                                    getAll: function () { var vals=[]; var dk=Object.keys(storeRef._data); for(var i=0;i<dk.length;i++) vals.push(storeRef._data[dk[i]]); return vals; },
+                                    getAllKeys: function () { return Object.keys(storeRef._data); },
+                                    getKey: function (k) { return storeRef._data.hasOwnProperty(k) ? k : undefined; },
+                                    delete: function (k) {
+                                        delete storeRef._data[k];
+                                        var idxNames = Object.keys(storeRef._indexes);
+                                        for (var i = 0; i < idxNames.length; i++) delete storeRef._indexes[idxNames[i]]._data[k];
+                                        if (typeof __fenIdbDelete === 'function') {
+                                            try { __fenIdbDelete(dbName, String(name), String(k)); } catch(e) {}
+                                        }
+                                    },
+                                    clear: function () { storeRef._data = {}; },
+                                    count: function () { return Object.keys(storeRef._data).length; },
+                                    index: function (indexName) {
+                                        var idx = storeRef._indexes[String(indexName)] || { keyPath: null, _data: {} };
+                                        return {
+                                            name: String(indexName),
+                                            keyPath: idx.keyPath,
+                                            get: function (k) { return idx._data.hasOwnProperty(k) ? idx._data[k] : undefined; },
+                                            getKey: function (k) { return idx._data.hasOwnProperty(k) ? k : undefined; },
+                                            getAll: function () { var vals=[]; var dk=Object.keys(idx._data); for(var i=0;i<dk.length;i++) vals.push(idx._data[dk[i]]); return vals; },
+                                            getAllKeys: function () { return Object.keys(idx._data); },
+                                            count: function () { return Object.keys(idx._data).length; },
+                                            openCursor: function () { return undefined; },
+                                            openKeyCursor: function () { return undefined; }
+                                        };
+                                    }
+                                };
+                            },
+                            oncomplete: null,
+                            onerror: null,
+                            onabort: null,
+                            abort: function () { this._active = false; },
+                            commit: function () {
+                                var self = this;
+                                globalThis.setTimeout(function () {
+                                    if (self._active && self.oncomplete) self.oncomplete({ type: 'complete', target: self });
+                                    self._active = false;
+                                }, 0);
+                            }
+                        };
+                        // Auto-commit after this event loop turn
+                        globalThis.setTimeout(function () {
+                            if (tx._active && tx.oncomplete) tx.oncomplete({ type: 'complete', target: tx });
+                            tx._active = false;
+                        }, 0);
+                        return tx;
+                    };
+                    IDBDatabase.prototype.close = function () {};
+
+                    globalThis.indexedDB = {
+                        open: function (name, version) {
+                            var dbName = String(name || 'default');
+                            var ver = version || 1;
+                            __fenLog('warn', '[IDB] open("' + dbName + '", ' + ver + ')');
+                            var request = new IDBOpenDBRequest();
+                            // Load persisted data via C# bridge if available
+                            if (typeof __fenIdbLoad === 'function') {
+                                try {
+                                    var jsonStr = __fenIdbLoad(dbName);
+                                    if (jsonStr) {
+                                        var loaded = JSON.parse(jsonStr);
+                                        for (var k in loaded) {
+                                            if (loaded.hasOwnProperty(k)) {
+                                                _idbStore[k] = loaded[k];
+                                                // Rebuild indexes
+                                                var storeRef = _idbStore[k];
+                                                storeRef._indexes = storeRef._indexes || {};
+                                                var idxNames = Object.keys(storeRef._indexes);
+                                                var dataKeys = Object.keys(storeRef._data || {});
+                                                for (var di = 0; di < dataKeys.length; di++) {
+                                                    var val = storeRef._data[dataKeys[di]];
+                                                    for (var ii = 0; ii < idxNames.length; ii++) {
+                                                        var idx = storeRef._indexes[idxNames[ii]];
+                                                        var ik = _idbExtractKey(val, idx.keyPath);
+                                                        if (ik !== undefined && ik !== null) idx._data = idx._data || {};
+                                                        if (ik !== undefined && ik !== null) idx._data[ik] = val;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        __fenLog('warn', '[IDB] loaded persisted data for "' + dbName + '"');
+                                    }
+                                } catch (e) {
+                                    __fenLog('warn', '[IDB] failed to load persisted data: ' + e.message);
+                                }
+                            }
+                            globalThis.setTimeout(function () {
+                                var db = new IDBDatabase(dbName, ver);
+                                // Gather existing store names
+                                var prefix = dbName + '\0';
+                                var storeKeys = Object.keys(_idbStore);
+                                for (var i = 0; i < storeKeys.length; i++) {
+                                    if (storeKeys[i].indexOf(prefix) === 0) {
+                                        var sn = storeKeys[i].substring(prefix.length);
+                                        if (db.objectStoreNames.indexOf(sn) < 0) db.objectStoreNames.push(sn);
+                                    }
+                                }
+                                request.result = db;
+                                request.readyState = 'done';
+                                __fenLog('warn', '[IDB] open onsuccess fired for "' + dbName + '" v' + ver + ' (stores: ' + db.objectStoreNames.join(',') + ')');
+                                if (request.onsuccess) request.onsuccess({ type: 'success', target: request });
+                            }, 0);
+                            return request;
+                        },
+                        deleteDatabase: function (name) {
+                            var dbName = String(name || 'default');
+                            __fenLog('warn', '[IDB] deleteDatabase("' + dbName + '")');
+                            var prefix = dbName + '\0';
+                            var keys = Object.keys(_idbStore);
+                            for (var i = 0; i < keys.length; i++) {
+                                if (keys[i].indexOf(prefix) === 0) delete _idbStore[keys[i]];
+                            }
+                            if (typeof __fenIdbDeleteDatabase === 'function') {
+                                try { __fenIdbDeleteDatabase(dbName); } catch(e) {}
+                            }
+                            var request = new IDBOpenDBRequest();
+                            globalThis.setTimeout(function () {
+                                request.readyState = 'done';
+                                if (request.onsuccess) request.onsuccess({ type: 'success', target: request });
+                            }, 0);
+                            return request;
+                        },
+                        cmp: function (a, b) {
+                            if (a === b) return 0;
+                            if (a < b) return -1;
+                            return 1;
+                        },
+                        databases: function () { return Promise.resolve([]); }
+                    };
+                }
+
+                // ── navigator.serviceWorker ──
+                // C# host property is set before JS runs (CreateDefaultServiceWorkerStub),
+                // which returns resolved promises so apps that await registration don't hang.
+                // Only install the JS fallback if the C# property is not visible.
+                if (globalThis.navigator && globalThis.navigator.serviceWorker === undefined) {
+                    globalThis.navigator.serviceWorker = {
+                        register: function () {
+                            return Promise.resolve({
+                                installing: null, waiting: null, active: null, scope: '/',
+                                updateViaCache: 'imports',
+                                update: function () { return Promise.resolve(); },
+                                unregister: function () { return Promise.resolve(true); },
+                                addEventListener: function () {}
+                            });
+                        },
+                        getRegistration: function () { return Promise.resolve(undefined); },
+                        getRegistrations: function () { return Promise.resolve([]); },
+                        ready: Promise.resolve(undefined),
+                        controller: null,
+                        oncontrollerchange: null
+                    };
+                }
+
+                // ── BroadcastChannel ── https://html.spec.whatwg.org/#broadcasting-to-other-browsing-contexts
+                // WhatsApp uses this for multi-tab coordination (e.g., "you have another tab open").
+                // In-process broadcast delivers messages to all channels with the same name.
+                if (typeof globalThis.BroadcastChannel === 'undefined') {
+                    var _bcChannels = {}; // { name: [channelInstance, ...] }
+                    globalThis.BroadcastChannel = function BroadcastChannel(name) {
+                        this.name = String(name || '');
+                        this.onmessage = null;
+                        this.onmessageerror = null;
+                        this._closed = false;
+                        this._listeners = {};
+                        var list = _bcChannels[this.name];
+                        if (!list) { list = []; _bcChannels[this.name] = list; }
+                        list.push(this);
+                    };
+                    BroadcastChannel.prototype.postMessage = function (message) {
+                        if (this._closed) throw new DOMException('Channel is closed', 'InvalidStateError');
+                        var list = _bcChannels[this.name];
+                        if (!list) return;
+                        var evt = { data: message, origin: '', lastEventId: '', source: null, ports: [] };
+                        for (var i = 0; i < list.length; i++) {
+                            var ch = list[i];
+                            if (ch === this || ch._closed) continue;
+                            if (typeof ch.onmessage === 'function') {
+                                globalThis.setTimeout(function (c, e) { return function () { c.onmessage(e); }; }(ch, evt), 0);
+                            }
+                            var ls = ch._listeners['message'];
+                            if (ls) {
+                                for (var j = 0; j < ls.length; j++) {
+                                    globalThis.setTimeout(function (l, e) { return function () { l(e); }; }(ls[j], evt), 0);
+                                }
+                            }
+                        }
+                    };
+                    BroadcastChannel.prototype.close = function () {
+                        this._closed = true;
+                        var list = _bcChannels[this.name];
+                        if (list) {
+                            var idx = list.indexOf(this);
+                            if (idx >= 0) list.splice(idx, 1);
+                        }
+                    };
+                    BroadcastChannel.prototype.addEventListener = function (type, callback) {
+                        if (this._closed) return;
+                        var ls = this._listeners[type] || (this._listeners[type] = []);
+                        if (ls.indexOf(callback) < 0) ls.push(callback);
+                    };
+                    BroadcastChannel.prototype.removeEventListener = function (type, callback) {
+                        var ls = this._listeners[type];
+                        if (!ls) return;
+                        var idx = ls.indexOf(callback);
+                        if (idx >= 0) ls.splice(idx, 1);
+                    };
+                }
+
+                // ── CacheStorage (caches) ── https://w3c.github.io/ServiceWorker/#cachestorage
+                // WhatsApp and many PWAs check for caches API availability.
+                if (typeof globalThis.caches === 'undefined') {
+                    globalThis.CacheStorage = function CacheStorage() {};
+                    globalThis.caches = {
+                        open: function (cacheName) {
+                            return Promise.resolve({
+                                match: function (request) { return Promise.resolve(undefined); },
+                                matchAll: function (request) { return Promise.resolve([]); },
+                                add: function (request) { return Promise.resolve(); },
+                                addAll: function (requests) { return Promise.resolve(); },
+                                put: function (request, response) { return Promise.resolve(); },
+                                delete: function (request) { return Promise.resolve(true); },
+                                keys: function () { return Promise.resolve([]); }
+                            });
+                        },
+                        has: function (cacheName) { return Promise.resolve(false); },
+                        delete: function (cacheName) { return Promise.resolve(true); },
+                        keys: function () { return Promise.resolve([]); },
+                        match: function (request) { return Promise.resolve(undefined); }
+                    };
+                }
+
+                // ── navigator.storage ── https://storage.spec.whatwg.org/
+                if (globalThis.navigator && !globalThis.navigator.storage) {
+                    globalThis.navigator.storage = {
+                        estimate: function () {
+                            return Promise.resolve({ quota: 0, usage: 0 });
+                        },
+                        persist: function () { return Promise.resolve(false); },
+                        persisted: function () { return Promise.resolve(false); }
+                    };
+                }
             })();
             """ +
             "globalThis.isSecureContext = " + secureContextLiteral + ";" +
-            "globalThis.window.isSecureContext = globalThis.isSecureContext;");
+            "globalThis.window.isSecureContext = globalThis.isSecureContext;" +
+            // Diagnostic error overlay — surfaces unhandled JS errors visibly on the page
+            // so we can see what's failing without opening DevTools. Remove once stable.
+            "(function(){" +
+            "  var _errs=[];" +
+            "  globalThis.addEventListener('error',function(e){" +
+            "    var msg=e.message||String(e);" +
+            "    _errs.push(msg);" +
+            "    var d=document.getElementById('__fen_errs');" +
+            "    if(!d){d=document.createElement('div');d.id='__fen_errs';" +
+            "    d.style.cssText='position:fixed;bottom:0;left:0;right:0;max-height:30vh;overflow:auto;background:#a00;color:#fff;font:11px monospace;z-index:99999;padding:6px;opacity:0.9';" +
+            "    document.body&&document.body.appendChild(d);}" +
+            "    d.textContent=_errs.slice(-20).join('\\n');" +
+            "  });" +
+            "  globalThis.addEventListener('unhandledrejection',function(e){" +
+            "    var msg='UNHANDLED: '+(e.reason&&e.reason.message||String(e.reason||''));" +
+            "    _errs.push(msg);" +
+            "    var d=document.getElementById('__fen_errs');" +
+            "    if(!d){d=document.createElement('div');d.id='__fen_errs';" +
+            "    d.style.cssText='position:fixed;bottom:0;left:0;right:0;max-height:30vh;overflow:auto;background:#a00;color:#fff;font:11px monospace;z-index:99999;padding:6px;opacity:0.9';" +
+            "    document.body&&document.body.appendChild(d);}" +
+            "    d.textContent=_errs.slice(-20).join('\\n');" +
+            "  });" +
+            "})();");
     }
 
     private static bool IsPotentiallyTrustworthyOrigin(Uri uri)
@@ -4103,6 +4990,30 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         typeof candidate.querySelectorAll === 'function';
                 });
 
+                var Navigator = defineCtor('Navigator', null, ['Navigator'], function (candidate) {
+                    return candidate === globalThis.navigator || (candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('Navigator') >= 0);
+                });
+
+                Object.defineProperty(Navigator.prototype, 'serviceWorker', {
+                    get: function () {
+                        return globalThis.navigator ? globalThis.navigator.serviceWorker : undefined;
+                    },
+                    configurable: true,
+                    enumerable: true
+                });
+
+                Object.defineProperty(Navigator.prototype, 'storage', {
+                    get: function () {
+                        return globalThis.navigator ? globalThis.navigator.storage : undefined;
+                    },
+                    configurable: true,
+                    enumerable: true
+                });
+
+                defineCtor('DOMStringMap', null, ['DOMStringMap'], function (candidate) {
+                    return candidate && candidate.__fenDomBrands && candidate.__fenDomBrands.indexOf('DOMStringMap') >= 0;
+                });
+
                 defineCtor('Attr', Node, ['Node', 'Attr'], function (candidate) {
                     return typeof candidate.name === 'string' &&
                         typeof candidate.value === 'string' &&
@@ -4614,6 +5525,57 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             _interpreter.AllocateNativeFunction(
                 "__fenCryptoDigest",
                 (_, args) => CryptoDigest(args)));
+
+        // ── WebSocket native bridge ──
+        _interpreter.RegisterGlobalValue(
+            "__fenWebSocketConnect",
+            _interpreter.AllocateNativeFunction(
+                "__fenWebSocketConnect",
+                (_, args) =>
+                {
+                    var url = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                    var protocolsJson = args.Count > 1 ? CoerceToHostString(args[1]) : null;
+                    string[] protocols = null;
+                    if (!string.IsNullOrWhiteSpace(protocolsJson) && protocolsJson != "[]" && protocolsJson != "null")
+                    {
+                        try
+                        {
+                            protocols = System.Text.Json.JsonSerializer.Deserialize<string[]>(protocolsJson);
+                        }
+                        catch { protocols = null; }
+                    }
+                    return ConnectWebSocket(url, protocols);
+                }));
+        _interpreter.RegisterGlobalValue(
+            "__fenWebSocketSend",
+            _interpreter.AllocateNativeFunction(
+                "__fenWebSocketSend",
+                (_, args) =>
+                {
+                    var id = args.Count > 0 ? (int)CoerceToFiniteNumber(args[0], -1) : -1;
+                    var data = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                    return SendWebSocketMessage(id, data);
+                }));
+        _interpreter.RegisterGlobalValue(
+            "__fenWebSocketClose",
+            _interpreter.AllocateNativeFunction(
+                "__fenWebSocketClose",
+                (_, args) =>
+                {
+                    var id = args.Count > 0 ? (int)CoerceToFiniteNumber(args[0], -1) : -1;
+                    var code = args.Count > 1 ? (int)CoerceToFiniteNumber(args[1], 1000) : 1000;
+                    var reason = args.Count > 2 ? CoerceToHostString(args[2]) : string.Empty;
+                    return CloseWebSocket(id, code, reason);
+                }));
+        _interpreter.RegisterGlobalValue(
+            "__fenWebSocketPoll",
+            _interpreter.AllocateNativeFunction(
+                "__fenWebSocketPoll",
+                (_, args) =>
+                {
+                    var id = args.Count > 0 ? (int)CoerceToFiniteNumber(args[0], -1) : -1;
+                    return PollWebSocket(id);
+                }));
 
         EvaluateWithFenJsRaw(
             """
@@ -6902,6 +7864,93 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
     }
 
+    // ── WebSocket bridge implementation ──────────────────────────────────────
+
+    private JsValue ConnectWebSocket(string url, string[] protocols)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return JsValue.FromString("SyntaxError: invalid URL");
+
+        try
+        {
+            var host = new FenWebSocketHost();
+            var error = host.Connect(url, protocols);
+            if (error != null)
+                return JsValue.FromString(error);
+
+            var id = Interlocked.Increment(ref _webSocketIdCounter);
+            lock (_webSocketHosts) { _webSocketHosts[id] = host; }
+            return JsValue.FromInt32(id);
+        }
+        catch (Exception ex)
+        {
+            return JsValue.FromString(ex.Message);
+        }
+    }
+
+    private JsValue SendWebSocketMessage(int id, string data)
+    {
+        FenWebSocketHost host;
+        lock (_webSocketHosts)
+        {
+            if (!_webSocketHosts.TryGetValue(id, out host))
+                return JsValue.FromString("InvalidStateError: socket not found");
+        }
+        var error = host.Send(data);
+        return error != null ? JsValue.FromString(error) : JsValue.Undefined;
+    }
+
+    private JsValue CloseWebSocket(int id, int code, string reason)
+    {
+        FenWebSocketHost host;
+        lock (_webSocketHosts)
+        {
+            if (!_webSocketHosts.TryGetValue(id, out host))
+                return JsValue.Undefined;
+            _webSocketHosts.Remove(id);
+        }
+        host.Close(code, reason);
+        host.Dispose();
+        return JsValue.Undefined;
+    }
+
+    /// <summary>
+    /// Poll a WebSocket for pending events and messages.
+    /// Returns a JSON string like {"events":[{"type":"open"}],"messages":[{"text":"..."},{"binary":"base64..."}]}
+    /// or "null" if nothing pending.
+    /// </summary>
+    private JsValue PollWebSocket(int id)
+    {
+        FenWebSocketHost host;
+        lock (_webSocketHosts)
+        {
+            if (!_webSocketHosts.TryGetValue(id, out host))
+                return JsValue.FromString("null");
+        }
+
+        var events = new List<object>();
+        WsEvent evt;
+        while ((evt = host.PollEvent()) != null)
+            events.Add(new { type = evt.Type, code = evt.Code, reason = evt.Reason });
+
+        var messages = new List<object>();
+        WsMessage msg;
+        while ((msg = host.PollMessage()) != null)
+        {
+            if (msg.IsText)
+                messages.Add(new { text = msg.TextData });
+            else
+                messages.Add(new { binary = Convert.ToBase64String(msg.BinaryData) });
+        }
+
+        if (events.Count == 0 && messages.Count == 0)
+            return JsValue.FromString("null");
+
+        var result = new { events, messages };
+        var json = System.Text.Json.JsonSerializer.Serialize(result);
+        return JsValue.FromString(json);
+    }
+
     private string DescribePromiseRejectionReason(JsValue reason)
     {
         if (reason.Tag != JsValueTag.Object)
@@ -7329,6 +8378,38 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return BrowserSettings.GetBrowserSurface(BrowserSettings.Instance.SelectedUserAgent);
     }
 
+    /// <summary>
+    /// Register localStorage and sessionStorage as host objects on the global scope.
+    /// Must be called after _interpreter is initialized and the base URI is known.
+    /// </summary>
+    private void RegisterFenJsStorageGlobals(Uri baseUri, Document document)
+    {
+        var origin = ResolveStorageOrigin(baseUri, document);
+        var partitionKey = StoragePartitionKey.FirstParty(origin);
+
+        var localStorage = new FenStorageAreaHost(
+            _storageService.LocalStorage, partitionKey, origin);
+        var sessionStorage = new FenStorageAreaHost(
+            _storageService.SessionStorage, partitionKey, origin);
+
+        _interpreter.RegisterGlobalHostObject(
+            "localStorage",
+            RegisterHostObject(localStorage, HostObjectKind.StorageArea));
+        _interpreter.RegisterGlobalHostObject(
+            "sessionStorage",
+            RegisterHostObject(sessionStorage, HostObjectKind.StorageArea));
+    }
+
+    private static string ResolveStorageOrigin(Uri baseUri, Document document)
+    {
+        if (baseUri != null && baseUri.IsAbsoluteUri)
+            return baseUri.GetLeftPart(UriPartial.Authority);
+        if (document != null && !string.IsNullOrWhiteSpace(document.URL) &&
+            Uri.TryCreate(document.URL, UriKind.Absolute, out var docUri))
+            return docUri.GetLeftPart(UriPartial.Authority);
+        return "about:blank";
+    }
+
     private JsValue CreateNavigatorUserAgentDataObject(BrowserUserAgentDataProfile userAgentData)
     {
         userAgentData ??= new BrowserUserAgentDataProfile();
@@ -7564,6 +8645,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             DomRange => "Range",
             FenJsHtmlCollectionHost => "HTMLCollection",
             Node when kind == HostObjectKind.DomNode => "Node",
+            BrowserSurfaceProfile => "Navigator",
+            FenJsDomStringMapHost => "DOMStringMap",
             _ => null
         };
     }
@@ -8298,6 +9381,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     {
         var (promise, resolve, _) = ((IBuiltinContext)_interpreter).CreatePromiseCapability();
         _ = _interpreter.InvokeFunction(resolve, new[] { resolution }, JsValue.Undefined);
+        return promise;
+    }
+
+    private JsValue CreateRejectedPromise(string message, string name)
+    {
+        var (promise, _, reject) = ((IBuiltinContext)_interpreter).CreatePromiseCapability();
+        var errorObj = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["message"] = JsValue.FromString(message ?? string.Empty),
+            ["name"] = JsValue.FromString(name ?? "Error")
+        });
+        _ = _interpreter.InvokeFunction(reject, new[] { errorObj }, JsValue.Undefined);
         return promise;
     }
 
@@ -11564,6 +12659,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case FenJsDomStringMapHost domStringMap:
                     found = TryGetDomStringMapProperty(domStringMap, property, out value);
                     break;
+                case FenStorageAreaHost storageArea:
+                    found = TryGetStorageProperty(storageArea, property, out value);
+                    break;
                 case BrowserSurfaceProfile navigator:
                     if (TryGetNavigatorProperty(navigator, property, out value))
                     {
@@ -11767,6 +12865,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return true;
                 case FenJsDomStringMapHost domStringMap:
                     domStringMap.Element.SetAttribute(PropertyNameToDatasetAttribute(property), CoerceToHostString(value));
+                    return true;
+                case FenStorageAreaHost storageArea:
+                    // Per spec, storage[key] = value is equivalent to storage.setItem(key, value).
+                    var setError = storageArea.SetItem(property, CoerceToHostString(value));
+                    if (setError != null)
+                    {
+                        // QuotaExceededError — the JS side should throw.
+                        // For now we silently ignore quota errors; a full
+                        // implementation would throw a DOMException.
+                    }
                     return true;
                 case FenJsTreeWalkerHost treeWalker when string.Equals(property, "currentNode", StringComparison.Ordinal):
                     var currentNode = _owner.ResolveHostObjectOrNull<Node>(value);
@@ -14774,7 +15882,98 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "product":
                     value = JsValue.FromString("Gecko");
                     return true;
+                case "serviceWorker":
+                    value = _owner.GetStoredHostPropertyOrUndefined(navigator, "serviceWorker");
+                    if (value.Tag == JsValueTag.Undefined)
+                    {
+                        value = _owner.CreateDefaultServiceWorkerStub();
+                        _owner.SetStoredHostProperty(navigator, "serviceWorker", value);
+                    }
+                    return true;
+                case "storage":
+                    value = _owner.GetStoredHostPropertyOrUndefined(navigator, "storage");
+                    if (value.Tag == JsValueTag.Undefined)
+                    {
+                        value = _owner.CreateDefaultStorageStub();
+                        _owner.SetStoredHostProperty(navigator, "storage", value);
+                    }
+                    return true;
                 default:
+                    value = JsValue.Undefined;
+                    return false;
+            }
+        }
+
+        private bool TryGetStorageProperty(FenStorageAreaHost storageArea, string property, out JsValue value)
+        {
+            switch (property)
+            {
+                case "length":
+                    value = JsValue.FromInt32(storageArea.Length);
+                    return true;
+                case "key":
+                    value = _owner.GetOrCreateHostCallable(
+                        storageArea, "key",
+                        (_, args) =>
+                        {
+                            var index = args.Count > 0 ? (int)CoerceToFiniteNumber(args[0], 0) : 0;
+                            var result = storageArea.Key(index);
+                            return result != null ? JsValue.FromString(result) : JsValue.Null;
+                        },
+                        length: 1);
+                    return true;
+                case "getItem":
+                    value = _owner.GetOrCreateHostCallable(
+                        storageArea, "getItem",
+                        (_, args) =>
+                        {
+                            var key = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            var result = storageArea.GetItem(key);
+                            return result != null ? JsValue.FromString(result) : JsValue.Null;
+                        },
+                        length: 1);
+                    return true;
+                case "setItem":
+                    value = _owner.GetOrCreateHostCallable(
+                        storageArea, "setItem",
+                        (_, args) =>
+                        {
+                            var key = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            var val = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            storageArea.SetItem(key, val);
+                            return JsValue.Undefined;
+                        },
+                        length: 2);
+                    return true;
+                case "removeItem":
+                    value = _owner.GetOrCreateHostCallable(
+                        storageArea, "removeItem",
+                        (_, args) =>
+                        {
+                            var key = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            storageArea.RemoveItem(key);
+                            return JsValue.Undefined;
+                        },
+                        length: 1);
+                    return true;
+                case "clear":
+                    value = _owner.GetOrCreateHostCallable(
+                        storageArea, "clear",
+                        (_, _) =>
+                        {
+                            storageArea.Clear();
+                            return JsValue.Undefined;
+                        },
+                        length: 0);
+                    return true;
+                default:
+                    // Per spec, storage[key] is equivalent to storage.getItem(key).
+                    var item = storageArea.GetItem(property);
+                    if (item != null)
+                    {
+                        value = JsValue.FromString(item);
+                        return true;
+                    }
                     value = JsValue.Undefined;
                     return false;
             }
@@ -15147,5 +16346,52 @@ public static class BrowserScriptEngineRuntime
     private static IBrowserScriptEngine CreateConfiguredDefault(IJsHost host)
     {
         return new FenJsBrowserScriptEngine(host);
+    }
+}
+
+/// <summary>
+/// Diagnostic Promise rejection tracker that logs every unhandled rejection
+/// to FenLogger with the WhatsApp category so SPA boot failures are visible
+/// in engine logs. Delegates to the inner tracker for normal operation.
+/// </summary>
+internal sealed class FenJsDiagnosticPromiseRejectionTracker : IHostPromiseRejectionTracker
+{
+    private readonly IHostPromiseRejectionTracker _inner;
+    private int _rejectedCount;
+    private int _handledCount;
+
+    public FenJsDiagnosticPromiseRejectionTracker(IHostPromiseRejectionTracker inner)
+    {
+        _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+    }
+
+    public void Track(JsValue promise, PromiseRejectionOperation operation)
+    {
+        _inner.Track(promise, operation);
+        if (operation == PromiseRejectionOperation.Reject)
+        {
+            var count = Interlocked.Increment(ref _rejectedCount);
+            // Only log first 20 rejections to avoid flooding logs;
+            // the inner InMemoryPromiseRejectionTracker retains the full list.
+            if (count <= 20)
+            {
+                try
+                {
+                    FenLogger.Warn(
+                        $"[PromiseRejection] Unhandled rejection #{count} detected (promise: {promise})",
+                        LogCategory.WhatsApp | LogCategory.JavaScript);
+                }
+                catch
+                {
+                    FenLogger.Warn(
+                        $"[PromiseRejection] Unhandled rejection #{count} detected",
+                        LogCategory.WhatsApp);
+                }
+            }
+        }
+        else if (operation == PromiseRejectionOperation.Handle)
+        {
+            Interlocked.Increment(ref _handledCount);
+        }
     }
 }
