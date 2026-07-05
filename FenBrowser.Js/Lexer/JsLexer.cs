@@ -685,7 +685,18 @@ public sealed class JsLexer
             return false;
         }
 
-        return token.Text is "(" or "{" or "[" or "," or ";" or ":" or "?" or "?." or "=" or "==" or "!=" or "<" or ">" or "<=" or ">=" or "&&" or "||" or "!" or "+" or "-" or "*" or "%" or "/";
+        return token.Text is "(" or "{" or "[" or "," or ";" or ":" or "?" or "?."
+            or "=" or "==" or "!=" or "===" or "!==" or "<" or ">" or "<=" or ">="
+            or "&&" or "||" or "??" or "!" or "~"
+            or "+" or "-" or "*" or "/" or "%" or "**"
+            or "++" or "--" or "..." or "=>"
+            or "<<" or ">>" or ">>>"
+            or "&" or "|" or "^"
+            // Compound assignment operators (each can precede a regex per spec §12.3)
+            or "+=" or "-=" or "*=" or "/=" or "%=" or "**="
+            or "<<=" or ">>=" or ">>>="
+            or "&=" or "|=" or "^="
+            or "&&=" or "||=" or "??=";
     }
 
     private bool TryReadRegexLiteral(out string rawText)

@@ -70,14 +70,15 @@ public sealed class JsParser
     // well before the native stack is exhausted on the smallest stack we run
     // on (xUnit worker threads overflow around ~200 nested parens). 128 levels
     // is far deeper than any realistic hand-written or generated program nests.
-    private const int MaxRecursionDepth = 128;
+    private const int DefaultMaxRecursionDepth = 128;
+    private readonly int _maxRecursionDepth;
     private int _recursionDepth;
 
     private void EnterRecursion()
     {
-        if (++_recursionDepth > MaxRecursionDepth)
+        if (++_recursionDepth > _maxRecursionDepth)
         {
-            throw new JsParserException("Maximum parser nesting depth exceeded.");
+            throw new JsParserException($"Maximum parser nesting depth exceeded{Where()}.");
         }
     }
 
@@ -86,9 +87,10 @@ public sealed class JsParser
         _recursionDepth--;
     }
 
-    private JsParser(IReadOnlyList<Token> tokens)
+    private JsParser(IReadOnlyList<Token> tokens, int maxRecursionDepth = DefaultMaxRecursionDepth)
     {
         _tokens = tokens;
+        _maxRecursionDepth = maxRecursionDepth;
     }
 
     public static ProgramNode ParseScript(SourceText source)
@@ -101,9 +103,12 @@ public sealed class JsParser
     // early-error checks (e.g. 'var arguments' / 'var eval') fire during
     // parsing — before compilation ever sees the AST.
     public static ProgramNode ParseScript(SourceText source, bool inheritedStrictMode)
+        => ParseScript(source, inheritedStrictMode, maxRecursionDepth: null);
+
+    public static ProgramNode ParseScript(SourceText source, bool inheritedStrictMode, int? maxRecursionDepth)
     {
         var tokens = new JsLexer(source).LexAll();
-        var parser = new JsParser(tokens);
+        var parser = new JsParser(tokens, maxRecursionDepth ?? DefaultMaxRecursionDepth);
         return parser.ParseProgram(ProgramKind.Script, inheritedStrictMode);
     }
 
@@ -114,13 +119,23 @@ public sealed class JsParser
         return parser.ParseProgram(ProgramKind.Module);
     }
 
+    public static ProgramNode ParseModule(SourceText source, int maxRecursionDepth)
+    {
+        var tokens = new JsLexer(source, moduleMode: true).LexAll();
+        var parser = new JsParser(tokens, maxRecursionDepth);
+        return parser.ParseProgram(ProgramKind.Module);
+    }
+
     // Parses the body of a dynamically-created function (the Function/
     // GeneratorFunction/AsyncFunction constructor) as a FunctionBody, so a
     // top-level `return` inside it is valid (ECMA-262 20.2.1.1.1).
     public static ProgramNode ParseFunctionBody(SourceText source)
+        => ParseFunctionBody(source, maxRecursionDepth: null);
+
+    public static ProgramNode ParseFunctionBody(SourceText source, int? maxRecursionDepth)
     {
         var tokens = new JsLexer(source).LexAll();
-        var parser = new JsParser(tokens) { _functionBodyDepth = 1 };
+        var parser = new JsParser(tokens, maxRecursionDepth ?? DefaultMaxRecursionDepth) { _functionBodyDepth = 1 };
         return parser.ParseProgram(ProgramKind.Script);
     }
 
@@ -4464,7 +4479,8 @@ public sealed class JsParser
                 // is `x; ++` (a prefix operator missing its operand), not `x++`.
                 if (!IsUpdateTarget(left))
                 {
-                    throw new JsParserException("Invalid update expression target.");
+                    throw new JsParserException(
+                        $"Invalid update expression target ({left.GetType().Name}){Where()}.");
                 }
 
                 ValidateStrictAssignmentTarget(left);
@@ -4568,7 +4584,8 @@ public sealed class JsParser
             var target = ParseExpression(40);
             if (!IsUpdateTarget(target))
             {
-                throw new JsParserException("Invalid update expression target.");
+                throw new JsParserException(
+                    $"Invalid update expression target ({target.GetType().Name}){Where()}.");
             }
 
             ValidateStrictAssignmentTarget(target);
@@ -4578,14 +4595,14 @@ public sealed class JsParser
         if (token.Kind == TokenKind.Punctuator && (token.Text == "!" || token.Text == "-" || token.Text == "+" || token.Text == "~"))
         {
             var op = Advance();
-            var operand = ParseExpression(40);
+            var operand = ParseExpression(34);
             return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
         }
 
         if (token.Kind == TokenKind.Keyword && (token.Text == "typeof" || token.Text == "delete" || token.Text == "void"))
         {
             var op = Advance();
-            var operand = ParseExpression(40);
+            var operand = ParseExpression(34);
 
             // ECMA-262 13.5.1.1 early error: in strict-mode code the operand of
             // `delete` may not be a bare variable reference (a parenthesized
@@ -4604,7 +4621,7 @@ public sealed class JsParser
             if (_allowAwaitExpression)
             {
                 var op = Advance();
-                var operand = ParseExpression(40);
+                var operand = ParseExpression(34);
                 return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
             }
 
@@ -4924,7 +4941,82 @@ public sealed class JsParser
             }
         }
 
+        // Recovery: when '/' appears as a punctuator at the start of an expression,
+        // the lexer has misclassified a regex literal as division. This happens when
+        // the previous token was ), ], or } — which the lexer conservatively treats as
+        // preceding division. Scan forward for the closing '/' and rebuild the regex.
+        if (IsPunctuator("/"))
+        {
+            return RecoverRegexLiteral(token);
+        }
+
         throw new JsParserException($"Unexpected token '{token.Text}' ({token.Kind}){Where()}.");
+    }
+
+    /// <summary>
+    /// Recover a regex literal that the lexer misclassified as a division punctuator.
+    /// Called from ParsePrefix when '/' appears where only a regex makes sense.
+    /// </summary>
+    private RegexLiteralExpressionNode RecoverRegexLiteral(Token openSlash)
+    {
+        // Consume the opening /
+        Advance();
+        var sb = new System.Text.StringBuilder();
+        sb.Append('/');
+
+        // Scan for the closing / punctuator.
+        var maxLookahead = Math.Min(_tokens.Count - _index, 200);
+        for (var i = 0; i < maxLookahead; i++)
+        {
+            var t = _tokens[_index + i];
+            if (t.Kind == TokenKind.Punctuator && t.Text == "/")
+            {
+                var closeIdx = _index + i;
+                for (var j = _index; j < closeIdx; j++)
+                {
+                    sb.Append(_tokens[j].Text);
+                }
+                sb.Append('/');
+
+                // Consume flag letters after the closing /
+                var flagStart = closeIdx + 1;
+                while (flagStart < _tokens.Count &&
+                       _tokens[flagStart].Kind == TokenKind.Identifier &&
+                       _tokens[flagStart].Text.Length > 0 &&
+                       _tokens[flagStart].Text.All(char.IsLetter))
+                {
+                    sb.Append(_tokens[flagStart].Text);
+                    flagStart++;
+                }
+
+                _index = flagStart;
+
+                try
+                {
+                    Regex.RegExpCompiler.ValidateLiteralSyntax(sb.ToString());
+                }
+                catch (Regex.RegexSyntaxError ex)
+                {
+                    throw new JsParserException(ex.Message);
+                }
+
+                var span = new SourceSpan(openSlash.Span.Start, sb.Length,
+                    openSlash.Span.Line, openSlash.Span.Column);
+                return new RegexLiteralExpressionNode(sb.ToString(), span);
+            }
+
+            // Bail if we hit a token that delimits the end of an expression context.
+            if (t.Kind == TokenKind.EndOfFile ||
+                (t.Kind == TokenKind.Punctuator && (t.Text == ";" || t.Text == "}")))
+            {
+                break;
+            }
+        }
+
+        // Recovery failed.
+        throw new JsParserException(
+            $"Unexpected token '{openSlash.Text}' ({openSlash.Kind}) — " +
+            "expected a regex literal but could not find the closing '/'.");
     }
 
     private static bool TryParseNumberLiteral(string text, out double value)
@@ -5689,6 +5781,12 @@ public sealed class JsParser
 
             if (IsPunctuator("("))
             {
+                if (!HasArrowAfterCurrentParenthesizedList())
+                {
+                    _index = saved;
+                    return false;
+                }
+
                 Advance();
                 var asyncParameters = new List<string>();
                 var asyncParameterBindings = new List<BindingPatternNode?>();
@@ -5795,6 +5893,11 @@ public sealed class JsParser
 
         if (IsPunctuator("("))
         {
+            if (!HasArrowAfterCurrentParenthesizedList())
+            {
+                return false;
+            }
+
             Advance();
             var parameters = new List<string>();
             var parameterBindings = new List<BindingPatternNode?>();
@@ -5880,6 +5983,59 @@ public sealed class JsParser
             Advance(); // >
             expression = ParseArrowFunctionBody(parameters, parameterBindings, _tokens[saved].Span, isAsync: false, restParameterIndex: restParameterIndex, parameterDefaults: parameterDefaults);
             return true;
+        }
+
+        return false;
+    }
+
+    private bool HasArrowAfterCurrentParenthesizedList()
+    {
+        if (!IsPunctuator("("))
+        {
+            return false;
+        }
+
+        var depth = 0;
+        for (var i = _index; i < _tokens.Count; i++)
+        {
+            var token = _tokens[i];
+            if (token.Kind == TokenKind.EndOfFile)
+            {
+                return false;
+            }
+
+            if (token.Kind != TokenKind.Punctuator)
+            {
+                continue;
+            }
+
+            if (token.Text == "(")
+            {
+                depth++;
+                continue;
+            }
+
+            if (token.Text != ")")
+            {
+                continue;
+            }
+
+            depth--;
+            if (depth != 0)
+            {
+                continue;
+            }
+
+            if (i + 2 >= _tokens.Count ||
+                _tokens[i + 1].Kind != TokenKind.Punctuator ||
+                _tokens[i + 1].Text != "=" ||
+                _tokens[i + 2].Kind != TokenKind.Punctuator ||
+                _tokens[i + 2].Text != ">")
+            {
+                return false;
+            }
+
+            return !HasLineTerminatorBetween(token, _tokens[i + 1]);
         }
 
         return false;
