@@ -23,6 +23,8 @@ public sealed partial class BytecodeInterpreter
     private IHostHooks _hostHooks = new StandaloneHostHooks();
     private HostObjectResolveContext _hostResolveContext =
         new(CurrentRealmId: 0, CurrentDocumentEpoch: default, CurrentNavigationEpoch: default);
+    private readonly Dictionary<HostObjectHandle, Dictionary<string, JsPropertyDescriptor>> _hostDefinedProperties = new();
+    private readonly Dictionary<HostObjectHandle, JsValue> _hostObjectPrototypes = new();
 
     public HostObjectTable HostObjectTable
     {
@@ -71,9 +73,24 @@ public sealed partial class BytecodeInterpreter
     // route either through TypeError by throwing inside its hook).
     private JsValue GetHostObjectProperty(JsValue receiver, string key)
     {
-        var resolution = RequireHostObject(receiver, "get host property");
-        _ = resolution;
-        return _hostHooks.TryGetHostProperty(receiver.AsHostObjectHandle(), key, out var value)
+        _ = RequireHostObject(receiver, "get host property");
+        var handle = receiver.AsHostObjectHandle();
+        if (key == "__proto__")
+        {
+            return GetHostObjectPrototype(handle);
+        }
+
+        if (TryGetHostObjectDefinedProperty(handle, key, out var descriptor))
+        {
+            return GetDescriptorValue(descriptor, receiver);
+        }
+
+        if (TryGetHostObjectPrototypeProperty(handle, receiver, key, out var value))
+        {
+            return value;
+        }
+
+        return _hostHooks.TryGetHostProperty(handle, key, out value)
             ? value
             : JsValue.Undefined;
     }
@@ -85,11 +102,264 @@ public sealed partial class BytecodeInterpreter
     private void SetHostObjectProperty(JsValue receiver, string key, JsValue value)
     {
         _ = RequireHostObject(receiver, "set host property");
-        if (!_hostHooks.TrySetHostProperty(receiver.AsHostObjectHandle(), key, value))
+        var handle = receiver.AsHostObjectHandle();
+        if (key == "__proto__")
         {
-            throw new JsThrownException(CreateTypeError(
-                "Cannot set property '" + key + "' on host object (refused by embedder)."));
+            if (value.Tag == JsValueTag.Object || value.Tag == JsValueTag.Null)
+            {
+                SetHostObjectPrototype(handle, value);
+            }
+
+            return;
         }
+
+        if (TryGetHostObjectDefinedProperty(handle, key, out var descriptor))
+        {
+            if (descriptor.IsAccessor)
+            {
+                if (!CallSetter(descriptor, value, receiver))
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Cannot set property '" + key + "' on host object accessor without a setter."));
+                }
+
+                return;
+            }
+
+            if (!descriptor.Writable)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Cannot assign to read-only property '" + key + "' on host object."));
+            }
+
+            DefineHostObjectProperty(handle, key, descriptor with { Value = value });
+            return;
+        }
+
+        if (_hostHooks.TrySetHostProperty(handle, key, value))
+        {
+            return;
+        }
+
+        if (!_hostHooks.TryGetHostProperty(handle, key, out _))
+        {
+            DefineHostObjectProperty(
+                handle,
+                key,
+                new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+            return;
+        }
+
+        throw new JsThrownException(CreateTypeError(
+            "Cannot set property '" + key + "' on host object (refused by embedder)."));
+    }
+
+    private bool TryGetHostObjectDefinedProperty(
+        HostObjectHandle handle,
+        string key,
+        out JsPropertyDescriptor descriptor)
+    {
+        if (_hostDefinedProperties.TryGetValue(handle, out var properties) &&
+            properties.TryGetValue(key, out descriptor))
+        {
+            return true;
+        }
+
+        descriptor = default;
+        return false;
+    }
+
+    private IEnumerable<string> EnumerateHostObjectDefinedPropertyNames(HostObjectHandle handle)
+        => _hostDefinedProperties.TryGetValue(handle, out var properties)
+            ? properties.Keys
+            : Array.Empty<string>();
+
+    private void DefineHostObjectProperty(HostObjectHandle handle, string key, JsPropertyDescriptor descriptor)
+    {
+        if (!_hostDefinedProperties.TryGetValue(handle, out var properties))
+        {
+            properties = new Dictionary<string, JsPropertyDescriptor>(StringComparer.Ordinal);
+            _hostDefinedProperties[handle] = properties;
+        }
+
+        properties[key] = descriptor;
+    }
+
+    public void CopyHostObjectOwnProperties(JsValue source, JsValue target)
+    {
+        if (source.Tag != JsValueTag.HostObject || target.Tag != JsValueTag.HostObject)
+        {
+            return;
+        }
+
+        var sourceHandle = source.AsHostObjectHandle();
+        var targetHandle = target.AsHostObjectHandle();
+        _ = RequireHostObject(source, "copy host object source properties");
+        _ = RequireHostObject(target, "copy host object target properties");
+        if (_hostDefinedProperties.TryGetValue(sourceHandle, out var sourceProperties))
+        {
+            foreach (var property in sourceProperties)
+            {
+                DefineHostObjectProperty(targetHandle, property.Key, property.Value);
+            }
+        }
+
+        CopyHostObjectAssignedPrototypeProperties(sourceHandle, targetHandle);
+    }
+
+    private void CopyHostObjectAssignedPrototypeProperties(HostObjectHandle sourceHandle, HostObjectHandle targetHandle)
+    {
+        var prototype = GetHostObjectPrototype(sourceHandle);
+        if (prototype.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var prototypeObject = _heap.GetObject(prototype.AsObjectHandle());
+        foreach (var property in prototypeObject.EnumerateOwnProperties())
+        {
+            if (TryGetHostObjectDefinedProperty(targetHandle, property.Key, out _))
+            {
+                continue;
+            }
+
+            DefineHostObjectProperty(targetHandle, property.Key, property.Value);
+        }
+    }
+
+    private JsValue GetHostObjectPrototype(HostObjectHandle handle)
+        => _hostObjectPrototypes.TryGetValue(handle, out var prototype)
+            ? prototype
+            : JsValue.Null;
+
+    private bool HasHostObjectPrototype(HostObjectHandle handle)
+        => _hostObjectPrototypes.ContainsKey(handle);
+
+    private void SetHostObjectPrototype(HostObjectHandle handle, JsValue prototype)
+    {
+        if (prototype.Tag != JsValueTag.Object && prototype.Tag != JsValueTag.Null)
+        {
+            throw new ArgumentException("Host object prototype must be an object or null.", nameof(prototype));
+        }
+
+        _hostObjectPrototypes[handle] = prototype;
+    }
+
+    private bool TryGetHostObjectPrototypeProperty(
+        HostObjectHandle handle,
+        JsValue receiver,
+        string key,
+        out JsValue value)
+    {
+        var prototype = GetHostObjectPrototype(handle);
+        if (prototype.Tag != JsValueTag.Object)
+        {
+            value = JsValue.Undefined;
+            return false;
+        }
+
+        var prototypeObject = _heap.GetObject(prototype.AsObjectHandle());
+        return TryGetPropertyValue(prototypeObject, receiver, key, out value);
+    }
+
+    private bool TryGetHostObjectPrototypeSymbolProperty(
+        HostObjectHandle handle,
+        JsValue receiver,
+        long symbolId,
+        out JsValue value)
+    {
+        var prototype = GetHostObjectPrototype(handle);
+        if (prototype.Tag != JsValueTag.Object)
+        {
+            value = JsValue.Undefined;
+            return false;
+        }
+
+        var prototypeObject = _heap.GetObject(prototype.AsObjectHandle());
+        if (prototypeObject.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var descriptor))
+        {
+            value = GetDescriptorValue(descriptor, receiver);
+            return true;
+        }
+
+        value = JsValue.Undefined;
+        return false;
+    }
+
+    private bool HasHostObjectProperty(JsValue receiver, string key)
+    {
+        _ = RequireHostObject(receiver, "check host property");
+        var handle = receiver.AsHostObjectHandle();
+        if (TryGetHostObjectDefinedProperty(handle, key, out _))
+        {
+            return true;
+        }
+
+        if (TryGetHostObjectPrototypeProperty(handle, receiver, key, out _))
+        {
+            return true;
+        }
+
+        return _hostHooks.TryGetHostProperty(handle, key, out _);
+    }
+
+    private bool HasHostObjectDefinedOrEmbedderProperty(HostObjectHandle handle, string key)
+        => TryGetHostObjectDefinedProperty(handle, key, out _) ||
+           _hostHooks.TryGetHostProperty(handle, key, out _);
+
+    private void ApplyDefaultHostObjectPrototypeIfUnset(JsValue constructed, JsValue newTarget)
+    {
+        if (constructed.Tag != JsValueTag.HostObject || newTarget.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var handle = constructed.AsHostObjectHandle();
+        _ = RequireHostObject(constructed, "set host object construction prototype");
+
+        var prototype = GetReceiverProperty(newTarget, "prototype");
+        if ((prototype.Tag == JsValueTag.Object || prototype.Tag == JsValueTag.Null) &&
+            ShouldApplyDefaultHostObjectPrototype(handle, prototype))
+        {
+            SetHostObjectPrototype(handle, prototype);
+        }
+    }
+
+    private bool ShouldApplyDefaultHostObjectPrototype(HostObjectHandle handle, JsValue prototype)
+    {
+        var current = GetHostObjectPrototype(handle);
+        if (current.Tag == JsValueTag.Null)
+        {
+            return true;
+        }
+
+        if (current.Tag == JsValueTag.Object &&
+            prototype.Tag == JsValueTag.Object &&
+            current.AsObjectHandle().Equals(prototype.AsObjectHandle()))
+        {
+            return true;
+        }
+
+        return IsFenDomDefaultPrototype(current);
+    }
+
+    private bool IsFenDomDefaultPrototype(JsValue prototype)
+    {
+        if (prototype.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var handle = prototype.AsObjectHandle();
+        if (_objectPrototypeHandle is { } objectPrototype &&
+            handle.Equals(objectPrototype))
+        {
+            return true;
+        }
+
+        var obj = _heap.GetObject(handle);
+        return obj.TryGetOwnProperty("__fenDomBrands", out var brandDescriptor) &&
+            brandDescriptor.HasValue;
     }
 
     // Enqueue a Promise job, routing through the host hooks when an embedder
@@ -133,6 +403,28 @@ public sealed partial class BytecodeInterpreter
                 Writable: true,
                 Enumerable: false,
                 Configurable: true));
+    }
+
+    public bool TrySetHostObjectPrototypeFromGlobalConstructor(JsValue target, string constructorName)
+    {
+        if (target.Tag != JsValueTag.HostObject ||
+            string.IsNullOrWhiteSpace(constructorName) ||
+            !TryReadGlobalValue(constructorName, out var constructor) ||
+            constructor.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var constructorObject = _heap.GetObject(constructor.AsObjectHandle());
+        if (!TryGetPropertyValue(constructorObject, constructor, "prototype", out var prototype) ||
+            (prototype.Tag != JsValueTag.Object && prototype.Tag != JsValueTag.Null))
+        {
+            return false;
+        }
+
+        _ = RequireHostObject(target, "set host object prototype");
+        SetHostObjectPrototype(target.AsHostObjectHandle(), prototype);
+        return true;
     }
 
     // Host embedder seam: allocate a callable native function on the current

@@ -43,6 +43,12 @@ public sealed partial class BytecodeInterpreter
     // B.2.2.1.1 get Object.prototype.__proto__: return ? O.[[GetPrototypeOf]]().
     private JsValue AnnexBGetProto(JsValue thisValue)
     {
+        if (thisValue.Tag == JsValueTag.HostObject)
+        {
+            _ = RequireHostObject(thisValue, "get host object prototype");
+            return GetHostObjectPrototype(thisValue.AsHostObjectHandle());
+        }
+
         var handle = RequireToObjectHandle(thisValue, "get __proto__");
         var obj = _heap.GetObject(handle);
         if (obj is ProxyObject proxy)
@@ -70,6 +76,13 @@ public sealed partial class BytecodeInterpreter
             return JsValue.Undefined;
         }
 
+        if (thisValue.Tag == JsValueTag.HostObject)
+        {
+            _ = RequireHostObject(thisValue, "set host object prototype");
+            SetHostObjectPrototype(thisValue.AsHostObjectHandle(), proto);
+            return JsValue.Undefined;
+        }
+
         // 3. If Type(O) is not Object, return undefined.
         if (thisValue.Tag != JsValueTag.Object)
         {
@@ -90,7 +103,6 @@ public sealed partial class BytecodeInterpreter
     private JsValue AnnexBDefineAccessor(JsValue thisValue, IReadOnlyList<JsValue> args, bool asGetter)
     {
         var label = asGetter ? "__defineGetter__" : "__defineSetter__";
-        var handle = RequireToObjectHandle(thisValue, label);
         var key = args.Count > 0 ? args[0] : JsValue.Undefined;
         var accessor = args.Count > 1 ? args[1] : JsValue.Undefined;
         if (!IsCallableValue(accessor))
@@ -99,7 +111,28 @@ public sealed partial class BytecodeInterpreter
                 $"Object.prototype.{label}: the second argument must be callable."));
         }
 
-        var target = _heap.GetObject(handle);
+        if (thisValue.Tag == JsValueTag.HostObject)
+        {
+            if (key.Tag == JsValueTag.Symbol)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    $"Object.prototype.{label}: symbol keys are not supported on host objects."));
+            }
+
+            var handle = thisValue.AsHostObjectHandle();
+            _ = RequireHostObject(thisValue, "define host object accessor");
+            var name = ToPropertyKey(key);
+            var (g, s) = ExistingAccessorHalves(TryGetHostObjectDefinedProperty(handle, name, out var ex), ex);
+            if (asGetter) g = accessor; else s = accessor;
+            DefineHostObjectProperty(
+                handle,
+                name,
+                JsPropertyDescriptor.Accessor(g, s, Enumerable: true, Configurable: true));
+            return JsValue.Undefined;
+        }
+
+        var objectHandle = RequireToObjectHandle(thisValue, label);
+        var target = _heap.GetObject(objectHandle);
         if (key.Tag == JsValueTag.Symbol)
         {
             var symId = key.AsSymbolId();
@@ -117,7 +150,7 @@ public sealed partial class BytecodeInterpreter
                 JsPropertyDescriptor.Accessor(g, s, Enumerable: true, Configurable: true));
         }
 
-        _heap.WriteBarrier(handle, accessor.AsObjectHandle());
+        _heap.WriteBarrier(objectHandle, accessor.AsObjectHandle());
         return JsValue.Undefined;
     }
 
@@ -127,12 +160,44 @@ public sealed partial class BytecodeInterpreter
     private JsValue AnnexBLookupAccessor(JsValue thisValue, IReadOnlyList<JsValue> args, bool wantGetter)
     {
         var label = wantGetter ? "__lookupGetter__" : "__lookupSetter__";
-        var handle = RequireToObjectHandle(thisValue, label);
         var key = args.Count > 0 ? args[0] : JsValue.Undefined;
         var isSymbol = key.Tag == JsValueTag.Symbol;
         var symId = isSymbol ? key.AsSymbolId() : 0;
         var name = isSymbol ? null : ToPropertyKey(key);
 
+        if (thisValue.Tag == JsValueTag.HostObject)
+        {
+            if (isSymbol)
+            {
+                return JsValue.Undefined;
+            }
+
+            _ = RequireHostObject(thisValue, "lookup host object accessor");
+            var hostHandle = thisValue.AsHostObjectHandle();
+            if (TryGetHostObjectDefinedProperty(hostHandle, name!, out var hostDescriptor) &&
+                hostDescriptor.IsAccessor)
+            {
+                var hostHalf = wantGetter ? hostDescriptor.Get : hostDescriptor.Set;
+                return hostHalf.Tag == JsValueTag.Undefined ? JsValue.Undefined : hostHalf;
+            }
+
+            var prototype = GetHostObjectPrototype(hostHandle);
+            return prototype.Tag == JsValueTag.Object
+                ? LookupAccessorOnObjectPrototypeChain(prototype.AsObjectHandle(), name!, symId: 0, isSymbol: false, wantGetter)
+                : JsValue.Undefined;
+        }
+
+        var handle = RequireToObjectHandle(thisValue, label);
+        return LookupAccessorOnObjectPrototypeChain(handle, name, symId, isSymbol, wantGetter);
+    }
+
+    private JsValue LookupAccessorOnObjectPrototypeChain(
+        ObjectHandle handle,
+        string? name,
+        long symId,
+        bool isSymbol,
+        bool wantGetter)
+    {
         ObjectHandle? current = handle;
         while (current is { } cur)
         {
@@ -196,6 +261,12 @@ public sealed partial class BytecodeInterpreter
         if (value.Tag == JsValueTag.Object)
         {
             return value.AsObjectHandle();
+        }
+
+        if (value.Tag == JsValueTag.HostObject)
+        {
+            throw new JsThrownException(CreateTypeError(
+                $"Object.prototype.{methodLabel} cannot box a host object receiver."));
         }
 
         return CreateObjectFromValue(value).AsObjectHandle();

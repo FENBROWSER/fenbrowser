@@ -190,9 +190,14 @@ public sealed partial class BytecodeInterpreter
                     : JsValue.Undefined;
             }
             case JsValueTag.HostObject:
-                // Host objects don't carry symbol-keyed properties in the
-                // current DOM bridge — fall through to undefined.
-                return JsValue.Undefined;
+                _ = RequireHostObject(receiver, "get host symbol property");
+                return TryGetHostObjectPrototypeSymbolProperty(
+                        receiver.AsHostObjectHandle(),
+                        receiver,
+                        symbolId,
+                        out var hostSymbolValue)
+                    ? hostSymbolValue
+                    : JsValue.Undefined;
             case JsValueTag.Undefined:
                 throw new JsThrownException(CreateTypeError(
                     "Cannot read properties of undefined (reading symbol key)."));

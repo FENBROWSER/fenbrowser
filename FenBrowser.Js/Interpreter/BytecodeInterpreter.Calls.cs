@@ -441,6 +441,15 @@ public sealed partial class BytecodeInterpreter
                 {
                     sb.Append('.').Append(fn.PropertyNames[ins.C]);
                 }
+                if ((ins.OpCode == OpCode.LoadVar || ins.OpCode == OpCode.StoreVar || ins.OpCode == OpCode.InitVar)
+                    && SlotNameTable.GetName(fn, ins.B) is { } slotName)
+                {
+                    sb.Append('.').Append(slotName);
+                }
+                if (ins.OpCode == OpCode.LoadConst && (uint)ins.B < (uint)fn.Constants.Count)
+                {
+                    sb.Append('=').Append(DescribeValueShort(fn.Constants[ins.B]));
+                }
                 // For GetElem, the key is a live register value — surface it so we can see
                 // exactly which dynamic key resolved to the non-callable object.
                 if (ins.OpCode == OpCode.GetElem &&
@@ -471,6 +480,15 @@ public sealed partial class BytecodeInterpreter
     // newTarget.prototype for the created object.
     private JsValue ConstructFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue newTarget)
     {
+        if (value.Tag == JsValueTag.Undefined || value.Tag == JsValueTag.Null)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Cannot construct " +
+                (value.Tag == JsValueTag.Undefined ? "undefined" : "null") +
+                " target. arg0=" + (args.Count > 0 ? DescribeValueShort(args[0]) : "<none>") +
+                " " + DescribeFrameStack()));
+        }
+
         var obj = ResolveObject(value);
 
         // ECMA-262 9.5.13 Proxy [[Construct]].
@@ -561,6 +579,10 @@ public sealed partial class BytecodeInterpreter
                     _heap.WriteBarrier(constructed.AsObjectHandle(), protoValue.AsObjectHandle());
                 }
             }
+            else if (constructed.Tag == JsValueTag.HostObject)
+            {
+                ApplyDefaultHostObjectPrototypeIfUnset(constructed, newTarget);
+            }
 
             return constructed;
         }
@@ -604,7 +626,7 @@ public sealed partial class BytecodeInterpreter
                 // derived constructor bytecode) can bind it into the
                 // FunctionEnvironmentRecord. Only objects can be bound as this;
                 // non-object results from super() trigger a TypeError elsewhere.
-                if (superResult.Tag == JsValueTag.Object)
+                if (IsConstructorReturnObject(superResult))
                     frame.ThisValue = superResult;
                 frame.Registers[destinationRegister] = superResult;
             }
@@ -718,7 +740,13 @@ public sealed partial class BytecodeInterpreter
             ? JsValue.Undefined
             : newTarget;
         var result = ExecuteInternal(callee.Function, args, defaultInstance, callee.OuterEnvironment, callee: callee);
-        return result.Tag == JsValueTag.Object ? result : defaultInstance;
+        ApplyDefaultHostObjectPrototypeIfUnset(result, newTarget);
+        return IsConstructorReturnObject(result) ? result : defaultInstance;
+    }
+
+    private static bool IsConstructorReturnObject(JsValue value)
+    {
+        return value.Tag is JsValueTag.Object or JsValueTag.HostObject;
     }
 
     // Run the generator's parameter-binding prologue synchronously. ECMA-262

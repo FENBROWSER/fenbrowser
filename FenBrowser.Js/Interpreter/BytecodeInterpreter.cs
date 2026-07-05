@@ -93,6 +93,29 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 tracer.Trace(handle);
             }
         }
+
+        foreach (var propertySet in _hostDefinedProperties.Values)
+        {
+            foreach (var descriptor in propertySet.Values)
+            {
+                TraceRootValue(tracer, descriptor.Value);
+                TraceRootValue(tracer, descriptor.Get);
+                TraceRootValue(tracer, descriptor.Set);
+            }
+        }
+
+        foreach (var prototype in _hostObjectPrototypes.Values)
+        {
+            TraceRootValue(tracer, prototype);
+        }
+    }
+
+    private static void TraceRootValue(IHeapTracer tracer, JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object)
+        {
+            tracer.Trace(value.AsObjectHandle());
+        }
     }
     double IBuiltinContext.ToNumber(JsValue value) => ToNumber(value);
     string IBuiltinContext.ToStringValue(JsValue value) => ToStringValue(value);
@@ -1916,10 +1939,28 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.SetElem:
                 {
-                    var ownerHandle = ResolveObjectHandle(frame.Registers[ins.A]);
-                    var obj = _heap.GetObject(ownerHandle);
+                    var receiverValue = frame.Registers[ins.A];
                     var keyValue = frame.Registers[ins.B];
                     var value = frame.Registers[ins.C];
+
+                    if (receiverValue.Tag == JsValueTag.HostObject)
+                    {
+                        try
+                        {
+                            if (keyValue.Tag != JsValueTag.Symbol)
+                            {
+                                SetHostObjectProperty(receiverValue, ToPropertyKey(keyValue), value);
+                            }
+                        }
+                        catch (JsThrownException ex)
+                        {
+                            ThrowOrHandle(frame, ex.Value);
+                        }
+                        break;
+                    }
+
+                    var ownerHandle = ResolveObjectHandle(receiverValue);
+                    var obj = _heap.GetObject(ownerHandle);
 
                     // ECMA-262 23.2.4.3 IntegerIndexedElementSet: TypedArray integer
                     // indices write through to the underlying buffer; out-of-bounds
@@ -1954,7 +1995,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                     if (keyValue.Tag == JsValueTag.Symbol)
                     {
-                        var ok = SetSymbolPropertyValue(ownerHandle, obj, keyValue.AsSymbolId(), value, frame.Registers[ins.A]);
+                        var ok = SetSymbolPropertyValue(ownerHandle, obj, keyValue.AsSymbolId(), value, receiverValue);
                         if (!ok && function.IsStrictMode)
                         {
                             ThrowTypeError(frame, "Cannot assign to symbol-keyed property.");
@@ -1966,7 +2007,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var key = ToPropertyKey(keyValue);
                     try
                     {
-                        var ok = SetPropertyValue(ownerHandle, obj, key, value, frame.Registers[ins.A]);
+                        var ok = SetPropertyValue(ownerHandle, obj, key, value, receiverValue);
                         if (!ok)
                         {
                             // ECMA-262 12.2.5.2 ArrayAccumulation / CreateDataProperty:
@@ -2564,14 +2605,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     bool has;
                     if (rhs.Tag == JsValueTag.HostObject)
                     {
-                        // Host objects: check property existence via host hooks.
-                        var resolution = _hostObjectTable.Resolve(rhs.AsHostObjectHandle(), _hostResolveContext);
-                        if (!resolution.IsOk)
-                        {
-                            ThrowTypeError(frame, "'in' on a stale host object handle.");
-                            break;
-                        }
-
                         var keyValue = frame.Registers[ins.B];
                         if (keyValue.Tag == JsValueTag.Symbol)
                         {
@@ -2581,7 +2614,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         else
                         {
                             var key = ToPropertyKey(keyValue);
-                            has = _hostHooks.TryGetHostProperty(rhs.AsHostObjectHandle(), key, out _);
+                            try
+                            {
+                                has = HasHostObjectProperty(rhs, key);
+                            }
+                            catch (JsThrownException ex)
+                            {
+                                ThrowOrHandle(frame, ex.Value);
+                                break;
+                            }
                         }
                     }
                     else
@@ -2664,7 +2705,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 {
                     var returnValue = frame.Registers[ins.A];
                     if (function.IsDerivedConstructor &&
-                        returnValue.Tag != JsValueTag.Object &&
+                        !IsConstructorReturnObject(returnValue) &&
                         frame.Environment is FunctionEnvironmentRecord derivedEnv)
                     {
                         var thisBindingResult = derivedEnv.GetThisBinding(out var derivedThis);
@@ -4436,6 +4477,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // WeakSet, WeakRef and FinalizationRegistry.
     private bool CanBeHeldWeakly(JsValue v)
     {
+        if (v.Tag == JsValueTag.HostObject) return true;
         if (v.Tag == JsValueTag.Object) return true;
         if (v.Tag == JsValueTag.Symbol) return !_symbolRegistryById.ContainsKey(v.AsSymbolId());
         return false;
@@ -4446,6 +4488,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private static bool WeakMapTryGet(WeakMapObject wm, JsValue key, out JsValue value)
     {
         if (key.Tag == JsValueTag.Object) return wm.TryGet(key.AsObjectHandle(), out value);
+        if (key.Tag == JsValueTag.HostObject) return wm.TryGetHost(key.AsHostObjectHandle(), out value);
         if (key.Tag == JsValueTag.Symbol) return wm.TryGetSymbol(key.AsSymbolId(), out value);
         value = JsValue.Undefined;
         return false;
@@ -4453,10 +4496,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private static bool WeakMapHas(WeakMapObject wm, JsValue key)
         => key.Tag == JsValueTag.Object ? wm.Has(key.AsObjectHandle())
+         : key.Tag == JsValueTag.HostObject ? wm.HasHost(key.AsHostObjectHandle())
          : key.Tag == JsValueTag.Symbol && wm.HasSymbol(key.AsSymbolId());
 
     private static bool WeakMapRemove(WeakMapObject wm, JsValue key)
         => key.Tag == JsValueTag.Object ? wm.Remove(key.AsObjectHandle())
+         : key.Tag == JsValueTag.HostObject ? wm.RemoveHost(key.AsHostObjectHandle())
          : key.Tag == JsValueTag.Symbol && wm.RemoveSymbol(key.AsSymbolId());
 
     private void WeakMapSet(ObjectHandle wmHandle, WeakMapObject wm, JsValue key, JsValue val)
@@ -4465,6 +4510,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             wm.Set(key.AsObjectHandle(), val);
             _heap.WriteBarrier(wmHandle, key.AsObjectHandle());
+        }
+        else if (key.Tag == JsValueTag.HostObject)
+        {
+            wm.SetHost(key.AsHostObjectHandle(), val);
         }
         else
         {
@@ -4552,6 +4601,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 ws.Add(value.AsObjectHandle());
                 _heap.WriteBarrier(thisValue.AsObjectHandle(), value.AsObjectHandle());
             }
+            else if (value.Tag == JsValueTag.HostObject)
+            {
+                ws.AddHost(value.AsHostObjectHandle());
+            }
             else
             {
                 ws.AddSymbol(value.AsSymbolId());
@@ -4564,6 +4617,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var ws = RequireWeakSet(thisValue);
             var value = args.Count > 0 ? args[0] : JsValue.Undefined;
             var present = value.Tag == JsValueTag.Object ? ws.Has(value.AsObjectHandle())
+                        : value.Tag == JsValueTag.HostObject ? ws.HasHost(value.AsHostObjectHandle())
                         : value.Tag == JsValueTag.Symbol && ws.HasSymbol(value.AsSymbolId());
             return JsValue.FromBoolean(present);
         }, length: 1);
@@ -4573,6 +4627,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var ws = RequireWeakSet(thisValue);
             var value = args.Count > 0 ? args[0] : JsValue.Undefined;
             var removed = value.Tag == JsValueTag.Object ? ws.Remove(value.AsObjectHandle())
+                        : value.Tag == JsValueTag.HostObject ? ws.RemoveHost(value.AsHostObjectHandle())
                         : value.Tag == JsValueTag.Symbol && ws.RemoveSymbol(value.AsSymbolId());
             return JsValue.FromBoolean(removed);
         }, length: 1);
@@ -4602,12 +4657,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private sealed class WeakMapObject : JsObject
     {
         private readonly Dictionary<ObjectHandle, JsValue> _entries = new();
+        private readonly Dictionary<HostObjectHandle, JsValue> _hostEntries = new();
         // ECMA-262: a non-registered Symbol can also be held weakly.
         private readonly Dictionary<long, JsValue> _symbolEntries = new();
         public void Set(ObjectHandle key, JsValue value) => _entries[key] = value;
         public bool TryGet(ObjectHandle key, out JsValue value) => _entries.TryGetValue(key, out value);
         public bool Has(ObjectHandle key) => _entries.ContainsKey(key);
         public bool Remove(ObjectHandle key) => _entries.Remove(key);
+        public void SetHost(HostObjectHandle key, JsValue value) => _hostEntries[key] = value;
+        public bool TryGetHost(HostObjectHandle key, out JsValue value) => _hostEntries.TryGetValue(key, out value);
+        public bool HasHost(HostObjectHandle key) => _hostEntries.ContainsKey(key);
+        public bool RemoveHost(HostObjectHandle key) => _hostEntries.Remove(key);
         public void SetSymbol(long id, JsValue value) => _symbolEntries[id] = value;
         public bool TryGetSymbol(long id, out JsValue value) => _symbolEntries.TryGetValue(id, out value);
         public bool HasSymbol(long id) => _symbolEntries.ContainsKey(id);
@@ -4617,10 +4677,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private sealed class WeakSetObject : JsObject
     {
         private readonly HashSet<ObjectHandle> _entries = new();
+        private readonly HashSet<HostObjectHandle> _hostEntries = new();
         private readonly HashSet<long> _symbolEntries = new();
         public void Add(ObjectHandle key) => _entries.Add(key);
         public bool Has(ObjectHandle key) => _entries.Contains(key);
         public bool Remove(ObjectHandle key) => _entries.Remove(key);
+        public void AddHost(HostObjectHandle key) => _hostEntries.Add(key);
+        public bool HasHost(HostObjectHandle key) => _hostEntries.Contains(key);
+        public bool RemoveHost(HostObjectHandle key) => _hostEntries.Remove(key);
         public void AddSymbol(long id) => _symbolEntries.Add(id);
         public bool HasSymbol(long id) => _symbolEntries.Contains(id);
         public bool RemoveSymbol(long id) => _symbolEntries.Remove(id);
@@ -7113,7 +7177,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
             catch (ArgumentException ex)
             {
-                if (RegExpCompiler.ContainsUnicodePropertyEscape(pattern))
+                if (RegExpCompiler.TryCompileRangeNormalizedDotNetRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250), ex, out var rangeNormalizedRegex))
+                {
+                    regex = rangeNormalizedRegex;
+                }
+                else if (RegExpCompiler.ShouldUseNeutralDotNetFallback(pattern, dotNetPattern, ex))
                 {
                     regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
                 }
@@ -7310,7 +7378,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
             catch (ArgumentException ex)
             {
-                if (RegExpCompiler.ContainsUnicodePropertyEscape(pattern))
+                if (RegExpCompiler.TryCompileRangeNormalizedDotNetRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250), ex, out var rangeNormalizedRegex))
+                {
+                    regex = rangeNormalizedRegex;
+                }
+                else if (RegExpCompiler.ShouldUseNeutralDotNetFallback(pattern, dotNetPattern, ex))
                 {
                     regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
                 }
@@ -7600,7 +7672,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // it doesn't know after the \p{} rewrite). When the pattern uses
             // property escapes, fall back to a neutral BCL regex and let the
             // native program do the matching, mirroring RegExpCompiler.Compile.
-            if (RegExpCompiler.ContainsUnicodePropertyEscape(newPattern))
+            if (RegExpCompiler.TryCompileRangeNormalizedDotNetRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250), ex, out var rangeNormalizedRegex))
+            {
+                regex = rangeNormalizedRegex;
+            }
+            else if (RegExpCompiler.ShouldUseNeutralDotNetFallback(newPattern, dotNetPattern, ex))
             {
                 regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
             }
@@ -7725,19 +7801,45 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             !rxObj.TryGetOwnProperty("global", out _) &&
             IsBuiltinRegExpExec(rxObj, thisValue))
         {
+            var global = fastRx.Flags.Contains('g', StringComparison.Ordinal);
             if (replacement.Tag == JsValueTag.Object && IsCallable(replacement))
             {
-                var output = fastRx.Regex.Replace(input, m =>
+                if (!global)
                 {
-                    var result = CallFunction(replacement,
-                        new[] { JsValue.FromString(m.Value), JsValue.FromNumber(m.Index), JsValue.FromString(input) },
-                        JsValue.Undefined);
-                    return ToStringValue(result);
-                });
-                return JsValue.FromString(output);
+                    var match = fastRx.Regex.Match(input);
+                    if (!match.Success) return JsValue.FromString(input);
+                    var replacementArgs = CreateRegExpReplacementFunctionArgs(input, match, fastRx);
+                    var replacementResult = CallFunction(replacement, replacementArgs, JsValue.Undefined);
+                    return JsValue.FromString(
+                        input.Substring(0, match.Index) +
+                        ToStringValue(replacementResult) +
+                        input.Substring(match.Index + match.Length));
+                }
+
+                var result = new System.Text.StringBuilder();
+                var cursor = 0;
+                while (cursor <= input.Length)
+                {
+                    var match = fastRx.Regex.Match(input, cursor);
+                    if (!match.Success) break;
+
+                    result.Append(input.AsSpan(cursor, match.Index - cursor));
+                    var replacementArgs = CreateRegExpReplacementFunctionArgs(input, match, fastRx);
+                    var replacementResult = CallFunction(replacement, replacementArgs, JsValue.Undefined);
+                    result.Append(ToStringValue(replacementResult));
+
+                    cursor = match.Index + match.Length;
+                    if (match.Length == 0)
+                    {
+                        if (cursor >= input.Length) break;
+                        result.Append(input[cursor]);
+                        cursor++;
+                    }
+                }
+                if (cursor < input.Length) result.Append(input.AsSpan(cursor));
+                return JsValue.FromString(result.ToString());
             }
             var replStr = ToStringValue(replacement);
-            var global = fastRx.Flags.Contains('g', StringComparison.Ordinal);
             if (!global)
             {
                 // Non-global: simple single-match replacement via .NET.
@@ -7755,23 +7857,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 while (cursor <= input.Length)
                 {
                     var m = fastRx.Regex.Match(input, cursor);
-                    if (!m.Success || m.Index != cursor) break;
+                    if (!m.Success) break;
+                    result.Append(input.AsSpan(cursor, m.Index - cursor));
                     if (m.Length == 0)
                     {
                         // Empty match: insert replacement, then the character at cursor.
                         result.Append(GetSubstitution(input, m, replStr, fastRx));
+                        cursor = m.Index;
                         if (cursor < input.Length)
                             result.Append(input[cursor]);
                         cursor++;
                     }
                     else
                     {
-                        result.Append(input.AsSpan(cursor, m.Index - cursor));
                         result.Append(GetSubstitution(input, m, replStr, fastRx));
                         cursor = m.Index + m.Length;
                     }
                 }
-                if (cursor <= input.Length) result.Append(input.AsSpan(cursor));
+                if (cursor < input.Length) result.Append(input.AsSpan(cursor));
                 return JsValue.FromString(result.ToString());
             }
         }
@@ -7931,6 +8034,45 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 
     /// <summary>ECMA-262 §22.2.5.9 GetSubstitution.</summary>
+    private IReadOnlyList<JsValue> CreateRegExpReplacementFunctionArgs(string input, System.Text.RegularExpressions.Match match, RegExpObject regexp)
+    {
+        var args = new List<JsValue>(match.Groups.Count + 3)
+        {
+            JsValue.FromString(match.Value)
+        };
+
+        for (var i = 1; i < match.Groups.Count; i++)
+        {
+            var group = match.Groups[i];
+            args.Add(group.Success ? JsValue.FromString(group.Value) : JsValue.Undefined);
+        }
+
+        args.Add(JsValue.FromNumber(match.Index));
+        args.Add(JsValue.FromString(input));
+
+        var groupNames = regexp.Regex.GetGroupNames();
+        var groupsObj = new JsObject();
+        var hasNamedGroups = false;
+        var reverseMap = regexp.NamedGroupReverseMap;
+        foreach (var name in groupNames)
+        {
+            if (int.TryParse(name, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out _)) continue;
+
+            hasNamedGroups = true;
+            var group = match.Groups[name];
+            var ecmaName = reverseMap is not null && reverseMap.TryGetValue(name, out var mapped) ? mapped : name;
+            _ = groupsObj.DefineOwnProperty(ecmaName,
+                new JsPropertyDescriptor(group.Success ? JsValue.FromString(group.Value) : JsValue.Undefined,
+                    Writable: true, Enumerable: true, Configurable: true));
+        }
+
+        if (hasNamedGroups)
+            args.Add(JsValue.FromObject(_heap.AllocateObject(groupsObj, AllocationSite.Current())));
+
+        return args;
+    }
+
     private string GetSubstitution(string input, System.Text.RegularExpressions.Match match, string replacement, RegExpObject regexp)
     {
         var sb = new System.Text.StringBuilder();
@@ -11259,12 +11401,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     "Cannot convert undefined or null to object."));
             }
 
+            var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (args[0].Tag == JsValueTag.HostObject)
+            {
+                if (keyArg.Tag == JsValueTag.Symbol)
+                {
+                    return JsValue.FromBoolean(false);
+                }
+
+                RequireHostObject(args[0], "check host object own property");
+                return JsValue.FromBoolean(
+                    HasHostObjectDefinedOrEmbedderProperty(args[0].AsHostObjectHandle(), ToPropertyKey(keyArg)));
+            }
+
             if (args[0].Tag != JsValueTag.Object)
             {
                 return JsValue.FromBoolean(false);
             }
 
-            var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
             var obj = _heap.GetObject(args[0].AsObjectHandle());
             if (keyArg.Tag == JsValueTag.Symbol)
             {
@@ -11288,7 +11442,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             var result = CreateOrdinaryObject();
             var resultHandle = _heap.AllocateObject(result, AllocationSite.Current());
-            if (target.Tag == JsValueTag.Object)
+            if (target.Tag == JsValueTag.HostObject)
+            {
+                RequireHostObject(target, "get host property descriptors");
+                var hostHandle = target.AsHostObjectHandle();
+                foreach (var key in EnumerateHostObjectDefinedPropertyNames(hostHandle))
+                {
+                    if (!TryGetHostObjectDefinedProperty(hostHandle, key, out var hostDescriptor))
+                    {
+                        continue;
+                    }
+
+                    var descObj = BuildDescriptorObject(hostDescriptor);
+                    var descHandle = _heap.AllocateObject(descObj, AllocationSite.Current());
+                    WriteDescriptorBarrier(descHandle, hostDescriptor);
+                    result.SetProperty(key, JsValue.FromObject(descHandle));
+                    _heap.WriteBarrier(resultHandle, descHandle);
+                }
+            }
+            else if (target.Tag == JsValueTag.Object)
             {
                 var obj = _heap.GetObject(target.AsObjectHandle());
                 foreach (var pair in obj.EnumerateOwnProperties())
@@ -11495,6 +11667,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // undefined/null throw.
             var firstArg = args.Count > 0 ? args[0] : JsValue.Undefined;
             var targetValue = ToObjectValue(firstArg);
+            if (targetValue.Tag == JsValueTag.HostObject)
+            {
+                RequireHostObject(targetValue, "get host own property names");
+                var hostItems = new List<JsValue>();
+                foreach (var key in EnumerateHostObjectDefinedPropertyNames(targetValue.AsHostObjectHandle()))
+                {
+                    hostItems.Add(JsValue.FromString(key));
+                }
+
+                var hostArr = CreateArrayFromElements(hostItems);
+                return JsValue.FromObject(_heap.AllocateObject(hostArr, AllocationSite.Current()));
+            }
+
             var obj = _heap.GetObject(targetValue.AsObjectHandle());
 
             var items = new List<JsValue>();
@@ -11770,6 +11955,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // ECMA-262 20.1.2.1 Object.assign(target, ...sources).
             // 1. Let to be ? ToObject(target).
             var toValue = ToObjectValue(args.Count > 0 ? args[0] : JsValue.Undefined);
+            if (toValue.Tag == JsValueTag.HostObject)
+            {
+                RequireHostObject(toValue, "assign host object");
+                for (var i = 1; i < args.Count; i++)
+                {
+                    CopyEnumerablePropertiesToHostObject(toValue, args[i]);
+                }
+
+                return toValue;
+            }
+
             var toHandle = toValue.AsObjectHandle();
             var to = _heap.GetObject(toHandle);
 
@@ -11784,6 +11980,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 // 4.b.i Let from be ! ToObject(nextSource). Strings expose their
                 // indexed code units (enumerable) plus a non-enumerable length.
                 var fromValue = ToObjectValue(source);
+                if (fromValue.Tag == JsValueTag.HostObject)
+                {
+                    CopyEnumerableHostPropertiesToObject(toHandle, to, fromValue, toValue);
+                    continue;
+                }
+
                 var fromObj = _heap.GetObject(fromValue.AsObjectHandle());
 
                 // String-keyed own enumerable properties, in own-key order. Read
@@ -11840,6 +12042,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     "Object.getPrototypeOf called on null or undefined."));
             }
 
+            if (args[0].Tag == JsValueTag.HostObject)
+            {
+                RequireHostObject(args[0], "get host object prototype");
+                return GetHostObjectPrototype(args[0].AsHostObjectHandle());
+            }
+
             // ECMA-262 20.1.2.8 Object.getPrototypeOf Step 1: ToObject(O).
             // Primitives (including Symbol) are auto-boxed to their wrapper objects.
             var target = _heap.GetObject(ToObjectValue(args[0]).AsObjectHandle());
@@ -11865,6 +12073,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 throw new JsThrownException(CreateTypeError(
                     "Object.setPrototypeOf: prototype must be Object or null."));
+            }
+
+            if (args[0].Tag == JsValueTag.HostObject)
+            {
+                RequireHostObject(args[0], "set host object prototype");
+                SetHostObjectPrototype(args[0].AsHostObjectHandle(), protoArg);
+                return args[0];
             }
 
             if (args[0].Tag != JsValueTag.Object)
@@ -11966,6 +12181,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             // ECMA-262 20.1.2.10: Let obj be ? ToObject(O).
             var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (target.Tag == JsValueTag.HostObject)
+            {
+                RequireHostObject(target, "get host own property symbols");
+                var hostSymbols = CreateArrayFromElements(Array.Empty<JsValue>());
+                return JsValue.FromObject(_heap.AllocateObject(hostSymbols, AllocationSite.Current()));
+            }
+
             var obj = ToObject(target);
             var symbols = new List<JsValue>();
             if (obj is ProxyObject proxyOwnSymbols)
@@ -12032,6 +12254,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var target = _heap.GetObject(targetHandle);
 
         var fromValue = ToObjectValue(source);
+        if (fromValue.Tag == JsValueTag.HostObject)
+        {
+            CopyEnumerableHostPropertiesToObject(targetHandle, target, fromValue, targetValue, defineDataProperty: true);
+            return;
+        }
+
         var fromObj = _heap.GetObject(fromValue.AsObjectHandle());
 
         foreach (var pair in fromObj.EnumerateOwnProperties())
@@ -12071,6 +12299,81 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
     }
 
+    private void CopyEnumerablePropertiesToHostObject(JsValue targetValue, JsValue source)
+    {
+        if (source.Tag == JsValueTag.Undefined || source.Tag == JsValueTag.Null)
+        {
+            return;
+        }
+
+        var fromValue = ToObjectValue(source);
+        if (fromValue.Tag == JsValueTag.HostObject)
+        {
+            _ = RequireHostObject(fromValue, "assign host object source");
+            var sourceHandle = fromValue.AsHostObjectHandle();
+            foreach (var key in EnumerateHostObjectDefinedPropertyNames(sourceHandle))
+            {
+                if (!TryGetHostObjectDefinedProperty(sourceHandle, key, out var descriptor) ||
+                    !descriptor.Enumerable)
+                {
+                    continue;
+                }
+
+                SetHostObjectProperty(targetValue, key, GetReceiverProperty(fromValue, key));
+            }
+
+            return;
+        }
+
+        var fromObj = _heap.GetObject(fromValue.AsObjectHandle());
+        foreach (var pair in fromObj.EnumerateOwnProperties())
+        {
+            if (!pair.Value.Enumerable)
+            {
+                continue;
+            }
+
+            SetHostObjectProperty(targetValue, pair.Key, GetReceiverProperty(fromValue, pair.Key));
+        }
+    }
+
+    private void CopyEnumerableHostPropertiesToObject(
+        ObjectHandle targetHandle,
+        JsObject target,
+        JsValue sourceValue,
+        JsValue receiver,
+        bool defineDataProperty = false)
+    {
+        _ = RequireHostObject(sourceValue, "copy host object enumerable properties");
+        var sourceHandle = sourceValue.AsHostObjectHandle();
+        foreach (var key in EnumerateHostObjectDefinedPropertyNames(sourceHandle))
+        {
+            if (!TryGetHostObjectDefinedProperty(sourceHandle, key, out var descriptor) ||
+                !descriptor.Enumerable)
+            {
+                continue;
+            }
+
+            var value = GetReceiverProperty(sourceValue, key);
+            if (defineDataProperty)
+            {
+                _ = target.DefineOwnProperty(
+                    key,
+                    new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+            }
+            else if (!SetPropertyValue(targetHandle, target, key, value, receiver))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    $"Cannot assign to read-only property '{key}'."));
+            }
+
+            if (value.Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(targetHandle, value.AsObjectHandle());
+            }
+        }
+    }
+
     private enum OwnEnumerableKind
     {
         Keys,
@@ -12084,6 +12387,42 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // primitives; undefined/null throw via ToObjectValue).
         var firstArg = args.Count > 0 ? args[0] : JsValue.Undefined;
         var targetValue = ToObjectValue(firstArg);
+        if (targetValue.Tag == JsValueTag.HostObject)
+        {
+            RequireHostObject(targetValue, "enumerate host object own properties");
+            var hostItems = new List<JsValue>();
+            var hostHandle = targetValue.AsHostObjectHandle();
+            foreach (var key in EnumerateHostObjectDefinedPropertyNames(hostHandle))
+            {
+                if (!TryGetHostObjectDefinedProperty(hostHandle, key, out var descriptor) ||
+                    !descriptor.Enumerable)
+                {
+                    continue;
+                }
+
+                switch (kind)
+                {
+                    case OwnEnumerableKind.Keys:
+                        hostItems.Add(JsValue.FromString(key));
+                        break;
+                    case OwnEnumerableKind.Values:
+                        hostItems.Add(GetReceiverProperty(targetValue, key));
+                        break;
+                    case OwnEnumerableKind.Entries:
+                        var entry = CreateArrayFromElements(new[]
+                        {
+                            JsValue.FromString(key),
+                            GetReceiverProperty(targetValue, key),
+                        });
+                        hostItems.Add(JsValue.FromObject(_heap.AllocateObject(entry, AllocationSite.Current())));
+                        break;
+                }
+            }
+
+            var hostArray = CreateArrayFromElements(hostItems);
+            return JsValue.FromObject(_heap.AllocateObject(hostArray, AllocationSite.Current()));
+        }
+
         var obj = _heap.GetObject(targetValue.AsObjectHandle());
 
         // 7.3.23 EnumerableOwnProperties: snapshot the own string keys first, then for
@@ -13065,12 +13404,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateTypeError("Object.prototype.hasOwnProperty called on null or undefined."));
         }
 
+        var keyArg = args.Count > 0 ? args[0] : JsValue.Undefined;
         if (thisValue.Tag == JsValueTag.HostObject)
         {
-            return JsValue.FromBoolean(false);
+            if (keyArg.Tag == JsValueTag.Symbol)
+            {
+                return JsValue.FromBoolean(false);
+            }
+
+            _ = RequireHostObject(thisValue, "check host object own property");
+            return JsValue.FromBoolean(
+                HasHostObjectDefinedOrEmbedderProperty(thisValue.AsHostObjectHandle(), ToPropertyKey(keyArg)));
         }
 
-        var keyArg = args.Count > 0 ? args[0] : JsValue.Undefined;
         var objectValue = thisValue.Tag == JsValueTag.Object
             ? thisValue
             : CreateObjectFromValue(thisValue);
@@ -13089,12 +13435,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateTypeError("Object.prototype.propertyIsEnumerable called on null or undefined."));
         }
 
+        var keyArg = args.Count > 0 ? args[0] : JsValue.Undefined;
         if (thisValue.Tag == JsValueTag.HostObject)
         {
-            return JsValue.FromBoolean(false);
+            if (keyArg.Tag == JsValueTag.Symbol)
+            {
+                return JsValue.FromBoolean(false);
+            }
+
+            _ = RequireHostObject(thisValue, "check host object property enumerability");
+            return JsValue.FromBoolean(
+                TryGetHostObjectDefinedProperty(
+                    thisValue.AsHostObjectHandle(),
+                    ToPropertyKey(keyArg),
+                    out var hostDescriptor) &&
+                hostDescriptor.Enumerable);
         }
 
-        var keyArg = args.Count > 0 ? args[0] : JsValue.Undefined;
         var objectValue = thisValue.Tag == JsValueTag.Object
             ? thisValue
             : CreateObjectFromValue(thisValue);
@@ -13108,39 +13465,45 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue ObjectPrototypeIsPrototypeOf(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        if (thisValue.Tag != JsValueTag.Object || args.Count == 0 || args[0].Tag != JsValueTag.Object)
+        if (thisValue.Tag != JsValueTag.Object ||
+            args.Count == 0 ||
+            (args[0].Tag != JsValueTag.Object && args[0].Tag != JsValueTag.HostObject))
         {
             return JsValue.FromBoolean(false);
         }
 
         var prototype = thisValue.AsObjectHandle();
-        var candidate = _heap.GetObject(args[0].AsObjectHandle());
-        while (candidate.PrototypeHandle is { } current)
-        {
-            if (current.Equals(prototype))
-            {
-                return JsValue.FromBoolean(true);
-            }
-
-            candidate = _heap.GetObject(current);
-        }
-
-        return JsValue.FromBoolean(false);
+        return JsValue.FromBoolean(OrdinaryHasInstancePrototype(args[0], prototype));
     }
 
     private JsValue ObjectDefineProperty(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = thisValue;
-        if (args.Count < 3 || args[0].Tag != JsValueTag.Object || args[2].Tag != JsValueTag.Object)
+        if (args.Count < 3 ||
+            (args[0].Tag != JsValueTag.Object && args[0].Tag != JsValueTag.HostObject) ||
+            args[2].Tag != JsValueTag.Object)
         {
             throw new JsThrownException(CreateTypeError("Object.defineProperty requires an object target and descriptor."));
         }
 
-        var targetHandle = args[0].AsObjectHandle();
-        var target = _heap.GetObject(targetHandle);
         var keyArg = args[1];
         var isSymbolKey = keyArg.Tag == JsValueTag.Symbol;
         var key = isSymbolKey ? string.Empty : ToPropertyKey(keyArg);
+        if (args[0].Tag == JsValueTag.HostObject)
+        {
+            if (isSymbolKey)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Object.defineProperty with a symbol key is not supported on host objects."));
+            }
+
+            _ = RequireHostObject(args[0], "define host property");
+            DefineHostObjectProperty(args[0].AsHostObjectHandle(), key, ToPropertyDescriptor(args[2]));
+            return args[0];
+        }
+
+        var targetHandle = args[0].AsObjectHandle();
+        var target = _heap.GetObject(targetHandle);
         var descriptorObject = _heap.GetObject(args[2].AsObjectHandle());
         var descriptorReceiver = args[2];
         var hasValue = TryGetPropertyValue(descriptorObject, descriptorReceiver, "value", out var value);
@@ -13545,10 +13908,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // undefined rather than throwing); only undefined/null raise a TypeError.
         var firstArg = args.Count > 0 ? args[0] : JsValue.Undefined;
         var targetValue = ToObjectValue(firstArg);
-        var target = _heap.GetObject(targetValue.AsObjectHandle());
         var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
         var isSymbolKey = keyArg.Tag == JsValueTag.Symbol;
         var key = isSymbolKey ? string.Empty : ToPropertyKey(keyArg);
+        if (targetValue.Tag == JsValueTag.HostObject)
+        {
+            _ = RequireHostObject(targetValue, "get host property descriptor");
+            if (!isSymbolKey &&
+                TryGetHostObjectDefinedProperty(targetValue.AsHostObjectHandle(), key, out var hostDescriptor))
+            {
+                var hostDescriptorObject = BuildDescriptorObject(hostDescriptor);
+                var hostDescriptorHandle = _heap.AllocateObject(hostDescriptorObject, AllocationSite.Current());
+                WriteDescriptorBarrier(hostDescriptorHandle, hostDescriptor);
+                return JsValue.FromObject(hostDescriptorHandle);
+            }
+
+            return JsValue.Undefined;
+        }
+
+        var target = _heap.GetObject(targetValue.AsObjectHandle());
         var found = false;
         JsPropertyDescriptor descriptor;
         if (target is ProxyObject proxyGetOwnPropertyDescriptor)
@@ -15744,11 +16122,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypeForEach(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var receiver = ToObjectValue(thisValue);
-        var obj = _heap.GetObject(receiver.AsObjectHandle());
-        var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
         RequireCallable(callback, "Array.prototype.forEach");
+
+        if (receiver.Tag == JsValueTag.HostObject)
+        {
+            var hostLength = GetHostArrayLikeLength(receiver);
+            for (var i = 0; i < hostLength; i++)
+            {
+                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var v = GetReceiverProperty(receiver, key);
+                if (v.Tag == JsValueTag.Undefined)
+                {
+                    continue;
+                }
+
+                InvokeArrayCallback(callback, v, i, receiver, thisArg);
+            }
+
+            return JsValue.Undefined;
+        }
+
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        var length = GetArrayLength(obj);
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -15761,6 +16158,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         return JsValue.Undefined;
+    }
+
+    private int GetHostArrayLikeLength(JsValue receiver)
+    {
+        var lengthValue = GetReceiverProperty(receiver, "length");
+        var number = ToNumber(lengthValue);
+        if (double.IsNaN(number) || number <= 0)
+        {
+            return 0;
+        }
+
+        return checked((int)Math.Min(Math.Truncate(number), int.MaxValue));
     }
 
     private JsValue ArrayPrototypeMap(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -16293,8 +16702,8 @@ fallbackArraySpecies:
         if ((a.Tag == JsValueTag.Int32 || a.Tag == JsValueTag.Number) &&
             (b.Tag == JsValueTag.Int32 || b.Tag == JsValueTag.Number))
         {
-            var an = a.AsNumber();
-            var bn = b.AsNumber();
+            var an = NumericValue(a);
+            var bn = NumericValue(b);
             if (double.IsNaN(an) && double.IsNaN(bn))
             {
                 return true;
@@ -19632,6 +20041,25 @@ fallbackArraySpecies:
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
+    /// <summary>
+    /// Read a named global value from the realm's global object.
+    /// Returns JsValue.Undefined if the global doesn't exist or the property isn't found.
+    /// </summary>
+    public JsValue ReadGlobalValueOrUndefined(string name)
+    {
+        try
+        {
+            var globalHandle = EnsureGlobalObject();
+            var global = _heap.GetObject(globalHandle);
+            if (TryGetPropertyValue(global, JsValue.FromObject(globalHandle), name, out var value))
+            {
+                return value;
+            }
+        }
+        catch { }
+        return JsValue.Undefined;
+    }
+
     private ObjectHandle GetGlobalPrototype(string constructorName)
     {
         var globalHandle = EnsureGlobalObject();
@@ -20926,16 +21354,34 @@ fallbackArraySpecies:
 
     internal void SetElemForJit(InterpreterFrame frame, int ownerReg, int keyReg, int valueReg)
     {
-        var ownerHandle = ResolveObjectHandle(frame.Registers[ownerReg]);
-        var obj = _heap.GetObject(ownerHandle);
+        var receiverValue = frame.Registers[ownerReg];
         var keyValue = frame.Registers[keyReg];
         var value = frame.Registers[valueReg];
+
+        if (receiverValue.Tag == JsValueTag.HostObject)
+        {
+            try
+            {
+                if (keyValue.Tag != JsValueTag.Symbol)
+                {
+                    SetHostObjectProperty(receiverValue, ToPropertyKey(keyValue), value);
+                }
+            }
+            catch (JsThrownException ex)
+            {
+                ThrowOrHandle(frame, ex.Value);
+            }
+            return;
+        }
+
+        var ownerHandle = ResolveObjectHandle(receiverValue);
+        var obj = _heap.GetObject(ownerHandle);
 
         if (keyValue.Tag == JsValueTag.Symbol)
         {
             try
             {
-                _ = SetSymbolPropertyValue(ownerHandle, obj, keyValue.AsSymbolId(), value, frame.Registers[ownerReg]);
+                _ = SetSymbolPropertyValue(ownerHandle, obj, keyValue.AsSymbolId(), value, receiverValue);
             }
             catch (JsThrownException ex)
             {
@@ -20947,7 +21393,7 @@ fallbackArraySpecies:
         var key = ToPropertyKey(keyValue);
         try
         {
-            _ = SetPropertyValue(ownerHandle, obj, key, value, frame.Registers[ownerReg]);
+            _ = SetPropertyValue(ownerHandle, obj, key, value, receiverValue);
         }
         catch (JsThrownException ex)
         {
@@ -21398,17 +21844,17 @@ fallbackArraySpecies:
         if ((left.Tag == JsValueTag.Int32 || left.Tag == JsValueTag.Number) &&
             (right.Tag == JsValueTag.Int32 || right.Tag == JsValueTag.Number))
         {
-            return left.AsNumber() == right.AsNumber();
+            return NumericValue(left) == NumericValue(right);
         }
 
         if ((left.Tag == JsValueTag.Int32 || left.Tag == JsValueTag.Number) && right.Tag == JsValueTag.String)
         {
-            return left.AsNumber() == ToNumberForEquality(right);
+            return NumericValue(left) == ToNumberForEquality(right);
         }
 
         if (left.Tag == JsValueTag.String && (right.Tag == JsValueTag.Int32 || right.Tag == JsValueTag.Number))
         {
-            return ToNumberForEquality(left) == right.AsNumber();
+            return ToNumberForEquality(left) == NumericValue(right);
         }
 
         // ECMA-262 7.2.15 step 6: BigInt == String → StringToBigInt
@@ -21430,14 +21876,14 @@ fallbackArraySpecies:
         // Step 12: BigInt == Number (or Number == BigInt)
         if (left.Tag == JsValueTag.BigInt && (right.Tag == JsValueTag.Int32 || right.Tag == JsValueTag.Number))
         {
-            var rn = right.AsNumber();
+            var rn = NumericValue(right);
             if (double.IsNaN(rn) || double.IsInfinity(rn))
                 return false;
             return CompareBigIntAndDouble(left.AsBigInt(), rn) == 0;
         }
         if ((left.Tag == JsValueTag.Int32 || left.Tag == JsValueTag.Number) && right.Tag == JsValueTag.BigInt)
         {
-            var ln = left.AsNumber();
+            var ln = NumericValue(left);
             if (double.IsNaN(ln) || double.IsInfinity(ln))
                 return false;
             return CompareBigIntAndDouble(right.AsBigInt(), ln) == 0;
@@ -21545,8 +21991,8 @@ fallbackArraySpecies:
         if ((left.Tag == JsValueTag.Int32 || left.Tag == JsValueTag.Number) &&
             (right.Tag == JsValueTag.Int32 || right.Tag == JsValueTag.Number))
         {
-            var a = left.AsNumber();
-            var b = right.AsNumber();
+            var a = NumericValue(left);
+            var b = NumericValue(right);
             if (double.IsNaN(a) && double.IsNaN(b))
             {
                 return true;
@@ -21569,7 +22015,7 @@ fallbackArraySpecies:
         if ((left.Tag == JsValueTag.Int32 || left.Tag == JsValueTag.Number) &&
             (right.Tag == JsValueTag.Int32 || right.Tag == JsValueTag.Number))
         {
-            return left.AsNumber() == right.AsNumber();
+            return NumericValue(left) == NumericValue(right);
         }
 
         if (left.Tag != right.Tag)
@@ -21588,6 +22034,7 @@ fallbackArraySpecies:
             JsValueTag.String => left.AsString() == right.AsString(),
             JsValueTag.Symbol => left.AsSymbolId() == right.AsSymbolId(),
             JsValueTag.Object => left.AsObjectHandle().Equals(right.AsObjectHandle()),
+            JsValueTag.HostObject => left.AsHostObjectHandle().Equals(right.AsHostObjectHandle()),
             _ => false
         };
     }
@@ -21596,7 +22043,7 @@ fallbackArraySpecies:
     {
         if (value.Tag == JsValueTag.Int32 || value.Tag == JsValueTag.Number)
         {
-            return value.AsNumber();
+            return NumericValue(value);
         }
 
         if (value.Tag == JsValueTag.String)
@@ -21660,6 +22107,9 @@ fallbackArraySpecies:
 
         return double.NaN;
     }
+
+    private static double NumericValue(JsValue value)
+        => value.Tag == JsValueTag.Int32 ? value.AsInt32() : value.AsNumber();
 
     private static bool TryParseRadixDigits(string digits, int radix, out double value)
     {
@@ -22197,7 +22647,7 @@ fallbackArraySpecies:
             return false;
         }
 
-        if (left.Tag != JsValueTag.Object)
+        if (left.Tag != JsValueTag.Object && left.Tag != JsValueTag.HostObject)
         {
             result = false;
             return true;
@@ -22236,20 +22686,18 @@ fallbackArraySpecies:
     [MayExecuteJs]
     private bool OrdinaryHasInstancePrototype(JsValue value, ObjectHandle targetPrototype)
     {
-        var currentObj = ResolveObject(value);
         while (true)
         {
-            JsValue nextProtoValue;
-            if (currentObj is ProxyObject proxyCurrent)
+            JsValue nextProtoValue = value.Tag switch
             {
-                nextProtoValue = ProxyGetPrototypeOf(proxyCurrent);
-            }
-            else
-            {
-                nextProtoValue = currentObj.PrototypeHandle is { } protoHandle
-                    ? JsValue.FromObject(protoHandle)
-                    : JsValue.Null;
-            }
+                JsValueTag.HostObject => GetHostObjectPrototype(value.AsHostObjectHandle()),
+                JsValueTag.Object => ResolveObject(value) is ProxyObject proxyCurrent
+                    ? ProxyGetPrototypeOf(proxyCurrent)
+                    : ResolveObject(value).PrototypeHandle is { } protoHandle
+                        ? JsValue.FromObject(protoHandle)
+                        : JsValue.Null,
+                _ => JsValue.Null
+            };
 
             if (nextProtoValue.Tag == JsValueTag.Null)
             {
@@ -22267,7 +22715,7 @@ fallbackArraySpecies:
                 return true;
             }
 
-            currentObj = _heap.GetObject(proto);
+            value = JsValue.FromObject(proto);
         }
     }
 
