@@ -29,6 +29,7 @@ All DOM objects inherit from the abstract `Node` class.
 - **No Child List**: Unlike V1, the base `Node` class does not store children. Only `ContainerNode` subclasses (like `Element` and `Document`) have child lists, reducing memory footprint for leaf nodes like Text.
 - **Root Node**: Implements `GetRootNode()` for Shadow DOM support.
 - **Connectivity**: Tracks `IsConnected` state for lifecycle callbacks (`connectedCallback`).
+- **Nested browsing-context documents (2026-07-03)**: `ContainerNode` preserves the owned `Document` identity when a parsed frame document is attached under an `iframe` / `frame` element. Frame descendants keep `OwnerDocument` pointing at the frame document instead of being adopted into the embedding page document.
 
 ### 2.2 Elements (`Element.cs`)
 
@@ -1243,6 +1244,7 @@ _End of Volume II_
     - redirect-hop ceiling from policy
     - request/navigation timeout from policy
     - text-body and binary/image body-size ceilings with explicit fail-closed outcomes/logging
+    - default text-resource body ceiling is 16 MiB, with normalization migrating the old 8 MiB default, so large modern script bundles can load while still reporting `FetchStatus.LimitExceeded` above the configured cap
   - This keeps malformed or high-cost payloads bounded while preserving deterministic failure classification for runtime diagnostics.
 
 ### 1.59 Strict-Mode `srcdoc` Sanitization Control (2026-05-01)
