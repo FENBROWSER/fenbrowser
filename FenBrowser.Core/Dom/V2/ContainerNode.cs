@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using FenBrowser.Core.Engine;
 using FenBrowser.Core.Dom.V2.Selectors;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Dom.V2
 {
@@ -382,7 +383,12 @@ namespace FenBrowser.Core.Dom.V2
             for (Node p = this; p != null; p = p._parentNode)
             {
                 if (ReferenceEquals(p, node))
+                {
+                    EngineLogCompat.Warn(
+                        $"[DOM] Rejected cyclic insertion parent={DescribeNodeForInsertion(this)} child={DescribeNodeForInsertion(node)} parentChain={DescribeAncestorChainForInsertion(this)} childParent={DescribeNodeForInsertion(node.ParentNode)}",
+                        LogCategory.DOM);
                     throw new DomException("HierarchyRequestError", "Node cannot be an ancestor of its new parent");
+                }
             }
 
             // Check node type validity
@@ -395,6 +401,35 @@ namespace FenBrowser.Core.Dom.V2
             // Document and DocumentType have additional restrictions
             if (node is Document)
                 throw new DomException("HierarchyRequestError", "Cannot insert a Document as a child");
+        }
+
+        private static string DescribeNodeForInsertion(Node node)
+        {
+            if (node == null)
+            {
+                return "null";
+            }
+
+            if (node is Element element)
+            {
+                var id = element.Id;
+                return string.IsNullOrEmpty(id)
+                    ? $"{element.NodeName}({element.GetType().Name})"
+                    : $"{element.NodeName}#{id}({element.GetType().Name})";
+            }
+
+            return $"{node.NodeName}({node.GetType().Name})";
+        }
+
+        private static string DescribeAncestorChainForInsertion(Node node)
+        {
+            var parts = new List<string>();
+            for (var current = node; current != null && parts.Count < 12; current = current.ParentNode)
+            {
+                parts.Add(DescribeNodeForInsertion(current));
+            }
+
+            return string.Join(" <- ", parts);
         }
 
         private Node AppendChildInternal(Node node)
@@ -410,8 +445,13 @@ namespace FenBrowser.Core.Dom.V2
             // Remove from old parent
             ((ContainerNode)node._parentNode)?.RemoveChildInternal(node);
 
-            // Adopt node
-            AdoptNode(node);
+            // Adopt node. Nested browsing-context documents attached under iframe/frame
+            // keep their own owner document; their DOM APIs must resolve against the
+            // frame document, not the embedding page.
+            if (!IsNestedFrameDocumentInsertion(node))
+            {
+                AdoptNode(node);
+            }
 
             // Insert at end
             _children.Append(node);
@@ -456,8 +496,13 @@ namespace FenBrowser.Core.Dom.V2
             // Remove from old parent
             ((ContainerNode)node._parentNode)?.RemoveChildInternal(node);
 
-            // Adopt node
-            AdoptNode(node);
+            // Adopt node. Nested browsing-context documents attached under iframe/frame
+            // keep their own owner document; their DOM APIs must resolve against the
+            // frame document, not the embedding page.
+            if (!IsNestedFrameDocumentInsertion(node))
+            {
+                AdoptNode(node);
+            }
 
             // Insert before child
             _children.InsertBefore(node, child);
@@ -560,6 +605,22 @@ namespace FenBrowser.Core.Dom.V2
             {
                 AdoptNodeRecursive(node, _ownerDocument);
             }
+        }
+
+        private bool IsNestedFrameDocumentInsertion(Node node)
+        {
+            if (node is not Document)
+            {
+                return false;
+            }
+
+            if (this is not Element element)
+            {
+                return false;
+            }
+
+            return string.Equals(element.LocalName, "iframe", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(element.LocalName, "frame", StringComparison.OrdinalIgnoreCase);
         }
 
         private static void AdoptNodeRecursive(Node node, Document newOwner)

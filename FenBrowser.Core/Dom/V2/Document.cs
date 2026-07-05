@@ -511,6 +511,34 @@ namespace FenBrowser.Core.Dom.V2
         }
 
         /// <summary>
+        /// Imports a node into this document by cloning it and assigning this
+        /// document as the owner for the cloned subtree.
+        /// https://dom.spec.whatwg.org/#dom-document-importnode
+        /// </summary>
+        public Node ImportNode(Node node, bool deep = false)
+        {
+            if (node == null)
+                throw new DomException("NotFoundError", "Node cannot be null");
+
+            if (node is Document)
+                throw new DomException("NotSupportedError", "Cannot import a Document node");
+
+            var clone = node.CloneNode(deep);
+            SetOwnerDocumentRecursive(clone, this);
+            return clone;
+        }
+
+        private static void SetOwnerDocumentRecursive(Node node, Document ownerDocument)
+        {
+            node._ownerDocument = ownerDocument;
+
+            for (var child = node.FirstChild; child != null; child = child._nextSibling)
+            {
+                SetOwnerDocumentRecursive(child, ownerDocument);
+            }
+        }
+
+        /// <summary>
         /// Creates a new doctype.
         /// </summary>
         public DocumentType CreateDocumentType(string name, string publicId = "", string systemId = "")

@@ -132,12 +132,19 @@ namespace FenBrowser.Core.Dom.V2
         }
 
         private DOMTokenList _classList;
+        private DOMTokenList _sandboxList;
 
         /// <summary>
         /// Returns the classList DOMTokenList.
         /// https://dom.spec.whatwg.org/#dom-element-classlist
         /// </summary>
         public DOMTokenList ClassList => _classList ??= new DOMTokenList(this, "class");
+
+        /// <summary>
+        /// Returns the iframe sandbox DOMTokenList.
+        /// https://html.spec.whatwg.org/multipage/iframe-embed-object.html#dom-iframe-sandbox
+        /// </summary>
+        public DOMTokenList SandboxList => _sandboxList ??= new DOMTokenList(this, "sandbox");
 
         // --- Constructor ---
 
