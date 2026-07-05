@@ -165,11 +165,14 @@ namespace FenBrowser.Core
 
     public class ResilienceSettings
     {
+        private const int LegacyDefaultMaxTextBodyBytes = 8 * 1024 * 1024;
+        public const int DefaultMaxTextBodyBytes = 16 * 1024 * 1024;
+
         public int MaxHtmlInputChars { get; set; } = 8_000_000;
         public int MaxHtmlTokenEmissions { get; set; } = 2_000_000;
         public int MaxOpenElementsDepth { get; set; } = 4096;
         public int MaxRedirectHops { get; set; } = 5;
-        public int MaxTextBodyBytes { get; set; } = 8 * 1024 * 1024;
+        public int MaxTextBodyBytes { get; set; } = DefaultMaxTextBodyBytes;
         public int MaxImageBodyBytes { get; set; } = 16 * 1024 * 1024;
         public int RequestTimeoutSeconds { get; set; } = 30;
         public int NavigationTimeoutSeconds { get; set; } = 60;
@@ -188,8 +191,8 @@ namespace FenBrowser.Core
             if (MaxRedirectHops < 1)
                 MaxRedirectHops = 5;
 
-            if (MaxTextBodyBytes < 64 * 1024)
-                MaxTextBodyBytes = 8 * 1024 * 1024;
+            if (MaxTextBodyBytes < 64 * 1024 || MaxTextBodyBytes == LegacyDefaultMaxTextBodyBytes)
+                MaxTextBodyBytes = DefaultMaxTextBodyBytes;
 
             if (MaxImageBodyBytes < 64 * 1024)
                 MaxImageBodyBytes = 16 * 1024 * 1024;
@@ -235,7 +238,7 @@ namespace FenBrowser.Core
             }
         }
 
-        public UserAgentType SelectedUserAgent { get; set; } = UserAgentType.FenBrowser;
+        public UserAgentType SelectedUserAgent { get; set; } = UserAgentType.Chrome;
         public ThemePreference Theme { get; set; } = ThemePreference.System;
 
         private bool _showFavoritesBar = true;
@@ -480,7 +483,7 @@ namespace FenBrowser.Core
             Resilience.Normalize();
 
             if (!Enum.IsDefined(typeof(UserAgentType), SelectedUserAgent))
-                SelectedUserAgent = UserAgentType.FenBrowser;
+                SelectedUserAgent = UserAgentType.Chrome;
 
             if (!Enum.IsDefined(typeof(ThemePreference), Theme))
                 Theme = ThemePreference.System;
