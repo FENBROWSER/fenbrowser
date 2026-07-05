@@ -306,10 +306,18 @@ namespace FenBrowser.FenEngine
 
             if (context is FenBrowser.FenEngine.Rendering.Core.RenderContext renderContext)
             {
-                evt.Target = FenBrowser.FenEngine.Rendering.Interaction.HitTester.HitTest(
+                if (FenBrowser.FenEngine.Rendering.Interaction.HitTester.HitTestInput(
                     renderContext,
                     (float)evt.X,
-                    (float)evt.Y);
+                    (float)evt.Y,
+                    out var input))
+                {
+                    evt.Target = input.Target;
+                    evt.X = input.ClientX;
+                    evt.Y = input.ClientY;
+                    evt.PageX = input.ClientX;
+                    evt.PageY = input.ClientY;
+                }
             }
 
             return evt.Target != null;

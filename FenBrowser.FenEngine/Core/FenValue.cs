@@ -2,14 +2,8 @@
 // Stores primitive values and object references directly. No longer depends on the
 // legacy FenRuntime; complex ToPrimitive/coercion paths were only used by the legacy
 // interpreter and are not needed by the WebDriver/browser API layer.
-using System;
-using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core.Types;
-using FenBrowser.FenEngine.Errors;
-using FenBrowser.FenEngine.Core.Interfaces;
-using FenBrowser.FenEngine.Core.Types;
-using FenBrowser.FenEngine.Errors;
 
 namespace FenBrowser.FenEngine.Core
 {
