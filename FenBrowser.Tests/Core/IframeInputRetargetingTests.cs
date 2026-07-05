@@ -1,11 +1,13 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Rendering.Core;
+using FenBrowser.FenEngine.Rendering.Interaction;
 using SkiaSharp;
 
 namespace FenBrowser.Tests.Core;
@@ -67,6 +69,9 @@ public sealed class IframeInputRetargetingTests
 
         var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
         var iframe = FindById(root, "challenge-frame");
+        await WaitForAsync(
+            () => iframe.FirstChild is Document document && document.GetElementById("anchor") != null,
+            "iframe document content to be written");
         var frameDocument = Assert.IsType<Document>(iframe.FirstChild);
         var button = frameDocument.GetElementById("anchor");
         Assert.NotNull(button);
@@ -82,6 +87,88 @@ public sealed class IframeInputRetargetingTests
         host.OnClick(visualX, visualY, button: 0);
 
         Assert.Equal("yes", frameDocument.Body?.GetAttribute("data-clicked"));
+    }
+
+    [Fact]
+    public async Task BrowserHostClick_UsesFenJsDefaultPreventionForFallbackActivation()
+    {
+        const int viewportWidth = 640;
+        const int viewportHeight = 360;
+        var baseUri = new Uri("https://fen.test/prevent-default");
+        const string html = """
+<!doctype html>
+<html>
+<head>
+  <style>
+    body { margin: 0; }
+    iframe {
+      display: block;
+      width: 300px;
+      height: 120px;
+      border: 0;
+      margin-left: 40px;
+      margin-top: 50px;
+    }
+  </style>
+</head>
+<body>
+  <iframe id="challenge-frame"></iframe>
+  <script>
+    var frame = document.getElementById('challenge-frame');
+    var doc = frame.contentDocument;
+    doc.open();
+    doc.write('<!doctype html><html><head><style>body{margin:0}#target{display:block;width:160px;height:40px;margin-left:20px;margin-top:10px}</style></head><body data-clicks="0"><a id="target" href="#blocked">Target</a></body></html>');
+    doc.close();
+    doc.body.addEventListener('click', function (event) {
+      doc.body.setAttribute('data-clicks', '1');
+      event.preventDefault();
+    });
+  </script>
+</body>
+</html>
+""";
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        host.SetActiveRenderer(renderer);
+        host.Engine.SetExternalRenderer(renderer);
+        SetCurrentUri(host, baseUri);
+
+        await host.Engine.RenderAsync(
+            html,
+            baseUri,
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth: viewportWidth,
+            viewportHeight: viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var iframe = FindById(root, "challenge-frame");
+        await WaitForAsync(
+            () => iframe.FirstChild is Document document && document.GetElementById("target") != null,
+            "iframe document target to be written");
+        var frameDocument = Assert.IsType<Document>(iframe.FirstChild);
+        var anchor = frameDocument.GetElementById("target");
+        Assert.NotNull(anchor);
+
+        RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+        Assert.True(renderer.LastLayout.TryGetElementRect(iframe, out var iframeRect), "Missing iframe layout rect.");
+        Assert.True(renderer.LastLayout.TryGetElementRect(anchor, out var anchorRect), "Missing anchor layout rect.");
+
+        var visualX = iframeRect.Left + anchorRect.Left + (anchorRect.Width / 2f);
+        var visualY = iframeRect.Top + anchorRect.Top + (anchorRect.Height / 2f);
+
+        Assert.True(HitTester.HitTestInput(renderer.CreateRenderContext(), visualX, visualY, out var input));
+        Assert.Same(anchor, input.Target);
+
+        host.OnClick(visualX, visualY, button: 0);
+        await host.HandleElementClick(anchor);
+
+        Assert.Equal("1", frameDocument.Body?.GetAttribute("data-clicks"));
+        Assert.Equal(baseUri, host.CurrentUri);
     }
 
     private static void RenderFrame(
@@ -112,5 +199,30 @@ public sealed class IframeInputRetargetingTests
         return root.Descendants()
             .OfType<Element>()
             .First(e => string.Equals(e.GetAttribute("id"), id, StringComparison.Ordinal));
+    }
+
+    private static async Task WaitForAsync(Func<bool> predicate, string description)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (predicate())
+            {
+                return;
+            }
+
+            await Task.Delay(25);
+        }
+
+        Assert.True(predicate(), $"Timed out waiting for {description}.");
+    }
+
+    private static void SetCurrentUri(BrowserHost host, Uri uri)
+    {
+        var currentField = typeof(BrowserHost).GetField(
+            "_current",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(currentField);
+        currentField!.SetValue(host, uri);
     }
 }

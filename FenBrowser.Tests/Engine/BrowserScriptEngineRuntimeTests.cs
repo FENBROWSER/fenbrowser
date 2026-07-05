@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Parsing;
+using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Scripting;
 using Xunit;
 
@@ -100,6 +101,44 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal("/app/index.html", engine.Evaluate("location.pathname")?.ToString());
             Assert.Equal(true, engine.Evaluate("navigator.cookieEnabled"));
             Assert.True(engine.FenJsEvaluationCount > 0);
+            Assert.Equal(0, engine.LegacyFallbackCount);
+        }
+
+        [Fact]
+        public async Task FenJsMode_HistoryStateAndLocation_RunThroughFenJs()
+        {
+            Environment.SetEnvironmentVariable(RuntimeSelectorVariable, "fenjs");
+            BrowserScriptEngineRuntime.Reset();
+
+            var baseUri = new Uri("https://example.com/app/index.html");
+            var document = new HtmlParser("<html><body><div id='app'>ok</div></body></html>", baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            var bridge = new TestHistoryBridge(baseUri);
+            engine.SetHistoryBridge(bridge);
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(@"
+                (function () {
+                    history.pushState({ step: 1 }, 'Title', '/watch?v=abc#pane');
+                    var afterPush = location.href + ':' + history.state.step + ':' + history.length;
+                    history.replaceState('next', '', '/next');
+                    return [
+                        typeof history.pushState,
+                        typeof history.replaceState,
+                        typeof history.back,
+                        afterPush,
+                        location.href,
+                        history.state,
+                        String(history.length)
+                    ].join('|');
+                })();
+            ");
+
+            Assert.Equal("function|function|function|https://example.com/watch?v=abc#pane:1:2|https://example.com/next|next|2", result?.ToString());
+            Assert.True(bridge.PushStateCalled);
+            Assert.True(bridge.ReplaceStateCalled);
+            Assert.Equal("/next", bridge.LastUrl);
             Assert.Equal(0, engine.LegacyFallbackCount);
         }
 
@@ -442,6 +481,7 @@ namespace FenBrowser.Tests.Engine
                     var comment = document.createComment('note');
                     comment.replaceData(2, 2, 'ne');
                     var fragment = document.createDocumentFragment();
+                    if (fragment.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) return 'bad-fragment-nodeType';
                     var span = document.createElement('span');
                     span.id = 'from-fragment';
                     span.appendChild(document.createTextNode(comment.data));
@@ -449,6 +489,93 @@ namespace FenBrowser.Tests.Engine
                     fragment.append('!');
                     document.getElementById('host').appendChild(fragment);
                     return document.getElementById('from-fragment').textContent + ':' + document.getElementById('host').textContent;
+                })();
+            ")?.ToString());
+            Assert.Equal(0, engine.LegacyFallbackCount);
+        }
+
+        [Fact]
+        public async Task FenJsMode_TemplateContent_RunThroughFenJs()
+        {
+            Environment.SetEnvironmentVariable(RuntimeSelectorVariable, "fenjs");
+            BrowserScriptEngineRuntime.Reset();
+
+            var baseUri = new Uri("https://example.com/index.html");
+            var document = new HtmlParser("<html><body></body></html>", baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("true|true|function|function|first|second|first|true", engine.Evaluate(@"
+                (function () {
+                    var template = document.createElement('template');
+                    var first = document.createElement('span');
+                    var second = document.createElement('b');
+                    first.setAttribute('id', 'first');
+                    second.setAttribute('id', 'second');
+                    template.appendChild(second);
+                    var content = template.content;
+                    var inserted = content.insertBefore(first, content.firstChild);
+                    var cloned = content.cloneNode(true);
+                    return [
+                        String(content instanceof DocumentFragment),
+                        String(content === template.content),
+                        typeof content.insertBefore,
+                        typeof content.cloneNode,
+                        content.firstChild.id,
+                        content.firstChild.nextSibling.id,
+                        cloned.firstChild.id,
+                        String(inserted === first && template.textContent === '')
+                    ].join('|');
+                })();
+            ")?.ToString());
+            Assert.Equal(0, engine.LegacyFallbackCount);
+        }
+
+        [Fact]
+        public async Task FenJsMode_RangeSurface_RunThroughFenJs()
+        {
+            Environment.SetEnvironmentVariable(RuntimeSelectorVariable, "fenjs");
+            BrowserScriptEngineRuntime.Reset();
+
+            var baseUri = new Uri("https://example.com/index.html");
+            var document = new HtmlParser("<html><body><div id='host'>abc</div></body></html>", baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("function|function|true|true|#text|bc|false|bc|bc|EM|0|0|true|0|abc", engine.Evaluate(@"
+                (function () {
+                    var host = document.getElementById('host');
+                    var text = host.firstChild;
+                    var range = document.createRange();
+                    range.setStart(text, 1);
+                    range.setEnd(text, 3);
+                    var constructed = new Range();
+                    constructed.selectNodeContents(host);
+                    var clone = range.cloneRange();
+                    var contents = range.cloneContents();
+                    var contextual = range.createContextualFragment('<em id=""created"">x</em>');
+                    var rect = range.getBoundingClientRect();
+                    var rects = range.getClientRects();
+
+                    return [
+                        typeof Range,
+                        typeof document.createRange,
+                        String(range instanceof Range),
+                        String(constructed instanceof Range),
+                        range.startContainer.nodeName,
+                        range.toString(),
+                        String(range.collapsed),
+                        clone.toString(),
+                        contents.firstChild.data,
+                        contextual.firstChild.tagName,
+                        String(rect.width),
+                        String(rects.length),
+                        String(rects.item(0) === null),
+                        String(Range.START_TO_START),
+                        constructed.toString()
+                    ].join('|');
                 })();
             ")?.ToString());
             Assert.Equal(0, engine.LegacyFallbackCount);
@@ -505,6 +632,14 @@ namespace FenBrowser.Tests.Engine
                     var attribute = document.createAttribute('x');
                     try { parent.appendChild(attribute); return 'no-error'; }
                     catch (e) { return e && e.name ? e.name : String(e); }
+                })();
+            ")?.ToString());
+            Assert.Equal("HierarchyRequestError: Child must be a DOM node.", engine.Evaluate(@"
+                (function () {
+                    var parent = document.createElement('div');
+                    var attribute = document.createAttribute('x');
+                    try { parent.appendChild(attribute); return 'no-error'; }
+                    catch (e) { return String(e); }
                 })();
             ")?.ToString());
             Assert.Equal(0, engine.LegacyFallbackCount);
@@ -654,6 +789,480 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task FenJsMode_YouTubeBootstrapDomSurface_RunThroughFenJs()
+        {
+            Environment.SetEnvironmentVariable(RuntimeSelectorVariable, "fenjs");
+            BrowserScriptEngineRuntime.Reset();
+
+            var baseUri = new Uri("https://www.youtube.com/");
+            var document = new HtmlParser(
+                "<html><body><a id='lnk' href='/watch?v=abc'></a><div id='root'><span id='child'></span></div></body></html>",
+                baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(@"
+                (function () {
+                    var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                    var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+                    var names = [];
+                    var node;
+                    while ((node = walker.nextNode()) && names.length < 3) {
+                        names.push(node.id || node.tagName);
+                    }
+
+                    var documentSeen = 0;
+                    document.addEventListener('yt-ready', function (event) { documentSeen = event.detail; });
+                    var documentEvent = document.createEvent('CustomEvent');
+                    documentEvent.initCustomEvent('yt-ready', true, true, 7);
+                    var documentDispatchResult = document.dispatchEvent(documentEvent);
+
+                    var child = document.getElementById('child');
+                    var elementSeen = 0;
+                    child.addEventListener('probe', function () { elementSeen = 1; });
+                    var elementDispatchResult = child.dispatchEvent(new Event('probe'));
+                    var windowSeen = 0;
+                    window.addEventListener('script-load-dpj', function (event) { windowSeen = event.detail; });
+                    var windowDispatchResult = window.dispatchEvent(new CustomEvent('script-load-dpj', { detail: 13 }));
+                    var animation = child.animate([{ opacity: 0 }, { opacity: 1 }], 100);
+                    animation.pause();
+                    animation.currentTime = 40;
+                    animation.updatePlaybackRate(2);
+                    Object.defineProperty(document, '_activeElement', {
+                        get: function () { return child; },
+                        configurable: true
+                    });
+                    Object.defineProperty(child, '__ytData', {
+                        value: 11,
+                        writable: true,
+                        configurable: true
+                    });
+                    var activeElementDescriptor = Object.getOwnPropertyDescriptor(document, '_activeElement');
+                    var windowAddEventListenerDescriptor = Object.getOwnPropertyDescriptor(Window.prototype, 'addEventListener');
+                    Object.defineProperty(Window.prototype, '__fen_native_addEventListener', windowAddEventListenerDescriptor);
+                    var mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+                    var wheel = new WheelEvent('wheel', {
+                        deltaY: 12,
+                        deltaMode: WheelEvent.DOM_DELTA_LINE
+                    });
+
+                    return [
+                        typeof document.createElementNS,
+                        String(svg.tagName).toLowerCase(),
+                        typeof document.createTreeWalker,
+                        String(NodeFilter.SHOW_ELEMENT),
+                        String(Node.ELEMENT_NODE),
+                        String(Node.TEXT_NODE),
+                        typeof CDATASection,
+                        String(CDATASection.prototype instanceof Text),
+                        typeof ProcessingInstruction,
+                        String(ProcessingInstruction.prototype instanceof CharacterData),
+                        names.join(','),
+                        String(document.contains(child)),
+                        String(documentDispatchResult),
+                        String(documentSeen),
+                        String(elementDispatchResult),
+                        String(elementSeen),
+                        String(windowDispatchResult),
+                        String(windowSeen),
+                        document.getElementById('lnk').href,
+                        typeof child.animate,
+                        animation.playState,
+                        String(animation.currentTime),
+                        String(animation.playbackRate),
+                        String(animation.effect.length),
+                        typeof animation.finished.then,
+                        String(document._activeElement === child),
+                        typeof activeElementDescriptor.get,
+                        String(child.__ytData),
+                        typeof Window,
+                        String(window instanceof Window),
+                        String(Object.getPrototypeOf(window) === Window.prototype),
+                        typeof Window.prototype.addEventListener,
+                        typeof window.__fen_native_addEventListener,
+                        typeof window.DocumentFragment,
+                        typeof CustomElementRegistry,
+                        String(customElements instanceof CustomElementRegistry),
+                        typeof CustomElementRegistry.prototype.define,
+                        typeof ShadowRoot,
+                        String(ShadowRoot.prototype instanceof DocumentFragment),
+                        typeof window.matchMedia,
+                        mediaQuery.media,
+                        String(mediaQuery.matches),
+                        typeof mediaQuery.addEventListener,
+                        String(mediaQuery.dispatchEvent(new Event('change'))),
+                        typeof WheelEvent,
+                        String(WheelEvent.prototype instanceof MouseEvent),
+                        String(WheelEvent.DOM_DELTA_LINE),
+                        String(wheel.deltaY),
+                        String(wheel.deltaMode),
+                        typeof wheel.initWheelEvent
+                    ].join('|');
+                })();
+            ");
+
+            Assert.Equal("function|svg|function|1|1|3|function|true|function|true|A,DIV,SPAN|true|true|7|true|1|true|13|https://www.youtube.com/watch?v=abc|function|paused|40|2|2|function|true|function|11|function|true|true|function|function|function|function|true|function|function|true|function|(prefers-color-scheme: dark)|false|function|true|function|true|1|12|1|function", result?.ToString());
+            Assert.Equal(0, engine.LegacyFallbackCount);
+        }
+
+        [Fact]
+        public async Task FenJsMode_YouTubeObservedHostSurface_RunThroughFenJs()
+        {
+            Environment.SetEnvironmentVariable(RuntimeSelectorVariable, "fenjs");
+            BrowserScriptEngineRuntime.Reset();
+
+            var baseUri = new Uri("https://www.youtube.com/");
+            var document = new HtmlParser(
+                "<html><body><div id='host' nonce='abc'></div></body></html>",
+                baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(@"
+                (function () {
+                    document.domain = 'youtube.com';
+                    var transitionCalled = 0;
+                    var transition = document.startViewTransition(function () {
+                        transitionCalled = 1;
+                    });
+                    var host = document.getElementById('host');
+                    host.setProperties({
+                        id: 'ready',
+                        className: 'alpha',
+                        textContent: 'loaded',
+                        nonce: 'xyz',
+                        customValue: 42
+                    });
+                    var fullscreenPromise = host.requestFullscreen();
+                    var connection = navigator.connection;
+                    var frame = document.createElement('iframe');
+                    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+
+                    return [
+                        document.baseURI,
+                        document.compatMode,
+                        String(document.prerendering),
+                        document.domain,
+                        document.location.href,
+                        typeof connection,
+                        connection.effectiveType,
+                        String(connection.saveData),
+                        String(connection.downlink),
+                        typeof connection.addEventListener,
+                        String(connection.dispatchEvent(new Event('change'))),
+                        typeof document.startViewTransition,
+                        typeof document.releaseCapture,
+                        typeof transition.ready.then,
+                        typeof transition.updateCallbackDone.then,
+                        typeof transition.finished.then,
+                        typeof transition.skipTransition,
+                        String(transitionCalled),
+                        typeof host.requestFullscreen,
+                        typeof host.webkitRequestFullscreen,
+                        typeof host.mozRequestFullScreen,
+                        typeof host.msRequestFullscreen,
+                        typeof host.setCapture,
+                        typeof host.setProperties,
+                        host.id,
+                        host.className,
+                        host.textContent,
+                        host.nonce,
+                        String(host.customValue),
+                        typeof fullscreenPromise.then,
+                        typeof frame.sandbox,
+                        String(frame.sandbox instanceof DOMTokenList),
+                        frame.sandbox.value,
+                        String(frame.sandbox.contains('allow-scripts')),
+                        String(frame.getAttribute('sandbox')),
+                        String(document.releaseCapture()),
+                        String(host.setCapture())
+                    ].join('|');
+                })();
+            ");
+
+            Assert.Equal("https://www.youtube.com/|CSS1Compat|false|youtube.com|https://www.youtube.com/|object|4g|false|10|function|true|function|function|function|function|function|function|1|function|function|function|function|function|function|ready|alpha|loaded|xyz|42|function|object|true|allow-scripts allow-same-origin|true|allow-scripts allow-same-origin|undefined|undefined", result?.ToString());
+            Assert.Equal(0, engine.LegacyFallbackCount);
+        }
+
+        [Fact]
+        public async Task FenJsMode_CustomElementsUpgradeExistingDom_RunThroughFenJs()
+        {
+            Environment.SetEnvironmentVariable(RuntimeSelectorVariable, "fenjs");
+            BrowserScriptEngineRuntime.Reset();
+
+            var baseUri = new Uri("https://www.youtube.com/");
+            var document = new HtmlParser(
+                "<html><body><x-probe id='a'></x-probe><div><x-probe id='b'></x-probe></div></body></html>",
+                baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(@"
+                (function () {
+                    var calls = [];
+                    function Probe() {
+                        this.constructed = this.id;
+                        calls.push('ctor:' + this.id);
+                    }
+                    Probe.prototype.connectedCallback = function () {
+                        this.setAttribute('upgraded', 'yes');
+                        this.textContent = 'ready-' + this.id;
+                        calls.push('connected:' + this.id);
+                    };
+                    Probe.prototype.answer = function () {
+                        return 'answer:' + this.id + ':' + this.constructed;
+                    };
+
+                    customElements.define('x-probe', Probe);
+
+                    var created = document.createElement('x-probe');
+                    var createdBeforeAppend = created.answer();
+                    created.id = 'c';
+                    document.body.appendChild(created);
+
+                    class ClassProbe extends HTMLElement {
+                        constructor() {
+                            super();
+                            this.constructed = this.readId();
+                        }
+                        connectedCallback() {
+                            this.textContent = this.constructed + ':' + this.id;
+                        }
+                        readId() {
+                            return this.id;
+                        }
+                        answer() {
+                            return this.constructed + ':' + this.id;
+                        }
+                    }
+
+                    var classElement = document.createElement('x-class-probe');
+                    classElement.id = 'class-created';
+                    customElements.define('x-class-probe', ClassProbe);
+                    document.body.appendChild(classElement);
+
+                    return [
+                        String(document.nodeType),
+                        String(document.nodeType === Node.DOCUMENT_NODE),
+                        typeof customElements.get('x-probe'),
+                        document.getElementById('a').getAttribute('upgraded'),
+                        document.getElementById('a').answer(),
+                        document.getElementById('b').textContent,
+                        createdBeforeAppend,
+                        created.answer(),
+                        created.textContent,
+                        classElement.answer(),
+                        classElement.textContent,
+                        calls.join(',')
+                    ].join('|');
+                })();
+            ");
+
+            Assert.Equal("9|true|function|yes|answer:a:a|ready-b|answer::|answer:c:|ready-c|class-created:class-created|class-created:class-created|ctor:a,connected:a,ctor:b,connected:b,ctor:,connected:c", result?.ToString());
+            Assert.Equal(0, engine.LegacyFallbackCount);
+        }
+
+        [Fact]
+        public async Task FenJsMode_CustomElementsRunMultiLevelClassConstructorsOnHostElement()
+        {
+            Environment.SetEnvironmentVariable(RuntimeSelectorVariable, "fenjs");
+            BrowserScriptEngineRuntime.Reset();
+
+            var baseUri = new Uri("https://www.youtube.com/");
+            var document = new HtmlParser("<html><body></body></html>", baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(@"
+                (function () {
+                    class BaseProbe extends HTMLElement {
+                        constructor() {
+                            super();
+                            this.base = this.readId();
+                            this.hasReady = this.hasAttribute('data-ready');
+                            this.mark('base');
+                        }
+                        readId() {
+                            return this.id;
+                        }
+                        mark(value) {
+                            this.trace = (this.trace || []).concat(value);
+                        }
+                    }
+
+                    class MidProbe extends BaseProbe {
+                        constructor() {
+                            super();
+                            this.mid = this.readId();
+                            this.mark('mid');
+                        }
+                    }
+
+                    class LeafProbe extends MidProbe {
+                        constructor() {
+                            super();
+                            this.leaf = this.readId();
+                            this.mark('leaf');
+                        }
+                        connectedCallback() {
+                            this.textContent = this.trace.join(',');
+                        }
+                        answer() {
+                            return this.base + ':' + this.mid + ':' + this.leaf + ':' + this.hasReady + ':' + this.textContent;
+                        }
+                    }
+
+                    Object.defineProperty(
+                        LeafProbe.prototype,
+                        'hasAttribute',
+                        Object.getOwnPropertyDescriptor(Element.prototype, 'hasAttribute'));
+
+                    var element = document.createElement('x-leaf-probe');
+                    element.id = 'leaf';
+                    element.setAttribute('data-ready', 'yes');
+                    customElements.define('x-leaf-probe', LeafProbe);
+                    document.body.appendChild(element);
+                    return element.answer();
+                })();
+            ");
+
+            Assert.Equal("leaf:leaf:leaf:true:base,mid,leaf", result?.ToString());
+            Assert.Equal(0, engine.LegacyFallbackCount);
+        }
+
+        [Fact]
+        public async Task FenJsMode_CustomElementsRunEs5AdapterConstructorsOnHostElement()
+        {
+            Environment.SetEnvironmentVariable(RuntimeSelectorVariable, "fenjs");
+            BrowserScriptEngineRuntime.Reset();
+
+            var baseUri = new Uri("https://www.youtube.com/");
+            var document = new HtmlParser("<html><body></body></html>", baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(@"
+                (function () {
+                    var originalHTMLElement = window.HTMLElement;
+                    var nativeDefine = window.customElements.define;
+                    var nativeGet = window.customElements.get;
+                    var namesByConstructor = new Map();
+                    var constructorsByName = new Map();
+                    var constructingBase = false;
+                    var alreadyConstructing = false;
+
+                    window.HTMLElement = function () {
+                        if (!constructingBase) {
+                            var name = namesByConstructor.get(this.constructor);
+                            var constructor = nativeGet.call(window.customElements, name);
+                            alreadyConstructing = true;
+                            return new constructor();
+                        }
+
+                        constructingBase = false;
+                    };
+                    window.HTMLElement.prototype = originalHTMLElement.prototype;
+                    window.HTMLElement.es5Shimmed = true;
+
+                    Object.defineProperty(window.customElements, 'define', {
+                        value: function (name, constructor) {
+                            var userPrototype = constructor.prototype;
+                            var wrapper = class extends originalHTMLElement {
+                                constructor() {
+                                    super();
+                                    Object.setPrototypeOf(this, userPrototype);
+                                    if (!alreadyConstructing) {
+                                        constructingBase = true;
+                                        constructor.call(this);
+                                    }
+                                    alreadyConstructing = false;
+                                }
+                            };
+
+                            wrapper.prototype.connectedCallback = userPrototype.connectedCallback;
+                            namesByConstructor.set(constructor, name);
+                            constructorsByName.set(name, constructor);
+                            nativeDefine.call(window.customElements, name, wrapper);
+                        },
+                        configurable: true
+                    });
+                    Object.defineProperty(window.customElements, 'get', {
+                        value: function (name) {
+                            return constructorsByName.get(name);
+                        },
+                        configurable: true
+                    });
+
+                    function BaseProbe() {
+                        return HTMLElement.apply(this, arguments) || this;
+                    }
+                    BaseProbe.prototype = Object.create(HTMLElement.prototype);
+                    BaseProbe.prototype.constructor = BaseProbe;
+
+                    function LeafProbe() {
+                        var self = BaseProbe.call(this) || this;
+                        self.constructed = self.id || 'pending';
+                        self.hasReady = self.hasAttribute('data-ready');
+                        return self;
+                    }
+                    LeafProbe.prototype = Object.create(BaseProbe.prototype);
+                    LeafProbe.prototype.constructor = LeafProbe;
+                    LeafProbe.prototype.connectedCallback = function () {
+                        this.textContent = this.constructed + ':' + String(this.hasReady);
+                    };
+
+                    var element = document.createElement('x-es5-adapter-probe');
+                    element.id = 'leaf';
+                    element.setAttribute('data-ready', 'yes');
+                    customElements.define('x-es5-adapter-probe', LeafProbe);
+                    document.body.appendChild(element);
+
+                    return [
+                        element.constructed,
+                        String(element.hasReady),
+                        element.textContent,
+                        String(element instanceof HTMLElement),
+                        String(element instanceof originalHTMLElement),
+                        String(Object.getPrototypeOf(element) === LeafProbe.prototype)
+                    ].join('|');
+                })();
+            ");
+
+            Assert.Equal("leaf|true|leaf:true|true|true|true", result?.ToString());
+            Assert.Equal(0, engine.LegacyFallbackCount);
+        }
+
+        [Fact]
+        public async Task FenJsMode_BrowserRuntimeAllowsFrameworkDepthAboveCoreDefault()
+        {
+            Environment.SetEnvironmentVariable(RuntimeSelectorVariable, "fenjs");
+            BrowserScriptEngineRuntime.Reset();
+
+            var baseUri = new Uri("https://www.youtube.com/");
+            var document = new HtmlParser("<html><body></body></html>", baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(@"
+                (function () {
+                    function descend(n) {
+                        return n === 0 ? 0 : 1 + descend(n - 1);
+                    }
+                    return String(descend(300));
+                })();
+            ");
+
+            Assert.Equal("300", result?.ToString());
+            Assert.Equal(0, engine.LegacyFallbackCount);
+        }
+
+        [Fact]
         public void FenJsMode_BrowserPolicyProperties_StillReachTheBackstopRuntime()
         {
             Environment.SetEnvironmentVariable(RuntimeSelectorVariable, "fenjs");
@@ -703,6 +1312,57 @@ namespace FenBrowser.Tests.Engine
         {
             Environment.SetEnvironmentVariable(RuntimeSelectorVariable, _originalMode);
             BrowserScriptEngineRuntime.Reset();
+        }
+
+        private sealed class TestHistoryBridge : IHistoryBridge
+        {
+            private Uri _currentUrl;
+
+            public TestHistoryBridge(Uri initialUrl)
+            {
+                _currentUrl = initialUrl;
+            }
+
+            public bool PushStateCalled { get; private set; }
+            public bool ReplaceStateCalled { get; private set; }
+            public bool GoCalled { get; private set; }
+            public object State { get; private set; }
+            public int Length { get; private set; } = 1;
+            public Uri CurrentUrl => _currentUrl;
+            public string LastTitle { get; private set; }
+            public string LastUrl { get; private set; }
+            public int LastDelta { get; private set; }
+
+            public void PushState(object state, string title, string url)
+            {
+                PushStateCalled = true;
+                State = state;
+                LastTitle = title;
+                LastUrl = url;
+                if (!string.IsNullOrWhiteSpace(url))
+                {
+                    _currentUrl = new Uri(_currentUrl, url);
+                }
+                Length++;
+            }
+
+            public void ReplaceState(object state, string title, string url)
+            {
+                ReplaceStateCalled = true;
+                State = state;
+                LastTitle = title;
+                LastUrl = url;
+                if (!string.IsNullOrWhiteSpace(url))
+                {
+                    _currentUrl = new Uri(_currentUrl, url);
+                }
+            }
+
+            public void Go(int delta)
+            {
+                GoCalled = true;
+                LastDelta = delta;
+            }
         }
 
         private static JsHostAdapter CreateHost()

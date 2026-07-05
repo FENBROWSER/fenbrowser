@@ -138,6 +138,30 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public void ResilienceDefaults_AllowLargeModernScriptBundles()
+        {
+            var settings = new ResilienceSettings();
+
+            Assert.Equal(ResilienceSettings.DefaultMaxTextBodyBytes, settings.MaxTextBodyBytes);
+        }
+
+        [Fact]
+        public void Normalize_MigratesLegacyTextBodyDefault()
+        {
+            var settings = new BrowserSettings
+            {
+                Resilience = new ResilienceSettings
+                {
+                    MaxTextBodyBytes = 8 * 1024 * 1024
+                }
+            };
+
+            settings.Normalize();
+
+            Assert.Equal(ResilienceSettings.DefaultMaxTextBodyBytes, settings.Resilience.MaxTextBodyBytes);
+        }
+
+        [Fact]
         public void Normalize_FixesInvalidResilienceSettings()
         {
             var settings = new BrowserSettings
@@ -162,7 +186,7 @@ namespace FenBrowser.Tests.Core
             Assert.True(settings.Resilience.MaxHtmlTokenEmissions >= 10_000);
             Assert.True(settings.Resilience.MaxOpenElementsDepth >= 64);
             Assert.True(settings.Resilience.MaxRedirectHops >= 1);
-            Assert.True(settings.Resilience.MaxTextBodyBytes >= 64 * 1024);
+            Assert.Equal(ResilienceSettings.DefaultMaxTextBodyBytes, settings.Resilience.MaxTextBodyBytes);
             Assert.True(settings.Resilience.MaxImageBodyBytes >= 64 * 1024);
             Assert.True(settings.Resilience.RequestTimeoutSeconds >= 1);
             Assert.True(settings.Resilience.NavigationTimeoutSeconds >= 1);

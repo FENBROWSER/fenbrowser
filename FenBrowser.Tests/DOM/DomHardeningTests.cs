@@ -136,7 +136,7 @@ namespace FenBrowser.Tests.Dom
         }
 
         [Fact]
-        public void TreeWalker_CurrentNode_MustStayWithinRoot()
+        public void TreeWalker_CurrentNode_CanLeaveRootButTraversalStaysBounded()
         {
             var document = Document.CreateHtmlDocument();
             var root = document.CreateElement("div");
@@ -150,8 +150,15 @@ namespace FenBrowser.Tests.Dom
             walker.CurrentNode = child;
             Assert.Same(child, walker.CurrentNode);
 
-            var exception = Assert.Throws<DomException>(() => walker.CurrentNode = outsider);
-            Assert.Equal(DomExceptionNames.NotFoundError, exception.Name);
+            walker.CurrentNode = outsider;
+            Assert.Same(outsider, walker.CurrentNode);
+            Assert.Null(walker.ParentNode());
+            Assert.Null(walker.FirstChild());
+            Assert.Null(walker.LastChild());
+            Assert.Null(walker.PreviousSibling());
+            Assert.Null(walker.NextSibling());
+            Assert.Null(walker.PreviousNode());
+            Assert.Null(walker.NextNode());
         }
 
         [Fact]

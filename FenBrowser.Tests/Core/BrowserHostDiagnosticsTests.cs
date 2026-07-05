@@ -1,6 +1,13 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Reflection;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Rendering;
@@ -103,6 +110,105 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public async Task NavigateUserInputAsync_DoesNotAutoFollowGoogleRecoveryLink()
+        {
+            using var handler = new GoogleRecoveryLinkHandler();
+            using var httpClient = new HttpClient(handler);
+            var resources = new ResourceManager(httpClient, isPrivate: true);
+            var navigation = new NavigationManager(resources);
+
+            using var browser = new BrowserHost(isPrivate: true);
+            SetPrivateField(browser, "_navManager", navigation);
+
+            var navigated = await browser.NavigateUserInputAsync("https://www.google.com/search?q=test");
+
+            Assert.True(navigated);
+            Assert.Single(handler.RequestUris);
+            Assert.Equal("https://www.google.com/search?q=test", browser.CurrentUri.AbsoluteUri);
+        }
+
+        [Fact]
+        public async Task NavigateAsync_CoalescesDuplicateProgrammaticNavigationWhileFirstIsLoading()
+        {
+            using var handler = new DelayedNavigationHandler();
+            using var httpClient = new HttpClient(handler);
+            var resources = new ResourceManager(httpClient, isPrivate: true);
+            var navigation = new NavigationManager(resources);
+
+            using var browser = new BrowserHost(isPrivate: true);
+            SetPrivateField(browser, "_navManager", navigation);
+
+            var first = browser.NavigateAsync("https://example.test/next");
+            await handler.FirstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var duplicate = await browser.NavigateAsync("https://example.test/next");
+            handler.ReleaseFirstRequest.SetResult(null);
+            var firstResult = await first;
+
+            Assert.False(duplicate);
+            Assert.True(firstResult);
+            Assert.Single(handler.RequestUris);
+            Assert.Equal("https://example.test/next", browser.CurrentUri.AbsoluteUri);
+        }
+
+        [Fact]
+        public async Task ScriptCreatedIframe_LoadsAndRunsFrameScripts()
+        {
+            using var handler = new ScriptFrameHandler();
+            using var httpClient = new HttpClient(handler);
+            var resources = new ResourceManager(httpClient, isPrivate: true);
+            var navigation = new NavigationManager(resources);
+
+            using var browser = new BrowserHost(isPrivate: true);
+            SetPrivateField(browser, "_resources", resources);
+            SetPrivateField(browser, "_navManager", navigation);
+
+            var navigated = await browser.NavigateAsync("https://example.test/page");
+            var marker = await WaitForElementAsync(browser, "frame-script-marker", element =>
+                element.ComputedStyle?.ForegroundColor == new SKColor(1, 2, 3));
+            var engine = GetPrivateField<CustomHtmlEngine>(browser, "_engine");
+            var iframe = FindFirstElement(engine.GetActiveDom(), element =>
+                string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase));
+            var frameDocument = Assert.IsType<Document>(iframe?.FirstChild);
+
+            Assert.True(navigated);
+            Assert.Contains(handler.RequestUris, uri => uri.AbsoluteUri == "https://example.test/frames/frame.html");
+            Assert.Contains(handler.RequestUris, uri => uri.AbsoluteUri == "https://example.test/frames/frame.css");
+            Assert.Same(frameDocument, frameDocument.DocumentElement.OwnerDocument);
+            Assert.Equal("https://example.test/frames/frame.html", frameDocument.URL);
+            Assert.NotNull(marker);
+            Assert.Equal(new SKColor(1, 2, 3), marker.ComputedStyle?.ForegroundColor);
+            Assert.Contains("frame script ran", marker.TextContent);
+        }
+
+        [Fact]
+        public async Task ScriptCreatedIframe_SrcNavigationLoadsAndRunsNextFrameScripts()
+        {
+            using var handler = new NavigatingScriptFrameHandler();
+            using var httpClient = new HttpClient(handler);
+            var resources = new ResourceManager(httpClient, isPrivate: true);
+            var navigation = new NavigationManager(resources);
+
+            using var browser = new BrowserHost(isPrivate: true);
+            SetPrivateField(browser, "_resources", resources);
+            SetPrivateField(browser, "_navManager", navigation);
+
+            var navigated = await browser.NavigateAsync("https://example.test/page");
+            var marker = await WaitForElementAsync(browser, "second-frame-marker");
+            var engine = GetPrivateField<CustomHtmlEngine>(browser, "_engine");
+            var iframe = FindFirstElement(engine.GetActiveDom(), element =>
+                string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase));
+            var frameDocument = Assert.IsType<Document>(iframe?.FirstChild);
+
+            Assert.True(navigated);
+            Assert.Contains(handler.RequestUris, uri => uri.AbsoluteUri == "https://example.test/frames/first.html");
+            Assert.Contains(handler.RequestUris, uri => uri.AbsoluteUri == "https://example.test/frames/second.html");
+            Assert.Equal("https://example.test/frames/second.html", frameDocument.URL);
+            Assert.NotNull(marker);
+            Assert.Contains("second frame script ran", marker.TextContent);
+        }
+
+        [Fact]
         public void DecodeFavicon_DecodesPngBackedIcoContainer()
         {
             var icoBytes = CreatePngBackedIcoBytes();
@@ -154,6 +260,274 @@ namespace FenBrowser.Tests.Core
             var nestedField = nestedOwner!.GetType().GetField(nestedFieldName, BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(nestedField);
             nestedField!.SetValue(nestedOwner, value);
+        }
+
+        private static void SetPrivateField(object owner, string fieldName, object value)
+        {
+            var field = owner.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(field);
+            field!.SetValue(owner, value);
+        }
+
+        private static T GetPrivateField<T>(object owner, string fieldName)
+        {
+            var field = owner.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(field);
+            return Assert.IsType<T>(field!.GetValue(owner));
+        }
+
+        private static async Task<string> WaitForPageSourceContainsAsync(BrowserHost browser, string expected)
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            string source = null;
+            while (DateTime.UtcNow < deadline)
+            {
+                source = await browser.GetPageSourceAsync();
+                if (source?.IndexOf(expected, StringComparison.Ordinal) >= 0)
+                {
+                    return source;
+                }
+
+                await Task.Delay(50);
+            }
+
+            return source ?? string.Empty;
+        }
+
+        private static async Task<Element> WaitForElementAsync(
+            BrowserHost browser,
+            string id,
+            Func<Element, bool> predicate = null)
+        {
+            var engine = GetPrivateField<CustomHtmlEngine>(browser, "_engine");
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            Element match = null;
+            while (DateTime.UtcNow < deadline)
+            {
+                match = FindFirstElement(engine.GetActiveDom(), element =>
+                    string.Equals(element.Id, id, StringComparison.Ordinal));
+                if (match != null && (predicate == null || predicate(match)))
+                {
+                    return match;
+                }
+
+                await Task.Delay(50);
+            }
+
+            return match;
+        }
+
+        private static Element FindFirstElement(Node root, Func<Element, bool> predicate)
+        {
+            if (root == null)
+            {
+                return null;
+            }
+
+            var stack = new Stack<Node>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var node = stack.Pop();
+                if (node is Element element && predicate(element))
+                {
+                    return element;
+                }
+
+                var children = node.ChildNodes;
+                for (int i = children.Length - 1; i >= 0; i--)
+                {
+                    stack.Push(children[i]);
+                }
+            }
+
+            return null;
+        }
+
+        private sealed class GoogleRecoveryLinkHandler : HttpMessageHandler
+        {
+            private readonly object _lock = new();
+            private readonly List<Uri> _requestUris = new();
+
+            public IReadOnlyList<Uri> RequestUris
+            {
+                get
+                {
+                    lock (_lock)
+                    {
+                        return _requestUris.ToArray();
+                    }
+                }
+            }
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                lock (_lock)
+                {
+                    _requestUris.Add(request.RequestUri);
+                }
+
+                var html = request.RequestUri?.Query.IndexOf("emsg=SG_REL", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? "<!doctype html><html><body><main>Recovery link was followed</main></body></html>"
+                    : "<!doctype html><html><head><title>Google</title></head><body>" +
+                      "<main id='search'>Search result stayed here</main>" +
+                      "<div id='yvlrue' style='display:none'>If you're having trouble accessing Google Search, " +
+                      "please <a href='/search?q=test&amp;emsg=SG_REL&amp;sei=abc'>click here</a>.</div>" +
+                      "</body></html>";
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(html, Encoding.UTF8, "text/html"),
+                    RequestMessage = request
+                });
+            }
+        }
+
+        private sealed class ScriptFrameHandler : HttpMessageHandler
+        {
+            private readonly object _lock = new();
+            private readonly List<Uri> _requestUris = new();
+
+            public IReadOnlyList<Uri> RequestUris
+            {
+                get
+                {
+                    lock (_lock)
+                    {
+                        return _requestUris.ToArray();
+                    }
+                }
+            }
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                lock (_lock)
+                {
+                    _requestUris.Add(request.RequestUri);
+                }
+
+                if (string.Equals(request.RequestUri?.AbsolutePath, "/frames/frame.css", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(".frame-marker{color:#010203;display:block}", Encoding.UTF8, "text/css"),
+                        RequestMessage = request
+                    });
+                }
+
+                var html = string.Equals(request.RequestUri?.AbsolutePath, "/frames/frame.html", StringComparison.OrdinalIgnoreCase)
+                    ? "<!doctype html><html><head><link rel='stylesheet' href='frame.css'></head><body><script>" +
+                      "var marker=document.createElement('p');" +
+                      "marker.id='frame-script-marker';" +
+                      "marker.className='frame-marker';" +
+                      "marker.textContent='frame script ran';" +
+                      "document.body.appendChild(marker);" +
+                      "</script></body></html>"
+                    : "<!doctype html><html><body><main>Top page</main><script>" +
+                      "var frame=document.createElement('iframe');" +
+                      "frame.src='/frames/frame.html';" +
+                      "document.body.appendChild(frame);" +
+                      "</script></body></html>";
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(html, Encoding.UTF8, "text/html"),
+                    RequestMessage = request
+                });
+            }
+        }
+
+        private sealed class NavigatingScriptFrameHandler : HttpMessageHandler
+        {
+            private readonly object _lock = new();
+            private readonly List<Uri> _requestUris = new();
+
+            public IReadOnlyList<Uri> RequestUris
+            {
+                get
+                {
+                    lock (_lock)
+                    {
+                        return _requestUris.ToArray();
+                    }
+                }
+            }
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                lock (_lock)
+                {
+                    _requestUris.Add(request.RequestUri);
+                }
+
+                var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+                var html = path switch
+                {
+                    "/frames/first.html" => "<!doctype html><html><body><script>" +
+                                            "window.frameElement.setAttribute('src','/frames/second.html');" +
+                                            "</script></body></html>",
+                    "/frames/second.html" => "<!doctype html><html><body><script>" +
+                                             "var marker=document.createElement('p');" +
+                                             "marker.id='second-frame-marker';" +
+                                             "marker.textContent='second frame script ran';" +
+                                             "document.body.appendChild(marker);" +
+                                             "</script></body></html>",
+                    _ => "<!doctype html><html><body><main>Top page</main><script>" +
+                         "var frame=document.createElement('iframe');" +
+                         "frame.src='/frames/first.html';" +
+                         "document.body.appendChild(frame);" +
+                         "</script></body></html>"
+                };
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(html, Encoding.UTF8, "text/html"),
+                    RequestMessage = request
+                });
+            }
+        }
+
+        private sealed class DelayedNavigationHandler : HttpMessageHandler
+        {
+            private readonly object _lock = new();
+            private readonly List<Uri> _requestUris = new();
+
+            public TaskCompletionSource<object> FirstRequestStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public TaskCompletionSource<object> ReleaseFirstRequest { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public IReadOnlyList<Uri> RequestUris
+            {
+                get
+                {
+                    lock (_lock)
+                    {
+                        return _requestUris.ToArray();
+                    }
+                }
+            }
+
+            protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                var requestIndex = 0;
+                lock (_lock)
+                {
+                    _requestUris.Add(request.RequestUri);
+                    requestIndex = _requestUris.Count;
+                }
+
+                if (requestIndex == 1)
+                {
+                    FirstRequestStarted.SetResult(null);
+                    await ReleaseFirstRequest.Task.WaitAsync(cancellationToken);
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("<!doctype html><html><body><main>Loaded</main></body></html>", Encoding.UTF8, "text/html"),
+                    RequestMessage = request
+                };
+            }
         }
 
         private static byte[] CreatePngBackedIcoBytes()

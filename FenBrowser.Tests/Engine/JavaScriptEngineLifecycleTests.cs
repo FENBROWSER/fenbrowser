@@ -433,6 +433,25 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task SetDomAsync_IframeContentDocument_StorageAccessSurfaceResolves()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body onload=\"var frame = document.getElementById('frame'); var doc = frame.contentDocument; globalThis.__iframeHasStorageAccessType = typeof doc.hasStorageAccess().then; globalThis.__iframeRequestStorageAccessType = typeof doc.requestStorageAccess().then; doc.hasStorageAccess().then(function(value){ globalThis.__iframeHasStorageAccessResolved = String(value); }); doc.requestStorageAccess().then(function(){ globalThis.__iframeRequestStorageAccessResolved = 'yes'; });\"><iframe id='frame'></iframe></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("function", engine.Evaluate("globalThis.__iframeHasStorageAccessType")?.ToString());
+            Assert.Equal("true", engine.Evaluate("globalThis.__iframeHasStorageAccessResolved")?.ToString());
+            Assert.Equal("function", engine.Evaluate("globalThis.__iframeRequestStorageAccessType")?.ToString());
+            Assert.Equal("yes", engine.Evaluate("globalThis.__iframeRequestStorageAccessResolved")?.ToString());
+        }
+
+        [Fact]
         public async Task SetDomAsync_IframeContentWindow_AbortSignalSurface_MatchesConstructorShape()
         {
             var baseUri = new Uri("https://example.com/index.html");
