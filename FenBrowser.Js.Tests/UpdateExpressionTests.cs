@@ -53,6 +53,19 @@ public sealed class UpdateExpressionTests
         => Assert.Equal("7,8", Str("var o = { n: 7 }; var a = o.n++; a + ',' + o.n;"));
 
     [Fact]
+    public void PostfixIncrementBindsInsideUnaryOperand()
+        => Assert.Equal("true,1,number,2,undefined,3", Str(@"
+            var z = 0;
+            var a = !z++;
+            var za = z;
+            var b = typeof z++;
+            var zb = z;
+            var c = void z++;
+            var zc = z;
+            a + ',' + za + ',' + b + ',' + zb + ',' + c + ',' + zc;
+        "));
+
+    [Fact]
     public void PrefixIncrementOnComputedMember()
         => Assert.Equal("3,3", Str("var a = [2]; var r = ++a[0]; r + ',' + a[0];"));
 

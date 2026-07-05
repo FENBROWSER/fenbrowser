@@ -197,6 +197,57 @@ public sealed class RegExpExecTests
     }
 
     [Fact]
+    public void ReplaceFunctionReceivesCapturesBeforeIndexAndInputOnFastPath()
+    {
+        var result = Run("""
+            var seen;
+            var output = "zab".replace(/(a)(b)/g, function(match, a, b, index, input) {
+              seen = match + "|" + a + "|" + b + "|" + index + "|" + input;
+              return "x";
+            });
+            seen + "|" + output;
+            """);
+        Assert.Equal("ab|a|b|1|zab|zx", result.AsString());
+    }
+
+    [Fact]
+    public void ReplaceFunctionReceivesUndefinedForUnmatchedCaptureOnFastPath()
+    {
+        var result = Run("""
+            var seen;
+            "ac".replace(/(a)(b)?(c)/g, function(match, a, b, c, index, input) {
+              seen = (b === undefined) + "|" + a + "|" + c + "|" + index + "|" + input;
+              return "x";
+            });
+            seen;
+            """);
+        Assert.Equal("true|a|c|0|ac", result.AsString());
+    }
+
+    [Fact]
+    public void ReplaceFunctionFastPathHonorsNonGlobalRegex()
+    {
+        var result = Run("""
+            var count = 0;
+            var output = "aa".replace(/a/, function() {
+              count++;
+              return "x";
+            });
+            output + "|" + count;
+            """);
+        Assert.Equal("xa|1", result.AsString());
+    }
+
+    [Fact]
+    public void ReplaceStringGlobalFastPathKeepsPrefixBeforeLaterMatch()
+    {
+        var result = Run("""
+            "za".replace(/a/g, "x");
+            """);
+        Assert.Equal("zx", result.AsString());
+    }
+
+    [Fact]
     public void MatchAllCoercesInputObjectAndReturnsMatchRecords()
     {
         var result = Run("""

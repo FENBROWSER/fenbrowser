@@ -1,5 +1,6 @@
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Regex;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
 using Xunit;
@@ -97,6 +98,36 @@ public sealed class RegExpLiteralTests
     {
         var result = Run("/abc/g.lastIndex;");
         Assert.Equal(0.0, result.AsNumber(), 4);
+    }
+
+    [Fact]
+    public void RegexLiteralAllowsEscapedPunctuationClassRanges()
+    {
+        var result = Run(@"var r = /[\x00- \x22\x27-\x29\x3c\x3e\\\x7b\x7d\x7f\x85\xa0\u2028\u2029\uff01\uff03\uff04\uff06-\uff0c\uff0f\uff1a\uff1b\uff1d\uff1f\uff20\uff3b\uff3d]/g;
+            r.test(' ') &&
+            (r.lastIndex = 0, r.test(String.fromCharCode(0x22))) &&
+            (r.lastIndex = 0, !r.test('A'));");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void RegExpCompilerKeepsMatcherForEscapedPunctuationClassRanges()
+    {
+        const string pattern = @"[\x00- \x22\x27-\x29\x3c\x3e\\\x7b\x7d\x7f\x85\xa0\u2028\u2029\uff01\uff03\uff04\uff06-\uff0c\uff0f\uff1a\uff1b\uff1d\uff1f\uff20\uff3b\uff3d]";
+        var compiled = RegExpCompiler.Compile(pattern, "g");
+        Assert.True(compiled.Regex.IsMatch(" "), compiled.Regex.ToString());
+        Assert.True(compiled.Regex.IsMatch("\""), compiled.Regex.ToString());
+        Assert.False(compiled.Regex.IsMatch("A"), compiled.Regex.ToString());
+    }
+
+    [Fact]
+    public void RegExpConstructorAllowsEscapedPunctuationClassRanges()
+    {
+        var result = Run(@"var r = new RegExp('[\\x00- \\x22\\x27-\\x29\\x3c\\x3e\\\\\\x7b\\x7d\\x7f\\x85\\xa0\\u2028\\u2029\\uff01\\uff03\\uff04\\uff06-\\uff0c\\uff0f\\uff1a\\uff1b\\uff1d\\uff1f\\uff20\\uff3b\\uff3d]', 'g');
+            r.test(' ') &&
+            (r.lastIndex = 0, r.test(String.fromCharCode(0x22))) &&
+            (r.lastIndex = 0, !r.test('A'));");
+        Assert.True(result.AsBoolean());
     }
 
     [Fact]

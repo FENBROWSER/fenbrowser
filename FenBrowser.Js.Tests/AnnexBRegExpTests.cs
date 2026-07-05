@@ -81,6 +81,43 @@ public sealed class AnnexBRegExpTests
     }
 
     [Fact]
+    public void SourcePreservesEscapedBackslashBeforeIdentityEscape()
+    {
+        Assert.Equal(@"\\N", Run(@"/\\N/.source;").AsString());
+    }
+
+    [Fact]
+    public void StickyTokenizerSkipsEscapedBackslashBeforeIdentityEscape()
+    {
+        Assert.True(Run(@"
+            var token = /\\([ABCE-RTUVXYZaeg-mopqyz]|c(?![A-Za-z])|u(?![\dA-Fa-f]{4}|{[\dA-Fa-f]+})|x(?![\dA-Fa-f]{2}))/gy;
+            var fallback = /\\(?:0(?:[0-3][0-7]{0,2}|[4-7][0-7]?)?|[1-9]\d*|x[\dA-Fa-f]{2}|u(?:[\dA-Fa-f]{4}|{[\dA-Fa-f]+})|c[A-Za-z]|[\s\S])|\(\?(?:[:=!]|<[=!])|[?*+]\?|{\d+(?:,\d*)?}\??|[\s\S]/gy;
+            var input = '\\\\N';
+            token.lastIndex = 0;
+            var firstToken = token.exec(input);
+            fallback.lastIndex = 0;
+            var firstFallback = fallback.exec(input);
+            token = new RegExp(token.source, 'gy');
+            token.lastIndex = firstFallback[0].length;
+            var secondToken = token.exec(input);
+            firstToken === null &&
+                firstFallback[0] === '\\\\' &&
+                firstFallback.index === 0 &&
+                fallback.lastIndex === 2 &&
+                secondToken === null &&
+                token.lastIndex === 0;
+        ").AsBoolean());
+    }
+
+    [Fact]
+    public void ReplacementTokenEscapesBackslashForXRegExpEscapePattern()
+    {
+        Assert.Equal(@"\\N", Run(@"
+            String('\\N').replace(/[-\[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+        ").AsString());
+    }
+
+    [Fact]
     public void SplitClonesAfterSymbolMatchGetterAndBeforeLimitCoercion()
     {
         Assert.Equal("a||a;|bb|", Run(@"

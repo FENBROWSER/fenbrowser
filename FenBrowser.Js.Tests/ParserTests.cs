@@ -1417,6 +1417,28 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesPostfixUpdateAsUnaryOperand()
+    {
+        var program = JsParser.ParseScript(new SourceText("!z++; typeof z++; void z++;"));
+
+        var notStmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var not = Assert.IsType<UnaryExpressionNode>(notStmt.Expression);
+        Assert.Equal("!", not.Operator);
+        var postIncrement = Assert.IsType<UnaryExpressionNode>(not.Operand);
+        Assert.Equal("postIncrement", postIncrement.Operator);
+
+        var typeofStmt = Assert.IsType<ExpressionStatementNode>(program.Body[1]);
+        var typeOf = Assert.IsType<UnaryExpressionNode>(typeofStmt.Expression);
+        Assert.Equal("typeof", typeOf.Operator);
+        Assert.Equal("postIncrement", Assert.IsType<UnaryExpressionNode>(typeOf.Operand).Operator);
+
+        var voidStmt = Assert.IsType<ExpressionStatementNode>(program.Body[2]);
+        var voidExpr = Assert.IsType<UnaryExpressionNode>(voidStmt.Expression);
+        Assert.Equal("void", voidExpr.Operator);
+        Assert.Equal("postIncrement", Assert.IsType<UnaryExpressionNode>(voidExpr.Operand).Operator);
+    }
+
+    [Fact]
     public void ParsesUpdateExpressionsOnCallTargetsInParserSubset()
     {
         var program = JsParser.ParseScript(new SourceText("f()++; ++f();"));

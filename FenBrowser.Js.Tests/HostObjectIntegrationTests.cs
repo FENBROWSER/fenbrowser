@@ -113,6 +113,50 @@ public sealed class HostObjectIntegrationTests
     }
 
     [Fact]
+    public void BracketWriteRoutesToHostHook()
+    {
+        var (interpreter, hooks, handle) = Setup();
+        _ = Run(interpreter, "myHost['data-sitekey'] = 'abc';");
+        Assert.Single(hooks.Writes);
+        Assert.Equal(handle, hooks.Writes[0].Handle);
+        Assert.Equal("data-sitekey", hooks.Writes[0].Prop);
+        Assert.Equal("abc", hooks.Writes[0].Value.AsString());
+    }
+
+    [Fact]
+    public void ComputedBracketWriteRoutesToHostHook()
+    {
+        var (interpreter, hooks, handle) = Setup();
+        _ = Run(interpreter, "var key = 'dataset'; myHost[key] = 7;");
+        Assert.Single(hooks.Writes);
+        Assert.Equal(handle, hooks.Writes[0].Handle);
+        Assert.Equal("dataset", hooks.Writes[0].Prop);
+        Assert.Equal(7d, hooks.Writes[0].Value.AsNumber());
+    }
+
+    [Fact]
+    public void ArrayForEachCallReadsHostArrayLikeProperties()
+    {
+        var (interpreter, hooks, handle) = Setup();
+        hooks.Store[(handle.Index, "length")] = JsValue.FromInt32(1);
+        hooks.Store[(handle.Index, "0")] = JsValue.FromString("DIV");
+        hooks.Store[(handle.Index, "nodeType")] = JsValue.FromInt32(1);
+
+        var result = Run(interpreter, @"
+            var seen = '';
+            Array.prototype.forEach.call(myHost, function(value, index, receiver) {
+                seen = value + ':' + index + ':' + (receiver === myHost);
+            });
+            seen + ':' + (myHost.nodeType === 1) + ':' + (myHost.nodeType !== 2);
+        ");
+
+        Assert.Equal("DIV:0:true:true:true", result.AsString());
+        Assert.Contains(hooks.Reads, read => read.Handle.Equals(handle) && read.Prop == "length");
+        Assert.Contains(hooks.Reads, read => read.Handle.Equals(handle) && read.Prop == "0");
+        Assert.Contains(hooks.Reads, read => read.Handle.Equals(handle) && read.Prop == "nodeType");
+    }
+
+    [Fact]
     public void RefusedWriteThrowsTypeError()
     {
         var (interpreter, hooks, _) = Setup();
