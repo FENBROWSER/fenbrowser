@@ -98,6 +98,44 @@ namespace FenBrowser.Tests.Scripting
         }
 
         [Fact]
+        public async Task DispatchEventForElement_EventListenerCanAccessFreshClassList()
+        {
+            var baseUri = new Uri("https://example.com/input-classlist.html");
+            var document = new HtmlParser(
+                """
+                <html><body>
+                  <button id="target" class="a b">Target</button>
+                  <script>
+                    globalThis.__classListFromInput = "unset";
+                    document.getElementById("target").addEventListener("mousedown", function (event) {
+                      var list = event.currentTarget.classList;
+                      globalThis.__classListFromInput = list.contains("a") + ":" + (list instanceof DOMTokenList);
+                    });
+                  </script>
+                </body></html>
+                """,
+                baseUri).Parse();
+
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var target = document.GetElementById("target");
+            var dispatch = Task.Run(() => engine.DispatchEventForElement(
+                target,
+                "mousedown",
+                new BrowserDomEventInit { ClientX = 12, ClientY = 20, Button = 0 }));
+
+            var completed = await Task.WhenAny(dispatch, Task.Delay(TimeSpan.FromSeconds(5)));
+            Assert.Same(dispatch, completed);
+            Assert.True(await dispatch);
+            Assert.Equal("true:true", engine.Evaluate("globalThis.__classListFromInput")?.ToString());
+        }
+
+        [Fact]
         public async Task BrowserUiApis_ExposeNotificationPopupAndDialogContracts()
         {
             var baseUri = new Uri("file:///C:/tests/browser-ui-api.html");
