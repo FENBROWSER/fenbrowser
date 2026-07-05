@@ -11,6 +11,8 @@ namespace FenBrowser.Js.Bytecode;
 
 public sealed class BytecodeCompiler
 {
+    public int? ParserMaxRecursionDepth { get; init; }
+
     private sealed class LoopContext
     {
         public int ContinueTarget { get; set; }
@@ -117,7 +119,7 @@ public sealed class BytecodeCompiler
 
     public BytecodeFunction CompileScript(SourceText source)
     {
-        var program = JsParser.ParseScript(source!);
+        var program = JsParser.ParseScript(source!, inheritedStrictMode: false, ParserMaxRecursionDepth);
         _rawSource = source?.Text;
         // ECMA-262 Static Semantics: Early Error validation.
         new AstValidator().Validate(program, new Diagnostics.DiagnosticBag());
@@ -169,7 +171,7 @@ public sealed class BytecodeCompiler
         string? name,
         FunctionKind functionKind)
     {
-        var program = JsParser.ParseFunctionBody(body);
+        var program = JsParser.ParseFunctionBody(body, ParserMaxRecursionDepth);
         return CompileProgramCore(
             program,
             parameters,
@@ -603,7 +605,7 @@ public sealed class BytecodeCompiler
             functionDecl.ParameterBindings,
             out var prologueCount,
             functionDecl.ParameterDefaults);
-        var childCompiler = new BytecodeCompiler { _brandTokens = this._brandTokens };
+        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             functionDecl.Parameters,
@@ -1304,7 +1306,7 @@ public sealed class BytecodeCompiler
         // a class expression or function expression in a field initializer).
         // Instead, the caller for the direct class constructor passes
         // FunctionKind.Constructor via explicitKind.
-        var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames };
+        var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             fnExpr.Parameters,
@@ -3017,7 +3019,6 @@ public sealed class BytecodeCompiler
             case AssignmentExpressionNode assign when assign.Left is MemberExpressionNode member:
             {
                 ThrowIfPrivateMemberAccess(member);
-                var valueReg = CompileExpression(assign.Right);
                 if (member.Object is SuperExpressionNode)
                 {
                     var thisReg = AllocateRegister();
@@ -3025,41 +3026,44 @@ public sealed class BytecodeCompiler
                     if (member.Computed)
                     {
                         var keyReg = CompileExpression(member.PropertyExpression!);
+                        var valueReg = CompileExpression(assign.Right);
                         _instructions.Add(new Instruction(OpCode.SetElem, thisReg, keyReg, valueReg));
-                    }
-                    else
-                    {
-                        var nameIndex = GetOrCreatePropertyName(member.Property);
-                        _instructions.Add(new Instruction(OpCode.SetPropByName, thisReg, nameIndex, valueReg));
+                        return valueReg;
                     }
 
-                    return valueReg;
+                    var superValueReg = CompileExpression(assign.Right);
+                    var superNameIndex = GetOrCreatePropertyName(member.Property);
+                    _instructions.Add(new Instruction(OpCode.SetPropByName, thisReg, superNameIndex, superValueReg));
+                    return superValueReg;
                 }
 
                 var objectReg = CompileExpression(member.Object);
                 if (member.Computed)
                 {
                     var keyReg = CompileExpression(member.PropertyExpression!);
+                    var valueReg = CompileExpression(assign.Right);
                     _instructions.Add(new Instruction(OpCode.SetElem, objectReg, keyReg, valueReg));
+                    return valueReg;
                 }
-                else if (TryGetComputedFieldIndex(member.Property, out var fieldIdx2))
+
+                if (TryGetComputedFieldIndex(member.Property, out var fieldIdx2))
                 {
                     var keyReg = AllocateRegister();
                     _instructions.Add(new Instruction(OpCode.LoadFieldKey, keyReg, fieldIdx2, 0));
+                    var valueReg = CompileExpression(assign.Right);
                     _instructions.Add(new Instruction(OpCode.SetElem, objectReg, keyReg, valueReg));
-                }
-                else
-                {
-                    var nameIndex = GetOrCreatePropertyName(member.Property);
-                    OpCode setOp;
-                    if (IsPrivateMangled(member.Property))
-                        setOp = _compilingClassConstructor ? OpCode.DefinePrivateField : OpCode.SetPrivateField;
-                    else
-                        setOp = OpCode.SetPropByName;
-                    _instructions.Add(new Instruction(setOp, objectReg, nameIndex, valueReg));
+                    return valueReg;
                 }
 
-                return valueReg;
+                var memberValueReg = CompileExpression(assign.Right);
+                var nameIndex = GetOrCreatePropertyName(member.Property);
+                OpCode setOp;
+                if (IsPrivateMangled(member.Property))
+                    setOp = _compilingClassConstructor ? OpCode.DefinePrivateField : OpCode.SetPrivateField;
+                else
+                    setOp = OpCode.SetPropByName;
+                _instructions.Add(new Instruction(setOp, objectReg, nameIndex, memberValueReg));
+                return memberValueReg;
             }
             case AssignmentExpressionNode assign when assign.Left is ArrayLiteralExpressionNode or ObjectLiteralExpressionNode:
             {
@@ -3737,7 +3741,7 @@ public sealed class BytecodeCompiler
                 // ECMA-262 NamedEvaluation: an anonymous function expression adopts
                 // the binding/assignment name; a named expression keeps its own name.
                 var fnExprName = fnExpr.Name ?? ConsumeNameHint();
-                var childCompiler = new BytecodeCompiler { _brandTokens = this._brandTokens };
+                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens };
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     fnExpr.Parameters,
@@ -3793,7 +3797,7 @@ public sealed class BytecodeCompiler
                 // ECMA-262 NamedEvaluation: arrows are always anonymous, so they take
                 // the binding/assignment name when one is in scope, else the empty name.
                 var arrowName = ConsumeNameHint() ?? string.Empty;
-                var childCompiler = new BytecodeCompiler { _brandTokens = this._brandTokens };
+                var childCompiler = new BytecodeCompiler { ParserMaxRecursionDepth = ParserMaxRecursionDepth, _brandTokens = this._brandTokens };
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     arrow.Parameters,

@@ -859,6 +859,7 @@ public static class JitCompiler
             JsValueTag.Int32 => a.AsInt32() == b.AsInt32(),
             JsValueTag.Number => a.AsNumber() == b.AsNumber(),
             JsValueTag.String => string.Equals(a.AsString(), b.AsString(), StringComparison.Ordinal),
+            JsValueTag.HostObject => a.AsHostObjectHandle().Equals(b.AsHostObjectHandle()),
             _ => false,
         };
     }
