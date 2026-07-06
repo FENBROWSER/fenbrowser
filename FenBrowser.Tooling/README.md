@@ -133,7 +133,7 @@ Run upstream WPT through the external WebDriver harness and write a deterministi
 
 Defaults:
 - WPT root: `C:\Users\udayk\Videos\wpt`
-- Host binary: first existing `FenBrowser.Host\bin\Debug\net8.0\FenBrowser.Host.exe`, then Release.
+- Host binary: first existing `FenBrowser.Host\bin\Release\net10.0\FenBrowser.Host.exe`, then Debug.
 - WebDriver launcher: `scripts\wpt-webdriver-launcher.cmd`
 - Output: timestamped `Results\wpt_*`
 
@@ -154,16 +154,21 @@ Main options:
 - `--timeout-seconds <N>`: watchdog for the whole WPT run.
 - `--venv <path>`: WPT virtualenv path; defaults to `C:\Users\udayk\Videos\wpt\_venv3` when present.
 - `--skip-venv-setup`: use the specified virtualenv as-is.
+- `--manifest-update`: allow upstream WPT to refresh its manifest before discovery. By default the wrapper passes `--no-manifest-update` for deterministic repeat runs.
 - `--output-dir <path>`: result bundle directory.
 - `--tests <paths>`: comma-separated WPT paths. Trailing positional paths are also accepted.
 
 Outputs:
 - `wpt.raw.json`
 - `wpt.report.json`
+- `wpt.failures.json`, a deterministic manifest of unexpected test and subtest failures extracted from the raw mozlog.
 - `wpt.mach.log`
 - `wpt.stdout.log`
 - `wpt.stderr.log`
-- `wpt.summary.json`, including `failurePhase: "wpt_startup"` when the watchdog fires before WPT emits any `test_start` events.
+- `wpt.summary.json`, including `failurePhase: "wpt_startup"` when the watchdog fires before WPT emits any `test_start` events, plus unexpected test/subtest failure counts.
+
+The wrapper propagates the upstream WPT process exit code so missing tests,
+harness startup failures, and other runner-level errors fail local scripts and CI.
 
 ```powershell
 dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- wpt --tests acid/acid2/reftest.html --processes 1 --timeout-seconds 120

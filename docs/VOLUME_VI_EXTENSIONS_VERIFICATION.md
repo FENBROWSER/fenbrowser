@@ -30,15 +30,19 @@ This volume details the infrastructure used to extend the browser and verify its
 - `tools/wptrunner-fenbrowser` owns the FenBrowser product adapter as a WPT custom-product plugin registered through the documented `wptrunner.products` entry point. This keeps FenBrowser-specific integration outside WPT core unless upstream maintainers explicitly request built-in product support.
 - Before running `FenBrowser.Tooling wpt`, install the plugin into the Python environment used by the target WPT checkout, for example:
   - `C:\Users\udayk\Videos\wpt\_venv3\Scripts\python.exe -m pip install -e C:\Users\udayk\Videos\fenbrowser-test\tools\wptrunner-fenbrowser`
+- By default, the wrapper passes `--no-manifest-update` for deterministic repeat runs. Use `--manifest-update` when the local WPT checkout or manifest cache has changed and discovery needs the upstream manifest refresh path.
 - Every run writes a deterministic bundle under `Results/`:
   - `wpt.raw.json`
   - `wpt.report.json`
+  - `wpt.failures.json`
   - `wpt.mach.log`
   - `wpt.stdout.log`
   - `wpt.stderr.log`
   - `wpt.summary.json`
-- `wpt.summary.json` records the exact command inputs, binaries, duration, watchdog outcome, raw-log test counts, and final status buckets.
+- `wpt.failures.json` is derived from the raw mozlog and records unexpected test-level and subtest-level failures with test path, subtest name, status, expected status, message, stack, and browser process id when WPT reported one.
+- `wpt.summary.json` records the exact command inputs, binaries, duration, watchdog outcome, raw-log test counts, final status buckets, and unexpected test/subtest failure counts.
 - If the watchdog fires before any raw-log `test_start` event, the summary records `failurePhase: "wpt_startup"` so harness/bootstrap failures are not confused with browser test failures.
+- The wrapper propagates upstream WPT's process exit code so missing-test selections and harness-level failures fail automation instead of producing success with only a JSON-side error.
 - Use this wrapper for local and CI WPT slices so pass/fail/timeout claims are backed by machine-readable artifacts instead of terminal-only output.
 
 ### 1.4 FenJS Standalone Shell Smoke Surface (2026-05-21)

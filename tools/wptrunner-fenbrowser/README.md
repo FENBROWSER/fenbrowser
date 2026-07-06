@@ -21,7 +21,7 @@ Pass both the FenBrowser Host binary and the WebDriver launcher explicitly:
 python C:\Users\udayk\Videos\wpt\wpt run `
   --venv C:\Users\udayk\Videos\wpt\_venv3 `
   --skip-venv-setup `
-  --binary C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.Host\bin\Debug\net8.0\FenBrowser.Host.exe `
+  --binary C:\Users\udayk\Videos\fenbrowser-test\FenBrowser.Host\bin\Debug\net10.0\FenBrowser.Host.exe `
   --webdriver-binary C:\Users\udayk\Videos\fenbrowser-test\scripts\wpt-webdriver-launcher.cmd `
   fenbrowser /acid/acid2/reftest.html
 ```
