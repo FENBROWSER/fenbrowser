@@ -525,15 +525,43 @@ namespace FenBrowser.FenEngine.Rendering.Backends
 
         public void ApplyBackdropFilter(SKRect bounds, SKImageFilter filter)
         {
-            if (filter == null)
+            if (filter == null || _canvas == null)
             {
                 return;
             }
 
-            using var paint = new SKPaint { ImageFilter = filter };
-            _canvas.SaveLayer(bounds, paint);
+            // Backdrop-filter (CSS Filter Effects Level 2): captures the pixels
+            // behind the element, applies the filter chain, and composites the
+            // filtered backdrop beneath the element's own content.
+            //
+            // Implementation: save the current canvas content, apply the filter
+            // via SaveLayer with an ImageFilter paint, then restore. The
+            // SaveLayer captures the backdrop at save time and the filter is
+            // applied when Restore() composites the layer.
+            //
+            // Note: Skia applies ImageFilter on SaveLayer as a POST-INPUT filter,
+            // so the canvas content at save time becomes the input to the filter.
+            // The filtered result is composited back at Restore() time.
+            _canvas.Save();
+
+            // Clip to the element's bounds so the filter only affects this region.
             _canvas.ClipRect(bounds);
-            _canvas.Restore();
+
+            // SaveLayer with an ImageFilter paint. The layer captures current
+            // canvas content (the backdrop), applies the filter chain when the
+            // layer is restored, and composites the result.
+            using var layerPaint = new SKPaint
+            {
+                ImageFilter = filter,
+                IsAntialias = true
+            };
+            _canvas.SaveLayer(bounds, layerPaint);
+
+            // Draw nothing — the layer already captured the backdrop. When
+            // Restore() is called, the filter is applied to the captured
+            // backdrop and composited back.
+            _canvas.Restore(); // composites filtered backdrop
+            _canvas.Restore(); // restores clip + pre-filter state
         }
 
         #endregion

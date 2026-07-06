@@ -1326,6 +1326,46 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
+            // Downscale to target display size to save GPU memory. A 4000×3000
+            // image displayed at 200×150 wastes ~400× memory if stored at native
+            // resolution. Only downscale when both dimensions are specified and
+            // the decoded bitmap is meaningfully larger.
+            if (bitmap != null &&
+                !bitmap.IsNull &&
+                targetWidth.HasValue &&
+                targetHeight.HasValue &&
+                targetWidth.Value > 0 &&
+                targetHeight.Value > 0)
+            {
+                int tw = targetWidth.Value;
+                int th = targetHeight.Value;
+                if (bitmap.Width > tw * 2 || bitmap.Height > th * 2)
+                {
+                    try
+                    {
+                        float scaleX = (float)tw / bitmap.Width;
+                        float scaleY = (float)th / bitmap.Height;
+                        float scale = Math.Min(scaleX, scaleY);
+                        int newW = Math.Max(1, (int)(bitmap.Width * scale));
+                        int newH = Math.Max(1, (int)(bitmap.Height * scale));
+
+                        var resized = bitmap.Resize(new SKSizeI(newW, newH), new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear));
+                        if (resized != null && !resized.IsNull)
+                        {
+                            bitmap.Dispose();
+                            bitmap = resized;
+                        }
+                    }
+                    catch (Exception resizeEx)
+                    {
+                        EngineLogCompat.Debug(
+                            $"[ImageLoader] Resize-to-target failed for {url}: {resizeEx.Message}",
+                            LogCategory.Rendering);
+                        // Keep the original bitmap on resize failure
+                    }
+                }
+            }
+
             return bitmap;
         }
 
