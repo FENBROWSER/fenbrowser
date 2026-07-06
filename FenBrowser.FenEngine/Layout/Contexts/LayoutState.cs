@@ -58,6 +58,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// <summary>
         /// Current scroll offset of the nearest scroll container (or viewport).
         /// Used by sticky positioning to compute the stuck/unstuck constraint.
+        /// For nested scroll containers, this reflects the nearest ancestor with
+        /// overflow != visible (hidden/scroll/auto/clip).
         /// </summary>
         public float ScrollOffsetX;
 
@@ -66,6 +68,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// Used by sticky positioning to compute the stuck/unstuck constraint.
         /// </summary>
         public float ScrollOffsetY;
+
+        /// <summary>
+        /// The nearest ancestor layout box that establishes a scroll container
+        /// (overflow != visible). May be null when the viewport is the only
+        /// scroll container. Used by sticky positioning to find the scroll port.
+        /// </summary>
+        public FenBrowser.FenEngine.Layout.Tree.LayoutBox ScrollContainer;
 
         public LayoutState(SKSize available, float cbWidth, float cbHeight, float vpWidth, float vpHeight, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {

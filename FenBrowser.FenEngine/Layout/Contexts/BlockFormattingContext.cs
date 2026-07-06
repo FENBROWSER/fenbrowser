@@ -1631,7 +1631,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 FloatManager = floatManager,
                 FloatOriginX = floatOriginX,
-                FloatOriginY = floatOriginY
+                FloatOriginY = floatOriginY,
+                ScrollOffsetX = state.ScrollOffsetX,
+                ScrollOffsetY = state.ScrollOffsetY,
+                ScrollContainer = state.ScrollContainer
             };
         }
 
