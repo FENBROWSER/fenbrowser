@@ -503,6 +503,21 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
             }
 
+            // CSS text-overflow: ellipsis (CSS Overflow 3 §5). After line construction,
+            // truncate overflowing lines and append the ellipsis glyph (U+2026).
+            // Only applies when overflow is hidden/clip/scroll/auto — visible overflow
+            // does not trigger ellipsis.
+            ApplyTextOverflow(
+                box, lines, textBoxLines, contentLimit, isShrinkToFitProbe,
+                hasFloatAvoidance ? effectiveContentLimit : contentLimit);
+
+            // Remove any empty segments left by text-overflow truncation
+            foreach (var kvp in textBoxLines)
+            {
+                kvp.Value.RemoveAll(seg =>
+                    string.IsNullOrEmpty(seg.Text) && seg.Width <= 0f);
+            }
+
             // Calculate line Y positions
             var textAlign = box.ComputedStyle?.TextAlign ?? SKTextAlign.Left;
             float curY = 0;
@@ -2455,6 +2470,287 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float adjustedLimit = Math.Max(0f, contentLimit - leftIntrusion - rightIntrusion);
 
             return (adjustedStartX, adjustedLimit);
+        }
+
+        /// <summary>
+        /// Applies CSS text-overflow: ellipsis (CSS Overflow 3 §5) to lines that
+        /// exceed the content limit. Truncates text segments and appends the
+        /// ellipsis glyph (U+2026) at the truncation point. Only active when
+        /// overflow is non-visible (hidden/scroll/auto/clip).
+        /// </summary>
+        private void ApplyTextOverflow(
+            LayoutBox container,
+            List<LineBox> lines,
+            Dictionary<TextLayoutBox, List<TextLineInfo>> textBoxLines,
+            float contentLimit,
+            bool isShrinkToFitProbe,
+            float effectiveLineLimit)
+        {
+            if (isShrinkToFitProbe || lines.Count == 0 || textBoxLines.Count == 0)
+            {
+                return;
+            }
+
+            string overflow = container.ComputedStyle?.Overflow?.Trim().ToLowerInvariant() ?? "visible";
+            string textOverflow = container.ComputedStyle?.TextOverflow?.Trim().ToLowerInvariant() ?? "clip";
+
+            // text-overflow only applies when overflow is non-visible per spec
+            if (overflow == "visible" || string.IsNullOrEmpty(textOverflow) || textOverflow == "clip")
+            {
+                return;
+            }
+
+            bool isEllipsis = textOverflow == "ellipsis" || textOverflow == "ellipsis-word";
+            if (!isEllipsis)
+            {
+                return;
+            }
+
+            float lineLimit = effectiveLineLimit;
+            if (lineLimit <= 0f || float.IsInfinity(lineLimit))
+            {
+                lineLimit = contentLimit;
+            }
+
+            if (lineLimit <= 0f || float.IsInfinity(lineLimit))
+            {
+                return;
+            }
+
+            // Measure the ellipsis glyph once. Use the font from the first text box
+            // on each line (the line's dominant font).
+            const string ellipsisChar = "…"; // …
+
+            for (int lineIdx = 0; lineIdx < lines.Count; lineIdx++)
+            {
+                var line = lines[lineIdx];
+                if (line.Width <= lineLimit + 0.5f || line.Items.Count == 0)
+                {
+                    continue;
+                }
+
+                // Find the primary font for this line from its text items
+                CssComputed lineFontStyle = null;
+                foreach (var item in line.Items)
+                {
+                    if (item is TextLayoutBox textBox && textBox.ComputedStyle != null)
+                    {
+                        lineFontStyle = textBox.ComputedStyle;
+                        break;
+                    }
+                }
+
+                if (lineFontStyle == null)
+                {
+                    continue;
+                }
+
+                float ellipsisWidth = MeasureString(ellipsisChar, lineFontStyle).Width;
+                if (ellipsisWidth <= 0f)
+                {
+                    continue;
+                }
+
+                float availableForText = lineLimit - ellipsisWidth;
+                if (availableForText <= 0f)
+                {
+                    // Line is too narrow — replace entire content with ellipsis
+                    TruncateLineToEllipsisOnly(textBoxLines, lineIdx, ellipsisChar, ellipsisWidth);
+                    line.Width = ellipsisWidth;
+                    continue;
+                }
+
+                // Walk the line's text segments in document order and truncate
+                // from the end until the remaining text + ellipsis fits.
+                float accumulatedWidth = 0f;
+                float truncateAt = availableForText;
+
+                // Group segments by TextLayoutBox for truncation
+                var lineSegments = new List<(TextLayoutBox textBox, TextLineInfo segment, int globalIdx)>();
+                foreach (var kvp in textBoxLines)
+                {
+                    foreach (var seg in kvp.Value)
+                    {
+                        if (seg.LineIndex == lineIdx)
+                        {
+                            lineSegments.Add((kvp.Key, seg, 0));
+                        }
+                    }
+                }
+
+                // Sort by X position (document order)
+                lineSegments.Sort((a, b) => a.segment.X.CompareTo(b.segment.X));
+
+                // Find truncation point: first segment that exceeds the limit
+                bool didTruncate = false;
+                float runningWidth = 0f;
+                for (int i = 0; i < lineSegments.Count; i++)
+                {
+                    var seg = lineSegments[i].segment;
+                    if (runningWidth + seg.Width > truncateAt)
+                    {
+                        // Truncate this segment and remove all subsequent ones
+                        float remaining = truncateAt - runningWidth;
+                        if (remaining > 0f && seg.Text.Length > 1)
+                        {
+                            // Try to fit partial text
+                            string truncatedText = TruncateTextToFit(
+                                seg.Text, lineFontStyle, remaining);
+                            seg.Text = truncatedText;
+                            seg.Width = MeasureString(truncatedText, lineFontStyle).Width;
+                            runningWidth += seg.Width;
+                        }
+                        else
+                        {
+                            // Remove this segment entirely — mark width as 0
+                            // and text as empty; it will be filtered out downstream.
+                            seg.Width = 0f;
+                            seg.Text = string.Empty;
+                        }
+
+                        // Mark all subsequent segments on this line as removed
+                        for (int j = i + 1; j < lineSegments.Count; j++)
+                        {
+                            lineSegments[j].segment.Width = 0f;
+                            lineSegments[j].segment.Text = string.Empty;
+                        }
+
+                        didTruncate = true;
+                        break;
+                    }
+
+                    runningWidth += seg.Width;
+                }
+
+                if (didTruncate)
+                {
+                    // Add ellipsis as a new segment at the truncation point.
+                    // Attach it to the last visible TextLayoutBox on this line.
+                    TextLayoutBox anchor = null;
+                    for (int i = lineSegments.Count - 1; i >= 0; i--)
+                    {
+                        if (lineSegments[i].segment.Width > 0f)
+                        {
+                            anchor = lineSegments[i].textBox;
+                            break;
+                        }
+                    }
+
+                    if (anchor == null && lineSegments.Count > 0)
+                    {
+                        anchor = lineSegments[0].textBox;
+                    }
+
+                    if (anchor != null)
+                    {
+                        var ellipsisInfo = new TextLineInfo
+                        {
+                            Text = ellipsisChar,
+                            X = runningWidth,
+                            Width = ellipsisWidth,
+                            Height = 0f, // will be resolved by line metrics
+                            Baseline = 0f,
+                            LineIndex = lineIdx
+                        };
+
+                        if (!textBoxLines.TryGetValue(anchor, out var anchorSegs))
+                        {
+                            anchorSegs = new List<TextLineInfo>();
+                            textBoxLines[anchor] = anchorSegs;
+                        }
+
+                        anchorSegs.Add(ellipsisInfo);
+                        runningWidth += ellipsisWidth;
+                    }
+
+                    line.Width = Math.Min(lineLimit, runningWidth);
+                }
+            }
+        }
+
+        private void TruncateLineToEllipsisOnly(
+            Dictionary<TextLayoutBox, List<TextLineInfo>> textBoxLines,
+            int lineIdx,
+            string ellipsisChar,
+            float ellipsisWidth)
+        {
+            // Remove all text segments on this line
+            foreach (var kvp in textBoxLines)
+            {
+                kvp.Value.RemoveAll(seg => seg.LineIndex == lineIdx);
+            }
+
+            // Find a text box to carry the ellipsis
+            TextLayoutBox anchor = null;
+            foreach (var kvp in textBoxLines)
+            {
+                if (kvp.Value.Count > 0 || kvp.Key.ComputedStyle != null)
+                {
+                    anchor = kvp.Key;
+                    break;
+                }
+            }
+
+            if (anchor != null)
+            {
+                var ellipsisInfo = new TextLineInfo
+                {
+                    Text = ellipsisChar,
+                    X = 0f,
+                    Width = ellipsisWidth,
+                    Height = 0f,
+                    Baseline = 0f,
+                    LineIndex = lineIdx
+                };
+
+                if (textBoxLines.TryGetValue(anchor, out var segs))
+                {
+                    segs.Add(ellipsisInfo);
+                }
+                else
+                {
+                    textBoxLines[anchor] = new List<TextLineInfo> { ellipsisInfo };
+                }
+            }
+        }
+
+        /// <summary>
+        /// Truncates text to fit within the given pixel width by removing characters
+        /// from the end and appending the ellipsis. Uses binary search for efficiency.
+        /// </summary>
+        private string TruncateTextToFit(string text, CssComputed style, float maxWidth)
+        {
+            if (string.IsNullOrEmpty(text) || maxWidth <= 0f)
+            {
+                return string.Empty;
+            }
+
+            // Quick check: does the full text fit?
+            float fullWidth = MeasureString(text, style).Width;
+            if (fullWidth <= maxWidth)
+            {
+                return text;
+            }
+
+            // Binary search for the longest prefix that fits
+            int lo = 1;
+            int hi = text.Length;
+            while (lo < hi)
+            {
+                int mid = (lo + hi + 1) / 2;
+                string prefix = text.Substring(0, mid);
+                float prefixWidth = MeasureString(prefix, style).Width;
+                if (prefixWidth <= maxWidth)
+                {
+                    lo = mid;
+                }
+                else
+                {
+                    hi = mid - 1;
+                }
+            }
+
+            return text.Substring(0, lo);
         }
 
     }
