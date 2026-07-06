@@ -149,6 +149,20 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
         }
 
         /// <summary>
+        /// Translates a subtree by (dx, dy) without resolving relative offsets.
+        /// Used by sticky positioning to apply the sticky constraint delta.
+        /// </summary>
+        public static void TranslateSubtree(LayoutBox box, float dx, float dy)
+        {
+            if (box?.Geometry == null)
+            {
+                return;
+            }
+
+            ShiftSubtree(box, dx, dy);
+        }
+
+        /// <summary>
         /// Resolves the first available text baseline for a layout box relative to its margin-box top.
         /// Returns false when no text-backed baseline can be resolved.
         /// </summary>

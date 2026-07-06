@@ -55,6 +55,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// </summary>
         public float FloatOriginY;
 
+        /// <summary>
+        /// Current scroll offset of the nearest scroll container (or viewport).
+        /// Used by sticky positioning to compute the stuck/unstuck constraint.
+        /// </summary>
+        public float ScrollOffsetX;
+
+        /// <summary>
+        /// Current scroll offset of the nearest scroll container (or viewport).
+        /// Used by sticky positioning to compute the stuck/unstuck constraint.
+        /// </summary>
+        public float ScrollOffsetY;
+
         public LayoutState(SKSize available, float cbWidth, float cbHeight, float vpWidth, float vpHeight, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             AvailableSize = available;
@@ -66,6 +78,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             FloatManager = null;
             FloatOriginX = 0f;
             FloatOriginY = 0f;
+            ScrollOffsetX = 0f;
+            ScrollOffsetY = 0f;
         }
 
         public LayoutState Clone()

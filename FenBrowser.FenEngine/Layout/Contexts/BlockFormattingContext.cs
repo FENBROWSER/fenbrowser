@@ -371,8 +371,27 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
 
                     PositionInFlowBlockChild(child, childX, yOffset + childY, childState);
-                    
-                    // Advance cursor by CONTENT (BorderBox) height
+
+                    // position:sticky — apply sticky constraint after normal-flow
+                    // positioning. The sticky offset shifts the visual position but
+                    // NOT the flow position (siblings use the static position).
+                    string childPosition = LayoutStyleResolver.GetEffectivePosition(child.ComputedStyle);
+                    if (string.Equals(childPosition, "sticky", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var stickyOffset = LayoutPositioningLogic.ResolveStickyOffset(
+                            child,
+                            blockBox.Geometry,
+                            state.ScrollOffsetY,
+                            state.ScrollOffsetX);
+
+                        if (Math.Abs(stickyOffset.X) > 0.01f || Math.Abs(stickyOffset.Y) > 0.01f)
+                        {
+                            LayoutBoxOps.TranslateSubtree(child, stickyOffset.X, stickyOffset.Y);
+                        }
+                    }
+
+                    // Advance cursor by CONTENT (BorderBox) height — uses the
+                    // static (pre-sticky) position so siblings are unaffected.
                     currentY = childY + child.Geometry.BorderBox.Height;
                     
                     lastMarginBottom = childMarginBottom;

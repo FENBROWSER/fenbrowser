@@ -723,5 +723,119 @@ namespace FenBrowser.FenEngine.Layout
                 geometry.BorderBox.Right + (float)m.Right,
                 geometry.BorderBox.Bottom + (float)m.Bottom);
         }
+
+        /// <summary>
+        /// Computes the sticky position offset for a position:sticky element
+        /// (CSS Positioned Layout Level 3 §3). The element's final position is
+        /// the normal-flow position clamped within the scroll-port-relative
+        /// inset constraints.
+        ///
+        /// Formula (Y axis, top-sticky):
+        ///   pos = normalFlowY
+        ///   if top is not auto: pos = max(pos, scrollOffset + top)
+        ///   if bottom is not auto: pos = min(pos, scrollOffset + containerHeight - elementHeight - bottom)
+        ///
+        /// Returns the delta to apply to the element's normal-flow position.
+        /// </summary>
+        public static SKPoint ResolveStickyOffset(
+            LayoutBox box,
+            BoxModel containerGeometry,
+            float scrollOffsetY,
+            float scrollOffsetX = 0f)
+        {
+            if (box?.ComputedStyle == null || box.Geometry == null || containerGeometry == null)
+            {
+                return SKPoint.Empty;
+            }
+
+            var style = box.ComputedStyle;
+            var effectivePosition = LayoutStyleResolver.GetEffectivePosition(style);
+            if (!string.Equals(effectivePosition, "sticky", StringComparison.OrdinalIgnoreCase))
+            {
+                return SKPoint.Empty;
+            }
+
+            float containerWidth = containerGeometry.ContentBox.Width;
+            float containerHeight = containerGeometry.ContentBox.Height;
+            float elementWidth = box.Geometry.MarginBox.Width;
+            float elementHeight = box.Geometry.MarginBox.Height;
+
+            // The element's current position is its normal-flow position
+            // (already set by the formatting context). Relative to the
+            // containing block's content box.
+            float normalFlowX = box.Geometry.MarginBox.Left - containerGeometry.ContentBox.Left;
+            float normalFlowY = box.Geometry.MarginBox.Top - containerGeometry.ContentBox.Top;
+
+            float offsetX = 0f;
+            float offsetY = 0f;
+
+            // Y-axis constraint (top / bottom)
+            bool hasTop = style.Top.HasValue || style.TopPercent.HasValue;
+            bool hasBottom = style.Bottom.HasValue || style.BottomPercent.HasValue;
+
+            if (hasTop)
+            {
+                float topInset = ResolveInsetValue(style.Top, style.TopPercent, containerHeight);
+                float stuckTop = scrollOffsetY + topInset;
+                if (stuckTop > normalFlowY)
+                {
+                    offsetY = stuckTop - normalFlowY;
+                }
+            }
+
+            if (hasBottom)
+            {
+                float bottomInset = ResolveInsetValue(style.Bottom, style.BottomPercent, containerHeight);
+                float maxY = scrollOffsetY + containerHeight - elementHeight - bottomInset;
+                if (maxY < normalFlowY + offsetY)
+                {
+                    offsetY = maxY - normalFlowY;
+                }
+            }
+
+            // X-axis constraint (left / right)
+            bool hasLeft = style.Left.HasValue || style.LeftPercent.HasValue;
+            bool hasRight = style.Right.HasValue || style.RightPercent.HasValue;
+
+            if (hasLeft)
+            {
+                float leftInset = ResolveInsetValue(style.Left, style.LeftPercent, containerWidth);
+                float stuckLeft = scrollOffsetX + leftInset;
+                if (stuckLeft > normalFlowX)
+                {
+                    offsetX = stuckLeft - normalFlowX;
+                }
+            }
+
+            if (hasRight)
+            {
+                float rightInset = ResolveInsetValue(style.Right, style.RightPercent, containerWidth);
+                float maxX = scrollOffsetX + containerWidth - elementWidth - rightInset;
+                if (maxX < normalFlowX + offsetX)
+                {
+                    offsetX = maxX - normalFlowX;
+                }
+            }
+
+            return new SKPoint(offsetX, offsetY);
+        }
+
+        private static float ResolveInsetValue(
+            double? pixelValue,
+            double? percentValue,
+            float containerSize)
+        {
+            if (pixelValue.HasValue)
+            {
+                return (float)pixelValue.Value;
+            }
+
+            if (percentValue.HasValue && containerSize > 0f)
+            {
+                return (float)(percentValue.Value / 100.0 * containerSize);
+            }
+
+            return 0f;
+        }
     }
 }
