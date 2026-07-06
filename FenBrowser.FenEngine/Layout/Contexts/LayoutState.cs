@@ -34,6 +34,27 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// </summary>
         public FenBrowser.Core.Deadlines.FrameDeadline Deadline { get; set; }
 
+        /// <summary>
+        /// The nearest ancestor BFC's float manager, if this box participates in an
+        /// inline formatting context that should avoid floats. Null for independent
+        /// formatting contexts (flex, grid, nested BFC, etc.).
+        /// </summary>
+        public FloatManager FloatManager;
+
+        /// <summary>
+        /// BFC-relative X offset of this IFC container's content-box left edge.
+        /// Used with FloatManager to compute horizontal float intrusions per line.
+        /// Only meaningful when FloatManager is non-null.
+        /// </summary>
+        public float FloatOriginX;
+
+        /// <summary>
+        /// BFC-relative Y offset of this IFC container's content-box top. Used with
+        /// FloatManager to compute per-line float intrusions. Only meaningful when
+        /// FloatManager is non-null.
+        /// </summary>
+        public float FloatOriginY;
+
         public LayoutState(SKSize available, float cbWidth, float cbHeight, float vpWidth, float vpHeight, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             AvailableSize = available;
@@ -42,6 +63,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             ViewportWidth = vpWidth;
             ViewportHeight = vpHeight;
             Deadline = deadline;
+            FloatManager = null;
+            FloatOriginX = 0f;
+            FloatOriginY = 0f;
         }
 
         public LayoutState Clone()

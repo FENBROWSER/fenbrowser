@@ -139,6 +139,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float startX = (float)box.Geometry.Padding.Left + (float)box.Geometry.Border.Left;
             float startY = (float)box.Geometry.Padding.Top + (float)box.Geometry.Border.Top;
 
+            // Float avoidance: when this IFC participates in an ancestor BFC with
+            // active floats, each line box must shorten around float intrusions
+            // (CSS 2.1 §9.5). The FloatManager and origin offsets are threaded
+            // through LayoutState by the parent BFC.
+            bool hasFloatAvoidance = state.FloatManager != null && state.FloatManager.HasFloats;
+            float floatOriginX = state.FloatManager != null
+                ? state.FloatOriginX + startX
+                : 0f;
+
             var lines = new List<LineBox>();
             var currentLine = new LineBox();
             lines.Add(currentLine);
@@ -164,6 +173,45 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             float curX = 0;
             bool previousEndedWithSpace = true;
+
+            // CSS 2.1 §9.5: each line box must shorten around floats in the
+            // ancestor BFC. Compute the float-adjusted content limit and the
+            // left-edge offset for the first line.
+            float effectiveContentLimit = contentLimit;
+            float floatLineStartAdjust = 0f;
+            if (hasFloatAvoidance)
+            {
+                float accumulatedLineHeights = 0f;
+                var (floatStartX, floatLimit) = ResolveFloatAdjustedLineSpace(
+                    state.FloatManager,
+                    state.FloatOriginY + startY + accumulatedLineHeights,
+                    GetStyleFontInfo(box.ComputedStyle ?? new FenBrowser.Core.Css.CssComputed()).LineHeight,
+                    floatOriginX,
+                    contentLimit,
+                    state.ContainingBlockWidth);
+                floatLineStartAdjust = floatStartX;
+                effectiveContentLimit = floatLimit;
+                curX = floatStartX;
+            }
+
+            // Local helper: recompute float-adjusted line space when advancing to
+            // the next line. accumulatedLineHeights is captured from the outer scope
+            // and updated as lines are committed.
+            float accumulatedLineHeightsForFloat = 0f;
+            System.Action recomputeFloatAdjustedLine = () =>
+            {
+                if (!hasFloatAvoidance) return;
+                accumulatedLineHeightsForFloat += currentLine.Height;
+                var (floatStartX, floatLimit) = ResolveFloatAdjustedLineSpace(
+                    state.FloatManager,
+                    state.FloatOriginY + startY + accumulatedLineHeightsForFloat,
+                    Math.Max(1f, GetStyleFontInfo(box.ComputedStyle ?? new FenBrowser.Core.Css.CssComputed()).LineHeight),
+                    floatOriginX,
+                    contentLimit,
+                    state.ContainingBlockWidth);
+                floatLineStartAdjust = floatStartX;
+                effectiveContentLimit = floatLimit;
+            };
 
             foreach (var child in flattenedChildren)
             {
@@ -193,9 +241,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             var segInfo = GetStyleFontInfo(textBox.ComputedStyle);
                             currentLine.Height = Math.Max(currentLine.Height, segInfo.LineHeight);
                             currentLine.IncludeMetrics(segInfo.Baseline, segInfo.Descent);
+                            recomputeFloatAdjustedLine();
                             currentLine = new LineBox();
                             lines.Add(currentLine);
-                            curX = 0;
+                            curX = floatLineStartAdjust;
                             previousEndedWithSpace = true;
                         }
 
@@ -240,12 +289,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     if (suppressSoftWrap)
                     {
                         float segmentWidth = MeasureString(fullText, textBox.ComputedStyle).Width;
-                        if (curX + segmentWidth > contentLimit && curX > 0)
+                        if (curX + segmentWidth > effectiveContentLimit && curX > 0)
                         {
                             currentLine.Height = Math.Max(currentLine.Height, lineHeight);
+                            recomputeFloatAdjustedLine();
                             currentLine = new LineBox();
                             lines.Add(currentLine);
-                            curX = 0;
+                            curX = floatLineStartAdjust;
                         }
 
                         textBoxLines[textBox].Add(new TextLineInfo
@@ -270,7 +320,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     if (!isShrinkToFitProbe)
                     {
                         float wholeWidth = MeasureString(fullText, textBox.ComputedStyle).Width;
-                        if (curX + wholeWidth <= contentLimit + 0.5f)
+                        if (curX + wholeWidth <= effectiveContentLimit + 0.5f)
                         {
                             textBoxLines[textBox].Add(new TextLineInfo
                             {
@@ -337,7 +387,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         string word = fullText.Substring(startIdx, endIdx - startIdx);
                         float wordWidth = MeasureString(word, textBox.ComputedStyle).Width;
 
-                        if (curX + wordWidth > contentLimit && curX > 0)
+                        if (curX + wordWidth > effectiveContentLimit && curX > 0)
                         {
                             // Save segment for current line before breaking
                             if (startIdx > currentLineStartIdx)
@@ -412,11 +462,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     // Atomic Inline (inline-block, images, inputs, etc.)
                     nonTextChildren.Add(child);
                     SKSize childSize = MeasureInlineChild(child, state);
-                    if (curX + childSize.Width > contentLimit && curX > 0)
+                    if (curX + childSize.Width > effectiveContentLimit && curX > 0)
                     {
+                        recomputeFloatAdjustedLine();
                         currentLine = new LineBox();
                         lines.Add(currentLine);
-                        curX = 0;
+                        curX = floatLineStartAdjust;
                     }
 
                     if (child.Geometry == null) child.Geometry = new BoxModel();
@@ -463,8 +514,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 float xOffset = 0;
                 if (!isShrinkToFitProbe)
                 {
-                    if (textAlign == SKTextAlign.Center) xOffset = (contentLimit - line.Width) / 2f;
-                    else if (textAlign == SKTextAlign.Right) xOffset = (contentLimit - line.Width);
+                    float alignLimit = hasFloatAvoidance ? effectiveContentLimit : contentLimit;
+                    if (textAlign == SKTextAlign.Center) xOffset = (alignLimit - line.Width) / 2f;
+                    else if (textAlign == SKTextAlign.Right) xOffset = (alignLimit - line.Width);
                 }
 
                 if (xOffset < 0f)
@@ -2371,7 +2423,40 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             ApplyMinMaxConstraints(box.ComputedStyle, state, ref constrainedWidth, ref constrainedHeight);
             return constrainedWidth;
         }
-        
+
+        /// <summary>
+        /// Computes the effective line width after subtracting float intrusions
+        /// (CSS 2.1 §9.5). Returns (adjustedStartX, adjustedContentLimit) where
+        /// adjustedStartX may be > 0 when a left float pushes the line rightward,
+        /// and adjustedContentLimit is the remaining inline space after both
+        /// left and right float intrusions are accounted for.
+        /// </summary>
+        private static (float startX, float contentLimit) ResolveFloatAdjustedLineSpace(
+            FloatManager floatManager,
+            float lineBfcY,
+            float lineEstimatedHeight,
+            float floatOriginX,
+            float contentLimit,
+            float containerWidth)
+        {
+            if (floatManager == null || !floatManager.HasFloats)
+            {
+                return (0f, contentLimit);
+            }
+
+            var space = floatManager.GetAvailableSpace(lineBfcY, Math.Max(1f, lineEstimatedHeight), containerWidth);
+            float bfcLineLeft = floatOriginX;
+            float bfcLineRight = floatOriginX + contentLimit;
+
+            float leftIntrusion = Math.Max(0f, space.LeftOffset - bfcLineLeft);
+            float rightIntrusion = Math.Max(0f, bfcLineRight - (containerWidth - space.RightOffset));
+
+            float adjustedStartX = leftIntrusion;
+            float adjustedLimit = Math.Max(0f, contentLimit - leftIntrusion - rightIntrusion);
+
+            return (adjustedStartX, adjustedLimit);
+        }
+
     }
 }
 

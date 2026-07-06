@@ -258,8 +258,24 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 else
                 {
                     // Normal Flow Block
-                    var childState = CreateChildState(childFlowWidth, state, definiteContentHeightForChildren);
-                    FormattingContext.Resolve(child).Layout(child, childState);
+                    // Compute margin before layout so FloatOriginY is available for
+                    // child IFCs that need to query float intrusions per line.
+                    float childMarginTop = (float)(child.ComputedStyle?.Margin.Top ?? 0.0);
+                    float childMarginBottom = (float)(child.ComputedStyle?.Margin.Bottom ?? 0.0);
+
+                    // MARGIN COLLAPSING
+                    float collapsedMargin;
+                    if (isFirstChild)
+                    {
+                        collapsedMargin = parentPreventsTopCollapse ? childMarginTop : 0f;
+                    }
+                    else
+                    {
+                        collapsedMargin = MarginCollapseComputer.Collapse(lastMarginBottom, childMarginTop);
+                    }
+
+                    float estimatedChildY = currentY + collapsedMargin;
+                    float floatOriginY = yOffset + estimatedChildY;
 
                     string breakBefore = NormalizeBreakDirective(child.ComputedStyle?.PageBreakBefore);
                     string breakAfter = NormalizeBreakDirective(child.ComputedStyle?.PageBreakAfter);
@@ -270,35 +286,21 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         {
                             maxBottom = Math.Max(maxBottom, currentY);
                         }
+                        // Recompute after fragment push
+                        estimatedChildY = currentY + collapsedMargin;
+                        floatOriginY = yOffset + estimatedChildY;
                     }
-                    
-                    float childMarginTop = (float)child.Geometry.Margin.Top;
-                    float childMarginBottom = (float)child.Geometry.Margin.Bottom;
+
+                    var childState = CreateChildState(childFlowWidth, state, definiteContentHeightForChildren,
+                        floatManager, xOffset, floatOriginY);
+                    FormattingContext.Resolve(child).Layout(child, childState);
+
                     if (TryResolveCollapsedThroughMargin(child, out float collapsedThroughMargin))
                     {
                         childMarginBottom = collapsedThroughMargin;
                     }
 
-                    // MARGIN COLLAPSING
-                    float collapsedMargin = 0;
-                    if (isFirstChild)
-                    {
-                        if (parentPreventsTopCollapse)
-                        {
-                            collapsedMargin = childMarginTop;
-                        }
-                        else
-                        {
-                            // Bubbles up to parent - child sits at 0 relative to content box
-                            collapsedMargin = 0;
-                            // (We should ideally update parent's bubbled margin, but BFC usually handles it)
-                        }
-                    }
-                    else
-                    {
-                        collapsedMargin = MarginCollapseComputer.Collapse(lastMarginBottom, childMarginTop);
-                    }
-
+                    // Advance cursor by the collapsed margin
                     currentY += collapsedMargin;
 
                     float childY = currentY;
@@ -1593,7 +1595,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return height.Value;
         }
 
-        private LayoutState CreateChildState(float contentWidth, LayoutState state, float definiteContentHeight = float.NaN)
+        private static LayoutState CreateChildState(float contentWidth, LayoutState state, float definiteContentHeight = float.NaN,
+            FloatManager floatManager = null, float floatOriginX = 0f, float floatOriginY = 0f)
         {
              float childAvailableHeight = float.IsFinite(definiteContentHeight) && definiteContentHeight > 0f
                 ? definiteContentHeight
@@ -1605,7 +1608,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 state.ViewportWidth,
                 state.ViewportHeight,
                 state.Deadline
-            );
+            )
+            {
+                FloatManager = floatManager,
+                FloatOriginX = floatOriginX,
+                FloatOriginY = floatOriginY
+            };
         }
 
         private static void PositionInFlowBlockChild(LayoutBox child, float targetMarginLeft, float targetBorderTop, LayoutState state)
