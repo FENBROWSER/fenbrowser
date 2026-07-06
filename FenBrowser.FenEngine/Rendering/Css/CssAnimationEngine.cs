@@ -268,10 +268,10 @@ namespace FenBrowser.FenEngine.Rendering
                     foreach (var anim in kvp.Value)
                     {
                         double progress = ComputeScrollDrivenProgress(element, style, animTimeline, scrollOffset, scrollMax);
-                        ApplyKeyframeAt(anim, progress * 100);
-                        ApplyToOverlay(element, anim.ComputedProperties);
-                        element.MarkDirty(DetermineInvalidationKind(anim.ComputedProperties.Keys));
-                        toNotify.Add(element);
+                        if (ApplyAnimationFrame(element, anim, progress * 100))
+                        {
+                            toNotify.Add(element);
+                        }
                     }
                 }
             }
@@ -1006,10 +1006,10 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             if (anim.FillMode == "backwards" || anim.FillMode == "both")
                             {
-                                ApplyKeyframeAt(anim, 0);
-                                ApplyToOverlay(element, anim.ComputedProperties);
-                                toNotify.Add(element);
-                                element.MarkDirty(DetermineInvalidationKind(anim.ComputedProperties.Keys));
+                                if (ApplyAnimationFrame(element, anim, 0))
+                                {
+                                    toNotify.Add(element);
+                                }
                             }
                             continue;
                         }
@@ -1024,10 +1024,10 @@ namespace FenBrowser.FenEngine.Rendering
                             anim.IsComplete = true;
                             if (anim.FillMode == "forwards" || anim.FillMode == "both")
                             {
-                                ApplyKeyframeAt(anim, 100);
-                                ApplyToOverlay(element, anim.ComputedProperties);
-                                toNotify.Add(element);
-                                element.MarkDirty(DetermineInvalidationKind(anim.ComputedProperties.Keys));
+                                if (ApplyAnimationFrame(element, anim, 100))
+                                {
+                                    toNotify.Add(element);
+                                }
                             }
                             toRemove.Add((element, anim));
                             OnAnimationEnd?.Invoke(element, anim.AnimationName);
@@ -1045,11 +1045,10 @@ namespace FenBrowser.FenEngine.Rendering
                         
                         if (reverse) progress = 1 - progress;
                         progress = ApplyEasing(progress, anim.TimingFunction);
-                        ApplyKeyframeAt(anim, progress * 100);
-                        
-                        ApplyToOverlay(element, anim.ComputedProperties);
-                        element.MarkDirty(DetermineInvalidationKind(anim.ComputedProperties.Keys));
-                        toNotify.Add(element);
+                        if (ApplyAnimationFrame(element, anim, progress * 100))
+                        {
+                            toNotify.Add(element);
+                        }
                     }
                 }
                 
@@ -1139,10 +1138,54 @@ namespace FenBrowser.FenEngine.Rendering
                 Stop();
         }
 
+        private bool ApplyAnimationFrame(Element element, ActiveAnimation anim, double progressPercent)
+        {
+            var previousProperties = anim.ComputedProperties != null && anim.ComputedProperties.Count > 0
+                ? new Dictionary<string, string>(anim.ComputedProperties, StringComparer.OrdinalIgnoreCase)
+                : null;
+
+            ApplyKeyframeAt(anim, progressPercent);
+            ApplyToOverlay(element, anim.ComputedProperties);
+
+            if (!AnimatedPropertiesChanged(previousProperties, anim.ComputedProperties))
+            {
+                return false;
+            }
+
+            element.MarkDirty(DetermineInvalidationKind(anim.ComputedProperties.Keys));
+            return true;
+        }
+
+        private static bool AnimatedPropertiesChanged(
+            IReadOnlyDictionary<string, string> previous,
+            IReadOnlyDictionary<string, string> current)
+        {
+            if (current == null || current.Count == 0)
+            {
+                return previous != null && previous.Count > 0;
+            }
+
+            if (previous == null || previous.Count != current.Count)
+            {
+                return true;
+            }
+
+            foreach (var kvp in current)
+            {
+                if (!previous.TryGetValue(kvp.Key, out var previousValue) ||
+                    !string.Equals(previousValue, kvp.Value, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private void ApplyToOverlay(Element element, Dictionary<string, string> properties)
         {
             var style = element.GetComputedStyle();
-            if (style == null) return;
+            if (style == null || properties == null || properties.Count == 0) return;
             style.AnimationOverlay ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var kvp in properties) style.AnimationOverlay[kvp.Key] = kvp.Value;
         }
@@ -1152,7 +1195,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (anim.Keyframes == null || anim.Keyframes.Frames.Count == 0) return;
 
             var frames = anim.Keyframes.Frames.OrderBy(f => f.Percentage).ToList();
-            double normalizedProgress = progress * 100.0;
+            double normalizedProgress = Math.Clamp(progress, 0.0, 100.0);
             
             // Find bounding keyframes
             CssLoader.CssKeyframe lower = frames.LastOrDefault(f => f.Percentage <= normalizedProgress);
