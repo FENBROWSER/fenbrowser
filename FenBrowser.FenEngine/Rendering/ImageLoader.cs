@@ -886,8 +886,16 @@ namespace FenBrowser.FenEngine.Rendering
         /// <param name="elementBounds">Element bounds for lazy loading registration</param>
         public static SKBitmap GetImage(string url, bool isLazy = false, SKRect? elementBounds = null, int? targetWidth = null, int? targetHeight = null)
         {
-            EngineLogCompat.Info($"[ImageLoader] GetImage called for {(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
             if (string.IsNullOrEmpty(url)) return null;
+            url = url.Trim();
+
+            if (IsCssImageFunction(url))
+            {
+                EngineLogCompat.Debug($"[ImageLoader] Ignoring non-fetchable CSS image function: {url.Substring(0, Math.Min(80, url.Length))}...", LogCategory.Rendering);
+                return null;
+            }
+
+            EngineLogCompat.Info($"[ImageLoader] GetImage called for {(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
 
             // Animated GIF: return the current frame based on elapsed time
             if (_animatedGifs.TryGetValue(url, out var anim))
@@ -974,6 +982,26 @@ namespace FenBrowser.FenEngine.Rendering
             EngineLogCompat.Debug($"[ImageLoader] Starting LoadImageAsync: {url}", LogCategory.Rendering);
             _ = LoadImageAsync(url, isLazy, targetWidth, targetHeight, GetPendingLoadContext(url));
             return null;
+        }
+
+        private static bool IsCssImageFunction(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            var trimmed = value.TrimStart();
+            return trimmed.StartsWith("linear-gradient(", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("repeating-linear-gradient(", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("radial-gradient(", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("repeating-radial-gradient(", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("conic-gradient(", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("repeating-conic-gradient(", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("image-set(", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("cross-fade(", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("element(", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("paint(", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
