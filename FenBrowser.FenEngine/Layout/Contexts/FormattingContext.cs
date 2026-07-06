@@ -30,6 +30,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         /// <summary>
         /// Factory method to determine the correct formatting context for a box.
+        /// Dispatch is driven by computed display, overflow, and contain properties —
+        /// NOT by HTML tag name. This ensures custom elements and non-standard markup
+        /// receive correct formatting contexts.
         /// </summary>
         public static FormattingContext Resolve(LayoutBox box)
         {
@@ -39,18 +42,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return InlineFormattingContext.Instance;
             }
 
-            // If the box establishes a new context for its children, use that.
-            // E.g., a BlockBox establishes a BFC for its block-level children.
-            // Or establishes an IFC if it contains only inline-level children.
-
-            // Currently, we assume BlockBox always uses BlockFormattingContext unless it has inline children?
-            // Wait, an AnonymousBlockBox wrapper (BlockBox) containing inlines uses IFC.
-            // Normal BlockBox containing Inlines uses IFC.
-            // Normal BlockBox containing Blocks uses BFC.
-
-            // NOTE: The 'context' is conceptually what the box ESTABLISHES for its children.
-            
-            // 1. Check for explicit formatting context triggers
+            // 1. Check for explicit formatting context triggers via display value.
             string display = box.ComputedStyle?.Display?.ToLowerInvariant() ?? "block";
 
             // Grid contexts (grid and inline-grid)
@@ -76,50 +68,23 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             if (display == "flow-root")
                 return BlockFormattingContext.Instance;
 
-            // Inline-block/table-cell establish block containers.
-            // If they only contain inline-level content, use IFC; otherwise BFC.
+            // Inline-block / table-cell: block containers that may establish
+            // either BFC or IFC depending on their children.
             if (display == "inline-block" || display == "table-cell")
             {
-                if (box.SourceNode is FenBrowser.Core.Dom.V2.Element controlElement)
-                {
-                    string controlTag = controlElement.TagName?.ToUpperInvariant() ?? string.Empty;
-                    if (controlTag == "INPUT" || controlTag == "BUTTON" || controlTag == "TEXTAREA" || controlTag == "SELECT")
-                    {
-                        return InlineFormattingContext.Instance;
-                    }
-                }
-
-                bool hasBlockChildren = false;
-                foreach (var child in box.Children)
-                {
-                    if (child is TextLayoutBox) continue;
-
-                    string childDisplay = child.ComputedStyle?.Display?.ToLowerInvariant() ?? "inline";
-                    if (child is BlockBox ||
-                        childDisplay == "block" ||
-                        childDisplay == "flex" ||
-                        childDisplay == "grid" ||
-                        childDisplay == "table" ||
-                        childDisplay == "flow-root" ||
-                        childDisplay == "list-item")
-                    {
-                        hasBlockChildren = true;
-                        break;
-                    }
-                }
-
+                bool hasBlockChildren = HasBlockLevelChild(box);
                 return hasBlockChildren ? BlockFormattingContext.Instance : InlineFormattingContext.Instance;
             }
 
-            // Contents - children are laid out as if the element doesn't exist
-            // (treat as if parent establishes the context)
+            // Contents — children are laid out as if the element doesn't exist.
             if (display == "contents")
             {
-                return BlockFormattingContext.Instance; // Simplified handling
+                return BlockFormattingContext.Instance;
             }
 
             if (box is BlockBox blockBox)
             {
+                // Root elements always establish a BFC.
                 if (box.SourceNode is FenBrowser.Core.Dom.V2.Element rootElement)
                 {
                     string rootTag = rootElement.TagName?.ToUpperInvariant() ?? string.Empty;
@@ -127,51 +92,91 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     {
                         return BlockFormattingContext.Instance;
                     }
-
-                    // Atomic controls/replaced elements can be block-level externally
-                    // without participating in inline line construction internally.
-                    // Routing authored display:block inputs through the inline formatter
-                    // collapses percent widths back to intrinsic control fallbacks.
-                    if (IsAtomicReplacedOrControlTag(rootTag))
-                    {
-                        return BlockFormattingContext.Instance;
-                    }
                 }
 
-                // Normal block or anonymous block
-                bool hasBlockChildren = false;
-                foreach(var child in blockBox.Children)
-                {
-                    if (child is BlockBox) hasBlockChildren = true;
-                }
+                // BlockBox with block-level children → BFC.
+                // Leaf BlockBoxes go to IFC unless they establish an independent
+                // formatting context via overflow, contain, or replaced-element status.
+                if (HasBlockLevelChild(blockBox))
+                    return BlockFormattingContext.Instance;
 
-                if (hasBlockChildren) return BlockFormattingContext.Instance;
-                return InlineFormattingContext.Instance; 
+                // A leaf block box that establishes its own formatting context
+                // (overflow != visible, contain: layout/paint, or replaced element)
+                // must use BFC. Otherwise, it contains only inline text → IFC.
+                if (EstablishesIndependentBlockContext(box))
+                    return BlockFormattingContext.Instance;
+
+                return InlineFormattingContext.Instance;
             }
 
             if (box is InlineBox)
             {
-                // Normal inline boxes (span, a, etc.) establish/participate in IFC
                 return InlineFormattingContext.Instance;
             }
-            
+
             // Default fallback
             return BlockFormattingContext.Instance;
         }
 
-        private static bool IsAtomicReplacedOrControlTag(string tag)
+        private static bool HasBlockLevelChild(LayoutBox box)
         {
-            return tag == "INPUT" ||
-                   tag == "SELECT" ||
-                   tag == "TEXTAREA" ||
-                   tag == "BUTTON" ||
-                   tag == "IMG" ||
-                   tag == "SVG" ||
-                   tag == "CANVAS" ||
-                   tag == "VIDEO" ||
-                   tag == "IFRAME" ||
-                   tag == "EMBED" ||
-                   tag == "OBJECT";
+            foreach (var child in box.Children)
+            {
+                if (child is TextLayoutBox) continue;
+
+                string childDisplay = child.ComputedStyle?.Display?.ToLowerInvariant() ?? "inline";
+                if (child is BlockBox ||
+                    childDisplay == "block" ||
+                    childDisplay == "flex" ||
+                    childDisplay == "grid" ||
+                    childDisplay == "table" ||
+                    childDisplay == "flow-root" ||
+                    childDisplay == "list-item")
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Returns true when the box establishes an independent block formatting
+        /// context via CSS properties (not HTML tag identity). Covers:
+        ///   - overflow: hidden | auto | scroll | clip
+        ///   - contain: layout | paint | strict | content
+        ///   - Replaced elements with intrinsic dimensions
+        /// </summary>
+        private static bool EstablishesIndependentBlockContext(LayoutBox box)
+        {
+            if (box?.ComputedStyle == null)
+                return false;
+
+            // overflow != visible establishes a new BFC (CSS 2.1 §9.4.1 / CSS Overflow 3 §3.3)
+            string overflow = (box.ComputedStyle.Overflow ?? "visible").Trim().ToLowerInvariant();
+            if (overflow != "visible")
+                return true;
+
+            // CSS Containment Level 1: contain:layout and contain:paint each establish
+            // an independent formatting context.
+            string contain = (box.ComputedStyle.Contain ?? string.Empty).Trim().ToLowerInvariant();
+            if (!string.IsNullOrEmpty(contain) && contain != "none")
+            {
+                if (contain == "strict" || contain == "content")
+                    return true;
+                if (contain.Contains("layout") || contain.Contains("paint"))
+                    return true;
+            }
+
+            // Replaced elements (img, video, input, etc.) have intrinsic dimensions
+            // and must not participate in inline line construction.
+            if (box.SourceNode is FenBrowser.Core.Dom.V2.Element element &&
+                FenBrowser.FenEngine.Layout.ReplacedElementSizing.ShouldTreatAsAtomicReplacedElement(element))
+            {
+                return true;
+            }
+
+            return false;
         }
 
     }
