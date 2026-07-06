@@ -32,6 +32,7 @@ public class BrowserIntegration
     private Dictionary<Node, CssComputed> _styles;
     private bool _needsRepaint = true;
     private bool _hasFirstStyledRender = false; // Track first styled render to avoid unstyled initial layout
+    private bool _hasStableStyleSnapshot = false;
     private DateTime _lastNavigationTime = DateTime.Now; // Track navigation start time for timeout
     private float _scrollY = 0;
     private float _contentHeight = 0;
@@ -256,6 +257,7 @@ public class BrowserIntegration
             {
                 _lastNavigationTime = DateTime.Now;
                 _hasFirstStyledRender = false;
+                _hasStableStyleSnapshot = false;
                 _root = null;
                 _styles = null;
                 _deferredScrollTarget = null;
@@ -295,15 +297,18 @@ public class BrowserIntegration
             // Sync DOM root and styles immediately on every RepaintReady.
             // PROGRESSIVE: Always adopt latest styles, even if they change incrementally.
             var snapshot = _browser.GetRenderSnapshot();
+            bool hadFirstStyledRender = _hasFirstStyledRender;
+            _hasStableStyleSnapshot = snapshot.HasStableStyles;
+            bool rootChanged = snapshot.Root != null && !ReferenceEquals(snapshot.Root, _root);
             _root = snapshot.Root;
             
             // Use the snapshot styles directly - the renderer detects changes by reference
             // and the engine provides a new dictionary reference when styles actually change.
             // Creating copies here causes reference ping-pong between poller and RepaintReady.
+            bool stylesChanged = snapshot.Styles != null && !ReferenceEquals(snapshot.Styles, _styles);
             if (snapshot.Styles != null && !ReferenceEquals(snapshot.Styles, _styles))
             {
                 _styles = snapshot.Styles;
-                _hasFirstStyledRender = true;
                 EngineLogBridge.Info($"[BrowserIntegration] RepaintReady: Styles updated ({snapshot.Styles.Count} rules)", LogCategory.Rendering);
             }
             
@@ -313,11 +318,11 @@ public class BrowserIntegration
             EngineLogBridge.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}, Styles={_styles?.Count ?? 0}", LogCategory.Rendering);
 
             // Wake the engine thread. RecordFrame will call NeedsRepaint?.Invoke() only
-            // after a valid frame is committed.
+            // after a valid frame is committed. Many repaint-ready signals are paint-only
+            // wakeups, especially image/animation callbacks; avoid upgrading those to
+            // DOM+style work unless the snapshot or dirty flags require it.
             RequestFrame(
-                _hasFirstStyledRender
-                    ? RenderFrameInvalidationReason.Dom | RenderFrameInvalidationReason.Style
-                    : RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Dom | RenderFrameInvalidationReason.Style,
+                ClassifyRepaintReadyInvalidation(_root, rootChanged, stylesChanged, hadFirstStyledRender),
                 "BrowserHost.RepaintReady");
         };
         
@@ -352,6 +357,7 @@ public class BrowserIntegration
                 var actualDom = snapshot.Root;
                 var actualStyles = snapshot.Styles;
                 var snapshotStable = snapshot.HasStableStyles;
+                _hasStableStyleSnapshot = snapshotStable;
 
                 bool needsSync = false;
 
@@ -371,7 +377,6 @@ public class BrowserIntegration
             {
                 _styles = actualStyles;
                 needsSync = true;
-                _hasFirstStyledRender = true;
                 EngineLogBridge.Info($"[BrowserIntegration] Poller: Styles updated ({actualStyles.Count} rules)", LogCategory.Rendering);
             }
 
@@ -515,6 +520,59 @@ public class BrowserIntegration
         {
             NeedsRepaint?.Invoke();
         }
+    }
+
+    internal static RenderFrameInvalidationReason ClassifyRepaintReadyInvalidation(
+        Node root,
+        bool rootChanged,
+        bool stylesChanged,
+        bool hasFirstStyledRender)
+    {
+        if (!hasFirstStyledRender)
+        {
+            return RenderFrameInvalidationReason.Navigation |
+                   RenderFrameInvalidationReason.Dom |
+                   RenderFrameInvalidationReason.Style;
+        }
+
+        if (rootChanged || stylesChanged ||
+            root?.StyleDirty == true ||
+            root?.ChildStyleDirty == true)
+        {
+            return RenderFrameInvalidationReason.Dom |
+                   RenderFrameInvalidationReason.Style;
+        }
+
+        if (root?.LayoutDirty == true || root?.ChildLayoutDirty == true)
+        {
+            return RenderFrameInvalidationReason.Layout |
+                   RenderFrameInvalidationReason.Paint;
+        }
+
+        return RenderFrameInvalidationReason.Paint;
+    }
+
+    internal static bool IsFirstRenderSnapshotPresentable(
+        Node root,
+        Dictionary<Node, CssComputed> styles,
+        bool hasStableStyles)
+    {
+        return root != null && styles != null && hasStableStyles;
+    }
+
+    internal static bool IsFirstContentFrameReady(
+        Node root,
+        Dictionary<Node, CssComputed> styles,
+        bool hasStableStyles,
+        string url,
+        bool isLoading)
+    {
+        if (!IsFirstRenderSnapshotPresentable(root, styles, hasStableStyles))
+        {
+            return false;
+        }
+
+        return !IsNewTabSurfaceUrl(url) || !isLoading;
     }
 
     private void DeferPendingFrame()
@@ -961,14 +1019,12 @@ public class BrowserIntegration
             var snapshot = _browser.GetRenderSnapshot();
             _root = snapshot.Root;
             _styles = snapshot.Styles;
+            _hasStableStyleSnapshot = snapshot.HasStableStyles;
 
-        // PROGRESSIVE RENDERING: Render with whatever data we have.
-        // Don't block waiting for "complete" styles - show content as soon as DOM is ready.
-        // The frame will naturally improve as styles arrive and trigger repaints.
-        if (!_hasFirstStyledRender && _root != null && _styles != null && _styles.Count > 0)
-        {
-            _hasFirstStyledRender = true;
-        }
+            if (!_hasFirstStyledRender && IsFirstContentFrameReady(_root, _styles, _hasStableStyleSnapshot, CurrentUrl, IsLoading))
+            {
+                _hasFirstStyledRender = true;
+            }
 
         _rendererLock.EnterWriteLock();
         try
@@ -1013,6 +1069,7 @@ public class BrowserIntegration
         // Reset navigation timing for unstyled layout skip
         _lastNavigationTime = DateTime.Now;
         _hasFirstStyledRender = false;
+        _hasStableStyleSnapshot = false;
         // Navigation must start from top; carrying prior page scroll causes blank/shifted first paints
         // on short documents (e.g., Acid2 reference page).
         _scrollY = 0f;
@@ -1028,6 +1085,7 @@ public class BrowserIntegration
         // when the new document is committed.
         _root = null;
         _styles = null;
+        _hasStableStyleSnapshot = false;
         _currentFrameSeedImage?.Dispose();
         _currentFrameSeedImage = null;
         _currentFrameSeedCreatedUtc = DateTime.MinValue;
@@ -1213,6 +1271,7 @@ public class BrowserIntegration
 
         _lastNavigationTime = DateTime.Now;
         _hasFirstStyledRender = false;
+        _hasStableStyleSnapshot = false;
         RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserIntegration.Refresh");
         StartPostNavigationRepaintPulse();
 
@@ -1400,6 +1459,12 @@ public class BrowserIntegration
             // here would prevent the engine from ever picking them up.
             // The post-navigation repaint pulse ensures the engine keeps waking.
             EngineLogBridge.Debug("[BrowserIntegration] RecordFrame skipped: awaiting DOM/style snapshot after navigation.", LogCategory.Rendering);
+            return;
+        }
+
+        if (!_hasFirstStyledRender && !IsFirstContentFrameReady(_root, _styles, _hasStableStyleSnapshot, CurrentUrl, IsLoading))
+        {
+            EngineLogBridge.Debug("[BrowserIntegration] RecordFrame skipped: awaiting presentable first content frame.", LogCategory.Rendering);
             return;
         }
 
@@ -1596,7 +1661,7 @@ public class BrowserIntegration
             }
 
             Element? deferredScroll = null;
-            if (_styles != null && _styles.Count > 0)
+            if (IsFirstContentFrameReady(_root, _styles, _hasStableStyleSnapshot, CurrentUrl, IsLoading))
             {
                 _hasFirstStyledRender = true;
                 if (_deferredScrollTarget != null)
@@ -2113,7 +2178,11 @@ public class BrowserIntegration
     
     private void DrawPlaceholder(SKCanvas canvas, SKRect viewport)
     {
-        using var bgPaint = new SKPaint { Color = SKColors.White };
+        bool isNewTabSurface = IsNewTabSurfaceUrl(CurrentUrl);
+        using var bgPaint = new SKPaint
+        {
+            Color = isNewTabSurface ? new SKColor(11, 18, 32) : SKColors.White
+        };
         canvas.DrawRect(viewport, bgPaint);
         
         if (IsLoading)
@@ -2121,7 +2190,7 @@ public class BrowserIntegration
             using var textFont = new SKFont(SKTypeface.Default, 18);
             using var textPaint = new SKPaint
             {
-                Color = SKColors.Gray,
+                Color = isNewTabSurface ? new SKColor(148, 163, 184) : SKColors.Gray,
                 IsAntialias = true
             };
             string loadMsg = "Loading...";
@@ -2133,13 +2202,25 @@ public class BrowserIntegration
             using var defaultFont = new SKFont(SKTypeface.Default, 16);
             using var textPaint = new SKPaint
             {
-                Color = SKColors.Gray,
+                Color = isNewTabSurface ? new SKColor(148, 163, 184) : SKColors.Gray,
                 IsAntialias = true
             };
             string defaultMsg = "Enter a URL to browse";
             float defaultW = defaultFont.MeasureText(defaultMsg);
             canvas.DrawText(defaultMsg, viewport.MidX - defaultW / 2, viewport.MidY, defaultFont, textPaint);
         }
+    }
+
+    internal static bool IsNewTabSurfaceUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return false;
+        }
+
+        var normalized = url.Trim().TrimEnd('/');
+        return normalized.Equals("fen://newtab", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Equals("about:newtab", StringComparison.OrdinalIgnoreCase);
     }
     
     /// <summary>

@@ -51,6 +51,13 @@ This class acts as the "Glue" between the Host and the Engine.
   - `BrowserIntegration.RecordFrame(...)` serializes renderer access under `_rendererLock` to prevent concurrent frame-building races.
   - The host continues presenting the committed `SKPicture` while maintaining a parallel `SKImage` seed snapshot for base-frame reuse/damage workflows.
   - Navigation resets now clear `_root` and `_styles` up front; sync/render adopts live snapshot styles directly to avoid stale pre-style presentation.
+- **Google Input-Latency Repaint Guard (2026-07-05)**:
+  - `BrowserIntegration` now classifies `RepaintReady` snapshots before requesting a frame: first styled render and changed root/style snapshots still request `Navigation`/`Dom`/`Style` work, layout-dirty snapshots request `Layout|Paint`, and stable snapshots request `Paint` only.
+  - This prevents image/animation repaint callbacks from upgrading stable Google-class frames into repeated DOM/style layout work while preserving root/style/layout dirty escalation.
+- **New-Tab First-Presentation Guard (2026-07-06)**:
+  - `BrowserIntegration` now tracks `BrowserRenderSnapshot.HasStableStyles` separately from the first committed styled frame and does not publish first content until that snapshot is presentable.
+  - `fen://newtab` additionally waits until loading has completed before its first content frame, keeping the visible startup path on a dark new-tab placeholder instead of flashing white default HTML before the focused new-tab layout settles.
+  - Verification: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --no-restore --filter "FullyQualifiedName~BrowserIntegrationRepaintInvalidationTests|FullyQualifiedName~CssAnimationEngineFrameTests|FullyQualifiedName~ImageLoaderCssFunctionTests" -v minimal` passed `16/16`; clean `fen://newtab` repro in `logs/` showed first committed content at `LoadFired` with styled layout (`boxes=78`).
 - **Frame Transition Logging Guard (2026-04-13)**:
   - `BrowserIntegration.RecordFrame()` no longer emits `[TRANSITION]` layout logs on every repaint by default.
   - The transition log is now gated behind `DebugConfig.EnableDeepDebug && DebugConfig.LogFrameTiming`, removing high-frequency synchronous log pressure from normal navigation while preserving targeted tracing in deep debug runs.
