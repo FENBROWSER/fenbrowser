@@ -97,7 +97,25 @@ namespace FenBrowser.FenEngine.Layout
 
             if (layoutRoot == null)
             {
+                _cachedLayoutRoot = null;
+                _cachedResult = null;
                 return null;
+            }
+
+            // Incremental layout fast-path: skip the box-tree build + formatting-
+            // context layout pass when the DOM root and viewport are unchanged.
+            // After a full layout pass ClearSubtreeDirtyFlags clears dirty flags,
+            // so paint-only frames return the cached result.
+            bool viewportChanged = Math.Abs(availableWidth - _cachedViewportWidth) > 0.5f ||
+                                   Math.Abs(availableHeight - _cachedViewportHeight) > 0.5f;
+
+            if (!viewportChanged &&
+                ReferenceEquals(layoutRoot, _cachedLayoutRoot) &&
+                _cachedResult != null)
+            {
+                if (LayoutDebugLogEnabled)
+                    DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] Incremental: reusing cached LayoutResult\n");
+                return _cachedResult;
             }
 
             _boxStore.Reset();
@@ -177,16 +195,54 @@ namespace FenBrowser.FenEngine.Layout
 
             float contentHeight = ComputeDocumentContentHeight(rootBox, availableHeight);
 
-            return new LayoutResult(
+            var result = new LayoutResult(
                 elementRects,
                 availableWidth,
                 availableHeight,
                 0,
                 contentHeight
             );
+
+            // Cache for incremental layout fast-path on next frame.
+            // Must populate the cache BEFORE clearing dirty flags so a
+            // throw in ClearSubtreeDirtyFlags does not leave the cache empty.
+            _cachedLayoutRoot = layoutRoot;
+            _cachedViewportWidth = availableWidth;
+            _cachedViewportHeight = availableHeight;
+            _cachedResult = result;
+
+            // Clear dirty flags after a successful layout pass so the incremental
+            // cache can be skipped on the next frame when the DOM is quiescent.
+            // Style flags are cleared because the box tree was rebuilt; layout
+            // flags are cleared because geometry was recomputed.
+            try { ClearSubtreeDirtyFlags(layoutRoot); }
+            catch { /* non-critical */ }
+
+            return result;
+        }
+
+        private static void ClearSubtreeDirtyFlags(Node node)
+        {
+            if (node == null) return;
+            node.ClearDirty(InvalidationKind.Style | InvalidationKind.Layout);
+            if (node.ChildNodes != null)
+            {
+                foreach (var child in node.ChildNodes)
+                {
+                    ClearSubtreeDirtyFlags(child);
+                }
+            }
         }
         
         private Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel> _generatedBoxes;
+
+        // Incremental layout cache: when the DOM and styles are unchanged between
+        // frames, skip the entire box-tree build + layout pass and return the
+        // previous result. Cache keyed by root node identity and viewport size.
+        private Node _cachedLayoutRoot;
+        private float _cachedViewportWidth;
+        private float _cachedViewportHeight;
+        private LayoutResult _cachedResult;
 
         private float ComputeDocumentContentHeight(FenBrowser.FenEngine.Layout.Tree.LayoutBox rootBox, float viewportHeight)
         {
