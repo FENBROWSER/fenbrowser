@@ -45,6 +45,7 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly IncrementalLayoutManager _incrementalLayoutManager = new IncrementalLayoutManager();
         private readonly PaintTreeLayerizer _paintTreeLayerizer = new PaintTreeLayerizer();
         private readonly RetainedTileRasterizer _retainedTileRasterizer;
+        private readonly CompositedLayerCache _compositedLayerCache = new CompositedLayerCache();
         private GRContext _gpuRasterContext;
 
         // Guards all reads/writes of renderer state that the raster pipeline mutates
@@ -655,6 +656,16 @@ namespace FenBrowser.FenEngine.Rendering
                         var layerization = _paintTreeLayerizer.Layerize(_lastPaintTree, styles);
                         _lastCompositedLayers = layerization.Layers;
                         LastPromotedLayerCount = layerization.PromotedLayerCount;
+
+                        // Rasterize promoted layers to dedicated GPU surfaces.
+                        // These cached surfaces are composited with transforms applied
+                        // during rasterization, avoiding re-rasterization for
+                        // transform-only and opacity-only changes.
+                        _compositedLayerCache.NextGeneration();
+                        if (layerization.PromotedLayerCount > 0 && _gpuRasterContext != null)
+                        {
+                            RasterizePromotedLayers(layerization.Layers, styles);
+                        }
 
                         // PC-3: Tree-diff damage.
                         var currentViewport = new SKRect(0, 0, _viewportWidth, _viewportHeight);
@@ -2080,6 +2091,120 @@ namespace FenBrowser.FenEngine.Rendering
                 result.Add(node);
                 CollectAllNodes(node.Children.Cast<PaintNodeBase>().ToList(), result);
             }
+        }
+
+        /// <summary>
+        /// Rasterizes promoted composited layers to dedicated GPU-backed surfaces.
+        /// Each layer's paint subtree is drawn into its own surface so transforms
+        /// and opacity changes composite without re-rasterization.
+        /// </summary>
+        private void RasterizePromotedLayers(
+            IReadOnlyList<CompositedLayer> layers,
+            IReadOnlyDictionary<Node, CssComputed> styles)
+        {
+            var gen = _compositedLayerCache.Generation;
+
+            foreach (var layer in layers)
+            {
+                if (layer.SourceNode == null || layer.Bounds.Width <= 0 || layer.Bounds.Height <= 0)
+                {
+                    continue;
+                }
+
+                var layerKey = $"layer_{layer.LayerId}";
+
+                // Skip if already cached at this generation
+                if (_compositedLayerCache.GetCachedLayer(layerKey, gen) != null)
+                {
+                    continue;
+                }
+
+                // Find the paint node for this layer's source
+                var paintNode = FindPaintNodeBySource(_lastPaintTree, layer.SourceNode);
+                if (paintNode == null)
+                {
+                    continue;
+                }
+
+                // Create GPU-backed surface for this layer
+                var surface = _compositedLayerCache.CreateLayerSurface(
+                    layer.Bounds,
+                    _gpuRasterContext,
+                    out var surfaceInfo);
+
+                if (surface == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var layerCanvas = surface.Canvas;
+                    layerCanvas.Clear(SKColors.Transparent);
+                    layerCanvas.Save();
+                    layerCanvas.Translate(-layer.Bounds.Left, -layer.Bounds.Top);
+
+                    // Render the entire paint tree clipped to this layer's bounds.
+                    // Only this layer's promoted subtree is visible; other content
+                    // is masked by the surface bounds.
+                    _renderer.Render(layerCanvas, _lastPaintTree, layer.Bounds, SKColors.Transparent);
+
+                    layerCanvas.Restore();
+                    layerCanvas.Flush();
+
+                    _compositedLayerCache.TryStoreLayer(layerKey, surface, gen);
+                }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Debug(
+                        $"[SkiaDomRenderer] Layer rasterization failed for layer {layer.LayerId}: {ex.Message}",
+                        LogCategory.Rendering);
+                }
+                finally
+                {
+                    surface.Dispose();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Composites cached GPU layer surfaces onto the target canvas,
+        /// applying each layer's transform and opacity.
+        /// </summary>
+        private void CompositePromotedLayers(SKCanvas canvas, IReadOnlyList<CompositedLayer> layers)
+        {
+            var gen = _compositedLayerCache.Generation;
+
+            foreach (var layer in layers)
+            {
+                var layerKey = $"layer_{layer.LayerId}";
+                _compositedLayerCache.DrawLayer(
+                    canvas,
+                    layerKey,
+                    layer.Bounds,
+                    layer.Transform,
+                    layer.Opacity,
+                    gen);
+            }
+        }
+
+        private static PaintNodeBase FindPaintNodeBySource(ImmutablePaintTree tree, Node source)
+        {
+            if (tree == null || source == null)
+            {
+                return null;
+            }
+
+            PaintNodeBase found = null;
+            tree.Traverse(node =>
+            {
+                if (found == null && node?.SourceNode == source)
+                {
+                    found = node;
+                }
+            });
+
+            return found;
         }
     }
 }
