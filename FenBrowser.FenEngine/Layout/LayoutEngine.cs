@@ -25,34 +25,19 @@ namespace FenBrowser.FenEngine.Layout
                 System.StringComparison.Ordinal);
 
         private readonly LayoutContext _context;
-        private readonly ILayoutComputer _computer;
         private readonly FenBrowser.FenEngine.Layout.Tree.LayoutBoxStore _boxStore = new FenBrowser.FenEngine.Layout.Tree.LayoutBoxStore();
 
-
-        /// <summary>
-        /// Creates a new layout engine with the given context and computer.
-        /// </summary>
-        public LayoutEngine(LayoutContext context, ILayoutComputer computer)
-        {
-            _context = context ?? throw new ArgumentNullException(nameof(context));
-            _computer = computer;
-        }
-        
         /// <summary>
         /// Creates a new layout engine from style dictionary and viewport.
-        /// Production path uses the box-tree pipeline (BoxTreeBuilder + FormattingContext)
-        /// and does not require an ILayoutComputer. The computer parameter is retained
-        /// only for tests that still drive the legacy Measure/Arrange path directly.
+        /// Uses the box-tree pipeline (BoxTreeBuilder → FormattingContext).
         /// </summary>
         public LayoutEngine(
             IReadOnlyDictionary<Node, CssComputed> styles,
             float viewportWidth,
             float viewportHeight,
-            ILayoutComputer computer = null,
             string baseUri = null)
         {
             _context = new LayoutContext(styles, viewportWidth, viewportHeight);
-            _computer = computer;
         }
 
         /// <summary>
@@ -61,7 +46,6 @@ namespace FenBrowser.FenEngine.Layout
         public LayoutEngine()
         {
             _context = new LayoutContext(new Dictionary<Node, CssComputed>(), 1920, 1080);
-            _computer = null;
         }
         
         /// <summary>
@@ -395,19 +379,9 @@ namespace FenBrowser.FenEngine.Layout
         /// </summary>
         public LayoutResult BuildResult(float contentWidth, float contentHeight)
         {
-            // Convert internal BoxModel to the LayoutResult format
             var elementRects = new Dictionary<Element, ElementGeometry>();
-            
-            // Start with local boxes
-            IEnumerable<KeyValuePair<Node, BoxModel>> allBoxes = _context.Boxes;
-            
-            // If delegating, include boxes from the computer
-            if (_computer != null)
-            {
-                allBoxes = allBoxes.Concat(_computer.GetAllBoxes());
-            }
-            
-            foreach (var kvp in allBoxes)
+
+            foreach (var kvp in _context.Boxes)
             {
                 if (kvp.Key is Element elem && kvp.Value != null)
                 {
@@ -432,23 +406,14 @@ namespace FenBrowser.FenEngine.Layout
         /// <summary>
         /// Expose all calculated boxes for rendering and debugging.
         /// </summary>
-        public IReadOnlyDictionary<Node, BoxModel> AllBoxes 
-        { 
-            get 
+        public IReadOnlyDictionary<Node, BoxModel> AllBoxes
+        {
+            get
             {
                  if (_generatedBoxes != null) return _generatedBoxes;
 
                  var dict = new Dictionary<Node, BoxModel>();
                  foreach(var kvp in _context.Boxes) dict[kvp.Key] = kvp.Value;
-                 
-                 if (_computer != null)
-                 {
-                     foreach(var kvp in _computer.GetAllBoxes()) 
-                     {
-                         if (!dict.ContainsKey(kvp.Key))
-                             dict[kvp.Key] = kvp.Value;
-                     }
-                 }
                  return dict;
             }
         }
@@ -491,8 +456,7 @@ namespace FenBrowser.FenEngine.Layout
             {
                 var current = stack.Pop();
 
-                BoxModel box = _computer?.GetBox(current);
-                if (box == null) box = _context.GetBox(current);
+                BoxModel box = _context.GetBox(current);
 
                 bool descendIntoChildren;
                 if (box != null)

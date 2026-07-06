@@ -23,7 +23,7 @@ namespace FenBrowser.Tests.Layout
         {
             _viewportWidth = viewportWidth;
             _viewportHeight = viewportHeight;
-            _engine = new LayoutEngine(styles, viewportWidth, viewportHeight, null, baseUri);
+            _engine = new LayoutEngine(styles, viewportWidth, viewportHeight, baseUri);
         }
 
         public LayoutEngine Engine => _engine;

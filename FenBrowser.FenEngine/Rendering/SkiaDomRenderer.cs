@@ -1376,7 +1376,6 @@ namespace FenBrowser.FenEngine.Rendering
                     effectiveStyles,
                     _viewportWidth,
                     _viewportHeight,
-                    null,
                     baseUrl);
                 _retainedLayoutStyles = effectiveStyles;
                 _retainedLayoutViewportWidth = _viewportWidth;
