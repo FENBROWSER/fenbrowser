@@ -2148,9 +2148,13 @@ public void Dispose()
             {
                 try
                 {
-                    // Compute styles for this subtree only
+                    // Collect rules from the owning document, but cascade only the dirty
+                    // subtree. Author styles normally live in <head>, outside a dirty body
+                    // descendant, so using the dirty root for both loses selector rules.
                     var subtreeBaseUri = ResolveBaseUriForRecascadeRoot(root);
-                    var subtreeStyles = await CssLoader.ComputeAsync(
+                    var stylesheetRoot = root.OwnerDocument?.DocumentElement ?? domEl;
+                    var subtreeStyles = await CssLoader.ComputeSubtreeAsync(
+                        stylesheetRoot,
                         root,
                         subtreeBaseUri,
                         _activeFetchCss,

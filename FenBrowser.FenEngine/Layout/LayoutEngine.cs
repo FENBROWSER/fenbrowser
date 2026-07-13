@@ -93,9 +93,13 @@ namespace FenBrowser.FenEngine.Layout
             bool viewportChanged = Math.Abs(availableWidth - _cachedViewportWidth) > 0.5f ||
                                    Math.Abs(availableHeight - _cachedViewportHeight) > 0.5f;
 
+            bool hasUnmaterializedNestedBrowsingContext =
+                HasUnmaterializedNestedBrowsingContext(layoutRoot, _cachedResult);
+
             if (!viewportChanged &&
                 ReferenceEquals(layoutRoot, _cachedLayoutRoot) &&
-                _cachedResult != null)
+                _cachedResult != null &&
+                !hasUnmaterializedNestedBrowsingContext)
             {
                 if (LayoutDebugLogEnabled)
                     DiagnosticPaths.AppendRootText("layout_engine_debug.txt", "[LayoutEngine] Incremental: reusing cached LayoutResult\n");
@@ -164,6 +168,8 @@ namespace FenBrowser.FenEngine.Layout
 
                 // PASS 2: Collect All Boxes for Renderer (Absolute Coordinates)
                 CollectBoxesAbsolute(rootBox, accumulatedBoxes, 0, 0);
+
+                RelayoutNestedBrowsingContexts(layoutRoot, elementRects, accumulatedBoxes, deadline);
             }
 
             _generatedBoxes = accumulatedBoxes;
@@ -203,6 +209,108 @@ namespace FenBrowser.FenEngine.Layout
             catch { /* non-critical */ }
 
             return result;
+        }
+
+        private void RelayoutNestedBrowsingContexts(
+            Node layoutRoot,
+            Dictionary<Element, ElementGeometry> elementRects,
+            Dictionary<Node, BoxModel> accumulatedBoxes,
+            FenBrowser.Core.Deadlines.FrameDeadline deadline)
+        {
+            if (layoutRoot == null)
+            {
+                return;
+            }
+
+            var frameElements = layoutRoot
+                .DescendantsAndSelf()
+                .OfType<Element>()
+                .Where(static element => string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+
+            foreach (var frameElement in frameElements)
+            {
+                deadline?.Check();
+
+                var frameDocument = frameElement.ChildNodes?.OfType<Document>().FirstOrDefault();
+                if (frameDocument?.DocumentElement == null ||
+                    !accumulatedBoxes.TryGetValue(frameElement, out var frameBox) ||
+                    frameBox == null)
+                {
+                    continue;
+                }
+
+                var frameViewport = frameBox.ContentBox;
+                if (!float.IsFinite(frameViewport.Width) ||
+                    !float.IsFinite(frameViewport.Height) ||
+                    frameViewport.Width <= 0f ||
+                    frameViewport.Height <= 0f)
+                {
+                    continue;
+                }
+
+                var frameLayoutEngine = new LayoutEngine(
+                    _context.Styles,
+                    frameViewport.Width,
+                    frameViewport.Height);
+                var frameLayout = frameLayoutEngine.ComputeLayout(
+                    frameDocument,
+                    0,
+                    0,
+                    frameViewport.Width,
+                    availableHeight: frameViewport.Height,
+                    deadline: deadline);
+
+                if (frameLayout == null)
+                {
+                    continue;
+                }
+
+                foreach (var frameEntry in frameLayoutEngine.AllBoxes)
+                {
+                    Contexts.LayoutBoxOps.ShiftBoxModel(
+                        frameEntry.Value,
+                        frameViewport.Left,
+                        frameViewport.Top);
+                    accumulatedBoxes[frameEntry.Key] = frameEntry.Value;
+                }
+
+                foreach (var frameRect in frameLayout.ElementRects)
+                {
+                    elementRects[frameRect.Key] = new ElementGeometry(
+                        frameRect.Value.X + frameViewport.Left,
+                        frameRect.Value.Y + frameViewport.Top,
+                        frameRect.Value.Width,
+                        frameRect.Value.Height);
+                }
+            }
+        }
+
+        private static bool HasUnmaterializedNestedBrowsingContext(
+            Node layoutRoot,
+            LayoutResult cachedResult)
+        {
+            if (layoutRoot == null || cachedResult == null)
+            {
+                return false;
+            }
+
+            foreach (var frameElement in layoutRoot.DescendantsAndSelf().OfType<Element>())
+            {
+                if (!string.Equals(frameElement.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var frameDocument = frameElement.ChildNodes?.OfType<Document>().FirstOrDefault();
+                var frameRoot = frameDocument?.DocumentElement;
+                if (frameRoot != null && !cachedResult.TryGetElementRect(frameRoot, out _))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static void ClearSubtreeDirtyFlags(Node node)

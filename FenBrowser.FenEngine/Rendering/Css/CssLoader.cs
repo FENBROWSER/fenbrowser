@@ -286,6 +286,33 @@ namespace FenBrowser.FenEngine.Rendering
             return result.Computed;
         }
 
+        public static async Task<Dictionary<Node, CssComputed>> ComputeSubtreeAsync(
+            Element stylesheetRoot,
+            Element cascadeRoot,
+            Uri baseUri,
+            Func<Uri, Task<string>> fetchExternalCssAsync,
+            double? viewportWidth = null,
+            double? viewportHeight = null,
+            Action<string> log = null,
+            FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
+        {
+            if (stylesheetRoot == null || cascadeRoot == null)
+            {
+                return new Dictionary<Node, CssComputed>();
+            }
+
+            var result = await ComputeWithResultCoreAsync(
+                stylesheetRoot,
+                baseUri,
+                fetchExternalCssAsync,
+                viewportWidth,
+                viewportHeight,
+                log,
+                deadline,
+                cascadeRoot).ConfigureAwait(false);
+            return result.Computed;
+        }
+
         public static async Task<CssLoadResult> ComputeWithResultAsync(
             Element root,
             Uri baseUri,
@@ -415,14 +442,16 @@ namespace FenBrowser.FenEngine.Rendering
         {
             // 1. CSS computed value (already resolved from parent page cascade)
             double? cssValue = null;
+            bool hasDeclaredCssDimension =
+                frame.ComputedStyle?.Map?.ContainsKey(attributeName) == true;
             if (attributeName == "width")
             {
-                if (frame.ComputedStyle?.Width is double w && w > 0)
+                if (hasDeclaredCssDimension && frame.ComputedStyle?.Width is double w && w > 0)
                     cssValue = w;
             }
             else if (attributeName == "height")
             {
-                if (frame.ComputedStyle?.Height is double h && h > 0)
+                if (hasDeclaredCssDimension && frame.ComputedStyle?.Height is double h && h > 0)
                     cssValue = h;
             }
 
@@ -447,7 +476,8 @@ namespace FenBrowser.FenEngine.Rendering
             double? viewportWidth = null,
             double? viewportHeight = null,
             Action<string> log = null,
-            FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
+            FenBrowser.Core.Deadlines.FrameDeadline deadline = null,
+            Element cascadeRoot = null)
         {
             await _globalComputeGate.WaitAsync().ConfigureAwait(false);
             try
@@ -901,7 +931,11 @@ namespace FenBrowser.FenEngine.Rendering
             ResolveVariables(allRulesForVars);
             EngineLogCompat.Debug($"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
             // Stage 3: Cascade
-            var computed = FenBrowser.FenEngine.Rendering.ParallelCascadeScheduler.Cascade(root, styleSet, log, deadline);
+            var computed = FenBrowser.FenEngine.Rendering.ParallelCascadeScheduler.Cascade(
+                cascadeRoot ?? root,
+                styleSet,
+                log,
+                deadline);
             EngineLogCompat.Info($"[PERF-CSS] Cascade Matching Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})", LogCategory.Rendering);
             
                 return new CssLoadResult
@@ -2389,7 +2423,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 
                 ProcessRuleList(sheet.Rules);
-                
+
                 EngineLogCompat.Debug($"[PERF-CSS] [CHECKPOINT] ParseRules FINISHED for {text.Length} bytes.", LogCategory.Rendering);
             }
             catch (Exception ex)
@@ -7112,7 +7146,9 @@ private static double? ExtractPx(string text, string prop)
                    s.StartsWith("fit-content(") ||
                    s == "fit-content" ||
                    s == "min-content" ||
-                   s == "max-content";
+                   s == "max-content" ||
+                   s.EndsWith("vh") ||
+                   s.EndsWith("vw");
         }
 
         private static string ComposeEffectiveTransform(IDictionary<string, string> map)

@@ -450,8 +450,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             attrH,
                             constrainAutoToAvailableWidth: false);
 
-                        if (w <= 0 && !hasExplicitWidth) w = resolved.Width;
-                        if (h <= 0 && !hasExplicitHeight) h = resolved.Height;
+                        if (!hasExplicitWidth) w = resolved.Width;
+                        if (!hasExplicitHeight) h = resolved.Height;
                     }
 
                     bool nativeCheckboxOrRadio =

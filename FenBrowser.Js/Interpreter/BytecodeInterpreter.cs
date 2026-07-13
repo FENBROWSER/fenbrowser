@@ -766,6 +766,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     public int MaxCallDepth { get; set; } = DefaultMaxCallDepth;
 
+    public int? ParserMaxRecursionDepth { get; set; }
+
     [MayExecuteJs]
     private JsValue ExecuteInternal(
         BytecodeFunction function,
@@ -5742,8 +5744,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         BytecodeFunction compiled;
         try
         {
-            var program = JsParser.ParseScript(new SourceText(args[0].AsString(), "<eval>"),
-                inheritedStrictMode: directEvalStrictMode);
+            var program = JsParser.ParseScript(
+                new SourceText(args[0].AsString(), "<eval>"),
+                inheritedStrictMode: directEvalStrictMode,
+                maxRecursionDepth: ParserMaxRecursionDepth);
             if (program.Body.Count == 1 &&
                 program.Body[0] is ExpressionStatementNode
                 {
@@ -5753,7 +5757,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 return CreateLazyRegExpLiteral(regexLiteral.RawText);
             }
-            compiled = new BytecodeCompiler().CompileProgram(program, inheritedStrictMode: directEvalStrictMode);
+            compiled = new BytecodeCompiler
+            {
+                ParserMaxRecursionDepth = ParserMaxRecursionDepth
+            }.CompileProgram(program, inheritedStrictMode: directEvalStrictMode);
             compiled.IsEvalCode = true;
             new BytecodeVerifier().Verify(compiled);
         }
@@ -12882,7 +12889,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 AddFunctionConstructorParameters(parameters, parameterText);
             }
 
-            var compiled = new BytecodeCompiler().CompileFunctionBody(
+            var compiled = new BytecodeCompiler
+            {
+                ParserMaxRecursionDepth = ParserMaxRecursionDepth
+            }.CompileFunctionBody(
                 new SourceText(body, "<Function>"),
                 parameters,
                 "anonymous",

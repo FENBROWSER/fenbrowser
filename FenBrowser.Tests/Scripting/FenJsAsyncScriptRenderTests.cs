@@ -185,6 +185,10 @@ namespace FenBrowser.Tests.Scripting
             var completed = await Task.WhenAny(repaintRequested.Task, Task.Delay(1000));
 
             Assert.Same(repaintRequested.Task, completed);
+            await WaitForEngineValueAsync(
+                engine,
+                "String(globalThis.__eventType)",
+                "challenge-ready");
             Assert.Equal("challenge-ready", engine.Evaluate("String(globalThis.__eventType)")?.ToString());
             Assert.Equal("function", engine.Evaluate("String(globalThis.__storagePromiseType)")?.ToString());
             Assert.Equal("function", engine.Evaluate("String(globalThis.__requestStoragePromiseType)")?.ToString());
@@ -352,6 +356,7 @@ namespace FenBrowser.Tests.Scripting
                 <html>
                       <body id="frame-body">
                         <script>
+                          document.body.className += ' js-enabled';
                           globalThis.__frameScriptSawDocument = document.body.id;
                           globalThis.__frameCookieLabelType = typeof navigator.cookieDeprecationLabel.getValue;
                           globalThis.__frameSendBeaconType = typeof navigator.sendBeacon;
@@ -373,6 +378,7 @@ namespace FenBrowser.Tests.Scripting
             frameElement.AppendChild(frameDocument);
             await engine.SetSubdocumentDomAsync(frameDocument.DocumentElement, frameUri);
 
+            Assert.Contains("js-enabled", frameDocument.Body.ClassName);
             Assert.Equal("frame-body", engine.Evaluate("String(globalThis.__frameScriptSawDocument)")?.ToString());
             Assert.Equal("function", engine.Evaluate("String(globalThis.__frameCookieLabelType)")?.ToString());
             Assert.Equal("function", engine.Evaluate("String(globalThis.__frameSendBeaconType)")?.ToString());
@@ -945,6 +951,23 @@ namespace FenBrowser.Tests.Scripting
                 post: (_, __) => { },
                 status: _ => { },
                 log: _ => { });
+        }
+
+        private static async Task WaitForEngineValueAsync(
+            FenJsBrowserScriptEngine engine,
+            string expression,
+            string expected)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(1);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (engine.Evaluate(expression)?.ToString() == expected)
+                {
+                    return;
+                }
+
+                await Task.Delay(25);
+            }
         }
     }
 }

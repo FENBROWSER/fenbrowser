@@ -508,7 +508,7 @@ namespace FenBrowser.Core.Dom.V2
             if (name.Equals("id", StringComparison.OrdinalIgnoreCase) ||
                 name.Equals("class", StringComparison.OrdinalIgnoreCase))
             {
-                UpdateAncestorFilter();
+                UpdateAncestorFilter(forceDescendantRefresh: true);
             }
 
             NotifySlotAssignmentMayHaveChanged(name);
@@ -549,7 +549,10 @@ namespace FenBrowser.Core.Dom.V2
                 }
             }
 
-            UpdateAncestorFilter();
+            UpdateAncestorFilter(
+                forceDescendantRefresh:
+                    name.Equals("id", StringComparison.OrdinalIgnoreCase) ||
+                    name.Equals("class", StringComparison.OrdinalIgnoreCase));
             NotifySlotAssignmentMayHaveChanged(name);
             NotifyAttributeMutation(attr, oldValue);
         }
@@ -603,7 +606,7 @@ namespace FenBrowser.Core.Dom.V2
 
         public long AncestorFilter { get; private set; }
 
-        internal void UpdateAncestorFilter()
+        internal void UpdateAncestorFilter(bool forceDescendantRefresh = false)
         {
             long newFilter = 0;
             if (_parentNode is Element parent)
@@ -611,7 +614,7 @@ namespace FenBrowser.Core.Dom.V2
                 newFilter = parent.AncestorFilter | parent.ComputeFeatureHash();
             }
 
-            if (newFilter != AncestorFilter)
+            if (newFilter != AncestorFilter || forceDescendantRefresh)
             {
                 AncestorFilter = newFilter;
                 // Propagate to children

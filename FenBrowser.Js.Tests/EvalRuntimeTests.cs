@@ -62,4 +62,18 @@ public sealed class EvalRuntimeTests
     {
         Assert.Equal(JsValueTag.Undefined, Run("eval();").Tag);
     }
+
+    [Fact]
+    public void Eval_UsesConfiguredParserRecursionDepth()
+    {
+        var nestedExpression = new string('(', 12) + "1" + new string(')', 12);
+        var fn = new BytecodeCompiler().CompileScript(
+            new SourceText($"try {{ eval('{nestedExpression}'); }} catch (e) {{ e.name; }}"));
+        var interpreter = new BytecodeInterpreter
+        {
+            ParserMaxRecursionDepth = 8
+        };
+
+        Assert.Equal("SyntaxError", interpreter.Execute(fn).AsString());
+    }
 }

@@ -15,6 +15,134 @@ namespace FenBrowser.Tests.Core;
 public sealed class IframeInputRetargetingTests
 {
     [Fact]
+    public async Task AttachedIframeDocument_ClipsPaintToFrameContentBox()
+    {
+        const int viewportWidth = 320;
+        const int viewportHeight = 200;
+        const string html = """
+<!doctype html>
+<html>
+<head><style>html,body{margin:0;background:#fff} iframe{display:block;margin:20px;border:0}</style></head>
+<body>
+  <iframe id="frame" width="100" height="60"></iframe>
+  <script>
+    var doc = document.getElementById('frame').contentDocument;
+    doc.open();
+    doc.write('<!doctype html><html><body style="margin:0"><div style="width:100px;height:60px;background:#000"></div></body></html>');
+    doc.close();
+  </script>
+</body>
+</html>
+""";
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        host.SetActiveRenderer(renderer);
+        host.Engine.SetExternalRenderer(renderer);
+
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/iframe-clip"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth: viewportWidth,
+            viewportHeight: viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var iframe = FindById(root, "frame");
+        await WaitForAsync(
+            () => iframe.FirstChild is Document document && document.Body != null,
+            "iframe document body to be written");
+
+        RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+        Assert.True(renderer.LastLayout.TryGetElementRect(iframe, out var iframeRect));
+
+        var context = renderer.CreateRenderContext();
+        var paintTree = NewPaintTreeBuilder.Build(
+            root,
+            context.Boxes,
+            host.ComputedStyles,
+            viewportWidth,
+            viewportHeight,
+            new ScrollManager());
+        var frameClip = FlattenPaintNodes(paintTree.Roots)
+            .OfType<ClipPaintNode>()
+            .FirstOrDefault(clip =>
+                clip.ClipRect is SKRect rect &&
+                Math.Abs(rect.Left - iframeRect.Left) < 1f &&
+                Math.Abs(rect.Top - iframeRect.Top) < 1f &&
+                Math.Abs(rect.Width - iframeRect.Width) < 1f &&
+                Math.Abs(rect.Height - iframeRect.Height) < 1f);
+
+        Assert.NotNull(frameClip);
+    }
+
+    [Fact]
+    public async Task AttachedIframeDocument_UsesFrameContentBoxAsLayoutViewport()
+    {
+        const int viewportWidth = 640;
+        const int viewportHeight = 360;
+        const string html = """
+<!doctype html>
+<html>
+<head>
+  <style>
+    body { margin: 0; }
+    iframe { display: block; margin: 40px 0 0 50px; border: 0; }
+  </style>
+</head>
+<body>
+  <iframe id="challenge-frame" width="300" height="120"></iframe>
+  <script>
+    var frame = document.getElementById('challenge-frame');
+    var doc = frame.contentDocument;
+    doc.open();
+    doc.write('<!doctype html><html><head><style>html,body{margin:0;height:100vh}</style></head><body><div>frame</div></body></html>');
+    doc.close();
+  </script>
+</body>
+</html>
+""";
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        host.SetActiveRenderer(renderer);
+        host.Engine.SetExternalRenderer(renderer);
+
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/iframe-viewport"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth: viewportWidth,
+            viewportHeight: viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var iframe = FindById(root, "challenge-frame");
+        await WaitForAsync(
+            () => iframe.FirstChild is Document document && document.Body != null,
+            "iframe document body to be written");
+        var frameDocument = Assert.IsType<Document>(iframe.FirstChild);
+
+        RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+
+        Assert.True(renderer.LastLayout.TryGetElementRect(iframe, out var iframeRect));
+        Assert.True(renderer.LastLayout.TryGetElementRect(frameDocument.DocumentElement, out var frameRootRect));
+        Assert.Equal(300f, iframeRect.Width, 1f);
+        Assert.Equal(120f, iframeRect.Height, 1f);
+        Assert.Equal(iframeRect.Left, frameRootRect.Left, 1f);
+        Assert.Equal(iframeRect.Top, frameRootRect.Top, 1f);
+        Assert.InRange(frameRootRect.Width, 299f, 301f);
+        Assert.InRange(frameRootRect.Height, 119f, 121f);
+    }
+
+    [Fact]
     public async Task BrowserHostClick_RetargetsVisualPointIntoIframeDocument()
     {
         const int viewportWidth = 640;
@@ -81,8 +209,8 @@ public sealed class IframeInputRetargetingTests
         Assert.True(renderer.LastLayout.TryGetElementRect(iframe, out var iframeRect), "Missing iframe layout rect.");
         Assert.True(renderer.LastLayout.TryGetElementRect(button, out var buttonRect), "Missing iframe button layout rect.");
 
-        var visualX = iframeRect.Left + buttonRect.Left + (buttonRect.Width / 2f);
-        var visualY = iframeRect.Top + buttonRect.Top + (buttonRect.Height / 2f);
+        var visualX = buttonRect.Left + (buttonRect.Width / 2f);
+        var visualY = buttonRect.Top + (buttonRect.Height / 2f);
 
         host.OnClick(visualX, visualY, button: 0);
 
@@ -158,8 +286,8 @@ public sealed class IframeInputRetargetingTests
         Assert.True(renderer.LastLayout.TryGetElementRect(iframe, out var iframeRect), "Missing iframe layout rect.");
         Assert.True(renderer.LastLayout.TryGetElementRect(anchor, out var anchorRect), "Missing anchor layout rect.");
 
-        var visualX = iframeRect.Left + anchorRect.Left + (anchorRect.Width / 2f);
-        var visualY = iframeRect.Top + anchorRect.Top + (anchorRect.Height / 2f);
+        var visualX = anchorRect.Left + (anchorRect.Width / 2f);
+        var visualY = anchorRect.Top + (anchorRect.Height / 2f);
 
         Assert.True(HitTester.HitTestInput(renderer.CreateRenderContext(), visualX, visualY, out var input));
         Assert.Same(anchor, input.Target);
@@ -192,6 +320,19 @@ public sealed class IframeInputRetargetingTests
             EmitVerificationReport = false
         });
         canvas.Flush();
+    }
+
+    private static System.Collections.Generic.List<PaintNodeBase> FlattenPaintNodes(
+        System.Collections.Generic.IEnumerable<PaintNodeBase> nodes)
+    {
+        var flattened = new System.Collections.Generic.List<PaintNodeBase>();
+        foreach (var node in nodes ?? Enumerable.Empty<PaintNodeBase>())
+        {
+            flattened.Add(node);
+            flattened.AddRange(FlattenPaintNodes(node.Children));
+        }
+
+        return flattened;
     }
 
     private static Element FindById(Element root, string id)

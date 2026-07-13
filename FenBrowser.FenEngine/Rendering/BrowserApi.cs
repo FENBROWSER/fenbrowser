@@ -250,6 +250,9 @@ namespace FenBrowser.FenEngine.Rendering
         private int _renderedDiagnosticsCapturedTextLength;
         private int _renderedDiagnosticsCapturedContentHash;
         private bool _disposed;
+        private readonly Action<Element> _elementStateChangedHandler;
+        private readonly Action<Element> _styleAttributeChangedHandler;
+        private CancellationTokenSource _interactionRecascadeDebounce;
         
         private readonly List<HistoryEntry> _history = new List<HistoryEntry>();
         private int _historyIndex = -1;
@@ -851,11 +854,13 @@ namespace FenBrowser.FenEngine.Rendering
             // Hover/focus/active state changes require re-running the selector cascade so that
             // rules like  a:hover { color: red }  are applied.  We schedule a single re-cascade
             // per state-change burst; ScheduleRecascade() ignores overlapping calls.
-            ElementStateManager.Instance.OnStateChanged += _ => _engine.ScheduleRecascade(fullRecascade: true);
+            _elementStateChangedHandler = _ => ScheduleInteractionRecascade();
+            ElementStateManager.Instance.OnStateChanged += _elementStateChangedHandler;
 
             // Wire DOM attribute mutations (class/id/style changes from JS or DOM manipulation)
             // â†’ CSS re-cascade.  e.g. element.classList.add('active') must reflect in selectors.
-            FenBrowser.Core.Dom.V2.Element.StyleAttributeChanged += _ => _engine.ScheduleRecascade();
+            _styleAttributeChangedHandler = _ => _engine.ScheduleRecascade();
+            FenBrowser.Core.Dom.V2.Element.StyleAttributeChanged += _styleAttributeChangedHandler;
 
             _engine.DomReady += (s, dom) =>
             {
@@ -9903,6 +9908,12 @@ pre {{
         {
             if (_disposed) return;
 
+            ElementStateManager.Instance.OnStateChanged -= _elementStateChangedHandler;
+            FenBrowser.Core.Dom.V2.Element.StyleAttributeChanged -= _styleAttributeChangedHandler;
+            var debounce = Interlocked.Exchange(ref _interactionRecascadeDebounce, null);
+            debounce?.Cancel();
+            debounce?.Dispose();
+
             if (_fontLoadedHandler != null)
                 FontRegistry.FontLoaded -= _fontLoadedHandler;
 
@@ -9925,6 +9936,34 @@ pre {{
             _disposed = true;
             try { _engine.Dispose(); }
             catch (Exception ex) { TryLogWarn($"[BrowserHost] Engine dispose failed: {ex.Message}", LogCategory.General); }
+        }
+
+        private void ScheduleInteractionRecascade()
+        {
+            var next = new CancellationTokenSource();
+            var previous = Interlocked.Exchange(ref _interactionRecascadeDebounce, next);
+            previous?.Cancel();
+            previous?.Dispose();
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(75, next.Token).ConfigureAwait(false);
+                    if (!_disposed)
+                    {
+                        _engine.ScheduleRecascade();
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                finally
+                {
+                    Interlocked.CompareExchange(ref _interactionRecascadeDebounce, null, next);
+                    next.Dispose();
+                }
+            });
         }
 
         // IHistoryBridge Implementation

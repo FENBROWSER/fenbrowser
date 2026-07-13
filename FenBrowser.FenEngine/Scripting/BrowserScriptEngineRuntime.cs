@@ -2502,7 +2502,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 // instructions is ~5-10 s of interpreted bytecode on a modern
                 // CPU — enough for even the largest page bundles to finish.
                 InstructionBudget = 100_000_000,
-                MaxCallDepth = 1024
+                MaxCallDepth = 1024,
+                ParserMaxRecursionDepth = FenJsBrowserParserMaxRecursionDepth
             };
 
             // Wire a diagnostic Promise rejection tracker so unhandled rejections

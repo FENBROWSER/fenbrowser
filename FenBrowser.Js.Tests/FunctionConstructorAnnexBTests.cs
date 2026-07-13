@@ -67,6 +67,20 @@ public class FunctionConstructorAnnexBTests
     }
 
     [Fact]
+    public void FunctionCtor_UsesConfiguredParserRecursionDepth()
+    {
+        var nestedExpression = new string('(', 12) + "1" + new string(')', 12);
+        var fn = new BytecodeCompiler().CompileScript(
+            new SourceText($"try {{ Function('return {nestedExpression};')(); }} catch (e) {{ e.name; }}"));
+        var interpreter = new BytecodeInterpreter
+        {
+            ParserMaxRecursionDepth = 8
+        };
+
+        Assert.Equal("SyntaxError", interpreter.Execute(fn).AsString());
+    }
+
+    [Fact]
     public void FunctionCtor_InvalidIdentifierParam_ThrowsSyntaxError()
     {
         // Regression: junk param name still throws SyntaxError (wrapped),

@@ -223,31 +223,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
                 if (tag == "IFRAME")
                 {
-                    // Prefer the nested browsing-context document when available.
-                    var frameDocs = element.ChildNodes.OfType<Document>().Cast<Node>().ToList();
-                    if (frameDocs.Count > 0)
-                    {
-                        return frameDocs;
-                    }
-
-                    // Fallback: include element children (e.g. WebDriver-attached frame roots).
-                    var frameElements = element.ChildNodes.OfType<Element>().Cast<Node>().ToList();
-                    if (frameElements.Count > 0)
-                    {
-                        return frameElements;
-                    }
-
-                    // Last fallback: if the JS layer has a cached frame document not yet attached,
-                    // traverse its document element so layout/paint can represent frame content.
-                    if (ElementWrapper.TryGetCachedIframeDocument(element, out var iframeDocument))
-                    {
-                        var root = iframeDocument?.DocumentElement;
-                        if (root != null)
-                        {
-                            return new Node[] { root };
-                        }
-                    }
-
+                    // The frame document belongs to a separate browsing context. It is
+                    // laid out against the iframe viewport after the atomic host box.
                     return Array.Empty<Node>();
                 }
 

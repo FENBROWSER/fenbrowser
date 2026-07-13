@@ -8,6 +8,26 @@ namespace FenBrowser.Tests.Core;
 public sealed class ImageLoaderCssFunctionTests
 {
     [Fact]
+    public void GetImage_DecodesUnpaddedBase64DataUri()
+    {
+        const string unpaddedPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK6QAAAAASUVORK5CYII";
+        ImageLoader.ClearCache();
+
+        try
+        {
+            var bitmap = ImageLoader.GetImage("data:image/png;base64," + unpaddedPng);
+
+            Assert.NotNull(bitmap);
+            Assert.Equal(1, bitmap.Width);
+            Assert.Equal(1, bitmap.Height);
+        }
+        finally
+        {
+            ImageLoader.ClearCache();
+        }
+    }
+
+    [Fact]
     public async Task GetImage_IgnoresCssImageFunctionsWithoutStartingAsyncLoad()
     {
         ImageLoader.ClearCache();

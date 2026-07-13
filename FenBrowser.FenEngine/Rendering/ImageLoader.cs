@@ -1086,6 +1086,17 @@ namespace FenBrowser.FenEngine.Rendering
              if (cleanData.Contains('%'))
              {
                  cleanData = Uri.UnescapeDataString(cleanData);
+                 cleanData = cleanData.Replace("\r", "").Replace("\n", "").Replace(" ", "").Replace("\t", "").Replace("\f", "");
+             }
+
+             int remainder = cleanData.Length % 4;
+             if (remainder == 2)
+             {
+                 cleanData += "==";
+             }
+             else if (remainder == 3)
+             {
+                 cleanData += "=";
              }
              
              try { bytes = Convert.FromBase64String(cleanData); }

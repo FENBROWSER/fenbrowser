@@ -560,6 +560,11 @@ namespace FenBrowser.FenEngine.Rendering
                 bool isIframeScrollHost = node is Element ifrEl &&
                     string.Equals(ifrEl.TagName, "IFRAME", StringComparison.OrdinalIgnoreCase);
 
+                if (isIframeScrollHost)
+                {
+                    childContext.ClipBounds = box.PaddingBox;
+                }
+
                 if ((isScrollable || isIframeScrollHost) && _scrollManager != null)
                 {
                     var scrollElement = node as Element;

@@ -379,6 +379,10 @@ namespace FenBrowser.FenEngine.Rendering
                                root != _lastRoot ||
                                Math.Abs(_viewportWidth - _lastViewportWidth) > 0.1f || 
                                Math.Abs(_viewportHeight - _lastViewportHeight) > 0.1f;
+            if (!forceLayout && HasUnmaterializedNestedBrowsingContext(root, _lastLayout))
+            {
+                forceLayout = true;
+            }
             
             _lastViewportWidth = _viewportWidth;
             _lastViewportHeight = _viewportHeight;
@@ -993,7 +997,8 @@ namespace FenBrowser.FenEngine.Rendering
 
                 var (html, body) = ResolveDocumentElements(root);
 
-                if (TryResolveOpaqueBackground(styles, html, out var htmlColor))
+                if (TryResolveOpaqueBackground(styles, html, out var htmlColor) &&
+                    HasAuthoredBackground(styles, html))
                 {
                     EngineLogCompat.Debug($"[SkiaDomRenderer] Canvas background resolved from HTML: {htmlColor}", LogCategory.Rendering);
                     return htmlColor;
@@ -1003,6 +1008,12 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     EngineLogCompat.Debug($"[SkiaDomRenderer] Canvas background resolved from BODY: {bodyColor}", LogCategory.Rendering);
                     return bodyColor;
+                }
+
+                if (TryResolveOpaqueBackground(styles, html, out htmlColor))
+                {
+                    EngineLogCompat.Debug($"[SkiaDomRenderer] Canvas background resolved from HTML fallback: {htmlColor}", LogCategory.Rendering);
+                    return htmlColor;
                 }
 
                 EngineLogCompat.Debug($"[SkiaDomRenderer] Canvas background fallback: {defaultReason}", LogCategory.Rendering);
@@ -1118,6 +1129,18 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return false;
+        }
+
+        private static bool HasAuthoredBackground(
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            Element element)
+        {
+            return element != null &&
+                   styles.TryGetValue(element, out var style) &&
+                   style?.Map != null &&
+                   (style.Map.ContainsKey("background") ||
+                    style.Map.ContainsKey("background-color") ||
+                    !string.IsNullOrWhiteSpace(style.BackgroundImage));
         }
 
         private RenderFrameTelemetry CreateTelemetry(
@@ -1698,6 +1721,31 @@ namespace FenBrowser.FenEngine.Rendering
                     stack.Push(children[i]);
                 }
             }
+        }
+
+        private static bool HasUnmaterializedNestedBrowsingContext(Node root, LayoutResult layout)
+        {
+            if (root == null || layout == null)
+            {
+                return false;
+            }
+
+            foreach (var frameElement in root.DescendantsAndSelf().OfType<Element>())
+            {
+                if (!string.Equals(frameElement.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var frameDocument = frameElement.ChildNodes?.OfType<Document>().FirstOrDefault();
+                var frameRoot = frameDocument?.DocumentElement;
+                if (frameRoot != null && !layout.TryGetElementRect(frameRoot, out _))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private sealed class IncrementalLayoutPlan
