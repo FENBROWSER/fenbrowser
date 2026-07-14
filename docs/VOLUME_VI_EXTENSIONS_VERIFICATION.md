@@ -2925,3 +2925,19 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~BoxTreeBuilderHotPathTests" -v quiet`: pass (`2/2`).
 - The two included Box Tree/layout filters pass `61/61` and `44/44`.
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in all five retained processes.
+
+## 6.98 Renderer Dirty-Walk Verification (2026-07-14)
+
+- `RecursivelyClearDirty_FlatTree_DoesNotAllocate` exercises the renderer's real recursive clear over 101 nodes. Ten warmed walks allocate `94,320 B` with `NodeList` snapshots and exactly `0 B` with sibling-link traversal.
+- The contract verifies the semantic boundary: clearing Paint also clears Style on the root and all children, while Layout remains dirty.
+- An explicit source restore/reapply keeps `RenderFrameTelemetryTests`, `IncrementalLayoutCacheTests`, `CompositorLayerAndIncrementalLayoutTests`, and `BrowserIntegrationRepaintInvalidationTests` at `19/19`; the candidate passes `20/20` including the new allocation contract.
+- Immediate process reports `134407`-`134412` before and `134430`-`134435` after reduce paint allocation `1.15%`-`3.83%` and render allocation `1.04%`-`2.83%`. Every failure gate passes.
+- Timing is deliberately not gated as an improvement: dense total is `+6.96%`, and wrapped total is `+24.74%` in a bimodal batch even though wrapped paint is `-0.31%` and untouched CSS is `-27.92%`.
+- A fresh `gc-verbose` trace reduces attributed `LiveChildNodeList.GetEnumerator` weight from `7.11%` to `0.03%`; the renderer dirty walk no longer appears as its caller.
+- This renderer-only implementation does not affect JavaScript semantics, so Test262 and WPT categories are not rerun.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~RecursivelyClearDirty_FlatTree|FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~IncrementalLayoutCacheTests|FullyQualifiedName~CompositorLayerAndIncrementalLayoutTests|FullyQualifiedName~BrowserIntegrationRepaintInvalidationTests" -v quiet /nodeReuse:false`: pass (`20/20`).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every immediate A/B process.

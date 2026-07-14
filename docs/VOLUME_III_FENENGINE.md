@@ -9147,3 +9147,29 @@ Verification:
 - Box Tree allocation contracts: pass (`2/2`).
 - Pseudo-element, inline, float, relayout, grid, replaced-element, Acid2, style/layout, aspect-ratio, flex, and positioning slices: pass (`61/61` and `44/44`).
 - All four benchmark failure gates passed in every retained report.
+
+## 2.337 Allocation-Free Renderer Dirty-Flag Walks (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - The post-Box-Tree allocation trace attributed `7.11%` of ranked FenBrowser allocation weight to `LiveChildNodeList.GetEnumerator`; reconstructed callers assigned `99.71%` of that weight to `SkiaDomRenderer.RecursivelyClearDirty`.
+  - Dirty-flag clearing does not mutate the DOM tree. The renderer now walks `FirstChild`/`NextSibling` links directly instead of asking the public live `NodeList` for its mutation-safe snapshot on every visited node. Traversal order and recursive clearing of the requested flag plus Style remain unchanged.
+  - `NodeList` enumeration semantics are untouched. The method is internal only so the included allocation and flag-semantics contract can exercise the production implementation; no cache, pool, unsafe code, retained state, or concurrency is added.
+- `FenBrowser.Tests/Performance/SkiaDomRendererDirtyTraversalTests.cs`
+  - A ten-walk workload over a root plus 100 leaf elements moved from `94,320 B` to exactly `0 B`. It also verifies that Paint and Style clear on every node while Layout remains dirty.
+
+An immediate restore/reapply A/B compares original reports `134407`-`134412` with retained reports `134430`-`134435`:
+
+| Scenario | Total before | Total after | Layout allocation before | Layout allocation after | Paint allocation before | Paint allocation after | Render allocation before | Render allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 182.03 ms | 181.41 ms (-0.34%) | 8,857,760 B | 8,811,704 B (-0.52%) | 1,523,696 B | 1,465,304 B (-3.83%) | 10,837,192 B | 10,722,640 B (-1.06%) |
+| steady-state-damage-animation | 14.18 ms | 14.29 ms (+0.78%) | 184 B | 184 B (flat) | 922,322 B | 888,466 B (-3.67%) | 10,494,384 B | 10,297,360 B (-1.88%) |
+| dense-text-flow | 13.08 ms | 13.99 ms (+6.96%) | 1,485,908 B | 1,470,944 B (-1.01%) | 1,300,852 B | 1,285,832 B (-1.15%) | 5,741,088 B | 5,681,424 B (-1.04%) |
+| wrapped-multiline-text | 6.75 ms | 8.42 ms (+24.74%) | 804,672 B | 798,260 B (-0.80%) | 362,908 B | 356,612 B (-1.73%) | 2,443,568 B | 2,374,488 B (-2.83%) |
+
+Allocation falls at every affected stage and in every fixture. Timing is not accepted as an improvement: dense paint moves `+7.87%`, while wrapped layout is bimodal (`1.55`-`3.50 ms`) and the untouched CSS stage moves `-27.92%` in the same batch. These signals are retained and reported rather than attributed to the four-line traversal change. A fresh allocation trace reduces `LiveChildNodeList.GetEnumerator` from `7.11%` to `0.03%` of attributed FenBrowser weight and removes `RecursivelyClearDirty` as its measured caller.
+
+Verification:
+
+- Explicit source restore: renderer invalidation and incremental-layout slice passes `19/19` before and after; the retained allocation contract makes the candidate slice `20/20`.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- All four benchmark failure gates passed in every immediate A/B report.

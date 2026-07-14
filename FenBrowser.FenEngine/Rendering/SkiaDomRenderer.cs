@@ -2198,18 +2198,17 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
         
-        private void RecursivelyClearDirty(Node node, InvalidationKind kind)
+        internal void RecursivelyClearDirty(Node node, InvalidationKind kind)
         {
             if (node == null) return;
             node.ClearDirty(kind);
             node.ClearDirty(InvalidationKind.Style); // Ensure Style is cleared too
-            
-            if (node.ChildNodes != null)
+
+            // This walk only mutates dirty flags, so DOM sibling links remain stable.
+            // Avoid NodeList's mutation-safe snapshot allocation on every visited node.
+            for (var child = node.FirstChild; child != null; child = child.NextSibling)
             {
-                foreach (var child in node.ChildNodes)
-                {
-                    RecursivelyClearDirty(child, kind);
-                }
+                RecursivelyClearDirty(child, kind);
             }
         }
 
