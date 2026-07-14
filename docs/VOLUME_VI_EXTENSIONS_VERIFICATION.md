@@ -2910,3 +2910,18 @@ Verification commands:
 - The two included before/after filters covering the Box Tree and layout contracts pass `61/61` and `44/44` on each side of the restore.
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in all ten immediate A/B processes.
+
+## 6.97 Lazy Box-Child Storage Verification (2026-07-14)
+
+- `Build_FlatEmptyElementTree_StaysWithinAllocationBudget` constructs 100 empty inline leaf elements and rebuilds their Box Tree ten times after warm-up. The pre-change implementation allocates `6,798,496 B`; the retained implementation allocates `6,766,496 B`, an exact `32,000 B` reduction. Its `6,780,000 B` ceiling rejects the eager per-leaf list allocation.
+- The existing 201-node inline/text allocation contract remains under its `11,450,000 B` budget, protecting the preceding caller-owned result-list change.
+- Focused semantics coverage passes `61/61` plus `44/44` across pseudo-elements, block-in-inline behavior, floats, relayout, grid, replaced elements, Acid2, style/layout mapping, aspect ratios, flex, and positioned layout.
+- Five-process reports `133020`-`133026` before and `133641`-`133646` after pass every failure gate. Whole-stage allocation and timing medians are recorded as mixed/noisy; the focused exact allocation probe is the acceptance measurement.
+- The change is internal to Box Tree construction, so no Test262 or WPT category is affected or rerun.
+
+Verification commands:
+
+- `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~BoxTreeBuilderHotPathTests" -v quiet`: pass (`2/2`).
+- The two included Box Tree/layout filters pass `61/61` and `44/44`.
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in all five retained processes.

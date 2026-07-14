@@ -36,5 +36,33 @@ namespace FenBrowser.Tests.Performance
             long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
             Assert.True(allocated <= 11_450_000, $"Expected at most 11,450,000 allocated bytes, got {allocated}.");
         }
+
+        [Fact]
+        public void Build_FlatEmptyElementTree_StaysWithinAllocationBudget()
+        {
+            var root = new Element("div");
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block" }
+            };
+
+            for (var index = 0; index < 100; index++)
+            {
+                var child = new Element("span");
+                root.AppendChild(child);
+                styles[child] = new CssComputed { Display = "inline" };
+            }
+
+            Assert.NotNull(new BoxTreeBuilder(styles).Build(root));
+
+            long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            for (var iteration = 0; iteration < 10; iteration++)
+            {
+                Assert.NotNull(new BoxTreeBuilder(styles).Build(root));
+            }
+
+            long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+            Assert.True(allocated <= 6_780_000, $"Expected at most 6,780,000 allocated bytes, got {allocated}.");
+        }
     }
 }

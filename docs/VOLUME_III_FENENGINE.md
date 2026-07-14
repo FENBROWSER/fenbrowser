@@ -9120,3 +9120,30 @@ Verification:
 - Two unrelated tests fail identically on original and candidate builds: `GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl` and `ColumnMinHeightDvh_AllowsFlexOneHeroToCenterContent`. They remain visible existing failures.
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - All four benchmark failure gates passed in both immediate five-process A/B batches.
+
+## 2.336 Lazy Leaf-Element Child Lists (2026-07-14)
+
+- `FenBrowser.FenEngine/Layout/Tree/BoxTreeBuilder.cs`
+  - The retained allocation trace continued to rank `BoxTreeBuilder.ConstructBoxes`. Type-level inspection found that every normal element eagerly allocated a child `List<LayoutBox>`, including leaf elements with no DOM children and no visible pseudo-elements.
+  - The list is now created only when a visible `::before`/`::after` box or a DOM child must be accumulated. Child ordering, block-in-inline splitting, pseudo-element construction, block-child fixup, and the caller-owned result list are unchanged. A null local is only the internal representation of an empty child sequence and does not escape the builder.
+  - The change adds no cache, pool, unsafe code, retained state, or concurrency. Non-leaf ownership stays element-local because splitting and fixup require it.
+- `FenBrowser.Tests/Performance/BoxTreeBuilderHotPathTests.cs`
+  - A deterministic ten-build workload over a root plus 100 empty inline leaf elements moved from `6,798,496 B` to `6,766,496 B`, exactly `32,000 B` lower (`0.47%`). The `6,780,000 B` budget rejects the eager-list implementation.
+
+Five fresh Release processes compare immediate pre-change reports `133020`-`133026` with retained reports `133641`-`133646`:
+
+| Scenario | Total before | Total after | Layout allocation before | Layout allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 184.43 ms | 176.31 ms (-4.40%) | 8,870,096 B | 8,857,760 B (-0.14%) |
+| steady-state-damage-animation | 14.24 ms | 13.95 ms (-2.04%) | 184 B | 184 B (flat) |
+| dense-text-flow | 13.84 ms | 12.79 ms (-7.59%) | 1,485,592 B | 1,485,392 B (-0.01%) |
+| wrapped-multiline-text | 7.09 ms | 6.73 ms (-5.08%) | 799,272 B | 804,672 B (+0.68%) |
+
+The exact focused allocation delta is retained as the causal measurement. Process-level layout allocation is mixed because the fixtures measure the whole layout stage, and the uniformly lower total times include improvements in untouched CSS, paint, and raster stages; no end-to-end timing improvement is attributed to this change. Collection counts and all four benchmark failure gates are unchanged.
+
+Verification:
+
+- `dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- Box Tree allocation contracts: pass (`2/2`).
+- Pseudo-element, inline, float, relayout, grid, replaced-element, Acid2, style/layout, aspect-ratio, flex, and positioning slices: pass (`61/61` and `44/44`).
+- All four benchmark failure gates passed in every retained report.

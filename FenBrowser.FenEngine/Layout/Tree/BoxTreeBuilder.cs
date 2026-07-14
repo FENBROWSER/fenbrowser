@@ -165,11 +165,12 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     box = _store.GetWrapper(id);
                 }
 
-                var childBoxes = new List<LayoutBox>();
+                List<LayoutBox>? childBoxes = null;
 
                 // Prepend ::before pseudo-element
                 if (style.Before != null && IsVisiblePseudo(style.Before))
                 {
+                    childBoxes = new List<LayoutBox>();
                     if (style.Before.PseudoElementInstance == null)
                         style.Before.PseudoElementInstance = new PseudoElement(element, "before", style.Before);
                     EnsurePseudoTextContent(style.Before.PseudoElementInstance, style.Before.Content);
@@ -179,12 +180,14 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 // Recurse on children
                 foreach (var childNode in GetChildren(element))
                 {
+                    childBoxes ??= new List<LayoutBox>();
                     ConstructBoxes(childNode, style, childBoxes);
                 }
 
                 // Append ::after pseudo-element
                 if (style.After != null && IsVisiblePseudo(style.After))
                 {
+                    childBoxes ??= new List<LayoutBox>();
                     if (style.After.PseudoElementInstance == null)
                         style.After.PseudoElementInstance = new PseudoElement(element, "after", style.After);
                     EnsurePseudoTextContent(style.After.PseudoElementInstance, style.After.Content);
@@ -192,16 +195,19 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 }
 
                 // Handle Block-in-Inline Splitting (CSS 2.1 Section 9.2.1.1)
-                if (isInline && HasBlockLevelBox(childBoxes))
+                if (childBoxes != null && isInline && HasBlockLevelBox(childBoxes))
                 {
                     result.AddRange(SplitInlineBox(element, style, childBoxes));
                     return;
                 }
 
                 // Normal child adding
-                foreach (var childBox in childBoxes)
+                if (childBoxes != null)
                 {
-                    box.AddChild(childBox);
+                    foreach (var childBox in childBoxes)
+                    {
+                        box.AddChild(childBox);
+                    }
                 }
 
                 if (box is BlockBox blockBox)
