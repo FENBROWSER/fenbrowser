@@ -52,6 +52,12 @@ namespace FenBrowser.FenEngine.Rendering.Core
 
         public int DomNodeCount { get; init; }
 
+        public int ElementNodeCount { get; init; }
+
+        public int TextNodeCount { get; init; }
+
+        public int AttributeCount { get; init; }
+
         public int BoxCount { get; init; }
 
         public int PaintNodeCount { get; init; }

@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using FenBrowser.FenEngine.Adapters;
 using FenBrowser.FenEngine.Rendering.Core;
+using FenBrowser.FenEngine.Typography;
 
 namespace FenBrowser.FenEngine.Rendering.Performance
 {
@@ -20,6 +22,9 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         int Gen1Collections,
         int Gen2Collections,
         int DomNodeCount,
+        int ElementNodeCount,
+        int TextNodeCount,
+        int AttributeCount,
         int LayoutObjectCount,
         int PaintCommandCount,
         double LayoutMs,
@@ -29,7 +34,22 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         int IncrementalLayoutRootCount,
         int DamageRegionCount,
         float DamageAreaRatio,
-        RenderFrameRasterMode RasterMode);
+        RenderFrameRasterMode RasterMode,
+        int CachedImageCount,
+        long ImageCacheBytes,
+        long ImageCacheHits,
+        long ImageCacheMisses,
+        long ImageCacheEvictions,
+        int CachedTypefaceCount,
+        long FontCacheBytes,
+        long FontCacheHits,
+        long FontCacheMisses,
+        long FontCacheEvictions,
+        long TextMeasurementCalls,
+        long TextMeasurementCacheHits,
+        long TextMeasurementCacheMisses,
+        long TextMeasurementCacheEvictions,
+        bool RendererCachesCaptured);
 
     /// <summary>
     /// Bounded, process-local navigation diagnostics. Hot paths store numeric values;
@@ -70,23 +90,47 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             {
                 _latestFrame = telemetry;
                 int index = Navigations.Count - 1;
-                if (index >= 0 && UrlMatches(Navigations[index].Url, telemetry.Url))
+                if (index < 0 || !UrlMatches(Navigations[index].Url, telemetry.Url))
                 {
-                    Navigations[index] = Navigations[index] with
-                    {
-                        DomNodeCount = telemetry.DomNodeCount,
-                        LayoutObjectCount = telemetry.BoxCount,
-                        PaintCommandCount = telemetry.PaintNodeCount,
-                        LayoutMs = telemetry.LayoutDurationMs,
-                        PaintGenerationMs = telemetry.PaintDurationMs,
-                        RasterMs = telemetry.RasterDurationMs,
-                        UsedIncrementalLayout = telemetry.UsedIncrementalLayout,
-                        IncrementalLayoutRootCount = telemetry.IncrementalLayoutRootCount,
-                        DamageRegionCount = telemetry.DamageRegionCount,
-                        DamageAreaRatio = telemetry.DamageAreaRatio,
-                        RasterMode = telemetry.RasterMode
-                    };
+                    return;
                 }
+
+                if (Navigations[index].RendererCachesCaptured)
+                {
+                    Navigations[index] = MergeFrameTelemetry(Navigations[index], telemetry);
+                    return;
+                }
+            }
+
+            var images = ImageLoader.GetCacheSnapshot();
+            var fonts = SkiaFontService.GetGlobalCacheSnapshot();
+            var textMeasurements = SkiaTextMeasurer.GetGlobalCacheSnapshot();
+            lock (Sync)
+            {
+                int index = Navigations.Count - 1;
+                if (index < 0 || !UrlMatches(Navigations[index].Url, telemetry.Url))
+                {
+                    return;
+                }
+
+                Navigations[index] = MergeFrameTelemetry(Navigations[index], telemetry) with
+                {
+                    CachedImageCount = images.StaticImageCount + images.AnimatedImageCount,
+                    ImageCacheBytes = images.ApproximateBytes,
+                    ImageCacheHits = images.HitCount,
+                    ImageCacheMisses = images.MissCount,
+                    ImageCacheEvictions = images.EvictionCount,
+                    CachedTypefaceCount = fonts.TypefaceEntries,
+                    FontCacheBytes = fonts.ApproximateBytes,
+                    FontCacheHits = fonts.HitCount,
+                    FontCacheMisses = fonts.MissCount,
+                    FontCacheEvictions = fonts.EvictionCount,
+                    TextMeasurementCalls = textMeasurements.HitCount + textMeasurements.MissCount,
+                    TextMeasurementCacheHits = textMeasurements.HitCount,
+                    TextMeasurementCacheMisses = textMeasurements.MissCount,
+                    TextMeasurementCacheEvictions = textMeasurements.EvictionCount,
+                    RendererCachesCaptured = true
+                };
             }
         }
 
@@ -115,6 +159,9 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                     telemetry.Gen1Collections,
                     telemetry.Gen2Collections,
                     frame?.DomNodeCount ?? 0,
+                    frame?.ElementNodeCount ?? 0,
+                    frame?.TextNodeCount ?? 0,
+                    frame?.AttributeCount ?? 0,
                     frame?.BoxCount ?? 0,
                     frame?.PaintNodeCount ?? 0,
                     frame?.LayoutDurationMs ?? 0,
@@ -124,7 +171,22 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                     frame?.IncrementalLayoutRootCount ?? 0,
                     frame?.DamageRegionCount ?? 0,
                     frame?.DamageAreaRatio ?? 0,
-                    frame?.RasterMode ?? RenderFrameRasterMode.None));
+                    frame?.RasterMode ?? RenderFrameRasterMode.None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    false));
 
                 if (Navigations.Count > MaximumNavigationHistory)
                 {
@@ -149,6 +211,29 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         private static bool IsPerformancePage(string? url)
         {
             return url?.StartsWith("fen://performance", StringComparison.OrdinalIgnoreCase) == true;
+        }
+
+        private static NavigationPerformanceSnapshot MergeFrameTelemetry(
+            NavigationPerformanceSnapshot navigation,
+            RenderFrameTelemetry telemetry)
+        {
+            return navigation with
+            {
+                DomNodeCount = telemetry.DomNodeCount,
+                ElementNodeCount = telemetry.ElementNodeCount,
+                TextNodeCount = telemetry.TextNodeCount,
+                AttributeCount = telemetry.AttributeCount,
+                LayoutObjectCount = telemetry.BoxCount,
+                PaintCommandCount = telemetry.PaintNodeCount,
+                LayoutMs = telemetry.LayoutDurationMs,
+                PaintGenerationMs = telemetry.PaintDurationMs,
+                RasterMs = telemetry.RasterDurationMs,
+                UsedIncrementalLayout = telemetry.UsedIncrementalLayout,
+                IncrementalLayoutRootCount = telemetry.IncrementalLayoutRootCount,
+                DamageRegionCount = telemetry.DamageRegionCount,
+                DamageAreaRatio = telemetry.DamageAreaRatio,
+                RasterMode = telemetry.RasterMode
+            };
         }
     }
 }

@@ -8712,3 +8712,27 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Performance.PerformanceDiagnosticsTests|FullyQualifiedName~FenBrowser.Tests.Performance.RenderPerformanceBenchmarkRunnerTests" --logger "console;verbosity=minimal" /nodeReuse:false`: pass (`7/7`).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: pass; all three failure gates remained green after diagnostics integration.
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site fen://performance 2000`: pass. The exact internal URL completed with `0` network requests, `0` script failures, `436` DOM nodes, `428` layout boxes, `298` paint nodes, and a screenshot in `logs/real-site/performance/20260714T095850Z`.
+
+## 2.320 Document and Bounded Renderer Cache Diagnostics (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Core/IRenderFramePipeline.cs`
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - Render-frame telemetry now includes element-node, text-node, and attribute counts.
+  - Detailed document statistics reuse the renderer's existing iterative DOM-count pass and are collected only while performance recording is active; stopping recording leaves the existing total-node traversal unchanged.
+- `FenBrowser.FenEngine/Rendering/Performance/PerformanceDiagnosticsStore.cs`
+- `FenBrowser.FenEngine/Rendering/Performance/PerformancePageRenderer.cs`
+  - The first matching frame for each navigation snapshots the existing bounded image, text-measurement, and font caches instead of introducing duplicate counters or repeating global-cache enumeration on animation frames.
+  - The internal page exposes cache entries/bytes, hits, misses, and evictions alongside real document node statistics. Image-decode and low-level Skia object counters remain explicitly `Not instrumented`.
+- `FenBrowser.FenEngine/Rendering/Performance/RenderPerformanceBenchmarkRunner.cs`
+  - Benchmark measurement scopes suspend diagnostics recording and restore its prior state afterward, excluding diagnostic cache snapshots from engine timing and allocation results.
+- `FenBrowser.Tests/Performance/PerformanceDiagnosticsTests.cs`
+- `FenBrowser.Tests/Performance/RenderPerformanceBenchmarkRunnerTests.cs`
+  - Covers a real parse/style/layout/raster frame, document-stat capture, existing cache snapshot publication, and a zero-allocation 1,000-call disabled-recording path.
+  - Performance tests share the non-parallel diagnostics collection because recording state is process-global.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Performance.PerformanceDiagnosticsTests|FullyQualifiedName~FenBrowser.Tests.Performance.RenderPerformanceBenchmarkRunnerTests" -v quiet /nodeReuse:false`: pass (`8/8`).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: pass; all failure gates passed, report `Results/performance/render_perf_benchmark_20260714_100645.json`.
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site fen://performance 2000`: pass with `0` network requests, `0` script failures, and clean screenshot output in `logs/real-site/performance/20260714T100657Z`.

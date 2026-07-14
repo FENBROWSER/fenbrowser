@@ -1,11 +1,16 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using FenBrowser.Core;
+using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Rendering.Css;
 using FenBrowser.FenEngine.Rendering.Core;
 using FenBrowser.FenEngine.Rendering.Performance;
+using SkiaSharp;
 using Xunit;
 
 namespace FenBrowser.Tests.Performance
@@ -27,6 +32,9 @@ namespace FenBrowser.Tests.Performance
             {
                 Url = "https://fen.test/page",
                 DomNodeCount = 12,
+                ElementNodeCount = 7,
+                TextNodeCount = 4,
+                AttributeCount = 3,
                 BoxCount = 10,
                 PaintNodeCount = 8,
                 LayoutDurationMs = 2,
@@ -49,6 +57,9 @@ namespace FenBrowser.Tests.Performance
             {
                 Url = history[^1].Url,
                 DomNodeCount = 12,
+                ElementNodeCount = 7,
+                TextNodeCount = 4,
+                AttributeCount = 3,
                 BoxCount = 10,
                 PaintNodeCount = 8,
                 LayoutDurationMs = 2,
@@ -57,10 +68,21 @@ namespace FenBrowser.Tests.Performance
                 RasterMode = RenderFrameRasterMode.Full
             });
             Assert.Equal(12, PerformanceDiagnosticsStore.GetNavigationHistory()[^1].DomNodeCount);
+            Assert.Equal(7, PerformanceDiagnosticsStore.GetNavigationHistory()[^1].ElementNodeCount);
+            Assert.Equal(4, PerformanceDiagnosticsStore.GetNavigationHistory()[^1].TextNodeCount);
+            Assert.Equal(3, PerformanceDiagnosticsStore.GetNavigationHistory()[^1].AttributeCount);
 
             PerformanceDiagnosticsStore.StopRecording();
+            var stoppedTelemetry = new RenderFrameTelemetry { Url = history[^1].Url };
+            long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 1_000; i++)
+            {
+                PerformanceDiagnosticsStore.RecordFrame(stoppedTelemetry);
+            }
+            long disabledPathAllocations = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
             PerformanceDiagnosticsStore.RecordNavigation(CreateNavigation("https://fen.test/not-recorded"));
             Assert.Equal(PerformanceDiagnosticsStore.MaximumNavigationHistory, PerformanceDiagnosticsStore.GetNavigationHistory().Count);
+            Assert.Equal(0, disabledPathAllocations);
         }
 
         [Fact]
@@ -85,6 +107,9 @@ namespace FenBrowser.Tests.Performance
             Assert.Contains("Export results", html);
             Assert.Contains("Not instrumented", html);
             Assert.Contains("https://fen.test/latest", html);
+            Assert.Contains("Text measurement cache hits", html);
+            Assert.Contains("Image cache bytes", html);
+            Assert.Contains("Font cache hits", html);
 
             PerformancePageRenderer.Render(new Uri("fen://performance?action=stop"));
             Assert.False(PerformanceDiagnosticsStore.IsRecording);
@@ -133,6 +158,45 @@ namespace FenBrowser.Tests.Performance
             string page = PerformancePageRenderer.Render(new Uri("fen://performance"));
             Assert.Contains("https://fen.test/performance-probe", page);
             Assert.Contains(telemetry.ManagedAllocatedBytes.ToString(), page);
+        }
+
+        [Fact]
+        public async Task RenderFrame_RecordsDocumentAndBoundedCacheStatistics()
+        {
+            const string source = "<!doctype html><html><body><div id='probe' class='sample'>text</div></body></html>";
+            var baseUri = new Uri("https://fen.test/frame-statistics");
+            var document = new HtmlParser(source, baseUri).Parse();
+            var root = document.Children.OfType<Element>().First(element => element.TagName == "HTML");
+            var styles = await CssLoader.ComputeAsync(root, baseUri, null, viewportWidth: 320, viewportHeight: 200);
+            PerformanceDiagnosticsStore.Reset();
+            PerformanceDiagnosticsStore.StartRecording();
+            PerformanceDiagnosticsStore.RecordNavigation(CreateNavigation(baseUri.AbsoluteUri));
+
+            var renderer = new SkiaDomRenderer();
+            using var bitmap = new SKBitmap(320, 200);
+            using var canvas = new SKCanvas(bitmap);
+            renderer.RenderFrame(new RenderFrameRequest
+            {
+                Root = root,
+                Canvas = canvas,
+                Styles = styles,
+                Viewport = new SKRect(0, 0, 320, 200),
+                BaseUrl = baseUri.AbsoluteUri,
+                InvalidationReason = RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Style,
+                RequestedBy = nameof(RenderFrame_RecordsDocumentAndBoundedCacheStatistics)
+            });
+
+            var snapshot = Assert.Single(PerformanceDiagnosticsStore.GetNavigationHistory());
+            Assert.True(snapshot.DomNodeCount >= 4);
+            Assert.True(snapshot.ElementNodeCount >= 3);
+            Assert.True(snapshot.TextNodeCount >= 1);
+            Assert.True(snapshot.AttributeCount >= 2);
+            Assert.True(snapshot.LayoutObjectCount > 0);
+            Assert.True(snapshot.PaintCommandCount > 0);
+            Assert.True(snapshot.RendererCachesCaptured);
+            Assert.True(snapshot.TextMeasurementCalls >= 0);
+            Assert.True(snapshot.ImageCacheBytes >= 0);
+            Assert.True(snapshot.FontCacheBytes >= 0);
         }
 
         private static RenderTelemetrySnapshot CreateNavigation(string url)

@@ -379,12 +379,18 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             private readonly bool _previousGlobalLoggingEnabled;
             private readonly bool _previousLogVerification;
             private readonly bool _previousLogFrameTiming;
+            private readonly bool _previousPerformanceRecording;
 
-            private BenchmarkMeasurementScope(bool previousGlobalLoggingEnabled, bool previousLogVerification, bool previousLogFrameTiming)
+            private BenchmarkMeasurementScope(
+                bool previousGlobalLoggingEnabled,
+                bool previousLogVerification,
+                bool previousLogFrameTiming,
+                bool previousPerformanceRecording)
             {
                 _previousGlobalLoggingEnabled = previousGlobalLoggingEnabled;
                 _previousLogVerification = previousLogVerification;
                 _previousLogFrameTiming = previousLogFrameTiming;
+                _previousPerformanceRecording = previousPerformanceRecording;
             }
 
             public static BenchmarkMeasurementScope Enter()
@@ -392,11 +398,13 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 var scope = new BenchmarkMeasurementScope(
                     EngineLogCompat.IsEnabled,
                     DebugConfig.LogVerification,
-                    DebugConfig.LogFrameTiming);
+                    DebugConfig.LogFrameTiming,
+                    PerformanceDiagnosticsStore.IsRecording);
 
                 EngineLogCompat.IsEnabled = false;
                 DebugConfig.LogVerification = false;
                 DebugConfig.LogFrameTiming = false;
+                PerformanceDiagnosticsStore.StopRecording();
                 return scope;
             }
 
@@ -405,6 +413,10 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 EngineLogCompat.IsEnabled = _previousGlobalLoggingEnabled;
                 DebugConfig.LogVerification = _previousLogVerification;
                 DebugConfig.LogFrameTiming = _previousLogFrameTiming;
+                if (_previousPerformanceRecording)
+                {
+                    PerformanceDiagnosticsStore.StartRecording();
+                }
             }
         }
 

@@ -7,6 +7,7 @@ using Xunit;
 
 namespace FenBrowser.Tests.Performance
 {
+    [Collection("Performance diagnostics")]
     public class RenderPerformanceBenchmarkRunnerTests
     {
         [Fact]

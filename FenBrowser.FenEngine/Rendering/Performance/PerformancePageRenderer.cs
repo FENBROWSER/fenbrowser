@@ -88,7 +88,10 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         {
             html.Append("<section><h2>Document statistics</h2><table>");
             Row(html, "DOM nodes", latest?.DomNodeCount.ToString(CultureInfo.InvariantCulture));
-            foreach (string name in new[] { "Element nodes", "Text nodes", "Attributes", "Stylesheets", "CSS rules", "Matched selectors" }) Row(html, name, null);
+            Row(html, "Element nodes", latest?.ElementNodeCount.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Text nodes", latest?.TextNodeCount.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Attributes", latest?.AttributeCount.ToString(CultureInfo.InvariantCulture));
+            foreach (string name in new[] { "Stylesheets", "CSS rules", "Matched selectors" }) Row(html, name, null);
             Row(html, "Layout objects", latest?.LayoutObjectCount.ToString(CultureInfo.InvariantCulture));
             Row(html, "Paint commands", latest?.PaintCommandCount.ToString(CultureInfo.InvariantCulture));
             foreach (string name in new[] { "Images", "Fonts", "Script count", "Event listeners" }) Row(html, name, null);
@@ -111,7 +114,21 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             html.Append("<section><h2>Renderer statistics</h2><table>");
             Row(html, "Display-list command count", latest?.PaintCommandCount.ToString(CultureInfo.InvariantCulture));
             Row(html, "Raster mode", latest?.RasterMode.ToString());
-            foreach (string name in new[] { "Skia draw calls", "Paint objects created", "Paths created", "Text measurement calls", "Image decodes", "Image cache hits", "Font cache hits" }) Row(html, name, null);
+            Row(html, "Text measurement calls (process)", latest?.TextMeasurementCalls.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Text measurement cache hits (process)", latest?.TextMeasurementCacheHits.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Text measurement cache misses (process)", latest?.TextMeasurementCacheMisses.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Text measurement cache evictions (process)", latest?.TextMeasurementCacheEvictions.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Cached images (process)", latest?.CachedImageCount.ToString(CultureInfo.InvariantCulture));
+            RowBytes(html, "Image cache bytes (process)", latest?.ImageCacheBytes);
+            Row(html, "Image cache hits (process)", latest?.ImageCacheHits.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Image cache misses (process)", latest?.ImageCacheMisses.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Image cache evictions (process)", latest?.ImageCacheEvictions.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Cached typefaces (process)", latest?.CachedTypefaceCount.ToString(CultureInfo.InvariantCulture));
+            RowBytes(html, "Font cache bytes (process)", latest?.FontCacheBytes);
+            Row(html, "Font cache hits (process)", latest?.FontCacheHits.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Font cache misses (process)", latest?.FontCacheMisses.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Font cache evictions (process)", latest?.FontCacheEvictions.ToString(CultureInfo.InvariantCulture));
+            foreach (string name in new[] { "Skia draw calls", "Paint objects created", "Paths created", "Image decodes" }) Row(html, name, null);
             html.Append("</table></section>");
         }
 

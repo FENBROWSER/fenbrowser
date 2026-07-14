@@ -78,6 +78,10 @@ namespace FenBrowser.FenEngine.Rendering
         private float _lastScrollY;
         private Node _lastRoot;
         private int _lastDomNodeCount;
+        private int _lastElementNodeCount;
+        private int _lastTextNodeCount;
+        private int _lastAttributeCount;
+        private bool _lastDocumentStatisticsCollected;
         private const float DefaultViewportWidth = 1920f;
         private const float DefaultViewportHeight = 1080f;
         private const float MaxSafeViewportDimension = 16384f;
@@ -349,9 +353,20 @@ namespace FenBrowser.FenEngine.Rendering
             bool styleInvalidation = treeDirty || stylesChanged || (invalidationReason & RenderFrameInvalidationReason.Style) != 0;
             _lastStyles = styles;
 
-            if (_lastDomNodeCount <= 0 || root != _lastRoot || treeDirty || (invalidationReason & (RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Dom)) != 0)
+            bool collectDocumentStatistics = PerformanceDiagnosticsStore.IsRecording;
+            if (_lastDomNodeCount <= 0 ||
+                root != _lastRoot ||
+                treeDirty ||
+                (invalidationReason & (RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Dom)) != 0 ||
+                (collectDocumentStatistics && !_lastDocumentStatisticsCollected))
             {
-                _lastDomNodeCount = CountNodes(root);
+                _lastDomNodeCount = CountNodes(
+                    root,
+                    collectDocumentStatistics,
+                    out _lastElementNodeCount,
+                    out _lastTextNodeCount,
+                    out _lastAttributeCount);
+                _lastDocumentStatisticsCollected = collectDocumentStatistics;
             }
             
             if (emitVerificationReport)
@@ -1175,6 +1190,9 @@ namespace FenBrowser.FenEngine.Rendering
                 InvalidationReason = invalidationReason,
                 RasterMode = rasterMode,
                 DomNodeCount = domNodeCount,
+                ElementNodeCount = _lastElementNodeCount,
+                TextNodeCount = _lastTextNodeCount,
+                AttributeCount = _lastAttributeCount,
                 BoxCount = boxCount,
                 PaintNodeCount = paintNodeCount,
                 OverlayCount = overlayCount,
@@ -1776,6 +1794,19 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static int CountNodes(Node root)
         {
+            return CountNodes(root, collectDocumentStatistics: false, out _, out _, out _);
+        }
+
+        private static int CountNodes(
+            Node root,
+            bool collectDocumentStatistics,
+            out int elementNodeCount,
+            out int textNodeCount,
+            out int attributeCount)
+        {
+            elementNodeCount = 0;
+            textNodeCount = 0;
+            attributeCount = 0;
             if (root == null)
             {
                 return 0;
@@ -1793,6 +1824,19 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 count++;
+                if (collectDocumentStatistics)
+                {
+                    if (current is Element element)
+                    {
+                        elementNodeCount++;
+                        attributeCount += element.Attributes?.Length ?? 0;
+                    }
+                    else if (current is Text)
+                    {
+                        textNodeCount++;
+                    }
+                }
+
                 var children = current.ChildNodes;
                 if (children == null)
                 {
