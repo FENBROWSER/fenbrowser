@@ -19,8 +19,12 @@ public sealed class DomPerformanceBenchmarkRunnerTests
             Assert.True(result.Operations > 0);
         });
         Assert.Equal(20_000, report.Results.Single(result => result.Name == "append-remove").ObservedCallbacks);
-        Assert.Equal(0, report.Results.Single(result => result.Name == "event-dispatch-no-listeners").ObservedCallbacks);
-        Assert.Equal(60_000, report.Results.Single(result => result.Name == "event-dispatch-listeners").ObservedCallbacks);
+        var noListeners = report.Results.Single(result => result.Name == "event-dispatch-no-listeners");
+        var listeners = report.Results.Single(result => result.Name == "event-dispatch-listeners");
+        Assert.Equal(0, noListeners.ObservedCallbacks);
+        Assert.Equal(60_000, listeners.ObservedCallbacks);
+        Assert.True(noListeners.AverageAllocatedBytes < 13_000_000);
+        Assert.True(listeners.AverageAllocatedBytes < 20_000_000);
     }
 
     [Fact]

@@ -1295,3 +1295,29 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~HtmlTokenPoolTests|FullyQualifiedName~HtmlParserTraceTests.ParseDocumentDetailed_WritesHtmlParsingTraceEvents" -v quiet /nodeReuse:false`: pass (`3/3`) when the file-trace contract is isolated from parallel diagnostics writers.
 - The default parallel parsing slice passed `67/68`; its trace-sink test is the same parallel file-diagnostics interference observed at the baseline (`65/66`) and passes in the serial slice.
 - A post-change sampled EventPipe trace reduced `HtmlTokenPool..ctor()` inclusive samples from `5.841` to `1.908` units (`-67.3%`), confirming that constructor work was removed rather than shifted into benchmark accounting.
+
+### 1.63 Allocation-Free Empty Event-Listener Snapshots (2026-07-14)
+
+- `FenBrowser.Core/Dom/V2/EventTarget.cs`
+  - Dispatch previously requested a concrete copied list at every target and phase. Targets without a listener for the event type returned a newly allocated empty `List<EventListenerEntry>`, so an eight-node bubbling path created fifteen empty lists per dispatch before invoking zero callbacks.
+  - Event storage now offers an internal `TryGetEventListeners` snapshot operation. It returns no value for a missing event type and still creates the same concrete list copy when listeners exist, preserving safe listener mutation during dispatch, once-listener removal, passive state, and capture/bubble semantics.
+  - The existing non-null `GetEventListeners` contract remains available to other internal diagnostics/tests. Dispatch uses the allocation-free missing-listener result and indexed concrete-list iteration.
+- `FenBrowser.Tests/Core/EventTargetDispatchTests.cs`
+  - Adds included coverage for listener-free state cleanup, capture/target/bubble ordering, once and passive options, and removal during dispatch. These contracts previously existed only under directories excluded by the active test project.
+- `FenBrowser.Tests/Performance/DomPerformanceBenchmarkRunnerTests.cs`
+  - Adds broad allocation ceilings that detect reintroduction of per-phase empty lists without relying on narrow wall-clock CI thresholds.
+
+Five-process Release medians compare baseline reports `112846`-`112848` with retained reports `113203`-`113205`:
+
+| Workload | Time before | Time after | Allocation before | Allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| no listeners | 19.584 ms | 16.368 ms (-16.42%) | 20,800,000 B | 11,200,000 B (-46.15%) |
+| capture/target/bubble listeners | 28.182 ms | 26.609 ms (-5.58%) | 24,000,000 B | 17,600,000 B (-26.67%) |
+
+An initial `IReadOnlyList` return shape reduced empty allocations but regressed the listener-bearing median to 43.791 ms because interface enumeration boxed/virtualized the hot loop. That experiment was rejected. The retained concrete `TryGet` snapshot keeps both allocation and time improvements.
+
+Verification:
+
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `EventTargetDispatchTests` and `DomPerformanceBenchmarkRunnerTests`: pass (`6/6`).
+- All retained benchmark runs observed zero callbacks in the no-listener case and exactly 60,000 callbacks in the listener-bearing case.

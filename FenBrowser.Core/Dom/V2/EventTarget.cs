@@ -105,9 +105,22 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         internal List<EventListenerEntry> GetEventListeners(string type)
         {
+            return TryGetEventListeners(type, out var listeners)
+                ? listeners
+                : new List<EventListenerEntry>();
+        }
+
+        internal bool TryGetEventListeners(string type, out List<EventListenerEntry> listeners)
+        {
             lock (_listenerLock)
             {
-                return _listeners?.GetCopy(type) ?? new List<EventListenerEntry>();
+                if (_listeners is not null)
+                {
+                    return _listeners.TryGetCopy(type, out listeners);
+                }
+
+                listeners = null;
+                return false;
             }
         }
 
@@ -238,20 +251,22 @@ namespace FenBrowser.Core.Dom.V2
         /// <summary>
         /// Returns a copy of listeners for thread-safe iteration during dispatch.
         /// </summary>
-        public List<EventListenerEntry> GetCopy(string type)
+        public bool TryGetCopy(string type, out List<EventListenerEntry> copy)
         {
             if (_listeners != null && _listeners.TryGetValue(type, out var list))
             {
                 // Return copy to allow safe iteration even if listeners modified
-                var copy = new List<EventListenerEntry>(list.Count);
+                copy = new List<EventListenerEntry>(list.Count);
                 foreach (var entry in list)
                 {
                     if (!entry.Removed)
                         copy.Add(entry);
                 }
-                return copy;
+                return copy.Count > 0;
             }
-            return new List<EventListenerEntry>();
+
+            copy = null;
+            return false;
         }
     }
 
@@ -627,12 +642,12 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         private static void InvokeEventListeners(Event evt, EventTarget target, EventPhase phase)
         {
-            var listeners = target.GetEventListeners(evt.Type);
-            if (listeners.Count == 0)
+            if (!target.TryGetEventListeners(evt.Type, out var listeners))
                 return;
 
-            foreach (var listener in listeners)
+            for (var listenerIndex = 0; listenerIndex < listeners.Count; listenerIndex++)
             {
+                var listener = listeners[listenerIndex];
                 if (listener.Removed)
                     continue;
 
