@@ -3009,3 +3009,19 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Layout.Grid" --logger "console;verbosity=minimal" /nodeReuse:false`: same known failure, `43/44`, before and after.
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every retained process.
+
+## 6.103 Cascade Tag-Index Verification (2026-07-14)
+
+- Allocation-trace reconstruction identifies `CascadeEngine.IndexKeySegment` as `77.44%` of sampled invariant case-conversion allocation before the change. The retained trace contains no case-conversion path from that caller.
+- `TagIndex_DoesNotAllocateNormalizedSelectorNames` measures the production index build for 512 distinct tag selectors after warm-up: `126,216 B` before and `93,448 B` after (`-32,768 B`, `-25.96%`). Its `94,000 B` ceiling rejects the original per-rule string copies.
+- `TagIndex_MatchesSelectorTagsWithoutCaseNormalization` verifies that a mixed-case tag key still reaches the full selector matcher and applies its declaration to a lowercase element.
+- The focused retained slice passes `6/6`. An explicit source restore/reapply keeps a broader CSS slice at `10/13`; the same two logical-projection failures and one Tailwind border-style failure occur with identical values on both builds.
+- Five candidate reports `145444`-`145448` pass every failure gate. Managed allocation medians fall by `6,216 B` to `10,312 B` across all fixtures; CSS allocation falls in three fixtures and is flat within `136 B` in the heavy fixture. CSS and total timings are mixed, so no timing speedup is claimed.
+- Test262 and WPT are not rerun for this storage-only change because `OrdinalIgnoreCase` remains the tag-index comparer and full selector matching is unchanged.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Performance.CascadeTagIndexAllocationTests|FullyQualifiedName~FenBrowser.Tests.Performance.InlineStyleCacheTests|FullyQualifiedName~FenBrowser.Tests.Core.DynamicClassRecascadeTests" --logger "console;verbosity=minimal"`: pass (`6/6`).
+- The broader included CSS filter is `10/13` on both original and candidate builds with identical existing failure output.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.

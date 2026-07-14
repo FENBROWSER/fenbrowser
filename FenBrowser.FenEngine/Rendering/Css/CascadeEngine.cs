@@ -294,10 +294,12 @@ private int _inlineStyleCacheEvictions;
             }
             else if (!string.IsNullOrEmpty(keySeg.TagName) && keySeg.TagName != "*")
             {
-                string upperTag = keySeg.TagName.ToUpperInvariant();
-                AddToIndex(_tagIndex, upperTag, styleRule);
+                // _tagIndex owns case-insensitive matching; preserve the parsed key so
+                // index construction does not allocate one normalized string per rule.
+                AddToIndex(_tagIndex, keySeg.TagName, styleRule);
                 // DEBUG: Log div rules
-                if (upperTag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
+                if (FenBrowser.Core.Logging.DebugConfig.LogCssCascade &&
+                    string.Equals(keySeg.TagName, "DIV", StringComparison.OrdinalIgnoreCase))
                 {
                     var props = string.Join(", ", styleRule.Declarations.Select(d => d.Property));
                     FenBrowser.Core.EngineLogCompat.Info($"[CASCADE-INDEX] Indexed DIV rule: {styleRule.Selector?.Raw} -> [{props}]", LogCategory.CSS);

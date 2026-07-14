@@ -9284,3 +9284,31 @@ Verification:
 - Grid track sizing, layout, formatting-context integration, content sizing, auto-placement, and alignment remain `43/44`; the only failure before and after is the existing `GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl` zero-text-bounds failure.
 - All four benchmark failure gates pass in all five retained candidate reports.
 - This engine-owned grid traversal change does not alter JavaScript or web-platform semantics, so Test262 and WPT categories are not rerun.
+
+## 2.342 Allocation-Free Cascade Tag-Key Normalization (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs`
+  - The retained Release allocation trace attributed `77.44%` of all sampled invariant case-conversion allocation to `CascadeEngine.IndexKeySegment`, where every tag-keyed selector called `ToUpperInvariant` before insertion.
+  - `_tagIndex` already uses `StringComparer.OrdinalIgnoreCase`, and element lookup already passes the unmodified `TagName`. Index construction now stores the parsed selector tag directly and lets that existing comparer own case-insensitive key matching. The optional DIV diagnostic uses an allocation-free ordinal-ignore-case comparison.
+  - Full selector matching remains the correctness guard after candidate filtering and still compares type selectors with `OrdinalIgnoreCase`. Index priority, candidate membership, rule order, selector storage, XML/HTML behavior already implemented by the matcher, and cache ownership are unchanged. No cache, interning table, pool, unsafe code, retained state, or concurrency is added.
+- `FenBrowser.Tests/Performance/CascadeTagIndexAllocationTests.cs`
+  - Building an index for 512 distinct tag rules moves from exactly `126,216 B` to `93,448 B`, saving `32,768 B` (`25.96%`, exactly `64 B` per rule). The retained `94,000 B` ceiling rejects per-rule normalized strings while allowing the required dictionary and rule-list storage.
+  - A mixed-case `DiV` selector still matches a lowercase `div` element and contributes its declaration, protecting the case-insensitive candidate-index contract.
+
+Five fresh Release processes compare the immediately preceding retained reports `144622`, `144624`, `144625`, `144627`, and `144629` with candidate reports `145444`-`145448`:
+
+| Scenario | Total before | Total after | CSS allocation before | CSS allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 169.63 ms | 170.40 ms (+0.45%) | 9,750,032 B | 9,750,168 B (flat) | 20,099,344 B | 20,091,224 B (-0.04%) |
+| steady-state-damage-animation | 14.50 ms | 14.51 ms (+0.07%) | 5,567,776 B | 5,559,584 B (-0.15%) | 15,610,496 B | 15,602,640 B (-0.05%) |
+| dense-text-flow | 12.17 ms | 12.18 ms (+0.08%) | 3,168,728 B | 3,158,440 B (-0.32%) | 9,150,104 B | 9,139,792 B (-0.11%) |
+| wrapped-multiline-text | 6.43 ms | 6.51 ms (+1.24%) | 1,707,536 B | 1,701,264 B (-0.37%) | 4,341,848 B | 4,335,632 B (-0.14%) |
+
+The exact index-construction allocation delta is the causal acceptance measurement. Whole-process managed allocation falls in every fixture, while the heavy CSS-stage counter is flat within `136 B`. CSS cascade medians range from `-1.54%` to `+2.61%`, and total medians are flat to slightly higher, so no timing improvement is claimed. A fresh `gc-verbose` trace removes `IndexKeySegment` from the `TextInfo.ChangeCaseCommon` call paths; total sampled case-conversion weight falls from `54.8425` to `0.7454` trace units, with only element construction and hyperlink matching remaining in that sample.
+
+Verification:
+
+- The focused mixed-case, allocation, inline-style-cache, and dynamic recascade slice passes `6/6`.
+- An explicit source restore/reapply leaves the broader CSS slice at `10/13` on both builds. The same three existing Tailwind/logical-projection failures retain identical expected and actual values.
+- All four benchmark failure gates pass in every candidate process.
+- Test262 and WPT categories are not rerun because the change only removes a redundant key copy; the index comparer and full selector matcher that define matching semantics are unchanged.
