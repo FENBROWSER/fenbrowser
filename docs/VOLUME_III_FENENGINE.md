@@ -9396,3 +9396,29 @@ Verification:
 - Existing logging contracts verify both zero allocation when interpolated diagnostics are filtered and exact message emission when Debug logging is enabled.
 - All four benchmark failure gates pass in every candidate process.
 - Test262 and WPT categories are not rerun because the change only defers formatting of a renderer diagnostic and does not alter JavaScript or web-platform behavior.
+
+## 2.346 Reused Grid Auto-Placement Positions (2026-07-14)
+
+- `FenBrowser.FenEngine/Layout/GridLayoutComputer.cs`
+  - The retained Release trace ranked `GridLayoutComputer.DetermineGridPosition` at `30.3125` sampled units. Inspection found that `ComputePlacements` parsed every auto-positioned item once while classifying explicit versus pending items, discarded that `RawGridPosition`, and then repeated the same style lookup, shorthand parsing, span parsing, and object construction during placement.
+  - The pending list now retains the already computed `RawGridPosition`. The placement pass consumes its original `Node` and position fields instead of recomputing them. Explicit placement, sparse/dense cursor rules, row/column flow, collision checks, named areas, shorthand precedence, source order, and the occupancy map are unchanged.
+  - The list remains method-local and engine-thread-owned. No cache, pool, unsafe code, native resource, retained cross-frame state, public API, or concurrency boundary is added.
+- `FenBrowser.Tests/Performance/GridAutoPlacementAllocationTests.cs`
+  - Ten warmed production `Arrange` calls over 100 auto-positioned grid items move from exactly `457,360 B` to exactly `393,360 B`, saving `64,000 B` (`13.99%`). The retained `394,000 B` ceiling rejects the duplicate resolution pass while allowing the remaining required grid collections and position output.
+
+Five fresh Release processes compare the immediately preceding renderer-root reports `152130`, `152132`, `152133`, `152135`, and `152137` with retained reports `152852`, `152853`, `152854`, `152855`, and `152857`:
+
+| Scenario | Total before | Total after | Layout allocation before | Layout allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 164.91 ms | 171.82 ms (+4.19%) | 7,317,968 B | 7,300,072 B (-0.24%) | 19,611,520 B | 19,595,144 B (-0.08%) |
+| steady-state-damage-animation | 13.75 ms | 13.97 ms (+1.60%) | 184 B | 184 B (flat) | 15,023,344 B | 15,013,880 B (-0.06%) |
+| dense-text-flow | 13.01 ms | 12.17 ms (-6.46%) | 1,348,620 B | 1,360,548 B (+0.88%) | 8,913,584 B | 9,002,304 B (+1.00%) |
+| wrapped-multiline-text | 6.21 ms | 6.58 ms (+5.96%) | 730,036 B | 730,180 B (+0.02%) | 4,282,280 B | 4,277,704 B (-0.11%) |
+
+The exact arrangement allocation delta is the causal acceptance measurement. The grid-heavy fixture records the expected layout-stage reduction; non-grid counters and every timing stage remain noisy or mixed, so no latency or whole-process allocation improvement is claimed. A second sampling trace records `DetermineGridPosition` at `30.9097` units and therefore does not distinguish the change; it is documented as inconclusive rather than presented as supporting evidence.
+
+Verification:
+
+- The existing grid slice is `44/45` before the change. The retained slice plus the new allocation contract is `45/46`; the sole failure on both implementations is the existing `GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl` zero-text-bounds failure.
+- The retained allocation contract passes twice after the Release build, and all four benchmark failure gates pass in every candidate process.
+- Test262 and WPT categories are not rerun because the change only reuses method-local parsed placement state and does not alter JavaScript, DOM, CSS parsing, or web-platform semantics.

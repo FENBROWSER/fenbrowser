@@ -3071,3 +3071,18 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~SkiaRendererRootLoggingAllocationTests|FullyQualifiedName~EngineLogSettingsTests|FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests"`: pass (`12/12`).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.107 Grid Auto-Placement Reuse Verification (2026-07-14)
+
+- `GridAutoPlacementAllocationTests` exercises ten warmed production `Arrange` calls over 100 auto-positioned items. The original double-resolution path allocates exactly `457,360 B`; retaining the first `RawGridPosition` allocates exactly `393,360 B` (`-64,000 B`, `-13.99%`) and passes the `394,000 B` ceiling.
+- The original grid filter remains `44/45`; the retained filter including the new contract is `45/46`. `GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl` is the same existing failure with zero text bounds and unchanged input bounds.
+- Candidate reports `152852`, `152853`, `152854`, `152855`, and `152857` pass every failure gate. The grid-heavy layout-allocation median falls from `7,317,968 B` to `7,300,072 B`; non-grid counters and all timings are mixed, so no broader performance claim is made.
+- A fresh sampling trace is explicitly inconclusive (`30.3125` before versus `30.9097` after for `DetermineGridPosition`) and is not used as acceptance evidence.
+- Test262 and WPT are not rerun because the change is confined to method-local grid placement state reuse with unchanged placement semantics.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~Grid" --logger "console;verbosity=minimal"`: retained `45/46` with the same existing grid text-node failure.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~GridAutoPlacementAllocationTests" --logger "console;verbosity=minimal"`: pass (`1/1`).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.

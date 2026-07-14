@@ -134,8 +134,9 @@ namespace FenBrowser.FenEngine.Layout
             bool isDense = autoFlow.Contains("dense");
             bool isColumnFlow = autoFlow.Contains("column");
 
-            // Temporary list for auto items
-            var pendingAuto = new List<Node>();
+            // Keep the parsed position so auto items are not parsed again during
+            // the placement pass.
+            var pendingAuto = new List<RawGridPosition>();
             
             // State for auto-placement cursor
             int cursorRow = 1;
@@ -180,15 +181,14 @@ namespace FenBrowser.FenEngine.Layout
                 }
                 else
                 {
-                    pendingAuto.Add(item);
+                    pendingAuto.Add(rawPos);
                 }
             }
 
             // Iterate pending items
-            foreach (var item in pendingAuto)
+            foreach (var rawPos in pendingAuto)
             {
-                var style = styles.TryGetValue(item, out var s) ? s : null;
-                var rawPos = DetermineGridPosition(style, item, areas);
+                var item = rawPos.Node;
 
                 if (isDense)
                 {
