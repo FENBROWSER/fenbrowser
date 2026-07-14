@@ -28,6 +28,22 @@ namespace FenBrowser.FenEngine.Rendering
         {
             public Dictionary<Node, CssComputed> Computed { get; set; } = new Dictionary<Node, CssComputed>();
             public List<CssSource> Sources { get; set; } = new List<CssSource>();
+            public CssLoadTiming Timing { get; set; } = new CssLoadTiming();
+        }
+
+        public sealed class CssLoadTiming
+        {
+            public double QueueWaitMs { get; set; }
+            public double DiscoveryAndFetchMs { get; set; }
+            public double ImportExpansionMs { get; set; }
+            public double RuleParseMs { get; set; }
+            public double VariableResolutionMs { get; set; }
+            public double CascadeMs { get; set; }
+            public double TotalMs { get; set; }
+            public int SourceCount { get; set; }
+            public int ExpandedSourceCount { get; set; }
+            public int RuleCount { get; set; }
+            public int ComputedStyleCount { get; set; }
         }
 
         // Keep file diagnostics enabled only in debug builds.
@@ -479,7 +495,10 @@ namespace FenBrowser.FenEngine.Rendering
             FenBrowser.Core.Deadlines.FrameDeadline deadline = null,
             Element cascadeRoot = null)
         {
+            long queueStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             await _globalComputeGate.WaitAsync().ConfigureAwait(false);
+            double queueWaitMs = System.Diagnostics.Stopwatch.GetElapsedTime(queueStarted).TotalMilliseconds;
+            long computeStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             try
             {
                 // This MUST be done even if using cached rules.
@@ -489,7 +508,16 @@ namespace FenBrowser.FenEngine.Rendering
             /* [PERF-REMOVED] */
 
                 if (root == null)
-                    return new CssLoadResult();
+                {
+                    return new CssLoadResult
+                    {
+                        Timing = new CssLoadTiming
+                        {
+                            QueueWaitMs = queueWaitMs,
+                            TotalMs = System.Diagnostics.Stopwatch.GetElapsedTime(computeStarted).TotalMilliseconds
+                        }
+                    };
+                }
 
                 var cssBlobs = new List<CssSource>(); // collected CSS texts with source ordering
                 int sourceIndex = 0;
@@ -774,10 +802,13 @@ namespace FenBrowser.FenEngine.Rendering
                 .Where(s => s != null)
                 .OrderBy(s => s.SequenceOrder)
                 .ToList();
+            double discoveryAndFetchMs = System.Diagnostics.Stopwatch.GetElapsedTime(computeStarted).TotalMilliseconds;
 
             // 3) Expand @import (depth-bounded)
             EngineLogCompat.Debug("[PERF-CSS] Starting @import expansion...", LogCategory.Rendering);
+            long importStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var expanded = await ExpandImportsAsync(cssBlobs, fetchExternalCssAsync, viewportWidth, log, gate);
+            double importExpansionMs = System.Diagnostics.Stopwatch.GetElapsedTime(importStarted).TotalMilliseconds;
             EngineLogCompat.Debug($"[PERF-CSS] @import Expansion: {_cssStopwatch.ElapsedMilliseconds}ms (Sources: {expanded.Count})", LogCategory.Rendering);
 
             // 4) Parse rules from all sources (parallel, bounded)
@@ -787,6 +818,7 @@ namespace FenBrowser.FenEngine.Rendering
             using var parseStageCts = new System.Threading.CancellationTokenSource();
             var parseStageToken = parseStageCts.Token;
             bool parseStageSealed = false;
+            long ruleParseStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             
             EngineLogCompat.Debug($"[PERF-CSS-TRACK] Validated CSS Blobs: {expanded.Count}. Scheduling tasks...", LogCategory.Rendering);
             foreach (var blob in expanded)
@@ -920,6 +952,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
+            double ruleParseMs = System.Diagnostics.Stopwatch.GetElapsedTime(ruleParseStarted).TotalMilliseconds;
             EngineLogCompat.Info($"[PERF-CSS] Rule Parsing Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Sheets: {styleSet.Count})", LogCategory.Rendering);
 
             // Extract all rules purely for variable resolution (which is order-independent for initial pass)
@@ -928,20 +961,38 @@ namespace FenBrowser.FenEngine.Rendering
 
             // 4.5) Resolve CSS variables
             EngineLogCompat.Debug("[PERF-CSS] Starting variable resolution...", LogCategory.Rendering);
+            long variableResolutionStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             ResolveVariables(allRulesForVars);
+            double variableResolutionMs = System.Diagnostics.Stopwatch.GetElapsedTime(variableResolutionStarted).TotalMilliseconds;
             EngineLogCompat.Debug($"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
             // Stage 3: Cascade
+            long cascadeStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var computed = FenBrowser.FenEngine.Rendering.ParallelCascadeScheduler.Cascade(
                 cascadeRoot ?? root,
                 styleSet,
                 log,
                 deadline);
+            double cascadeMs = System.Diagnostics.Stopwatch.GetElapsedTime(cascadeStarted).TotalMilliseconds;
             EngineLogCompat.Info($"[PERF-CSS] Cascade Matching Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})", LogCategory.Rendering);
             
                 return new CssLoadResult
                 {
                     Computed = computed,
-                    Sources = cssBlobs
+                    Sources = cssBlobs,
+                    Timing = new CssLoadTiming
+                    {
+                        QueueWaitMs = queueWaitMs,
+                        DiscoveryAndFetchMs = discoveryAndFetchMs,
+                        ImportExpansionMs = importExpansionMs,
+                        RuleParseMs = ruleParseMs,
+                        VariableResolutionMs = variableResolutionMs,
+                        CascadeMs = cascadeMs,
+                        TotalMs = System.Diagnostics.Stopwatch.GetElapsedTime(computeStarted).TotalMilliseconds,
+                        SourceCount = cssBlobs.Count,
+                        ExpandedSourceCount = expanded.Count,
+                        RuleCount = allRulesForVars.Count,
+                        ComputedStyleCount = computed.Count
+                    }
                 };
             }
             finally

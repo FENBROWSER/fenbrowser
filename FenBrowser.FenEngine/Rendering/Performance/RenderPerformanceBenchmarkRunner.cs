@@ -37,6 +37,16 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         double MaxTotalMs,
         double HtmlParseMs,
         double CssParseAndStyleMs,
+        double CssCoreTotalMs,
+        double CssQueueWaitMs,
+        double CssDiscoveryAndFetchMs,
+        double CssImportExpansionMs,
+        double CssRuleParseMs,
+        double CssVariableResolutionMs,
+        double CssCascadeMs,
+        int CssSourceCount,
+        int CssRuleCount,
+        int ComputedStyleCount,
         double AverageLayoutMs,
         double AveragePaintGenerationMs,
         double AverageRasterMs,
@@ -111,7 +121,8 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             double htmlParseMs = Stopwatch.GetElapsedTime(parseStarted).TotalMilliseconds;
             var root = document.DocumentElement;
             long cssStarted = Stopwatch.GetTimestamp();
-            var styles = await CssLoader.ComputeAsync(root, baseUri, null, scenario.ViewportWidth, scenario.ViewportHeight).ConfigureAwait(false);
+            var cssResult = await CssLoader.ComputeWithResultAsync(root, baseUri, null, scenario.ViewportWidth, scenario.ViewportHeight).ConfigureAwait(false);
+            var styles = cssResult.Computed;
             double cssParseAndStyleMs = Stopwatch.GetElapsedTime(cssStarted).TotalMilliseconds;
             var renderer = new SkiaDomRenderer();
             var totals = new List<double>(scenario.Iterations);
@@ -192,6 +203,16 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 Math.Round(max, 2),
                 Math.Round(htmlParseMs, 2),
                 Math.Round(cssParseAndStyleMs, 2),
+                Math.Round(cssResult.Timing.TotalMs, 2),
+                Math.Round(cssResult.Timing.QueueWaitMs, 2),
+                Math.Round(cssResult.Timing.DiscoveryAndFetchMs, 2),
+                Math.Round(cssResult.Timing.ImportExpansionMs, 2),
+                Math.Round(cssResult.Timing.RuleParseMs, 2),
+                Math.Round(cssResult.Timing.VariableResolutionMs, 2),
+                Math.Round(cssResult.Timing.CascadeMs, 2),
+                cssResult.Timing.SourceCount,
+                cssResult.Timing.RuleCount,
+                cssResult.Timing.ComputedStyleCount,
                 Math.Round(AverageOrZero(layoutTotals), 2),
                 Math.Round(AverageOrZero(paintTotals), 2),
                 Math.Round(AverageOrZero(rasterTotals), 2),
@@ -270,7 +291,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             foreach (var result in report.Results)
             {
                 builder.AppendLine(
-                    $"{result.Name}: total={result.AverageTotalMs:0.##}ms parse={result.HtmlParseMs:0.##}ms css+style={result.CssParseAndStyleMs:0.##}ms layout={result.AverageLayoutMs:0.##}ms paint={result.AveragePaintGenerationMs:0.##}ms raster={result.AverageRasterMs:0.##}ms alloc={result.ManagedAllocatedBytes}B dom={result.DomNodeCount} boxes={result.BoxCount} paintNodes={result.PaintNodeCount} rasterMode={result.DominantRasterMode} failGate={result.FailureGatePassed}");
+                    $"{result.Name}: total={result.AverageTotalMs:0.##}ms html={result.HtmlParseMs:0.##}ms cssRules={result.CssRuleParseMs:0.##}ms cascade={result.CssCascadeMs:0.##}ms cssTotal={result.CssParseAndStyleMs:0.##}ms layout={result.AverageLayoutMs:0.##}ms paint={result.AveragePaintGenerationMs:0.##}ms raster={result.AverageRasterMs:0.##}ms alloc={result.ManagedAllocatedBytes}B dom={result.DomNodeCount} boxes={result.BoxCount} paintNodes={result.PaintNodeCount} rasterMode={result.DominantRasterMode} failGate={result.FailureGatePassed}");
             }
 
             return builder.ToString();

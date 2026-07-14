@@ -8736,3 +8736,29 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Performance.PerformanceDiagnosticsTests|FullyQualifiedName~FenBrowser.Tests.Performance.RenderPerformanceBenchmarkRunnerTests" -v quiet /nodeReuse:false`: pass (`8/8`).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: pass; all failure gates passed, report `Results/performance/render_perf_benchmark_20260714_100645.json`.
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site fen://performance 2000`: pass with `0` network requests, `0` script failures, and clean screenshot output in `logs/real-site/performance/20260714T100657Z`.
+
+## 2.321 Structured CSS Pipeline Timing (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - `CssLoadResult` now carries high-resolution numeric timing for compute-gate wait, stylesheet discovery/fetch, import expansion, rule parsing, variable resolution, cascade, and total core CSS work.
+  - The same result records source, parsed-rule, and computed-style counts. Formatting remains outside the CSS pipeline.
+- `FenBrowser.FenEngine/Rendering/Performance/RenderPerformanceBenchmarkRunner.cs`
+  - Deterministic render reports retain the existing end-to-end CSS total while adding the individual CSS phases and operation counts.
+- `FenBrowser.Tests/Performance/RenderPerformanceBenchmarkRunnerTests.cs`
+  - Verifies every phase/count is present in memory and in the structured JSON artifact.
+
+First split Release baseline (`Results/performance/render_perf_benchmark_20260714_101250.json`):
+
+| Scenario | CSS total | Rule parse | Cascade | Computed styles |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 133.17 ms | 25.25 ms | 91.42 ms | 424 |
+| steady-state-damage-animation | 23.67 ms | 0.10 ms | 23.30 ms | 252 |
+| dense-text-flow | 5.43 ms | 0.67 ms | 4.51 ms | 183 |
+
+The measured evidence ranks cascade/style generation ahead of CSS rule parsing for these three fixtures. In the first-frame fixture cascade accounts for about 68% of the end-to-end CSS stage; in the warm steady-state fixture it accounts for about 99%. This identifies cascade as the next CSS profiling target without yet changing selector or style semantics.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Performance.RenderPerformanceBenchmarkRunnerTests" -v quiet /nodeReuse:false`: pass (`3/3`).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: pass; all correctness/performance failure gates passed and the split report was written to `Results/performance/render_perf_benchmark_20260714_101250.json`.
