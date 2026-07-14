@@ -87,6 +87,52 @@ public sealed class SelectorListSplitAllocationTests
         _output.WriteLine($"Matching one parsed pseudo-class {iterations:N0} times allocated {allocated:N0} B.");
 
         Assert.True(matched);
-        Assert.InRange(allocated, 1, 2_100_000);
+        Assert.Equal(0, allocated);
+    }
+
+    [Fact]
+    public void MatchesParsedStructuralPseudoClasses_AvoidsSiblingIteratorAllocations()
+    {
+        const int iterationsPerSelector = 2_500;
+        var parent = new Element("div");
+        var firstSpan = new Element("span");
+        var lastSpan = new Element("span");
+        parent.AppendChild(new Text("before"));
+        parent.AppendChild(firstSpan);
+        parent.AppendChild(new Element("div"));
+        parent.AppendChild(lastSpan);
+        parent.AppendChild(new Text("after"));
+
+        string[] selectors =
+        {
+            "span:first-child",
+            "span:last-child",
+            "span:first-of-type",
+            "span:last-of-type"
+        };
+        Element[] targets = { firstSpan, lastSpan, firstSpan, lastSpan };
+        var chains = new SelectorChain[selectors.Length];
+        for (var index = 0; index < selectors.Length; index++)
+        {
+            chains[index] = SelectorMatcher.ParseSelectorList(selectors[index])[0];
+            Assert.True(SelectorMatcher.MatchesChain(targets[index], chains[index]));
+        }
+
+        var matched = true;
+        long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (var iteration = 0; iteration < iterationsPerSelector; iteration++)
+        {
+            for (var index = 0; index < chains.Length; index++)
+            {
+                matched &= SelectorMatcher.MatchesChain(targets[index], chains[index]);
+            }
+        }
+
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        _output.WriteLine(
+            $"Matching four parsed structural pseudo-classes {iterationsPerSelector:N0} times each allocated {allocated:N0} B.");
+
+        Assert.True(matched);
+        Assert.Equal(0, allocated);
     }
 }

@@ -871,15 +871,15 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "not": 
                 {
                     if (parsedArgs != null && parsedArgs.Count > 0)
-                        return !parsedArgs.Any(chain => MatchesChain(el, chain, depth + 1));
+                        return !MatchesAnyChain(el, parsedArgs, depth + 1);
                     return !Matches(el, args, depth + 1);
                 }
                 case "is":
                 case "where": 
                 {
                     if (parsedArgs != null && parsedArgs.Count > 0)
-                        return parsedArgs.Any(chain => MatchesChain(el, chain, depth + 1));
-                    return ParseSelectorList(args).Any(chain => MatchesChain(el, chain, depth + 1));
+                        return MatchesAnyChain(el, parsedArgs, depth + 1);
+                    return MatchesAnyChain(el, ParseSelectorList(args), depth + 1);
                 }
                 case "has": return MatchesHas(el, args, parsedArgs, depth + 1);
                 case "nth-child": return MatchesNthChild(el, args, parsedArgs, depth + 1);
@@ -1013,11 +1013,22 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
         }
 
+        private static bool MatchesAnyChain(Element el, List<SelectorChain> chains, int depth)
+        {
+            for (var index = 0; index < chains.Count; index++)
+            {
+                if (MatchesChain(el, chains[index], depth))
+                    return true;
+            }
+
+            return false;
+        }
+
         private static bool IsFirstChild(Element el)
         {
             var parent = el.ParentNode as ContainerNode; // Cast to ContainerNode
             if (parent == null) return true;
-            return parent.ChildNodes.OfType<Element>().FirstOrDefault() == el;
+            return el.PreviousElementSibling == null;
         }
 
         private static bool IsEmptyElement(Element el)
@@ -1210,7 +1221,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             var parent = el.ParentNode as ContainerNode;
             if (parent == null) return true;
-            return parent.ChildNodes.OfType<Element>().LastOrDefault() == el;
+            return el.NextElementSibling == null;
         }
 
         private static bool IsOnlyChild(Element el)
@@ -1222,16 +1233,30 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static bool IsFirstOfType(Element el)
         {
-             var parent = el.ParentNode as ContainerNode;
-             if (parent == null) return true;
-             return parent.ChildNodes.OfType<Element>().FirstOrDefault(c => string.Equals(c.TagName, el.TagName, StringComparison.OrdinalIgnoreCase)) == el;
+            var parent = el.ParentNode as ContainerNode;
+            if (parent == null) return true;
+
+            for (var sibling = el.PreviousElementSibling; sibling != null; sibling = sibling.PreviousElementSibling)
+            {
+                if (string.Equals(sibling.TagName, el.TagName, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            return true;
         }
 
         private static bool IsLastOfType(Element el)
         {
-             var parent = el.ParentNode as ContainerNode;
-             if (parent == null) return true;
-             return parent.ChildNodes.OfType<Element>().LastOrDefault(c => string.Equals(c.TagName, el.TagName, StringComparison.OrdinalIgnoreCase)) == el;
+            var parent = el.ParentNode as ContainerNode;
+            if (parent == null) return true;
+
+            for (var sibling = el.NextElementSibling; sibling != null; sibling = sibling.NextElementSibling)
+            {
+                if (string.Equals(sibling.TagName, el.TagName, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            return true;
         }
 
         private static bool MatchesNthChild(Element el, string args, List<SelectorChain> parsedArgs, int depth)

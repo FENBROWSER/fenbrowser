@@ -3369,3 +3369,22 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five candidate processes.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_pseudo_name_canonicalization_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture and `topN` report succeed.
+
+## 6.124 Structural Pseudo Matching Verification (2026-07-14)
+
+- `SelectorListSplitAllocationTests.MatchesParsedStructuralPseudoClasses_AvoidsSiblingIteratorAllocations` parses `:first-child`, `:last-child`, `:first-of-type`, and `:last-of-type` once, verifies each match across intervening text and mixed-tag siblings, then measures 2,500 warmed matches per selector. The production path falls exactly from `3,400,000 B` to `0 B` in three fresh Release processes.
+- The intermediate direct-sibling candidate measured `320,000 B` (`32 B` per match). Inspection found that capturing functional-pseudo lambdas created a display class for every `MatchesPseudoClass` call, so the retained indexed helper removes that shared allocation as well as the four structural LINQ iterators.
+- `MatchesParsedPseudoClass_DoesNotRenormalizeItsName` also tightens from the preceding `2,100,000 B` ceiling and measured `2,080,000 B` to an exact `0 B` assertion. Included functional-pseudo cases verify `:IS(...)`, `:WHERE(...)`, and `:NOT(...)` matching after the lambda removal.
+- The focused selector/cascade/render slice passes `23/23`. Both affected Release builds pass with zero warnings and zero errors.
+- Candidate reports `172743`, `172746`, `172748`, `172750`, and `172752` pass every failure gate against reports `172117`, `172119`, `172121`, `172124`, and `172126`. CSS/style allocation medians fall `2.65%`-`9.33%` in all four fixtures; managed allocation falls `0.91%`-`3.79%`. Total timing remains mixed, so no latency claim is made.
+- The before trace records `SelectorMatcher.MatchesPseudoClass` at `2.46%` exclusive sampled allocation weight. The after trace no longer lists it among the top 50 exclusive owners.
+- Test262 is not applicable to CSS matching. WPT is not rerun because the direct included contracts cover the changed structural and functional matching branches.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~SelectorListSplitAllocationTests.MatchesParsedPseudoClass_DoesNotRenormalizeItsName|FullyQualifiedName~SelectorListSplitAllocationTests.MatchesParsedStructuralPseudoClasses_AvoidsSiblingIteratorAllocations" --logger "console;verbosity=detailed"`: pass (`2/2`) in three fresh processes, exactly `0 B` for both contracts each time.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~DynamicClassRecascadeTests|FullyQualifiedName~PseudoSelectorCanonicalizationTests|FullyQualifiedName~SelectorListSplitAllocationTests|FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~LayoutStabilityTests" --logger "console;verbosity=minimal"`: pass (`23/23`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five candidate processes.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_structural_pseudo_matching_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `topN -n 50` confirms the targeted method is absent.

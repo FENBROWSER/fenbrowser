@@ -9750,3 +9750,33 @@ Verification:
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five candidate processes.
 - A fresh final-code `gc-verbose` trace still lists `SelectorMatcher.MatchesPseudoClass` at `2.46%` exclusive sampled weight because other pseudo-specific branches remain; this change claims only removal of repeated name normalization, not elimination of the whole matching owner.
 - Test262 is unrelated to CSS selector matching, and WPT is not rerun because the focused contracts directly cover the affected uppercase parsing, functional-pseudo, pseudo-element, specificity-model, and matching boundaries.
+
+## 2.360 Allocation-Free Structural Pseudo Matching (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Css/SelectorMatcher.cs`
+  - The final trace from canonical pseudo names still ranked `MatchesPseudoClass` at `2.46%` exclusive sampled allocation weight. A focused production contract then showed that `:first-child`, `:last-child`, `:first-of-type`, and `:last-of-type` materialized LINQ sibling iterators, while capturing `.Any(...)` expressions for functional pseudos forced a shared `32 B` display-class allocation at method entry for every pseudo kind.
+  - First/last-child matching now reads the DOM's existing previous/next element-sibling links. First/last-of-type walks only the relevant direction and stops at the first same-tag sibling. This preserves element-only semantics, skips intervening text nodes, keeps detached elements on the existing true path, and avoids scanning siblings beyond the first disqualifying match.
+  - `:is()`, `:where()`, and `:not()` now share an indexed, short-circuiting chain helper instead of capturing lambdas. Pre-parsed argument order, fallback parsing, recursion-depth propagation, and full `MatchesChain` behavior are unchanged. The change adds no cache, pool, unsafe code, retained state, public representation, synchronization, or DOM ownership change.
+- `FenBrowser.Tests/Performance/SelectorListSplitAllocationTests.cs`
+  - Ten thousand warmed matches split evenly across the four structural pseudos move from exactly `3,400,000 B` to `0 B`. The initial sibling-link-only candidate measured `320,000 B`, which exposed and justified removing the unconditional functional-pseudo closure rather than accepting a partial fix.
+  - The existing single uppercase `:first-child` contract moves from the immediately preceding `2,080,000 B` to `0 B`, proving that both the former sibling iterator and the shared display class are absent.
+- `FenBrowser.Tests/Core/PseudoSelectorCanonicalizationTests.cs`
+  - Added direct included matching cases for pre-parsed uppercase `:IS(...)`, `:WHERE(...)`, and `:NOT(...)` arguments so the closure removal remains protected by semantics rather than allocation alone.
+
+Five fresh Release processes compare canonical-name reports `172117`, `172119`, `172121`, `172124`, and `172126` with structural-matching reports `172743`, `172746`, `172748`, `172750`, and `172752`:
+
+| Scenario | CSS allocation before | CSS allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 9,304,584 B | 9,058,248 B (-246,336 B, -2.65%) | 18,762,976 B | 18,516,032 B (-246,944 B, -1.32%) |
+| steady-state-damage-animation | 5,289,320 B | 5,148,456 B (-140,864 B, -2.66%) | 14,357,056 B | 14,226,640 B (-130,416 B, -0.91%) |
+| dense-text-flow | 3,062,496 B | 2,776,824 B (-285,672 B, -9.33%) | 8,583,272 B | 8,258,208 B (-325,064 B, -3.79%) |
+| wrapped-multiline-text | 1,646,040 B | 1,596,840 B (-49,200 B, -2.99%) | 3,968,800 B | 3,917,184 B (-51,616 B, -1.30%) |
+
+CSS/style time medians are lower in all four fixtures, but total medians range from `-9.97%` to `+9.42%`; no latency improvement is claimed. The exact zero-allocation contracts and consistent page-allocation reductions are the acceptance evidence. A fresh `gc-verbose` trace no longer lists `MatchesPseudoClass` among the top 50 exclusive allocation owners.
+
+Verification:
+
+- Both zero-allocation contracts repeat unchanged in three fresh Release test processes.
+- The included canonicalization, functional-pseudo, selector allocation, dynamic recascade, pill-rendering, and layout-stability slice passes `23/23`.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five candidate processes.
+- Test262 is unrelated to CSS selector matching, and WPT is not rerun because the focused contracts directly exercise the changed sibling semantics, intervening text nodes, tag-type filtering, pre-parsed functional arguments, and matching results.

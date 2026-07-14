@@ -41,4 +41,18 @@ public sealed class PseudoSelectorCanonicalizationTests
 
         Assert.Equal("first-child", pseudo.Name);
     }
+
+    [Theory]
+    [InlineData("button:IS(.primary, .ghost)")]
+    [InlineData("button:WHERE(.primary, .ghost)")]
+    [InlineData("button:NOT(.ghost)")]
+    public void FunctionalPseudoClasses_MatchPreparsedArguments(string selector)
+    {
+        var element = new Element("button");
+        element.SetAttribute("class", "primary");
+
+        var parsed = SelectorMatcher.ParseSelectorList(selector);
+
+        Assert.True(SelectorMatcher.MatchesChain(element, Assert.Single(parsed)));
+    }
 }
