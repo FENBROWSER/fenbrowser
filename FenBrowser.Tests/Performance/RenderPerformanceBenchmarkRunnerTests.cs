@@ -32,6 +32,7 @@ namespace FenBrowser.Tests.Performance
                 Assert.True(result.HtmlParseMs >= 0);
                 Assert.True(result.HtmlParseAllocatedBytes > 0);
                 Assert.True(result.CssParseAndStyleMs >= 0);
+                Assert.True(result.CssParseAndStyleAllocatedBytes > 0);
                 Assert.True(result.CssCoreTotalMs >= 0);
                 Assert.True(result.CssCoreTotalMs <= result.CssParseAndStyleMs + 1);
                 Assert.True(result.CssQueueWaitMs >= 0);
@@ -50,6 +51,7 @@ namespace FenBrowser.Tests.Performance
                 Assert.True(result.AverageLayoutMs >= 0);
                 Assert.True(result.AveragePaintGenerationMs >= 0);
                 Assert.True(result.AverageRasterMs >= 0);
+                Assert.True(result.RenderAllocatedBytes > 0);
                 Assert.True(result.PipelineDurationMs >= result.AverageTotalMs);
                 Assert.True(result.ManagedAllocatedBytes > 0);
                 Assert.True(result.ManagedHeapBytesAfter > 0);
@@ -77,9 +79,11 @@ namespace FenBrowser.Tests.Performance
             Assert.Contains("\"Environment\"", json);
             Assert.Contains("\"HtmlParseMs\"", json);
             Assert.Contains("\"HtmlParseAllocatedBytes\"", json);
+            Assert.Contains("\"CssParseAndStyleAllocatedBytes\"", json);
             Assert.Contains("\"CssRuleParseMs\"", json);
             Assert.Contains("\"CssCascadeMs\"", json);
             Assert.Contains("\"InlineStyleCacheHits\"", json);
+            Assert.Contains("\"RenderAllocatedBytes\"", json);
             Assert.Contains("\"ManagedAllocatedBytes\"", json);
             Assert.Contains("steady-state-damage-animation", json);
         }

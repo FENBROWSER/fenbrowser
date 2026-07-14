@@ -2756,3 +2756,29 @@ Verification:
 
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `DomPerformanceBenchmarkRunnerTests` and included `AncestorFilterTests`: pass (`4/4`).
+
+## 6.88 CSS and Render Stage Allocation Measurement (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Performance/RenderPerformanceBenchmarkRunner.cs`
+  - Structured reports now separate CSS parse/style allocation and render-frame allocation from the existing HTML parser and whole-scenario counters.
+  - CSS work can execute on bounded worker threads, so the CSS and render boundaries use `GC.GetTotalAllocatedBytes(false)` rather than incorrectly treating the continuation thread as the whole stage. These are process-stage deltas and can include concurrent logging-dispatch allocation; five fresh process samples are used to expose that noise.
+  - Console summaries and JSON artifacts publish `CssParseAndStyleAllocatedBytes` and `RenderAllocatedBytes`. Release execution, scenario inputs, timing gates, and total allocation semantics are unchanged.
+- `FenBrowser.Tests/Performance/RenderPerformanceBenchmarkRunnerTests.cs`
+  - Verifies positive in-memory stage values and persistence of both fields in structured JSON.
+
+Five-process Release medians from reports `120315`-`120320`:
+
+| Scenario | HTML parse allocation | CSS parse/style allocation | Render allocation | Whole scenario allocation |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 1,124,520 B | 9,778,872 B | 13,541,488 B | 24,448,160 B |
+| steady-state-damage-animation | 729,480 B | 5,575,664 B | 15,721,080 B | 22,020,464 B |
+| dense-text-flow | 522,240 B | 3,165,800 B | 9,173,744 B | 12,856,608 B |
+| wrapped-multiline-text | 356,040 B | 1,723,424 B | 3,662,424 B | 5,741,648 B |
+
+The values rank render-frame managed allocation above CSS/style allocation in all four fixtures. They do not attribute native Skia allocation, and they are not used as narrow CI timing assertions.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `RenderPerformanceBenchmarkRunnerTests`: pass (`3/3`).
+- All four benchmark failure gates passed in every retained report.

@@ -38,6 +38,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         double HtmlParseMs,
         long HtmlParseAllocatedBytes,
         double CssParseAndStyleMs,
+        long CssParseAndStyleAllocatedBytes,
         double CssCoreTotalMs,
         double CssQueueWaitMs,
         double CssDiscoveryAndFetchMs,
@@ -55,6 +56,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         double AverageLayoutMs,
         double AveragePaintGenerationMs,
         double AverageRasterMs,
+        long RenderAllocatedBytes,
         double PipelineDurationMs,
         long ManagedAllocatedBytes,
         long ManagedHeapBytesAfter,
@@ -127,10 +129,12 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             double htmlParseMs = Stopwatch.GetElapsedTime(parseStarted).TotalMilliseconds;
             long htmlParseAllocatedBytes = Math.Max(0, GC.GetAllocatedBytesForCurrentThread() - htmlAllocatedBefore);
             var root = document.DocumentElement;
+            long cssAllocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
             long cssStarted = Stopwatch.GetTimestamp();
             var cssResult = await CssLoader.ComputeWithResultAsync(root, baseUri, null, scenario.ViewportWidth, scenario.ViewportHeight).ConfigureAwait(false);
             var styles = cssResult.Computed;
             double cssParseAndStyleMs = Stopwatch.GetElapsedTime(cssStarted).TotalMilliseconds;
+            long cssParseAndStyleAllocatedBytes = Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - cssAllocatedBefore);
             var renderer = new SkiaDomRenderer();
             var totals = new List<double>(scenario.Iterations);
             var layoutTotals = new List<double>(scenario.Iterations);
@@ -138,6 +142,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             var rasterTotals = new List<double>(scenario.Iterations);
             var rasterModes = new Dictionary<RenderFrameRasterMode, int>();
             RenderFrameResult lastResult = null;
+            long renderAllocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
 
             using var initialBitmap = new SKBitmap(scenario.ViewportWidth, scenario.ViewportHeight);
             using var initialCanvas = new SKCanvas(initialBitmap);
@@ -202,6 +207,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             var dominantRasterMode = rasterModes.Count == 0
                 ? RenderFrameRasterMode.None
                 : rasterModes.OrderByDescending(pair => pair.Value).First().Key;
+            long renderAllocatedBytes = Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - renderAllocatedBefore);
 
             return new RenderPerformanceBenchmarkResult(
                 scenario.Name,
@@ -211,6 +217,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 Math.Round(htmlParseMs, 2),
                 htmlParseAllocatedBytes,
                 Math.Round(cssParseAndStyleMs, 2),
+                cssParseAndStyleAllocatedBytes,
                 Math.Round(cssResult.Timing.TotalMs, 2),
                 Math.Round(cssResult.Timing.QueueWaitMs, 2),
                 Math.Round(cssResult.Timing.DiscoveryAndFetchMs, 2),
@@ -228,6 +235,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 Math.Round(AverageOrZero(layoutTotals), 2),
                 Math.Round(AverageOrZero(paintTotals), 2),
                 Math.Round(AverageOrZero(rasterTotals), 2),
+                renderAllocatedBytes,
                 Math.Round(pipelineStopwatch.Elapsed.TotalMilliseconds, 2),
                 Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore),
                 GC.GetTotalMemory(forceFullCollection: false),
@@ -311,7 +319,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             foreach (var result in report.Results)
             {
                 builder.AppendLine(
-                    $"{result.Name}: total={result.AverageTotalMs:0.##}ms html={result.HtmlParseMs:0.##}ms htmlAlloc={result.HtmlParseAllocatedBytes}B cssRules={result.CssRuleParseMs:0.##}ms cascade={result.CssCascadeMs:0.##}ms cssTotal={result.CssParseAndStyleMs:0.##}ms inlineStyleCache={result.InlineStyleCacheHits}h/{result.InlineStyleCacheMisses}m/{result.InlineStyleCacheEvictions}e layout={result.AverageLayoutMs:0.##}ms paint={result.AveragePaintGenerationMs:0.##}ms raster={result.AverageRasterMs:0.##}ms alloc={result.ManagedAllocatedBytes}B dom={result.DomNodeCount} boxes={result.BoxCount} paintNodes={result.PaintNodeCount} rasterMode={result.DominantRasterMode} failGate={result.FailureGatePassed}");
+                    $"{result.Name}: total={result.AverageTotalMs:0.##}ms html={result.HtmlParseMs:0.##}ms htmlAlloc={result.HtmlParseAllocatedBytes}B cssRules={result.CssRuleParseMs:0.##}ms cascade={result.CssCascadeMs:0.##}ms cssTotal={result.CssParseAndStyleMs:0.##}ms cssAlloc={result.CssParseAndStyleAllocatedBytes}B inlineStyleCache={result.InlineStyleCacheHits}h/{result.InlineStyleCacheMisses}m/{result.InlineStyleCacheEvictions}e layout={result.AverageLayoutMs:0.##}ms paint={result.AveragePaintGenerationMs:0.##}ms raster={result.AverageRasterMs:0.##}ms renderAlloc={result.RenderAllocatedBytes}B alloc={result.ManagedAllocatedBytes}B dom={result.DomNodeCount} boxes={result.BoxCount} paintNodes={result.PaintNodeCount} rasterMode={result.DominantRasterMode} failGate={result.FailureGatePassed}");
             }
 
             return builder.ToString();
