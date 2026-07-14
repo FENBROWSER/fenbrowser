@@ -3343,3 +3343,11 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_grid_struct_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture passes every gate; `dotnet-trace report ... topN` confirms the targeted method is absent from the top 40.
+
+## 6.122 Rejected Inherited-Text Normalization Verification (2026-07-14)
+
+- The focused candidate measurement reduced ten flat text-heavy Box Tree builds from exactly `11,414,256 B` to `7,269,840 B` (`-4,144,416 B`, `-36.31%`) while the empty-element control stayed exactly `6,774,256 B`. The results repeated in three fresh Release test processes.
+- A temporary semantic contract verified that raw mapped parent `display` and `width` values were normalized before the text box reused the same style instance. The candidate allocation/semantic tests and neighboring style/layout slice passed `76/76`.
+- All four page gates passed in candidate and restored runs, but the dense-text CSS/style median was `11.04 ms` in candidate reports `170904`, `170906`, `170909`, `170911`, and `170913`, versus `5.50 ms` after restoring the source in reports `170951`, `170954`, `170956`, `170958`, and `171001`. Candidate dense total time was `12.72 ms` versus restored `12.36 ms`.
+- The `100.73%` cross-stage CSS/style regression is reproducible and outweighs the `27.32%` dense layout-allocation reduction. The optimization, tightened budget, output instrumentation, and semantic test were fully reverted; only this rejection record remains.
+- The restored Release `FenBrowser.Tooling` build succeeds, and every failure gate passes in all five immediate restore reports. Test262 and WPT are not run for an unshipped candidate.
