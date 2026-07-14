@@ -61,4 +61,32 @@ public sealed class SelectorListSplitAllocationTests
         Assert.True(SelectorMatcher.MatchesChain(link, parsed[1]));
         Assert.True(SelectorMatcher.MatchesChain(item, parsed[2]));
     }
+
+    [Fact]
+    public void MatchesParsedPseudoClass_DoesNotRenormalizeItsName()
+    {
+        const int iterations = 10_000;
+        var parent = new Element("div");
+        var first = new Element("span");
+        parent.AppendChild(first);
+        parent.AppendChild(new Element("span"));
+
+        List<SelectorChain> parsed = SelectorMatcher.ParseSelectorList("span:FIRST-CHILD");
+        Assert.Single(parsed);
+        Assert.Equal("first-child", parsed[0].Segments[0].PseudoClasses[0].Name);
+        Assert.True(SelectorMatcher.MatchesChain(first, parsed[0]));
+
+        var matched = false;
+        long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (var iteration = 0; iteration < iterations; iteration++)
+        {
+            matched = SelectorMatcher.MatchesChain(first, parsed[0]);
+        }
+
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        _output.WriteLine($"Matching one parsed pseudo-class {iterations:N0} times allocated {allocated:N0} B.");
+
+        Assert.True(matched);
+        Assert.InRange(allocated, 1, 2_100_000);
+    }
 }

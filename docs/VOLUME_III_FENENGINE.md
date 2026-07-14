@@ -9729,3 +9729,24 @@ Verification:
 - The candidate was nevertheless rejected and fully reverted. Five candidate reports `170904`, `170906`, `170909`, `170911`, and `170913` moved dense-text CSS/style median time to `11.04 ms`. An immediate source restore produced reports `170951`, `170954`, `170956`, `170958`, and `171001` at `5.50 ms`; the candidate therefore reproduced a `100.73%` cross-stage regression. Dense total median was also slower at `12.72 ms` versus restored `12.36 ms` (`+2.91%`).
 - Candidate layout allocation did fall from the restored `1,360,752 B` to `989,028 B` (`-371,724 B`, `-27.32%`), but allocation-only improvement does not justify the unexplained stage regression. This matches the earlier rejected broader normalization-delegate experiments and strengthens the requirement to understand benchmark/cascade interaction before changing normalization frequency.
 - No production or test code from the experiment is retained. Test262 and WPT were not run because the candidate was rejected before shipping.
+
+## 2.359 Canonical Pseudo-Selector Names (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssModel.cs` and `SelectorMatcher.cs`
+  - Allocation-profile follow-up kept pseudo-class matching visible and source inspection found that every match dispatched through `name.ToLowerInvariant()`, even though selector parsing already identifies pseudo names and reuses the parsed model across candidate elements.
+  - `PseudoSelector.Name` now maintains a lowercase-invariant model boundary. Parsing normalizes a pseudo-class or pseudo-element name once, then uses that canonical value for CSS2 single-colon pseudo-element classification, functional-pseudo argument pre-parsing, specificity, pseudo-element matching, and repeated pseudo-class dispatch.
+  - This preserves the existing invariant-casing behavior for manually constructed public `PseudoSelector` values as well as parsed selectors. Arguments, nested selector parsing, specificity rules, source order, candidate selection, dynamic state queries, and full matching semantics are unchanged. The change adds no atom table, cache, pool, unsafe code, retained state, or synchronization.
+- `FenBrowser.Tests/Performance/SelectorListSplitAllocationTests.cs`
+  - Ten thousand warmed matches of one parsed uppercase `:FIRST-CHILD` selector move from exactly `2,560,000 B` to `2,080,000 B`, saving `480,000 B` (`18.75%`, exactly `48 B` per match). Both values repeat unchanged across three fresh Release test processes, and the retained `2,100,000 B` ceiling rejects match-time name normalization.
+- `FenBrowser.Tests/Core/PseudoSelectorCanonicalizationTests.cs`
+  - Focused contracts cover uppercase functional `:IS(...)`, its pre-parsed arguments and matching behavior, legacy uppercase `:BEFORE`, uppercase `::SLOTTED(...)`, and direct public model construction.
+
+Five fresh final-code Release processes compare immediate pre-change reports `170951`, `170954`, `170956`, `170958`, and `171001` with canonical-name reports `172117`, `172119`, `172121`, `172124`, and `172126`. CSS allocation medians are flat for first-frame and steady-state, `-1.26%` for dense text, and `+0.27%` for wrapped text. CSS/style timing medians are lower in all four fixtures, while total time ranges from `-1.85%` to `+0.49%`. Those mixed page counters are directional only; the exact production matching contract is the causal acceptance evidence, and no page-latency claim is made.
+
+Verification:
+
+- The exact allocation contract passes three fresh Release processes at `2,080,000 B`; its source model is asserted as `first-child` before matching.
+- The included canonicalization, selector allocation, dynamic recascade, pill-rendering, and layout-stability slice passes `19/19`.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five candidate processes.
+- A fresh final-code `gc-verbose` trace still lists `SelectorMatcher.MatchesPseudoClass` at `2.46%` exclusive sampled weight because other pseudo-specific branches remain; this change claims only removal of repeated name normalization, not elimination of the whole matching owner.
+- Test262 is unrelated to CSS selector matching, and WPT is not rerun because the focused contracts directly cover the affected uppercase parsing, functional-pseudo, pseudo-element, specificity-model, and matching boundaries.

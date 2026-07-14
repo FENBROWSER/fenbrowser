@@ -3351,3 +3351,21 @@ Verification commands:
 - All four page gates passed in candidate and restored runs, but the dense-text CSS/style median was `11.04 ms` in candidate reports `170904`, `170906`, `170909`, `170911`, and `170913`, versus `5.50 ms` after restoring the source in reports `170951`, `170954`, `170956`, `170958`, and `171001`. Candidate dense total time was `12.72 ms` versus restored `12.36 ms`.
 - The `100.73%` cross-stage CSS/style regression is reproducible and outweighs the `27.32%` dense layout-allocation reduction. The optimization, tightened budget, output instrumentation, and semantic test were fully reverted; only this rejection record remains.
 - The restored Release `FenBrowser.Tooling` build succeeds, and every failure gate passes in all five immediate restore reports. Test262 and WPT are not run for an unshipped candidate.
+
+## 6.123 Pseudo-Selector Canonicalization Verification (2026-07-14)
+
+- `SelectorListSplitAllocationTests.MatchesParsedPseudoClass_DoesNotRenormalizeItsName` parses uppercase `span:FIRST-CHILD` once, asserts the stored canonical name, warms the production `MatchesChain` path, and measures 10,000 repeated matches. Allocation falls exactly from `2,560,000 B` to `2,080,000 B` (`-480,000 B`, `-18.75%`) in each of three fresh Release processes; the `2,100,000 B` ceiling rejects match-time casing.
+- `PseudoSelectorCanonicalizationTests` adds four cases covering uppercase functional pseudo parsing and matching, nested argument pre-parsing, legacy single-colon pseudo-element classification, double-colon pseudo-element parsing, and the public `PseudoSelector.Name` invariant.
+- The canonicalization, selector allocation, dynamic recascade, pill-rendering, and layout-stability filter passes `19/19`. Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` pass with zero warnings and zero errors.
+- Final-code reports `172117`, `172119`, `172121`, `172124`, and `172126` pass every failure gate against immediate baseline reports `170951`, `170954`, `170956`, `170958`, and `171001`. Page allocation medians are mixed from `-1.26%` to `+0.27%`; CSS/style timing medians are lower in all four fixtures but total time is mixed, so no end-to-end latency claim is made.
+- The final-code allocation trace records `SelectorMatcher.MatchesPseudoClass` at `2.46%` exclusive sampled weight, confirming that this unit removes only the name-normalization leaf and does not hide remaining pseudo-specific costs.
+- Test262 is not applicable to CSS matching. WPT is not rerun because direct included tests exercise the changed parsing/model boundary and case-insensitive matching semantics.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~SelectorListSplitAllocationTests.MatchesParsedPseudoClass_DoesNotRenormalizeItsName" --logger "console;verbosity=detailed"`: pass (`1/1`) in three fresh processes, exactly `2,080,000 B` each time.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~DynamicClassRecascadeTests|FullyQualifiedName~PseudoSelectorCanonicalizationTests|FullyQualifiedName~SelectorListSplitAllocationTests|FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~LayoutStabilityTests" --logger "console;verbosity=minimal"`: pass (`19/19`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five candidate processes.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_pseudo_name_canonicalization_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture and `topN` report succeed.

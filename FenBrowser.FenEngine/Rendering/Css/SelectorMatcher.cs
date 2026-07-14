@@ -305,12 +305,14 @@ namespace FenBrowser.FenEngine.Rendering.Css
                         break;
                     }
 
+                    var pseudo = new PseudoSelector { Name = name };
+                    name = pseudo.Name;
+
                     // CSS2 compatibility: :before/:after/:first-line/:first-letter
                     // are pseudo-elements even with a single colon.
                     if (!isElement)
                     {
-                        string lower = name.ToLowerInvariant();
-                        if (lower == "before" || lower == "after" || lower == "first-line" || lower == "first-letter")
+                        if (name == "before" || name == "after" || name == "first-line" || name == "first-letter")
                         {
                             isElement = true;
                         }
@@ -331,15 +333,14 @@ namespace FenBrowser.FenEngine.Rendering.Css
                         args = selector.Substring(argStart, i - argStart - 1);
                     }
 
-                    var pseudo = new PseudoSelector { Name = name, Args = args };
+                    pseudo.Args = args;
                     if (!isElement && !string.IsNullOrWhiteSpace(args))
                     {
-                        var lowerName = name.ToLowerInvariant();
-                        if (lowerName == "is" || lowerName == "not" || lowerName == "where" || lowerName == "has")
+                        if (name == "is" || name == "not" || name == "where" || name == "has")
                         {
                             pseudo.ParsedArgs = ParseSelectorListInternal(args, depth + 1);
                         }
-                        else if (lowerName == "nth-child" || lowerName == "nth-last-child")
+                        else if (name == "nth-child" || name == "nth-last-child")
                         {
                             ParseNthArguments(args, out _, out var ofSelector);
                             if (!string.IsNullOrWhiteSpace(ofSelector))
@@ -813,7 +814,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             // Pseudo-elements (::slotted)
             foreach (var ps in seg.PseudoElements)
             {
-                if (string.Equals(ps.Name, "slotted", StringComparison.OrdinalIgnoreCase))
+                if (ps.Name == "slotted")
                 {
                     if (el.ParentElement is Element parent && parent.ShadowRoot != null) // ParentElement check
                     {
@@ -853,7 +854,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
         private static bool MatchesPseudoClass(Element el, string name, string args, List<SelectorChain> parsedArgs, int depth)
         {
             if (depth > 64) return false;
-            switch (name.ToLowerInvariant())
+            switch (name)
             {
                 case "first-child": return IsFirstChild(el);
                 case "last-child": return IsLastChild(el);

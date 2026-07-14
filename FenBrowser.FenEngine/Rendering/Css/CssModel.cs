@@ -131,7 +131,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     // Pseudo-classes need special handling
                     foreach (var pseudo in seg.PseudoClasses)
                     {
-                        var name = pseudo.Name?.ToLowerInvariant();
+                        var name = pseudo.Name;
 
                         // :where() has 0 specificity (CSS Selectors Level 4)
                         if (name == "where")
@@ -261,7 +261,16 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
     public class PseudoSelector
     {
-        public string Name { get; set; }
+        private string _name;
+
+        // Pseudo names are ASCII case-insensitive. Keep the parsed model canonical so
+        // specificity and repeated matching do not normalize the same name again.
+        public string Name
+        {
+            get => _name;
+            set => _name = value?.ToLowerInvariant();
+        }
+
         public string Args { get; set; }
         public List<SelectorChain> ParsedArgs { get; set; } = new List<SelectorChain>();
     }
