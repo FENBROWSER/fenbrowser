@@ -9780,3 +9780,31 @@ Verification:
 - The included canonicalization, functional-pseudo, selector allocation, dynamic recascade, pill-rendering, and layout-stability slice passes `23/23`.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five candidate processes.
 - Test262 is unrelated to CSS selector matching, and WPT is not rerun because the focused contracts directly exercise the changed sibling semantics, intervening text nodes, tag-type filtering, pre-parsed functional arguments, and matching results.
+
+## 2.361 Lazy Paint-Layer Promotion State (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Compositing/PaintTreeLayerizer.cs`
+  - The immediate post-selector allocation trace attributed `0.59%` exclusive sampled weight to `PaintTreeLayerizer.CollectPromotionReasons`. Inspection found that every Paint Tree node created a `HashSet<string>` even when it had no promotion reason; each layerization also eagerly created source and synthetic-layer collections plus a capturing traversal delegate before knowing whether any layer would be promoted.
+  - Promotion-reason storage is now created only when the first reason is found. Source and synthetic-layer collections are likewise created only for the first corresponding promoted node, and an indexed traversal helper avoids the capture allocation. An entirely unpromoted tree returns the existing static `LayerizationResult.Empty` without allocating.
+  - Traversal remains depth-first and child-order preserving. Promoted nodes retain all existing opacity, transform, stacking-context, opacity-group, scroll, and `will-change` reasons; source-node merging, bounds union, layer ordering, opacity, and public results are unchanged. The change adds no cache, pool, unsafe code, native resource, retained state, synchronization, or ownership change.
+- `FenBrowser.Tests/Performance/PaintTreeLayerizerAllocationTests.cs`
+  - Ten warmed layerizations of a 513-node unpromoted Paint Tree move from exactly `331,120 B` to `0 B`, saving `331,120 B` (`100%`). Both values are exact across three fresh Release test processes, and the retained exact-zero assertion rejects per-node reason sets, eager result collections, and traversal-capture allocation.
+  - A nested promoted-node counter-case verifies child traversal, source identity, bounds, opacity, promoted-layer count, synthetic scroll-layer collection, ordering, and the complete sorted set of transform, opacity, stacking-context, and `will-change` reasons.
+
+Five fresh Release processes compare structural-selector reports `172743`, `172746`, `172748`, `172750`, and `172752` with lazy-layerization reports `173400`, `173402`, `173404`, `173406`, and `173409`:
+
+| Scenario | Paint-generation allocation before | Paint-generation allocation after | Difference |
+| --- | ---: | ---: | ---: |
+| first-frame-heavy-layout | 1,283,040 B | 1,228,904 B | -54,136 B (-4.22%) |
+| steady-state-damage-animation | 789,556 B | 756,980 B | -32,576 B (-4.13%) |
+| dense-text-flow | 1,234,156 B | 1,231,020 B | -3,136 B (-0.25%) |
+| wrapped-multiline-text | 329,500 B | 319,132 B | -10,368 B (-3.15%) |
+
+Managed-allocation medians fall `0.29%`, `1.16%`, and `0.42%` in the first, steady-state, and wrapped fixtures; dense text rises `2.31%` amid mixed stage timing. No latency claim is made. The exact production-path contract and consistent paint-allocation reductions are the acceptance evidence. A fresh final-code `gc-verbose` trace no longer lists `CollectPromotionReasons` among the top 75 exclusive allocation owners.
+
+Verification:
+
+- The zero-allocation contract and promoted-reason contract pass three fresh Release processes (`2/2` each time).
+- The included layerizer, Paint Tree pill, paint traversal, and root-raster logging slice passes `14/14`.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five candidate processes.
+- Test262 and WPT are not rerun because the change is confined to private Paint Tree layerization storage and traversal; the focused contracts directly exercise both the allocation-free and promoted semantic paths.

@@ -60,46 +60,26 @@ namespace FenBrowser.FenEngine.Rendering
                 return LayerizationResult.Empty;
             }
 
-            var bySource = new Dictionary<Node, MutableLayer>();
-            var synthetic = new List<MutableLayer>();
+            Dictionary<Node, MutableLayer> bySource = null;
+            List<MutableLayer> synthetic = null;
+            CollectLayers(tree.Roots, styles, ref bySource, ref synthetic);
 
-            tree.Traverse(node =>
-            {
-                if (node == null)
-                {
-                    return;
-                }
-
-                var reasons = CollectPromotionReasons(node, styles);
-                if (reasons.Count == 0)
-                {
-                    return;
-                }
-
-                var sourceNode = node.SourceNode;
-                if (sourceNode == null)
-                {
-                    synthetic.Add(MutableLayer.FromNode(node, reasons));
-                    return;
-                }
-
-                if (!bySource.TryGetValue(sourceNode, out var layer))
-                {
-                    bySource[sourceNode] = MutableLayer.FromNode(node, reasons);
-                    return;
-                }
-
-                layer.Merge(node, reasons);
-            });
-
-            if (bySource.Count == 0 && synthetic.Count == 0)
+            if ((bySource == null || bySource.Count == 0) &&
+                (synthetic == null || synthetic.Count == 0))
             {
                 return LayerizationResult.Empty;
             }
 
-            var orderedLayers = new List<MutableLayer>(bySource.Values.Count + synthetic.Count);
-            orderedLayers.AddRange(bySource.Values);
-            orderedLayers.AddRange(synthetic);
+            var orderedLayers = new List<MutableLayer>((bySource?.Count ?? 0) + (synthetic?.Count ?? 0));
+            if (bySource != null)
+            {
+                orderedLayers.AddRange(bySource.Values);
+            }
+
+            if (synthetic != null)
+            {
+                orderedLayers.AddRange(synthetic);
+            }
             orderedLayers.Sort(static (a, b) =>
             {
                 var top = a.Bounds.Top.CompareTo(b.Bounds.Top);
@@ -131,33 +111,78 @@ namespace FenBrowser.FenEngine.Rendering
             };
         }
 
+        private static void CollectLayers(
+            IReadOnlyList<PaintNodeBase> nodes,
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            ref Dictionary<Node, MutableLayer> bySource,
+            ref List<MutableLayer> synthetic)
+        {
+            if (nodes == null)
+            {
+                return;
+            }
+
+            for (var index = 0; index < nodes.Count; index++)
+            {
+                var node = nodes[index];
+                if (node == null)
+                {
+                    continue;
+                }
+
+                var reasons = CollectPromotionReasons(node, styles);
+                if (reasons != null)
+                {
+                    var sourceNode = node.SourceNode;
+                    if (sourceNode == null)
+                    {
+                        (synthetic ??= new List<MutableLayer>()).Add(MutableLayer.FromNode(node, reasons));
+                    }
+                    else
+                    {
+                        bySource ??= new Dictionary<Node, MutableLayer>();
+                        if (!bySource.TryGetValue(sourceNode, out var layer))
+                        {
+                            bySource[sourceNode] = MutableLayer.FromNode(node, reasons);
+                        }
+                        else
+                        {
+                            layer.Merge(node, reasons);
+                        }
+                    }
+                }
+
+                CollectLayers(node.Children, styles, ref bySource, ref synthetic);
+            }
+        }
+
         private static HashSet<string> CollectPromotionReasons(PaintNodeBase node, IReadOnlyDictionary<Node, CssComputed> styles)
         {
-            var reasons = new HashSet<string>(StringComparer.Ordinal);
+            HashSet<string> reasons = null;
 
             if (node.Transform.HasValue)
             {
-                reasons.Add("transform");
+                AddPromotionReason(ref reasons, "transform");
             }
 
             if (node.Opacity < 0.999f)
             {
-                reasons.Add("opacity");
+                AddPromotionReason(ref reasons, "opacity");
             }
 
             if (node is StackingContextPaintNode)
             {
-                reasons.Add("stacking-context");
+                AddPromotionReason(ref reasons, "stacking-context");
             }
 
             if (node is OpacityGroupPaintNode)
             {
-                reasons.Add("opacity-group");
+                AddPromotionReason(ref reasons, "opacity-group");
             }
 
             if (node is ScrollPaintNode)
             {
-                reasons.Add("scroll");
+                AddPromotionReason(ref reasons, "scroll");
             }
 
             if (node.SourceNode != null && styles != null && styles.TryGetValue(node.SourceNode, out var computed))
@@ -174,7 +199,7 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             if (normalized.Contains(WillChangePromotionHints[i], StringComparison.Ordinal))
                             {
-                                reasons.Add($"will-change:{WillChangePromotionHints[i]}");
+                                AddPromotionReason(ref reasons, $"will-change:{WillChangePromotionHints[i]}");
                             }
                         }
                     }
@@ -182,6 +207,11 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return reasons;
+        }
+
+        private static void AddPromotionReason(ref HashSet<string> reasons, string reason)
+        {
+            (reasons ??= new HashSet<string>(StringComparer.Ordinal)).Add(reason);
         }
 
         private sealed class MutableLayer

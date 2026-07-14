@@ -3388,3 +3388,21 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five candidate processes.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_structural_pseudo_matching_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `topN -n 50` confirms the targeted method is absent.
+
+## 6.125 Paint-Layer Promotion Allocation Verification (2026-07-14)
+
+- `PaintTreeLayerizerAllocationTests.Layerize_UnpromotedTree_AvoidsPerNodeReasonAllocations` measures ten warmed production layerizations of a 513-node unpromoted Paint Tree. Eager reason sets, result collections, and traversal capture allocate exactly `331,120 B`; lazy promotion state allocates exactly `0 B` in each of three fresh Release test processes.
+- `Layerize_PromotedNode_PreservesAllReasons` protects the counter-path by verifying nested child traversal, source identity, bounds, opacity, count, synthetic scroll-layer collection, ordering, and the complete sorted promotion-reason set for a node combining transform, opacity, stacking context, and `will-change` hints.
+- The included layerizer, Paint Tree pill, paint traversal, and root-raster logging filter passes `14/14`. Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` pass with zero warnings and zero errors.
+- Candidate reports `173400`, `173402`, `173404`, `173406`, and `173409` pass every failure gate against reports `172743`, `172746`, `172748`, `172750`, and `172752`. Paint-generation allocation medians fall `4.22%`, `4.13%`, `0.25%`, and `3.15%` across the four fixtures. Stage timings are mixed, so no page-latency claim is made.
+- The immediate before trace records `PaintTreeLayerizer.CollectPromotionReasons` at `0.59%` exclusive sampled allocation weight. The final-code trace no longer lists it among the top 75 exclusive owners.
+- Test262 and WPT are not rerun because this is private layerization storage and traversal with direct semantic and allocation coverage.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~PaintTreeLayerizerAllocationTests" --logger "console;verbosity=detailed"`: pass (`2/2`) in three fresh processes, exactly `0 B` for the unpromoted fixture each time.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~PaintTreeLayerizerAllocationTests|FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~SkiaDomRendererPaintTreeTraversalTests|FullyQualifiedName~SkiaRendererRootLoggingAllocationTests" --logger "console;verbosity=minimal"`: pass (`14/14`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five candidate processes.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_lazy_layer_promotion_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `topN -n 75` confirms the targeted method is absent.
