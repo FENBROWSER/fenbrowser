@@ -3025,3 +3025,19 @@ Verification commands:
 - The broader included CSS filter is `10/13` on both original and candidate builds with identical existing failure output.
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.104 Typeface Cache-Key Verification (2026-07-14)
+
+- Allocation-trace reconstruction identifies `SkiaFontService.ResolveTypeface` as `7.3326` of `27.0361` sampled `String(ReadOnlySpan<char>)` trace units before the change. The retained trace contains no `ResolveTypeface` frame on that allocation path.
+- `ResolveTypeface_RepeatedCacheHitsDoNotAllocateKeys` measures 10,000 warmed production cache hits: the original interpolated string key allocates exactly `560,000 B`, while the retained value key allocates exactly `0 B` and returns the same native typeface object.
+- `ResolveTypeface_CacheKeyPreservesFamilyWeightAndSlant` protects entry reuse and separation for every key component, including the existing null-family/`"default"` alias.
+- The retained focused slice covering both new contracts, inline formatting, probe reset, and the render benchmark passes `25/25`.
+- Candidate reports `150503`, `150504`, `150506`, `150507`, and `150508` pass every failure gate. Active-fixture render allocation falls by `24,600 B` to `36,904 B`, and managed allocation falls by `32,776 B` to `47,696 B`; steady-state counters are flat within noise.
+- Wall-clock medians remain mixed from `-2.46%` to `+3.28%` overall, so no timing speedup is claimed.
+- Test262 and WPT are not rerun because this is an internal cache-key representation change with unchanged lookup semantics and no web-observable behavior.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~SkiaFontServiceTypefaceCacheAllocationTests|FullyQualifiedName~InlineFormattingContractTests|FullyQualifiedName~InlineFormattingContextProbeResetTests|FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests"`: pass (`25/25`).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.

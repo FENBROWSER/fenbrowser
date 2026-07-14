@@ -26,10 +26,15 @@ namespace FenBrowser.FenEngine.Typography
     /// </summary>
     public class SkiaFontService : IFontService
     {
+        private readonly record struct TypefaceCacheKey(
+            string FontFamily,
+            int FontWeight,
+            SKFontStyleSlant FontStyle);
+
         private static readonly object s_instancesLock = new();
         private static readonly List<WeakReference<SkiaFontService>> s_instances = new();
 
-        private readonly ConcurrentDictionary<string, SKTypeface> _typefaceCache = new();
+        private readonly ConcurrentDictionary<TypefaceCacheKey, SKTypeface> _typefaceCache = new();
         private readonly BoundedLruCache<MetricsCacheKey, NormalizedFontMetrics> _metricsCache;
         private readonly BoundedLruCache<MeasureCacheKey, float> _widthCache;
         private readonly BoundedLruCache<MeasureCacheKey, GlyphRun> _glyphRunCache;
@@ -173,7 +178,7 @@ namespace FenBrowser.FenEngine.Typography
 
         public SKTypeface ResolveTypeface(string fontFamily, int fontWeight = 400, SKFontStyleSlant fontStyle = SKFontStyleSlant.Upright)
         {
-            string cacheKey = $"{fontFamily ?? "default"}|{fontWeight}|{fontStyle}";
+            var cacheKey = new TypefaceCacheKey(fontFamily ?? "default", fontWeight, fontStyle);
 
             if (_typefaceCache.TryGetValue(cacheKey, out var cached))
             {

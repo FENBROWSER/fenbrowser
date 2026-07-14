@@ -9312,3 +9312,31 @@ Verification:
 - An explicit source restore/reapply leaves the broader CSS slice at `10/13` on both builds. The same three existing Tailwind/logical-projection failures retain identical expected and actual values.
 - All four benchmark failure gates pass in every candidate process.
 - Test262 and WPT categories are not rerun because the change only removes a redundant key copy; the index comparer and full selector matcher that define matching semantics are unchanged.
+
+## 2.343 Allocation-Free Typeface Cache Hits (2026-07-14)
+
+- `FenBrowser.FenEngine/Typography/SkiaFontService.cs`
+  - The post-cascade Release allocation trace attributed `7.3326` of `27.0361` sampled `String(ReadOnlySpan<char>)` trace units (`27.12%`) to the interpolated `family|weight|slant` key built by `ResolveTypeface` on every lookup, including cache hits.
+  - The existing per-service concurrent typeface cache now uses a private value key containing the original family string, numeric weight, and `SKFontStyleSlant`. A warmed hit hashes and compares that struct without formatting a new string. Null family names still map to the same `"default"` key as an explicit default family, and family, weight, and slant remain independent key components.
+  - The cache remains service-owned, concurrent, and otherwise unchanged: typeface resolution, fallback order, native `SKTypeface` values, cache lifetime, snapshot counts, and existing cache growth policy are not altered. No cache, pool, unsafe code, native resource, retained string, or concurrency boundary is added.
+- `FenBrowser.Tests/Performance/SkiaFontServiceTypefaceCacheAllocationTests.cs`
+  - Ten thousand warmed cache hits move from exactly `560,000 B` to exactly `0 B` while returning the identical `SKTypeface` instance.
+  - A key-semantics contract verifies reuse for an identical key, separate entries for family/weight/slant changes, and the existing null/explicit-default alias.
+
+Five fresh Release processes compare the immediately preceding retained reports `145444`-`145448` with candidate reports `150503`, `150504`, `150506`, `150507`, and `150508`:
+
+| Scenario | Total before | Total after | Render allocation before | Render allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 170.40 ms | 171.41 ms (+0.59%) | 9,229,656 B | 9,192,752 B (-0.40%) | 20,091,224 B | 20,054,320 B (-0.18%) |
+| steady-state-damage-animation | 14.51 ms | 14.37 ms (-0.96%) | 9,318,448 B | 9,318,192 B (flat) | 15,602,640 B | 15,605,760 B (+0.02%) |
+| dense-text-flow | 12.18 ms | 12.58 ms (+3.28%) | 5,462,544 B | 5,437,416 B (-0.46%) | 9,139,792 B | 9,092,096 B (-0.52%) |
+| wrapped-multiline-text | 6.51 ms | 6.35 ms (-2.46%) | 2,279,568 B | 2,254,968 B (-1.08%) | 4,335,632 B | 4,302,856 B (-0.76%) |
+
+The exact warmed-hit allocation delta is the causal acceptance measurement. Active layout/paint fixture allocations fall consistently, while steady-state process allocation is flat within noise. Total, layout, and paint timings move in both directions, so no latency improvement is claimed. A fresh `gc-verbose` trace contains no `ResolveTypeface` frame on the string-construction path; sampled `String(ReadOnlySpan<char>)` weight falls from `27.0361` to `16.1068` trace units overall.
+
+Verification:
+
+- The original string key passes the cache-semantics contract and fails only the allocation contract at exactly `560,000 B`; the retained value key passes both contracts at `2/2`.
+- The retained font-cache, inline-formatting, probe-reset, and render-benchmark slice passes `25/25`.
+- All four benchmark failure gates pass in every candidate process.
+- Test262 and WPT categories are not rerun because the change is confined to the internal typeface-cache key; JavaScript, DOM, CSS, layout, and web-platform behavior are unchanged.
