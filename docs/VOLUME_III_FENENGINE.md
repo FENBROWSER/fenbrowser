@@ -9227,3 +9227,32 @@ Verification:
 - The retained allocation, Box Tree, incremental-layout, compositor, and renderer-telemetry slice passes `9/9`.
 - All four benchmark failure gates pass in every immediate A/B report.
 - This layout-storage change does not alter JavaScript or web-platform semantics, so Test262 and WPT categories are not rerun.
+
+## 2.340 Allocation-Free Layout Subtree Enumeration (2026-07-14)
+
+- `FenBrowser.FenEngine/Layout/Contexts/LayoutBoxOps.cs`
+  - The retained allocation trace still ranked `LayoutBoxStore.ChildrenListWrapper.GetEnumerator` at `1.65%` exclusive weight. Call-stack reconstruction attributed `47.55%` of its samples to `ShiftSubtree` and `27.42%` to `ResetSubtreeToOrigin`, together accounting for `74.97%` of the measured child-enumerator path.
+  - Those two non-mutating recursive walks now capture the live child view and traverse it by index. Child order, geometry translation, recursion, null handling, and fixed-position descendant skipping are unchanged. `ShiftSubtree` retains its per-call `HashSet<LayoutBox>` because cycle protection is a correctness boundary, not disposable overhead.
+  - The public `IList<LayoutBox>` contract, child-view implementation, other layout loops, store lifetime, and layout-thread ownership are unchanged. The change adds no cache, pool, unsafe code, retained state, native resource, or concurrency.
+- `FenBrowser.Tests/Performance/LayoutBoxOpsTraversalAllocationTests.cs`
+  - Ten warmed reset walks over 101 boxes move from exactly `48,480 B` to exactly `0 B`.
+  - Ten warmed shift walks move from exactly `122,240 B` to `73,760 B` (`-39.66%`). The retained bytes are the intentional per-call visited sets; the `74,000 B` ceiling rejects the enumerator implementation while preserving cycle protection.
+  - Both contracts verify the resulting geometry for every box.
+
+Five fresh Release processes compare original reports `144039`, `144040`, `144041`, `144042`, and `144051` with retained reports `144113`, `144115`, `144117`, `144119`, and `144120`:
+
+| Scenario | Total before | Total after | Layout allocation before | Layout allocation after | Render allocation before | Render allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 172.22 ms | 172.65 ms (+0.25%) | 8,018,992 B | 7,379,792 B (-7.97%) | 9,902,720 B | 9,262,472 B (-6.47%) | 20,772,352 B | 20,132,104 B (-3.08%) |
+| steady-state-damage-animation | 13.91 ms | 14.64 ms (+5.25%) | 184 B | 184 B (flat) | 9,861,488 B | 9,334,464 B (-5.34%) | 16,153,144 B | 15,626,680 B (-3.26%) |
+| dense-text-flow | 12.82 ms | 13.73 ms (+7.10%) | 1,414,156 B | 1,367,068 B (-3.33%) | 5,554,232 B | 5,462,520 B (-1.65%) | 9,235,424 B | 8,989,192 B (-2.67%) |
+| wrapped-multiline-text | 8.56 ms | 6.49 ms (-24.18%) | 767,640 B | 738,224 B (-3.83%) | 2,292,456 B | 2,279,568 B (-0.56%) | 4,350,760 B | 4,343,552 B (-0.17%) |
+
+Allocation falls in every exercised layout workload and in every whole-render/process measurement. Timing is mixed from `-24.18%` to `+7.10%`, including movement in untouched CSS, paint, and raster stages, so no timing improvement is claimed. A fresh `gc-verbose` trace reduces the child enumerator from `1.65%` to `0.93%` exclusive weight and contains neither targeted `LayoutBoxOps` caller. Remaining samples belong to grid mapping, formatting-context classification, inline layout, and materialization walks and are left for separately measured changes.
+
+Verification:
+
+- An explicit source restore records the focused original at `5/7`: all five existing `LayoutBoxOpsTests` pass, while both new allocation contracts fail with the baseline values above. The retained source passes `7/7`.
+- The broad layout slice remains `231/233`; the only failures before and after are the existing `GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl` and `ColumnMinHeightDvh_AllowsFlexOneHeroToCenterContent` failures with unchanged output.
+- All four benchmark failure gates pass in every original and retained process.
+- This layout traversal change does not alter JavaScript or web-platform semantics, so Test262 and WPT categories are not rerun.

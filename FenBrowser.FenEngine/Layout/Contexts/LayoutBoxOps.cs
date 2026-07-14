@@ -74,9 +74,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
             float dy = -box.Geometry.ContentBox.Top;
             ShiftBoxModel(box.Geometry, dx, dy);
 
-            foreach (var child in box.Children)
+            var children = box.Children;
+            for (var index = 0; index < children.Count; index++)
             {
-                ResetSubtreeToOrigin(child);
+                ResetSubtreeToOrigin(children[index]);
             }
         }
 
@@ -99,8 +100,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts // Namespace matching usage
 
             ShiftBoxModel(box.Geometry, dx, dy);
 
-            foreach (var child in box.Children)
+            var children = box.Children;
+            for (var index = 0; index < children.Count; index++)
             {
+                var child = children[index];
                 var childPosition = LayoutStyleResolver.GetEffectivePosition(child?.ComputedStyle);
                 if (string.Equals(childPosition, "fixed", StringComparison.OrdinalIgnoreCase))
                 {

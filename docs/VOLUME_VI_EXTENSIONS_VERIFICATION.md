@@ -2973,3 +2973,21 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~LayoutBoxChildrenAccessTests|FullyQualifiedName~BoxTreeBuilderHotPathTests|FullyQualifiedName~IncrementalLayoutCacheTests|FullyQualifiedName~CompositorLayerAndIncrementalLayoutTests|FullyQualifiedName~RenderFrameTelemetryTests" --logger "console;verbosity=minimal" /nodeReuse:false`: pass (`9/9`).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every immediate A/B process.
+
+## 6.101 Layout Subtree-Walk Verification (2026-07-14)
+
+- Allocation-trace caller reconstruction attributes `74.97%` of measured layout child-enumerator samples to `LayoutBoxOps.ShiftSubtree` and `ResetSubtreeToOrigin`.
+- `ResetSubtreeToOrigin_RepeatedWalkDoesNotAllocate` records `48,480 B` before and exactly `0 B` after for ten warmed 101-box walks, while checking that every content box reaches the origin.
+- `ShiftSubtree_RepeatedWalkStaysWithinAllocationBudget` records `122,240 B` before and `73,760 B` after (`-39.66%`), while checking every translated box. Its documented `74,000 B` ceiling keeps the intentional visited-set allocations and rejects the original enumerator path.
+- The five existing `LayoutBoxOpsTests` pass on both sides of the explicit restore. The original focused slice is `5/7` only because the two new allocation contracts expose the baseline; the retained slice passes `7/7`.
+- The broad layout slice remains `231/233` before and after. The same grid text-bounds and flex viewport-remainder failures remain visible with identical output and were neither skipped nor changed.
+- Five-process reports `144039`-`144051` before and `144113`-`144120` after reduce active-layout allocation by `3.33%`-`7.97%`, render allocation by `0.56%`-`6.47%`, and managed allocation by `0.17%`-`3.26%`. All failure gates pass.
+- Timing medians are mixed from `-24.18%` to `+7.10%`, so no timing speedup is claimed. A fresh allocation trace reduces `ChildrenListWrapper.GetEnumerator` from `1.65%` to `0.93%` exclusive weight and removes both targeted callers.
+- Test262 and WPT are not rerun because the change is confined to engine-owned layout traversal.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~LayoutBoxOpsTests|FullyQualifiedName~LayoutBoxOpsTraversalAllocationTests" --logger "console;verbosity=minimal" /nodeReuse:false`: pass (`7/7`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Layout" --logger "console;verbosity=minimal" /nodeReuse:false`: same two known failures, `231/233`, before and after.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in all ten unique original and retained reports.
