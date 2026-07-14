@@ -1,119 +1,79 @@
-# FenBrowser — Test Baseline
+# FenBrowser Test Baseline
 
-> Auto-generated Gate 0 Reality Audit. Last refreshed: 2026-06-27.
-> Evidence policy: numbers come from actual test runs, not estimates.
+Snapshot date: 2026-07-14. All paths and results are local. No conformance data in this file was fetched from the internet.
 
-## 1. Build
+## Verification run in this audit
 
-| Metric | Value |
-|--------|-------|
-| Solution | FenBrowser.sln (14 projects) |
-| Target framework | net10.0 |
-| Build result | **0 errors, 13 warnings** |
-| Warnings | All in test projects: CS0618 (obsolete Node.Text/Node.ComputedStyle/Element.Attr), xUnit2012/xUnit2031 analyzer suggestions |
+| Surface | Command | Result | Status |
+| --- | --- | --- | --- |
+| Tooling dependency graph, Release | `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -v minimal` | 0 errors, 0 warnings | TESTED |
+| Diagnostic/process focused tests | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~MissingApiTrackerTests|FullyQualifiedName~NavigationLifecycleTraceTests|FullyQualifiedName~RendererIpcMetadataTests|FullyQualifiedName~RendererIsolationPoliciesTests"` | 44 passed, 0 failed, 0 skipped | TESTED |
+| Tooling dependency graph, Debug | Same build in Debug | Reached project compilation, then failed copying Host dependencies because Visual Studio and a running FenBrowser.Host locked Debug DLLs | RESEARCHED |
 
-## 2. Unit Tests
+The Debug result is an environment lock, not a source compilation failure. The active processes were not terminated because they belong to the user's live workspace session.
 
-### FenBrowser.Tests (browser engine)
+## Test discovery gap
 
-| Metric | Value |
-|--------|-------|
-| Passed | **566** |
-| Failed | **16** |
-| Total | **582** |
-| Pass rate | **97.3%** |
+`FenBrowser.Tests/FenBrowser.Tests.csproj` removes `Engine/**`, `DOM/**`, `WebAPIs/**`, `Workers/**`, `Interaction/**`, `Integration/**`, `Diagnostics/**`, `Host/**`, `Rendering/**`, and `Architecture/**` from compilation.
 
-Failing tests by area:
-- WebDriver: 9 (shadow root, element commands, navigation, cookies, multi-session, actions)
-- Scripting/FenJS XMLHttpRequest: 5 (PromiseThen, ArrowPromiseChain, ObjectLiteral, PromiseConstructor, Fetch)
-- Core/GoogleSnapshotDiagnostics: 2 (snapshot analysis null refs)
-- Core/Layout: 1 (HeightResolutionTests.InlineButton_WithNestedFlexContent)
-- Core/P2ClosureContract: 1 (EngineLog_PerDocumentCounters)
+The Release discovery check found:
 
-### FenBrowser.Js.Tests (JS engine)
+| Test class | Discovered |
+| --- | --- |
+| `MissingApiTrackerTests` | yes |
+| `RendererIpcMetadataTests` | yes |
+| `EventLoopTraceTests` | no |
+| `RealSiteRenderDiagnostics` | no |
+| `RendererChildLoopIoTests` | no |
 
-| Metric | Value |
-|--------|-------|
-| Passed | **752** |
-| Failed | **6** |
-| Total | **758** |
-| Pass rate | **99.2%** |
+Passing the normal test project therefore does not currently protect every diagnostic, render, host, or IPC path.
 
-Failing tests:
-- ModuleParserTests.ExportNamedListProducesOneEntryEach (1)
+## Test262 source of truth
 
-## 3. Test262 Conformance
+Read `docs/test262_results.md`; do not rerun the full suite for status checks.
 
-| Metric | Value |
-|--------|-------|
-| Overall | **50842/55220 = 92.07%** |
-| Categories total | 1772 |
-| Categories at 100% | 1474 |
-| Categories below 100% | 298 |
+| Metric | Local batched snapshot |
+| --- | --- |
+| Snapshot | 2026-07-05 |
+| Passed | 49,070 |
+| Total | 53,198 |
+| Pass rate | 92.24% |
+| Categories at 100% | 1,490 / 1,767 |
+| Categories below 100% | 277 |
 
-### Top failure clusters (by fail count, >50 fails)
+Any future Test262 invocation must use the local `C:/Users/udayk/Videos/test262` checkout, a 2,000 ms per-test timeout, and the 30 second stall watchdog.
 
-| Category | Fail | Pass% | Root cause type |
-|----------|------|-------|-----------------|
-| staging | 566 | 61.8% | ES2025 proposals, mixed |
-| built-ins/RegExp | 343 | 85.5% | Regex VM gaps, unicode property escapes, matchAll indices |
-| built-ins/Temporal | 268 | 94.2% | relativeTo, DST-aware diff, until/since largestUnit, non-ISO calendar edge cases |
-| language/eval-code/direct | 211 | 63.1% | Eval scope resolution, var-binding semantics |
-| built-ins/TypedArray | 166 | 88.6% | Species, validation, resizable buffers |
-| language/statements/class | 166 | 96.2% | Private field brand checks, super() ordering |
-| built-ins/TypedArrayConstructors | 154 | 79.1% | Constructor species, this-check |
-| intl402/NumberFormat | 140 | 43.8% | Missing resolvedOptions, formatRange, formatToParts gaps |
-| intl402/Temporal | 138 | 93.2% | Calendar-aware Intl formatting for Temporal types |
-| intl402/DateTimeFormat | 122 | 50.0% | Missing resolvedOptions, formatToParts |
-| built-ins/Atomics | 110 | 71.8% | Atomic operations on SharedArrayBuffer |
-| built-ins/Array | 96 | 96.9% | 2^53-1 length/index edge cases, species |
-| language/expressions/class | 96 | 97.6% | Class expression scoping, private names |
-| language/import/import-defer | 89 | 11.9% | Deferred import proposal (ES2025) |
-| built-ins/String | 76 | 93.8% | matchAll, replaceAll with regexps |
-| language/statements/for-of | 74 | 90.1% | Iterator close on destructuring, for-of head let leak |
-| built-ins/Function | 66 | 87.0% | Function.prototype.toString source text |
-| built-ins/Object | 65 | 98.1% | 2^53-1 key edge cases |
+## WPT tracked aggregate
 
-## 4. WPT Conformance
+`Results/wpt_categories/_summary.json` is a local generated aggregate dated 2026-07-07. It is useful as a runner snapshot, not proof that every category is correctly implemented.
 
 | Metric | Value |
-|--------|-------|
-| Runner | Upstream wptrunner + wptrunner_fenbrowser plugin (WebDriver-based) |
-| Known result | dom/lists: 180/189 = 95.2% |
-| Full baseline | **Not yet run** — needs full category sweep |
-| Runner caveat | Must pin FEN_BROWSER_SCRIPT_ENGINE=legacy for WebDriver (dual-engine split-brain issue) |
+| --- | --- |
+| Total tests represented | 4,445 |
+| Passed | 2,752 |
+| Failed | 502 |
+| Crashed | 369 |
+| Timed out | 822 |
+| Aggregate pass rate | 61.91% |
+| Category errors | 17 |
 
-## 5. Real-Site Smoke Testing
+The latest retained focused `dom/lists` summary at `Results/wpt_20260704_175911/wpt.summary.json` ended with exit code 1 and four OK statuses plus one ERROR. Selected WPT baselines must be rerun category-by-category from the local `C:/Users/udayk/Videos/wpt` checkout before using them as acceptance evidence.
 
-| Site | Elements | With Layout | Missing Rect | Zero-Area (w/content) | Verdict |
-|------|----------|-------------|--------------|----------------------|---------|
-| HackerNews (news.ycombinator.com) | 816 | 777 (95%) | 31 | 97 (0) | 🟡 Mostly renders, minor gaps |
-| React docs (react.dev) | 1843 | 1240 (67%) | 497 | 11 (4) | 🟠 Significant missing elements |
-| GitHub (github.com) | 1959 | 1090 (56%) | 588 | 194 (102) | 🔴 Major layout gaps, many zero-area with content |
-| x.com | 81 | 10 (12%) | 26 | 0 (0) | 🔴 Severely broken, scripts barely execute |
+## Real-site and diagnostic evidence
 
-## 6. Known Regressions from Test Failures
+| Target | Evidence | Observed result | Status |
+| --- | --- | --- | --- |
+| Google | `logs/real-site/www.google.com/20260714T075906Z/` | Main page rendered; DCL/load true; 17 completed script executions; input not automated | TESTED |
+| example.com control | `logs/real-site/example.com/20260713T074825Z/` | Complete lifecycle and screenshot, no failure | TESTED |
+| `fen://performance` control | `logs/real-site/performance/20260714T102820Z/` | 518 boxes, screenshot, complete lifecycle | TESTED |
 
-| Test | Area | Type |
-|------|------|------|
-| WebDriverContractTests (9 fails) | WebDriver | Shadow DOM, element refs, navigation, cookies |
-| FenJsXmlHttpRequestTests (5 fails) | Scripting | Promise/Fetch in hosted browser engine |
-| GoogleSnapshotDiagnosticsTests (2 fails) | Diagnostics | Null-ref in snapshot analysis |
-| HeightResolutionTests.InlineButton | Layout | Flex + inline button height |
-| P2ClosureContractTests.EngineLog | Core | Per-document engine log aggregation |
+## Baselines still required
 
-## 7. html5lib Conformance
-
-**Not yet baselined.** The `html5lib-tests/` directory exists with upstream test data. Runner needs to be verified.
-
-## 8. CSS Test Conformance
-
-**Not yet formally baselined.** WPT CSS tests can be run via wptrunner. Acid2 smiley face assembles (commit 5321ce29).
-
-## 9. WebDriver Test Conformance
-
-| Metric | Value |
-|--------|-------|
-| WebDriver-specific tests | ~20 in FenBrowser.Tests |
-| Pass rate | ~55% (11/20 estimated) |
-| Known gaps | Shadow root commands, cross-session element refs, cookie isolation |
+| Surface | Status | Required output |
+| --- | --- | --- |
+| Full `FenBrowser.Tests` included set | RESEARCHED | Fresh pass/fail list after resolving or avoiding active binary locks |
+| `FenBrowser.Js.Tests` | RESEARCHED | Fresh complete result |
+| Core-focused tests inside `FenBrowser.Tests` | RESEARCHED | Fresh discovered and executed result for active Core paths |
+| html5lib | NOT_STARTED | Runner command, totals, failures, and local result bundle |
+| Selected boot-critical WPT | RESEARCHED | `html`, `dom`, `fetch`, `cors`, `cookies`, `custom-elements`, `cssom`, and focused layout categories |
+| WebDriver interaction smoke | NOT_STARTED | Click/type/submit/screenshot proof against Google or a deterministic local reduction |

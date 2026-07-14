@@ -1,226 +1,145 @@
-# FenBrowser — Diagnostics Specification
+# FenBrowser Diagnostic Spine
 
-> Diagnostic spine design for Gate 1. Specifies trace format, log levels, categories, and output bundle structure.
-> Implementation: T1.1 base trace sink implemented in `FenBrowser.Core/Logging/EngineLogSinks.cs`; T1.2-T1.8 remain open.
+Status: INTEGRATED with documented Gate 1 gaps. Snapshot date: 2026-07-14.
 
-## Log Levels
+Runtime artifacts follow the repository path policy and live under `logs/`, not at repository root or in `docs/`. The per-site bundle path is:
 
-| Level | Use |
-|-------|-----|
-| TRACE | Internal state transitions, per-operation details |
-| DEBUG | Diagnostic information useful for debugging |
-| INFO | Notable lifecycle events (navigation, parse, load, paint) |
-| WARN | Non-fatal issues (missing API, slow operation, degraded mode) |
-| ERROR | Fatal operation failures (script crash, network failure, parse error) |
-| FATAL | Renderer crash, unrecoverable state |
+`logs/real-site/<site>/<run-id>/`
 
-## Trace Categories (25 Required)
+## Current entrypoint
 
-```
-Navigation, Network, HTMLParser, ResourceLoader, ScriptLoader,
-JS, WebIDL, DOM, EventLoop, Microtask, Timer, CSSParser,
-Selector, Cascade, Style, Layout, Paint, Compositor, Input,
-Storage, Cookie, Security, IPC, Process, Crash, Performance
+```powershell
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site <url> <settle_ms>
 ```
 
-## Trace Event Schema
+The current CLI accepts a URL and optional settle time. The proposed `--trace`, `--output`, standalone dump commands, and selector inspection are NOT_STARTED and must not be documented as working commands.
 
-Every trace event (JSONL line) must include:
+## Current versus required capability
+
+| Capability | Status | Current truth | Required closure |
+| --- | --- | --- | --- |
+| Structured NDJSON | INTEGRATED | `EngineLog` writes `logs.ndjson` | Add an explicit drain/export boundary |
+| Diagnostic trace JSONL | INTEGRATED | Core fields and category mapping exist | Populate stable session/document/frame/realm/request/task IDs at owners |
+| Navigation lifecycle | TESTED | Google has six ordered terminal transitions | Add redirect/failure/frame reductions |
+| Script loading snapshot | TESTED | Per-script identity, source coordinates, fetch, batch, and execution state | Normalize dynamic-script discovery/execution populations |
+| Event-loop snapshot | INTEGRATED | DCL/load, timers, rAF counters, callback failures, and event records | Preserve per-failure exception data and task/microtask start records in the bundle |
+| Network capture | INTEGRATED | Request/response records and counts | Correct non-HTTP schemes and add policy/cookie/CORS disposition |
+| Missing API runtime tracker | TESTED | Rich per-site records are written under `logs/missing_apis/` | Export that schema into the run bundle and classify probes/expandos |
+| First blocker summary | STUBBED | Independent first console/navigation/API strings | Rank causal candidates across every stage and emit one typed result |
+| Exceptions artifact | STUBBED | Navigation exception plus console string heuristics | Include script, promise, timer, event listener, parser, IPC, and crash failures |
+| DOM/style/layout/paint dumps | INTEGRATED | Current bundle has text dumps and screenshot | Add HTML DOM serialization contract and selector inspection |
+| IPC/sandbox/performance artifacts | NOT_STARTED | Data sources exist outside the bundle | Emit typed files even when inactive, with an explicit inactive reason |
+
+## Trace event envelope
+
+Target schema: `fenbrowser.trace.v1`. Every event must contain the following keys; unknown identifiers are `null`, never omitted.
 
 ```json
 {
-  "ts": "2026-06-27T12:00:00.000Z",
-  "level": "INFO",
-  "category": "Navigation",
-  "event": "NavigationStarted",
-  "session_id": "s_abc123",
-  "process_id": "p_main",
-  "nav_id": "n_1",
-  "doc_id": "d_1",
-  "frame_id": "f_1",
-  "realm_id": null,
-  "script_id": null,
+  "schema_version": 1,
+  "timestamp": "2026-07-14T07:59:06.7760907Z",
+  "sequence": 2042,
+  "level": "WARN",
+  "category": "EventLoop",
+  "event_name": "TaskFailed",
+  "browser_session_id": "session-...",
+  "process_id": 26572,
+  "process_role": "renderer",
+  "navigation_id": "1",
+  "frame_id": "main",
+  "document_id": "document-1",
+  "realm_id": "realm-1",
+  "script_id": "script-10",
   "request_id": null,
-  "task_id": null,
-  "msg": "Navigation started to https://example.com",
-  "data": { "url": "https://example.com", "disposition": "new" }
+  "task_id": "timer-12",
+  "message": "event-loop callback task failed",
+  "data": {
+    "error_type": "TypeError",
+    "error": "..."
+  }
 }
 ```
 
-Current implementation note: `EngineLog` trace output now writes this diagnostic JSONL schema when `EnableTraceSink` is enabled. Event names can be supplied with the `fields["event"]` value, and exact trace category overrides can be supplied with `fields["traceCategory"]`. Later instrumentation tasks must populate navigation, document, frame, request, realm, script, and task IDs at their owning subsystem boundaries.
+The current JSONL keys use short names such as `ts`, `event`, and `nav_id`. Migration must be additive or versioned; it must not silently break existing bundle readers.
 
-Required ID fields per event type:
-- All events: `ts`, `level`, `category`, `event`, `session_id`, `process_id`
-- Navigation events: + `nav_id`
-- Document events: + `doc_id`, `nav_id`
-- Frame events: + `frame_id`, `doc_id`
-- Script events: + `script_id`, `doc_id`
-- Network events: + `request_id`, `nav_id`
-- JS execution: + `realm_id`, `script_id`
-- Task/microtask: + `task_id`
-- Layout/paint: + `doc_id`
+## Levels and categories
 
-## Script Loading Events
+Required levels: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`.
 
-| Event | When |
-|-------|------|
-| `ScriptDiscovered` | Parser or document.write encounters `<script>` |
-| `ScriptFetchStarted` | Network request for external script begins |
-| `ScriptFetchCompleted` | Network response received |
-| `ScriptReady` | Script fetched and ready to execute (respects async/defer ordering) |
-| `ScriptExecutionStarted` | Script begins executing |
-| `ScriptExecutionCompleted` | Script execution completes without error |
-| `ScriptExecutionFailed` | Script throws unhandled exception |
-| `DOMContentLoadedBlockedByScript` | Parser-blocking script delays DCL |
-| `DOMContentLoadedFired` | DOMContentLoaded event dispatched |
-| `LoadFired` | Window load event dispatched |
+Required categories:
 
-Per-script fields: `script_id`, `url`, `inline|external`, `classic|module`, `async`, `defer`, `parser_inserted`, `blocking_status`, `fetch_status`, `mime_type`, `execution_order`, `exception` if failed.
+`Navigation`, `Network`, `HTMLParser`, `ResourceLoader`, `ScriptLoader`, `JS`, `WebIDL`, `DOM`, `EventLoop`, `Microtask`, `Timer`, `CSSParser`, `Selector`, `Cascade`, `Style`, `Layout`, `Paint`, `Compositor`, `Input`, `Storage`, `Cookie`, `Security`, `IPC`, `Process`, `Crash`, `Performance`.
 
-## Event Loop Events
+Current `MissingApiTracker` emits category `MissingAPI`, which is outside this contract. A missing interface member belongs to `WebIDL` or `DOM`; the event name remains `MissingApiObserved`.
 
-| Event | When |
-|-------|------|
-| `TaskQueued` | Task added to a task queue |
-| `TaskStarted` | Task begins execution |
-| `TaskCompleted` | Task finishes execution |
-| `MicrotaskQueued` | Microtask (Promise job) queued |
-| `MicrotaskCheckpointStarted` | Microtask checkpoint begins |
-| `MicrotaskExecuted` | Individual microtask executes |
-| `MicrotaskCheckpointCompleted` | All pending microtasks executed |
-| `TimerScheduled` | setTimeout/setInterval registered |
-| `TimerFired` | Timer callback executes |
-| `RequestAnimationFrameScheduled` | requestAnimationFrame callback registered |
-| `RequestAnimationFrameFired` | rAF callbacks execute |
-| `RenderOpportunityStarted` | Render opportunity (style/layout/paint) begins |
-| `RenderOpportunityCompleted` | Render opportunity ends |
+## Required trace points
 
-## Navigation Lifecycle Events
+| Stage | Required event points | Required stage data |
+| --- | --- | --- |
+| Navigation | `NavigationStarted`, `NavigationRedirected`, `NavigationResponseReceived`, `NavigationCommitted`, `NavigationFailed` | URL, initiator, redirect chain, status, MIME, commit source |
+| Document/parser | `DocumentCreated`, `HTMLParsingStarted`, `HTMLParsingCompleted` | document/frame IDs, bytes/tokens/nodes, parse mode, error count |
+| Resources | `StylesheetDiscovered`, `StylesheetFetchStarted`, `StylesheetLoaded`, `ResourceFailed` | request ID, URL, initiator, type, blocking state, MIME |
+| Scripts | `ScriptDiscovered`, `ScriptFetchStarted`, `ScriptFetchCompleted`, `ScriptReady`, `ScriptExecutionStarted`, `ScriptExecutionCompleted`, `ScriptExecutionFailed`, `DOMContentLoadedBlockedByScript` | stable script ID, source URL/coordinates, classic/module, async/defer/parser-inserted, execution order |
+| JS | `JsExceptionThrown`, `UnhandledPromiseRejection`, `PromiseRejectionHandled` | realm/script/source/stack, handled state, fatality |
+| WebIDL/DOM | `BindingConversionFailed`, `BrandCheckFailed`, `MissingApiObserved`, `DomExceptionThrown`, `MutationObserverDelivered`, `CustomElementReactionFailed` | interface/member, receiver brand, argument index, exception, source provenance |
+| Event loop | `TaskQueued`, `TaskStarted`, `TaskCompleted`, `TaskFailed`, checkpoint start/execute/complete, timer schedule/fire, rAF schedule/fire, render opportunity start/complete | task source, queue, parent task, callback ID, timestamps, exception |
+| Network/security | request/response/redirect/CORS/cookie/cache/CSP/mixed-content decisions | origin, credentials, policy decision, response exposure, redacted headers |
+| Style/layout/paint | calculation start/complete, dirty reason, Box Tree build, layout start/complete, Paint Tree build, raster/submit | counts, durations, viewport, invalidation cause, blocker |
+| Input | hit test, focus change, dispatch start/complete, default action, text edit, navigation activation | coordinates, target, event phase, prevented state, resulting value/navigation |
+| Process/IPC | child launch/ready/exit, envelope send/receive/reject/timeout, sandbox allow/deny | role, sender/receiver, schema version, type, correlation, byte count, permission, rejection |
+| Performance/crash | long task, allocation/GC, frame budget, hang watchdog, crash | duration, allocation, GC generation/pause, last task/IPC/script, dump path |
 
-| Event | When |
-|-------|------|
-| `NavigationRequested` | URL bar or link click initiates navigation |
-| `NavigationRedirected` | Server returns redirect |
-| `NavigationResponseReceived` | HTTP response received |
-| `NavigationCommitted` | Navigation commits to new document |
-| `DocumentCreated` | Document object created |
-| `HTMLParsingStarted` | HTML tokenization begins |
-| `HTMLParsingCompleted` | HTML tree construction complete |
-| `StylesheetDiscovered` | `<link rel=stylesheet>` or `@import` found |
-| `StylesheetLoaded` | Stylesheet fetched and parsed |
+## First fatal blocker algorithm
 
-## Diagnostic Bundle Format
+The classifier is currently STUBBED. The required algorithm is:
 
-Per-site trace bundle at `/traces/<site>/<run-id>/`:
+1. Load lifecycle, network, script, event-loop, exception, missing-API, style/layout, IPC, sandbox, crash, and raw trace records.
+2. Normalize every candidate to one timestamp/sequence domain and attach its blocked milestone.
+3. Discard non-fatal feature probes, site expandos, optional subresource failures, and failures after the acceptance milestone unless they explain an observed symptom.
+4. Sort remaining candidates by causal timestamp, then select the earliest candidate that prevents the next required milestone.
+5. Map it to failure bucket A-L and an owning subsystem.
+6. Emit `first_blocker.json` with candidate evidence and render the same record into `summary.md`/`summary.json`.
+7. If no fatal blocker exists, say `none`; list the first remaining acceptance gap separately.
 
-| File | Content |
-|------|---------|
-| `summary.md` | Human-readable summary per PLAN.MD format |
-| `trace.jsonl` | All structured trace events |
-| `console.log` | Console API calls (console.log/warn/error) |
-| `network.json` | Network request/response summary |
-| `exceptions.json` | JS exceptions with stack traces |
-| `missing_apis.json` | Missing API accesses (deduplicated) |
-| `script_loading.json` | Per-script lifecycle records |
-| `event_loop.json` | Task/microtask/timer/rAF trace |
-| `style_layout.json` | Style/layout/paint events |
-| `ipc.json` | IPC message events (when process isolation active) |
-| `sandbox_denials.json` | Sandbox policy denials |
-| `performance.json` | Timing, allocation, GC events |
-| `dom_dump.html` | Serialized DOM tree |
-| `style_dump.txt` | Computed style for every element |
-| `layout_dump.txt` | Layout boxes with rects |
-| `paint_dump.txt` | Paint commands |
-| `display_list.txt` | Display list |
-| `screenshot.png` | Rendered viewport |
+A missing property is not fatal merely because it was read. It becomes a fatal candidate only when a standards-defined member is confirmed and the access is causally linked to an exception, failed callback, missing milestone, or visible failure.
 
-## Summary.md Template
+## Bundle contract
 
-```markdown
-# FenBrowser Site Diagnostic: <URL>
+| Artifact | Status | Contract |
+| --- | --- | --- |
+| `summary.md`, `summary.json` | INTEGRATED | Human and machine run summary |
+| `trace.jsonl`, `logs.ndjson` | INTEGRATED | Structured event streams, flushed through the run boundary |
+| `console.log`, `exceptions.json` | STUBBED | Console plus typed exception records |
+| `network.json` | INTEGRATED | Requests, responses, failures, policy disposition |
+| `missing_apis.json` | STUBBED | Rich classified records with provenance |
+| `script_loading.json` | INTEGRATED | Per-script lifecycle |
+| `event_loop.json` | INTEGRATED | Tasks, microtasks, timers, rAF, lifecycle |
+| `style_layout.json` | INTEGRATED | Style/layout/paint/raster summary |
+| `ipc.json` | NOT_STARTED | IPC metadata; empty typed record with inactive reason in in-process mode |
+| `sandbox_denials.json` | NOT_STARTED | Policy denials; empty typed record with inactive reason if no sandbox |
+| `performance.json` | NOT_STARTED | Navigation/stage/frame/allocation/GC/long-task metrics |
+| `first_blocker.json` | NOT_STARTED | Deterministic classifier result and considered candidates |
+| `dom_dump.html`, style/layout/paint/display-list dumps | INTEGRATED | Current DOM filename is `dom_dump.txt`; canonical HTML form remains to be added |
+| `screenshot.png` | INTEGRATED | 1280x800 current tooling viewport |
+| `artifact_manifest.json` | INTEGRATED | Must list the full required contract, not only files already implemented |
 
-- **URL**: <url>
-- **Run ID**: <run-id>
-- **Timestamp**: <iso-timestamp>
+## Security and privacy
 
-## Visible Result
-<description>
+Trace output may contain sensitive URLs, query strings, headers, cookies, local file paths, page text, or tokens. Before bundles leave the local workspace:
 
-## Status Checklist
-- [ ] Navigation started
-- [ ] Navigation committed
-- [ ] Document created
-- [ ] HTML parsing started/completed
-- [ ] Stylesheets discovered/loaded
-- [ ] Scripts discovered/loaded/executed
-- [ ] DOMContentLoaded fired
-- [ ] Load event fired
-- [ ] Style calculation run
-- [ ] Layout run
-- [ ] Paint run
-- [ ] Pixels submitted
+- redact `Authorization`, `Cookie`, `Set-Cookie`, bearer tokens, passwords, and configured query parameters;
+- cap message, stack, body, and payload sizes;
+- record that redaction occurred without recording the secret;
+- keep raw page content and screenshots local by default;
+- never let diagnostic failures alter page behavior.
 
-## Network
-- Requests: N
-- Failed: N
-- Notable failures: <list>
+## Gate 1 implementation order
 
-## Scripts
-- Discovered: N
-- Executed: N
-- Failed: N
-- First fatal error: <error>
-
-## Missing APIs
-- Count: N
-- Top: <list>
-
-## Layout/Rendering
-- Style calculation: <yes/no/count>
-- Layout boxes: N
-- Painted commands: N
-- First paint blocker: <description>
-
-## Root Cause
-- **Likely**: <hypothesis>
-- **Confirmed**: <yes/no>
-
-## Next Task
-<task-id or description>
-```
-
-## Debug Commands
-
-```bash
-fenbrowser --debug-site <url> --trace all --output <folder>
-fenbrowser --dump-dom <url>
-fenbrowser --dump-style <url>
-fenbrowser --dump-layout <url>
-fenbrowser --dump-paint <url>
-fenbrowser --dump-display-list <url>
-fenbrowser --screenshot <url>
-fenbrowser --inspect-selector <url> "<selector>"
-```
-
-## Element Inspection Output
-
-For `--inspect-selector`, each matched element shows:
-```
-Element: <div.example>
-  id: my-id
-  classes: example, active
-  computed-display: block
-  computed-position: static
-  size: 200px × 100px
-  margin: 10px 20px 10px 20px
-  padding: 5px
-  border: 1px solid #000
-  layout-dirty-reason: child-added
-  paint-status: painted
-  visibility: visible
-  --- Matched Rules ---
-  .example { display: block; width: 200px; } [specificity: 0,1,0] ← winning
-  div { color: red; } [specificity: 0,0,1]
-  --- Why not visible (if hidden/zero-size/clipped) ---
-  <reason>
-```
+1. Preserve and classify event-loop/script/promise exceptions; add log drain.
+2. Implement deterministic first blocker output.
+3. Unify and classify missing API records.
+4. Export `ipc.json`.
+5. Export `sandbox_denials.json`.
+6. Export `performance.json`.
+7. Add standalone dump and selector-inspection commands.
+8. Move regression tests onto included test surfaces and verify with a local failure fixture plus a fresh Google run.

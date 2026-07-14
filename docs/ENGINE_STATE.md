@@ -1,128 +1,111 @@
-# FenBrowser — Engine State
+# FenBrowser Engine State
 
-> Auto-generated Gate 0 Reality Audit. Last refreshed: 2026-06-27.
-> Status taxonomy: `IMPLEMENTED` | `PARTIAL` | `STUBBED` | `BROKEN` | `UNKNOWN` | `DEPRECATED` | `DESIGN_INTENT`
+Live Gate 0 snapshot: 2026-07-14. Base commit: `e3fa7a41bfd5f803d086f1bf27412c0a879eb90e` on branch `new`, with unrelated user changes present in the working tree. This file reports observed state; it does not turn implemented code into a completion claim.
 
-## 1. FenBrowser.Js — JavaScript Engine
+Allowed status values in this tracker are the execution-system status values. `DONE` is intentionally unused.
 
-| Subsystem | Status | Evidence |
-|-----------|--------|----------|
-| Lexer | IMPLEMENTED | 98.4% test262 parser subset |
-| Parser (incl. AST) | IMPLEMENTED | Full ES2025 syntax; Annex B; class fields, private fields, static blocks; import/export; optional chaining; nullish coalesce; destructuring; async/await; generators |
-| AstValidation | IMPLEMENTED | Early-error validation wired; destructuring target validation |
-| BytecodeCompiler | IMPLEMENTED | All ES2025 opcodes; generator suspend/resume; class compilation; private fields |
-| BytecodeVerifier | IMPLEMENTED | Stack balance, type safety checks |
-| BytecodeInterpreter | IMPLEMENTED | Full execution pipeline; call/construct; generators; spread; dynamic import |
-| Runtime (JsValue, JsIsolate, JsRealm) | IMPLEMENTED | Realms, isolates, handle scopes, string interning |
-| Objects (JsObject, property descriptors) | IMPLEMENTED | Full [[Get]]/[[Set]]/[[DefineOwnProperty]]; Proxy; accessors |
-| Heap (JsHeap, GC) | IMPLEMENTED | Mark-sweep; generational nursery; remembered set; write barriers; GC-stress mode |
-| Builtins | IMPLEMENTED | Full surface for Array, Object, String, RegExp, Function, Promise, Map, Set, WeakMap, WeakSet, Symbol, Proxy, Reflect, Date, Math, JSON, Error, TypedArrays, DataView, ArrayBuffer, Atomics, BigInt, Intl (partial), Temporal (partial), Iterator helpers (partial) |
-| Promises | IMPLEMENTED | PromiseJob queue; microtask checkpoint; all combinators (all/allSettled/any/race) |
-| Modules | PARTIAL | Parse + import/export binding works; module linking/environment records stubbed (no real module graph resolution); dynamic import returns rejected Promise |
-| Regex engine | PARTIAL | Dual backend: native VM for .test() + .NET fallback for exec/match; unicode property escapes; lookbehind; named groups; hasIndices |
-| Intl | PARTIAL | DateTimeFormat, NumberFormat, Collator backed by .NET globalization; Locale, RelativeTimeFormat, PluralRules, ListFormat, DurationFormat, Segmenter, DisplayNames partial |
-| Temporal | PARTIAL | ISO calendar full; non-ISO calendars (gregory, buddhist, roc, japanese, coptic, ethiopic, indian, islamic, hebrew, chinese, dangi); ZonedDateTime on epoch ns; Duration round/total; since/until partial; relativeTo/DST gaps remain |
-| Host hooks (IHostHooks) | IMPLEMENTED | HostObjectTable; StandaloneHostHooks; NavigationEpoch; DocumentEpoch |
-| JIT compiler | PARTIAL | Baseline JIT with IL expression-tree codegen; inline caches for GetPropByName/Call/GetElem; not yet enabled by default |
-| Fuzzing | IMPLEMENTED | FenBrowser.Js.Fuzz project |
+## Audit method
 
-**Overall JS engine**: 92.07% test262 (50842/55220). ~4378 failures, top clusters: staging(566), RegExp(343), Temporal(268), eval-code(211), TypedArray(166), class(166), TypedArrayCtors(154), intl402 NumberFormat(140), Temporal-intl(138), DateTimeFormat(122).
+The reality audit proceeds in this order:
 
-## 2. FenBrowser.Core — Platform Primitives
+1. Confirm compile inclusion from each `.csproj`; a source file that is excluded is not an implemented runtime capability.
+2. Identify the owning project and active call path.
+3. Build the smallest owning surface.
+4. Run included focused tests that can falsify the claim.
+5. Check local conformance stores instead of remote sources.
+6. Run `debug-site` and inspect the fresh screenshot, lifecycle, script, event-loop, network, style/layout, and raw trace artifacts.
+7. Record an implementation status only with a code path; record `TESTED` only with a named result; reserve `DONE` for the full acceptance contract.
 
-| Subsystem | Status | Evidence |
-|-----------|--------|----------|
-| DOM V2 (Node, Element, Document) | IMPLEMENTED | Full tree model; attributes; classList; dataset; querySelector/querySelectorAll; matches; closest; live collections; TreeWalker; Range; MutationObserver |
-| EventTarget / Events | IMPLEMENTED | addEventListener/removeEventListener; capture/bubble; stopPropagation; preventDefault; CustomEvent; MouseEvent; KeyboardEvent; InputEvent; FocusEvent |
-| Shadow DOM | PARTIAL | ShadowRoot present; slot assignment basic; closed/open mode; not fully tested |
-| Custom Elements | PARTIAL | CustomElementRegistry present; upgrade path; not fully tested |
-| HTML Parser | IMPLEMENTED | Full WHATWG tokenizer + tree builder; StreamingHtmlParser; PreloadScanner; script insertion points; template parsing |
-| CSS Types (CssComputed, etc.) | IMPLEMENTED | Full CSSOM value model; computed style cache |
-| Selector Engine | IMPLEMENTED | Full CSS selectors level 4; specificity calculation |
-| Network (NetworkClient, fetch, XHR) | PARTIAL | HttpClient-based; handler pipeline (CSP, CORS, HSTS, AdBlock, SafeBrowsing, TrackingPrevention); WhatwgUrl full state machine; MimeSniffer; EncodingSniffer; ResourcePrefetcher; SecureDnsResolver |
-| CORS | PARTIAL | Basic enforcement; preflight partial; credentials mode partial |
-| Cookies | PARTIAL | PartitionedCookieStore exists; same-site behavior basic; not fully tested |
-| Storage | PARTIAL | localStorage, sessionStorage skeletons; IndexedDB design intent; quota design intent |
-| Security (CSP, CORB, sandbox) | PARTIAL | CspPolicy; CorbFilter; OopifPlanner; sandbox policies; AttributeSanitizer |
-| Accessibility | IMPLEMENTED | Full A11y tree; ARIA role resolution; AccName/AccDesc calculation; platform bridges (UIA, AT-SPI2, NSAccessibility) |
-| Memory (ArenaAllocator) | IMPLEMENTED | Unsafe bump-pointer; FrameArenaPool; canary+poison in DEBUG; EngineMetrics; TimelineTracer; FrameBudgetMonitor; JankDetector |
-| WebIDL | PARTIAL | WebIdlParser (recursive descent); WebIdlBindingGenerator (C# code gen); .idl files exist for core interfaces; not all APIs have generated bindings |
-| WebDriver | PARTIAL | W3C WebDriver protocol; command handler; window commands; element commands; shadow root commands; script commands; cookie commands. **16/582 browser tests failing (5 WebDriver)** |
-| Process Isolation | PARTIAL | BrokeredProcessIsolationCoordinator; NetworkProcessIpc; GpuProcessIpc; UtilityProcessIpc; IPC fuzzing harness; shared memory frame delivery |
+## Solution inventory
 
-## 3. FenBrowser.FenEngine — Layout & Rendering
+| Project | Responsibility observed in the current checkout | Status | Evidence |
+| --- | --- | --- | --- |
+| `FenBrowser.Core` | DOM, parser, networking primitives, logging, security and platform contracts | INTEGRATED | Referenced by FenEngine, Host, WebDriver, and Tooling; Release build passed |
+| `FenBrowser.FenEngine` | CSS, Box Tree, layout, Paint Tree, raster orchestration, FenJS browser bridge | INTEGRATED | Google bundle reached style/layout/paint/raster; Release build passed |
+| `FenBrowser.Host` | Window, tabs, input, renderer-child entrypoint, process-isolation coordinators | INTEGRATED | Host is in the Tooling dependency graph; brokered path is opt-in |
+| `FenBrowser.DevTools` | Native DevTools and remote-debug protocol surfaces | IMPLEMENTED | Project builds; no fresh DevTools behavior run in this audit |
+| `FenBrowser.Js` | ECMAScript parser/compiler/interpreter/runtime/heap | TESTED | Local Test262 source of truth reports 49,070/53,198 (92.24%) |
+| `FenBrowser.Js.Tests` | JavaScript unit tests | IMPLEMENTED | Project exists; full suite was not rerun in this slice |
+| `FenBrowser.Js.Test262` | Local Test262 runner | TESTED | Batched results generate `docs/test262_results.md` |
+| `FenBrowser.Js.Fuzz` | JavaScript fuzz harness | IMPLEMENTED | Project builds in the solution; no fresh fuzz campaign result |
+| `FenBrowser.Js.Shell` | Standalone JavaScript shell | IMPLEMENTED | Project is in the solution; no fresh shell smoke |
+| `FenBrowser.WebIdlGen` | WebIDL parser/generator CLI | IMPLEMENTED | Ten IDL inputs and generator code exist; generated outputs are excluded from FenEngine compilation |
+| `FenBrowser.WebDriver` | Automation protocol implementation | IMPLEMENTED | Project builds; no fresh end-to-end WebDriver run |
+| `FenBrowser.Tooling` | `debug-site`, WPT orchestration, performance and diagnostic commands | TESTED | Release build passed with 0 errors and 0 warnings |
+| `FenBrowser.Conformance` | Conformance support project | IMPLEMENTED | Project builds through focused test dependency graph |
+| `FenBrowser.Tests` | Browser integration/unit tests | TESTED | Focused diagnostic/process filter passed 44/44; important directories remain excluded |
 
-| Subsystem | Status | Evidence |
-|-----------|--------|----------|
-| Layout Engine | IMPLEMENTED | BoxTreeBuilder; block, inline, flex, grid, table, float, absolute/fixed/sticky positioning; margin collapse; text measurement |
-| Formatting Contexts | IMPLEMENTED | Block, Inline, Flex, Grid, Table, Float, AbsolutePosition |
-| Text Layout | IMPLEMENTED | HarfBuzz text shaping; font metrics normalization; line breaking |
-| Rendering (Paint) | IMPLEMENTED | SkiaSharp paint pipeline; stacking contexts; clipping; opacity; transforms; backgrounds; borders; images; text painting; canvas |
-| CSS Engine | IMPLEMENTED | CascadeEngine; custom properties; container queries; media range queries; selector matching; specificity; inheritance; computed values |
-| Style Invalidation | PARTIAL | Dirty flag system; not fully incremental |
-| Compositing | PARTIAL | DamageTracker; BaseFrameReusePolicy; FrameBudgetAdaptivePolicy; display lists |
-| SVG Rendering | IMPLEMENTED | ISvgRenderer adapter; sandboxed (max recursion 32, max filters 10, max render time 100ms) |
-| Scripting (BrowserScriptEngineRuntime) | IMPLEMENTED | FenJS integration; DOM bridging via HostObjectTable; BrowserFenJsHostHooks; FenJsMutationObserverHost |
-| Event Loop | IMPLEMENTED | EventLoopCoordinator; TaskQueue; MicrotaskQueue; rAF callbacks; mutation observer callbacks; delayed tasks |
-| Web APIs | PARTIAL | Fetch, XHR, WebStorage, IndexedDB (stub), Cache/CacheStorage (stub), WebAudio (stub), WebRTC (stub), IntersectionObserver, ResizeObserver |
-| Workers | PARTIAL | WorkerRuntime exists; not fully tested |
+## Browser integration state
 
-**Real-site rendering quality** (from existing diagnostic dumps):
-- HackerNews: 777/816 elements get layout rects (95%) — **best result**
-- React docs: 1240/1843 elements get layout rects (67%) — significant gaps
-- GitHub: 1090/1959 elements get layout rects (56%); 194 zero-area boxes; 102 with content but zero height — **inline/flex layout gaps**
-- x.com: 10/81 elements get layout rects (12%) — **scripts barely executing**
+| Subsystem | Current status | Confirmed behavior | Unclosed behavior |
+| --- | --- | --- | --- |
+| Navigation/document lifecycle | TESTED | Google transitioned Requested -> Fetching -> ResponseReceived -> Committing -> Interactive -> Complete | Cross-frame and failure-path coverage is not current |
+| HTML parsing/DOM construction | INTEGRATED | Google produced 572 DOM nodes and a DOM dump | html5lib baseline is not current |
+| Classic script loading | TESTED | Google discovered 13 script elements with 17 completed executions and no script execution failure | Execution/discovery count semantics need normalization; modules were not exercised |
+| Event loop/timers/microtasks | INTEGRATED | Google fired DOMContentLoaded/load and recorded 10 microtask checkpoints and 22 timers | Eight timer callbacks threw a retained host-object/JS-object `TypeError`, but individual attribution was not promoted into `exceptions.json` or the summary blocker |
+| Missing API observation | TESTED | Dedicated tracker tests passed and Google emitted missing-property observations | Bundle export loses rich fields and reports site expandos as APIs |
+| Fetch/network visibility | INTEGRATED | Google captured 27 requests | A `data:` image is counted as failed; CORS/cookie/security decisions are not summarized |
+| CSS/style/layout/paint | TESTED | Google styled 446 nodes, built 172 boxes and 93 paint nodes, and captured a usable screenshot | Input interaction and screenshot comparison are not automated; the frame exceeded budget |
+| WebIDL-generated bindings | IMPLEMENTED | Parser and generator exist | `FenBrowser.FenEngine.csproj` explicitly removes `Bindings/Generated/**/*.cs`; runtime exposure remains manual |
+| DOM host bindings | INTEGRATED | Manual FenJS host dispatch supports enough APIs for Google boot | The monolithic dispatch path lacks generated conversions, overload resolution, and complete brand/descriptor coverage |
+| Per-tab renderer process | IMPLEMENTED | Brokered coordinator, renderer child, authenticated IPC, shared-memory frames, crash policy exist | Default mode is in-process; a current brokered real-site proof is absent |
+| Network process | IMPLEMENTED | Child host, session, coordinator, capability token and payload limits exist | No active caller of `NetworkCoordinator.SendAsync` was found; fallback uses in-process `HttpClient` |
+| GPU/utility child targets | INTEGRATED | Target sessions auto-start in brokered mode; compositor submissions are wired | Raster/composite isolation and recovery are not acceptance-tested here |
+| Storage service process | NOT_STARTED | Page-local storage service exists inside FenEngine | No separate storage-service process boundary |
+| Image decoder worker | NOT_STARTED | In-process image support exists | No isolated hostile-image decoder worker |
 
-## 4. FenBrowser.Host — Browser Shell
+## Diagnostic spine state
 
-| Subsystem | Status | Evidence |
-|-----------|--------|----------|
-| Program.cs startup | IMPLEMENTED | --headless, --test262, --wpt, --acid2 modes |
-| BrowserIntegration | IMPLEMENTED | Connects BrowserHost to render loop; double-buffered display list; event queue; engine thread |
-| Window/UI Integration | IMPLEMENTED | Silk.NET+OpenGL+Skia windowing stack; coordinate system mapping |
-| Input Routing | IMPLEMENTED | Mouse, keyboard, scroll event dispatch |
-| Chrome/Chromium Management | PARTIAL | ChromeManager for multi-process |
-| DevTools | IMPLEMENTED | In-process Skia DevTools UI; CDP remote debug server on port 9222; Elements, CSS, Box Model panels; DomDomain, CSSDomain, RuntimeDomain |
-| Tooling (FenBrowser.Tooling) | IMPLEMENTED | WPT runner integration; diagnostic commands; build/dev tooling |
+| Capability | Status | Evidence or gap |
+| --- | --- | --- |
+| Structured NDJSON and trace JSONL | INTEGRATED | `EngineLog` emits both formats; many session/document/realm IDs are still null in the Google trace |
+| `debug-site <url> [settle_ms]` | TESTED | Current Google, example.com, and `fen://performance` bundles exist |
+| Lifecycle, script, event-loop, network snapshots | INTEGRATED | Present in the Google bundle |
+| DOM/style/layout/paint/display-list dumps and screenshot | INTEGRATED | Present in the Google bundle |
+| Deterministic first-fatal-blocker classifier | STUBBED | Summary selects independent first console/navigation/API strings and misses callback failures |
+| Exception attribution | STUBBED | `exceptions.json` only derives from navigation and console strings; Google has 8 callback failures but an empty exception file |
+| Missing API bundle schema | STUBBED | Runtime tracker has provenance; bundle exports a smaller `EngineCapabilities` view with false positives |
+| `ipc.json` | NOT_STARTED | Not in the artifact manifest |
+| `sandbox_denials.json` | NOT_STARTED | Not in the artifact manifest |
+| `performance.json` | NOT_STARTED | Render telemetry exists but is not exported as the required artifact |
+| Individual dump/selector CLI commands | NOT_STARTED | Current Tooling usage exposes only `diagnose` and `debug-site` for this workflow |
 
-## 5. Test Infrastructure
+## Primary real-site target
 
-| Subsystem | Status | Evidence |
-|-----------|--------|----------|
-| test262 runner (FenBrowser.Js.Test262) | IMPLEMENTED | Path-based CLI; batched execution; timeout enforcement; result JSON with failure details |
-| Browser unit tests (FenBrowser.Tests) | IMPLEMENTED | 582 tests, 566 pass, 16 fail |
-| JS engine unit tests (FenBrowser.Js.Tests) | IMPLEMENTED | 758 tests, 752 pass, 6 fail |
-| Core unit tests (FenBrowser.Core.Tests) | IMPLEMENTED | Present but needs baseline run |
-| WPT runner | PARTIAL | Upstream wptrunner + wptrunner_fenbrowser plugin; WebDriver-based; dom/lists 180/189 (95.2%) |
-| Fuzzing (FenBrowser.Js.Fuzz) | IMPLEMENTED | JS engine fuzzing |
-| Differential testing (FenBrowser.Js.Compare) | IMPLEMENTED | Comparison vs reference engine |
-| Conformance (FenBrowser.Conformance) | IMPLEMENTED | Present but needs baseline |
+Google is the current target because it has the freshest complete bundle and already crosses the boot pipeline. The 2026-07-14 run loaded the document, executed scripts, fired lifecycle events, built DOM/style/layout/paint state, and rendered the main UI. The first remaining runtime error is eight timer callbacks ending in `TypeError: Cannot use a host object where a JS object is expected`; it occurs after DOMContentLoaded and does not prevent load. The next acceptance work is not a speculative language fix: preserve each callback's source/receiver evidence, reduce the owning host-integration seam, remove missing-API false positives, and automate click/type/submit behavior.
 
-## 6. Diagnostic Infrastructure (GATE 1)
+Evidence: `logs/real-site/www.google.com/20260714T075906Z/`.
 
-| Subsystem | Status | Evidence |
-|-----------|--------|----------|
-| debug-site command | IMPLEMENTED | `FenBrowser.Tooling -- debug-site <url>` produces complete trace bundle |
-| Trace bundle output | IMPLEMENTED | 20+ artifacts per run; `logs/real-site/<site>/<run-id>/` |
-| Script loading trace | IMPLEMENTED | `BrowserScriptLoadingSnapshot` with per-script lifecycle records |
-| Event loop trace | IMPLEMENTED | `BrowserEventLoopSnapshot` with DCL/load/microtask/timer/rAF counters |
-| Missing API tracker | IMPLEMENTED | `MissingApiTracker` — deduplicated per-site JSON with EngineLog integration |
-| Engine capabilities registry | IMPLEMENTED | `EngineCapabilities` — thread-safe HTML/CSS/JS feature tracking |
-| Network capture | IMPLEMENTED | `DebugSiteNetworkCapture` — request/response metadata with timing |
-| Lifecycle tracking | IMPLEMENTED | `NavigationLifecycleTransition` events with phase timeline |
-| Style/layout/paint dumps | IMPLEMENTED | Computed style dump, layout box dump, paint tree dump, display list dump |
-| Screenshot capture | IMPLEMENTED | 1280x800 Skia-rendered screenshot in bundle |
-| Structured logging | IMPLEMENTED | `EngineLog` with NDJSON + trace sinks; `EngineFailureBundleExporter` |
-| IPC trace artifact | NOT_STARTED | ipc.json not yet generated in trace bundle |
-| Sandbox denial artifact | NOT_STARTED | sandbox_denials.json not yet generated |
-| Performance artifact | NOT_STARTED | performance.json not yet generated (telemetry data available) |
+## Gate status
 
-## 7. Known Architecture Issues
+| Gate | Status | Exit evidence still required |
+| --- | --- | --- |
+| Gate 0 reality audit | RESEARCHED | Fresh full unit/html5lib baselines and smoke coverage beyond the current sites |
+| Gate 1 diagnostic spine | INTEGRATED | Correct first blocker, rich exception/API export, IPC/sandbox/performance artifacts, included regression tests |
+| Gate 2 architecture freeze | RESEARCHED | Human decisions recorded for memory ownership, default process policy, network fallback, and IPC versioning |
+| Gate 3 build/test/trace infrastructure | INTEGRATED | Make diagnostic/process tests discoverable and establish repeatable selected WPT baselines |
+| Gate 4 real-site boot pipeline | TESTED | Google input/submit/network behavior and one regression-protected reduction |
 
-1. **No per-tab renderer process isolation** — single monolithic process (FEN_PROCESS_ISOLATION=brokered env var exists but not default)
-2. **No real network broker** — NetworkClient runs in-process
-3. **No out-of-process image decoding** — hostile images can crash renderer
-4. **Module linking not implemented** — dynamic import and module graphs don't resolve
-5. **Missing Web API tracking** — `MissingApiTracker` exists (deduplicated per-site JSON, EngineLog integration with `LogMarker.Unimplemented`); `EngineCapabilities` thread-safe registry for HTML/CSS/JS features
-6. **Script loading diagnostics** — `BrowserScriptLoadingSnapshot` captures per-script discovery/fetch/execute lifecycle; trace events: ScriptDiscovered/ScriptFetchStarted/ScriptFetchCompleted/ScriptReady/ScriptExecutionStarted/ScriptExecutionCompleted/ScriptExecutionFailed
-7. **Structured trace bundle output** — `debug-site` command produces full bundle per PLAN.MD spec in `logs/real-site/<site>/<run-id>/` with 20+ artifacts (summary.md, trace.jsonl, console.log, network.json, exceptions.json, missing_apis.json, script_loading.json, event_loop.json, style_layout.json, style_dump.txt, layout_dump.txt, paint_dump.txt, display_list.txt, screenshot.png, lifecycle.json, lifecycle_timeline.json, probes.json, artifact_manifest.json). Gaps: ipc.json, sandbox_denials.json, performance.json not yet generated.
+## Persistent file disposition for this audit
+
+| Requested first-execution output | Owning file |
+| --- | --- |
+| 1. Current engine audit plan | `ENGINE_STATE.md` and `TEST_BASELINE.md` |
+| 2. Diagnostic spine implementation plan | `DIAGNOSTICS.md` |
+| 3. Real-site failure classification plan | `REAL_SITE_DEBUGGING.md` |
+| 4. Minimal smoke-test matrix | `REAL_SITE_TRACKER.md` |
+| 5. Required trace/log points | `DIAGNOSTICS.md` |
+| 6. Missing API tracker format | `MISSING_API_TRACKER.md` |
+| 7. Process boundary audit | `ARCHITECTURE.md`, `PROCESS_MODEL.md`, and `IPC_MODEL.md` |
+| 8. Current architecture risk register | `RISK_REGISTER.md` and `BLOCKERS.md` |
+| 9. Top dependency-ready tasks | `NEXT_TASKS.md` |
+| 10. Files created or updated | This section and `INDEX.md` |
+
+| File group | Files | Disposition |
+| --- | --- | --- |
+| Gate 0 state | `ENGINE_STATE.md`, `TEST_BASELINE.md`, `KNOWN_GAPS.md`, `RISK_REGISTER.md`, `NEXT_TASKS.md` | Updated from current code and local artifacts |
+| Gate 1 and site attribution | `DIAGNOSTICS.md`, `REAL_SITE_DEBUGGING.md`, `REAL_SITE_TRACKER.md`, `MISSING_API_TRACKER.md` | Created or updated with the current bundle contract and Google triage |
+| Gate 2 boundary audit | `ARCHITECTURE.md`, `PROCESS_MODEL.md`, `IPC_MODEL.md`, `SECURITY_MODEL.md`, `MEMORY_MODEL.md`, `NATIVE_INTEROP_MODEL.md`, `BLOCKERS.md`, `DECISION_RECORDS/README.md` | Created; unresolved contracts are explicitly blocked |
+| Capability trackers | `JS_ENGINE_TRACKER.md`, `WEBIDL_BINDINGS_TRACKER.md`, `DOM_API_TRACKER.md`, `EVENT_LOOP_TRACKER.md`, `SCRIPT_LOADING_TRACKER.md`, `NETWORK_FETCH_TRACKER.md`, `CSS_LAYOUT_TRACKER.md`, `PERFORMANCE_DASHBOARD.md` | Created with observed state and next evidence |
+| Navigation | `INDEX.md` | Updated to link the live execution state |
+| Canonical subsystem volumes | `VOLUME_I_SYSTEM_MANIFEST.md` through `VOLUME_VI_EXTENSIONS_VERIFICATION.md` | No audit-only change required; this slice changes no runtime behavior or subsystem boundary |

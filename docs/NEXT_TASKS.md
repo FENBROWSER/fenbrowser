@@ -1,116 +1,263 @@
-# FenBrowser — Next Tasks
+# FenBrowser Dependency-Ready Next Tasks
 
-> Auto-generated from GATE 0 audit + diagnostic infrastructure survey.
-> Last refreshed: 2026-06-30.
-> Only dependency-ready tasks are listed. Tasks are ordered by priority.
+Snapshot date: 2026-07-14. Only tasks whose current dependencies are satisfied are listed. Order follows the diagnostic-first mission; it is not a calendar plan.
 
-## GATE Status Summary
+## Task TRACE-001
 
-| Gate | Name | Status | Blocker |
-|------|------|--------|---------|
-| 0 | Reality Audit | **95%** | NEXT_TASKS.md (this file) |
-| 1 | Diagnostic Spine | **85%** | ipc.json, sandbox_denials.json, performance.json artifacts |
-| 2 | Architecture Freeze | **0%** | Gates 0-1 completion |
-| 3 | Build/Test/Trace Infra | **80%** | Clean build OK; unit tests OK; test262 OK; WPT baseline needed |
-| 4 | Real-Site Boot Pipeline | **10%** | **IMMEDIATE PRIORITY** |
+Task ID: TRACE-001
+Title: Preserve callback failures and drain logs before bundle export
+Area: Diagnostic spine / event loop / Tooling
+Owner Agent: Diagnostic Agent
+Status: RESEARCHED
+Priority: 1
+Risk Level: Medium
+Dependencies: Current event-loop snapshot, structured logger, and `debug-site` bundle writer are INTEGRATED
+Files likely involved: `FenBrowser.FenEngine/Rendering/EventLoopCoordinator.cs`, event-loop diagnostic record types, `FenBrowser.Core/Logging/EngineLog.cs`, `FenBrowser.Tooling/Program.cs`, included diagnostic test surface
+Specs/references: HTML event loops; `docs/SPEC_EVENT_LOOP.md`; `docs/DIAGNOSTICS.md`
+Current behavior: Google reports eight callback failures and retains `TypeError: Cannot use a host object where a JS object is expected` in `event_loop.json`, while `exceptions.json`, `summary.md`, and copied raw traces contain no per-callback source/receiver attribution. The asynchronous logger has no explicit bundle-drain boundary.
+Expected behavior: Every failed timer/task/event/promise callback has timestamp, task/callback ID, error type/message/stack, realm/script/source where known, and appears before bundle finalization.
+Reproduction: Run the local callback-failure fixture and `debug-site https://www.google.com 20000`; compare `event_loop.json`, `exceptions.json`, `trace.jsonl`, and summary counts.
+Root cause hypothesis: Event-loop snapshots retain only aggregate failure state, exception provenance is discarded, and Tooling copies asynchronous logs before pending records are drained.
+Implementation plan: Add a bounded typed failure record; propagate it at the callback catch point; add an explicit asynchronous logger drain/export barrier; serialize typed exceptions; preserve behavior if diagnostic export fails.
+Tests required: Timer callback throw, event-listener throw, promise rejection, drain ordering, bounded stack/message, and bundle consistency tests on an included test surface.
+Evidence required: Before bundle with eight unattributed failures; after fixture and real-site bundle with matching counts and source/task identity.
+Security impact: Redact page secrets and cap error/stack sizes; logging must not alter exception propagation.
+Performance impact: Measure added record allocations and drain duration; no synchronous logging in callback hot paths.
+Compatibility impact: Diagnostic-only output change with versioned/additive JSON fields.
+Known risks: Flush deadlock, reordered events, or retaining callback/realm graphs through diagnostics.
+Blockers: None
+Next action: Write the minimal throwing-callback fixture and failing bundle assertion before changing runtime records.
 
-## Current Real-Site State (from latest trace bundles)
+## Task TRACE-002
 
-| Site | DOM | Styles | Scripts Exec | Screenshot | Verdict |
-|------|-----|--------|-------------|------------|---------|
-| example.com | 18 nodes | 12/12 styled | 0 scripts | Captured | Perfect |
-| news.ycombinator.com | 816 nodes | 777/816 styled | few | Captured | 95% layout coverage |
-| react.dev | 1843 nodes | 1240/1843 styled | unknown | Partial | 67% layout coverage |
-| github.com | 2891 nodes | 1920/2891 styled | 69/84 scripts | Captured | 1418 layout boxes; 63 zero-area boxes; header height/top alignment and logo/menu allocation fixed; nav labels no longer self-overlap; hero headline/description wrap inside max-width caps; dropdown/background and visual sizing remain |
-| x.com | 81 nodes | 10/81 styled | Very few | Mostly white | 12% layout; scripts fail early |
+Task ID: TRACE-002
+Title: Export rich missing-API records and reject false positives
+Area: WebIDL / DOM diagnostics
+Owner Agent: Bindings Diagnostic Agent
+Status: RESEARCHED
+Priority: 1
+Risk Level: Medium
+Dependencies: Runtime `MissingApiTracker` and Tooling bundle export are INTEGRATED
+Files likely involved: `FenBrowser.FenEngine` missing-API tracker and host dispatch, `FenBrowser.Tooling/Program.cs`, included tracker tests
+Specs/references: Web IDL; DOM; `docs/MISSING_API_TRACKER.md`
+Current behavior: Runtime records provenance, but the bundle exports a smaller capability list. Google observations include Closure expandos, wrong-receiver probes, legacy feature checks, and standards candidates as one undifferentiated list.
+Expected behavior: The bundle preserves provenance and classifies `STANDARD_API`, `SITE_EXPANDO`, `WRONG_RECEIVER`, `LEGACY_PROBE`, or `UNCLASSIFIED`; only confirmed standard APIs feed priority counts.
+Reproduction: Run a local page that reads one missing standard member, assigns/reads an expando, probes a wrong receiver, and performs legacy feature detection; then inspect `missing_apis.json`.
+Root cause hypothesis: Tooling reads `EngineCapabilities` rather than the richer per-run tracker, and property-miss instrumentation lacks assignment/prototype/IDL-aware classification.
+Implementation plan: Define v2 record, merge runtime records by stable key, add classifier inputs without mutating page behavior, map trace category to `WebIDL` or `DOM`, export classifications and causal links.
+Tests required: All five dispositions, dedup/count/first-seen, source identity, cross-navigation isolation, redaction, and Google-name regression cases.
+Evidence required: Before false-positive list and after classified local/Google bundles with no loss of provenance.
+Security impact: Script URLs and messages require redaction/length limits.
+Performance impact: Bound unique records per document and avoid allocating stacks on every repeated miss.
+Compatibility impact: Improves attribution; does not add fake browser members.
+Known risks: Misclassifying a true standard member or suppressing a causal probe.
+Blockers: None
+Next action: Add the mixed-disposition local fixture and lock the v2 JSON schema with a snapshot test.
 
-## Priority 1 — Real-Site Blocker Diagnosis
+## Task TRACE-003
 
-### Task T4.1 — Fresh GitHub trace with latest debug-site
+Task ID: TRACE-003
+Title: Implement deterministic first-fatal-blocker classification
+Area: Diagnostic spine / real-site attribution
+Owner Agent: Diagnostic Agent
+Status: DESIGNED
+Priority: 1
+Risk Level: Medium
+Dependencies: Lifecycle, network, script, event-loop, style/layout, and raw trace artifacts are INTEGRATED
+Files likely involved: New classifier under `FenBrowser.Tooling`, `FenBrowser.Tooling/Program.cs`, included Tooling/diagnostic tests
+Specs/references: `docs/DIAGNOSTICS.md`; `docs/REAL_SITE_DEBUGGING.md`
+Current behavior: Summary selects independent first strings and can report a non-causal missing property while omitting callback failures. Its terminal navigation detail also retains loading/DCL 0/load 0 while the event-loop snapshot and ready-state probe report completion.
+Expected behavior: `first_blocker.json` names one earliest causal blocker, affected milestone, A-L bucket, subsystem owner, evidence records, and confidence; `none` is explicit when boot succeeds.
+Reproduction: Use fixtures for navigation failure, script throw, missing API causing throw, late optional resource failure, zero-size root, and successful page.
+Root cause hypothesis: There is no normalized candidate model, milestone dependency graph, or fatality filter.
+Implementation plan: Parse typed artifacts; normalize sequence/time; derive required milestones; filter non-fatal probes/late optional errors; rank by blocked milestone then causal sequence; emit typed result and summary rendering.
+Tests required: One fixture per A-L-relevant implemented bucket, tie ordering, contradictory lifecycle sources, missing artifact, clock mismatch, successful page, and schema-version tests.
+Evidence required: Deterministic repeated output and correct blocker for every fixture plus current Google result of `none` with remaining gaps listed separately.
+Security impact: Do not embed secrets or unbounded payloads in evidence excerpts.
+Performance impact: Offline/bundle-finalization work with bounded artifact sizes.
+Compatibility impact: Changes diagnostics only; no page behavior.
+Known risks: Causal inference presented as certainty; guard with evidence IDs and confidence.
+Blockers: None
+Next action: Add fixture bundles and the candidate/milestone model before wiring real artifacts.
 
-- **Task ID**: T4.1
-- **Title**: Run debug-site on GitHub with latest tooling
-- **Area**: Diagnostic spine + real-site
-- **Status**: COMPLETED
-- **Priority**: 1
-- **Risk Level**: Low
-- **Dependencies**: None (debug-site command exists and builds)
-- **Reproduction**: Run FenBrowser.Tooling debug-site https://github.com 20000
-- **Expected**: Fresh trace with full artifact bundle; identify first fatal JS exception, first missing API, DCL/load status, layout blocker detail
-- **Evidence**: `logs/real-site/github.com/20260627T163931Z/`
-- **Result**: Default-deadline run captures style/layout/paint/raster: 1415 layout boxes, 733 paint nodes, 193 zero-area boxes, DCL/load counters true, first missing API `Document.tagName`, 7 script execution failures.
+## Task TEST-001
 
-### Task T4.2 — Fix GitHub zero-area layout boxes
+Task ID: TEST-001
+Title: Put diagnostic and browser-integration regressions on a discovered test surface
+Area: Verification infrastructure
+Owner Agent: Conformance Agent
+Status: RESEARCHED
+Priority: 1
+Risk Level: Medium
+Dependencies: `FenBrowser.Tests` builds and focused included tests pass
+Files likely involved: `FenBrowser.Tests/FenBrowser.Tests.csproj`, diagnostic/event-loop test files or a new focused test project
+Specs/references: `docs/VOLUME_VI_EXTENSIONS_VERIFICATION.md`; `docs/DEFINITION_OF_DONE.md`
+Current behavior: `Engine/**`, `DOM/**`, `WebAPIs/**`, `Integration/**`, `Diagnostics/**`, `Rendering/**`, `Host/**`, and other directories are excluded. Release discovery finds missing-API and renderer metadata tests but not event-loop trace or real-site rendering diagnostics.
+Expected behavior: Tests that protect TRACE-001 through TRACE-003 are compiled, discoverable, and run by one small documented command.
+Reproduction: Compare `dotnet test --list-tests` output for named diagnostic test classes against source files.
+Root cause hypothesis: Broad compile-removal patterns silently disconnect high-value regression files from the active test assembly.
+Implementation plan: Inventory excluded tests and dependencies; choose the smallest coherent included project/surface; include only required files; resolve compile failures without broad production refactors; document the focused command.
+Tests required: Test discovery assertion/list plus execution of the selected diagnostic slice.
+Evidence required: Before/after discovered-test list and green focused run with exact counts.
+Security impact: Enables deny-path and redaction regression tests.
+Performance impact: Keep the default focused slice bounded; no full-suite requirement.
+Compatibility impact: Verification-only.
+Known risks: Surfacing stale tests that describe obsolete architecture.
+Blockers: None
+Next action: Produce an excluded-test inventory grouped by compile dependency and select the diagnostic subset only.
 
-- **Task ID**: T4.2
-- **Title**: Fix inline/flex child zero-height layout for GitHub
-- **Area**: Layout engine (FenBrowser.FenEngine)
-- **Status**: IN_PROGRESS
-- **Priority**: 1
-- **Risk Level**: Medium
-- **Dependencies**: T4.1 (fresh diagnosis)
-- **Files**: FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs, FenBrowser.FenEngine/Layout/Contexts/FlexFormattingContext.cs, FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs, FenBrowser.FenEngine/Layout/LayoutStyleResolver.cs, FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs
-- **Current**: GitHub captures layout but still has 63 zero-area boxes after unitless `line-height` flex sizing, repeated percentage-height normalization, auto-height positioned-header percentage sizing, flex/grid item blockification, shrink-to-fit text/row-flex intrinsic width preservation, leaf/control row-flex shrink floors, inline max-width line limits, `width:auto` flex intrinsic probing, and position-only `background` shorthand reset were fixed. `height:100%` under an auto-height positioned header no longer resolves against viewport/out-of-flow used geometry; the header is now 60px and top-aligned. Column-flex hero text wraps inside its resolved max-width cap. The logo/menu split now starts from a shrink-wrapped logo shell instead of a half-header stale `width:100%` basis, giving search/sign-in/sign-up visible allocation. GitHub's dropdown trigger buttons now keep their authored transparent background instead of inheriting the UA light-gray button fill. Remaining visual issues are sign-in content-box sizing, hidden dropdown max-content geometry, and hero visual/carousel sizing, not header viewport-height inflation, nav labels shrinking below their own text, search/sign-in overlap from the logo shell, white dropdown trigger boxes, or the hero headline overflowing as one unwrapped line.
-- **Expected**: Remaining zero-area boxes should be traced to the next width/placement/intrinsic-sizing root cause, not unresolved percentage heights resolving against viewport height or auto-height positioned headers.
-- **Tests required**: Layout unit tests; WPT css-flexbox tests
-- **Evidence**: Before/after layout dumps showing first `NavGroup` title height moved from ~1.5px to 18px and parent group height moved from 800px to 381px; header-specific bundles `logs/real-site/github.com/20260630T052935Z/` and `logs/real-site/github.com/20260630T053453Z/` show the marketing header moving from `1280x832` with nav around `y=402` to `1280x60` with nav at `y=16`. Bundle `logs/real-site/github.com/20260630T061451Z/` keeps the header top-aligned, reduces zero-area boxes to 64, and shows nav leaf widths preserving visible text (`Platform` button `81.0px` for `60.1px` text; `Open Source` button `112.0px` for `91.5px` text; `Pricing` link `56.0px` for `55.8px` text). The hero overflow repro in `logs/real-site/github.com/20260630T063502Z/` had the H1 at `924.0x69.1` while its text line measured `1135.1px`; after inline max-width line-limit handling, `logs/real-site/github.com/20260630T064734Z/` lays out the H1 as a centered `891.1x138.2` two-line box and the paragraph as `518.6x54.0`. After `width:auto` flex intrinsic probing and keyword projection clearing, `logs/real-site/github.com/20260630T070038Z/` reduces zero-area boxes to 63 and changes the header logo shell from the prior `608.0px` half-row basis to `54.7px`, with the menu/search group starting at `x=86.7` and search widening to `320.0px`. After `background: 0 0` shorthand expansion now resets `background-color` to transparent, `logs/real-site/github.com/20260630T071253Z/` keeps 63 zero-area boxes, changes the five `.NavDropdown-module__button__PEHWX` styles from `background=#F8F9FA` to `background=#00FFFFFF`, and removes the prior light-gray `BackgroundPaintNode` entries for those buttons.
+## Task TRACE-004
 
-### Task T4.3 — Fix GitHub script execution failures
+Task ID: TRACE-004
+Title: Complete required bundle artifacts for IPC, sandbox, and performance
+Area: Diagnostic spine / process / performance
+Owner Agent: Process Diagnostic Agent
+Status: NOT_STARTED
+Priority: 1
+Risk Level: Medium
+Dependencies: Current bundle manifest, IPC logging, sandbox profiles, and render telemetry exist
+Files likely involved: `FenBrowser.Tooling/Program.cs`, Host process-isolation diagnostics, render telemetry types, included tests
+Specs/references: `docs/DIAGNOSTICS.md`; `docs/IPC_MODEL.md`; `docs/PERFORMANCE_DASHBOARD.md`
+Current behavior: `ipc.json`, `sandbox_denials.json`, and `performance.json` are absent from the artifact manifest.
+Expected behavior: Every run emits schema-versioned files, including explicit `inactive`/`no-denials` records when the process mode or data source is inactive.
+Reproduction: Run one in-process local page, one explicit brokered local page, an IPC rejection fixture, and a frame-budget fixture.
+Root cause hypothesis: Data producers and Tooling snapshots were developed separately and the bundle contract only lists implemented outputs.
+Implementation plan: Define schemas; adapt bounded metadata snapshots; emit empty/inactive reason records; add manifest validation; preserve token/header redaction.
+Tests required: Inactive mode, send/receive/reject/timeout, sandbox deny, frame/allocation metrics, manifest completeness, and redaction.
+Evidence required: Four fixture bundles with complete manifests and cross-file correlation IDs.
+Security impact: Never serialize tokens, payload bodies, cookies, or authorization headers.
+Performance impact: Metadata must be bounded and collected without blocking hot paths.
+Compatibility impact: Diagnostic-only additive artifacts.
+Known risks: Sensitive-data leakage or high-volume IPC trace growth.
+Blockers: None
+Next action: Lock the three JSON schemas and an artifact-manifest completeness test.
 
-- **Task ID**: T4.3
-- **Title**: Diagnose and fix failed scripts on GitHub (7 of 84)
-- **Area**: Script loading / JS engine integration
-- **Status**: NOT_STARTED
-- **Priority**: 1
-- **Risk Level**: Medium
-- **Dependencies**: T4.1 (fresh diagnosis)
-- **Files**: FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs
-- **Current**: 69/84 scripts execute; 7 fail. Failures include undefined `.replace`, missing `document.head.prepend(...)`, null `.readyState`, and parser `Unexpected token '/'` cases.
-- **Root cause hypothesis**: Missing Web APIs, document/head host-object gaps, module parser gaps, or lifecycle object mismatch.
-- **Evidence**: script_loading.json with per-script failure details; missing_apis.json
+## Task SITE-001
 
-### Task T4.4 — Fix GitHub lifecycle/readyState consistency
+Task ID: SITE-001
+Title: Automate Google search input and submission acceptance
+Area: Real-site input / event / navigation
+Owner Agent: Browser Integration Agent
+Status: RESEARCHED
+Priority: 1
+Risk Level: Medium
+Dependencies: Google document, scripts, DOM, layout, paint, and screenshot are TESTED in the current bundle
+Files likely involved: `FenBrowser.Tooling`, WebDriver/automation hooks, Host input routing, BrowserApi activation/focus paths, local regression fixture
+Specs/references: UI Events; HTML forms; WebDriver; `docs/REAL_SITE_TRACKER.md`
+Current behavior: The search UI renders, but the current run does not prove focus, text editing, submit/default action, or resulting network/navigation.
+Expected behavior: Automation clicks the search control, enters a nonce, submits, observes value/input events and a terminal network/navigation outcome, and captures before/after screenshots.
+Reproduction: Current Google URL at 1280x800 plus the same interaction on a local form fixture.
+Root cause hypothesis: Unknown until input, focus, event phase/default action, and request/navigation are correlated in one trace.
+Implementation plan: Add deterministic automation steps and trace markers; run local fixture first; then Google; stop at the earliest failed acceptance milestone and reduce it.
+Tests required: Hit test, focus, keyboard/text input, input/change/submit ordering, preventDefault, successful submit/navigation.
+Evidence required: Before/after screenshots, input trace, DOM value, event/default-action records, request/navigation result, no crash/hang.
+Security impact: Automation must not bypass page security or challenge behavior; do not persist user data.
+Performance impact: Record input-to-visible-update and input-to-request latency.
+Compatibility impact: Directly validates real-site usability.
+Known risks: Site variation, consent UI, or network challenge; retain exact URL/run evidence.
+Blockers: None
+Next action: Build the local form acceptance fixture and expose the same automation sequence through current Tooling/WebDriver hooks.
 
-- **Task ID**: T4.4
-- **Title**: Fix GitHub lifecycle/readyState consistency
-- **Area**: Event loop / document lifecycle
-- **Status**: NOT_STARTED
-- **Priority**: 1
-- **Risk Level**: Medium
-- **Dependencies**: T4.1, T4.3 (script failures may block DCL)
-- **Files**: EventLoopCoordinator.cs, BrowserScriptEngineRuntime.cs
-- **Current**: DCL/load counters are true in `event_loop.json`, but the navigation detail and readyState probe still report loading-state fields.
-- **Expected**: `event_loop.json`, navigation detail, and `document.readyState` probes agree after parser-inserted scripts execute and parsing completes
-- **Evidence**: event_loop.json with DCL/load timestamps
+## Task WPT-001
 
-## Priority 2 — Diagnostic Spine Completion
+Task ID: WPT-001
+Title: Establish a selected browser-integration WPT baseline
+Area: Conformance / regression
+Owner Agent: Conformance Agent
+Status: RESEARCHED
+Priority: 2
+Risk Level: Low
+Dependencies: Local WPT checkout and category runner/results exist
+Files likely involved: `scripts/` WPT runners, `Results/wpt_categories/`, `docs/TEST_BASELINE.md`
+Specs/references: Local `C:\Users\udayk\Videos\wpt`; DOM, HTML, Fetch, Web IDL, CSSOM, UI Events
+Current behavior: Retained aggregate reports 2,752 pass, 502 fail, 369 crash, and 822 timeout of 4,445, with 17 category errors; it is not a selected Gate 0 integration matrix.
+Expected behavior: A small repeatable category set covers lifecycle, event loop, DOM/events, fetch/CORS, CSSOM/geometry, and forms with per-test terminal results.
+Reproduction: Run the existing local category runner for the selected categories only.
+Root cause hypothesis: Existing aggregate mixes capability gaps, runner crashes/timeouts, and category errors without a boot-pipeline priority view.
+Implementation plan: Select categories by real-site dependency; purge result history older than 24 hours; run locally; separate runner errors from engine failures; record exact commands and artifact paths.
+Tests required: The selected WPT categories themselves plus runner self-check.
+Evidence required: Machine-readable results, pass/fail/crash/timeout counts, first shared failures, and updated baseline.
+Security impact: Include at least one same-origin/CORS negative slice.
+Performance impact: Record hangs/timeouts as diagnostic signals, not benchmarks.
+Compatibility impact: Prioritizes browser integration over obscure conformance.
+Known risks: Runner infrastructure may dominate failure counts.
+Blockers: None
+Next action: List available local category tags and choose the smallest six-category integration set without running a full suite.
 
-### Task T1.7 — Add ipc.json to trace bundle
+## Task PROC-001
 
-- **Status**: NOT_STARTED | **Priority**: 2 | **Dependencies**: None
-- Hook into IPC layer to capture message metadata; serialize to bundle
+Task ID: PROC-001
+Title: Audit one explicit brokered renderer real-site run
+Area: Process isolation / IPC / crash containment
+Owner Agent: Process Agent
+Status: RESEARCHED
+Priority: 2
+Risk Level: High
+Dependencies: Brokered coordinator and child-process implementations exist; explicit environment selection avoids changing the default
+Files likely involved: `FenBrowser.Host/ProcessIsolation`, `FenBrowser.Tooling/Program.cs`, process diagnostic tests
+Specs/references: `docs/PROCESS_MODEL.md`; `docs/IPC_MODEL.md`; `docs/SECURITY_MODEL.md`
+Current behavior: Default real-site bundle is in-process; no current brokered Google evidence was found.
+Expected behavior: Explicit brokered mode navigates, renders, accepts input, logs authenticated IPC, and contains a forced renderer failure without killing the UI process.
+Reproduction: Use a local fixture first, then Google, with `FEN_PROCESS_ISOLATION=brokered`; record process IDs and mode in the bundle.
+Root cause hypothesis: Unknown; likely integration gaps are child startup, log forwarding, shared-memory frame lifecycle, or automation routing.
+Implementation plan: Capture clean process inventory; run local fixture; verify handshake/frame/input; induce a controlled test-only child exit; then run Google if local acceptance passes.
+Tests required: Auth failure, timeout, oversized payload, stale generation, crash/restart/quarantine, UI survival.
+Evidence required: Complete process/IPC/crash artifacts, screenshot, UI survival proof, and no orphan child.
+Security impact: Do not relax sandbox or authentication to make the run pass.
+Performance impact: Record startup, IPC counts/bytes, frame latency, and shared-memory use.
+Compatibility impact: Identifies process-only regressions before changing defaults.
+Known risks: Child launch/hang and native resource leakage.
+Blockers: None for explicit audit; changing the default remains `BLOCK-PROC-001`.
+Next action: Run the included coordinator policy tests and a local brokered fixture before any external site.
 
-### Task T1.9 — Add performance.json to trace bundle
+## Task BIND-001
 
-- **Status**: NOT_STARTED | **Priority**: 2 | **Dependencies**: None
-- Export frame timing and allocation data from RenderFrameTelemetry
+Task ID: BIND-001
+Title: Inventory active manual bindings against available WebIDL
+Area: WebIDL / DOM architecture
+Owner Agent: Bindings Agent
+Status: RESEARCHED
+Priority: 2
+Risk Level: Low
+Dependencies: Manual host runtime, WebIDL generator, and IDL inputs exist
+Files likely involved: `FenBrowser.WebIdlGen`, `FenBrowser.FenEngine/Bindings`, `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`, `docs/WEBIDL_BINDINGS_TRACKER.md`
+Specs/references: Web IDL and the specifications linked by each selected interface
+Current behavior: Generated sources are excluded and manual dispatch owns runtime exposure; exact overlap and drift are not machine-readable.
+Expected behavior: A generated audit report maps each IDL member to manual implementation, missing implementation, excluded source, test coverage, and lifetime complexity without activating generated bindings.
+Reproduction: Run the inventory over current IDL inputs and active host member registration.
+Root cause hypothesis: Generator and runtime integration evolved independently, hiding duplicate, missing, and incompatible surfaces.
+Implementation plan: Parse existing IDL metadata; extract active binding registrations; normalize interface/member names; emit report under `Results/`; update tracker with evidence only.
+Tests required: Inventory parser/extractor fixtures and deterministic output.
+Evidence required: Report with source paths and counts; one reviewed low-lifetime-risk candidate.
+Security impact: Research only; no new exposure.
+Performance impact: Offline tooling only.
+Compatibility impact: Enables evidence-based migration.
+Known risks: Reflection-based extraction could misrepresent dynamic registrations; prefer source/generator metadata.
+Blockers: None for inventory; activation remains `BLOCK-MEM-001`.
+Next action: Enumerate checked-in IDL interfaces and the active host registration tables into a deterministic report schema.
 
-## Priority 2 — Real-Site Expansion
+## Task PERF-001
 
-### Task T4.5 — Run debug-site on react.dev
-
-- **Status**: NOT_STARTED | **Priority**: 2 | **Dependencies**: T4.1 pattern
-- Identify why 497/1843 elements (27%) lack layout rects
-
-### Task T4.6 — Run debug-site on x.com
-
-- **Status**: NOT_STARTED | **Priority**: 2 | **Dependencies**: Network fixes may be needed
-- Identify first fatal script/network/API failure; only 10/81 elements get layout rects
-
-## Immediate Next Action
-
-**Continue T4.2**: Fix the remaining GitHub zero-area/layout fidelity gaps using the latest bundle:
-1. `style_layout.json` - 63 zero-area boxes, no captured layout blocker
-2. `layout_dump.txt` - header is `1280x60` and top-aligned; logo shell is shrink-wrapped; hero headline/description wrap inside max-width caps; inspect sign-in content-box sizing, hidden dropdown max-content geometry, and visual/carousel geometry
-3. `screenshot.png` - nav labels no longer self-overlap, dropdown trigger boxes are transparent, search/sign-in/sign-up are visibly allocated, and hero text no longer clips; remaining visual acceptance signal is sign-in/content-box and hero visual sizing
-4. Add or extend focused regressions before changing the formatting context or cascade path
+Task ID: PERF-001
+Title: Create a repeatable real-site performance capture
+Area: Performance / diagnostics
+Owner Agent: Performance Agent
+Status: RESEARCHED
+Priority: 2
+Risk Level: Low
+Dependencies: Stage telemetry, performance fixture, and Google bundle exist
+Files likely involved: render telemetry, Tooling performance export, `docs/PERFORMANCE_DASHBOARD.md`
+Specs/references: .NET runtime counters/profiling; browser frame-timing semantics
+Current behavior: One Google frame records 56.8748 ms layout, 256.4934 ms paint, 101.6828 ms raster, and a 424.62 ms watchdog duration, without CPU/allocation/GC attribution or repeated distribution.
+Expected behavior: Identical runs emit navigation/stage/frame distributions, managed/FenJS/native memory signals, GC pauses, long tasks, and correctness artifacts.
+Reproduction: Fixed local performance fixture and Google at recorded viewport/build/process mode with identical settle and interaction sequence.
+Root cause hypothesis: No bottleneck is assigned; paint is only the largest coarse stage in one sample.
+Implementation plan: Define capture metadata; export bounded telemetry; collect repeated samples; attach CPU/allocation profile; rank only measured hotspots.
+Tests required: Performance artifact schema, counter reset/isolation, low-overhead disabled mode, and unchanged rendering correctness.
+Evidence required: Reproducible baseline distribution, profile artifact, and dashboard update; no optimization patch in this task.
+Security impact: Profile and trace redaction follows diagnostic policy.
+Performance impact: Measure profiler/telemetry overhead and keep normal mode bounded.
+Compatibility impact: Measurement only.
+Known risks: Diagnostic builds, cold caches, or network variation can distort results.
+Blockers: None
+Next action: Lock run metadata and `performance.json` schema on the local fixture before profiling Google.

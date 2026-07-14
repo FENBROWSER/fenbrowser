@@ -1,129 +1,69 @@
-# FenBrowser — Real-Site Tracker
+# FenBrowser Real-Site Tracker
 
-> Status of important websites. Updated as evidence is collected.
-> Format per PLAN.MD § "Real-Site Smoke Testing".
+Snapshot date: 2026-07-14. Only evidence present in the current workspace is treated as current.
 
-## Smoke-Test Matrix (Minimum 12 Categories)
+## Minimal smoke matrix
 
-| # | Site | Category | URL | Status | Evidence |
-|---|------|----------|-----|--------|----------|
-| 1 | Google | Search | https://www.google.com | NOT_STARTED | — |
-| 2 | Wikipedia | Documentation/wiki | https://en.wikipedia.org | NOT_STARTED | — |
-| 3 | GitHub | GitHub-like app | https://github.com | 🔴 Broken | See below |
-| 4 | x.com | Social SPA | https://x.com | 🔴 Severely broken | See below |
-| 5 | YouTube | Video page | https://www.youtube.com | NOT_STARTED | — |
-| 6 | Amazon | Ecommerce | https://www.amazon.com | NOT_STARTED | — |
-| 7 | Gmail | Webmail | https://mail.google.com | NOT_STARTED | — |
-| 8 | React docs | Documentation SPA | https://react.dev | 🟠 Partial | See below |
-| 9 | Hacker News | News | https://news.ycombinator.com | 🟡 Mostly works | See below |
-| 10 | Banking | Form-heavy | TBD | NOT_STARTED | — |
-| 11 | CSS Zen Garden | CSS layout | http://www.csszengarden.com | NOT_STARTED | — |
-| 12 | TodoMVC (React) | JS app | TBD | NOT_STARTED | — |
+| ID | Category | Target | URL | Login | Current status | Acceptance focus |
+| --- | --- | --- | --- | --- | --- | --- |
+| SITE-SEARCH-001 | Search | Google | `https://www.google.com/` | no | TESTED | load, type, submit, result navigation |
+| SITE-WIKI-001 | Documentation/wiki | Wikipedia | `https://en.wikipedia.org/` | no | NOT_STARTED | article layout, links, scrolling |
+| SITE-GITHUB-001 | GitHub-like app | GitHub | `https://github.com/` | no | RESEARCHED | fresh boot, nav/input, visual fidelity |
+| SITE-SOCIAL-001 | Social/media SPA | X | `https://x.com/` | no for landing | NOT_STARTED | bundle fetch, framework boot, scrolling |
+| SITE-VIDEO-001 | Video | YouTube | `https://www.youtube.com/` | no | NOT_STARTED | custom elements, shadow DOM, media shell |
+| SITE-COMMERCE-001 | Ecommerce | Amazon | `https://www.amazon.com/` | no | NOT_STARTED | redirects/cookies, dense layout, search input |
+| SITE-MAIL-001 | Webmail-like | Gmail | `https://mail.google.com/` | yes | NOT_STARTED | unauthenticated shell only unless credentials are supplied manually |
+| SITE-DASHBOARD-001 | Dashboard SPA | Grafana demo | `https://demo.grafana.org/` | target-dependent | NOT_STARTED | module boot, fetch, grid, canvas/SVG |
+| SITE-NEWS-001 | News | Hacker News | `https://news.ycombinator.com/` | no | NOT_STARTED | table layout, links, scrolling |
+| SITE-FORM-001 | Banking/form-heavy safety fixture | Planned deterministic fixture | `FenBrowser.Tests/Fixtures/real-site/form-heavy.html` | no | NOT_STARTED | focus, labels, validation, typing, submit; no real bank automation |
+| SITE-CSS-001 | Heavy CSS | CSS Zen Garden | `https://www.csszengarden.com/` | no | NOT_STARTED | cascade, fonts, backgrounds, responsive layout |
+| SITE-JS-001 | Heavy JavaScript app | React TodoMVC | `https://todomvc.com/examples/react/dist/` | no | NOT_STARTED | framework boot, events, storage, mutation |
 
----
+Controls that do not replace a real-site row:
 
-## Detailed Site Reports
+- `example.com`: TESTED at `logs/real-site/example.com/20260713T074825Z/`.
+- `fen://performance`: TESTED at `logs/real-site/performance/20260714T102820Z/`.
 
-### github.com
+## SITE-SEARCH-001 triage
 
-| Field | Value |
-|-------|-------|
-| Site ID | github-001 |
-| URL | https://github.com |
-| Category | GitHub-like app (3) |
-| Login required | No |
-| Expected behavior | Full GitHub homepage with nav, search, feed |
-| Current behavior | Page loads, DCL/load fire, 69/84 scripts execute, but 7 scripts fail (June 27 trace). Major layout gaps: 102 elements with content but zero height — inline/flex formatting context issue. 6 missing APIs detected (Document.tagName 357x, Element.content, Document.baseURI, etc.) |
-| Screenshot | `logs/real-site/github.com/20260627T153353Z/screenshot.png` (2026-06-27) |
-| Console errors | 0 console messages captured |
-| Network errors | 0 failed requests (121 total) |
-| JS exceptions | 7 scripts fail: 3 runtime errors (HostObject binding, null .readyState), 2 parser errors (/ regex ambiguity), 1 undefined.replace, 1 null.readyState |
-| Missing APIs | `Document.tagName` (357x), `Document.nodeType` (4x), `Element.content` (2x), `Document.baseURI`, `Element.name`, `Element.prepend` — all from EngineCapabilities tracking |
-| Layout/rendering bugs | 1920/1920 elements styled, but layout boxes=0 in diagnostic render (screenshot capture uses separate SkiaDomRenderer that doesn't populate boxes — known diag artifact) |
-| Input/event bugs | Not tested |
-| Storage/cookie bugs | Not tested |
-| Crash/hang | No crash |
-| Likely root cause | **Script failures** (4 runtime + 2 parser) block framework initialization; **inline/flex zero-height** causes visual gaps. First fatal: missing DOM APIs + host-object binding gaps |
-| Confirmed root cause | Parser: `static` in destructuring FIXED (commit 1f126d66). Remaining: `/` regex-vs-division lexer ambiguity; HostObject call-target resolution; `Document.readyState` null access |
-| Linked engine tasks | T4.2, T4.3a (done), T4.3b, T4.4 |
-| Tests added | None yet |
-| Status | DIAGNOSED |
-| Evidence | Full trace bundle at `logs/real-site/github.com/20260627T153353Z/` (20 artifacts) |
+Site: Google
 
-### x.com
+URL: `https://www.google.com/`
 
-| Field | Value |
-|-------|-------|
-| Site ID | x-001 |
-| URL | https://x.com |
-| Category | Social SPA (4) |
-| Login required | No (shows landing page) |
-| Expected behavior | X.com landing page with sign-up prompt |
-| Current behavior | Barely loads — only 81 elements, 45 display:none, 10 with layout rects |
-| Screenshot | `real_site_render_xcom.png` (2026-06-23) — mostly white |
-| Console errors | Not captured |
-| Network errors | Not captured (external bundles likely not fetched) |
-| JS exceptions | Not captured |
-| Missing APIs | Not tracked |
-| Layout/rendering bugs | 26/81 elements missing rects; only 10/81 get layout rects |
-| Input/event bugs | Not tested |
-| Storage/cookie bugs | Not tested |
-| Crash/hang | No crash |
-| Likely root cause | **Script loading failure** — external JS bundles from abs.twimg.com not fetched/executed; page stuck at "Loading…" shell state. Previously: cross-thread deadlock in BindFenJsDomContext (FIXED 2026-06-05) |
-| Confirmed root cause | Not confirmed for current state |
-| Linked engine tasks | T4.1 |
-| Tests added | None yet |
-| Status | RESEARCHED |
-| Evidence | Layout dump at `real_site_render_xcom.diag.txt` (2026-06-23) |
+Current visible result: The 1280x800 screenshot contains the Google logo, search control, buttons, language links, navigation, and footer. The document, script, event-loop, layout, paint, and raster stages completed.
 
-### react.dev
+Expected visible result: The same main UI plus verified focus, typing, submit/click navigation, and visible network/input trace records.
 
-| Field | Value |
-|-------|-------|
-| Site ID | react-001 |
-| URL | https://react.dev |
-| Category | Documentation SPA (8) |
-| Login required | No |
-| Expected behavior | React documentation homepage |
-| Current behavior | Renders mostly but 497/1843 elements (27%) missing layout rects |
-| Screenshot | `real_site_render_reactdocs.png` (2026-06-23) |
-| Console errors | Not captured |
-| Network errors | Not captured |
-| JS exceptions | Not captured |
-| Missing APIs | Not tracked |
-| Layout/rendering bugs | 497 missing rects; 11 zero-area (4 with content); 209 offscreen |
-| Input/event bugs | Not tested |
-| Storage/cookie bugs | Not tested |
-| Crash/hang | No crash |
-| Likely root cause | CSS/layout gaps in flex/inline handling; partial script execution |
-| Confirmed root cause | Not confirmed |
-| Linked engine tasks | T4.3 |
-| Tests added | None yet |
-| Status | RESEARCHED |
-| Evidence | Layout dump at `real_site_render_reactdocs.diag.txt` (2026-06-23) |
+First fatal console error: None captured.
 
-### news.ycombinator.com
+First remaining runtime error: Eight `setTimeout` callbacks fail after DOMContentLoaded. The snapshot's retained error is `TypeError: Cannot use a host object where a JS object is expected.` The bundle does not preserve which source/callback produced each occurrence, and load still fires, so this is not yet classified as fatal.
 
-| Field | Value |
-|-------|-------|
-| Site ID | hn-001 |
-| URL | https://news.ycombinator.com |
-| Category | News (9) |
-| Login required | No |
-| Expected behavior | Hacker News front page with story list |
-| Current behavior | Mostly works — 777/816 elements (95%) get layout rects. 97 zero-area boxes but none with content. Best-performing real site tested. |
-| Screenshot | `real_site_render_hackernews.png` (2026-06-23) |
-| Console errors | Not captured |
-| Network errors | Not captured |
-| JS exceptions | Not captured |
-| Missing APIs | Not tracked |
-| Layout/rendering bugs | 31 missing rects; 97 zero-area boxes (0 with content — likely legitimate empty elements) |
-| Input/event bugs | Not tested |
-| Storage/cookie bugs | Not tested |
-| Crash/hang | No crash |
-| Likely root cause | Minor — mostly works. Table-based layout is well-supported. |
-| Confirmed root cause | N/A (mostly works) |
-| Linked engine tasks | None urgent |
-| Tests added | None yet |
-| Status | RESEARCHED |
-| Evidence | Layout dump at `real_site_render_hackernews.diag.txt` (2026-06-23) |
+First fatal network error: None confirmed. The only failed request is a `data:image/gif` URI, which is a capture-classification defect rather than an HTTP failure.
+
+First missing API: The summary reports `Element.closure_listenable_498696`; this is a site-expando candidate, not a confirmed Web API. Standards candidates include `Document.compareDocumentPosition`, `Location.toString`, and `CharacterData.childNodes`; none is confirmed fatal.
+
+First layout blocker: None captured. There are 31 zero-area boxes, but the main UI is visible.
+
+Script loading status: Completed. 13 script elements, 13 eligible, 6 fetch starts/completions, 17 execution starts/completions, 0 failures.
+
+DOMContentLoaded fired: Yes, at `2026-07-14T07:59:06.0098103Z`.
+
+Load fired: Yes, at `2026-07-14T07:59:06.7861094Z`.
+
+Main framework detected: Google Closure-style property names are present; this is an inference from `closure_*` and `$goog_Thenable`, not a confirmed framework detector result.
+
+Likely failure bucket: E and G for host-object/JS-value interop during timer callbacks; L for diagnostic omission and missing interaction proof.
+
+Confirmed failure bucket: G for eight failed timer callbacks and L for diagnostic attribution: `event_loop.json` retains one error, `exceptions.json` is empty, and the summary does not surface the failures. Bucket E remains a root-cause hypothesis until source/receiver attribution is preserved.
+
+Minimal reproduction: `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site https://www.google.com/ 20000`.
+
+Engine subsystem owner: FenEngine event-loop callback execution and FenJS host-object conversion, plus the Tooling bundle builder for lost attribution.
+
+Fix task: `TRACE-001`; then create a narrow host-object interop fix task from the attributed callback. `SITE-001` independently verifies interaction acceptance.
+
+Regression test: NOT_STARTED. It must use an included test surface and a deterministic local timer-failure fixture before the live rerun.
+
+Evidence: `logs/real-site/www.google.com/20260714T075906Z/summary.md`, `event_loop.json`, `missing_apis.json`, `network.json`, `style_layout.json`, and `screenshot.png`.
+
+Status: TESTED for load/render; interaction acceptance remains RESEARCHED.

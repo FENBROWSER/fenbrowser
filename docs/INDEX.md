@@ -74,9 +74,9 @@ Master execution control sheet for subsystem-by-subsystem gap closure with a str
 
 Saved comparison snapshot (Fen vs Chrome/Firefox/Ladybird baseline) captured from project review artifact.
 
-### [Appendix K: Token Savior Workspace Configuration](TOKEN_SAVIOR_WORKSPACE.md)
+### Appendix K: Token Savior Workspace Configuration
 
-Project-local MCP setup for structural source navigation without indexing non-source fixture trees.
+No maintained source file is present in the current checkout; this legacy index entry is intentionally not linked.
 
 ### [Appendix L: Specification Ownership Map](SPECS.md)
 
@@ -100,4 +100,44 @@ Machine-readable security impact + reason-code contract for security-sensitive c
 
 ---
 
-_State as of 2026-05-06_
+## III. Live Execution State
+
+These files are evidence-led audit and execution ledgers. The six volumes above remain the canonical subsystem documentation.
+
+### Architecture and boundaries
+
+- [Current Architecture](ARCHITECTURE.md)
+- [Process Model](PROCESS_MODEL.md)
+- [IPC Model](IPC_MODEL.md)
+- [Security Model](SECURITY_MODEL.md)
+- [Memory and Lifetime Model](MEMORY_MODEL.md)
+- [Native Interop Model](NATIVE_INTEROP_MODEL.md)
+- [Architecture Decision Records](DECISION_RECORDS/README.md)
+
+### Reality, diagnostics, and real-site work
+
+- [Engine State](ENGINE_STATE.md)
+- [Test Baseline](TEST_BASELINE.md)
+- [Known Gaps](KNOWN_GAPS.md)
+- [Diagnostic Spine](DIAGNOSTICS.md)
+- [Real-Site Debugging](REAL_SITE_DEBUGGING.md)
+- [Real-Site Tracker](REAL_SITE_TRACKER.md)
+- [Missing API Tracker](MISSING_API_TRACKER.md)
+
+### Capability trackers and execution control
+
+- [JavaScript Engine Tracker](JS_ENGINE_TRACKER.md)
+- [WebIDL Bindings Tracker](WEBIDL_BINDINGS_TRACKER.md)
+- [DOM API Tracker](DOM_API_TRACKER.md)
+- [Event Loop Tracker](EVENT_LOOP_TRACKER.md)
+- [Script Loading Tracker](SCRIPT_LOADING_TRACKER.md)
+- [Network and Fetch Tracker](NETWORK_FETCH_TRACKER.md)
+- [CSS, Layout, and Paint Tracker](CSS_LAYOUT_TRACKER.md)
+- [Performance Dashboard](PERFORMANCE_DASHBOARD.md)
+- [Risk Register](RISK_REGISTER.md)
+- [Human-Decision Blockers](BLOCKERS.md)
+- [Dependency-Ready Next Tasks](NEXT_TASKS.md)
+
+---
+
+_State as of 2026-07-14_
