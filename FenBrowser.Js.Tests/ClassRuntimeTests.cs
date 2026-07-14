@@ -37,6 +37,27 @@ public sealed class ClassRuntimeTests
     }
 
     [Fact]
+    public void ConstructorParametersRemainBoundWhenInvokedThroughConstructorProperty()
+    {
+        Assert.Equal(6d, Run(@"
+            class MessageBase { constructor(a, b, c) { this.sum = a + b + c; } }
+            var instance = new MessageBase(1, 2, 3);
+            var clone = new instance.constructor(1, 2, 3);
+            clone.sum;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void ConstructorObjectPatternParameterBindsDestructuredNames()
+    {
+        Assert.Equal(8d, Run(@"
+            class MessageBase { constructor(a, b, { c }) { this.sum = a + b + c; } }
+            var instance = new MessageBase(1, 2, { c: 5 });
+            instance.sum;
+        ").AsNumber());
+    }
+
+    [Fact]
     public void InstanceMethodIsInheritedThroughPrototype()
     {
         Assert.Equal(15d, Run(@"

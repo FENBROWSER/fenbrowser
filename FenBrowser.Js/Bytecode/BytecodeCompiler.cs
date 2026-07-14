@@ -1012,7 +1012,11 @@ public sealed class BytecodeCompiler
                 constructorFn.Body,
                 constructorFn.Span,
                 IsAsync: constructorFn.IsAsync,
-                IsGenerator: constructorFn.IsGenerator);
+                IsGenerator: constructorFn.IsGenerator,
+                HasSimpleParameterList: constructorFn.HasSimpleParameterList,
+                RestParameterIndex: constructorFn.RestParameterIndex,
+                ParameterBindings: constructorFn.ParameterBindings,
+                ParameterDefaults: constructorFn.ParameterDefaults);
         }
 
         // H.5 - public instance fields. ECMA-262 15.7.10 [[InitializeInstanceElements]]
@@ -1090,7 +1094,11 @@ public sealed class BytecodeCompiler
                 newBody,
                 constructorFn.Span,
                 IsAsync: constructorFn.IsAsync,
-                IsGenerator: constructorFn.IsGenerator);
+                IsGenerator: constructorFn.IsGenerator,
+                HasSimpleParameterList: constructorFn.HasSimpleParameterList,
+                RestParameterIndex: constructorFn.RestParameterIndex,
+                ParameterBindings: constructorFn.ParameterBindings,
+                ParameterDefaults: constructorFn.ParameterDefaults);
         }
 
         // Compile constructor.

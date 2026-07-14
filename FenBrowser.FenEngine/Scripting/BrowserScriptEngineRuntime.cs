@@ -3250,6 +3250,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             "globalThis.__gppLocator = function() {};");
         SeedFenJsDocumentAndNavigatorProperties(document, navigator);
         _interpreter.RegisterGlobalValue("NodeFilter", CreateNodeFilterConstantsObject());
+        _interpreter.RegisterGlobalValue("CSS", CreateCssGlobalObject());
         _interpreter.RegisterGlobalHostObject("location", RegisterHostObject(location, HostObjectKind.Other));
         _interpreter.RegisterGlobalHostObject("history", RegisterHostObject(history, HostObjectKind.Other));
         RegisterFenJsStorageGlobals(baseUri, document);
@@ -12248,6 +12249,203 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         });
     }
 
+    private JsValue CreateCssGlobalObject()
+    {
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["supports"] = _interpreter.AllocateNativeFunction(
+                "supports",
+                (_, args) => JsValue.FromBoolean(CssSupports(args)),
+                length: 1),
+            ["escape"] = _interpreter.AllocateNativeFunction(
+                "escape",
+                (_, args) => JsValue.FromString(CssEscape(args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty)),
+                length: 1)
+        });
+    }
+
+    private JsValue CreateEmptyStyleSheetListObject()
+    {
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["length"] = JsValue.FromInt32(0),
+            ["item"] = _interpreter.AllocateNativeFunction(
+                "item",
+                (_, _) => JsValue.Null,
+                length: 1)
+        });
+    }
+
+    private static bool CssSupports(IReadOnlyList<JsValue> args)
+    {
+        if (args.Count == 0)
+        {
+            return false;
+        }
+
+        if (args.Count == 1)
+        {
+            return IsPlausibleCssSupportsCondition(CoerceToHostString(args[0]));
+        }
+
+        var property = CoerceToHostString(args[0]).Trim();
+        var value = CoerceToHostString(args[1]).Trim();
+        return IsPlausibleCssPropertyName(property) &&
+               !string.IsNullOrWhiteSpace(value) &&
+               !ContainsCssParseBreaker(value) &&
+               HasBalancedCssGrouping(value);
+    }
+
+    private static bool IsPlausibleCssSupportsCondition(string condition)
+    {
+        var text = condition?.Trim();
+        if (string.IsNullOrEmpty(text) || ContainsCssParseBreaker(text))
+        {
+            return false;
+        }
+
+        return HasBalancedCssGrouping(text);
+    }
+
+    private static bool IsPlausibleCssPropertyName(string property)
+    {
+        if (string.IsNullOrWhiteSpace(property))
+        {
+            return false;
+        }
+
+        if (property.StartsWith("--", StringComparison.Ordinal))
+        {
+            return property.Length > 2 && property.All(ch => char.IsLetterOrDigit(ch) || ch == '-' || ch == '_');
+        }
+
+        return property.All(ch => char.IsLetterOrDigit(ch) || ch == '-');
+    }
+
+    private static bool ContainsCssParseBreaker(string text)
+        => text.IndexOf('{') >= 0 || text.IndexOf('}') >= 0 || text.IndexOf(';') >= 0;
+
+    private static bool HasBalancedCssGrouping(string text)
+    {
+        var parentheses = 0;
+        var brackets = 0;
+        var inSingleQuote = false;
+        var inDoubleQuote = false;
+        var escaping = false;
+
+        foreach (var ch in text)
+        {
+            if (escaping)
+            {
+                escaping = false;
+                continue;
+            }
+
+            if (ch == '\\')
+            {
+                escaping = true;
+                continue;
+            }
+
+            if (inSingleQuote)
+            {
+                if (ch == '\'')
+                {
+                    inSingleQuote = false;
+                }
+
+                continue;
+            }
+
+            if (inDoubleQuote)
+            {
+                if (ch == '"')
+                {
+                    inDoubleQuote = false;
+                }
+
+                continue;
+            }
+
+            switch (ch)
+            {
+                case '\'':
+                    inSingleQuote = true;
+                    break;
+                case '"':
+                    inDoubleQuote = true;
+                    break;
+                case '(':
+                    parentheses++;
+                    break;
+                case ')':
+                    if (--parentheses < 0)
+                    {
+                        return false;
+                    }
+
+                    break;
+                case '[':
+                    brackets++;
+                    break;
+                case ']':
+                    if (--brackets < 0)
+                    {
+                        return false;
+                    }
+
+                    break;
+            }
+        }
+
+        return parentheses == 0 && brackets == 0 && !inSingleQuote && !inDoubleQuote && !escaping;
+    }
+
+    private static string CssEscape(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        var sb = new StringBuilder(value.Length);
+        for (var i = 0; i < value.Length; i++)
+        {
+            var ch = value[i];
+            if (ch == '\0')
+            {
+                sb.Append('\uFFFD');
+                continue;
+            }
+
+            if ((i == 0 && char.IsDigit(ch)) ||
+                (i == 1 && value[0] == '-' && char.IsDigit(ch)))
+            {
+                sb.Append('\\');
+                sb.Append(((int)ch).ToString("x", CultureInfo.InvariantCulture));
+                sb.Append(' ');
+                continue;
+            }
+
+            if (i == 0 && ch == '-' && value.Length == 1)
+            {
+                sb.Append("\\-");
+                continue;
+            }
+
+            if (ch >= 0x80 || ch == '-' || ch == '_' || char.IsLetterOrDigit(ch))
+            {
+                sb.Append(ch);
+                continue;
+            }
+
+            sb.Append('\\');
+            sb.Append(ch);
+        }
+
+        return sb.ToString();
+    }
+
     private NodeFilter CreateTreeWalkerFilter(JsValue filterValue)
     {
         if (filterValue.Tag == JsValueTag.Undefined || filterValue.Tag == JsValueTag.Null)
@@ -12959,6 +13157,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return true;
                 case "compatMode":
                     value = JsValue.FromString("CSS1Compat");
+                    return true;
+                case "styleSheets":
+                    value = _owner.CreateEmptyStyleSheetListObject();
                     return true;
                 case "prerendering":
                     value = JsValue.FromBoolean(false);
