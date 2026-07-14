@@ -9089,3 +9089,34 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - Paint traversal, included paint-tree rendering, and style/layout contracts: pass (`27/27`).
 - All four benchmark failure gates passed in every retained report.
+
+## 2.335 Caller-Owned Box Tree Accumulation (2026-07-14)
+
+- `FenBrowser.FenEngine/Layout/Tree/BoxTreeBuilder.cs`
+  - The post-parser allocation trace ranked `BoxTreeBuilder.ConstructBox` at `8.37%` of sampled FenBrowser allocation leaves. Every recursive call created a result `List<LayoutBox>` even when the node produced no box or exactly one box, and callers immediately copied those results with `AddRange`.
+  - Recursive construction now appends into a caller-owned destination list. The builder still creates a distinct child list for each element because block-in-inline splitting, pseudo-elements, and block-child fixup require that ownership boundary; only the redundant return list is removed.
+  - Document, `display: contents`, hidden-node, text, pseudo-element, and split-inline ordering are unchanged. The change adds no pool, cache, unsafe code, retained global state, or concurrency.
+- `FenBrowser.Tests/Performance/BoxTreeBuilderHotPathTests.cs`
+  - A deterministic ten-build workload over a 201-node flat inline/text tree moved from `11,574,736 B` to `11,398,496 B`, a reduction of `176,240 B` (`1.52%`). The retained budget allows normal runtime noise but fails the pre-change implementation.
+
+An immediate restore/reapply A/B compares original reports `132937`-`132942` with retained reports `133020`-`133026`:
+
+| Scenario | Total time before | Total time after | Layout allocation before | Layout allocation after | Render allocation before | Render allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 184.23 ms | 184.43 ms (+0.11%) | 8,919,592 B | 8,870,096 B (-0.55%) | 10,903,176 B | 10,837,192 B (-0.61%) | 21,772,808 B | 21,706,824 B (-0.30%) |
+| steady-state-damage-animation | 14.20 ms | 14.24 ms (+0.28%) | 184 B | 184 B (flat) | 10,534,968 B | 10,494,632 B (-0.38%) | 16,826,392 B | 16,785,720 B (-0.24%) |
+| dense-text-flow | 13.98 ms | 13.84 ms (-1.00%) | 1,501,300 B | 1,485,592 B (-1.05%) | 5,765,896 B | 5,739,784 B (-0.45%) | 9,408,600 B | 9,426,928 B (+0.19%) |
+| wrapped-multiline-text | 6.82 ms | 7.09 ms (+3.96%) | 811,816 B | 799,272 B (-1.55%) | 2,459,968 B | 2,435,368 B (-1.00%) | 4,470,840 B | 4,442,936 B (-0.62%) |
+
+The allocation reduction is deterministic across every layout-active fixture. Timing is mixed and no speedup is claimed; wrapped CSS time also moved `+6.50%` although CSS code was unchanged, so its small end-to-end movement is retained as run noise rather than attributed to Box Tree accumulation. Collection-count medians are unchanged. A fresh trace still ranks `ConstructBoxes` because the required per-element child lists and layout objects remain allocated there; further work needs type-level attribution rather than treating the whole method as removable allocation.
+
+Rejected experiment:
+
+- Removing `LayoutStyleResolver.NormalizeForLayout` capture allocations with cached static delegates, and then with direct enum-routed setters, reduced the focused 10,000-call probe from `41,440,000 B` to `0 B`. Both implementations reproduced a dense CSS/style regression: the original median was about `5.9 ms`, while the retained-candidate batches were about `11.8 ms`. Both variants were reverted completely; no allocation-only microbenchmark was accepted over the process-stage regression.
+
+Verification:
+
+- Box Tree, pseudo-element, inline, float, grid, replaced-element, Acid2, style, aspect-ratio, flex, and positioning slices pass the same `61/61` and `44/44` before and after.
+- Two unrelated tests fail identically on original and candidate builds: `GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl` and `ColumnMinHeightDvh_AllowsFlexOneHeroToCenterContent`. They remain visible existing failures.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- All four benchmark failure gates passed in both immediate five-process A/B batches.

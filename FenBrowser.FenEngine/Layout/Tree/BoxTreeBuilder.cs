@@ -31,21 +31,21 @@ namespace FenBrowser.FenEngine.Layout.Tree
         public LayoutBox Build(Node root)
         {
             if (root == null) return null;
-            return ConstructBox(root, null).FirstOrDefault();
+            var result = new List<LayoutBox>(1);
+            ConstructBoxes(root, null, result);
+            return result.Count == 0 ? null : result[0];
         }
 
-        private List<LayoutBox> ConstructBox(Node node, CssComputed parentStyle)
+        private void ConstructBoxes(Node node, CssComputed parentStyle, List<LayoutBox> result)
         {
-            var result = new List<LayoutBox>();
-
             if (node is Document documentNode)
             {
                 foreach (var childNode in documentNode.ChildNodes)
                 {
-                    result.AddRange(ConstructBox(childNode, parentStyle));
+                    ConstructBoxes(childNode, parentStyle, result);
                 }
 
-                return result;
+                return;
             }
 
             // HTML details/summary behavior:
@@ -59,7 +59,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     string.Equals(elementNode.TagName, "SUMMARY", StringComparison.OrdinalIgnoreCase);
                 if (!isSummaryElement)
                 {
-                    return result;
+                    return;
                 }
             }
 
@@ -83,14 +83,14 @@ namespace FenBrowser.FenEngine.Layout.Tree
             if (display == "none")
             {
                 LogLayoutDecision(node, "Box skipped because computed display=none", "none");
-                return result;
+                return;
             }
             
             if (node is Element e)
             {
                 string tag = e.TagName?.ToUpperInvariant();
                 if (tag == "HEAD" || tag == "SCRIPT" || tag == "STYLE" || tag == "META" || tag == "LINK" || tag == "TITLE" || tag == "NOSCRIPT" || tag == "TEMPLATE" || tag == "MAP" || tag == "AREA")
-                    return result;
+                    return;
             }
 
             // 2. Handle Text Nodes
@@ -98,7 +98,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             {
                 // Preserve whitespace-only nodes but normalize them if they are too long? 
                 // For now, only drop IF they are totally empty (not even space).
-                if (string.IsNullOrEmpty(textNode.Data)) return result;
+                if (string.IsNullOrEmpty(textNode.Data)) return;
 
                 // In normal flow, indentation/newline-only text under block/flex/grid containers
                 // should not create standalone layout boxes.
@@ -120,7 +120,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
                     if (!preserveWhitespace && !inlineParent)
                     {
-                        return result;
+                        return;
                     }
                 }
                 
@@ -129,7 +129,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 int id = _store.CreateBox(textNode, style, LayoutBoxStore.BoxType.Text);
                 result.Add(_store.GetWrapper(id));
                 LogLayoutDecision(textNode, "Box created", "inline");
-                return result;
+                return;
             }
 
             // 3. Handle Elements
@@ -140,9 +140,9 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 {
                     foreach (var childNode in GetChildren(element))
                     {
-                        result.AddRange(ConstructBox(childNode, style));
+                        ConstructBoxes(childNode, style, result);
                     }
-                    return result;
+                    return;
                 }
 
                 LayoutBox box;
@@ -173,13 +173,13 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     if (style.Before.PseudoElementInstance == null)
                         style.Before.PseudoElementInstance = new PseudoElement(element, "before", style.Before);
                     EnsurePseudoTextContent(style.Before.PseudoElementInstance, style.Before.Content);
-                    childBoxes.AddRange(ConstructBox(style.Before.PseudoElementInstance, style.Before));
+                    ConstructBoxes(style.Before.PseudoElementInstance, style.Before, childBoxes);
                 }
 
                 // Recurse on children
                 foreach (var childNode in GetChildren(element))
                 {
-                    childBoxes.AddRange(ConstructBox(childNode, style));
+                    ConstructBoxes(childNode, style, childBoxes);
                 }
 
                 // Append ::after pseudo-element
@@ -188,13 +188,14 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     if (style.After.PseudoElementInstance == null)
                         style.After.PseudoElementInstance = new PseudoElement(element, "after", style.After);
                     EnsurePseudoTextContent(style.After.PseudoElementInstance, style.After.Content);
-                    childBoxes.AddRange(ConstructBox(style.After.PseudoElementInstance, style.After));
+                    ConstructBoxes(style.After.PseudoElementInstance, style.After, childBoxes);
                 }
 
                 // Handle Block-in-Inline Splitting (CSS 2.1 Section 9.2.1.1)
                 if (isInline && HasBlockLevelBox(childBoxes))
                 {
-                    return SplitInlineBox(element, style, childBoxes);
+                    result.AddRange(SplitInlineBox(element, style, childBoxes));
+                    return;
                 }
 
                 // Normal child adding
@@ -210,10 +211,10 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
                 result.Add(box);
                 LogLayoutDecision(element, $"Box created type={box.GetType().Name}", display);
-                return result;
+                return;
             }
 
-            return result;
+            return;
         }
 
         private IEnumerable<Node> GetChildren(Element element)

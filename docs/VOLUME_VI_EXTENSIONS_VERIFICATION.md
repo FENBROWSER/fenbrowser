@@ -2894,3 +2894,19 @@ Verification commands:
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every retained process.
+
+## 6.96 Box Tree Accumulation Verification (2026-07-14)
+
+- `BoxTreeBuilderHotPathTests` builds the same 201-node inline/text tree ten times after warm-up. The measured allocation moves from `11,574,736 B` to `11,398,496 B` (`-1.52%`); the retained `11,450,000 B` budget rejects the original recursive result-list path.
+- Correctness was measured on both sides of an explicit source restore. Pseudo-element, inline-formatting, float, relayout, grid, replaced-element, Acid2, style/layout, aspect-ratio, flex, and positioning coverage passes `61/61` plus `44/44` before and after.
+- `GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl` and `ColumnMinHeightDvh_AllowsFlexOneHeroToCenterContent` fail alone with the same output on both original and candidate builds. They are recorded existing failures and were neither skipped nor changed.
+- Immediate process A/B reports `132937`-`132942` before and `133020`-`133026` after reduce layout allocation by `0.55%`, `1.05%`, and `1.55%` in the three active-layout fixtures. Render allocation falls `0.38%`-`1.00%` in all four scenarios. Every failure gate passes and GC collection medians are unchanged.
+- Timing medians are mixed (`-1.00%` to `+3.96%` total). Wrapped CSS, an untouched stage, moves `+6.50%`; no timing improvement is claimed.
+- A separate normalization experiment was rejected even though its focused allocation probe moved from `41,440,000 B` to `0 B`: both static-delegate and enum-routed variants reproduced roughly doubled dense CSS/style time. The source and temporary allocation contract were reverted.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~BoxTreeBuilderHotPathTests" -v quiet /nodeReuse:false`: pass (`1/1`).
+- The two included before/after filters covering the Box Tree and layout contracts pass `61/61` and `44/44` on each side of the restore.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in all ten immediate A/B processes.
