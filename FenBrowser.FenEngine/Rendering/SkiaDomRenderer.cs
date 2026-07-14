@@ -262,7 +262,8 @@ namespace FenBrowser.FenEngine.Rendering
                 request.HasBaseFrame,
                 request.InvalidationReason,
                 request.RequestedBy,
-                request.EmitVerificationReport);
+                request.EmitVerificationReport,
+                request.CollectAllocationTelemetry || PerformanceDiagnosticsStore.IsRecording);
 
             PerformanceDiagnosticsStore.RecordFrame(LastFrameTelemetry);
 
@@ -294,7 +295,8 @@ namespace FenBrowser.FenEngine.Rendering
             bool hasBaseFrame = false,
             RenderFrameInvalidationReason invalidationReason = RenderFrameInvalidationReason.Unknown,
             string requestedBy = "direct-call",
-            bool emitVerificationReport = true)
+            bool emitVerificationReport = true,
+            bool collectAllocationTelemetry = false)
         {
             if (root == null || canvas == null) return;
 
@@ -336,6 +338,9 @@ namespace FenBrowser.FenEngine.Rendering
             bool watchdogAbortBeforeRaster = false;
             bool layoutUpdated = false;
             bool rebuiltPaintTree = false;
+            long layoutAllocatedBytes = 0;
+            long paintAllocatedBytes = 0;
+            long rasterAllocatedBytes = 0;
             var rasterMode = RenderFrameRasterMode.None;
             LastFrameWatchdogTriggered = false;
             LastFrameWatchdogReason = null;
@@ -516,6 +521,9 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // PHASE 1: Layout using the new LayoutEngine
+                long layoutAllocatedBefore = collectAllocationTelemetry
+                    ? GC.GetAllocatedBytesForCurrentThread()
+                    : 0;
                 using (pipelineContext.BeginScopedStage(PipelineStage.Layout))
                 {
                     using var layoutTimeline = TimelineTracer.Instance.Begin("RenderFrame.Layout", "render");
@@ -621,6 +629,12 @@ namespace FenBrowser.FenEngine.Rendering
                     pipelineContext.SetLayoutSnapshot(_lastLayout);
                     layoutStageWatchdog.Stop();
                 }
+                if (collectAllocationTelemetry)
+                {
+                    layoutAllocatedBytes = Math.Max(
+                        0,
+                        GC.GetAllocatedBytesForCurrentThread() - layoutAllocatedBefore);
+                }
                 
                 // Update Scroll Animations
                 bool scrollAnimationActive = _scrollManager.OnFrame();
@@ -641,6 +655,9 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // PHASE 2: Build Paint Tree
+                long paintAllocatedBefore = collectAllocationTelemetry
+                    ? GC.GetAllocatedBytesForCurrentThread()
+                    : 0;
                 using (pipelineContext.BeginScopedStage(PipelineStage.Painting))
                 {
                     using var paintTimeline = TimelineTracer.Instance.Begin("RenderFrame.Paint", "render");
@@ -785,12 +802,21 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                     }
                 }
+                if (collectAllocationTelemetry)
+                {
+                    paintAllocatedBytes = Math.Max(
+                        0,
+                        GC.GetAllocatedBytesForCurrentThread() - paintAllocatedBefore);
+                }
 
 
                 
                 // PHASE 3: Render
                 var bgColor = ResolveCanvasBackgroundColor(root, styles);
-                
+
+                long rasterAllocatedBefore = collectAllocationTelemetry
+                    ? GC.GetAllocatedBytesForCurrentThread()
+                    : 0;
                 using (pipelineContext.BeginScopedStage(PipelineStage.Rasterizing))
                 {
                     using var rasterTimeline = TimelineTracer.Instance.Begin("RenderFrame.Raster", "render");
@@ -916,6 +942,12 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                     }
                 }
+                if (collectAllocationTelemetry)
+                {
+                    rasterAllocatedBytes = Math.Max(
+                        0,
+                        GC.GetAllocatedBytesForCurrentThread() - rasterAllocatedBefore);
+                }
 
                 using (pipelineContext.BeginScopedStage(PipelineStage.Presenting))
                 {
@@ -950,6 +982,9 @@ namespace FenBrowser.FenEngine.Rendering
                         layoutStageWatchdog.Elapsed.TotalMilliseconds,
                         paintStageWatchdog.Elapsed.TotalMilliseconds,
                         rasterStageWatchdog.Elapsed.TotalMilliseconds,
+                        layoutAllocatedBytes,
+                        paintAllocatedBytes,
+                        rasterAllocatedBytes,
                         RenderPipeline.LastFrameDuration.TotalMilliseconds > 0
                             ? RenderPipeline.LastFrameDuration.TotalMilliseconds
                             : frameWatchdog.Elapsed.TotalMilliseconds);
@@ -998,6 +1033,9 @@ namespace FenBrowser.FenEngine.Rendering
                     layoutStageWatchdog.Elapsed.TotalMilliseconds,
                     paintStageWatchdog.Elapsed.TotalMilliseconds,
                     rasterStageWatchdog.Elapsed.TotalMilliseconds,
+                    layoutAllocatedBytes,
+                    paintAllocatedBytes,
+                    rasterAllocatedBytes,
                     frameWatchdog.Elapsed.TotalMilliseconds);
             }
             
@@ -1207,6 +1245,9 @@ namespace FenBrowser.FenEngine.Rendering
             double layoutDurationMs,
             double paintDurationMs,
             double rasterDurationMs,
+            long layoutAllocatedBytes,
+            long paintAllocatedBytes,
+            long rasterAllocatedBytes,
             double totalDurationMs)
         {
             return new RenderFrameTelemetry
@@ -1236,6 +1277,9 @@ namespace FenBrowser.FenEngine.Rendering
                 LayoutDurationMs = layoutDurationMs,
                 PaintDurationMs = paintDurationMs,
                 RasterDurationMs = rasterDurationMs,
+                LayoutAllocatedBytes = layoutAllocatedBytes,
+                PaintAllocatedBytes = paintAllocatedBytes,
+                RasterAllocatedBytes = rasterAllocatedBytes,
                 TotalDurationMs = totalDurationMs,
                 DamageAreaRatio = LastDamageAreaRatio
             };

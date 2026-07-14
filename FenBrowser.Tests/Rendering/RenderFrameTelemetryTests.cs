@@ -42,7 +42,8 @@ namespace FenBrowser.Tests.Rendering
                 Viewport = new SKRect(0, 0, 128, 128),
                 BaseUrl = baseUri.AbsoluteUri,
                 InvalidationReason = RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Style,
-                RequestedBy = "RenderFrameTelemetryTests.InitialCommit"
+                RequestedBy = "RenderFrameTelemetryTests.InitialCommit",
+                CollectAllocationTelemetry = true
             });
 
             Assert.NotNull(result);
@@ -52,6 +53,9 @@ namespace FenBrowser.Tests.Rendering
             Assert.True(result.Telemetry.FrameSequence > 0);
             Assert.True(result.Telemetry.LayoutUpdated);
             Assert.True(result.Telemetry.PaintTreeRebuilt);
+            Assert.True(result.Telemetry.LayoutAllocatedBytes > 0);
+            Assert.True(result.Telemetry.PaintAllocatedBytes > 0);
+            Assert.True(result.Telemetry.RasterAllocatedBytes >= 0);
             Assert.True(result.Telemetry.DomNodeCount >= 3);
             Assert.True(result.Telemetry.BoxCount > 0);
             Assert.True(result.Telemetry.PaintNodeCount > 0);

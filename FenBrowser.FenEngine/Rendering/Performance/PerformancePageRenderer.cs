@@ -74,6 +74,9 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         {
             html.Append("<section><h2>Memory and GC</h2><table>");
             RowBytes(html, "Managed allocated bytes", latest?.ManagedAllocatedBytes);
+            RowBytes(html, "Layout allocated bytes (latest frame)", latest?.LayoutAllocatedBytes);
+            RowBytes(html, "Paint allocated bytes (latest frame)", latest?.PaintAllocatedBytes);
+            RowBytes(html, "Raster allocated bytes (latest frame)", latest?.RasterAllocatedBytes);
             RowBytes(html, "Current managed heap", latest?.ManagedHeapBytes);
             RowBytes(html, "Working set", latest?.WorkingSetBytes);
             Row(html, "Gen 0 collections", latest?.Gen0Collections.ToString(CultureInfo.InvariantCulture));

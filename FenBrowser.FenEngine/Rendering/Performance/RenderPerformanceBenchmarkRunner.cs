@@ -56,6 +56,9 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         double AverageLayoutMs,
         double AveragePaintGenerationMs,
         double AverageRasterMs,
+        long AverageLayoutAllocatedBytes,
+        long AveragePaintGenerationAllocatedBytes,
+        long AverageRasterAllocatedBytes,
         long RenderAllocatedBytes,
         double PipelineDurationMs,
         long ManagedAllocatedBytes,
@@ -140,6 +143,9 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             var layoutTotals = new List<double>(scenario.Iterations);
             var paintTotals = new List<double>(scenario.Iterations);
             var rasterTotals = new List<double>(scenario.Iterations);
+            var layoutAllocationTotals = new List<long>(scenario.Iterations);
+            var paintAllocationTotals = new List<long>(scenario.Iterations);
+            var rasterAllocationTotals = new List<long>(scenario.Iterations);
             var rasterModes = new Dictionary<RenderFrameRasterMode, int>();
             RenderFrameResult lastResult = null;
             long renderAllocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
@@ -155,13 +161,22 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 BaseUrl = baseUri.AbsoluteUri,
                 InvalidationReason = RenderFrameInvalidationReason.Navigation,
                 RequestedBy = $"RenderPerformanceBenchmark.{scenario.Name}.Initial",
-                EmitVerificationReport = false
+                EmitVerificationReport = false,
+                CollectAllocationTelemetry = true
             });
             initialCanvas.Flush();
 
             if (!scenario.PreferSteadyStateDamage)
             {
-                RecordTelemetry(lastResult.Telemetry, totals, layoutTotals, paintTotals, rasterTotals);
+                RecordTelemetry(
+                    lastResult.Telemetry,
+                    totals,
+                    layoutTotals,
+                    paintTotals,
+                    rasterTotals,
+                    layoutAllocationTotals,
+                    paintAllocationTotals,
+                    rasterAllocationTotals);
                 CountRasterMode(rasterModes, lastResult.RasterMode);
             }
 
@@ -193,11 +208,20 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                         ? RenderFrameInvalidationReason.Animation
                         : RenderFrameInvalidationReason.Navigation,
                     RequestedBy = $"RenderPerformanceBenchmark.{scenario.Name}.{i}",
-                    EmitVerificationReport = false
+                    EmitVerificationReport = false,
+                    CollectAllocationTelemetry = true
                 });
 
                 canvas.Flush();
-                RecordTelemetry(lastResult.Telemetry, totals, layoutTotals, paintTotals, rasterTotals);
+                RecordTelemetry(
+                    lastResult.Telemetry,
+                    totals,
+                    layoutTotals,
+                    paintTotals,
+                    rasterTotals,
+                    layoutAllocationTotals,
+                    paintAllocationTotals,
+                    rasterAllocationTotals);
                 CountRasterMode(rasterModes, lastResult.RasterMode);
             }
 
@@ -235,6 +259,9 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 Math.Round(AverageOrZero(layoutTotals), 2),
                 Math.Round(AverageOrZero(paintTotals), 2),
                 Math.Round(AverageOrZero(rasterTotals), 2),
+                AverageOrZero(layoutAllocationTotals),
+                AverageOrZero(paintAllocationTotals),
+                AverageOrZero(rasterAllocationTotals),
                 renderAllocatedBytes,
                 Math.Round(pipelineStopwatch.Elapsed.TotalMilliseconds, 2),
                 Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore),
@@ -319,7 +346,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             foreach (var result in report.Results)
             {
                 builder.AppendLine(
-                    $"{result.Name}: total={result.AverageTotalMs:0.##}ms html={result.HtmlParseMs:0.##}ms htmlAlloc={result.HtmlParseAllocatedBytes}B cssRules={result.CssRuleParseMs:0.##}ms cascade={result.CssCascadeMs:0.##}ms cssTotal={result.CssParseAndStyleMs:0.##}ms cssAlloc={result.CssParseAndStyleAllocatedBytes}B inlineStyleCache={result.InlineStyleCacheHits}h/{result.InlineStyleCacheMisses}m/{result.InlineStyleCacheEvictions}e layout={result.AverageLayoutMs:0.##}ms paint={result.AveragePaintGenerationMs:0.##}ms raster={result.AverageRasterMs:0.##}ms renderAlloc={result.RenderAllocatedBytes}B alloc={result.ManagedAllocatedBytes}B dom={result.DomNodeCount} boxes={result.BoxCount} paintNodes={result.PaintNodeCount} rasterMode={result.DominantRasterMode} failGate={result.FailureGatePassed}");
+                    $"{result.Name}: total={result.AverageTotalMs:0.##}ms html={result.HtmlParseMs:0.##}ms htmlAlloc={result.HtmlParseAllocatedBytes}B cssRules={result.CssRuleParseMs:0.##}ms cascade={result.CssCascadeMs:0.##}ms cssTotal={result.CssParseAndStyleMs:0.##}ms cssAlloc={result.CssParseAndStyleAllocatedBytes}B inlineStyleCache={result.InlineStyleCacheHits}h/{result.InlineStyleCacheMisses}m/{result.InlineStyleCacheEvictions}e layout={result.AverageLayoutMs:0.##}ms/{result.AverageLayoutAllocatedBytes}B paint={result.AveragePaintGenerationMs:0.##}ms/{result.AveragePaintGenerationAllocatedBytes}B raster={result.AverageRasterMs:0.##}ms/{result.AverageRasterAllocatedBytes}B renderAlloc={result.RenderAllocatedBytes}B alloc={result.ManagedAllocatedBytes}B dom={result.DomNodeCount} boxes={result.BoxCount} paintNodes={result.PaintNodeCount} rasterMode={result.DominantRasterMode} failGate={result.FailureGatePassed}");
             }
 
             return builder.ToString();
@@ -336,17 +363,28 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             List<double> totals,
             List<double> layoutTotals,
             List<double> paintTotals,
-            List<double> rasterTotals)
+            List<double> rasterTotals,
+            List<long> layoutAllocationTotals,
+            List<long> paintAllocationTotals,
+            List<long> rasterAllocationTotals)
         {
             totals.Add(telemetry?.TotalDurationMs ?? 0);
             layoutTotals.Add(telemetry?.LayoutDurationMs ?? 0);
             paintTotals.Add(telemetry?.PaintDurationMs ?? 0);
             rasterTotals.Add(telemetry?.RasterDurationMs ?? 0);
+            layoutAllocationTotals.Add(telemetry?.LayoutAllocatedBytes ?? 0);
+            paintAllocationTotals.Add(telemetry?.PaintAllocatedBytes ?? 0);
+            rasterAllocationTotals.Add(telemetry?.RasterAllocatedBytes ?? 0);
         }
 
         private static double AverageOrZero(List<double> values)
         {
             return values.Count == 0 ? 0 : values.Average();
+        }
+
+        private static long AverageOrZero(List<long> values)
+        {
+            return values.Count == 0 ? 0 : (long)Math.Round(values.Average());
         }
 
         private static RenderPerformanceEnvironment CaptureEnvironment()

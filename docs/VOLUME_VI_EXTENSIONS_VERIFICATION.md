@@ -2782,3 +2782,25 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `RenderPerformanceBenchmarkRunnerTests`: pass (`3/3`).
 - All four benchmark failure gates passed in every retained report.
+
+## 6.89 Per-Stage Render Allocation Reports (2026-07-14)
+
+- The deterministic render runner opts into allocation telemetry and publishes `AverageLayoutAllocatedBytes`, `AveragePaintGenerationAllocatedBytes`, and `AverageRasterAllocatedBytes` in JSON and console summaries.
+- Averages use the same measured-frame set as stage timing. In particular, `steady-state-damage-animation` excludes its initial setup frame, so its values characterize repeated paint invalidation rather than navigation setup.
+- `fen://performance` now exposes the latest recorded frame's layout, paint, and raster managed allocations. Stopping performance recording disables the renderer counter reads; export and copy include the numeric fields through the existing bounded report model.
+- `RenderPerformanceBenchmarkRunnerTests` verifies positive layout/paint attribution, non-negative raster attribution, and JSON persistence. `PerformanceDiagnosticsTests` verifies frame-to-navigation merging and page exposure through an included test surface.
+
+Five-process Release medians from reports `121725`-`121730`:
+
+| Scenario | Median frame | Layout allocation | Paint allocation | Raster allocation |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 176.21 ms | 9,366,592 B | 2,832,528 B | 1,262,456 B |
+| steady-state-damage-animation | 14.48 ms | 184 B | 1,660,242 B | 113,148 B |
+| dense-text-flow | 20.91 ms | 1,597,280 B | 2,802,784 B | 162,796 B |
+| wrapped-multiline-text | 7.88 ms | 851,672 B | 917,368 B | 32,532 B |
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- Focused diagnostics and benchmark filter: pass (`10/10`).
+- Five fresh benchmark processes: all four failure gates passed in every report.

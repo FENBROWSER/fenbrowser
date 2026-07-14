@@ -40,6 +40,9 @@ namespace FenBrowser.Tests.Performance
                 LayoutDurationMs = 2,
                 PaintDurationMs = 3,
                 RasterDurationMs = 4,
+                LayoutAllocatedBytes = 200,
+                PaintAllocatedBytes = 300,
+                RasterAllocatedBytes = 400,
                 RasterMode = RenderFrameRasterMode.Full
             });
 
@@ -65,12 +68,18 @@ namespace FenBrowser.Tests.Performance
                 LayoutDurationMs = 2,
                 PaintDurationMs = 3,
                 RasterDurationMs = 4,
+                LayoutAllocatedBytes = 200,
+                PaintAllocatedBytes = 300,
+                RasterAllocatedBytes = 400,
                 RasterMode = RenderFrameRasterMode.Full
             });
             Assert.Equal(12, PerformanceDiagnosticsStore.GetNavigationHistory()[^1].DomNodeCount);
             Assert.Equal(7, PerformanceDiagnosticsStore.GetNavigationHistory()[^1].ElementNodeCount);
             Assert.Equal(4, PerformanceDiagnosticsStore.GetNavigationHistory()[^1].TextNodeCount);
             Assert.Equal(3, PerformanceDiagnosticsStore.GetNavigationHistory()[^1].AttributeCount);
+            Assert.Equal(200, PerformanceDiagnosticsStore.GetNavigationHistory()[^1].LayoutAllocatedBytes);
+            Assert.Equal(300, PerformanceDiagnosticsStore.GetNavigationHistory()[^1].PaintAllocatedBytes);
+            Assert.Equal(400, PerformanceDiagnosticsStore.GetNavigationHistory()[^1].RasterAllocatedBytes);
 
             PerformanceDiagnosticsStore.StopRecording();
             var stoppedTelemetry = new RenderFrameTelemetry { Url = history[^1].Url };
@@ -112,6 +121,9 @@ namespace FenBrowser.Tests.Performance
             Assert.Contains("Image cache bytes", html);
             Assert.Contains("Font cache hits", html);
             Assert.Contains("Inline style cache hits", html);
+            Assert.Contains("Layout allocated bytes", html);
+            Assert.Contains("Paint allocated bytes", html);
+            Assert.Contains("Raster allocated bytes", html);
             Assert.Contains(">7<", html);
 
             PerformancePageRenderer.Render(new Uri("fen://performance?action=stop"));
@@ -196,6 +208,9 @@ namespace FenBrowser.Tests.Performance
             Assert.True(snapshot.AttributeCount >= 2);
             Assert.True(snapshot.LayoutObjectCount > 0);
             Assert.True(snapshot.PaintCommandCount > 0);
+            Assert.True(snapshot.LayoutAllocatedBytes > 0);
+            Assert.True(snapshot.PaintAllocatedBytes > 0);
+            Assert.True(snapshot.RasterAllocatedBytes >= 0);
             Assert.True(snapshot.RendererCachesCaptured);
             Assert.True(snapshot.TextMeasurementCalls >= 0);
             Assert.True(snapshot.ImageCacheBytes >= 0);

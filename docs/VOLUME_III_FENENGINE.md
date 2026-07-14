@@ -8961,3 +8961,27 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `RenderDiagnosticsCostTests` and `RenderPerformanceBenchmarkRunnerTests`: pass (`5/5`). Rendering-directory tests requested in the same filter remain excluded by the active test project, so equivalent included coverage lives under `Performance`.
 - All four deterministic scenarios retained their operation counts and failure gates.
+
+## 2.330 Recording-Gated Render Stage Allocation Telemetry (2026-07-14)
+
+- `RenderFrameTelemetry` now carries numeric managed-allocation deltas for layout, paint-tree generation, and rasterization. `SkiaDomRenderer` reads the current render thread's allocation counter only when performance recording is active or a caller explicitly requests allocation telemetry.
+- Layout, paint, and raster remain synchronous renderer-owner-thread stages, so `GC.GetAllocatedBytesForCurrentThread()` attributes their managed allocations without concurrent CSS-worker noise. The counter reads are skipped when recording is stopped; no formatted diagnostic strings are built in the stages.
+- `RenderFrameRequest.CollectAllocationTelemetry` lets deterministic tooling opt in while `PerformanceDiagnosticsStore.IsRecording` owns normal `fen://performance` collection. The latest frame's three numeric values flow through the bounded navigation history and are formatted only when the internal page is rendered.
+- These deltas cover managed allocations inside the named stage boundaries. They do not estimate native Skia memory, bitmap creation by the caller, frame-result materialization, or work before and after the three stages.
+
+Five fresh Release processes produced reports `121725`-`121730`. Each value below is the median per measured frame; the steady-state scenario excludes its initial full-layout setup frame:
+
+| Scenario | Layout | Paint generation | Raster |
+| --- | ---: | ---: | ---: |
+| first-frame-heavy-layout | 9,366,592 B | 2,832,528 B | 1,262,456 B |
+| steady-state-damage-animation | 184 B | 1,660,242 B | 113,148 B |
+| dense-text-flow | 1,597,280 B | 2,802,784 B | 162,796 B |
+| wrapped-multiline-text | 851,672 B | 917,368 B | 32,532 B |
+
+Paint-tree generation is the repeated managed-allocation leader in steady-state and text-heavy frames. The heavy first frame is instead layout-dominated. This evidence selects paint-generation allocation profiling as the next cross-fixture optimization target while preserving a separate heavy-layout target.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- Included performance diagnostics, benchmark, and render-diagnostics slice: pass (`10/10`).
+- All four scenarios passed their existing timing and correctness gates in all five retained reports.

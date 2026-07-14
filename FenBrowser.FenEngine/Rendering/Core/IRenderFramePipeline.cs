@@ -90,6 +90,12 @@ namespace FenBrowser.FenEngine.Rendering.Core
 
         public double RasterDurationMs { get; init; }
 
+        public long LayoutAllocatedBytes { get; init; }
+
+        public long PaintAllocatedBytes { get; init; }
+
+        public long RasterAllocatedBytes { get; init; }
+
         public double TotalDurationMs { get; init; }
 
         public float DamageAreaRatio { get; init; }
@@ -138,6 +144,8 @@ namespace FenBrowser.FenEngine.Rendering.Core
         public string RequestedBy { get; set; } = "unspecified";
 
         public bool EmitVerificationReport { get; set; } = true;
+
+        public bool CollectAllocationTelemetry { get; set; }
     }
 
     public sealed class RenderFrameResult
