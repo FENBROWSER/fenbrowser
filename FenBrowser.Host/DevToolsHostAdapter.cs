@@ -4,6 +4,10 @@ using FenBrowser.DevTools.Core;
 using FenBrowser.DevTools.Domains;
 using FenBrowser.DevTools.Domains.DTOs;
 using FenBrowser.FenEngine.DevTools;
+using FenBrowser.FenEngine.Layout;
+using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Rendering.Core;
+using SkiaSharp;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -57,11 +61,7 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
     
     public event Action DomChanged;
     public event Action<ConsoleMessageInfo> ConsoleMessageAdded;
-    // Required by IDevToolsHost but adapter currently doesn't raise NetworkRequestUpdated;
-    // raising sites move with the network-request lifecycle work.
-#pragma warning disable CS0414
     public event Action<NetworkRequestInfo> NetworkRequestUpdated;
-#pragma warning restore CS0414
     public event Action<string>? ProtocolEventReceived;
     public event Action<CursorType>? CursorChanged;
     
@@ -91,6 +91,7 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
         _server.InitializeDebugger(this);
         _server.InitializeLog();
         _server.InitializeBrowserFrontendCompatibility(this);
+        _server.InitializeFenBrowser(this);
         
         // Wire up network events from legacy DevToolsCore (correlate with protocol)
         DevToolsCore.Instance.OnNetworkRequest += _networkRequestHandler;
@@ -114,8 +115,66 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
         Program.RunOnMainThread(() => _browser.HighlightElement(element));
     }
 
+    public int GetNodeId(Node node) => _server.Registry.GetId(node);
+
     public IEnumerable<NetworkRequestInfo> GetNetworkRequests() => _networkRequests;
     public IEnumerable<ConsoleMessageInfo> GetConsoleMessages() => _consoleMessages;
+
+    public NodeDiagnosticsInfo? GetNodeDiagnostics(int nodeId)
+    {
+        var node = _server.Registry.GetNode(nodeId);
+        if (node == null)
+        {
+            return null;
+        }
+
+        var missingReasons = new List<string>();
+        var context = _browser.TryCreateRenderContextSnapshot();
+        if (context == null)
+        {
+            missingReasons.Add("Renderer context is busy or unavailable.");
+        }
+
+        NodeBoxModelInfo? boxModel = null;
+        var hasLayoutBox = false;
+        var isVisible = false;
+        if (context?.TryGetBox(node, out var box) == true && box != null)
+        {
+            hasLayoutBox = true;
+            boxModel = ToBoxModelInfo(box);
+            isVisible = IsVisible(box.BorderBox, context.Viewport);
+        }
+        else
+        {
+            missingReasons.Add("Node has no layout box in the current frame.");
+        }
+
+        var paintNodes = context != null
+            ? FindPaintNodesForNode(context.PaintTreeRoots, node, context.Viewport).ToArray()
+            : Array.Empty<NodePaintNodeInfo>();
+        if (paintNodes.Length == 0)
+        {
+            missingReasons.Add("Node has no paint nodes in the current frame.");
+        }
+        else
+        {
+            isVisible = isVisible || paintNodes.Any(p => p.Bounds.Width > 0 && p.Bounds.Height > 0);
+        }
+
+        var style = context?.GetStyle(node);
+        var telemetry = ToFrameTelemetryInfo(_browser.LastFrameTelemetry, context);
+        return new NodeDiagnosticsInfo(
+            nodeId,
+            node.NodeName ?? node.GetType().Name,
+            boxModel,
+            style != null ? ToComputedLayoutSummary(style) : null,
+            paintNodes,
+            telemetry,
+            hasLayoutBox,
+            paintNodes.Length > 0,
+            isVisible,
+            missingReasons);
+    }
     
     public void ScrollToElement(Element element)
     {
@@ -279,6 +338,149 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
             _networkRequests.Remove(existing);
         }
         _networkRequests.Add(info);
+        NetworkRequestUpdated?.Invoke(info);
+    }
+
+    private static NodeBoxModelInfo ToBoxModelInfo(BoxModel box)
+    {
+        return new NodeBoxModelInfo(
+            ToRectInfo(box.MarginBox),
+            ToRectInfo(box.BorderBox),
+            ToRectInfo(box.PaddingBox),
+            ToRectInfo(box.ContentBox),
+            ToEdges(box.Margin),
+            ToEdges(box.Border),
+            ToEdges(box.Padding));
+    }
+
+    private static ComputedLayoutSummaryInfo ToComputedLayoutSummary(CssComputed style)
+    {
+        return new ComputedLayoutSummaryInfo(
+            style.Display,
+            style.Position,
+            style.Visibility,
+            style.Overflow,
+            style.OverflowX,
+            style.OverflowY,
+            style.BoxSizing,
+            FormatCssLength(style.Width, style.WidthExpression),
+            FormatCssLength(style.Height, style.HeightExpression),
+            style.ZIndex);
+    }
+
+    private static string? FormatCssLength(double? value, string? expression)
+    {
+        if (!string.IsNullOrWhiteSpace(expression))
+        {
+            return expression;
+        }
+
+        return value.HasValue ? $"{value.Value:0.##}px" : null;
+    }
+
+    private static IEnumerable<NodePaintNodeInfo> FindPaintNodesForNode(
+        IReadOnlyList<PaintNodeBase>? roots,
+        Node node,
+        SKRect viewport)
+    {
+        if (roots == null)
+        {
+            yield break;
+        }
+
+        var yielded = 0;
+        foreach (var paintNode in EnumeratePaintNodes(roots))
+        {
+            if (!ReferenceEquals(paintNode.SourceNode, node))
+            {
+                continue;
+            }
+
+            yield return new NodePaintNodeInfo(
+                paintNode.GetType().Name,
+                ToRectInfo(paintNode.Bounds),
+                paintNode.Opacity,
+                paintNode.IsFocused,
+                paintNode.IsHovered,
+                paintNode.ClipRect.HasValue,
+                paintNode.Transform.HasValue);
+
+            yielded++;
+            if (yielded >= 64)
+            {
+                yield break;
+            }
+        }
+    }
+
+    private static IEnumerable<PaintNodeBase> EnumeratePaintNodes(IReadOnlyList<PaintNodeBase> roots)
+    {
+        var stack = new Stack<PaintNodeBase>(roots.Reverse());
+        while (stack.Count > 0)
+        {
+            var node = stack.Pop();
+            yield return node;
+
+            if (node.Children == null)
+            {
+                continue;
+            }
+
+            for (var i = node.Children.Count - 1; i >= 0; i--)
+            {
+                stack.Push(node.Children[i]);
+            }
+        }
+    }
+
+    private static int CountPaintNodes(IReadOnlyList<PaintNodeBase>? roots)
+    {
+        return roots == null ? 0 : EnumeratePaintNodes(roots).Count();
+    }
+
+    private static FrameTelemetryInfo ToFrameTelemetryInfo(RenderFrameTelemetry? telemetry, RenderContext? context)
+    {
+        return new FrameTelemetryInfo(
+            telemetry?.FrameSequence ?? 0,
+            telemetry?.RequestedBy,
+            telemetry?.InvalidationReason.ToString(),
+            telemetry?.RasterMode.ToString(),
+            telemetry?.LayoutDurationMs ?? 0,
+            telemetry?.PaintDurationMs ?? 0,
+            telemetry?.RasterDurationMs ?? 0,
+            telemetry?.TotalDurationMs ?? 0,
+            telemetry?.WatchdogTriggered ?? false,
+            telemetry?.WatchdogReason,
+            telemetry?.DomNodeCount ?? 0,
+            telemetry?.BoxCount ?? context?.Boxes.Count ?? 0,
+            telemetry?.PaintNodeCount ?? CountPaintNodes(context?.PaintTreeRoots));
+    }
+
+    private static RectInfo ToRectInfo(SKRect rect)
+    {
+        return new RectInfo(
+            rect.Left,
+            rect.Top,
+            rect.Right,
+            rect.Bottom,
+            rect.Width,
+            rect.Height);
+    }
+
+    private static EdgeSizesInfo ToEdges(FenBrowser.Core.Thickness thickness)
+    {
+        return new EdgeSizesInfo(
+            thickness.Top,
+            thickness.Right,
+            thickness.Bottom,
+            thickness.Left);
+    }
+
+    private static bool IsVisible(SKRect rect, SKRect viewport)
+    {
+        return rect.Width > 0 &&
+               rect.Height > 0 &&
+               (!viewport.IsEmpty ? rect.IntersectsWith(viewport) : true);
     }
 
     private static string ResolveStatusText(int statusCode, string fallbackStatus)

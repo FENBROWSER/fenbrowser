@@ -26,6 +26,7 @@ public class DevToolsServer
     private LogDomain? _logDomain;
     private PageDomain? _pageDomain;
     private OverlayDomain? _overlayDomain;
+    private FenBrowserDomain? _fenBrowserDomain;
     
     public NodeRegistry Registry => _registry;
     public MessageRouter Router => _router;
@@ -85,6 +86,12 @@ public class DevToolsServer
         _overlayDomain = new OverlayDomain();
         _router.RegisterHandler(_pageDomain);
         _router.RegisterHandler(_overlayDomain);
+    }
+
+    public void InitializeFenBrowser(IDevToolsHost host)
+    {
+        _fenBrowserDomain = new FenBrowserDomain(host);
+        _router.RegisterHandler(_fenBrowserDomain);
     }
     
     public void InitializeCss(
@@ -189,5 +196,6 @@ public class DevToolsServer
         _logDomain = null;
         _pageDomain = null;
         _overlayDomain = null;
+        _fenBrowserDomain = null;
     }
 }

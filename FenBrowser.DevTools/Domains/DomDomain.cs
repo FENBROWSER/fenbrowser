@@ -5,6 +5,7 @@ using FenBrowser.DevTools.Core.Protocol;
 using FenBrowser.DevTools.Domains.DTOs;
 using System.Net;
 using System.Text;
+using System.Text.Json;
 
 namespace FenBrowser.DevTools.Domains;
 
@@ -14,6 +15,10 @@ namespace FenBrowser.DevTools.Domains;
 /// </summary>
 public class DomDomain : IProtocolHandler
 {
+    private const int DefaultDocumentDepth = 4;
+    private const int DefaultChildDepth = 1;
+    private const int MaxSerializedNodeCount = 10000;
+
     private readonly INodeRegistry _registry;
     private readonly Func<Node?> _getRootNode;
     private readonly Action<int?>? _onHighlight;
@@ -68,7 +73,9 @@ public class DomDomain : IProtocolHandler
                 return ProtocolResponse.Failure(request.Id, "No document loaded");
             }
 
-            var rootDto = BuildNodeDto(root, depth: 4);
+            var options = ReadTreeOptions(request, DefaultDocumentDepth);
+            var budget = new NodeSerializationBudget(MaxSerializedNodeCount);
+            var rootDto = BuildNodeDto(root, options, budget);
             var result = new GetDocumentResult { Root = rootDto };
             return ProtocolResponse.Success(request.Id, result);
         });
@@ -133,8 +140,10 @@ public class DomDomain : IProtocolHandler
                     return ProtocolResponse.Failure(request.Id, "Node not found");
                 }
 
-                var children = node.ChildNodes
-                    .Select(child => BuildNodeDto(child, depth: 1))
+                var options = ReadTreeOptions(request, DefaultChildDepth);
+                var budget = new NodeSerializationBudget(MaxSerializedNodeCount);
+                var children = GetInspectableChildren(node, options.Pierce)
+                    .Select(child => BuildNodeDto(child, options, budget))
                     .ToArray();
 
                 return ProtocolResponse.Success(request.Id, new { nodes = children });
@@ -528,8 +537,34 @@ public class DomDomain : IProtocolHandler
     /// <summary>
     /// Build DTO for a node with specified depth.
     /// </summary>
-    private DomNodeDto BuildNodeDto(Node node, int depth)
+    private static DomTreeOptions ReadTreeOptions(ProtocolRequest request, int defaultDepth)
     {
+        var depth = defaultDepth;
+        var pierce = false;
+
+        if (request.Params.HasValue)
+        {
+            var parameters = request.Params.Value;
+            if (parameters.TryGetProperty("depth", out var depthElement) &&
+                depthElement.ValueKind == JsonValueKind.Number &&
+                depthElement.TryGetInt32(out var requestedDepth))
+            {
+                depth = requestedDepth < 0 ? -1 : Math.Min(requestedDepth, MaxSerializedNodeCount);
+            }
+
+            if (parameters.TryGetProperty("pierce", out var pierceElement) &&
+                (pierceElement.ValueKind == JsonValueKind.True || pierceElement.ValueKind == JsonValueKind.False))
+            {
+                pierce = pierceElement.GetBoolean();
+            }
+        }
+
+        return new DomTreeOptions(depth, pierce);
+    }
+
+    private DomNodeDto BuildNodeDto(Node node, DomTreeOptions options, NodeSerializationBudget budget)
+    {
+        budget.Consume();
         var nodeId = _registry.GetId(node);
         var parentId = node.ParentNode != null ? _registry.GetId(node.ParentNode) : (int?)null;
         
@@ -577,16 +612,21 @@ public class DomDomain : IProtocolHandler
         DomNodeDto[]? children = null;
         int[]? childNodeIds = null;
         
-        if (depth > 0 && node.ChildNodes.Length > 0)
+        var inspectableChildren = GetInspectableChildren(node, options.Pierce).ToArray();
+
+        if ((options.Depth > 0 || options.Depth < 0) && inspectableChildren.Length > 0 && budget.HasRemaining)
         {
-            children = node.ChildNodes
-                .Select(child => BuildNodeDto(child, depth - 1))
+            var childDepth = options.Depth < 0 ? -1 : options.Depth - 1;
+            var childOptions = options with { Depth = childDepth };
+            children = inspectableChildren
+                .TakeWhile(_ => budget.HasRemaining)
+                .Select(child => BuildNodeDto(child, childOptions, budget))
                 .ToArray();
         }
-        else if (node.ChildNodes.Length > 0)
+        else if (inspectableChildren.Length > 0)
         {
             // Just return IDs for lazy loading
-            childNodeIds = node.ChildNodes
+            childNodeIds = inspectableChildren
                 .Select(child => _registry.GetId(child))
                 .ToArray();
         }
@@ -601,8 +641,40 @@ public class DomDomain : IProtocolHandler
             Attributes = attributes,
             Children = children,
             ChildNodeIds = childNodeIds,
-            ChildNodeCount = (node is Element || node is Document) ? node.ChildNodes.Length : 0
+            ChildNodeCount = (node is Element || node is Document || node is DocumentFragment) ? inspectableChildren.Length : 0
         };
+    }
+
+    private static IEnumerable<Node> GetInspectableChildren(Node node, bool pierce)
+    {
+        foreach (var child in node.ChildNodes)
+        {
+            yield return child;
+        }
+
+        if (pierce && node is Element { ShadowRoot: { } shadowRoot })
+        {
+            yield return shadowRoot;
+        }
+    }
+
+    private readonly record struct DomTreeOptions(int Depth, bool Pierce);
+
+    private sealed class NodeSerializationBudget
+    {
+        private int _remaining;
+
+        public NodeSerializationBudget(int remaining)
+        {
+            _remaining = Math.Max(1, remaining);
+        }
+
+        public bool HasRemaining => _remaining > 0;
+
+        public void Consume()
+        {
+            _remaining--;
+        }
     }
 }
 

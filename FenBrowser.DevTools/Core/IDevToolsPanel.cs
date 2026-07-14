@@ -1,4 +1,5 @@
 using SkiaSharp;
+using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.DevTools.Core;
 
@@ -77,6 +78,14 @@ public interface IDevToolsPanel
     /// Set the DevTools host for data access.
     /// </summary>
     void SetHost(IDevToolsHost host);
+}
+
+/// <summary>
+/// Optional panel capability for focusing a live DOM element.
+/// </summary>
+public interface IDevToolsElementSelectionPanel
+{
+    void SelectInspectedElement(Element element);
 }
 
 /// <summary>

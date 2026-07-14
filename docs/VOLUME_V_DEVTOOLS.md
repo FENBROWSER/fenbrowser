@@ -20,7 +20,8 @@ The central hub managing the UI.
 
 - **Docking**: Supports Bottom, Right, and Undocked modes.
 - **Input Handling**: Intercepts mouse/keyboard events before they reach the page (when active).
-- **Element Picker**: Provides "Select Element" functionality with visual highlighting.
+- **Element Picker**: Provides "Inspect Element" selection and reveal in the native Elements tree.
+  - Inspect selection updates the native row selection and sidebars without keeping a page overlay active; tree hover updates only native row state so moving the mouse through DevTools does not continuously repaint the inspected page.
 
 ### 2.2 The Elements Panel (`ElementsPanel.cs`)
 
@@ -495,5 +496,33 @@ Net effect:
   - `Log.enable` now accepts optional runtime filter payload (`filter.subsystems[]`, `filter.tabId`, `filter.frameId`) for live stream narrowing.
   - Added `Log.getCounters` returning per-document EngineLog counters (total/warn/error/fatal plus last context metadata).
   - Filtering is applied before broadcasting `Log.entryAdded`, reducing noisy cross-tab/log-domain traffic in active DevTools sessions.
+
+### 5.22 Native DevTools Diagnostics And Full DOM Hydration (2026-07-13)
+
+- `FenBrowser.DevTools/Domains/DomDomain.cs`
+  - `DOM.getDocument` and `DOM.requestChildNodes` now honor request `depth` and `pierce` parameters.
+  - Native Elements activation/refresh keeps a bounded tree snapshot, while search explicitly requests `depth = -1` with bounded serialization so searches operate on the full hydrated tree without freezing inspect startup on large pages.
+- `FenBrowser.DevTools/Domains/FenBrowserDomain.cs`
+- `FenBrowser.DevTools/Core/DevToolsServer.cs`
+- `FenBrowser.DevTools/Core/IDevToolsHost.cs`
+  - Added native protocol method `FenBrowser.getNodeDiagnostics`.
+  - The method returns selected-node box model rectangles, computed layout summary, paint-node summaries, frame telemetry, visibility state, and explicit missing-state reasons.
+- `FenBrowser.Host/BrowserIntegration.cs`
+- `FenBrowser.Host/DevToolsHostAdapter.cs`
+  - Host diagnostics are sourced from the current `SkiaDomRenderer.CreateRenderContext()` snapshot and the last render-frame telemetry rather than a parallel DevTools-only cache.
+  - The host adapter raises `NetworkRequestUpdated` as engine network lifecycle records are translated into `NetworkRequestInfo`.
+- `FenBrowser.DevTools/Panels/ElementsPanel.cs`
+  - Removed the debug-only `"Spotted 'g' node"` log.
+  - Inspect Element now resolves the clicked live DOM node to its protocol node ID, hydrates only that node's ancestor path, expands the tree, and selects/reveals the target without forcing a full-tree refresh.
+  - Selected-node state is kept inside the Elements panel instead of sending `DOM.highlightNode` for every selection, avoiding page-overlay repaint flicker while inspect-open hydrates the target path.
+  - The DOM tree now has fixed native search and breadcrumb chrome: `Ctrl+F` focuses search, typing runs debounced full-tree search, Enter/Shift+Enter navigates results, matched nodes are highlighted, and the selected-node path remains visible at the bottom of the tree.
+  - DOM rows now distinguish lazy-loading state, text/style/script previews, HTML void elements, and selected-node layout badges; the Styles pane falls back to a compact computed-property snapshot when matched stylesheet attribution is unavailable.
+  - The Layout tab now prefers renderer box data when diagnostics are available, and a new Diagnostics tab shows paint nodes, frame telemetry, visibility, and missing layout/paint reasons.
+- `FenBrowser.DevTools/Panels/NetworkPanel.cs`
+  - Native Network now consumes host update events, preserves selected request details across updates, and includes a simple request filter.
+- `FenBrowser.DevTools/Panels/ConsolePanel.cs`
+  - Console log scrolling now uses the correct coordinate direction, auto-scrolls to new entries, and no longer truncates long messages at render time.
+- `FenBrowser.DevTools/Panels/SourcesPanel.cs`
+  - Sources entries are ordered by origin group and preserve the selected script record when protocol updates refresh metadata.
 
 _End of Volume V_

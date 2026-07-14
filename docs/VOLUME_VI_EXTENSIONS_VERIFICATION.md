@@ -2668,3 +2668,21 @@ _End of Volume VI_
     - Bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_debug_site_missing_global_smoke.html/20260627T101419Z`.
     - `script_loading.json` recorded `ScriptId=script-1`, `SourceOffset=58`, `SourceLine=5`, and `SourceColumn=1` for the failing inline script.
     - `logs.ndjson` carried `scriptSourceOffset=58`, `scriptSourceLine=5`, and `scriptSourceColumn=1` on `ScriptElementDiscovered`, `ScriptElementSeen`, `ScriptExecutionStarted`, and `ScriptExecutionFailed`.
+
+## 6.73 Native DevTools Diagnostics Verification (2026-07-13)
+
+- Added included regression coverage under `FenBrowser.Tests/Core/DevToolsProtocolDiagnosticsTests.cs` because `FenBrowser.Tests/DevTools/**` remains excluded by `FenBrowser.Tests/FenBrowser.Tests.csproj`.
+- Coverage verifies:
+  - `DOM.getDocument` honors requested depth while preserving lazy child IDs.
+  - `DOM.getDocument` with `depth = -1` hydrates deep descendants for native search.
+  - Elements panel activation uses a bounded DOM snapshot while search keeps the full-tree request path.
+  - Inspect Element hydrates only the selected node's ancestor path with lazy child requests and selects the target node without a full-tree refresh.
+  - The visible Elements search UI focuses via `Ctrl+F`, accepts typed queries, debounces full-tree search, and navigates result positions from keyboard input.
+  - `FenBrowser.getNodeDiagnostics` returns host-supplied layout/paint/frame diagnostics.
+- Focused verification:
+  - `dotnet build FenBrowser.DevTools/FenBrowser.DevTools.csproj -nologo`: pass on `2026-07-14` with existing Skia obsolete-warning noise.
+  - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -nologo`: pass on `2026-07-14`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -nologo --filter "FullyQualifiedName~DevTools"`: pass on `2026-07-14`, `11 passed / 0 failed / 0 skipped`.
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- debug-site https://example.com 2000`: pass on `2026-07-13`.
+    - Bundle: `logs/real-site/example.com/20260713T074825Z`.
+    - Evidence: navigation returned `True`, final URL `https://example.com/`, `18` DOM nodes, `12` computed styles, `10` layout boxes, `6` paint nodes, `1` network request, `0` navigation failures, `0` console messages, and screenshot capture succeeded.

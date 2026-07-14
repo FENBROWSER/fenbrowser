@@ -71,8 +71,10 @@ public class DevToolsFrontendCompatibilityTests
         public IEnumerable<ConsoleMessageInfo> GetConsoleMessages() => Array.Empty<ConsoleMessageInfo>();
         public Task<object?> EvaluateScriptAsync(string script) => Task.FromResult<object?>(null);
         public void HighlightElement(Element? element) { }
+        public int GetNodeId(Node node) => 1;
         public void ScrollToElement(Element element) { }
         public IEnumerable<ScriptSourceInfo> GetScriptSources() => Array.Empty<ScriptSourceInfo>();
+        public NodeDiagnosticsInfo? GetNodeDiagnostics(int nodeId) => null;
         public string? CurrentUrl => "https://example.test/";
         public void RequestCursorChange(CursorType cursor) { }
         public void CopyToClipboard(string text) { }

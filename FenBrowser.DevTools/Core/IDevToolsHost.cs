@@ -38,6 +38,11 @@ public interface IDevToolsHost
     /// Highlight an element on the page (still useful internally, but we might prefer protocol).
     /// </summary>
     void HighlightElement(Element? element);
+
+    /// <summary>
+    /// Resolve a live DOM node to its DevTools protocol node ID.
+    /// </summary>
+    int GetNodeId(Node node);
     
     /// <summary>
     /// Navigate to element's location in DOM.
@@ -48,6 +53,11 @@ public interface IDevToolsHost
     /// Get source scripts loaded by the page.
     /// </summary>
     IEnumerable<ScriptSourceInfo> GetScriptSources();
+
+    /// <summary>
+    /// Get FenBrowser-native layout/paint diagnostics for a protocol node ID.
+    /// </summary>
+    NodeDiagnosticsInfo? GetNodeDiagnostics(int nodeId);
     
     /// <summary>
     /// Current page URL.
@@ -168,4 +178,73 @@ public record ScriptSourceInfo(
     string ScriptId = "",
     int StartLine = 0,
     int StartColumn = 0
+);
+
+/// <summary>
+/// FenBrowser-native diagnostics for a selected DOM node.
+/// </summary>
+public record NodeDiagnosticsInfo(
+    int NodeId,
+    string NodeName,
+    NodeBoxModelInfo? BoxModel,
+    ComputedLayoutSummaryInfo? ComputedStyle,
+    IReadOnlyList<NodePaintNodeInfo> PaintNodes,
+    FrameTelemetryInfo FrameTelemetry,
+    bool HasLayoutBox,
+    bool HasPaintNodes,
+    bool IsVisible,
+    IReadOnlyList<string> MissingReasons
+);
+
+public record NodeBoxModelInfo(
+    RectInfo Margin,
+    RectInfo Border,
+    RectInfo Padding,
+    RectInfo Content,
+    EdgeSizesInfo MarginEdges,
+    EdgeSizesInfo BorderEdges,
+    EdgeSizesInfo PaddingEdges
+);
+
+public record RectInfo(float Left, float Top, float Right, float Bottom, float Width, float Height);
+
+public record EdgeSizesInfo(double Top, double Right, double Bottom, double Left);
+
+public record ComputedLayoutSummaryInfo(
+    string? Display,
+    string? Position,
+    string? Visibility,
+    string? Overflow,
+    string? OverflowX,
+    string? OverflowY,
+    string? BoxSizing,
+    string? Width,
+    string? Height,
+    int? ZIndex
+);
+
+public record NodePaintNodeInfo(
+    string Type,
+    RectInfo Bounds,
+    float Opacity,
+    bool IsFocused,
+    bool IsHovered,
+    bool HasClip,
+    bool HasTransform
+);
+
+public record FrameTelemetryInfo(
+    long FrameSequence,
+    string? RequestedBy,
+    string? InvalidationReason,
+    string? RasterMode,
+    double LayoutDurationMs,
+    double PaintDurationMs,
+    double RasterDurationMs,
+    double TotalDurationMs,
+    bool WatchdogTriggered,
+    string? WatchdogReason,
+    int DomNodeCount,
+    int BoxCount,
+    int PaintNodeCount
 );

@@ -153,15 +153,15 @@ public class ConsolePanel : DevToolsPanelBase
     
     private void DrawLogs(SKCanvas canvas, SKRect bounds)
     {
-        float y = bounds.Top + DevToolsTheme.PaddingNormal + ScrollY;
+        float y = bounds.Top + DevToolsTheme.PaddingNormal - ScrollY;
         
         for (int i = 0; i < _entries.Count; i++)
         {
             float itemY = y + i * DevToolsTheme.ItemHeight;
             
             // Skip if outside visible area
-            if (itemY + DevToolsTheme.ItemHeight < bounds.Top - ScrollY) continue;
-            if (itemY > bounds.Bottom - ScrollY) break;
+            if (itemY + DevToolsTheme.ItemHeight < bounds.Top) continue;
+            if (itemY > bounds.Bottom) break;
             
             var entry = _entries[i];
             
@@ -207,9 +207,7 @@ public class ConsolePanel : DevToolsPanelBase
             // Message
             using var msgFont = DevToolsTheme.CreateTextFont();
             using var msgColorPaint = DevToolsTheme.CreateTextColorPaint(color);
-            string msg = entry.Message;
-            if (msg.Length > 100) msg = msg.Substring(0, 97) + "...";
-            canvas.DrawText(msg, x, textY, msgFont, msgColorPaint);
+            canvas.DrawText(entry.Message, x, textY, msgFont, msgColorPaint);
 
             // Source location
             if (!string.IsNullOrEmpty(entry.Source))

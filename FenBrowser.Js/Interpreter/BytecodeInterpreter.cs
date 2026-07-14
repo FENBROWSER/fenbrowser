@@ -12749,7 +12749,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var opcode = frame.Function.Instructions.Count == 0
                     ? "none"
                     : frame.Function.Instructions[ip].OpCode.ToString();
-                return $"    at {functionName} [ip={ip}, op={opcode}]";
+                var parameters = frame.Function.ParameterNames.Count == 0
+                    ? string.Empty
+                    : ", params=" + string.Join(",", frame.Function.ParameterNames);
+                return $"    at {functionName} [ip={ip}, op={opcode}{parameters}]";
             });
         return header + "\n" + string.Join("\n", frames);
     }

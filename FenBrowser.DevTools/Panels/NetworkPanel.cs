@@ -19,10 +19,13 @@ public class NetworkPanel : DevToolsPanelBase
     private int _hoveredIndex = -1;
     private string? _requestBodyPreview;
     private string? _responseBodyPreview;
+    private string _filterText = string.Empty;
+    private bool _filterFocused;
     
     // Layout
     private float _listHeight;
     private float _detailsHeight;
+    private const float FILTER_HEIGHT = 26f;
     private const float HEADER_HEIGHT = 24f;
     
     // Columns
@@ -40,6 +43,7 @@ public class NetworkPanel : DevToolsPanelBase
         if (previousHost != null)
         {
             previousHost.ProtocolEventReceived -= OnProtocolEvent;
+            previousHost.NetworkRequestUpdated -= OnNetworkRequestUpdated;
         }
 
         _requests.Clear();
@@ -47,6 +51,8 @@ public class NetworkPanel : DevToolsPanelBase
         _hoveredIndex = -1;
         _requestBodyPreview = null;
         _responseBodyPreview = null;
+        _filterText = string.Empty;
+        _filterFocused = false;
         ScrollY = 0;
         MaxScrollY = 0;
     }
@@ -56,6 +62,7 @@ public class NetworkPanel : DevToolsPanelBase
         if (Host != null)
         {
             Host.ProtocolEventReceived += OnProtocolEvent;
+            Host.NetworkRequestUpdated += OnNetworkRequestUpdated;
             
             // Enable Network domain
             _ = Host.SendProtocolCommandAsync(JsonSerializer.Serialize(new ProtocolRequest<object>
@@ -158,13 +165,25 @@ public class NetworkPanel : DevToolsPanelBase
         catch { }
     }
 
+    private void OnNetworkRequestUpdated(NetworkRequestInfo request)
+    {
+        UpdateRequest(request);
+    }
+
     private void UpdateRequest(NetworkRequestInfo info)
     {
         int index = _requests.FindIndex(r => r.Id == info.Id);
         if (index >= 0) _requests[index] = info;
         else _requests.Add(info);
+
+        if (_selectedRequest?.Id == info.Id)
+        {
+            _selectedRequest = info;
+            _requestBodyPreview = info.RequestBody ?? _requestBodyPreview;
+            _responseBodyPreview = info.ResponseBody ?? _responseBodyPreview;
+        }
         
-        MaxScrollY = Math.Max(0, _requests.Count * DevToolsTheme.ItemHeight - _listHeight + HEADER_HEIGHT);
+        MaxScrollY = Math.Max(0, GetVisibleRequests().Count * DevToolsTheme.ItemHeight - _listHeight + HEADER_HEIGHT + FILTER_HEIGHT);
         Invalidate();
     }
     
@@ -177,7 +196,6 @@ public class NetworkPanel : DevToolsPanelBase
         var listBounds = new SKRect(bounds.Left, bounds.Top, bounds.Right, bounds.Top + _listHeight);
         var detailsBounds = new SKRect(bounds.Left, listBounds.Bottom, bounds.Right, bounds.Bottom);
         
-        // Draw list
         DrawRequestList(canvas, listBounds);
         
         // Draw details if selected
@@ -189,9 +207,11 @@ public class NetworkPanel : DevToolsPanelBase
     
     private void DrawRequestList(SKCanvas canvas, SKRect bounds)
     {
+        DrawFilter(canvas, new SKRect(bounds.Left, bounds.Top, bounds.Right, bounds.Top + FILTER_HEIGHT));
+
         // Draw header
         float x = bounds.Left;
-        float y = bounds.Top;
+        float y = bounds.Top + FILTER_HEIGHT;
         
         using var headerBgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundLight);
         canvas.DrawRect(new SKRect(bounds.Left, y, bounds.Right, y + HEADER_HEIGHT), headerBgPaint);
@@ -210,17 +230,18 @@ public class NetworkPanel : DevToolsPanelBase
         canvas.DrawLine(bounds.Left, y + HEADER_HEIGHT, bounds.Right, y + HEADER_HEIGHT, borderPaint);
         
         // Draw requests
-        y = bounds.Top + HEADER_HEIGHT - ScrollY;
+        var visibleRequests = GetVisibleRequests();
+        y = bounds.Top + FILTER_HEIGHT + HEADER_HEIGHT - ScrollY;
         
-        for (int i = 0; i < _requests.Count; i++)
+        for (int i = 0; i < visibleRequests.Count; i++)
         {
             float itemY = y + i * DevToolsTheme.ItemHeight;
             
             // Skip if outside visible area
-            if (itemY + DevToolsTheme.ItemHeight < bounds.Top + HEADER_HEIGHT) continue;
+            if (itemY + DevToolsTheme.ItemHeight < bounds.Top + FILTER_HEIGHT + HEADER_HEIGHT) continue;
             if (itemY > bounds.Bottom) break;
             
-            var request = _requests[i];
+            var request = visibleRequests[i];
             
             // Selection / hover background
             if (request == _selectedRequest)
@@ -238,7 +259,7 @@ public class NetworkPanel : DevToolsPanelBase
             float textY = itemY + DevToolsTheme.ItemHeight / 2 + 4;
             
             // Name (URL)
-            string name = System.IO.Path.GetFileName(new Uri(request.Url).AbsolutePath);
+            string name = GetRequestDisplayName(request.Url);
             if (string.IsNullOrEmpty(name)) name = "/";
             if (name.Length > 30) name = name.Substring(0, 27) + "...";
 
@@ -281,12 +302,29 @@ public class NetworkPanel : DevToolsPanelBase
         }
 
         // Empty state
-        if (_requests.Count == 0)
+        if (visibleRequests.Count == 0)
         {
             using var hintFont = DevToolsTheme.CreateTextFont();
             using var hintColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
-            canvas.DrawText("No network requests", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + HEADER_HEIGHT + 30, hintFont, hintColorPaint);
+            canvas.DrawText("No network requests", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + FILTER_HEIGHT + HEADER_HEIGHT + 30, hintFont, hintColorPaint);
         }
+    }
+
+    private void DrawFilter(SKCanvas canvas, SKRect bounds)
+    {
+        using var bgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.Background);
+        using var borderPaint = DevToolsTheme.CreateStrokePaint(_filterFocused ? DevToolsTheme.TabBorder : DevToolsTheme.Border);
+        using var textFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
+        using var textPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextPrimary);
+        using var mutedPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
+
+        canvas.DrawRect(bounds, bgPaint);
+        var inputRect = new SKRect(bounds.Left + 6, bounds.Top + 4, Math.Min(bounds.Right - 6, bounds.Left + 260), bounds.Bottom - 4);
+        canvas.DrawRoundRect(inputRect, 3, 3, bgPaint);
+        canvas.DrawRoundRect(inputRect, 3, 3, borderPaint);
+
+        var text = string.IsNullOrEmpty(_filterText) ? "Filter" : _filterText;
+        canvas.DrawText(text, inputRect.Left + 8, inputRect.Top + 14, textFont, string.IsNullOrEmpty(_filterText) ? mutedPaint : textPaint);
     }
     
     private void DrawRequestDetails(SKCanvas canvas, SKRect bounds)
@@ -405,12 +443,22 @@ public class NetworkPanel : DevToolsPanelBase
     
     public override bool OnMouseDown(float x, float y, bool isRightButton)
     {
+        if (y >= Bounds.Top && y <= Bounds.Top + FILTER_HEIGHT)
+        {
+            _filterFocused = true;
+            Invalidate();
+            return true;
+        }
+
+        _filterFocused = false;
+
         if (y < Bounds.Top + _listHeight)
         {
             int index = GetRequestIndexAt(y);
-            if (index >= 0 && index < _requests.Count)
+            var visibleRequests = GetVisibleRequests();
+            if (index >= 0 && index < visibleRequests.Count)
             {
-                _selectedRequest = _requests[index];
+                _selectedRequest = visibleRequests[index];
                 _requestBodyPreview = _selectedRequest.RequestBody;
                 _responseBodyPreview = _selectedRequest.ResponseBody;
                 _ = LoadSelectedRequestBodiesAsync(_selectedRequest.Id);
@@ -420,6 +468,42 @@ public class NetworkPanel : DevToolsPanelBase
         }
         
         return false;
+    }
+
+    public override bool OnKeyDown(int keyCode, bool ctrl, bool shift, bool alt)
+    {
+        if (!_filterFocused)
+        {
+            return false;
+        }
+
+        if (keyCode == 8 && _filterText.Length > 0)
+        {
+            _filterText = _filterText[..^1];
+            RefreshFilterScroll();
+            return true;
+        }
+
+        if (keyCode == 27)
+        {
+            _filterText = string.Empty;
+            _filterFocused = false;
+            RefreshFilterScroll();
+            return true;
+        }
+
+        return false;
+    }
+
+    public override void OnTextInput(char c)
+    {
+        if (!_filterFocused || char.IsControl(c))
+        {
+            return;
+        }
+
+        _filterText += c;
+        RefreshFilterScroll();
     }
 
     public override void OnMouseWheel(float x, float y, float deltaX, float deltaY)
@@ -435,9 +519,47 @@ public class NetworkPanel : DevToolsPanelBase
     
     private int GetRequestIndexAt(float y)
     {
-        float relativeY = y - Bounds.Top - HEADER_HEIGHT + ScrollY;
+        float relativeY = y - Bounds.Top - FILTER_HEIGHT - HEADER_HEIGHT + ScrollY;
         int index = (int)(relativeY / DevToolsTheme.ItemHeight);
-        return index >= 0 && index < _requests.Count ? index : -1;
+        var visibleRequests = GetVisibleRequests();
+        return index >= 0 && index < visibleRequests.Count ? index : -1;
+    }
+
+    private List<NetworkRequestInfo> GetVisibleRequests()
+    {
+        if (string.IsNullOrWhiteSpace(_filterText))
+        {
+            return _requests;
+        }
+
+        return _requests
+            .Where(request =>
+                request.Url.Contains(_filterText, StringComparison.OrdinalIgnoreCase) ||
+                request.Method.Contains(_filterText, StringComparison.OrdinalIgnoreCase) ||
+                request.StatusText.Contains(_filterText, StringComparison.OrdinalIgnoreCase) ||
+                request.StatusCode.ToString().Contains(_filterText, StringComparison.OrdinalIgnoreCase) ||
+                request.ContentType.Contains(_filterText, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private void RefreshFilterScroll()
+    {
+        ScrollY = 0;
+        MaxScrollY = Math.Max(0, GetVisibleRequests().Count * DevToolsTheme.ItemHeight - _listHeight + HEADER_HEIGHT + FILTER_HEIGHT);
+        Invalidate();
+    }
+
+    private static string GetRequestDisplayName(string url)
+    {
+        try
+        {
+            string name = System.IO.Path.GetFileName(new Uri(url).AbsolutePath);
+            return string.IsNullOrEmpty(name) ? "/" : name;
+        }
+        catch
+        {
+            return string.IsNullOrWhiteSpace(url) ? "/" : url;
+        }
     }
     
     private static string FormatSize(long bytes)

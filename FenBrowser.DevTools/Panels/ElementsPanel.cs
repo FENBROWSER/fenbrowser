@@ -6,6 +6,7 @@ using FenBrowser.DevTools.Domains.DTOs;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Css;
 using FenBrowser.Core;
+using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.DevTools.Panels;
 
@@ -13,10 +14,15 @@ namespace FenBrowser.DevTools.Panels;
 /// Elements panel showing DOM tree and element details.
 /// Uses the DevTools protocol for all data access.
 /// </summary>
-public class ElementsPanel : DevToolsPanelBase
+public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
 {
     public override string Title => "Elements";
     public override string? Shortcut => "Ctrl+Shift+C";
+    public int? SelectedNodeId => _selectedNodeId;
+    public string SearchQuery => _searchQuery;
+    public int SearchResultCount => _searchResults.Count;
+    public int SearchCurrentIndex => _searchResults.Count == 0 ? -1 : _searchCurrentIndex;
+    public bool IsSearchFocused => _searchFocused;
     
     // DOM tree state (Protocol-based)
     private DomNodeDto? _rootNode;
@@ -25,12 +31,13 @@ public class ElementsPanel : DevToolsPanelBase
     private readonly HashSet<int> _expandedNodes = new();
     private int? _selectedNodeId;
     private int? _hoveredNodeId;
+    private int? _highlightedNodeId;
     private int _hoveredIndex = -1;
     
     // Layout
     private float _splitterX = 400f; // Default valid value
     private bool _draggingSplitter;
-    private int _sidebarTab = 0; // 0: Styles, 1: Computed, 2: Layout
+    private int _sidebarTab = 0; // 0: Styles, 1: Computed, 2: Layout, 3: Diagnostics
     private const float MIN_PANEL_WIDTH = 200f;
     private const float SPLITTER_WIDTH = 4f;
     
@@ -55,6 +62,7 @@ public class ElementsPanel : DevToolsPanelBase
     // Style and Layout Data
     private GetComputedStyleResponse? _computedStyleData;
     private GetMatchedStylesResponse? _matchedStyleData;
+    private NodeDiagnosticsInfo? _nodeDiagnosticsData;
     
     // CSS Property Live Editing
     private int? _editingCssNodeId = null;
@@ -75,6 +83,14 @@ public class ElementsPanel : DevToolsPanelBase
     private string _searchQuery = "";
     private List<int> _searchResults = new();
     private int _searchCurrentIndex = 0;
+    private bool _searchFocused;
+    private int _searchRevision;
+    private SKRect _searchInputBounds;
+    private SKRect _searchPrevBounds;
+    private SKRect _searchNextBounds;
+    private SKRect _searchClearBounds;
+    private const float SearchBarHeight = 34f;
+    private const float BreadcrumbHeight = 28f;
 
 
     // --- 10/10: Breadcrumb trail ---
@@ -104,6 +120,7 @@ public class ElementsPanel : DevToolsPanelBase
         _expandedNodes.Clear();
         _selectedNodeId = null;
         _hoveredNodeId = null;
+        _highlightedNodeId = null;
         _hoveredIndex = -1;
         _treeScrollY = 0;
         _treeMaxScrollY = 0;
@@ -114,6 +131,7 @@ public class ElementsPanel : DevToolsPanelBase
         _editingCssPropertyName = null;
         _editingElementAsHtml = false;
         _editingElementNodeId = null;
+        _nodeDiagnosticsData = null;
     }
     
     protected override void OnHostChanged()
@@ -140,6 +158,11 @@ public class ElementsPanel : DevToolsPanelBase
         _editingElementNodeId = null;
         _ = SendHighlightCommand(null);
         Invalidate();
+    }
+
+    public void SelectInspectedElement(Element element)
+    {
+        _ = SelectInspectedElementAsync(element);
     }
 
     private void HandleDomChanged()
@@ -205,13 +228,14 @@ public class ElementsPanel : DevToolsPanelBase
     }
     
     
-    private async Task RefreshTreeAsync()
+    private async Task RefreshTreeAsync(bool loadFullTree = false)
     {
         if (Host == null) return;
         
         try
         {
-            var request = new ProtocolRequest<object> { Id = 1001, Method = "DOM.getDocument", Params = new { } };
+            var depth = loadFullTree ? -1 : 4;
+            var request = new ProtocolRequest<object> { Id = 1001, Method = "DOM.getDocument", Params = new { depth, pierce = true } };
             var responseJson = await Host.SendProtocolCommandAsync(JsonSerializer.Serialize(request, ProtocolJson.Options));
             var response = JsonSerializer.Deserialize<ProtocolResponse<GetDocumentResult>>(responseJson, ProtocolJson.Options);
             
@@ -275,7 +299,7 @@ public class ElementsPanel : DevToolsPanelBase
         
         try
         {
-            var request = new ProtocolRequest<object> { Id = 1002, Method = "DOM.requestChildNodes", Params = new { nodeId = nodeId } };
+            var request = new ProtocolRequest<object> { Id = 1002, Method = "DOM.requestChildNodes", Params = new { nodeId = nodeId, depth = 1, pierce = true } };
             var responseJson = await Host.SendProtocolCommandAsync(JsonSerializer.Serialize(request, ProtocolJson.Options));
             var response = JsonSerializer.Deserialize<ProtocolResponse<RequestChildNodesResult>>(responseJson, ProtocolJson.Options);
             
@@ -302,6 +326,79 @@ public class ElementsPanel : DevToolsPanelBase
         {
             FenBrowser.Core.EngineLogCompat.Error($"[ElementsPanel] RequestChildNodes error: {ex.Message}", LogCategory.General);
         }
+    }
+
+    private async Task SelectInspectedElementAsync(Element element)
+    {
+        if (Host == null) return;
+
+        var path = GetProtocolNodePath(element);
+        if (path.Count == 0) return;
+
+        if (_rootNode == null || !_nodeMap.ContainsKey(path[0]))
+        {
+            await RefreshTreeAsync();
+        }
+
+        for (var i = 0; i < path.Count - 1; i++)
+        {
+            var ancestorId = path[i];
+            var nextId = path[i + 1];
+            _expandedNodes.Add(ancestorId);
+
+            if (!_nodeMap.TryGetValue(ancestorId, out var ancestor))
+            {
+                continue;
+            }
+
+            var hasNextChild = ancestor.Children?.Any(child => child.NodeId == nextId) == true;
+            if (!hasNextChild && ancestor.ChildNodeCount > 0)
+            {
+                await RequestChildNodesAsync(ancestorId);
+            }
+        }
+
+        var targetId = path[^1];
+        if (!_nodeMap.ContainsKey(targetId) && path.Count > 1)
+        {
+            await RequestChildNodesAsync(path[^2]);
+        }
+
+        if (_nodeMap.ContainsKey(targetId))
+        {
+            SelectNode(targetId);
+            ScrollSelectedNodeIntoView(targetId);
+        }
+    }
+
+    private List<int> GetProtocolNodePath(Node node)
+    {
+        var path = new List<int>();
+        for (Node? current = node; current != null; current = current.ParentNode)
+        {
+            path.Add(Host!.GetNodeId(current));
+        }
+
+        path.Reverse();
+        return path;
+    }
+
+    private void ScrollSelectedNodeIntoView(int nodeId)
+    {
+        RefreshFlattenedTree();
+
+        var index = _flattenedNodes.FindIndex(node => !node.IsClosingTag && node.Node.NodeId == nodeId);
+        if (index < 0)
+        {
+            Invalidate();
+            return;
+        }
+
+        var visibleHeight = Bounds.Height > 0 ? Bounds.Height : 300f;
+        var targetY = index * DevToolsTheme.ItemHeight;
+        _treeMaxScrollY = Math.Max(0, (_flattenedNodes.Count * DevToolsTheme.ItemHeight) - visibleHeight);
+        _treeScrollY = Math.Clamp(targetY - (visibleHeight / 2f), 0, _treeMaxScrollY);
+        Invalidate();
     }
     
     private void UpdateNodeInTree(DomNodeDto? root, DomNodeDto updated)
@@ -376,11 +473,6 @@ public class ElementsPanel : DevToolsPanelBase
         // Add opening tag / text node
         _flattenedNodes.Add(new DomTreeNode(node, depth, hasChildren, isExpanded));
         
-        if (node.NodeType == 3 && node.NodeValue == "g")
-        {
-            FenBrowser.Core.EngineLogCompat.Debug($"[ElementsPanel] Spotted 'g' node! Parent: {node.ParentId}, Id: {node.NodeId}");
-        }
-        
         if (isExpanded && node.Children != null)
         {
             foreach (var child in node.Children)
@@ -393,6 +485,21 @@ public class ElementsPanel : DevToolsPanelBase
             {
                 _flattenedNodes.Add(new DomTreeNode(node, depth, false, false, true));
             }
+        }
+        else if (isExpanded && hasChildren)
+        {
+            _flattenedNodes.Add(new DomTreeNode(
+                new DomNodeDto
+                {
+                    NodeId = -node.NodeId,
+                    ParentId = node.NodeId,
+                    NodeType = 0,
+                    NodeName = "#unloaded",
+                    NodeValue = $"Loading {node.ChildNodeCount} child node{(node.ChildNodeCount == 1 ? string.Empty : "s")}..."
+                },
+                depth + 1,
+                false,
+                false));
         }
     }
     
@@ -410,8 +517,12 @@ public class ElementsPanel : DevToolsPanelBase
         _treeWidth = _splitterX - bounds.Left;
         _stylesWidth = bounds.Right - _splitterX - SPLITTER_WIDTH;
 
+        var treePanelBounds = new SKRect(bounds.Left, bounds.Top, _splitterX, bounds.Bottom);
+        DrawSearchBar(canvas, treePanelBounds);
+        DrawBreadcrumbBar(canvas, treePanelBounds);
+
         // Clip and draw DOM tree
-        var treeBounds = new SKRect(bounds.Left, bounds.Top, _splitterX, bounds.Bottom);
+        var treeBounds = new SKRect(bounds.Left, bounds.Top + SearchBarHeight, _splitterX, bounds.Bottom - BreadcrumbHeight);
         canvas.Save();
         canvas.ClipRect(treeBounds);
         canvas.Translate(0, -_treeScrollY);
@@ -470,6 +581,152 @@ public class ElementsPanel : DevToolsPanelBase
         
         using var paint = DevToolsTheme.CreateFillPaint(DevToolsTheme.Scrollbar);
         canvas.DrawRoundRect(thumbRect, 3, 3, paint);
+    }
+
+    private void DrawSearchBar(SKCanvas canvas, SKRect bounds)
+    {
+        var bar = new SKRect(bounds.Left, bounds.Top, bounds.Right, bounds.Top + SearchBarHeight);
+        using var bgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundLight);
+        using var borderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.Border);
+        canvas.DrawRect(bar, bgPaint);
+        canvas.DrawLine(bar.Left, bar.Bottom, bar.Right, bar.Bottom, borderPaint);
+
+        var buttonSize = 24f;
+        _searchClearBounds = new SKRect(bar.Right - buttonSize - DevToolsTheme.PaddingSmall, bar.Top + 5, bar.Right - DevToolsTheme.PaddingSmall, bar.Bottom - 5);
+        _searchNextBounds = new SKRect(_searchClearBounds.Left - buttonSize - 4, _searchClearBounds.Top, _searchClearBounds.Left - 4, _searchClearBounds.Bottom);
+        _searchPrevBounds = new SKRect(_searchNextBounds.Left - buttonSize - 4, _searchNextBounds.Top, _searchNextBounds.Left - 4, _searchNextBounds.Bottom);
+        _searchInputBounds = new SKRect(bar.Left + DevToolsTheme.PaddingNormal, bar.Top + 5, _searchPrevBounds.Left - 74, bar.Bottom - 5);
+
+        if (_searchInputBounds.Right < _searchInputBounds.Left + 100)
+        {
+            _searchInputBounds.Right = Math.Max(_searchInputBounds.Left + 80, _searchPrevBounds.Left - 8);
+        }
+
+        using var inputBgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.Background);
+        using var inputBorderPaint = DevToolsTheme.CreateStrokePaint(_searchFocused ? DevToolsTheme.TabBorder : DevToolsTheme.BorderLight);
+        canvas.DrawRoundRect(_searchInputBounds, 3, 3, inputBgPaint);
+        canvas.DrawRoundRect(_searchInputBounds, 3, 3, inputBorderPaint);
+
+        using var textFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
+        using var textPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextPrimary);
+        using var mutedPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
+        var displayQuery = string.IsNullOrEmpty(_searchQuery) ? "Find in DOM" : TrimToFit(_searchQuery, textFont, Math.Max(20, _searchInputBounds.Width - 18));
+        canvas.DrawText(displayQuery, _searchInputBounds.Left + 7, _searchInputBounds.MidY + 4, textFont, string.IsNullOrEmpty(_searchQuery) ? mutedPaint : textPaint);
+
+        if (_searchFocused && _cursorBlink)
+        {
+            var caretX = _searchInputBounds.Left + 7 + (string.IsNullOrEmpty(_searchQuery) ? 0 : textFont.MeasureText(displayQuery));
+            using var caretPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.TextPrimary);
+            canvas.DrawLine(caretX + 2, _searchInputBounds.Top + 5, caretX + 2, _searchInputBounds.Bottom - 5, caretPaint);
+        }
+
+        var countText = string.IsNullOrEmpty(_searchQuery)
+            ? string.Empty
+            : _searchResults.Count == 0 ? "0/0" : $"{_searchCurrentIndex + 1}/{_searchResults.Count}";
+        canvas.DrawText(countText, _searchInputBounds.Right + 8, bar.MidY + 4, textFont, mutedPaint);
+
+        DrawSearchButton(canvas, _searchPrevBounds, "<", _searchResults.Count > 0);
+        DrawSearchButton(canvas, _searchNextBounds, ">", _searchResults.Count > 0);
+        DrawSearchButton(canvas, _searchClearBounds, "x", !string.IsNullOrEmpty(_searchQuery));
+    }
+
+    private void DrawSearchButton(SKCanvas canvas, SKRect rect, string label, bool enabled)
+    {
+        using var bgPaint = DevToolsTheme.CreateFillPaint(enabled ? DevToolsTheme.TabInactive : DevToolsTheme.BackgroundLight);
+        using var borderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.Border);
+        using var font = DevToolsTheme.CreateUIFont(DevToolsTheme.FontSizeSmall);
+        using var paint = DevToolsTheme.CreateTextColorPaint(enabled ? DevToolsTheme.TextPrimary : DevToolsTheme.TextMuted);
+        canvas.DrawRoundRect(rect, 3, 3, bgPaint);
+        canvas.DrawRoundRect(rect, 3, 3, borderPaint);
+        var textWidth = font.MeasureText(label);
+        canvas.DrawText(label, rect.MidX - textWidth / 2, rect.MidY + 4, font, paint);
+    }
+
+    private void DrawBreadcrumbBar(SKCanvas canvas, SKRect bounds)
+    {
+        var bar = new SKRect(bounds.Left, bounds.Bottom - BreadcrumbHeight, bounds.Right, bounds.Bottom);
+        using var bgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundLight);
+        using var borderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.Border);
+        canvas.DrawRect(bar, bgPaint);
+        canvas.DrawLine(bar.Left, bar.Top, bar.Right, bar.Top, borderPaint);
+
+        using var font = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
+        using var tagPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.SyntaxTag);
+        using var mutedPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
+        using var selectedPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextPrimary);
+
+        if (_breadcrumbPath.Count == 0)
+        {
+            canvas.DrawText("No node selected", bar.Left + DevToolsTheme.PaddingNormal, bar.MidY + 4, font, mutedPaint);
+            return;
+        }
+
+        var x = bar.Left + DevToolsTheme.PaddingNormal;
+        foreach (var nodeId in _breadcrumbPath)
+        {
+            if (!_nodeMap.TryGetValue(nodeId, out var node))
+            {
+                continue;
+            }
+
+            var label = FormatBreadcrumbLabel(node);
+            var available = bar.Right - x - DevToolsTheme.PaddingNormal;
+            if (available <= 20)
+            {
+                break;
+            }
+
+            label = TrimToFit(label, font, available);
+            canvas.DrawText(label, x, bar.MidY + 4, font, nodeId == _selectedNodeId ? selectedPaint : tagPaint);
+            x += font.MeasureText(label) + 8;
+
+            if (nodeId != _breadcrumbPath[^1] && x < bar.Right - 12)
+            {
+                canvas.DrawText(">", x, bar.MidY + 4, font, mutedPaint);
+                x += font.MeasureText(">") + 8;
+            }
+        }
+    }
+
+    private static string TrimToFit(string value, SKFont font, float maxWidth)
+    {
+        if (font.MeasureText(value) <= maxWidth)
+        {
+            return value;
+        }
+
+        const string suffix = "...";
+        var trimmed = value;
+        while (trimmed.Length > 0 && font.MeasureText(trimmed + suffix) > maxWidth)
+        {
+            trimmed = trimmed[..^1];
+        }
+
+        return trimmed.Length == 0 ? suffix : trimmed + suffix;
+    }
+
+    private static string FormatBreadcrumbLabel(DomNodeDto node)
+    {
+        if (node.NodeType == 3)
+        {
+            return "#text";
+        }
+
+        var label = node.NodeName.ToLowerInvariant();
+        if (node.Attributes?.TryGetValue("id", out var id) == true && !string.IsNullOrWhiteSpace(id))
+        {
+            label += "#" + id;
+        }
+        else if (node.Attributes?.TryGetValue("class", out var cls) == true && !string.IsNullOrWhiteSpace(cls))
+        {
+            var firstClass = cls.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(firstClass))
+            {
+                label += "." + firstClass;
+            }
+        }
+
+        return label;
     }
     
     
@@ -543,6 +800,11 @@ public class ElementsPanel : DevToolsPanelBase
                     using var selectPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundSelected);
                     canvas.DrawRect(new SKRect(bounds.Left, itemY, bounds.Right, itemY + DevToolsTheme.ItemHeight), selectPaint);
                 }
+                else if (_searchResults.Contains(node.Node.NodeId))
+                {
+                    using var searchPaint = DevToolsTheme.CreateFillPaint(new SKColor(90, 70, 20));
+                    canvas.DrawRect(new SKRect(bounds.Left, itemY, bounds.Right, itemY + DevToolsTheme.ItemHeight), searchPaint);
+                }
                 else if (i == _hoveredIndex)
                 {
                     using var hoverPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundHover);
@@ -595,7 +857,12 @@ public class ElementsPanel : DevToolsPanelBase
             }
             
             // Render based on node type
-            if (node.Node.NodeType == 3) // Text node
+            if (node.Node.NodeType == 0)
+            {
+                using var placeholderPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
+                canvas.DrawText(node.Node.NodeValue ?? "No children", x, textY, punctFont, placeholderPaint);
+            }
+            else if (node.Node.NodeType == 3) // Text node
             {
                 if (_editingNodeId == node.Node.NodeId)
                 {
@@ -618,8 +885,8 @@ public class ElementsPanel : DevToolsPanelBase
                 }
                 else
                 {
-                    string displayText = node.Node.NodeValue ?? "";
-                    if (displayText.Length > 60) displayText = displayText.Substring(0, 57) + "...";
+                    string displayText = NormalizeNodePreview(node.Node.NodeValue);
+                    if (displayText.Length > 80) displayText = displayText.Substring(0, 77) + "...";
                     canvas.DrawText("\"" + displayText + "\"", x, textY, attrValueFont, attrValueColorPaint);
                 }
             }
@@ -634,15 +901,15 @@ public class ElementsPanel : DevToolsPanelBase
                 canvas.DrawText(tagName, x, textY, tagFont, tagColorPaint);
                 x += tagFont.MeasureText(tagName);
 
-                // Attributes (limit to avoid overflow)
+                // Attributes (prioritize human-identifying fields; noisy framework internals stay in the details pane)
                 if (node.Node.Attributes != null)
                 {
                     int attrCount = 0;
-                    foreach (var attr in node.Node.Attributes)
+                    foreach (var attr in GetDisplayAttributes(node.Node.Attributes))
                     {
-                        if (attrCount >= 3 && node.Node.Attributes.Count > 4)
+                        if (x > bounds.Right - 70)
                         {
-                            canvas.DrawText($" ...+{node.Node.Attributes.Count - 3} more", x, textY, punctFont, punctColorPaint);
+                            canvas.DrawText(" ...", x, textY, punctFont, punctColorPaint);
                             break;
                         }
 
@@ -654,7 +921,7 @@ public class ElementsPanel : DevToolsPanelBase
                         x += punctFont.MeasureText("=\"");
 
                         string attrValue = attr.Value;
-                        if (attrValue.Length > 25) attrValue = attrValue.Substring(0, 22) + "...";
+                        if (attrValue.Length > 18) attrValue = attrValue.Substring(0, 15) + "...";
                         canvas.DrawText(attrValue, x, textY, attrValueFont, attrValueColorPaint);
                         x += attrValueFont.MeasureText(attrValue);
 
@@ -663,11 +930,40 @@ public class ElementsPanel : DevToolsPanelBase
 
                         attrCount++;
                     }
+
+                    var hiddenCount = node.Node.Attributes.Count - attrCount;
+                    if (hiddenCount > 0 && x < bounds.Right - 70)
+                    {
+                        canvas.DrawText($" ...+{hiddenCount}", x, textY, punctFont, punctColorPaint);
+                    }
                 }
 
                 // Closing bracket
                 if (!node.HasChildren || !node.IsExpanded)
                 {
+                    var preview = GetInlineChildPreview(node.Node);
+                    if (!string.IsNullOrEmpty(preview))
+                    {
+                        canvas.DrawText(">", x, textY, punctFont, punctColorPaint);
+                        x += punctFont.MeasureText(">");
+                        canvas.DrawText(preview, x, textY, attrValueFont, attrValueColorPaint);
+                        x += attrValueFont.MeasureText(preview);
+                        canvas.DrawText("</" + tagName + ">", x, textY, punctFont, punctColorPaint);
+                    }
+                    else if (node.HasChildren)
+                    {
+                        canvas.DrawText(">...</" + tagName + ">", x, textY, punctFont, punctColorPaint);
+                    }
+                    else if (IsVoidElement(tagName))
+                    {
+                        canvas.DrawText(" />", x, textY, punctFont, punctColorPaint);
+                    }
+                    else
+                    {
+                        canvas.DrawText("></" + tagName + ">", x, textY, punctFont, punctColorPaint);
+                    }
+
+                    continue;
                     if (node.HasChildren)
                         canvas.DrawText(">…</" + tagName + ">", x, textY, punctFont, punctColorPaint);
                     else
@@ -676,11 +972,99 @@ public class ElementsPanel : DevToolsPanelBase
                 else
                 {
                     canvas.DrawText(">", x, textY, punctFont, punctColorPaint);
+                    x += punctFont.MeasureText(">");
                 }
+
+                DrawLayoutBadge(canvas, x + 8, itemY + 4, node.Node.NodeId);
             }
         }
 
         _treeMaxScrollY = Math.Max(0, (y + _flattenedNodes.Count * DevToolsTheme.ItemHeight) - bounds.Bottom);
+    }
+
+    private static IEnumerable<KeyValuePair<string, string>> GetDisplayAttributes(IReadOnlyDictionary<string, string> attributes)
+    {
+        static int Rank(string name)
+        {
+            return name switch
+            {
+                "id" => 0,
+                "class" => 1,
+                "role" => 2,
+                "name" => 3,
+                "type" => 4,
+                "href" => 5,
+                "src" => 6,
+                "alt" => 7,
+                "title" => 8,
+                "aria-label" => 9,
+                _ when name.StartsWith("aria-", StringComparison.OrdinalIgnoreCase) => 20,
+                _ when name.StartsWith("data-", StringComparison.OrdinalIgnoreCase) => 30,
+                _ when name.StartsWith("js", StringComparison.OrdinalIgnoreCase) => 80,
+                _ => 40
+            };
+        }
+
+        return attributes
+            .OrderBy(attribute => Rank(attribute.Key))
+            .ThenBy(attribute => attribute.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(4);
+    }
+
+    private void DrawLayoutBadge(SKCanvas canvas, float x, float y, int nodeId)
+    {
+        if (nodeId != _selectedNodeId)
+        {
+            return;
+        }
+
+        var display = _nodeDiagnosticsData?.ComputedStyle?.Display
+            ?? _computedStyleData?.ComputedStyle?.FirstOrDefault(property => property.Name == "display")?.Value;
+        if (display is not ("flex" or "inline-flex" or "grid" or "inline-grid"))
+        {
+            return;
+        }
+
+        var label = display.Contains("grid", StringComparison.OrdinalIgnoreCase) ? "grid" : "flex";
+        using var font = DevToolsTheme.CreateUIFont(9);
+        var width = font.MeasureText(label) + 10;
+        var rect = new SKRect(x, y, x + width, y + 14);
+        using var bgPaint = DevToolsTheme.CreateFillPaint(new SKColor(10, 74, 113));
+        using var strokePaint = DevToolsTheme.CreateStrokePaint(new SKColor(0, 122, 204));
+        using var textPaint = DevToolsTheme.CreateTextColorPaint(new SKColor(173, 220, 255));
+        canvas.DrawRoundRect(rect, 7, 7, bgPaint);
+        canvas.DrawRoundRect(rect, 7, 7, strokePaint);
+        canvas.DrawText(label, rect.Left + 5, rect.Top + 10, font, textPaint);
+    }
+
+    private static string? GetInlineChildPreview(DomNodeDto node)
+    {
+        if (!string.Equals(node.NodeName, "STYLE", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(node.NodeName, "SCRIPT", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var text = node.Children?.FirstOrDefault(child => child.NodeType == 3)?.NodeValue;
+        var preview = NormalizeNodePreview(text);
+        return string.IsNullOrEmpty(preview)
+            ? null
+            : " " + (preview.Length > 64 ? preview[..61] + "..." : preview) + " ";
+    }
+
+    private static string NormalizeNodePreview(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        return string.Join(" ", value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    private static bool IsVoidElement(string tagName)
+    {
+        return tagName is "area" or "base" or "br" or "col" or "embed" or "hr" or "img" or "input" or "link" or "meta" or "param" or "source" or "track" or "wbr";
     }
     
     /// <summary>
@@ -707,8 +1091,7 @@ public class ElementsPanel : DevToolsPanelBase
     private void DrawSidebarTabs(SKCanvas canvas, SKRect bounds)
     {
         // Tabs (fixed at top, not scrolled)
-        float tabWidth = bounds.Width / 3;
-        string[] tabs = { "Styles", "Computed", "Layout" };
+        string[] tabs = { "Styles", "Computed", "Layout", "Diagnostics" };
         
         using var tabBgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundLight);
         using var tabBorderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.Border);
@@ -720,25 +1103,50 @@ public class ElementsPanel : DevToolsPanelBase
         // Draw tab bar background
         canvas.DrawRect(new SKRect(bounds.Left, bounds.Top, bounds.Right, bounds.Top + 32), tabBgPaint);
 
+        float x = bounds.Left;
         for (int i = 0; i < tabs.Length; i++)
         {
-            var tabRect = new SKRect(bounds.Left + i * tabWidth, bounds.Top, bounds.Left + (i + 1) * tabWidth, bounds.Top + 32);
+            float tabWidth = GetSidebarTabWidth(tabs[i], tabFont);
+            var tabRect = new SKRect(x, bounds.Top, Math.Min(x + tabWidth, bounds.Right), bounds.Top + 32);
             if (i == _sidebarTab)
             {
                 canvas.DrawRect(tabRect, activeTabPaint);
             }
 
             float textWidth = tabFont.MeasureText(tabs[i]);
-            canvas.DrawText(tabs[i], tabRect.Left + (tabWidth - textWidth) / 2, tabRect.Top + 20, tabFont, i == _sidebarTab ? tabTextColorPaint : inactiveTabTextColorPaint);
+            canvas.DrawText(tabs[i], tabRect.Left + 14, tabRect.Top + 20, tabFont, i == _sidebarTab ? tabTextColorPaint : inactiveTabTextColorPaint);
             canvas.DrawLine(tabRect.Right, tabRect.Top + 4, tabRect.Right, tabRect.Bottom - 4, tabBorderPaint);
+            x = tabRect.Right;
         }
         
         canvas.DrawLine(bounds.Left, bounds.Top + 32, bounds.Right, bounds.Top + 32, tabBorderPaint);
     }
 
+    private static float GetSidebarTabWidth(string title, SKFont font)
+    {
+        return Math.Clamp(font.MeasureText(title) + 28, 88, 132);
+    }
+
+    private static int GetSidebarTabIndexAt(float x, float left, float right)
+    {
+        string[] tabs = { "Styles", "Computed", "Layout", "Diagnostics" };
+        using var font = DevToolsTheme.CreateUIFont(DevToolsTheme.FontSizeNormal);
+        float cursor = left;
+        for (var i = 0; i < tabs.Length; i++)
+        {
+            cursor += GetSidebarTabWidth(tabs[i], font);
+            if (x <= cursor && x <= right)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
     private void DrawStylesPanelContent(SKCanvas canvas, SKRect bounds)
     {
-        string[] tabs = { "Styles", "Computed", "Layout" };
+        string[] tabs = { "Styles", "Computed", "Layout", "Diagnostics" };
         float contentTop = bounds.Top + DevToolsTheme.PaddingNormal;
         
         if (_selectedNodeId == null)
@@ -756,6 +1164,7 @@ public class ElementsPanel : DevToolsPanelBase
             case 0: DrawStylesContent(canvas, bounds, selectedNode, contentTop); break;
             case 1: DrawComputedContent(canvas, bounds, selectedNode, contentTop); break;
             case 2: DrawLayoutContent(canvas, bounds, selectedNode, contentTop); break;
+            case 3: DrawDiagnosticsContent(canvas, bounds, selectedNode, contentTop); break;
         }
     }
 
@@ -772,6 +1181,10 @@ public class ElementsPanel : DevToolsPanelBase
             var computedJson = await Host.SendProtocolCommandAsync($"{{\"id\": {nodeId + 2000}, \"method\": \"CSS.getComputedStyleForNode\", \"params\": {{\"nodeId\": {nodeId}}}}}");
             var computedResp = ProtocolJson.Deserialize<ProtocolResponse<GetComputedStyleResponse>>(computedJson);
             if (computedResp?.Result != null) _computedStyleData = computedResp.Result;
+
+            var diagnosticsJson = await Host.SendProtocolCommandAsync($"{{\"id\": {nodeId + 3000}, \"method\": \"FenBrowser.getNodeDiagnostics\", \"params\": {{\"nodeId\": {nodeId}}}}}");
+            var diagnosticsResp = ProtocolJson.Deserialize<ProtocolResponse<NodeDiagnosticsInfo>>(diagnosticsJson);
+            if (diagnosticsResp?.Result != null) _nodeDiagnosticsData = diagnosticsResp.Result;
 
             Invalidate();
         }
@@ -802,7 +1215,7 @@ public class ElementsPanel : DevToolsPanelBase
         canvas.DrawText(" {", ex, y, mutedFont, mutedColorPaint);
         y += DevToolsTheme.ItemHeight;
         
-        if (_matchedStyleData?.InlineStyle?.CssProperties != null)
+        if (_matchedStyleData?.InlineStyle?.CssProperties is { Count: > 0 })
         {
             foreach (var prop in _matchedStyleData.InlineStyle.CssProperties)
             {
@@ -829,9 +1242,14 @@ public class ElementsPanel : DevToolsPanelBase
                 y += DevToolsTheme.ItemHeight;
             }
         }
-        else if (selectedNode.Attributes != null)
+        canvas.DrawText("}", bounds.Left + DevToolsTheme.PaddingNormal, y, mutedFont, mutedColorPaint);
+        y += DevToolsTheme.ItemHeight * 1.25f;
+
+        if (selectedNode.Attributes is { Count: > 0 })
         {
-            // Fallback: show attributes if protocol matched style is missing
+            canvas.DrawText("Attributes", bounds.Left + DevToolsTheme.PaddingNormal, y, selectorFont, selectorColorPaint);
+            y += DevToolsTheme.ItemHeight;
+
             foreach (var kv in selectedNode.Attributes)
             {
                 if (y > bounds.Bottom) break;
@@ -839,18 +1257,18 @@ public class ElementsPanel : DevToolsPanelBase
                 
                 float x = bounds.Left + DevToolsTheme.PaddingNormal * 2;
                 canvas.DrawText(kv.Key, x, y, propFont, propColorPaint);
-                x += Math.Max(120, propFont.MeasureText(kv.Key) + 10);
-                canvas.DrawText(": ", x, y, punctFont, punctColorPaint);
-                x += punctFont.MeasureText(": ");
-                canvas.DrawText(kv.Value + ";", x, y, valueFont, valueColorPaint);
+                x += Math.Max(120, propFont.MeasureText(kv.Key) + 14);
+                canvas.DrawText("=", x, y, punctFont, punctColorPaint);
+                x += punctFont.MeasureText("=") + 4;
+                canvas.DrawText("\"" + TrimToFit(kv.Value, valueFont, Math.Max(40, bounds.Right - x - DevToolsTheme.PaddingNormal)) + "\"", x, y, valueFont, valueColorPaint);
                 y += DevToolsTheme.ItemHeight;
             }
+
+            y += DevToolsTheme.ItemHeight * 0.5f;
         }
-        
-        canvas.DrawText("}", bounds.Left + DevToolsTheme.PaddingNormal, y, mutedFont, mutedColorPaint);
-        y += DevToolsTheme.ItemHeight * 1.5f;
 
         // 2. Placeholder for user agent or other rules
+        var drewMatchedRules = false;
         if (_matchedStyleData?.MatchedCSSRules != null)
         {
             foreach (var rule in _matchedStyleData.MatchedCSSRules)
@@ -922,7 +1340,59 @@ public class ElementsPanel : DevToolsPanelBase
 
                 canvas.DrawText("}", bounds.Left + DevToolsTheme.PaddingNormal, y, mutedFont, mutedColorPaint);
                 y += DevToolsTheme.ItemHeight * 1.5f;
+                drewMatchedRules = true;
             }
+        }
+
+        if (!drewMatchedRules && _computedStyleData?.ComputedStyle is { Count: > 0 } computed)
+        {
+            const string snapshotTitle = "Computed snapshot";
+            float sx = bounds.Left + DevToolsTheme.PaddingNormal;
+            canvas.DrawText(snapshotTitle, sx, y, selectorFont, selectorColorPaint);
+            sx += selectorFont.MeasureText(snapshotTitle);
+            canvas.DrawText(" {", sx, y, mutedFont, mutedColorPaint);
+            y += DevToolsTheme.ItemHeight;
+
+            var priorityProperties = new[]
+            {
+                "display",
+                "position",
+                "width",
+                "height",
+                "margin-top",
+                "margin-right",
+                "margin-bottom",
+                "margin-left",
+                "padding-top",
+                "padding-right",
+                "padding-bottom",
+                "padding-left",
+                "font-family",
+                "font-size",
+                "color",
+                "background-color"
+            };
+
+            foreach (var name in priorityProperties)
+            {
+                var prop = computed.FirstOrDefault(property => property.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                if (prop == null || string.IsNullOrWhiteSpace(prop.Value))
+                {
+                    continue;
+                }
+
+                if (y > bounds.Bottom) break;
+                float x = bounds.Left + DevToolsTheme.PaddingNormal * 2;
+                canvas.DrawText(prop.Name, x, y, propFont, propColorPaint);
+                x += Math.Max(140, propFont.MeasureText(prop.Name) + 14);
+                canvas.DrawText(": ", x, y, punctFont, punctColorPaint);
+                x += punctFont.MeasureText(": ");
+                canvas.DrawText(prop.Value + ";", x, y, valueFont, valueColorPaint);
+                y += DevToolsTheme.ItemHeight;
+            }
+
+            canvas.DrawText("}", bounds.Left + DevToolsTheme.PaddingNormal, y, mutedFont, mutedColorPaint);
+            y += DevToolsTheme.ItemHeight * 1.5f;
         }
         
         // Draw autocomplete dropdown if editing and have suggestions
@@ -936,11 +1406,6 @@ public class ElementsPanel : DevToolsPanelBase
         {
             DrawColorPicker(canvas, bounds);
         }
-        
-        // Draw Box Model diagram at the bottom of Styles tab (Edge parity)
-        y += DevToolsTheme.PaddingNormal;
-        DrawBoxModelDiagram(canvas, bounds, y);
-        y += 180; // Height of box model diagram
         
         _stylesMaxScrollY = Math.Max(0, y + _stylesScrollY - bounds.Bottom);
     }
@@ -1182,6 +1647,12 @@ public class ElementsPanel : DevToolsPanelBase
 
     private void DrawLayoutContent(SKCanvas canvas, SKRect bounds, DomNodeDto selectedNode, float y)
     {
+        if (_nodeDiagnosticsData?.BoxModel is { } realBox)
+        {
+            DrawRealLayoutContent(canvas, bounds, realBox, y);
+            return;
+        }
+
         // Box Model visualization with real data
         float centerX = bounds.Left + bounds.Width / 2;
         float centerY = y + 100;
@@ -1268,6 +1739,167 @@ public class ElementsPanel : DevToolsPanelBase
         
         _stylesMaxScrollY = Math.Max(0, (y + 200 + DevToolsTheme.ItemHeight) + _stylesScrollY - bounds.Bottom);
     }
+
+    private void DrawRealLayoutContent(SKCanvas canvas, SKRect bounds, NodeBoxModelInfo box, float y)
+    {
+        using var labelFont = DevToolsTheme.CreateTextFont();
+        using var valueFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
+        using var labelPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextSecondary);
+        using var valuePaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextPrimary);
+        using var propertyPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.SyntaxProperty);
+
+        canvas.DrawText("Box Model", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, labelFont, valuePaint);
+        DrawBoxModelDiagram(canvas, bounds, y + DevToolsTheme.ItemHeight);
+        y += 180;
+
+        canvas.DrawText("Renderer Rects", bounds.Left + DevToolsTheme.PaddingNormal, y + 12, labelFont, labelPaint);
+        y += DevToolsTheme.ItemHeight;
+
+        void DrawRectRow(string name, RectInfo rect)
+        {
+            if (y > bounds.Bottom) return;
+            canvas.DrawText(name, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, valueFont, propertyPaint);
+            canvas.DrawText(
+                $"x={rect.Left:0.##} y={rect.Top:0.##} w={rect.Width:0.##} h={rect.Height:0.##}",
+                bounds.Left + 120,
+                y + 12,
+                valueFont,
+                valuePaint);
+            y += DevToolsTheme.ItemHeight;
+        }
+
+        DrawRectRow("margin", box.Margin);
+        DrawRectRow("border", box.Border);
+        DrawRectRow("padding", box.Padding);
+        DrawRectRow("content", box.Content);
+
+        y += DevToolsTheme.PaddingNormal;
+        canvas.DrawText("Edges", bounds.Left + DevToolsTheme.PaddingNormal, y + 12, labelFont, labelPaint);
+        y += DevToolsTheme.ItemHeight;
+
+        void DrawEdgesRow(string name, EdgeSizesInfo edges)
+        {
+            if (y > bounds.Bottom) return;
+            canvas.DrawText(name, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, valueFont, propertyPaint);
+            canvas.DrawText(
+                $"top={edges.Top:0.##} right={edges.Right:0.##} bottom={edges.Bottom:0.##} left={edges.Left:0.##}",
+                bounds.Left + 120,
+                y + 12,
+                valueFont,
+                valuePaint);
+            y += DevToolsTheme.ItemHeight;
+        }
+
+        DrawEdgesRow("margin", box.MarginEdges);
+        DrawEdgesRow("border", box.BorderEdges);
+        DrawEdgesRow("padding", box.PaddingEdges);
+
+        if (_nodeDiagnosticsData?.ComputedStyle is { } computed)
+        {
+            y += DevToolsTheme.PaddingNormal;
+            canvas.DrawText("Computed Summary", bounds.Left + DevToolsTheme.PaddingNormal, y + 12, labelFont, labelPaint);
+            y += DevToolsTheme.ItemHeight;
+
+            var summary = new[]
+            {
+                ("display", computed.Display),
+                ("position", computed.Position),
+                ("visibility", computed.Visibility),
+                ("overflow", computed.Overflow),
+                ("box-sizing", computed.BoxSizing),
+                ("width", computed.Width),
+                ("height", computed.Height),
+                ("z-index", computed.ZIndex?.ToString())
+            };
+
+            foreach (var (name, value) in summary)
+            {
+                if (y > bounds.Bottom) break;
+                canvas.DrawText(name, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, valueFont, propertyPaint);
+                canvas.DrawText(value ?? "-", bounds.Left + 120, y + 12, valueFont, valuePaint);
+                y += DevToolsTheme.ItemHeight;
+            }
+        }
+
+        _stylesMaxScrollY = Math.Max(0, y + _stylesScrollY - bounds.Bottom);
+    }
+
+    private void DrawDiagnosticsContent(SKCanvas canvas, SKRect bounds, DomNodeDto selectedNode, float y)
+    {
+        using var sectionFont = DevToolsTheme.CreateUIFont(DevToolsTheme.FontSizeMedium);
+        using var textFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
+        using var sectionPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextPrimary);
+        using var labelPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.SyntaxProperty);
+        using var valuePaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextSecondary);
+        using var warnPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.ConsoleWarn);
+
+        if (_nodeDiagnosticsData == null)
+        {
+            canvas.DrawText("No diagnostics available", bounds.Left + DevToolsTheme.PaddingNormal, y + 18, textFont, valuePaint);
+            _stylesMaxScrollY = 0;
+            return;
+        }
+
+        canvas.DrawText("Node", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, sectionFont, sectionPaint);
+        y += DevToolsTheme.ItemHeight;
+        DrawKeyValue("node", $"{_nodeDiagnosticsData.NodeName} #{_nodeDiagnosticsData.NodeId}");
+        DrawKeyValue("layout box", _nodeDiagnosticsData.HasLayoutBox ? "present" : "missing");
+        DrawKeyValue("paint nodes", _nodeDiagnosticsData.PaintNodes.Count.ToString());
+        DrawKeyValue("visible", _nodeDiagnosticsData.IsVisible ? "yes" : "no");
+
+        if (_nodeDiagnosticsData.MissingReasons.Count > 0)
+        {
+            y += DevToolsTheme.PaddingNormal;
+            canvas.DrawText("Missing State", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, sectionFont, warnPaint);
+            y += DevToolsTheme.ItemHeight;
+            foreach (var reason in _nodeDiagnosticsData.MissingReasons)
+            {
+                if (y > bounds.Bottom) break;
+                canvas.DrawText(reason, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, textFont, warnPaint);
+                y += DevToolsTheme.ItemHeight;
+            }
+        }
+
+        y += DevToolsTheme.PaddingNormal;
+        canvas.DrawText("Paint Nodes", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, sectionFont, sectionPaint);
+        y += DevToolsTheme.ItemHeight;
+        foreach (var paintNode in _nodeDiagnosticsData.PaintNodes)
+        {
+            if (y > bounds.Bottom) break;
+            canvas.DrawText(paintNode.Type, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, textFont, labelPaint);
+            canvas.DrawText(
+                $"{paintNode.Bounds.Left:0.#},{paintNode.Bounds.Top:0.#} {paintNode.Bounds.Width:0.#}x{paintNode.Bounds.Height:0.#} opacity={paintNode.Opacity:0.##}",
+                bounds.Left + 132,
+                y + 12,
+                textFont,
+                valuePaint);
+            y += DevToolsTheme.ItemHeight;
+        }
+
+        y += DevToolsTheme.PaddingNormal;
+        canvas.DrawText("Frame", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, sectionFont, sectionPaint);
+        y += DevToolsTheme.ItemHeight;
+        var frame = _nodeDiagnosticsData.FrameTelemetry;
+        DrawKeyValue("sequence", frame.FrameSequence.ToString());
+        DrawKeyValue("reason", frame.InvalidationReason ?? "-");
+        DrawKeyValue("raster", frame.RasterMode ?? "-");
+        DrawKeyValue("boxes", frame.BoxCount.ToString());
+        DrawKeyValue("paint nodes", frame.PaintNodeCount.ToString());
+        DrawKeyValue("layout", $"{frame.LayoutDurationMs:0.##}ms");
+        DrawKeyValue("paint", $"{frame.PaintDurationMs:0.##}ms");
+        DrawKeyValue("raster", $"{frame.RasterDurationMs:0.##}ms");
+        DrawKeyValue("watchdog", frame.WatchdogTriggered ? frame.WatchdogReason ?? "triggered" : "ok");
+
+        _stylesMaxScrollY = Math.Max(0, y + _stylesScrollY - bounds.Bottom);
+
+        void DrawKeyValue(string key, string value)
+        {
+            if (y > bounds.Bottom) return;
+            canvas.DrawText(key, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, textFont, labelPaint);
+            canvas.DrawText(value, bounds.Left + 132, y + 12, textFont, valuePaint);
+            y += DevToolsTheme.ItemHeight;
+        }
+    }
     
     public override void OnMouseMove(float x, float y)
     {
@@ -1286,21 +1918,19 @@ public class ElementsPanel : DevToolsPanelBase
         // FenBrowser.Core.EngineLogCompat.Info($"[Elements] MouseMove x={x:F1}, y={y:F1}, splitterX={_splitterX:F1}, dragging={_draggingSplitter}, bounds={Bounds}", FenBrowser.Core.Logging.LogCategory.General);
 
         // 3. Handle Tree hover
-        if (x < _splitterX)
+        if (x < _splitterX && y >= Bounds.Top + SearchBarHeight && y <= Bounds.Bottom - BreadcrumbHeight)
         {
-            int index = GetNodeIndexAt(y + _treeScrollY - Bounds.Top - DevToolsTheme.PaddingNormal);
+            int index = GetNodeIndexAt(y + _treeScrollY - Bounds.Top - SearchBarHeight - DevToolsTheme.PaddingNormal);
             if (index != _hoveredIndex)
             {
                 _hoveredIndex = index;
                 if (index >= 0 && index < _flattenedNodes.Count)
                 {
                     _hoveredNodeId = _flattenedNodes[index].Node.NodeId;
-                    _ = SendHighlightCommand(_hoveredNodeId);
                 }
                 else
                 {
                     _hoveredNodeId = null;
-                    _ = SendHighlightCommand(_selectedNodeId);
                 }
                 Invalidate();
             }
@@ -1312,7 +1942,6 @@ public class ElementsPanel : DevToolsPanelBase
             {
                 _hoveredIndex = -1;
                 _hoveredNodeId = null;
-                _ = SendHighlightCommand(_selectedNodeId);
                 Invalidate();
             }
         }
@@ -1325,6 +1954,36 @@ public class ElementsPanel : DevToolsPanelBase
             return true;
         }
 
+        if (x < _splitterX && y <= Bounds.Top + SearchBarHeight)
+        {
+            if (_searchPrevBounds.Contains(x, y))
+            {
+                PreviousSearchResult();
+                return true;
+            }
+
+            if (_searchNextBounds.Contains(x, y))
+            {
+                NextSearchResult();
+                return true;
+            }
+
+            if (_searchClearBounds.Contains(x, y))
+            {
+                ClearSearch();
+                return true;
+            }
+
+            _searchFocused = _searchInputBounds.Contains(x, y);
+            Invalidate();
+            return _searchFocused;
+        }
+
+        if (x < _splitterX)
+        {
+            _searchFocused = false;
+        }
+
         // Check splitter - consistent 10px hit area
         if (Math.Abs(x - _splitterX) <= 5)
         {
@@ -1334,13 +1993,17 @@ public class ElementsPanel : DevToolsPanelBase
         }
         
         // Check tree click
-        if (x < _splitterX)
+        if (x < _splitterX && y >= Bounds.Top + SearchBarHeight && y <= Bounds.Bottom - BreadcrumbHeight)
         {
-            int index = GetNodeIndexAt(y + _treeScrollY - Bounds.Top - DevToolsTheme.PaddingNormal);
+            int index = GetNodeIndexAt(y + _treeScrollY - Bounds.Top - SearchBarHeight - DevToolsTheme.PaddingNormal);
             
             if (index >= 0 && index < _flattenedNodes.Count)
             {
                 var node = _flattenedNodes[index];
+                if (node.Node.NodeType == 0)
+                {
+                    return true;
+                }
                 
                 // Calculate node X position using new constants
                 float baseX = Bounds.Left + 24f;  // leftMargin from DrawDomTree
@@ -1366,11 +2029,7 @@ public class ElementsPanel : DevToolsPanelBase
                     // Also select the node to keep highlight persistent
                     if (_selectedNodeId != node.Node.NodeId)
                     {
-                        _selectedNodeId = node.Node.NodeId;
-                        _stylesScrollY = 0;
-                        _computedStyleData = null;
-                        _matchedStyleData = null;
-                        _ = FetchStylesAsync(node.Node.NodeId);
+                        SelectNode(node.Node.NodeId);
                     }
                     
                     RefreshFlattenedTree();
@@ -1384,12 +2043,7 @@ public class ElementsPanel : DevToolsPanelBase
                     _lastClickTime = DateTime.Now;
                     _lastClickedNodeId = node.Node.NodeId;
                     
-                    // Select node
-                    _selectedNodeId = node.Node.NodeId;
-                    _stylesScrollY = 0;
-                    _computedStyleData = null;
-                    _matchedStyleData = null;
-                    _ = FetchStylesAsync(node.Node.NodeId);
+                    SelectNode(node.Node.NodeId);
                     
                     // Double-click on element enters "Edit as HTML" mode
                     if (isDoubleClick && node.Node.NodeType == 1 && !node.IsClosingTag)
@@ -1421,10 +2075,8 @@ public class ElementsPanel : DevToolsPanelBase
             // Check tab clicks
             if (y >= Bounds.Top && y <= Bounds.Top + 32)
             {
-                float relativeX = x - _splitterX - SPLITTER_WIDTH;
-                float panelWidth = Bounds.Right - _splitterX - SPLITTER_WIDTH;
-                int tabIdx = (int)(relativeX / (panelWidth / 3));
-                if (tabIdx >= 0 && tabIdx < 3 && tabIdx != _sidebarTab)
+                int tabIdx = GetSidebarTabIndexAt(x, _splitterX + SPLITTER_WIDTH, Bounds.Right);
+                if (tabIdx >= 0 && tabIdx < 4 && tabIdx != _sidebarTab)
                 {
                     _sidebarTab = tabIdx;
                     _stylesScrollY = 0;
@@ -1508,7 +2160,18 @@ public class ElementsPanel : DevToolsPanelBase
     
     public override void OnTextInput(char c)
     {
-        if (_editingElementAsHtml)
+        if (_searchFocused)
+        {
+            if (!char.IsControl(c))
+            {
+                _searchQuery += c;
+                _cursorBlink = true;
+                _lastBlink = DateTime.Now;
+                ScheduleSearch();
+                Invalidate();
+            }
+        }
+        else if (_editingElementAsHtml)
         {
             if (!char.IsControl(c))
             {
@@ -1557,12 +2220,70 @@ public class ElementsPanel : DevToolsPanelBase
     
     public override bool OnKeyDown(int keyCode, bool ctrl, bool shift, bool alt)
     {
-        if (_editingAttrKey == null && _editingNodeId == null && _editingCssPropertyName == null && !_editingElementAsHtml) return false;
-        
         const int KEY_BACK = 8;
         const int KEY_ENTER = 13;
         const int KEY_ESC = 27;
         const int KEY_TAB = 9;
+        const int KEY_F = 70;
+
+        if (ctrl && !alt && keyCode == KEY_F)
+        {
+            _searchFocused = true;
+            _editingAttrKey = null;
+            _editingNodeId = null;
+            _editingCssPropertyName = null;
+            _editingElementAsHtml = false;
+            Invalidate();
+            return true;
+        }
+
+        if (_searchFocused)
+        {
+            if (keyCode == KEY_BACK)
+            {
+                if (_searchQuery.Length > 0)
+                {
+                    _searchQuery = _searchQuery[..^1];
+                    ScheduleSearch();
+                    Invalidate();
+                }
+
+                return true;
+            }
+
+            if (keyCode == KEY_ENTER)
+            {
+                if (shift)
+                {
+                    PreviousSearchResult();
+                }
+                else
+                {
+                    NextSearchResult();
+                }
+
+                return true;
+            }
+
+            if (keyCode == KEY_ESC)
+            {
+                if (!string.IsNullOrEmpty(_searchQuery))
+                {
+                    ClearSearch();
+                }
+                else
+                {
+                    _searchFocused = false;
+                    Invalidate();
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        if (_editingAttrKey == null && _editingNodeId == null && _editingCssPropertyName == null && !_editingElementAsHtml) return false;
 
         if (_editingElementAsHtml)
         {
@@ -1790,6 +2511,9 @@ public class ElementsPanel : DevToolsPanelBase
     private async Task SendHighlightCommand(int? nodeId)
     {
         if (Host == null) return;
+        if (_highlightedNodeId == nodeId) return;
+
+        _highlightedNodeId = nodeId;
         
         if (nodeId == null)
         {
@@ -1857,11 +2581,45 @@ public class ElementsPanel : DevToolsPanelBase
     /// </summary>
     public void Search(string query)
     {
+        _ = SearchAsync(query);
+    }
+
+    private void ScheduleSearch()
+    {
+        var revision = ++_searchRevision;
+        _ = RunScheduledSearchAsync(revision);
+    }
+
+    private async Task RunScheduledSearchAsync(int revision)
+    {
+        await Task.Delay(250);
+        if (revision != _searchRevision)
+        {
+            return;
+        }
+
+        await SearchAsync(_searchQuery);
+    }
+
+    private void ClearSearch()
+    {
+        _searchRevision++;
+        _searchQuery = string.Empty;
+        _searchResults.Clear();
+        _searchCurrentIndex = 0;
+        _searchFocused = false;
+        Invalidate();
+    }
+
+    private async Task SearchAsync(string query)
+    {
         _searchQuery = query;
         _searchResults.Clear();
         _searchCurrentIndex = 0;
         
         if (string.IsNullOrWhiteSpace(query)) return;
+
+        await RefreshTreeAsync(loadFullTree: true);
         
         var lowerQuery = query.ToLowerInvariant();
         foreach (var kv in _nodeMap)
@@ -1913,6 +2671,7 @@ public class ElementsPanel : DevToolsPanelBase
         
         // Select and scroll to node
         SelectNode(nodeId);
+        ScrollSelectedNodeIntoView(nodeId);
     }
     
     /// <summary>
@@ -2021,9 +2780,12 @@ public class ElementsPanel : DevToolsPanelBase
     private void SelectNode(int nodeId)
     {
         _selectedNodeId = nodeId;
+        _stylesScrollY = 0;
+        _computedStyleData = null;
+        _matchedStyleData = null;
+        _nodeDiagnosticsData = null;
         UpdateBreadcrumbs();
         _ = FetchStylesAsync(nodeId);
-        _ = SendHighlightCommand(nodeId);
         Invalidate();
     }
     

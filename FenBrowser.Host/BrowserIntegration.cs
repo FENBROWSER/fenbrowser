@@ -98,6 +98,7 @@ public class BrowserIntegration
     // Safety Net: Polls for DOM updates if events are missed
     private System.Threading.Timer _domPoller;
     private EventLoopSliceTelemetry _lastEventLoopSliceTelemetry = EventLoopSliceTelemetry.Empty;
+    private RenderFrameTelemetry? _lastFrameTelemetry;
     
     public string CurrentUrl => _overrideUrl ?? _browser.CurrentUri?.AbsoluteUri ?? "";
     public bool IsLoading { get; private set; }
@@ -107,6 +108,7 @@ public class BrowserIntegration
     public Element Document => _root;
     public Dictionary<Node, CssComputed> ComputedStyles => _styles;
     public List<CssLoader.CssSource> CssSources => _browser.Engine.LastCssSources;
+    public RenderFrameTelemetry? LastFrameTelemetry => _lastFrameTelemetry;
     
     public event Action<string> TitleChanged;
     public event Action<string> UrlChanged;
@@ -827,6 +829,23 @@ public class BrowserIntegration
     public void RequestRepaint()
     {
         RequestFrame(RenderFrameInvalidationReason.HostRequest, "BrowserIntegration.RequestRepaint", notifyUi: true);
+    }
+
+    public RenderContext? TryCreateRenderContextSnapshot(int timeoutMs = 10)
+    {
+        if (!_rendererLock.TryEnterReadLock(Math.Max(0, timeoutMs)))
+        {
+            return null;
+        }
+
+        try
+        {
+            return _renderer.CreateRenderContext();
+        }
+        finally
+        {
+            _rendererLock.ExitReadLock();
+        }
     }
     
     public async Task<object?> EvaluateScriptAsync(string script)
@@ -1677,6 +1696,7 @@ public class BrowserIntegration
             }
 
             LogCommittedFrame(frameResult, viewportSize);
+            _lastFrameTelemetry = frameResult?.Telemetry;
             bool requestedFollowupFrame = TryApplyPendingFragmentNavigation();
 
             if (!requestedFollowupFrame)
@@ -2605,7 +2625,12 @@ public class BrowserIntegration
             _cachedHitTest = result;
         }
     }
-    public HitTestResult PerformHitTest(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
+    public HitTestResult PerformHitTest(
+        float windowX,
+        float windowY,
+        float viewportOffsetX = 0,
+        float viewportOffsetY = 0,
+        bool allowCachedFallback = true)
     {
         // Window → UI coordinates (subtract viewport offset)
         float uiX = windowX - viewportOffsetX;
@@ -2647,6 +2672,11 @@ public class BrowserIntegration
         }
 
         // Renderer is busy (engine mid-layout) — use cached result to keep UI responsive.
+        if (!allowCachedFallback)
+        {
+            return HitTestResult.None;
+        }
+
         var cachedHit = GetCachedHitTest();
         if (!cachedHit.Equals(_lastHitTest))
         {
@@ -2786,7 +2816,7 @@ public class BrowserIntegration
         var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
         if (defaultAllowed)
         {
-            ContextMenuRequested?.Invoke(new ContextMenuRequest(windowX, windowY, result));
+            ContextMenuRequested?.Invoke(new ContextMenuRequest(windowX, windowY, viewportOffsetX, viewportOffsetY, result));
         }
     }
 
@@ -2796,12 +2826,16 @@ public class BrowserIntegration
     {
         public float X { get; }
         public float Y { get; }
+        public float ViewportOffsetX { get; }
+        public float ViewportOffsetY { get; }
         public HitTestResult Hit { get; }
         
-        public ContextMenuRequest(float x, float y, HitTestResult hit)
+        public ContextMenuRequest(float x, float y, float viewportOffsetX, float viewportOffsetY, HitTestResult hit)
         {
             X = x;
             Y = y;
+            ViewportOffsetX = viewportOffsetX;
+            ViewportOffsetY = viewportOffsetY;
             Hit = hit;
         }
     }

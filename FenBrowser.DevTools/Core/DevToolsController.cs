@@ -125,11 +125,13 @@ public class DevToolsController : IDisposable
     /// </summary>
     public void Show()
     {
+        if (IsVisible) return;
+
         IsVisible = true;
         _host?.RequestCursorChange(CursorType.Default);
+        LayoutChanged?.Invoke();
         _activePanel?.OnActivate();
         Invalidated?.Invoke();
-        LayoutChanged?.Invoke();
     }
     
     /// <summary>
@@ -137,6 +139,8 @@ public class DevToolsController : IDisposable
     /// </summary>
     public void Hide()
     {
+        if (!IsVisible) return;
+
         IsVisible = false;
         _host?.RequestCursorChange(CursorType.Default);
         _activePanel?.OnDeactivate();
@@ -159,10 +163,11 @@ public class DevToolsController : IDisposable
     public void SelectElement(Element? element)
     {
         _selectedElement = element;
-        _host?.HighlightElement(element);
-        
-        // Notify Elements panel if it exists
-        // (Will be implemented in ElementsPanel)
+
+        if (element != null)
+        {
+            SelectElementInPanel(element);
+        }
         
         Invalidated?.Invoke();
     }
@@ -178,6 +183,7 @@ public class DevToolsController : IDisposable
     public void ActivatePanel(int index)
     {
         if (index < 0 || index >= _panels.Count) return;
+        if (_activePanel != null && index == _activePanelIndex) return;
         
         _activePanel?.OnDeactivate();
         _activePanelIndex = index;
@@ -197,6 +203,19 @@ public class DevToolsController : IDisposable
             if (_panels[i] is T)
             {
                 ActivatePanel(i);
+                return;
+            }
+        }
+    }
+
+    private void SelectElementInPanel(Element element)
+    {
+        for (int i = 0; i < _panels.Count; i++)
+        {
+            if (_panels[i] is IDevToolsElementSelectionPanel selectionPanel)
+            {
+                ActivatePanel(i);
+                selectionPanel.SelectInspectedElement(element);
                 return;
             }
         }

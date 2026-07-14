@@ -187,7 +187,7 @@ public class SourcesPanel : DevToolsPanelBase
             var title = script.DisplayName.Length > 28 ? script.DisplayName[..25] + "..." : script.DisplayName;
             canvas.DrawText(title, bounds.Left + DevToolsTheme.PaddingNormal, itemY + 14, textFont, textColorPaint);
 
-            var metadata = script.IsInline ? "inline" : $"{Math.Max(1, script.Length)} chars";
+            var metadata = script.IsInline ? $"{script.OriginGroup} inline" : $"{script.OriginGroup} - {Math.Max(1, script.Length)} chars";
             canvas.DrawText(metadata, bounds.Left + DevToolsTheme.PaddingNormal, itemY + DevToolsTheme.ItemHeight - 5, mutedFont, mutedColorPaint);
         }
 
@@ -301,12 +301,23 @@ public class SourcesPanel : DevToolsPanelBase
         if (index >= 0)
         {
             _scripts[index] = item;
+            if (_selectedScript?.ScriptId == item.ScriptId)
+            {
+                _selectedScript = item;
+            }
         }
         else
         {
             _scripts.Add(item);
-            _scripts.Sort((left, right) => string.Compare(left.DisplayName, right.DisplayName, StringComparison.OrdinalIgnoreCase));
         }
+
+        _scripts.Sort((left, right) =>
+        {
+            var originCompare = string.Compare(left.OriginGroup, right.OriginGroup, StringComparison.OrdinalIgnoreCase);
+            return originCompare != 0
+                ? originCompare
+                : string.Compare(left.DisplayName, right.DisplayName, StringComparison.OrdinalIgnoreCase);
+        });
     }
 
     private void SelectScript(ScriptListItem item)
@@ -371,6 +382,24 @@ public class SourcesPanel : DevToolsPanelBase
                 }
 
                 return Url;
+            }
+        }
+
+        public string OriginGroup
+        {
+            get
+            {
+                if (IsInline)
+                {
+                    return "inline";
+                }
+
+                if (Uri.TryCreate(Url, UriKind.Absolute, out var uri))
+                {
+                    return uri.Host;
+                }
+
+                return "local";
             }
         }
     }

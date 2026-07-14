@@ -605,13 +605,17 @@ namespace FenBrowser.Host
 
         private void OnContextMenuRequested(BrowserIntegration.ContextMenuRequest request)
         {
-            ShowContextMenu(request.X, request.Y, request.Hit);
+            ShowContextMenu(request);
         }
         
-        private void ShowContextMenu(float x, float y, FenBrowser.FenEngine.Interaction.HitTestResult hit)
+        private void ShowContextMenu(BrowserIntegration.ContextMenuRequest request)
         {
             var activeTab = TabManager.Instance.ActiveTab;
             if (activeTab == null) return;
+
+            float x = request.X;
+            float y = request.Y;
+            var hit = request.Hit;
             
              var items = ContextMenuBuilder.Build(
                  hit,
@@ -631,7 +635,20 @@ namespace FenBrowser.Host
                  onInspectElement: h => {
                       _root.SetPopup(null);
                       _devTools?.Show();
-                      if (h.NativeElement is Element el) _devTools?.SelectElement(el);
+                      var inspectHit = activeTab.Browser.PerformHitTest(
+                          x,
+                          y,
+                          request.ViewportOffsetX,
+                          request.ViewportOffsetY,
+                          allowCachedFallback: false);
+                      if (inspectHit.NativeElement is Element exactElement)
+                      {
+                          _devTools?.SelectElement(exactElement);
+                      }
+                      else if (h.NativeElement is Element fallbackElement)
+                      {
+                          _devTools?.SelectElement(fallbackElement);
+                      }
                       _root?.Invalidate();
                  }
              );
