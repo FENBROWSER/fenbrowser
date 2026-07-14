@@ -1900,7 +1900,10 @@ namespace FenBrowser.FenEngine.Rendering
                     if (current is Element element)
                     {
                         elementNodeCount++;
-                        attributeCount += element.Attributes?.Length ?? 0;
+                        if (element.HasAttributes())
+                        {
+                            attributeCount += element.Attributes.Length;
+                        }
                     }
                     else if (current is Text)
                     {
@@ -2167,7 +2170,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // Add Attributes info for Elements
-                if (node is Element el && el.Attributes != null && el.Attributes.Any())
+                if (node is Element el && el.HasAttributes())
                 {
                     sb.Append(" {");
                     bool first = true;

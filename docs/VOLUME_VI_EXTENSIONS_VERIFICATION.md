@@ -3245,3 +3245,24 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_css_var_tracking_after_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture passes all four benchmark gates; `dotnet-trace report ... topN` reports the post-change allocation owners.
+
+## 6.117 Lazy Element Attribute-Storage Verification (2026-07-14)
+
+- `ElementAttributeStorageAllocationTests.Constructor_DefersEmptyAttributeMap` measures 10,000 warmed production `Element` constructions. Eager maps allocate exactly `3,920,000 B`; deferred maps allocate exactly `3,200,000 B` (`-720,000 B`, `-18.37%`) and pass the `3,300,000 B` ceiling.
+- The same included surface verifies non-materializing empty reads, stable/live `Attributes` identity, set/remove behavior, clone equality, and empty/attributed serialization.
+- The neighboring included DOM/filter/observer filter passes `9/9`; the focused parser filter passes `95/95`. The broader Core parsing slice remains at its established `68/69` state with the same `HtmlParserTraceTests.ParseDocumentDetailed_WritesHtmlParsingTraceEvents` failure.
+- Candidate reports `164347`, `164349`, `164351`, `164354`, and `164356` pass every failure gate against reports `163657`, `163659`, `163700`, `163701`, and `163703`. HTML allocation medians fall by `144 B`, `144 B`, `13,104 B`, and `5,904 B`; managed medians fall by `144 B`, `64 B`, `13,912 B`, and `8,560 B` across the four fixtures.
+- Timing is mixed, so no latency improvement is claimed. The fresh `gc-verbose` trace moves `HtmlTreeBuilder.CreateElement` from `9.74%` to `9.53%` exclusive sampled weight; exact constructor allocation remains the causal evidence.
+- Test262 and WPT are not rerun because attribute behavior and parser output are exercised by the direct included contracts, with no representation exposed to JavaScript or conformance runners.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~ElementAttributeStorageAllocationTests" --logger "console;verbosity=detailed"`: pass (`3/3`), exactly `3,200,000 B` for 10,000 attribute-free elements.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~ElementAttributeStorageAllocationTests" --logger "console;verbosity=detailed"`: retained rerun passes (`3/3`) at exactly `3,200,000 B`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "AncestorFilterTests|DevToolsFrontendCompatibilityTests|DomMutationNotificationTests|MutationObserverTests" --logger "console;verbosity=minimal"`: pass (`9/9`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "HtmlTokenPoolTests|HtmlTokenPoolAllocationTests|Html5libTokenizerTests|Html5libTreeBuilderTests|HtmlTreeBuilder|TableParsingTests|AfterHeadParsingTests|SelectParsingTests|CanonicalHtmlParserEntrypointTests|ParserHardeningGuardTests" --logger "console;verbosity=minimal"`: pass (`95/95`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FenBrowser.Tests.Core.Parsing" --logger "console;verbosity=minimal"`: same existing trace assertion, `68/69`.
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_element_attribute_maps_after_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN` reports the post-change allocation owners.

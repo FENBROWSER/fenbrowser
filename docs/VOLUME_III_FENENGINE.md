@@ -9619,3 +9619,12 @@ Verification:
 - The neighboring included pill-rendering, Tailwind-variable, and layout-stability slice passes `16/16`.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and all four benchmark failure gates pass in every candidate process.
 - Test262 and WPT are not rerun because the change only defers allocation of private recursion-tracking state; CSS variable semantics are exercised by the direct included contract and neighboring CSS/render tests.
+
+## 2.354 Non-Materializing Attribute Diagnostics (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - Document-statistics collection and debug tree dumping now call `Element.HasAttributes()` before accessing the live `Attributes` collection.
+  - This preserves attribute counts and dump contents while allowing Core's lazy `NamedNodeMap` storage to remain absent for attribute-free elements. Diagnostics therefore do not defeat the DOM allocation optimization merely to establish that the collection is empty.
+  - The traversal, formatting, counters, and DOM ownership boundary are unchanged; no cache, retained state, synchronization, or native resource is introduced.
+
+The five candidate Release reports `164347`, `164349`, `164351`, `164354`, and `164356` pass every benchmark failure gate. HTML-stage allocation medians fall by `144 B` to `13,104 B`, depending on fixture composition, while timing remains mixed. The exact Core constructor contract supplies the causal measurement; no renderer latency improvement is claimed.

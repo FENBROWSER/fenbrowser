@@ -67,13 +67,13 @@ namespace FenBrowser.Core.Dom.V2
 
         // --- Attributes (Single Source of Truth) ---
 
-        private readonly NamedNodeMap _attributes;
+        private NamedNodeMap _attributes;
 
         /// <summary>
         /// Returns the attributes collection.
         /// https://dom.spec.whatwg.org/#dom-element-attributes
         /// </summary>
-        public NamedNodeMap Attributes => _attributes;
+        public NamedNodeMap Attributes => _attributes ??= new NamedNodeMap(this);
 
         // --- Legacy V1 Compatibility ---
         [Obsolete("Use GetAttribute/SetAttribute/HasAttribute")]
@@ -171,7 +171,6 @@ namespace FenBrowser.Core.Dom.V2
             }
 
             _ownerDocument = owner;
-            _attributes = new NamedNodeMap(this);
             _flags |= NodeFlags.IsElement | NodeFlags.IsContainer;
             _ancestorFeatureHash = BloomHash(TagName?.ToUpperInvariant());
         }
@@ -200,7 +199,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public string GetAttribute(string qualifiedName)
         {
-            return _attributes.GetNamedItem(qualifiedName)?.Value;
+            return _attributes?.GetNamedItem(qualifiedName)?.Value;
         }
 
         /// <summary>
@@ -209,7 +208,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public string GetAttributeNS(string namespaceUri, string localName)
         {
-            return _attributes.GetNamedItemNS(namespaceUri, localName)?.Value;
+            return _attributes?.GetNamedItemNS(namespaceUri, localName)?.Value;
         }
 
         /// <summary>
@@ -236,7 +235,7 @@ namespace FenBrowser.Core.Dom.V2
             EngineContext.Current.AssertNotInPhase(
                 EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
 
-            var existing = _attributes.GetNamedItem(qualifiedName);
+            var existing = _attributes?.GetNamedItem(qualifiedName);
             if (existing != null)
             {
                 // Short-circuit: if the value hasn't changed, skip the full mutation cycle.
@@ -249,7 +248,7 @@ namespace FenBrowser.Core.Dom.V2
             {
                 // Create new attribute
                 var attr = new Attr(qualifiedName, value ?? "", this);
-                _attributes.Add(attr);
+                Attributes.Add(attr);
                 OnAttributeAdded(attr);
             }
         }
@@ -263,7 +262,7 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(qualifiedName))
                 return;
 
-            var existing = _attributes.GetNamedItem(qualifiedName);
+            var existing = _attributes?.GetNamedItem(qualifiedName);
             if (existing != null)
             {
                 existing.Value = value ?? "";
@@ -271,7 +270,7 @@ namespace FenBrowser.Core.Dom.V2
             else
             {
                 var attr = new Attr(qualifiedName, value ?? "", this);
-                _attributes.Add(attr);
+                Attributes.Add(attr);
                 OnAttributeAdded(attr);
             }
         }
@@ -292,7 +291,7 @@ namespace FenBrowser.Core.Dom.V2
             int colon = qualifiedName.IndexOf(':');
             var localName = colon >= 0 ? qualifiedName.Substring(colon + 1) : qualifiedName;
 
-            var existing = _attributes.GetNamedItemNS(namespaceUri, localName);
+            var existing = _attributes?.GetNamedItemNS(namespaceUri, localName);
             if (existing != null)
             {
                 existing.Value = value ?? "";
@@ -300,7 +299,7 @@ namespace FenBrowser.Core.Dom.V2
             else
             {
                 var attr = new Attr(namespaceUri, qualifiedName, value ?? "", this);
-                _attributes.Add(attr);
+                Attributes.Add(attr);
                 OnAttributeAdded(attr);
             }
         }
@@ -311,7 +310,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public bool HasAttribute(string qualifiedName)
         {
-            return _attributes.GetNamedItem(qualifiedName) != null;
+            return _attributes?.GetNamedItem(qualifiedName) != null;
         }
 
         /// <summary>
@@ -320,7 +319,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public bool HasAttributeNS(string namespaceUri, string localName)
         {
-            return _attributes.GetNamedItemNS(namespaceUri, localName) != null;
+            return _attributes?.GetNamedItemNS(namespaceUri, localName) != null;
         }
 
         /// <summary>
@@ -329,7 +328,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public bool HasAttributes()
         {
-            return _attributes.Length > 0;
+            return _attributes?.Length > 0;
         }
 
         /// <summary>
@@ -338,7 +337,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public void RemoveAttribute(string qualifiedName)
         {
-            var attr = _attributes.GetNamedItem(qualifiedName);
+            var attr = _attributes?.GetNamedItem(qualifiedName);
             if (attr != null)
             {
                 EngineContext.Current.AssertNotInPhase(
@@ -357,7 +356,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public void RemoveAttributeNS(string namespaceUri, string localName)
         {
-            var attr = _attributes.GetNamedItemNS(namespaceUri, localName);
+            var attr = _attributes?.GetNamedItemNS(namespaceUri, localName);
             if (attr != null)
             {
                 EngineContext.Current.AssertNotInPhase(
@@ -414,7 +413,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public Attr GetAttributeNode(string qualifiedName)
         {
-            return _attributes.GetNamedItem(qualifiedName);
+            return _attributes?.GetNamedItem(qualifiedName);
         }
 
         /// <summary>
@@ -423,7 +422,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public Attr GetAttributeNodeNS(string namespaceUri, string localName)
         {
-            return _attributes.GetNamedItemNS(namespaceUri, localName);
+            return _attributes?.GetNamedItemNS(namespaceUri, localName);
         }
 
         /// <summary>
@@ -432,7 +431,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public Attr SetAttributeNode(Attr attr)
         {
-            return _attributes.SetNamedItem(attr);
+            return Attributes.SetNamedItem(attr);
         }
 
         /// <summary>
@@ -915,8 +914,11 @@ namespace FenBrowser.Core.Dom.V2
             var clone = new Element(LocalName, _ownerDocument, NamespaceUri);
 
             // Clone is an internal DOM copy operation; preserve parser-produced names verbatim.
-            foreach (var attr in _attributes)
-                clone.SetAttributeUnsafe(attr.Name, attr.Value);
+            if (_attributes != null)
+            {
+                foreach (var attr in _attributes)
+                    clone.SetAttributeUnsafe(attr.Name, attr.Value);
+            }
 
             if (deep)
             {
@@ -934,14 +936,18 @@ namespace FenBrowser.Core.Dom.V2
             if (other is not Element otherEl) return false;
             if (NamespaceUri != otherEl.NamespaceUri) return false;
             if (LocalName != otherEl.LocalName) return false;
-            if (_attributes.Length != otherEl._attributes.Length) return false;
+            var attributeCount = _attributes?.Length ?? 0;
+            if (attributeCount != (otherEl._attributes?.Length ?? 0)) return false;
 
             // Compare attributes
-            foreach (var attr in _attributes)
+            if (_attributes != null)
             {
-                var otherAttr = otherEl._attributes.GetNamedItemNS(attr.NamespaceUri, attr.LocalName);
-                if (otherAttr == null || attr.Value != otherAttr.Value)
-                    return false;
+                foreach (var attr in _attributes)
+                {
+                    var otherAttr = otherEl._attributes?.GetNamedItemNS(attr.NamespaceUri, attr.LocalName);
+                    if (otherAttr == null || attr.Value != otherAttr.Value)
+                        return false;
+                }
             }
 
             return base.IsEqualNode(other);
@@ -996,9 +1002,12 @@ namespace FenBrowser.Core.Dom.V2
             var sb = new StringBuilder();
             sb.Append('<').Append(LocalName);
 
-            foreach (var attr in _attributes)
-                sb.Append(' ').Append(attr.Name).Append("=\"")
-                  .Append(EscapeAttribute(attr.Value)).Append('"');
+            if (_attributes != null)
+            {
+                foreach (var attr in _attributes)
+                    sb.Append(' ').Append(attr.Name).Append("=\"")
+                      .Append(EscapeAttribute(attr.Value)).Append('"');
+            }
 
             // Void elements
             if (IsVoidElement())

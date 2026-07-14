@@ -1575,3 +1575,33 @@ Verification:
 - The broader Core parsing slice remains `68/69` with the same existing `HtmlParserTraceTests` trace-file assertion.
 - Release builds of `FenBrowser.Core` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and all four benchmark failure gates pass in every candidate process.
 - Test262 and WPT are not rerun because this changes only allocation timing for an existing DOM notification record; observer semantics and parser output are covered directly.
+
+### 1.74 Lazy Element Attribute Maps (2026-07-14)
+
+- `FenBrowser.Core/Dom/V2/Element.cs`
+  - `Element` previously constructed a four-inline-slot `NamedNodeMap` for every node even when the element never carried an attribute and callers only used `GetAttribute`, `HasAttribute`, or removal no-ops.
+  - Attribute storage is now created on the first collection access or first attribute insertion. Empty read, query, removal, clone, equality, and serialization paths inspect the nullable backing field without materializing it.
+  - The public `Attributes` contract remains a non-null, stable, live `NamedNodeMap`: once observed, repeated access returns the same object and later mutations remain visible through it. Attributed elements keep the existing owner and mutation flow.
+  - Lazy initialization follows the existing single-owner DOM threading boundary; it adds no cross-thread synchronization, cache, pool, unsafe code, native resource, or global lifetime.
+- `FenBrowser.Tests/Performance/ElementAttributeStorageAllocationTests.cs`
+  - Ten thousand warmed attribute-free element constructions move from exactly `3,920,000 B` to `3,200,000 B`, saving `720,000 B` (`18.37%`, `72 B` per element). The retained `3,300,000 B` ceiling rejects eager map creation.
+  - Focused contracts preserve empty reads, stable/live collection identity, set/remove behavior, clone equality, and empty/attributed serialization.
+
+Five fresh Release processes compare reports `163657`, `163659`, `163700`, `163701`, and `163703` with candidate reports `164347`, `164349`, `164351`, `164354`, and `164356`:
+
+| Scenario | HTML allocation before | HTML allocation after | Managed allocation before | Managed allocation after | Total before | Total after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 925,928 B | 925,784 B (-144 B) | 18,949,944 B | 18,949,800 B (-144 B) | 172.64 ms | 172.48 ms (-0.09%) |
+| steady-state-damage-animation | 526,912 B | 526,768 B (-144 B) | 14,458,088 B | 14,458,024 B (-64 B) | 14.18 ms | 14.52 ms (+2.40%) |
+| dense-text-flow | 315,312 B | 302,208 B (-13,104 B) | 8,696,640 B | 8,682,728 B (-13,912 B) | 12.27 ms | 11.88 ms (-3.18%) |
+| wrapped-multiline-text | 149,360 B | 143,456 B (-5,904 B) | 4,010,032 B | 4,001,472 B (-8,560 B) | 6.28 ms | 6.51 ms (+3.66%) |
+
+Allocation falls according to the number of unobserved attribute-free elements in each fixture. Total timing remains mixed, so no latency improvement is claimed. A fresh `gc-verbose` trace moves `HtmlTreeBuilder.CreateElement` from `9.74%` to `9.53%` exclusive sampled weight; the exact constructor measurement is the causal evidence and the trace movement is directional.
+
+Verification:
+
+- The allocation and behavior contracts pass `3/3` twice at exactly `3,200,000 B` on the retained Release build.
+- The neighboring included DOM/filter/observer slice passes `9/9`; the focused parser regression slice passes `95/95`.
+- The broader Core parsing slice remains `68/69` with the same existing `HtmlParserTraceTests` trace-file assertion.
+- Release builds of `FenBrowser.Core` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every render benchmark failure gate passes in all five candidate processes.
+- Test262 and WPT are not rerun because the change preserves the DOM attribute API and parser output; the included attribute and parser contracts exercise the affected behavior directly.
