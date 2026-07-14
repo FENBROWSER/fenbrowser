@@ -3266,3 +3266,24 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_element_attribute_maps_after_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN` reports the post-change allocation owners.
+
+## 6.118 Open-Element Stack-Search Verification (2026-07-14)
+
+- `HtmlTreeBuilderStackSearchAllocationTests.OrdinaryEndTags_AvoidStackSearchIteratorAllocations` measures a warmed production parse of 2,000 ordinary elements and 4,000 open-element membership searches. The LINQ path allocates exactly `2,322,168 B`; direct stack iteration allocates exactly `1,554,168 B` (`-768,000 B`, `-33.07%`) and passes the `1,600,000 B` ceiling.
+- The established focused parser filter plus the new allocation contract passes `96/96`, covering tokenizer and tree-builder behavior, local html5lib fixtures, malformed-input guards, formatting recovery, tables, selects, and interleaved parsing.
+- The broader Core parsing filter remains at its established `68/69` state with only `HtmlParserTraceTests.ParseDocumentDetailed_WritesHtmlParsingTraceEvents` failing its trace-file predicate.
+- Candidate reports `164904`, `164906`, `164909`, `164911`, and `164913` pass every failure gate against reports `164347`, `164349`, `164351`, `164354`, and `164356`. HTML allocation medians fall `17.46%`-`22.87%`; managed-allocation medians fall `0.63%`-`0.87%`.
+- HTML timing medians are lower in all four fixtures, but whole-render timing is mixed by `+0.34%` in dense text. The exact allocation contract is the causal evidence; no broad latency claim is made.
+- The fresh `gc-verbose` trace no longer lists `HtmlTreeBuilder.StackHas` or `Stack<Element>.IEnumerable<Element>.GetEnumerator` among the top 40 exclusive allocation owners.
+- Test262 and WPT are not rerun because the change preserves parser branching and stack-pop semantics, which the focused included parser suites exercise directly.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~HtmlTreeBuilderStackSearchAllocationTests" --logger "console;verbosity=detailed"`: pass (`1/1`), exactly `1,554,168 B`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~HtmlTreeBuilderStackSearchAllocationTests" --logger "console;verbosity=detailed"`: retained rerun passes (`1/1`) at exactly `1,554,168 B`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "HtmlTokenPoolTests|HtmlTokenPoolAllocationTests|Html5libTokenizerTests|Html5libTreeBuilderTests|HtmlTreeBuilder|TableParsingTests|AfterHeadParsingTests|SelectParsingTests|CanonicalHtmlParserEntrypointTests|ParserHardeningGuardTests" --logger "console;verbosity=minimal"`: pass (`96/96`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FenBrowser.Tests.Core.Parsing" --logger "console;verbosity=minimal"`: same existing trace assertion, `68/69`.
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_stack_search_after_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN` confirms the targeted allocation leaves are absent from the top 40.

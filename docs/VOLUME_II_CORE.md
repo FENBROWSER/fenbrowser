@@ -1605,3 +1605,32 @@ Verification:
 - The broader Core parsing slice remains `68/69` with the same existing `HtmlParserTraceTests` trace-file assertion.
 - Release builds of `FenBrowser.Core` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every render benchmark failure gate passes in all five candidate processes.
 - Test262 and WPT are not rerun because the change preserves the DOM attribute API and parser output; the included attribute and parser contracts exercise the affected behavior directly.
+
+### 1.75 Allocation-Free Open-Element Stack Search (2026-07-14)
+
+- `FenBrowser.Core/Parsing/HtmlTreeBuilder.cs`
+  - The allocation trace ranked `HtmlTreeBuilder.StackHas` at `0.74%` exclusive sampled weight and showed `Stack<Element>.IEnumerable<Element>.GetEnumerator`. Both `StackHas` and `PopUntil` used capturing LINQ predicates for ordinary open-element membership checks.
+  - `StackHas` now iterates the concrete stack directly, and `PopUntil` reuses that helper. Top-to-bottom search order, ordinal-ignore-case matching, absent-target no-op behavior, and the subsequent pop sequence remain unchanged.
+  - The parser adds no cache, pool, retained state, unsafe code, recursion, or concurrency boundary; it only avoids the closure, predicate, LINQ iterator, and boxed stack enumerator created for each search.
+- `FenBrowser.Tests/Performance/HtmlTreeBuilderStackSearchAllocationTests.cs`
+  - A warmed production parse of 2,000 ordinary `<div></div>` elements exercises 4,000 membership searches. Allocation moves from exactly `2,322,168 B` to `1,554,168 B`, saving `768,000 B` (`33.07%`, `192 B` per search).
+  - The retained `1,600,000 B` ceiling rejects the LINQ implementation, and the parsed document must still expose its body.
+
+Five fresh Release processes compare reports `164347`, `164349`, `164351`, `164354`, and `164356` with candidate reports `164904`, `164906`, `164909`, `164911`, and `164913`:
+
+| Scenario | HTML allocation before | HTML allocation after | Managed allocation before | Managed allocation after | HTML time before | HTML time after | Total before | Total after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 925,784 B | 764,120 B (-17.46%) | 18,949,800 B | 18,785,528 B (-0.87%) | 32.80 ms | 32.18 ms (-1.89%) | 172.48 ms | 170.50 ms (-1.15%) |
+| steady-state-damage-animation | 526,768 B | 434,224 B (-17.57%) | 14,458,024 B | 14,367,520 B (-0.63%) | 1.61 ms | 1.56 ms (-3.11%) | 14.52 ms | 14.11 ms (-2.82%) |
+| dense-text-flow | 302,208 B | 233,088 B (-22.87%) | 8,682,728 B | 8,607,320 B (-0.87%) | 1.02 ms | 0.89 ms (-12.75%) | 11.88 ms | 11.92 ms (+0.34%) |
+| wrapped-multiline-text | 143,456 B | 112,352 B (-21.68%) | 4,001,472 B | 3,976,336 B (-0.63%) | 0.45 ms | 0.43 ms (-4.44%) | 6.51 ms | 6.26 ms (-3.84%) |
+
+HTML allocation falls in every fixture, with process-wide managed allocation down `0.63%`-`0.87%`. HTML timing medians are directionally lower, but one whole-render median is `0.34%` higher, so the exact allocation reduction is the primary acceptance evidence. A fresh `gc-verbose` trace no longer lists `StackHas` or the boxed stack enumerator among its top 40 exclusive owners.
+
+Verification:
+
+- The allocation contract passes twice at exactly `1,554,168 B` on the retained Release build.
+- The existing focused parser slice plus the new allocation contract passes `96/96`.
+- The broader Core parsing slice remains `68/69` with the same existing `HtmlParserTraceTests` trace-file assertion.
+- Release builds of `FenBrowser.Core` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and all four benchmark failure gates pass in every candidate process.
+- Test262 and WPT are not rerun because this replaces private collection iteration without changing HTML tree-construction decisions; focused malformed, table, select, formatting, tokenizer, and local html5lib coverage exercises the affected parser.

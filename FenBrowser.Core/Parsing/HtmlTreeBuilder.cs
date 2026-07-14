@@ -2902,12 +2902,18 @@ namespace FenBrowser.Core.Parsing
         
         private bool StackHas(string tagName)
         {
-            return _openElements.Any(e => string.Equals(e.TagName, tagName, StringComparison.OrdinalIgnoreCase));
+            foreach (var element in _openElements)
+            {
+                if (string.Equals(element.TagName, tagName, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
         }
         
         private void PopUntil(string tagName)
         {
-            var targetFound = _openElements.Any(e => string.Equals(e.TagName, tagName, StringComparison.OrdinalIgnoreCase));
+            var targetFound = StackHas(tagName);
             // EngineLogCompat.Debug($"[Parser] PopUntil({tagName}). Target in stack: {targetFound}. Current top: {(_openElements.Count > 0 ? _openElements.Peek().TagName : "NULL")}", LogCategory.HtmlParsing);
 
             if (targetFound)
