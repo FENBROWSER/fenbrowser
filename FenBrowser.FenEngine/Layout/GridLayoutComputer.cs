@@ -136,7 +136,7 @@ namespace FenBrowser.FenEngine.Layout
 
             // Keep the parsed position so auto items are not parsed again during
             // the placement pass.
-            var pendingAuto = new List<RawGridPosition>();
+            List<RawGridPosition>? pendingAuto = null;
             
             // State for auto-placement cursor
             int cursorRow = 1;
@@ -181,8 +181,14 @@ namespace FenBrowser.FenEngine.Layout
                 }
                 else
                 {
+                    pendingAuto ??= new List<RawGridPosition>(items.Count - positions.Count);
                     pendingAuto.Add(rawPos);
                 }
+            }
+
+            if (pendingAuto is null)
+            {
+                return (positions, maxRow, maxCol);
             }
 
             // Iterate pending items

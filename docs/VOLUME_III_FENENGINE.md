@@ -9658,3 +9658,34 @@ Verification:
 - The broader Tailwind-inclusive filter remains `16/17` because `RegisteredBorderStyleInitialValue_ProducesEffectiveBorder` reports the known unrelated `expected 1, actual 0` assertion.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five candidate processes.
 - Test262 and WPT are not rerun because the same selector substrings still enter the same parser and the direct included contract exercises top-level, functional-pseudo, attribute-value, combinator, and matching behavior.
+
+## 2.356 Lazy Grid Auto-Placement Reservation (2026-07-14)
+
+- `FenBrowser.FenEngine/Layout/GridLayoutComputer.cs`
+  - The post-selector allocation profile attributed `1.84%` exclusive sampled weight to `DetermineGridPosition`; the focused allocation contract then showed geometric growth of the pending auto-placement list during repeated all-auto grid layout.
+  - `ComputePlacements` now creates the pending list only when it encounters the first non-fully-explicit item and reserves the remaining item upper bound once. Fully explicit grids return after their first placement pass without creating or enumerating an unused pending list.
+  - Item classification, `RawGridPosition` objects, explicit-first ordering, auto-placement ordering, occupancy checks, cursor behavior, and returned bounds are unchanged. The reservation is method-local and adds no cache, pool, unsafe code, retained state, synchronization, or ownership change.
+- `FenBrowser.Tests/Performance/GridAutoPlacementAllocationTests.cs`
+  - Ten warmed arrangements of 100 auto-positioned items move from exactly `393,360 B` to `380,000 B`, saving `13,360 B` (`3.40%`). The retained `381,000 B` ceiling rejects the geometric-growth path.
+  - A counter-case with 100 fully explicit items moves from exactly `364,800 B` to `364,480 B`, saving `320 B` (`0.09%`), and passes a `364,600 B` ceiling. This prevents an eager-capacity optimization from shifting allocation cost onto grids that need no pending storage.
+  - Both measurements are exact across three fresh Release test processes, and both fixtures verify that all 1,000 expected child arrangements still occur.
+
+Five fresh final-code Release processes compare reports `165346`, `165349`, `165351`, `165353`, and `165355` with candidate reports `170159`, `170201`, `170204`, `170206`, and `170208`:
+
+| Scenario | Layout allocation before | Layout allocation after | Layout time before | Layout time after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 7,300,072 B | 7,293,872 B (-6,200 B, -0.08%) | 91.73 ms | 90.75 ms |
+| steady-state-damage-animation | 184 B | 184 B (flat) | 0.00 ms | 0.00 ms |
+| dense-text-flow | 1,361,904 B | 1,361,600 B (-304 B, -0.02%) | 2.55 ms | 2.24 ms |
+| wrapped-multiline-text | 729,832 B | 730,480 B (+648 B, +0.09%) | 1.47 ms | 1.61 ms |
+
+The page fixtures are not dedicated all-auto grid workloads, so their layout counters are small and mixed; no end-to-end allocation or latency improvement is claimed from them. The exact production-path allocation contracts are the causal acceptance evidence, and every benchmark failure gate passes in all five candidate processes.
+
+Verification:
+
+- The two allocation contracts pass three consecutive fresh Release processes at exactly `380,000 B` and `364,480 B`.
+- The included allocation, grid auto-placement, grid layout, track sizing, content sizing, and alignment slice passes `41/41`.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors.
+- A class-to-struct experiment for `RawGridPosition` was rejected and fully reverted: the all-auto contract rose to `430,160 B`, `36,800 B` (`9.36%`) above its `393,360 B` baseline because growing and copying the larger value-type list cost more than the removed item objects.
+- The first eager-capacity candidate was also superseded before shipping because it would reserve storage for fully explicit grids. Only the lazy final design is retained and reported.
+- Test262 and WPT are not rerun because this change only controls private list creation and capacity; the focused grid suites exercise placement semantics directly.

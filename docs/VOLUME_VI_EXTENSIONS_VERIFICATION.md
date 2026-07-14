@@ -3307,3 +3307,20 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_selector_split_after_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN` confirms the targeted helper is absent from the top 40.
+
+## 6.120 Grid Auto-Placement Reservation Verification (2026-07-14)
+
+- `GridAutoPlacementAllocationTests.Arrange_RepeatedAutoPlacement_HasBoundedAllocations` measures ten warmed production arrangements of 100 auto-positioned children. Geometric pending-list growth allocates exactly `393,360 B`; lazy one-time reservation allocates exactly `380,000 B` (`-13,360 B`, `-3.40%`) and passes the `381,000 B` ceiling.
+- `Arrange_RepeatedExplicitPlacement_DoesNotReserveAutoPlacementStorage` protects the counter-case. Ten arrangements of 100 fully explicit children move from exactly `364,800 B` to `364,480 B` (`-320 B`, `-0.09%`) and pass the `364,600 B` ceiling, proving the final implementation does not eagerly allocate the auto-placement buffer.
+- Both exact measurements repeat unchanged in three fresh Release test processes. The broader included grid filter passes `41/41`, covering auto placement, explicit placement, layout, track sizing, content sizing, and alignment.
+- Candidate reports `170159`, `170201`, `170204`, `170206`, and `170208` pass every failure gate against reports `165346`, `165349`, `165351`, `165353`, and `165355`. Layout-allocation medians range from `-6,200 B` to `+648 B`, and layout timing is mixed; the fixtures are not dedicated all-auto grid workloads, so no end-to-end improvement is claimed.
+- The rejected `RawGridPosition` struct experiment measured `430,160 B`, a `9.36%` regression from the all-auto baseline, and was fully reverted. The eager-reservation intermediate candidate was also superseded to avoid penalizing fully explicit grids.
+- Test262 and WPT are not rerun because the private placement objects and ordering are unchanged; direct allocation and grid semantic tests are the relevant falsification surfaces.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~GridAutoPlacementAllocationTests" --logger "console;verbosity=detailed"`: pass (`2/2`) in three fresh processes, exactly `380,000 B` auto and `364,480 B` explicit each time.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~GridAutoPlacementAllocationTests|FullyQualifiedName~GridAutoPlacementTests|FullyQualifiedName~GridLayoutTests|FullyQualifiedName~GridTrackSizingTests|FullyQualifiedName~GridContentSizingTests|FullyQualifiedName~GridAlignmentTests" --logger "console;verbosity=minimal"`: pass (`41/41`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
