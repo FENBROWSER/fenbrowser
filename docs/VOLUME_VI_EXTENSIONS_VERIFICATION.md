@@ -3324,3 +3324,22 @@ Verification commands:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.121 Grid Placement Scratch-Value Verification (2026-07-14)
+
+- `GridAutoPlacementAllocationTests.Arrange_RepeatedAutoPlacement_HasBoundedAllocations` measures the private representation change on the shipped exact-capacity baseline. Ten warmed arrangements of 100 auto-positioned children move from exactly `380,000 B` to `356,000 B` (`-24,000 B`, `-6.32%`) and pass the tightened `357,000 B` ceiling.
+- `Arrange_RepeatedExplicitPlacement_DoesNotReserveAutoPlacementStorage` measures the immediate-consumption path: `364,480 B` becomes `300,480 B` (`-64,000 B`, `-17.56%`) and passes the tightened `301,000 B` ceiling.
+- Both exact results repeat unchanged in three fresh Release test processes. The broader included grid filter remains `41/41`, covering auto and explicit placement, layout, track sizing, content sizing, and alignment.
+- Candidate reports `170447`, `170449`, `170451`, `170453`, and `170456` pass every failure gate against reports `170159`, `170201`, `170204`, `170206`, and `170208`. The grid-heavy first-frame fixture reduces layout allocation by `19,056 B`; the other fixture medians range from `-672 B` to `+828 B`, and timing is mixed, so no page-latency claim is made.
+- The before trace ranks `GridLayoutComputer.DetermineGridPosition` at `1.80%` exclusive sampled allocation weight. The after trace no longer lists it among the top 40 exclusive owners.
+- The old `430,160 B` struct result is retained as a rejected experiment for a geometrically growing list. Re-testing after the separately shipped exact-capacity prerequisite produces the accepted `356,000 B` result.
+- Test262 and WPT are not rerun because this is an internal scratch representation with direct placement and allocation coverage.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~GridAutoPlacementAllocationTests" --logger "console;verbosity=detailed"`: pass (`2/2`) in three fresh processes, exactly `356,000 B` auto and `300,480 B` explicit each time.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~GridAutoPlacementAllocationTests|FullyQualifiedName~GridAutoPlacementTests|FullyQualifiedName~GridLayoutTests|FullyQualifiedName~GridTrackSizingTests|FullyQualifiedName~GridContentSizingTests|FullyQualifiedName~GridAlignmentTests" --logger "console;verbosity=minimal"`: pass (`41/41`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_grid_struct_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture passes every gate; `dotnet-trace report ... topN` confirms the targeted method is absent from the top 40.

@@ -381,13 +381,13 @@ namespace FenBrowser.FenEngine.Layout
             return (positions, maxRow, maxCol);
         }
 
-        private class RawGridPosition {
+        private struct RawGridPosition {
             public int RowStart; 
             public int? RowEnd; // null = auto/span
-            public int RowSpan = 1;
+            public int RowSpan;
             public int ColStart;
             public int? ColEnd;
-            public int ColSpan = 1;
+            public int ColSpan;
             public bool HasExplicitRow;
             public bool HasExplicitCol;
             public Node Node;
@@ -396,7 +396,7 @@ namespace FenBrowser.FenEngine.Layout
         private static RawGridPosition DetermineGridPosition(CssComputed style, Node node, Dictionary<string, NamedArea> areas)
         {
             style ??= new CssComputed();
-            var p = new RawGridPosition { Node = node };
+            var p = new RawGridPosition { Node = node, RowSpan = 1, ColSpan = 1 };
 
             // 1. Check for named area ("grid-area: header")
             if (!string.IsNullOrEmpty(style.GridArea))

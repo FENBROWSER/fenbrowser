@@ -9689,3 +9689,34 @@ Verification:
 - A class-to-struct experiment for `RawGridPosition` was rejected and fully reverted: the all-auto contract rose to `430,160 B`, `36,800 B` (`9.36%`) above its `393,360 B` baseline because growing and copying the larger value-type list cost more than the removed item objects.
 - The first eager-capacity candidate was also superseded before shipping because it would reserve storage for fully explicit grids. Only the lazy final design is retained and reported.
 - Test262 and WPT are not rerun because this change only controls private list creation and capacity; the focused grid suites exercise placement semantics directly.
+
+## 2.357 Compact Grid Placement Scratch Values (2026-07-14)
+
+- `FenBrowser.FenEngine/Layout/GridLayoutComputer.cs`
+  - A fresh trace from the shipped lazy-reservation baseline still attributed `1.80%` exclusive sampled allocation weight to `DetermineGridPosition`. Each grid item created a private `RawGridPosition` reference object even though placement consumes the value only within one `ComputePlacements` call.
+  - `RawGridPosition` is now a private value type stored inline in the already exact-capacity pending list. The factory explicitly initializes the two span defaults, and all other fields retain their zero/null defaults.
+  - The value is fully populated before return and only read afterward; no caller observes its identity and no later mutation relies on reference aliasing. Placement order, Node identity, line/span parsing, named areas, occupancy, cursor behavior, and final `GridItemPosition` objects remain unchanged.
+  - This adds no unsafe code, pooling, cache, native resource, retained state, public representation, synchronization, or ownership change.
+- `FenBrowser.Tests/Performance/GridAutoPlacementAllocationTests.cs`
+  - Against the immediately preceding shipped baseline, ten warmed arrangements of 100 auto-positioned items move from exactly `380,000 B` to `356,000 B`, saving `24,000 B` (`6.32%`). The tightened `357,000 B` ceiling rejects the reference-object path.
+  - Ten arrangements of 100 fully explicit items move from exactly `364,480 B` to `300,480 B`, saving `64,000 B` (`17.56%`). The tightened `301,000 B` ceiling covers the path where every scratch value is consumed immediately and no pending list is created.
+  - Both measurements are exact across three fresh Release test processes and both fixtures still observe all 1,000 expected child arrangements.
+
+Five fresh Release processes compare lazy-reservation reports `170159`, `170201`, `170204`, `170206`, and `170208` with value-type reports `170447`, `170449`, `170451`, `170453`, and `170456`:
+
+| Scenario | Layout allocation before | Layout allocation after | Layout time before | Layout time after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 7,293,872 B | 7,274,816 B (-19,056 B, -0.26%) | 90.75 ms | 92.30 ms |
+| steady-state-damage-animation | 184 B | 184 B (flat) | 0.00 ms | 0.00 ms |
+| dense-text-flow | 1,361,600 B | 1,362,428 B (+828 B, +0.06%) | 2.24 ms | 2.58 ms |
+| wrapped-multiline-text | 730,480 B | 729,808 B (-672 B, -0.09%) | 1.61 ms | 1.48 ms |
+
+Only the first fixture contains enough grid work for the expected counter movement to stand above noise. Timings remain mixed, so no latency improvement is claimed. A fresh `gc-verbose` trace no longer lists `DetermineGridPosition` among the top 40 exclusive allocation owners; the exact production-path contracts remain the causal acceptance evidence.
+
+Verification:
+
+- The two allocation contracts pass three consecutive fresh Release processes at exactly `356,000 B` and `300,480 B`.
+- The included grid allocation, auto-placement, layout, track-sizing, content-sizing, and alignment slice passes `41/41`.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and all four benchmark failure gates pass in every candidate process.
+- The earlier struct experiment remains a valid rejected result for the former geometrically growing list: it allocated `430,160 B`. The representation is retained only after the independently shipped exact-capacity prerequisite changes the measured outcome to `356,000 B`.
+- Test262 and WPT are not rerun because the private scratch value is not exposed to script and the focused grid tests exercise the affected placement semantics directly.

@@ -53,7 +53,7 @@ namespace FenBrowser.Tests.Performance
 
             long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
             _output.WriteLine($"Ten arrangements of 100 auto-positioned items allocated {allocated:N0} B.");
-            Assert.InRange(allocated, 1, 381_000);
+            Assert.InRange(allocated, 1, 357_000);
             Assert.Equal(1_000, arrangedCount);
         }
 
@@ -97,7 +97,7 @@ namespace FenBrowser.Tests.Performance
 
             long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
             _output.WriteLine($"Ten arrangements of 100 explicitly positioned items allocated {allocated:N0} B.");
-            Assert.InRange(allocated, 1, 364_600);
+            Assert.InRange(allocated, 1, 301_000);
             Assert.Equal(1_000, arrangedCount);
         }
 
