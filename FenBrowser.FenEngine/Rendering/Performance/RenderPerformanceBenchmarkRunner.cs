@@ -36,6 +36,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         double AverageTotalMs,
         double MaxTotalMs,
         double HtmlParseMs,
+        long HtmlParseAllocatedBytes,
         double CssParseAndStyleMs,
         double CssCoreTotalMs,
         double CssQueueWaitMs,
@@ -119,10 +120,12 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             var pipelineStopwatch = Stopwatch.StartNew();
 
             var baseUri = new Uri("https://bench.fen/");
+            long htmlAllocatedBefore = GC.GetAllocatedBytesForCurrentThread();
             long parseStarted = Stopwatch.GetTimestamp();
             var parser = new HtmlParser(scenario.Html, baseUri);
             var document = parser.Parse();
             double htmlParseMs = Stopwatch.GetElapsedTime(parseStarted).TotalMilliseconds;
+            long htmlParseAllocatedBytes = Math.Max(0, GC.GetAllocatedBytesForCurrentThread() - htmlAllocatedBefore);
             var root = document.DocumentElement;
             long cssStarted = Stopwatch.GetTimestamp();
             var cssResult = await CssLoader.ComputeWithResultAsync(root, baseUri, null, scenario.ViewportWidth, scenario.ViewportHeight).ConfigureAwait(false);
@@ -206,6 +209,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 Math.Round(average, 2),
                 Math.Round(max, 2),
                 Math.Round(htmlParseMs, 2),
+                htmlParseAllocatedBytes,
                 Math.Round(cssParseAndStyleMs, 2),
                 Math.Round(cssResult.Timing.TotalMs, 2),
                 Math.Round(cssResult.Timing.QueueWaitMs, 2),
@@ -307,7 +311,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             foreach (var result in report.Results)
             {
                 builder.AppendLine(
-                    $"{result.Name}: total={result.AverageTotalMs:0.##}ms html={result.HtmlParseMs:0.##}ms cssRules={result.CssRuleParseMs:0.##}ms cascade={result.CssCascadeMs:0.##}ms cssTotal={result.CssParseAndStyleMs:0.##}ms inlineStyleCache={result.InlineStyleCacheHits}h/{result.InlineStyleCacheMisses}m/{result.InlineStyleCacheEvictions}e layout={result.AverageLayoutMs:0.##}ms paint={result.AveragePaintGenerationMs:0.##}ms raster={result.AverageRasterMs:0.##}ms alloc={result.ManagedAllocatedBytes}B dom={result.DomNodeCount} boxes={result.BoxCount} paintNodes={result.PaintNodeCount} rasterMode={result.DominantRasterMode} failGate={result.FailureGatePassed}");
+                    $"{result.Name}: total={result.AverageTotalMs:0.##}ms html={result.HtmlParseMs:0.##}ms htmlAlloc={result.HtmlParseAllocatedBytes}B cssRules={result.CssRuleParseMs:0.##}ms cascade={result.CssCascadeMs:0.##}ms cssTotal={result.CssParseAndStyleMs:0.##}ms inlineStyleCache={result.InlineStyleCacheHits}h/{result.InlineStyleCacheMisses}m/{result.InlineStyleCacheEvictions}e layout={result.AverageLayoutMs:0.##}ms paint={result.AveragePaintGenerationMs:0.##}ms raster={result.AverageRasterMs:0.##}ms alloc={result.ManagedAllocatedBytes}B dom={result.DomNodeCount} boxes={result.BoxCount} paintNodes={result.PaintNodeCount} rasterMode={result.DominantRasterMode} failGate={result.FailureGatePassed}");
             }
 
             return builder.ToString();

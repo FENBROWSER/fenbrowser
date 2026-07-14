@@ -30,6 +30,7 @@ namespace FenBrowser.Tests.Performance
             {
                 Assert.True(result.Iterations > 0);
                 Assert.True(result.HtmlParseMs >= 0);
+                Assert.True(result.HtmlParseAllocatedBytes > 0);
                 Assert.True(result.CssParseAndStyleMs >= 0);
                 Assert.True(result.CssCoreTotalMs >= 0);
                 Assert.True(result.CssCoreTotalMs <= result.CssParseAndStyleMs + 1);
@@ -75,6 +76,7 @@ namespace FenBrowser.Tests.Performance
             Assert.Equal(outputPath, writtenPath);
             Assert.Contains("\"Environment\"", json);
             Assert.Contains("\"HtmlParseMs\"", json);
+            Assert.Contains("\"HtmlParseAllocatedBytes\"", json);
             Assert.Contains("\"CssRuleParseMs\"", json);
             Assert.Contains("\"CssCascadeMs\"", json);
             Assert.Contains("\"InlineStyleCacheHits\"", json);

@@ -1270,3 +1270,28 @@ _End of Volume II_
   - Added `BrowserSettings.Logging.LogCookies` and env override `FEN_LOG_COOKIES=1`.
   - Diagnostics are PII-safe by construction: no plaintext cookie values, only cookie name, value length, and short hash tag for correlation.
   - Diagnostics are fail-safe: all logging paths swallow exceptions and cannot break cookie/network flow.
+
+### 1.62 Lazy HTML Token-Pool Slot Initialization (2026-07-14)
+
+- `FenBrowser.Core/Parsing/HtmlTokenPool.cs`
+  - The fixed-capacity per-parser token pool no longer constructs all 25,664 token objects in its constructor. Start-tag, end-tag, character, comment, and doctype slots are initialized on first rent and then retain the existing reset-and-reuse behavior.
+  - Capacity and ring-wrap behavior are unchanged, so memory remains bounded and tokenizer/tree-builder ordering semantics are preserved. The arrays still define the ownership boundary; no process-global or unbounded pool was introduced.
+  - `TotalAllocated` now reports real lazy slot creation, and `ReuseRatio` reports actual reused rents instead of claiming 100% reuse before any token was reused.
+- `FenBrowser.Tests/Core/Parsing/HtmlTokenPoolTests.cs`
+  - Covers zero token-object construction before first rent, state reset, reference reuse after `ResetAll`, and allocation/reuse telemetry.
+
+Five-process Release benchmark medians:
+
+| Fixture | Parse before | Parse after | Parser allocations before | Parser allocations after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 35.60 ms | 34.01 ms (-4.47%) | 3,044,792 B | 1,310,976 B (-56.94%) |
+| steady-state-damage-animation | 2.20 ms | 1.73 ms (-21.36%) | 2,609,680 B | 838,696 B (-67.86%) |
+| dense-text-flow | 2.26 ms | 1.01 ms (-55.31%) | 2,387,968 B | 605,544 B (-74.64%) |
+| wrapped-multiline-text | 7.02 ms | 0.52 ms (-92.59%) | 2,193,928 B | 394,080 B (-82.04%) |
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Core.Parsing&FullyQualifiedName!~HtmlParserTraceTests" -v quiet /nodeReuse:false`: pass (`67/67`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~HtmlTokenPoolTests|FullyQualifiedName~HtmlParserTraceTests.ParseDocumentDetailed_WritesHtmlParsingTraceEvents" -v quiet /nodeReuse:false`: pass (`3/3`) when the file-trace contract is isolated from parallel diagnostics writers.
+- The default parallel parsing slice passed `67/68`; its trace-sink test is the same parallel file-diagnostics interference observed at the baseline (`65/66`) and passes in the serial slice.
+- A post-change sampled EventPipe trace reduced `HtmlTokenPool..ctor()` inclusive samples from `5.841` to `1.908` units (`-67.3%`), confirming that constructor work was removed rather than shifted into benchmark accounting.

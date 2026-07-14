@@ -8849,3 +8849,13 @@ Verification:
 
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~InlineFormattingContractTests" -v quiet /nodeReuse:false`: pass (`21/21`) before and after the change.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests|FullyQualifiedName~PaintTreePillRenderingContractTests" -v quiet /nodeReuse:false`: pass (`13/13`) with the new fixture.
+
+## 2.325 Parser Allocation Measurement (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Performance/RenderPerformanceBenchmarkRunner.cs`
+  - Each deterministic scenario now records `HtmlParseAllocatedBytes` with the current-thread allocation counter around the synchronous HTML parse boundary.
+  - The console summary and structured JSON report expose parser allocation independently from whole-pipeline allocation, allowing parser changes to be retained or rejected without attributing CSS, layout, paint, or raster allocations to parsing.
+- `FenBrowser.Tests/Performance/RenderPerformanceBenchmarkRunnerTests.cs`
+  - Verifies non-zero parser allocation capture and JSON persistence.
+
+The first use of this metric established the baseline and retained result for Core lazy token-pool initialization documented in `VOLUME_II_CORE.md` section 1.62. Baseline reports are `104748`–`104754`; optimized reports are `104909`–`104914`.

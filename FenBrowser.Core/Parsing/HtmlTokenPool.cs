@@ -43,10 +43,11 @@ namespace FenBrowser.Core.Parsing
 
         // Telemetry
         private long _rented;
+        private long _allocated;
 
         public long TotalRented => _rented;
-        public long TotalAllocated => 0;
-        public double ReuseRatio => _rented > 0 ? 1.0 : 0.0;
+        public long TotalAllocated => _allocated;
+        public double ReuseRatio => _rented > 0 ? (double)(_rented - _allocated) / _rented : 0.0;
 
         public HtmlTokenPool()
         {
@@ -55,18 +56,6 @@ namespace FenBrowser.Core.Parsing
             _charPool = new PooledCharacterToken[CharPoolSize];
             _commentPool = new PooledCommentToken[CommentPoolSize];
             _doctypePool = new PooledDoctypeToken[DoctypePoolSize];
-
-            for (int i = 0; i < TagPoolSize; i++)
-            {
-                _startTagPool[i] = new PooledStartTagToken();
-                _endTagPool[i] = new PooledEndTagToken();
-            }
-            for (int i = 0; i < CharPoolSize; i++)
-                _charPool[i] = new PooledCharacterToken();
-            for (int i = 0; i < CommentPoolSize; i++)
-                _commentPool[i] = new PooledCommentToken();
-            for (int i = 0; i < DoctypePoolSize; i++)
-                _doctypePool[i] = new PooledDoctypeToken();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -76,6 +65,12 @@ namespace FenBrowser.Core.Parsing
             var index = _startTagIndex;
             _startTagIndex = (index + 1) % TagPoolSize;
             var token = _startTagPool[index];
+            if (token == null)
+            {
+                token = new PooledStartTagToken();
+                _startTagPool[index] = token;
+                _allocated++;
+            }
             token.Reset();
             return token;
         }
@@ -87,6 +82,12 @@ namespace FenBrowser.Core.Parsing
             var index = _endTagIndex;
             _endTagIndex = (index + 1) % TagPoolSize;
             var token = _endTagPool[index];
+            if (token == null)
+            {
+                token = new PooledEndTagToken();
+                _endTagPool[index] = token;
+                _allocated++;
+            }
             token.Reset();
             return token;
         }
@@ -98,6 +99,12 @@ namespace FenBrowser.Core.Parsing
             var index = _charIndex;
             _charIndex = (index + 1) % CharPoolSize;
             var token = _charPool[index];
+            if (token == null)
+            {
+                token = new PooledCharacterToken();
+                _charPool[index] = token;
+                _allocated++;
+            }
             token.ResetWith(c);
             return token;
         }
@@ -109,6 +116,12 @@ namespace FenBrowser.Core.Parsing
             var index = _charIndex;
             _charIndex = (index + 1) % CharPoolSize;
             var token = _charPool[index];
+            if (token == null)
+            {
+                token = new PooledCharacterToken();
+                _charPool[index] = token;
+                _allocated++;
+            }
             token.ResetWith(s);
             return token;
         }
@@ -120,6 +133,12 @@ namespace FenBrowser.Core.Parsing
             var index = _commentIndex;
             _commentIndex = (index + 1) % CommentPoolSize;
             var token = _commentPool[index];
+            if (token == null)
+            {
+                token = new PooledCommentToken();
+                _commentPool[index] = token;
+                _allocated++;
+            }
             token.Reset();
             return token;
         }
@@ -131,6 +150,12 @@ namespace FenBrowser.Core.Parsing
             var index = _doctypeIndex;
             _doctypeIndex = (index + 1) % DoctypePoolSize;
             var token = _doctypePool[index];
+            if (token == null)
+            {
+                token = new PooledDoctypeToken();
+                _doctypePool[index] = token;
+                _allocated++;
+            }
             token.Reset();
             return token;
         }
