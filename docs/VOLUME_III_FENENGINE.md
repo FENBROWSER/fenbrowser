@@ -9449,3 +9449,31 @@ Verification:
 - The original focused font contracts pass `2/2` before the change; the retained allocation, font-metrics, font-service-cache, inline-formatting, and probe-reset slice passes `23/23`.
 - The retained allocation contract passes twice after the Release build, and all four benchmark failure gates pass in every candidate process.
 - Test262 and WPT categories are not rerun because the change only shares an immutable internal constant and does not alter JavaScript or web-platform semantics.
+
+## 2.348 Exact-Size CSS Comment Removal (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - The retained Release allocation trace ranked `CssLoader.StripComments` first among FenBrowser allocation owners at `131.7975` sampled units. Inspection found that every stylesheet containing a comment allocated a `StringBuilder` backing buffer sized to the complete source and then allocated the returned string, even when comments removed a substantial part of that source.
+  - Comment removal now makes one ordinal marker-search pass to calculate the exact retained character count, then uses `string.Create` for the single required output allocation and copies retained spans during a second pass. Stylesheets without a comment marker still return the original string instance.
+  - Current recovery semantics remain unchanged, including removal of an unterminated comment tail and the existing lexical treatment of marker text. The implementation adds no pool, cache, unsafe code, retained source buffer, global state, native resource, or concurrency boundary. `StripComments` is internal only so the included performance contract can exercise the production operation directly.
+- `FenBrowser.Tests/Performance/CssCommentStrippingAllocationTests.cs`
+  - One hundred warmed removals over a generated 256-rule comment-heavy stylesheet move from exactly `4,705,600 B` with the original algorithm to exactly `1,772,800 B`, saving `2,932,800 B` (`62.33%`). The retained `1,773,000 B` ceiling allows the required output strings and rejects the oversized temporary buffers.
+  - The test compares the retained result with a local copy of the original algorithm across null, empty, no-comment, empty-comment, adjacent-comment, leading/trailing, unterminated, and nested-marker inputs. It also protects no-comment reference identity and exact output for the generated stylesheet.
+
+Five fresh Release processes compare the immediately preceding reports `153454`, `153456`, `153457`, `153458`, and `153459` with candidate reports `154124`, `154125`, `154127`, `154128`, and `154129`:
+
+| Scenario | Total before | Total after | CSS time before | CSS time after | CSS allocation before | CSS allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 175.31 ms | 170.97 ms (-2.48%) | 121.52 ms | 119.41 ms (-1.74%) | 9,750,168 B | 9,733,760 B (-0.17%) | 19,578,744 B | 19,572,968 B (-0.03%) |
+| steady-state-damage-animation | 14.24 ms | 14.07 ms (-1.19%) | 18.50 ms | 17.89 ms (-3.30%) | 5,555,064 B | 5,546,744 B (-0.15%) | 14,955,208 B | 14,946,880 B (-0.06%) |
+| dense-text-flow | 12.74 ms | 12.25 ms (-3.85%) | 5.72 ms | 5.56 ms (-2.80%) | 3,174,536 B | 3,156,448 B (-0.57%) | 8,982,824 B | 8,957,416 B (-0.28%) |
+| wrapped-multiline-text | 6.48 ms | 6.27 ms (-3.24%) | 9.94 ms | 8.77 ms (-11.77%) | 1,688,840 B | 1,697,912 B (+0.54%) | 4,249,408 B | 4,266,680 B (+0.41%) |
+
+The exact production-call allocation delta is the causal acceptance measurement. CSS and total timing medians improve in all four batches and are directionally consistent with the targeted work, but the processes batch multiple stages and the individual readings remain noisy. CSS allocation improves in three fixtures while the wrapped fixture increases by `9,072 B`; that contrary counter is retained and no whole-process allocation claim is made. The immediate sampling trace is also explicitly inconclusive: `StripComments` attribution moves from `131.7975` to `134.3451` units and is not used as supporting evidence.
+
+Verification:
+
+- The exact allocation and compatibility contract passes on two retained Release reruns.
+- The included CSS background, logical-projection, Tailwind utility, and layout-stability slice remains `6/9` before and after. The same existing border-initial-value failure (`1` expected, `0` actual) and two logical-projection failures (`30` expected, `57.6` actual) remain unchanged.
+- The Release `FenBrowser.Tooling` build succeeds with zero warnings and zero errors, and all four benchmark failure gates pass in every candidate process.
+- Engine-directory parser tests are excluded by the current test project, so the new contract is placed on the included performance surface. Test262 and WPT categories are not rerun because the change preserves the CSS preprocessing output and does not alter selector, cascade, layout, JavaScript, or DOM semantics.

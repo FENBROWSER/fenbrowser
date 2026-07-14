@@ -3101,3 +3101,20 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~TextLayoutTypefaceAllocationTests" --logger "console;verbosity=minimal"`: pass (`1/1`) on both retained reruns.
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.109 CSS Comment-Removal Verification (2026-07-14)
+
+- `CssCommentStrippingAllocationTests` measures 100 warmed calls to the production remover over a 256-rule comment-heavy stylesheet. The original `StringBuilder(css.Length)` path allocates exactly `4,705,600 B`; exact-size output construction allocates exactly `1,772,800 B` (`-2,932,800 B`, `-62.33%`) and passes the `1,773,000 B` ceiling on two retained runs.
+- The same contract compares production output against the original algorithm for null, empty, plain, marker-only, empty, adjacent, leading/trailing, unterminated, and nested-marker inputs. It verifies exact generated output and preserves the original string reference on the no-comment fast path.
+- The included CSS correctness baseline is `6/9`, and the candidate remains `6/9` with identical values. The existing failures are `RegisteredBorderStyleInitialValue_ProducesEffectiveBorder` (`1` expected, `0` actual) and both logical-projection contracts (`30` expected, `57.6` actual).
+- Candidate reports `154124`, `154125`, `154127`, `154128`, and `154129` pass every failure gate. CSS time medians improve `1.74%`-`11.77%` and total medians improve `1.19%`-`3.85%`, while allocation counters are mixed: CSS allocation improves in three fixtures but increases `0.54%` in the wrapped fixture.
+- The immediate sampling trace is inconclusive (`131.7975` before versus `134.3451` after for `CssLoader.StripComments`) and is not acceptance evidence. The deterministic production-call allocation measurement is the retained proof.
+- `FenBrowser.Tests.csproj` excludes `Engine\\**\\*.cs`, so attempts to run the existing engine-directory CSS tokenizer/parser tests match no included tests. The new direct contract resides under the included performance directory rather than changing project inclusion policy.
+- Test262 and WPT are not rerun because output compatibility is protected directly and the change is confined to allocation behavior inside CSS comment preprocessing.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CssCommentStrippingAllocationTests"`: pass (`1/1`) on both retained reruns.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CssBackgroundShorthandTests|FullyQualifiedName~CssLogicalProjectionTests|FullyQualifiedName~TailwindUtilityCssContractTests|FullyQualifiedName~LayoutStabilityTests"`: same three existing failures, `6/9`, before and after.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.

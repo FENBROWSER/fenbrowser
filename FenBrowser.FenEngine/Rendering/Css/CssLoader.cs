@@ -6711,31 +6711,58 @@ private static double? ExtractPx(string text, string prop)
             return true;
         }
 
-        private static string StripComments(string css)
+        internal static string StripComments(string css)
         {
             if (string.IsNullOrEmpty(css)) return "";
-            if (!css.Contains("/*")) return css;
+            if (css.IndexOf("/*", StringComparison.Ordinal) < 0) return css;
 
-            var sb = new StringBuilder(css.Length);
-            int i = 0;
-            while (i < css.Length)
+            int outputLength = 0;
+            int sourceIndex = 0;
+            while (sourceIndex < css.Length)
             {
-                if (i + 1 < css.Length && css[i] == '/' && css[i + 1] == '*')
+                int commentStart = css.IndexOf("/*", sourceIndex, StringComparison.Ordinal);
+                if (commentStart < 0)
                 {
-                    i += 2;
-                    while (i + 1 < css.Length && !(css[i] == '*' && css[i + 1] == '/'))
-                    {
-                        i++;
-                    }
-                    i += 2; // skip */
+                    outputLength += css.Length - sourceIndex;
+                    break;
                 }
-                else
+
+                outputLength += commentStart - sourceIndex;
+                int commentEnd = css.IndexOf("*/", commentStart + 2, StringComparison.Ordinal);
+                if (commentEnd < 0)
                 {
-                    sb.Append(css[i]);
-                    i++;
+                    break;
                 }
+
+                sourceIndex = commentEnd + 2;
             }
-            return sb.ToString();
+
+            return string.Create(outputLength, css, static (destination, source) =>
+            {
+                int readIndex = 0;
+                int writeIndex = 0;
+                while (readIndex < source.Length)
+                {
+                    int commentStart = source.IndexOf("/*", readIndex, StringComparison.Ordinal);
+                    if (commentStart < 0)
+                    {
+                        source.AsSpan(readIndex).CopyTo(destination[writeIndex..]);
+                        break;
+                    }
+
+                    int segmentLength = commentStart - readIndex;
+                    source.AsSpan(readIndex, segmentLength).CopyTo(destination[writeIndex..]);
+                    writeIndex += segmentLength;
+
+                    int commentEnd = source.IndexOf("*/", commentStart + 2, StringComparison.Ordinal);
+                    if (commentEnd < 0)
+                    {
+                        break;
+                    }
+
+                    readIndex = commentEnd + 2;
+                }
+            });
         }
 
         private static IEnumerable<string> SplitTokens(string s)
