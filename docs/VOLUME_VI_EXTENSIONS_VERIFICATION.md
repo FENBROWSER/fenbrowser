@@ -2848,3 +2848,19 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~InlineFormattingContractTests|FullyQualifiedName~InlineFormattingContextProbeResetTests" -v quiet /nodeReuse:false`: pass (`20/20`).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every retained process.
+
+## 6.93 Live Child-Node View Verification (2026-07-14)
+
+- The included `ChildNodeListTests` contract failed before the implementation because separate `ChildNodes` reads returned different objects and 10,000 repeated reads allocated `240,000 B`.
+- The retained path returns the same collection, reflects subsequent appends through the original reference, and allocates exactly `0 B` after its first lazy creation.
+- Existing parser, malformed-input hardening, and table-tree coverage passed `18/18` both before and after; the combined retained slice passes `20/20`.
+- Five-process Release comparisons use reports `124343`-`124348` before and `124856`-`124901` after. Median paint allocations fall `14.62%`-`33.14%`, render allocations fall `4.07%`-`20.87%`, and managed page allocations fall `2.05%`-`14.39%`.
+- Every benchmark failure gate passes. Dense-text Gen0 collections improve from one to zero, but wrapped-text collections move from zero to one; the result is reported without claiming a uniform GC improvement.
+- A fresh verbose allocation trace no longer ranks `ContainerNode.get_ChildNodes` in its top 500 entries (previously `3.11%` exclusive weight).
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~ChildNodeListTests|FullyQualifiedName~TableParsingTests|FullyQualifiedName~AfterHeadParsingTests|FullyQualifiedName~ParserHardeningGuardTests" -v quiet /nodeReuse:false`: pass (`20/20`).
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every retained process.

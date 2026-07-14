@@ -1460,3 +1460,29 @@ Verification:
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `EngineLogSettingsTests`: pass (`8/8`).
 - Logging trace contract slice: pass (`12/12`) with enabled parser, script, event-loop, navigation, and missing-API diagnostics preserved.
+
+### 1.70 Same-Object Live Child Node Lists (2026-07-14)
+
+- `FenBrowser.Core/Dom/V2/ContainerNode.cs`
+  - `ContainerNode.ChildNodes` previously constructed a `LiveChildNodeList` on every property read. Allocation traces found the getter in dirty-state clearing, paint-tree construction, layout, and selector traversal, where its exclusive allocation weight reached `3.11%`.
+  - Each container now lazily owns one live wrapper. This implements the repository IDL's `[SameObject]` requirement for `Node.childNodes`; the wrapper continues to read current sibling storage, so append/remove operations remain visible without replacing or invalidating the view.
+  - Ownership follows the existing single DOM-owner-thread contract. This is one per-node standards object rather than a global cache: there is no key table, eviction, cross-document lifetime, or pooled state. Unread collections remain unallocated; accessed containers retain one wrapper and one reference field.
+- `FenBrowser.Tests/Core/ChildNodeListTests.cs`
+  - Proves repeated reads return the same object, that the object remains live across two mutations, and that 10,000 post-initialization reads allocate `0 B`.
+
+Five-process Release medians compare immediate reports `124343`-`124348` with retained reports `124856`-`124901`:
+
+| Scenario | Total time before | Total time after | Paint allocation before | Paint allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 183.50 ms | 183.16 ms (-0.19%) | 1,899,952 B | 1,622,272 B (-14.62%) | 22,328,272 B | 21,871,048 B (-2.05%) |
+| steady-state-damage-animation | 14.26 ms | 14.17 ms (-0.63%) | 1,140,082 B | 971,602 B (-14.78%) | 18,020,288 B | 17,081,336 B (-5.21%) |
+| dense-text-flow | 23.56 ms | 20.62 ms (-12.48%) | 2,543,036 B | 1,700,356 B (-33.14%) | 11,950,968 B | 10,231,456 B (-14.39%) |
+| wrapped-multiline-text | 7.70 ms | 7.63 ms (-0.91%) | 662,636 B | 468,188 B (-29.34%) | 5,166,320 B | 4,684,032 B (-9.34%) |
+
+The direct read probe moved from `240,000 B` to `0 B`. `ContainerNode.get_ChildNodes` disappeared from the top 500 entries in the fresh allocation trace. Working-set medians remained within `-1.31%` to `+0.25%`; the dense fixture's Gen0 count moved from `1` to `0`, while the wrapped fixture moved from `0` to `1`, so no universal GC-pause claim is made.
+
+Verification:
+
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- Same-object, liveness, allocation, parser, and hardening slice: pass (`20/20`).
+- All four benchmark failure gates passed in every retained report.

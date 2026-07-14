@@ -26,6 +26,8 @@ namespace FenBrowser.Core.Dom.V2
     {
         // --- Slot-Based Child Storage ---
         private ChildNodeStorage _children;
+        // Node.childNodes is [SameObject]; the DOM owner thread creates one live view on demand.
+        private LiveChildNodeList _childNodes;
 
         // --- Performance: Cached counts (invalidated on mutation) ---
         private int _cachedChildElementCount = -1; // -1 means not cached
@@ -36,7 +38,7 @@ namespace FenBrowser.Core.Dom.V2
         public override Node FirstChild => _children.First;
         public override Node LastChild => _children.Last;
         public override bool HasChildNodes => _children.Count > 0;
-        public override NodeList ChildNodes => new LiveChildNodeList(this);
+        public override NodeList ChildNodes => _childNodes ??= new LiveChildNodeList(this);
 
         /// <summary>
         /// Gets or sets the text content of this node.
