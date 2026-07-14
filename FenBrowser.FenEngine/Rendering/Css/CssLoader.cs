@@ -44,6 +44,10 @@ namespace FenBrowser.FenEngine.Rendering
             public int ExpandedSourceCount { get; set; }
             public int RuleCount { get; set; }
             public int ComputedStyleCount { get; set; }
+            public int InlineStyleCacheHits { get; set; }
+            public int InlineStyleCacheMisses { get; set; }
+            public int InlineStyleCacheEvictions { get; set; }
+            public int InlineStyleCacheEntries { get; set; }
         }
 
         // Keep file diagnostics enabled only in debug builds.
@@ -971,7 +975,9 @@ namespace FenBrowser.FenEngine.Rendering
                 cascadeRoot ?? root,
                 styleSet,
                 log,
-                deadline);
+                deadline,
+                out var inlineStyleCacheStatistics);
+            FenBrowser.FenEngine.Rendering.Performance.PerformanceDiagnosticsStore.RecordInlineStyleCache(inlineStyleCacheStatistics);
             double cascadeMs = System.Diagnostics.Stopwatch.GetElapsedTime(cascadeStarted).TotalMilliseconds;
             EngineLogCompat.Info($"[PERF-CSS] Cascade Matching Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})", LogCategory.Rendering);
             
@@ -991,7 +997,11 @@ namespace FenBrowser.FenEngine.Rendering
                         SourceCount = cssBlobs.Count,
                         ExpandedSourceCount = expanded.Count,
                         RuleCount = allRulesForVars.Count,
-                        ComputedStyleCount = computed.Count
+                        ComputedStyleCount = computed.Count,
+                        InlineStyleCacheHits = inlineStyleCacheStatistics.Hits,
+                        InlineStyleCacheMisses = inlineStyleCacheStatistics.Misses,
+                        InlineStyleCacheEvictions = inlineStyleCacheStatistics.Evictions,
+                        InlineStyleCacheEntries = inlineStyleCacheStatistics.Entries
                     }
                 };
             }

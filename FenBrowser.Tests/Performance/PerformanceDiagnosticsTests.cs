@@ -90,6 +90,7 @@ namespace FenBrowser.Tests.Performance
         {
             PerformanceDiagnosticsStore.Reset();
             PerformanceDiagnosticsStore.StartRecording();
+            PerformanceDiagnosticsStore.RecordInlineStyleCache(new InlineStyleCacheStatistics(7, 2, 1, 4, 256));
             PerformanceDiagnosticsStore.RecordNavigation(CreateNavigation("https://fen.test/latest"));
 
             string html = PerformancePageRenderer.Render(new Uri("fen://performance"));
@@ -110,6 +111,8 @@ namespace FenBrowser.Tests.Performance
             Assert.Contains("Text measurement cache hits", html);
             Assert.Contains("Image cache bytes", html);
             Assert.Contains("Font cache hits", html);
+            Assert.Contains("Inline style cache hits", html);
+            Assert.Contains(">7<", html);
 
             PerformancePageRenderer.Render(new Uri("fen://performance?action=stop"));
             Assert.False(PerformanceDiagnosticsStore.IsRecording);

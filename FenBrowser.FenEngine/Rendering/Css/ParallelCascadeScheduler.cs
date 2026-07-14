@@ -45,7 +45,21 @@ namespace FenBrowser.FenEngine.Rendering
             Action<string> log, 
             FenBrowser.Core.Deadlines.FrameDeadline deadline)
         {
-            if (root == null) return new Dictionary<Node, CssComputed>();
+            return Cascade(root, styleSet, log, deadline, out _);
+        }
+
+        public static Dictionary<Node, CssComputed> Cascade(
+            Element root,
+            StyleSet styleSet,
+            Action<string> log,
+            FenBrowser.Core.Deadlines.FrameDeadline deadline,
+            out InlineStyleCacheStatistics inlineStyleCacheStatistics)
+        {
+            if (root == null)
+            {
+                inlineStyleCacheStatistics = default;
+                return new Dictionary<Node, CssComputed>();
+            }
 
             var result = new ConcurrentDictionary<Node, CssComputed>();
             var engine = new CascadeEngine(styleSet);
@@ -84,6 +98,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (bodyElement == null)
             {
                 // No <body> found – degenerate document; everything was already processed.
+                inlineStyleCacheStatistics = engine.GetInlineStyleCacheStatistics();
                 return new Dictionary<Node, CssComputed>(result);
             }
 
@@ -116,6 +131,7 @@ namespace FenBrowser.FenEngine.Rendering
                 });
             }
 
+            inlineStyleCacheStatistics = engine.GetInlineStyleCacheStatistics();
             return new Dictionary<Node, CssComputed>(result);
         }
 

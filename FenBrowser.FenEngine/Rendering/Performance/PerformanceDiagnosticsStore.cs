@@ -49,6 +49,10 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         long TextMeasurementCacheHits,
         long TextMeasurementCacheMisses,
         long TextMeasurementCacheEvictions,
+        long InlineStyleCacheHits,
+        long InlineStyleCacheMisses,
+        long InlineStyleCacheEvictions,
+        int InlineStyleCacheEntries,
         bool RendererCachesCaptured);
 
     /// <summary>
@@ -63,6 +67,10 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         private static readonly List<NavigationPerformanceSnapshot> Navigations = new(MaximumNavigationHistory);
         private static RenderFrameTelemetry? _latestFrame;
         private static int _isRecording = 1;
+        private static long _inlineStyleCacheHits;
+        private static long _inlineStyleCacheMisses;
+        private static long _inlineStyleCacheEvictions;
+        private static int _inlineStyleCacheEntries;
 
         public static bool IsRecording => Volatile.Read(ref _isRecording) != 0;
 
@@ -76,7 +84,24 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             {
                 Navigations.Clear();
                 _latestFrame = null;
+                Interlocked.Exchange(ref _inlineStyleCacheHits, 0);
+                Interlocked.Exchange(ref _inlineStyleCacheMisses, 0);
+                Interlocked.Exchange(ref _inlineStyleCacheEvictions, 0);
+                Volatile.Write(ref _inlineStyleCacheEntries, 0);
             }
+        }
+
+        public static void RecordInlineStyleCache(InlineStyleCacheStatistics statistics)
+        {
+            if (!IsRecording)
+            {
+                return;
+            }
+
+            Interlocked.Add(ref _inlineStyleCacheHits, statistics.Hits);
+            Interlocked.Add(ref _inlineStyleCacheMisses, statistics.Misses);
+            Interlocked.Add(ref _inlineStyleCacheEvictions, statistics.Evictions);
+            Volatile.Write(ref _inlineStyleCacheEntries, statistics.Entries);
         }
 
         public static void RecordFrame(RenderFrameTelemetry? telemetry)
@@ -186,6 +211,10 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                     0,
                     0,
                     0,
+                    Interlocked.Read(ref _inlineStyleCacheHits),
+                    Interlocked.Read(ref _inlineStyleCacheMisses),
+                    Interlocked.Read(ref _inlineStyleCacheEvictions),
+                    Volatile.Read(ref _inlineStyleCacheEntries),
                     false));
 
                 if (Navigations.Count > MaximumNavigationHistory)

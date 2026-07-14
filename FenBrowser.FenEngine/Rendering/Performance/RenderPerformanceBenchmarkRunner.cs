@@ -47,6 +47,10 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         int CssSourceCount,
         int CssRuleCount,
         int ComputedStyleCount,
+        int InlineStyleCacheHits,
+        int InlineStyleCacheMisses,
+        int InlineStyleCacheEvictions,
+        int InlineStyleCacheEntries,
         double AverageLayoutMs,
         double AveragePaintGenerationMs,
         double AverageRasterMs,
@@ -213,6 +217,10 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 cssResult.Timing.SourceCount,
                 cssResult.Timing.RuleCount,
                 cssResult.Timing.ComputedStyleCount,
+                cssResult.Timing.InlineStyleCacheHits,
+                cssResult.Timing.InlineStyleCacheMisses,
+                cssResult.Timing.InlineStyleCacheEvictions,
+                cssResult.Timing.InlineStyleCacheEntries,
                 Math.Round(AverageOrZero(layoutTotals), 2),
                 Math.Round(AverageOrZero(paintTotals), 2),
                 Math.Round(AverageOrZero(rasterTotals), 2),
@@ -291,7 +299,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             foreach (var result in report.Results)
             {
                 builder.AppendLine(
-                    $"{result.Name}: total={result.AverageTotalMs:0.##}ms html={result.HtmlParseMs:0.##}ms cssRules={result.CssRuleParseMs:0.##}ms cascade={result.CssCascadeMs:0.##}ms cssTotal={result.CssParseAndStyleMs:0.##}ms layout={result.AverageLayoutMs:0.##}ms paint={result.AveragePaintGenerationMs:0.##}ms raster={result.AverageRasterMs:0.##}ms alloc={result.ManagedAllocatedBytes}B dom={result.DomNodeCount} boxes={result.BoxCount} paintNodes={result.PaintNodeCount} rasterMode={result.DominantRasterMode} failGate={result.FailureGatePassed}");
+                    $"{result.Name}: total={result.AverageTotalMs:0.##}ms html={result.HtmlParseMs:0.##}ms cssRules={result.CssRuleParseMs:0.##}ms cascade={result.CssCascadeMs:0.##}ms cssTotal={result.CssParseAndStyleMs:0.##}ms inlineStyleCache={result.InlineStyleCacheHits}h/{result.InlineStyleCacheMisses}m/{result.InlineStyleCacheEvictions}e layout={result.AverageLayoutMs:0.##}ms paint={result.AveragePaintGenerationMs:0.##}ms raster={result.AverageRasterMs:0.##}ms alloc={result.ManagedAllocatedBytes}B dom={result.DomNodeCount} boxes={result.BoxCount} paintNodes={result.PaintNodeCount} rasterMode={result.DominantRasterMode} failGate={result.FailureGatePassed}");
             }
 
             return builder.ToString();

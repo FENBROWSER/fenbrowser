@@ -8762,3 +8762,35 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Performance.RenderPerformanceBenchmarkRunnerTests" -v quiet /nodeReuse:false`: pass (`3/3`).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: pass; all correctness/performance failure gates passed and the split report was written to `Results/performance/render_perf_benchmark_20260714_101250.json`.
+
+## 2.322 Bounded Inline-Style Parse Cache (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs`
+  - Sampled-thread profiling ranked inline declaration parsing at 14.60 inclusive sample-weight units within a 44.45-unit `ComputeCascadedValues` path on the deterministic render suite.
+  - A cascade-engine-owned cache now parses repeated exact inline-style text once. Keys use ordinal string equality; values are declaration arrays treated as read-only after publication; the cache is bounded to 256 entries with FIFO eviction.
+  - The cache lifetime is one cascade engine, so it cannot retain document-controlled strings after that cascade. Access is serialized because one engine is shared by the bounded parallel cascade scheduler.
+  - A changed `style` attribute naturally uses a different exact-text key, while the existing element dirty flag invalidates the computed-style cache. Invalid declarations and empty parse results are cached without turning parser failures into successful declarations.
+- `FenBrowser.FenEngine/Rendering/Css/ParallelCascadeScheduler.cs`
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - Cascade results publish numeric cache hits, misses, evictions, and current entries. The benchmark report captures the per-cascade values.
+- `FenBrowser.FenEngine/Rendering/Performance/PerformanceDiagnosticsStore.cs`
+- `FenBrowser.FenEngine/Rendering/Performance/PerformancePageRenderer.cs`
+  - `fen://performance` exposes process cache hits, misses, evictions, and latest-cascade entries. Recording adds counters once per completed cascade; the disabled path returns before counter updates.
+- `FenBrowser.Tests/Performance/InlineStyleCacheTests.cs`
+  - Focused tests prove exact repeated text is parsed once and changing the inline style produces the new cascaded value.
+
+Five-process Release medians compare the pre-change reports from `101356`–`101402` with retained-change reports from `102517`–`102523`:
+
+| Scenario | Cache hits / misses | Cascade before | Cascade after | Allocations before | Allocations after | Allocation change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 417 / 5 | 86.58 ms | 79.16 ms | 87,582,320 B | 85,333,000 B | -2.57% |
+| steady-state-damage-animation | 244 / 6 | 21.87 ms | 17.30 ms | 60,085,112 B | 58,730,512 B | -2.25% |
+| dense-text-flow control | 0 / 1 | 7.97 ms | 4.77 ms | 25,220,640 B | 25,211,984 B | -0.03% |
+
+The retained conclusion rests on avoided parse operations and the allocation reduction: the repeated-style fixtures avoid 417 and 244 parser invocations, respectively, while the no-hit control allocation is flat. Wall-clock cascade deltas are reported but not attributed entirely to the cache because the no-hit control also moved between process batches.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~PerformanceDiagnosticsTests|FullyQualifiedName~InlineStyleCacheTests|FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests" -v quiet /nodeReuse:false`: pass (`10/10`).
+- Five fresh `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf` processes: pass; all failure gates remained green and structured reports were written under `Results/performance/`.

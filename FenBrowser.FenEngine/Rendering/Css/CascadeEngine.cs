@@ -31,6 +31,17 @@ private bool _indexed = false;
 // PERF: Style cache to avoid recomputing styles for unchanged elements
 private readonly Dictionary<Node, CssComputed> _styleCache = new Dictionary<Node, CssComputed>();
 
+// Inline style text is commonly repeated by generated markup. Parsing it once per
+// element dominated sampled cascade time, so keep a small engine-owned FIFO cache.
+// Exact ordinal text is the key; values are read-only-by-contract arrays owned by this engine.
+private const int InlineStyleCacheCapacity = 256;
+private readonly object _inlineStyleCacheSync = new object();
+private readonly Dictionary<string, CssDeclaration[]> _inlineStyleCache = new Dictionary<string, CssDeclaration[]>(StringComparer.Ordinal);
+private readonly Queue<string> _inlineStyleCacheOrder = new Queue<string>(InlineStyleCacheCapacity);
+private int _inlineStyleCacheHits;
+private int _inlineStyleCacheMisses;
+private int _inlineStyleCacheEvictions;
+
 
         // PERF: Track which pseudo-elements have any rules to skip cascade for unused ones
         private HashSet<string> _pseudoElementsWithRules;
@@ -411,7 +422,20 @@ return computed;
             return declarations;
         }
 
-        private static void CollectInlineStyleMatches(Element element, List<MatchedDeclaration> results, string pseudoElement)
+        public InlineStyleCacheStatistics GetInlineStyleCacheStatistics()
+        {
+            lock (_inlineStyleCacheSync)
+            {
+                return new InlineStyleCacheStatistics(
+                    _inlineStyleCacheHits,
+                    _inlineStyleCacheMisses,
+                    _inlineStyleCacheEvictions,
+                    _inlineStyleCache.Count,
+                    InlineStyleCacheCapacity);
+            }
+        }
+
+        private void CollectInlineStyleMatches(Element element, List<MatchedDeclaration> results, string pseudoElement)
         {
             if (element == null || results == null || !string.IsNullOrWhiteSpace(pseudoElement))
             {
@@ -424,7 +448,7 @@ return computed;
                 return;
             }
 
-            var inlineDeclarations = ParseInlineStyleDeclarations(inlineStyleText);
+            var inlineDeclarations = GetInlineStyleDeclarations(inlineStyleText);
             if (inlineDeclarations.Count == 0)
             {
                 return;
@@ -459,7 +483,32 @@ return computed;
             }
         }
 
-        private static IReadOnlyList<CssDeclaration> ParseInlineStyleDeclarations(string styleAttribute)
+        private IReadOnlyList<CssDeclaration> GetInlineStyleDeclarations(string styleAttribute)
+        {
+            lock (_inlineStyleCacheSync)
+            {
+                if (_inlineStyleCache.TryGetValue(styleAttribute, out var cached))
+                {
+                    _inlineStyleCacheHits++;
+                    return cached;
+                }
+
+                _inlineStyleCacheMisses++;
+                var parsed = ParseInlineStyleDeclarations(styleAttribute);
+                if (_inlineStyleCache.Count >= InlineStyleCacheCapacity)
+                {
+                    string oldest = _inlineStyleCacheOrder.Dequeue();
+                    _inlineStyleCache.Remove(oldest);
+                    _inlineStyleCacheEvictions++;
+                }
+
+                _inlineStyleCache.Add(styleAttribute, parsed);
+                _inlineStyleCacheOrder.Enqueue(styleAttribute);
+                return parsed;
+            }
+        }
+
+        private static CssDeclaration[] ParseInlineStyleDeclarations(string styleAttribute)
         {
             if (string.IsNullOrWhiteSpace(styleAttribute))
             {
@@ -471,13 +520,24 @@ return computed;
                 var tokenizer = new CssTokenizer("*{" + styleAttribute + "}");
                 var parser = new CssSyntaxParser(tokenizer);
                 var stylesheet = parser.ParseStylesheet();
-                var firstStyleRule = stylesheet?.Rules?.OfType<CssStyleRule>().FirstOrDefault();
+                CssStyleRule firstStyleRule = null;
+                if (stylesheet?.Rules != null)
+                {
+                    for (var ruleIndex = 0; ruleIndex < stylesheet.Rules.Count; ruleIndex++)
+                    {
+                        if (stylesheet.Rules[ruleIndex] is CssStyleRule styleRule)
+                        {
+                            firstStyleRule = styleRule;
+                            break;
+                        }
+                    }
+                }
                 if (firstStyleRule == null || firstStyleRule.Declarations.Count == 0)
                 {
                     return Array.Empty<CssDeclaration>();
                 }
 
-                return firstStyleRule.Declarations;
+                return firstStyleRule.Declarations.ToArray();
             }
             catch
             {
@@ -2243,6 +2303,13 @@ return computed;
             return Key.CompareTo(other.Key);
         }
     }
+
+    public readonly record struct InlineStyleCacheStatistics(
+        int Hits,
+        int Misses,
+        int Evictions,
+        int Entries,
+        int Capacity);
 }
 
 

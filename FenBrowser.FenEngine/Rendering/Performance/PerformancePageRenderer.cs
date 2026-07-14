@@ -92,6 +92,10 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             Row(html, "Text nodes", latest?.TextNodeCount.ToString(CultureInfo.InvariantCulture));
             Row(html, "Attributes", latest?.AttributeCount.ToString(CultureInfo.InvariantCulture));
             foreach (string name in new[] { "Stylesheets", "CSS rules", "Matched selectors" }) Row(html, name, null);
+            Row(html, "Inline style cache hits (process)", latest?.InlineStyleCacheHits.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Inline style cache misses (process)", latest?.InlineStyleCacheMisses.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Inline style cache evictions (process)", latest?.InlineStyleCacheEvictions.ToString(CultureInfo.InvariantCulture));
+            Row(html, "Inline style cache entries (latest cascade)", latest?.InlineStyleCacheEntries.ToString(CultureInfo.InvariantCulture));
             Row(html, "Layout objects", latest?.LayoutObjectCount.ToString(CultureInfo.InvariantCulture));
             Row(html, "Paint commands", latest?.PaintCommandCount.ToString(CultureInfo.InvariantCulture));
             foreach (string name in new[] { "Images", "Fonts", "Script count", "Event listeners" }) Row(html, name, null);

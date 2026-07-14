@@ -41,6 +41,10 @@ namespace FenBrowser.Tests.Performance
                 Assert.True(result.CssSourceCount > 0);
                 Assert.True(result.CssRuleCount > 0);
                 Assert.True(result.ComputedStyleCount > 0);
+                Assert.True(result.InlineStyleCacheHits >= 0);
+                Assert.True(result.InlineStyleCacheMisses >= 0);
+                Assert.True(result.InlineStyleCacheEvictions >= 0);
+                Assert.InRange(result.InlineStyleCacheEntries, 0, 256);
                 Assert.True(result.AverageLayoutMs >= 0);
                 Assert.True(result.AveragePaintGenerationMs >= 0);
                 Assert.True(result.AverageRasterMs >= 0);
@@ -72,6 +76,7 @@ namespace FenBrowser.Tests.Performance
             Assert.Contains("\"HtmlParseMs\"", json);
             Assert.Contains("\"CssRuleParseMs\"", json);
             Assert.Contains("\"CssCascadeMs\"", json);
+            Assert.Contains("\"InlineStyleCacheHits\"", json);
             Assert.Contains("\"ManagedAllocatedBytes\"", json);
             Assert.Contains("steady-state-damage-animation", json);
         }
