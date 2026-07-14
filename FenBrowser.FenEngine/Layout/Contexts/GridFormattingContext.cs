@@ -288,7 +288,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
         }
 
-        private static void CollectNodeMappings(
+        internal static void CollectNodeMappings(
             LayoutBox box,
             IDictionary<Node, LayoutBox> nodeToBox,
             IDictionary<Node, CssComputed> styles)
@@ -306,9 +306,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
             }
 
-            foreach (var child in box.Children)
+            var children = box.Children;
+            for (var index = 0; index < children.Count; index++)
             {
-                CollectNodeMappings(child, nodeToBox, styles);
+                CollectNodeMappings(children[index], nodeToBox, styles);
             }
         }
 

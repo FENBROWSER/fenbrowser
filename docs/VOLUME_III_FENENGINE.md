@@ -9256,3 +9256,31 @@ Verification:
 - The broad layout slice remains `231/233`; the only failures before and after are the existing `GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl` and `ColumnMinHeightDvh_AllowsFlexOneHeroToCenterContent` failures with unchanged output.
 - All four benchmark failure gates pass in every original and retained process.
 - This layout traversal change does not alter JavaScript or web-platform semantics, so Test262 and WPT categories are not rerun.
+
+## 2.341 Allocation-Free Grid Node Mapping Walk (2026-07-14)
+
+- `FenBrowser.FenEngine/Layout/Contexts/GridFormattingContext.cs`
+  - After removing the two `LayoutBoxOps` enumerators, call-stack reconstruction attributed `72.42%` of the remaining `ChildrenListWrapper.GetEnumerator` samples to `GridFormattingContext.CollectNodeMappings`.
+  - The recursive mapping pass now captures the live child view and traverses it by index instead of allocating a `yield` enumerator for every visited box. Pre-order traversal, first-box/first-style retention, source-node filtering, computed-style fallback, and the caller-owned dictionaries are unchanged.
+  - The helper is internal only so the included allocation and mapping contract can exercise the production implementation. It does not mutate the Box Tree, and layout-thread ownership makes the indexed live view safe. No cache, pool, unsafe code, retained state, native resource, or concurrency is added.
+- `FenBrowser.Tests/Performance/GridNodeMappingAllocationTests.cs`
+  - Ten warmed mapping walks over a root plus 100 child boxes move from exactly `48,480 B` to exactly `0 B`.
+  - The contract verifies all 101 node-to-box and node-to-style entries and their object identities after the measured walks.
+
+The immediately preceding retained reports `144113`, `144115`, `144117`, `144119`, and `144120` form the original batch; candidate reports are `144622`, `144624`, `144625`, `144627`, and `144629`:
+
+| Scenario | Total before | Total after | Layout allocation before | Layout allocation after | Render allocation before | Render allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 172.65 ms | 169.63 ms (-1.75%) | 7,379,792 B | 7,346,144 B (-0.46%) | 9,262,472 B | 9,229,712 B (-0.35%) | 20,132,104 B | 20,099,344 B (-0.16%) |
+| steady-state-damage-animation | 14.64 ms | 14.50 ms (-0.96%) | 184 B | 184 B (flat) | 9,334,464 B | 9,318,144 B (-0.17%) | 15,626,680 B | 15,610,496 B (-0.10%) |
+| dense-text-flow | 13.73 ms | 12.17 ms (-11.36%) | 1,367,068 B | 1,367,116 B (+0.00%) | 5,462,520 B | 5,462,512 B (flat) | 8,989,192 B | 9,150,104 B (+1.79%) |
+| wrapped-multiline-text | 6.49 ms | 6.43 ms (-0.92%) | 738,224 B | 738,416 B (+0.03%) | 2,279,568 B | 2,279,568 B (flat) | 4,343,552 B | 4,341,848 B (-0.04%) |
+
+The grid-heavy fixture records the expected stage reduction, and the steady-state fixture records a smaller whole-render reduction from its initial grid frame. The non-grid fixtures are flat or noisy, including dense managed allocation at `+1.79%`; those signals are retained and not attributed to this change. Although total medians are lower in all four batches, untouched CSS, paint, and raster components move in both directions, so no timing speedup is claimed. A fresh `gc-verbose` trace removes `CollectNodeMappings` as an enumerator caller and reduces `ChildrenListWrapper.GetEnumerator` from `0.93%` to `0.15%` exclusive weight.
+
+Verification:
+
+- The focused allocation contract fails on the original loop at exactly `48,480 B` and passes on the retained loop at exactly `0 B`.
+- Grid track sizing, layout, formatting-context integration, content sizing, auto-placement, and alignment remain `43/44`; the only failure before and after is the existing `GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl` zero-text-bounds failure.
+- All four benchmark failure gates pass in all five retained candidate reports.
+- This engine-owned grid traversal change does not alter JavaScript or web-platform semantics, so Test262 and WPT categories are not rerun.

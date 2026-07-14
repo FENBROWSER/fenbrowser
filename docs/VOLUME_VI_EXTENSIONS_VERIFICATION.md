@@ -2991,3 +2991,21 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Layout" --logger "console;verbosity=minimal" /nodeReuse:false`: same two known failures, `231/233`, before and after.
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in all ten unique original and retained reports.
+
+## 6.102 Grid Node-Mapping Verification (2026-07-14)
+
+- The post-`LayoutBoxOps` allocation trace identifies `GridFormattingContext.CollectNodeMappings` as `72.42%` of the remaining layout child-enumerator samples.
+- `CollectNodeMappings_RepeatedWalkDoesNotAllocate` invokes the production helper ten times after warm-up over 101 boxes. The original loop allocates exactly `48,480 B`; the retained indexed walk allocates exactly `0 B`.
+- The contract also verifies complete node-to-box and node-to-style maps with the original object identities, protecting traversal coverage and mapping semantics.
+- The included grid test filter is `43/44` on both sides. `GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl` remains the sole existing failure with the same zero text bounds and unchanged input bounds.
+- Immediate reports `144113`-`144120` before and `144622`-`144629` after reduce grid-heavy layout allocation by `33,648 B`, render allocation by `32,760 B`, and managed allocation by `32,760 B`. Non-grid fixtures are flat or noisy and remain visible in the FenEngine volume.
+- Every candidate failure gate passes. Timing is not claimed as an improvement because CSS, paint, raster, and layout components move in conflicting directions despite lower total medians.
+- A fresh trace removes `CollectNodeMappings` as an enumerator caller and reduces `ChildrenListWrapper.GetEnumerator` exclusive weight from `0.93%` to `0.15%`.
+- Test262 and WPT are not rerun because the change is confined to engine-owned grid layout traversal.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~GridNodeMappingAllocationTests" --logger "console;verbosity=minimal" /nodeReuse:false`: pass (`1/1`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Layout.Grid" --logger "console;verbosity=minimal" /nodeReuse:false`: same known failure, `43/44`, before and after.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every retained process.
