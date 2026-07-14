@@ -4661,7 +4661,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             int renderableRuns = 0;
-            foreach (var child in textNode.ParentNode.Children)
+            for (var child = textNode.ParentNode.FirstChild; child != null; child = child.NextSibling)
             {
                 if (child is Text siblingText)
                 {
@@ -4714,7 +4714,7 @@ namespace FenBrowser.FenEngine.Rendering
             return best;
         }
 
-        private static bool HasSingleRenderableChild(Node node)
+        internal static bool HasSingleRenderableChild(Node node)
         {
             if (node == null)
             {
@@ -4722,7 +4722,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             int renderableChildren = 0;
-            foreach (var child in node.Children)
+            for (var child = node.FirstChild; child != null; child = child.NextSibling)
             {
                 if (child is Text text)
                 {

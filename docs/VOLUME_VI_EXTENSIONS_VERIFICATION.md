@@ -2864,3 +2864,18 @@ Verification commands:
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every retained process.
+
+## 6.94 Paint Child-Classification Verification (2026-07-14)
+
+- The included `PaintTreeTraversalTests` allocation contract failed before the implementation with `880,000 B` for 10,000 `HasSingleRenderableChild` calls and passes at exactly `0 B` after sibling-link traversal.
+- Semantics coverage includes one text run, ignorable whitespace, an ignored `<style>` element, and rejection after a second renderable element is appended.
+- The broader included paint-tree and style/layout slice passes `27/27`; FenEngine builds with `0` warnings and `0` errors.
+- Five-process Release comparisons use reports `124856`-`124901` before and `125726`-`125738` after. Paint allocation falls `5.07%`-`23.50%`, render allocation falls `0.81%`-`12.15%`, managed allocation falls `0.41%`-`7.44%`, and total-time medians improve in all four fixtures.
+- A broader three-loop experiment was rejected after two optimized batches reproduced a wrapped-layout regression and a restore build removed it. The final retained reports contain only the two helper-loop changes.
+- Fresh allocation-stack reconstruction contains no `HasSingleRenderableChild` or `IsSingleRenderableTextRun` caller beneath `Node.get_Children`; `ProcessChildren` remains measurable and unchanged.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~PaintTreeTraversalTests|FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~StyleLayoutContractTests" -v quiet /nodeReuse:false`: pass (`27/27`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every retained process.

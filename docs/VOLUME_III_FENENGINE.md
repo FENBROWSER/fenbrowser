@@ -9058,3 +9058,34 @@ Verification:
 - Focused whitespace semantics and allocation tests: pass (`6/6`).
 - Inline formatting and probe-reset tests: pass (`20/20`).
 - All four benchmark failure gates passed in every retained report.
+
+## 2.334 Allocation-Free Paint Child Classification (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - After the live `ChildNodes` fix, reconstructed allocation stacks still reached the obsolete snapshot-producing `Node.Children` property from `HasSingleRenderableChild` and `IsSingleRenderableTextRun`. The two helper callers contributed sampled weights of `10.14` and `2.29`, respectively.
+  - Both mutation-free classification helpers now traverse the existing sibling links from `FirstChild` through `NextSibling`. This preserves O(n) ordering and text/style/script filtering without allocating a list, NodeList enumerator, cache, pool, or retained state.
+  - `HasSingleRenderableChild` is internal only so the included allocation/semantics contract can exercise the real helper; it is not a public API.
+- `FenBrowser.Tests/Core/PaintTreeTraversalTests.cs`
+  - Verifies one renderable text child, ignored whitespace and `<style>` children, and a second renderable element. The 10,000-call probe moved from `880,000 B` to `0 B`.
+
+Five-process Release medians compare immediate reports `124856`-`124901` with retained reports `125726`-`125738`:
+
+| Scenario | Total time before | Total time after | Paint allocation before | Paint allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 183.16 ms | 179.92 ms (-1.77%) | 1,622,272 B | 1,523,696 B (-6.08%) | 21,871,048 B | 21,781,024 B (-0.41%) |
+| steady-state-damage-animation | 14.17 ms | 13.97 ms (-1.41%) | 971,602 B | 922,322 B (-5.07%) | 17,081,336 B | 16,833,000 B (-1.45%) |
+| dense-text-flow | 20.62 ms | 13.40 ms (-35.01%) | 1,700,356 B | 1,300,852 B (-23.50%) | 10,231,456 B | 9,469,832 B (-7.44%) |
+| wrapped-multiline-text | 7.63 ms | 6.82 ms (-10.62%) | 468,188 B | 362,908 B (-22.49%) | 4,684,032 B | 4,474,992 B (-4.46%) |
+
+GC counts and correctness gates were unchanged. A fresh trace reduced `Node.get_Children` from `0.26%` to `0.19%` exclusive allocation weight and removed both targeted helper callers; the remaining stacks are `ProcessChildren` and scroll anchoring.
+
+Rejected experiment:
+
+- Replacing the recursive `ProcessChildren` snapshot at the same time reduced paint allocation further, but five retained-candidate reports `125532`-`125537` moved wrapped layout from `1.61 ms` to `3.54 ms` and total time from `7.63 ms` to `8.56 ms` (`+12.19%`). A local restore build returned layout to `1.67`-`1.75 ms` in reports `125659`-`125701`.
+- That broader change was reverted. The helper-only variant avoids the reproduced regression while retaining a measured allocation and time benefit. `ProcessChildren` remains visible in the trace for a future separately-instrumented investigation.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- Paint traversal, included paint-tree rendering, and style/layout contracts: pass (`27/27`).
+- All four benchmark failure gates passed in every retained report.
