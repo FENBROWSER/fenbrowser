@@ -268,13 +268,7 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         private void NotifyCharacterDataMutation(string oldValue)
         {
-            // Create the mutation record
-            var record = new MutationRecord
-            {
-                Type = MutationRecordType.CharacterData,
-                Target = this,
-                OldValue = oldValue
-            };
+            MutationRecord record = null;
 
             // Notify observers registered on this node's ancestors
             // CharacterData nodes can't have their own observers, but their parent
@@ -283,25 +277,13 @@ namespace FenBrowser.Core.Dom.V2
             {
                 if (ancestor is ContainerNode container)
                 {
-                    // Get the registered observer list via reflection or internal accessor
-                    // For first ancestor (direct parent), notify with characterData option
-                    // For further ancestors, notify with subtree option
-                    NotifyContainerObservers(container, record, ancestor == _parentNode);
-
-                    // Only the first container needs direct notification,
-                    // the rest get subtree notifications
+                    record = container.NotifyCharacterDataChange(
+                        record,
+                        this,
+                        oldValue,
+                        ancestor == _parentNode);
                 }
             }
-        }
-
-        /// <summary>
-        /// Notifies a container node's observers about character data change.
-        /// </summary>
-        private static void NotifyContainerObservers(ContainerNode container, MutationRecord record, bool isDirect)
-        {
-            // Access the registered observers through the container's internal field
-            // We need to use the internal method since _registeredObservers is private
-            container.NotifyCharacterDataChange(record, isDirect);
         }
     }
 }

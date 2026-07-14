@@ -1543,3 +1543,35 @@ Verification:
 - The broader included Core parsing slice remains `68/69`; `HtmlParserTraceTests.ParseDocumentDetailed_WritesHtmlParsingTraceEvents` is the same pre-existing trace-file assertion before and after.
 - Release builds of `FenBrowser.Core` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes.
 - Test262 and WPT are not rerun because this changes only private pool slot storage; local tokenizer/tree-builder output and recovery behavior are covered directly, including html5lib fixtures.
+
+### 1.73 Deferred Character-Data Mutation Records (2026-07-14)
+
+- `FenBrowser.Core/Dom/V2/CharacterData.cs`
+  - The post-raster-glyph allocation trace ranked `HtmlTreeBuilder.InsertCharacter` as the largest concrete FenBrowser allocation owner at `139.839` sampled units. Appending to an existing parser text node enters `CharacterData.OnDataChanged`, which previously constructed a `MutationRecord` before inspecting any ancestor for registered observers.
+  - Character-data notification now carries a nullable record while walking ancestors. No record exists unless a container actually owns a registered-observer list; once created, the same record is reused for direct-parent and subtree notification as before.
+- `FenBrowser.Core/Dom/V2/ContainerNode.cs`
+  - The observer-owning container now performs the deferred record construction after its existing null-list check. Direct `CharacterData` filtering, subtree filtering, target, old value, callback scheduling, and record reuse are unchanged.
+  - The fast path adds no cache, pool, unsafe code, global state, native resource, or concurrency boundary. DOM ownership remains unchanged, and observed mutations still use the existing thread-safe observer list.
+- `FenBrowser.Tests/Performance/CharacterDataMutationAllocationTests.cs`
+  - Ten thousand warmed data changes on an attached but unobserved text node move from exactly `880,000 B` to exactly `0 B`, removing `88 B` per mutation (`100%` of the avoidable record cost).
+  - A direct parent observer and an ancestor subtree observer both continue to receive exactly one `CharacterData` record with the same text-node target and `"before"` old value.
+
+Five fresh Release processes compare the raster-glyph reports `162921`, `162922`, `162923`, `162924`, and `162925` with candidate reports `163548`, `163550`, `163551`, `163552`, and `163553`:
+
+| Scenario | HTML allocation before | HTML allocation after | Managed allocation before | Managed allocation after | Total before | Total after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 925,928 B | 925,928 B (flat) | 19,350,568 B | 18,942,208 B (-2.11%) | 171.40 ms | 172.03 ms (+0.37%) |
+| steady-state-damage-animation | 526,912 B | 526,912 B (flat) | 14,706,776 B | 14,462,024 B (-1.66%) | 14.18 ms | 14.15 ms (-0.21%) |
+| dense-text-flow | 315,312 B | 315,312 B (flat) | 8,733,008 B | 8,687,824 B (-0.52%) | 11.82 ms | 11.93 ms (+0.93%) |
+| wrapped-multiline-text | 149,360 B | 149,360 B (flat) | 4,033,744 B | 4,009,992 B (-0.59%) | 6.55 ms | 6.36 ms (-2.90%) |
+
+The exact DOM mutation probe and trace movement are the causal evidence. The benchmark's current-thread HTML counter is flat, while its approximate process-wide counter observes the reduction after the parser phase; the latter is not presented as CSS behavior. Managed allocation falls in every fixture, but total and HTML timings are mixed, so no latency improvement is claimed. The fresh trace reduces `InsertCharacter` from `139.839` to `0.3041` sampled units and exposes `HtmlTreeBuilder.CreateElement` as the next parser owner at `138.831` units.
+
+Verification:
+
+- The allocation and direct/subtree observer contracts pass `2/2` twice on the retained Release build.
+- The included MutationObserver and DOM mutation-notification slice passes `6/6`.
+- The tokenizer, tree-builder, malformed recovery, tables, selects, interleaved parsing, and local html5lib fixture slice passes `95/95`.
+- The broader Core parsing slice remains `68/69` with the same existing `HtmlParserTraceTests` trace-file assertion.
+- Release builds of `FenBrowser.Core` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and all four benchmark failure gates pass in every candidate process.
+- Test262 and WPT are not rerun because this changes only allocation timing for an existing DOM notification record; observer semantics and parser output are covered directly.

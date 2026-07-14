@@ -785,21 +785,35 @@ namespace FenBrowser.Core.Dom.V2
         /// <summary>
         /// Called by CharacterData to notify observers of character data changes.
         /// </summary>
-        internal void NotifyCharacterDataChange(MutationRecord record, bool isDirect)
+        internal MutationRecord NotifyCharacterDataChange(
+            MutationRecord record,
+            CharacterData target,
+            string oldValue,
+            bool isDirect)
         {
-            if (_registeredObservers == null)
-                return;
+            var registeredObservers = _registeredObservers;
+            if (registeredObservers == null)
+                return record;
+
+            record ??= new MutationRecord
+            {
+                Type = MutationRecordType.CharacterData,
+                Target = target,
+                OldValue = oldValue
+            };
 
             if (isDirect)
             {
                 // Direct parent - notify with characterData option
-                _registeredObservers.NotifyCharacterData(record);
+                registeredObservers.NotifyCharacterData(record);
             }
             else
             {
                 // Ancestor - notify with subtree option
-                _registeredObservers.NotifySubtree(record);
+                registeredObservers.NotifySubtree(record);
             }
+
+            return record;
         }
 
         /// <summary>

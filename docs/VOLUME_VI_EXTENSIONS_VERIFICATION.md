@@ -3207,3 +3207,22 @@ Verification commands:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.115 Deferred Character-Data Record Verification (2026-07-14)
+
+- `CharacterDataMutationAllocationTests.DataChange_WithoutObserversAvoidsMutationRecordAllocation` measures 10,000 warmed alternating writes on an attached text node. The original eager record path allocates exactly `880,000 B`; deferred construction allocates exactly `0 B` and the retained contract requires zero.
+- `DataChange_PreservesDirectAndSubtreeObserverRecords` verifies that a direct parent observer and ancestor subtree observer each receive one `CharacterData` record with the original target and old value.
+- The existing MutationObserver/DOM notification slice plus the new contracts passes `6/6`; the focused parser regression slice passes `95/95`.
+- Candidate reports `163548`, `163550`, `163551`, `163552`, and `163553` pass every failure gate. Managed-allocation medians fall `0.52%`-`2.11%`; the current-thread HTML counter is flat and timing is mixed, so no HTML-stage or latency improvement is claimed from those counters.
+- The fresh allocation trace reduces `HtmlTreeBuilder.InsertCharacter` attribution from `139.839` to `0.3041` sampled units. `HtmlTreeBuilder.CreateElement` becomes the next parser allocation owner at `138.831` units.
+- The broader Core parsing slice remains at its established `68/69` state with the same `HtmlParserTraceTests.ParseDocumentDetailed_WritesHtmlParsingTraceEvents` failure. Test262 and WPT are not rerun because notification semantics and parser behavior are exercised by the focused included tests.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CharacterDataMutationAllocationTests" --logger "console;verbosity=detailed"`: pass (`2/2`), exactly `0 B` for 10,000 unobserved changes.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "CharacterDataMutationAllocationTests|MutationObserverTests|DomMutationNotificationTests" --logger "console;verbosity=minimal"`: pass (`6/6`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "HtmlTokenPoolTests|HtmlTokenPoolAllocationTests|Html5libTokenizerTests|Html5libTreeBuilderTests|HtmlTreeBuilder|TableParsingTests|AfterHeadParsingTests|SelectParsingTests|CanonicalHtmlParserEntrypointTests|ParserHardeningGuardTests" --logger "console;verbosity=minimal"`: pass (`95/95`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FenBrowser.Tests.Core.Parsing" --logger "console;verbosity=minimal"`: same existing trace assertion, `68/69`.
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
