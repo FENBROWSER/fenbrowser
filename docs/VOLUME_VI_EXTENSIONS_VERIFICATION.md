@@ -2724,3 +2724,19 @@ Verification:
 - Five fresh Release processes established a median execution time of `59.975 ms` and a stable current-thread allocation result of `10,564,616 B`. Reports are `112355`-`112359` under ignored `Results/performance/`.
 - The fixture returns `20,000`, executes `300,046` bytecode instructions, leaves `1,405` FenJS heap cells, and triggers zero FenJS collections. The benchmark runner verifies the result before publishing metrics.
 - `FenJsPerformanceBenchmarkRunnerTests` passes `2/2` with the five-scenario suite and structured JSON contract.
+
+## 6.86 Deterministic DOM Performance Baseline (2026-07-14)
+
+- `FenBrowser.Core/Performance/DomPerformanceBenchmarkRunner.cs` owns three network-independent Release workloads: repeated append/remove of one node, bubbling dispatch through an eight-node chain without listeners, and the same dispatch with capture/target/bubble listeners.
+- Setup is outside each measured region. Every scenario reports current-thread managed allocation, managed GC deltas, operation count, elapsed time, and observed callback count. Structured JSON includes the same OS, architecture, runtime, GC, tiering, processor, build, and commit metadata contract as the other performance runners.
+- `FenBrowser.Tooling dom-perf` writes reports below ignored `Results/performance/`; `DomPerformanceBenchmarkRunnerTests` verifies outcomes and JSON persistence (`2/2`).
+
+Five-process Release medians from reports `112846`-`112848`:
+
+| Workload | Operations | Median execution | Managed allocation | Observed callbacks |
+| --- | ---: | ---: | ---: | ---: |
+| append-remove | 20,000 | 4.754 ms | 5,584,016 B | 20,000 completed mutations |
+| event-dispatch-no-listeners | 20,000 | 19.584 ms | 20,800,000 B | 0 |
+| event-dispatch-listeners | 20,000 | 28.182 ms | 24,000,000 B | 60,000 |
+
+The zero-listener result establishes that event-path and empty-listener processing allocate about 1,040 bytes per dispatch even when no callback is observable. The append/remove result separately exposes mutation-notification allocation without measuring node construction.

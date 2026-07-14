@@ -15,6 +15,7 @@ using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Engine;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Performance;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Rendering.Core;
 using FenBrowser.FenEngine.Rendering.Paint;
@@ -75,6 +76,9 @@ namespace FenBrowser.Tooling
                     return;
                 case "js-perf":
                     await RunFenJsPerfAsync(args).ConfigureAwait(false);
+                    return;
+                case "dom-perf":
+                    await RunDomPerfAsync().ConfigureAwait(false);
                     return;
                 case "capability-ledger":
                     RunCapabilityLedger(args);
@@ -2548,6 +2552,15 @@ namespace FenBrowser.Tooling
             Console.WriteLine($"artifact={artifactPath}");
         }
 
+        private static async Task RunDomPerfAsync()
+        {
+            var runner = new DomPerformanceBenchmarkRunner();
+            var report = runner.RunDefaultSuite();
+            var artifactPath = await runner.WriteReportAsync(report).ConfigureAwait(false);
+            Console.WriteLine(DomPerformanceBenchmarkRunner.FormatSummary(report));
+            Console.WriteLine($"artifact={artifactPath}");
+        }
+
         private static void WireToolingConsoleCapture()
         {
             void AttachTab(BrowserTab tab)
@@ -2579,6 +2592,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  webdriver [--port=4444] [--headless]");
             Console.WriteLine("  render-perf");
             Console.WriteLine("  js-perf [scenario]");
+            Console.WriteLine("  dom-perf");
             Console.WriteLine("  capability-ledger [output_json] [--require-live-evidence] [--logs-dir <path>]");
             Console.WriteLine("  debug-css");
             Console.WriteLine("  test");

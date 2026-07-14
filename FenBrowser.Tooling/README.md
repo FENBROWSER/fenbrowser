@@ -84,6 +84,12 @@ dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -- 
 dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -- js-perf property-access
 ```
 
+Run deterministic DOM mutation and event-dispatch benchmarks:
+
+```powershell
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -- dom-perf
+```
+
 ### `capability-ledger`
 
 Generate a machine-readable capability ledger by reconciling:
