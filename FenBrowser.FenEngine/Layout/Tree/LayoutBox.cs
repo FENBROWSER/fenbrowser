@@ -14,6 +14,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
         public readonly int StoreId;
         public readonly LayoutBoxStore Store;
         private readonly int _storeGeneration;
+        private IList<LayoutBox> _children;
 
         /// <summary>
         /// Attempts to link this box back to a source DOM Node.
@@ -71,7 +72,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             get
             {
                 EnsureAlive();
-                return Store.GetChildrenList(StoreId);
+                return _children ??= Store.GetChildrenList(StoreId);
             }
         }
 

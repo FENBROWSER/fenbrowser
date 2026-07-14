@@ -2956,3 +2956,20 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CollectAllNodes_PreSizedResult|FullyQualifiedName~InputOverlayColorTests|FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~BrowserIntegrationRepaintInvalidationTests|FullyQualifiedName~IncrementalLayoutCacheTests|FullyQualifiedName~CompositorLayerAndIncrementalLayoutTests" -v quiet /nodeReuse:false`: pass (`20/20`).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every immediate A/B process.
+
+## 6.100 Layout Child-View Verification (2026-07-14)
+
+- `ChildrenProperty_RepeatedAccess_DoesNotAllocate` exercises the production `LayoutBox.Children` accessor after warm-up. Ten thousand reads allocate exactly `320,000 B` before the change and exactly `0 B` after it.
+- The same contract keeps the original view alive, appends another child, and verifies reference identity, updated count, order, and wrapper identity for the new child. This protects the store-backed live-view semantics rather than accepting a stale snapshot.
+- An explicit source restore/reapply keeps the broad layout slice at `231/233` on both sides. The same two existing failures remain visible with identical messages: `GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl` reports zero text bounds, and `ColumnMinHeightDvh_AllowsFlexOneHeroToCenterContent` reports a `100`-pixel hero.
+- The retained focused slice covering the allocation contract, Box Tree construction, incremental-layout caches, compositor integration, and renderer telemetry passes `9/9`.
+- Immediate reports `140010`-`140015` before and `140035`-`140040` after reduce active-layout allocation by `3.21%`-`9.01%`, render allocation by `1.85%`-`7.43%`, and managed allocation by `1.13%`-`3.69%`. All failure gates pass.
+- Timing medians are mixed, including dense total at `+10.82%`; no timing improvement is claimed. A fresh allocation trace removes `LayoutBoxStore.GetChildrenList`, previously `3.16%` of attributed FenBrowser allocation weight, as an allocation owner.
+- The implementation is confined to the engine-owned layout wrapper and does not affect Test262 or WPT semantics, so those suites are not rerun.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Layout" --logger "console;verbosity=minimal" /nodeReuse:false`: same known failures, `231/233`, before and after.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~LayoutBoxChildrenAccessTests|FullyQualifiedName~BoxTreeBuilderHotPathTests|FullyQualifiedName~IncrementalLayoutCacheTests|FullyQualifiedName~CompositorLayerAndIncrementalLayoutTests|FullyQualifiedName~RenderFrameTelemetryTests" --logger "console;verbosity=minimal" /nodeReuse:false`: pass (`9/9`).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every immediate A/B process.

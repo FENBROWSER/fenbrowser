@@ -9199,3 +9199,31 @@ Verification:
 - Explicit source restore: overlay, renderer telemetry, repaint invalidation, and incremental-layout coverage passes `19/19`; the candidate passes the same tests plus the allocation/order contract (`20/20`).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - All four benchmark failure gates pass in every immediate A/B report.
+
+## 2.339 Cached Layout Child Views (2026-07-14)
+
+- `FenBrowser.FenEngine/Layout/Tree/LayoutBox.cs`
+  - A retained Release allocation trace attributed `3.16%` of FenBrowser allocation weight to `LayoutBoxStore.GetChildrenList`. Every `LayoutBox.Children` read created a new `ChildrenListWrapper`, even when callers repeatedly read the same box during layout and painting.
+  - Each `LayoutBox` now creates its child view lazily once and reuses it. The wrapper remains live because its count, indexer, and mutation methods continue to read and update the store-owned child-ID list; adding a child after the first access is immediately visible through the original view.
+  - `EnsureAlive` still runs before every property access, preserving stale-wrapper detection. The cached view has the same lifetime and layout-thread ownership as its already store-cached `LayoutBox`, is bounded to one object per accessed box per store generation, and adds no global cache, pool, unsafe code, native resource, or concurrency.
+- `FenBrowser.Tests/Performance/LayoutBoxChildrenAccessTests.cs`
+  - Ten thousand warmed `Children.Count` reads move from exactly `320,000 B` (`32 B` per read) to exactly `0 B`.
+  - The contract also checks reference stability and live behavior after appending a second child.
+
+An immediate source restore/reapply A/B compares original reports `140010`-`140015` with retained reports `140035`-`140040`:
+
+| Scenario | Total before | Total after | Layout allocation before | Layout allocation after | Render allocation before | Render allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 181.12 ms | 181.02 ms (-0.06%) | 8,799,368 B | 8,006,656 B (-9.01%) | 10,698,176 B | 9,902,824 B (-7.43%) | 21,567,808 B | 20,772,456 B (-3.69%) |
+| steady-state-damage-animation | 13.85 ms | 14.41 ms (+4.04%) | 184 B | 184 B (flat) | 10,215,592 B | 9,861,488 B (-3.47%) | 16,507,216 B | 16,153,152 B (-2.14%) |
+| dense-text-flow | 12.75 ms | 14.13 ms (+10.82%) | 1,470,336 B | 1,415,020 B (-3.76%) | 5,665,672 B | 5,560,856 B (-1.85%) | 9,336,432 B | 9,119,960 B (-2.32%) |
+| wrapped-multiline-text | 8.73 ms | 8.79 ms (+0.69%) | 792,920 B | 767,432 B (-3.21%) | 2,354,216 B | 2,287,416 B (-2.84%) | 4,400,120 B | 4,350,264 B (-1.13%) |
+
+The exact property-access delta is the causal acceptance measurement. Layout allocation falls in all active-layout fixtures, and render plus managed allocation fall in every fixture. Timing remains mixed and includes a dense `+10.82%` total movement, so no timing improvement is claimed. A fresh direct-executable `gc-verbose` trace removes `LayoutBoxStore.GetChildrenList` as an allocation owner. `ChildrenListWrapper.GetEnumerator` remains measurable and is deliberately left for a separate change because changing enumeration or the public collection type requires a distinct correctness and API assessment.
+
+Verification:
+
+- Exact original and candidate layout slices each pass `231/233`; the only failures on both sides are the existing `GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl` and `ColumnMinHeightDvh_AllowsFlexOneHeroToCenterContent` failures.
+- The retained allocation, Box Tree, incremental-layout, compositor, and renderer-telemetry slice passes `9/9`.
+- All four benchmark failure gates pass in every immediate A/B report.
+- This layout-storage change does not alter JavaScript or web-platform semantics, so Test262 and WPT categories are not rerun.
