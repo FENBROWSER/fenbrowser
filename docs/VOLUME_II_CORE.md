@@ -1439,3 +1439,24 @@ Verification:
 - Included compatibility allocation checks: pass (`2/2`, exactly `0 B` for both suppressed cases).
 - Logging contract slice spanning settings, script, parser, event-loop, missing-API, and navigation traces: pass (`9/9`).
 - A post-change GC allocation trace no longer contains `EngineLogCompat` or `EngineLogCompatibility.FromLegacyCategory` in the filtered top allocation stacks.
+
+### 1.69 Caller-Lazy Interpolated Compatibility Logging (2026-07-14)
+
+- `FenBrowser.Core/Logging/EngineLogInterpolatedStringHandler.cs`
+  - Adds a standard C# interpolated-string handler that snapshots the authoritative category/level filter before evaluating formatted expressions.
+  - The handler is a stack-only `ref struct` backed by `DefaultInterpolatedStringHandler` only when enabled. It owns no pool, cache, global table, unmanaged handle, or retained buffer.
+  - Disabled and filtered calls skip `AppendFormatted`, including user `ToString`, substring, URI formatting, and numeric formatting work. Enabled calls build the same string and enter the existing compatibility pipeline.
+- `FenBrowser.Core/EngineLogCompat.cs`
+  - Adds the explicit category-first overload `Log(category, level, $"...")`. The existing string-first APIs remain source- and behavior-compatible.
+  - Caller member, file, and line attribution are captured on the handler overload and forwarded to the structured event. Unlike the legacy convenience wrappers, migrated sites therefore identify the real caller instead of the facade. The existing logger check is repeated at emission to remain safe if configuration changes between handler construction and the write.
+- `FenBrowser.Tests/Logging/EngineLogSettingsTests.cs`
+  - Verifies disabled and severity-filtered handlers do not call a formatted object's `ToString` and allocate exactly `0 B` for 10,000 varying numeric messages.
+  - Verifies enabled Debug formatting runs once and emits the original Paint category, Debug level, and formatted message with the actual caller file, member, and line.
+
+The equivalent pre-handler caller path allocated `879,920 B` for 10,000 suppressed varying messages. The retained path allocates `0 B`; this is distinct from the earlier callee-side metadata saving because no message string is created at all.
+
+Verification:
+
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `EngineLogSettingsTests`: pass (`8/8`).
+- Logging trace contract slice: pass (`12/12`) with enabled parser, script, event-loop, navigation, and missing-API diagnostics preserved.

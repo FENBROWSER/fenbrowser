@@ -64,6 +64,103 @@ public class EngineLogSettingsTests
     }
 
     [Fact]
+    public void DisabledInterpolatedCompatibilityLogging_DoesNotAllocateAtCaller()
+    {
+        bool wasEnabled = EngineLogCompat.IsEnabled;
+        try
+        {
+            EngineLogCompat.IsEnabled = false;
+            var probe = new FormattingProbe();
+            EngineLogCompat.Log(LogCategory.Paint, LogLevel.Debug, $"suppressed paint diagnostic {probe}");
+            Assert.Equal(0, probe.ToStringCalls);
+
+            long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 10_000; i++)
+            {
+                EngineLogCompat.Log(LogCategory.Paint, LogLevel.Debug, $"suppressed paint diagnostic {i}");
+            }
+
+            Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - allocatedBefore);
+        }
+        finally
+        {
+            EngineLogCompat.IsEnabled = wasEnabled;
+        }
+    }
+
+    [Fact]
+    public void FilteredInterpolatedCompatibilityLogging_DoesNotFormatOrAllocateAtCaller()
+    {
+        bool wasEnabled = EngineLogCompat.IsEnabled;
+        try
+        {
+            EngineLogCompat.IsEnabled = true;
+            EngineLog.Configure(new EngineLoggingOptions
+            {
+                Enabled = true,
+                GlobalMinimumSeverity = LogSeverity.Info,
+                EnableConsoleSink = false,
+                EnableDebugSink = false,
+                EnableNdjsonSink = false,
+                EnableRingBufferSink = false,
+                EnableTraceSink = false
+            });
+            var probe = new FormattingProbe();
+            EngineLogCompat.Log(LogCategory.Paint, LogLevel.Debug, $"filtered paint diagnostic {probe}");
+            Assert.Equal(0, probe.ToStringCalls);
+
+            long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 10_000; i++)
+            {
+                EngineLogCompat.Log(LogCategory.Paint, LogLevel.Debug, $"filtered paint diagnostic {i}");
+            }
+
+            Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - allocatedBefore);
+        }
+        finally
+        {
+            EngineLogCompat.IsEnabled = wasEnabled;
+        }
+    }
+
+    [Fact]
+    public void EnabledInterpolatedCompatibilityLogging_FormatsAndEmitsMessage()
+    {
+        bool wasEnabled = EngineLogCompat.IsEnabled;
+        try
+        {
+            EngineLog.Configure(new EngineLoggingOptions
+            {
+                Enabled = true,
+                GlobalMinimumSeverity = LogSeverity.Debug,
+                EnableConsoleSink = false,
+                EnableDebugSink = false,
+                EnableNdjsonSink = false,
+                EnableRingBufferSink = true,
+                EnableTraceSink = false,
+                RingBufferCapacity = 1000
+            });
+            EngineLog.ClearCompatibilityBuffer();
+            var probe = new FormattingProbe();
+
+            EngineLogCompat.Log(LogCategory.Paint, LogLevel.Debug, $"visible paint diagnostic {probe}");
+
+            Assert.Equal(1, probe.ToStringCalls);
+            var entry = Assert.Single(EngineLog.GetCompatibilityRecentEntries());
+            Assert.Equal(LogCategory.Paint, entry.Category);
+            Assert.Equal(LogLevel.Debug, entry.Level);
+            Assert.Equal("visible paint diagnostic formatted", entry.Message);
+            Assert.Equal("EngineLogSettingsTests.cs", entry.SourceFile);
+            Assert.Equal(nameof(EnabledInterpolatedCompatibilityLogging_FormatsAndEmitsMessage), entry.MethodName);
+            Assert.True(entry.SourceLine > 0);
+        }
+        finally
+        {
+            EngineLogCompat.IsEnabled = wasEnabled;
+        }
+    }
+
+    [Fact]
     public void DisabledLogging_BlocksWritesAndClearsCompatibilityBuffer()
     {
         EngineLog.Configure(new EngineLoggingOptions
@@ -199,6 +296,17 @@ public class EngineLogSettingsTests
             {
                 File.Delete(tracePath);
             }
+        }
+    }
+
+    private sealed class FormattingProbe
+    {
+        public int ToStringCalls { get; private set; }
+
+        public override string ToString()
+        {
+            ToStringCalls++;
+            return "formatted";
         }
     }
 }

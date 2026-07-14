@@ -2818,3 +2818,17 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~EngineLogSettingsTests|FullyQualifiedName~BrowserScriptEngineTraceTests|FullyQualifiedName~CustomHtmlEngineDocumentTraceTests|FullyQualifiedName~EventLoopTraceTests|FullyQualifiedName~HtmlParserTraceTests|FullyQualifiedName~MissingApiTrackerTests|FullyQualifiedName~NavigationLifecycleTraceTests" -v quiet /nodeReuse:false`: pass (`9/9`).
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests|FullyQualifiedName~RenderDiagnosticsCostTests|FullyQualifiedName~PerformanceDiagnosticsTests" -v quiet /nodeReuse:false`: pass (`10/10`).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four scenario gates pass in each retained process.
+
+## 6.91 Caller-Lazy Logging Verification (2026-07-14)
+
+- A focused pre-change allocation assertion measured `879,920 B` for 10,000 suppressed interpolated compatibility messages whose numeric value changes on every call.
+- The retained category-first handler path measures exactly `0 B` for both disabled logging and Debug filtered by an Info threshold. A probe object confirms `ToString` is not evaluated in either case.
+- The enabled-path test confirms one formatting evaluation and the original emitted category, level, and message. This prevents allocation reduction from silently disabling diagnostics.
+- Five-process CSS-stage comparisons use reports `122621`-`122626` before and `123710`-`123715` after. CSS allocation is flat or lower in all four scenarios; time movements from `-1.9%` to `+2.6%` are treated as noise.
+- Verbose GC allocation traces before and after use the same Release `render-perf` command. The ranked `String.Ctor(ReadOnlySpan<char>)` sample share moved from `44.02%` to `0.91%`, and the targeted `CssLoader.ParseRules` interpolation stack no longer appears.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~EngineLogSettingsTests" -v quiet /nodeReuse:false`: pass (`8/8`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests|FullyQualifiedName~MediaWikiDeduplicatedInlineStyleTests|FullyQualifiedName~CssBackgroundShorthandTests|FullyQualifiedName~CssBackgroundShorthandColorTests" -v quiet /nodeReuse:false`: pass (`4/4`).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every retained process.

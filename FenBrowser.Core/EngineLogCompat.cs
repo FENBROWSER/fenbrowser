@@ -48,6 +48,24 @@ public static class EngineLogCompat
         => LogContext.Push(component, correlationId, data);
 
     public static void Log(
+        LogCategory category,
+        LogLevel level,
+        [InterpolatedStringHandlerArgument(nameof(category), nameof(level))]
+        ref EngineLogInterpolatedStringHandler message,
+        Exception ex = null,
+        [CallerMemberName] string memberName = "",
+        [CallerFilePath] string sourceFile = "",
+        [CallerLineNumber] int sourceLine = 0)
+    {
+        if (!message.IsEnabled)
+        {
+            return;
+        }
+
+        Log(message.GetFormattedText(), category, level, ex, memberName, sourceFile, sourceLine);
+    }
+
+    public static void Log(
         string message,
         LogCategory category = LogCategory.General,
         LogLevel level = LogLevel.Info,

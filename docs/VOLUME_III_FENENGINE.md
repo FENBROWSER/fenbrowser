@@ -9009,3 +9009,27 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - Render diagnostics and deterministic benchmark slice: pass (`10/10`).
 - All four correctness and timing failure gates passed in each of the five retained reports.
+
+## 2.332 Caller-Lazy CSS Pipeline Diagnostics (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - A post-logging-fix GC allocation trace still attributed `44.02%` of sampled exclusive allocation-stack weight to interpolated string construction. The largest identified stack was `CssLoader.ParseRules -> DefaultInterpolatedStringHandler.ToStringAndClear -> String.Ctor`.
+  - Unguarded normal-path CSS discovery, import, parse, variable-resolution, cascade, URL-background, and auto-margin diagnostics now use the Core category-first interpolated handler. Formatted expressions are skipped when their category/level is disabled while enabled messages retain the same text, category, and level and now attribute the structured event to the actual CSS caller.
+  - Diagnostics already protected by an explicit feature/debug predicate were left unchanged, as were exception and timeout messages. This keeps the migration limited to the measured normal path.
+
+Five fresh Release processes compare immediate reports `122621`-`122626` with retained reports `123710`-`123715`:
+
+| Scenario | CSS time before | CSS time after | CSS allocation before | CSS allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 118.74 ms | 118.63 ms (-0.1%) | 9,751,336 B | 9,749,688 B (-0.02%) |
+| steady-state-damage-animation | 17.63 ms | 17.80 ms (+1.0%) | 5,567,816 B | 5,567,760 B (flat) |
+| dense-text-flow | 5.68 ms | 5.57 ms (-1.9%) | 3,174,192 B | 3,128,048 B (-1.45%) |
+| wrapped-multiline-text | 9.47 ms | 9.72 ms (+2.6%) | 1,710,240 B | 1,705,200 B (-0.29%) |
+
+Pipeline timing is treated as neutral/noisy, not as an improvement. The change is retained for the exact caller microbenchmark (`879,920 B` to `0 B`) and consistent non-increasing CSS-stage allocation. A fresh allocation trace reduced sampled `String.Ctor(ReadOnlySpan<char>)` exclusive weight from `44.02%` to `0.91%`; the targeted `ParseRules` interpolation stack disappeared from the ranked report.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- CSS/render benchmark and focused CSS correctness slice: pass (`4/4`).
+- All four benchmark failure gates passed in every retained report.
