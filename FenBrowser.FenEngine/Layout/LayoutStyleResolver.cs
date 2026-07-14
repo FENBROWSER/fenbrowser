@@ -98,8 +98,6 @@ namespace FenBrowser.FenEngine.Layout
 
         public static string GetEffectivePosition(CssComputed style)
         {
-            NormalizeForLayout(style);
-
             if (style == null)
             {
                 return null;
@@ -113,9 +111,18 @@ namespace FenBrowser.FenEngine.Layout
                 position = mappedPosition;
             }
 
-            return string.IsNullOrWhiteSpace(position)
-                ? null
-                : position.Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(position))
+            {
+                return null;
+            }
+
+            position = position.Trim();
+            if (position.Equals("static", StringComparison.OrdinalIgnoreCase)) return "static";
+            if (position.Equals("relative", StringComparison.OrdinalIgnoreCase)) return "relative";
+            if (position.Equals("absolute", StringComparison.OrdinalIgnoreCase)) return "absolute";
+            if (position.Equals("fixed", StringComparison.OrdinalIgnoreCase)) return "fixed";
+            if (position.Equals("sticky", StringComparison.OrdinalIgnoreCase)) return "sticky";
+            return position.ToLowerInvariant();
         }
 
         private static void SyncInset(

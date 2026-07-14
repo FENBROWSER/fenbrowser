@@ -8794,3 +8794,33 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~PerformanceDiagnosticsTests|FullyQualifiedName~InlineStyleCacheTests|FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests" -v quiet /nodeReuse:false`: pass (`10/10`).
 - Five fresh `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf` processes: pass; all failure gates remained green and structured reports were written under `Results/performance/`.
+
+## 2.323 Position Lookup Without Repeated Full Style Normalization (2026-07-14)
+
+- `FenBrowser.FenEngine/Layout/LayoutStyleResolver.cs`
+  - `GetEffectivePosition` previously called `NormalizeForLayout` on every lookup. Position checks occur repeatedly during box-tree construction, layout, relative/absolute positioning, flex processing, and paint preparation, so each lookup redundantly repeated all size, inset, anchor, and logical-property projections and created their capturing delegates.
+  - The cascade scheduler and box-tree boundary already perform full normalization. Position lookup now reads the typed projection or raw computed map directly and canonicalizes the five recognized position keywords without allocating for the normal lowercase values.
+  - The fallback still trims and case-normalizes unknown values. It no longer mutates unrelated width, height, or inset fields as a hidden side effect of reading `position`.
+- `FenBrowser.Tests/Performance/LayoutStyleResolverHotPathTests.cs`
+  - Covers typed and computed-map position values, canonical keyword output, absence of unrelated style mutation, and zero managed allocation for 1,000 common canonical lookups.
+
+Post-inline-cache sampled profiling identified `NormalizeForLayout` at 153.68 inclusive units, of which repeated `GetEffectivePosition` calls accounted for 116.57. After the change, `GetEffectivePosition` fell below the sampled ranking, total normalization fell to 23.18 units, and `LayoutEngine.ComputeLayout` fell from 200.82 to 110.93 units.
+
+Five-process Release medians compare reports `102517`–`102523` with `103149`–`103154`:
+
+| Scenario | Frame before | Frame after | Layout before | Layout after | Allocations before | Allocations after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 261.22 ms | 218.72 ms (-16.27%) | 123.41 ms | 92.02 ms (-25.44%) | 85,333,000 B | 26,642,896 B (-68.78%) |
+| steady-state-damage-animation | 14.01 ms | 14.86 ms (+6.07%) | 0 ms | 0 ms | 58,730,512 B | 23,647,296 B (-59.74%) |
+| dense-text-flow | 43.01 ms | 38.13 ms (-11.35%) | 6.54 ms | 2.55 ms (-61.01%) | 25,211,984 B | 14,931,832 B (-40.77%) |
+
+The steady paint-only wall-clock delta is retained in the report rather than hidden; that scenario performs no measured layout and still shows a large allocation reduction. All benchmark failure gates remained green.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~LayoutStyleResolverHotPathTests -v quiet /nodeReuse:false`: pass (`7/7`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~HeightResolutionTests -v quiet /nodeReuse:false`: pass (`21/21`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~CssLogicalProjectionTests -v quiet /nodeReuse:false`: pass (`2/2`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~FenBrowser.Tests.Layout -v quiet /nodeReuse:false`: `225/227` pass; the two failures are the same pre-existing flex/grid failures present at the pushed parent commit.
+- The broader serial-configured suite passed `766/782`; its 16 failures are existing artifact-sensitive, WebDriver-state, and two known layout failures. The pushed parent comparison passed `750/775` with 25 existing failures, including the same two layout failures. The differing totals include the seven new tests and baseline-worktree snapshot discovery differences.
+- Five fresh `render-perf` processes: all failure gates passed; reports are under `Results/performance/`.
