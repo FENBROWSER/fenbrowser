@@ -1156,10 +1156,11 @@ namespace FenBrowser.FenEngine.Rendering
                 return null;
             }
 
-            var glyphs = new List<PositionedGlyph>(glyphRun.Glyphs.Length);
+            var glyphs = new PositionedGlyph[glyphRun.Glyphs.Length];
             int renderableGlyphCount = 0;
-            foreach (var glyph in glyphRun.Glyphs)
+            for (var index = 0; index < glyphRun.Glyphs.Length; index++)
             {
+                var glyph = glyphRun.Glyphs[index];
                 var positioned = new PositionedGlyph(
                     glyph.GlyphId,
                     origin.X + glyph.X,
@@ -1169,7 +1170,7 @@ namespace FenBrowser.FenEngine.Rendering
                     renderableGlyphCount++;
                 }
 
-                glyphs.Add(positioned);
+                glyphs[index] = positioned;
             }
 
             return renderableGlyphCount > 0 ? glyphs : null;

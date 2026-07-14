@@ -3173,3 +3173,20 @@ Verification commands:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.113 Fixed-Size Paint Glyph Verification (2026-07-14)
+
+- `PaintGlyphAllocationTests` invokes the production glyph-result builder through a delegate created before measurement. One thousand warmed calls move from exactly `392,088 B` with the original fixed-capacity list to exactly `360,088 B` with the exact-size array (`-32,000 B`, `-8.16%`) and pass the `361,000 B` ceiling on both retained runs.
+- The same contract verifies that the result is a `PositionedGlyph[]`, retains the shaped glyph count, and preserves the supplied origin for the first glyph.
+- The neighboring paint/text correctness filter passes `32/32`, covering child traversal, pill rendering, P2 closure, text layout typeface resolution, and Skia typeface-cache behavior.
+- Candidate reports `162409`, `162410`, `162411`, `162413`, and `162414` pass every failure gate. Paint-generation allocation medians fall `0.38%`-`1.97%` across all four fixtures; paint timing is mixed, so no latency improvement is claimed.
+- The rejected paint-tree string-normalization probe remained exactly `386,400 B` for ten warmed wide-tree builds before and after and was fully removed. This records the non-beneficial experiment without retaining complexity.
+- Test262 and WPT are not rerun because the production change preserves the glyph sequence and only removes an internal list wrapper.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~PaintGlyphAllocationTests" --logger "console;verbosity=detailed"`: pass (`1/1`), exactly `360,088 B`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "PaintGlyphAllocationTests|PaintTreeChildTraversalAllocationTests|PaintTreePillRenderingContractTests|P2ClosureContractTests|TextLayoutTypefaceAllocationTests|SkiaFontServiceTypefaceCacheAllocationTests" --logger "console;verbosity=minimal"`: pass (`32/32`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.

@@ -9533,3 +9533,32 @@ Verification:
 - The included CSS background, logical-projection, Tailwind utility, and layout-stability slice remains at its established `6/9` state with the same border-initial-value failure and two logical-projection failures.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and all four benchmark failure gates pass in every candidate process.
 - Test262 and WPT are not rerun because the change preserves parse inputs, parsed-rule values, cache partitions, selector matching, and cascade behavior; the relevant key semantics are covered directly.
+
+## 2.351 Fixed-Size Paint Glyph Results (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - The post-CSS-cache-key allocation trace ranks `NewPaintTreeBuilder.BuildPaintGlyphs` at `53.3223` sampled units. The method already knows the shaped glyph count, but it allocated a `List<PositionedGlyph>` wrapper and its fixed-capacity backing array for every rendered text run.
+  - Paint glyph construction now writes directly into one exact-size `PositionedGlyph[]` and returns it through the existing `IReadOnlyList<PositionedGlyph>` contract. Glyph order, count, coordinates, renderability checks, and the all-unrenderable `null` result remain unchanged.
+  - This adds no pool, cache, unsafe code, native resource, retained state, or concurrency boundary. The array has the same lifetime and contents as the former list backing store and removes only the redundant list object.
+- `FenBrowser.Tests/Performance/PaintGlyphAllocationTests.cs`
+  - One thousand warmed production glyph builds move from exactly `392,088 B` to `360,088 B`, saving `32,000 B` (`8.16%`) and one list wrapper per call. The retained `361,000 B` ceiling allows the shaped-result allocations and rejects the former container cost.
+  - The contract also verifies the fixed-size result type, glyph count, and first-glyph origin coordinates.
+
+Five fresh Release processes compare the structured CSS key reports `161116`, `161117`, `161118`, `161119`, and `161120` with candidate reports `162409`, `162410`, `162411`, `162413`, and `162414`:
+
+| Scenario | Paint allocation before | Paint allocation after | Paint time before | Paint time after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 1,308,816 B | 1,283,040 B (-1.97%) | 63.38 ms | 63.51 ms (+0.21%) |
+| steady-state-damage-animation | 797,628 B | 789,948 B (-0.96%) | 7.13 ms | 7.05 ms (-1.12%) |
+| dense-text-flow | 1,239,516 B | 1,234,812 B (-0.38%) | 8.34 ms | 7.94 ms (-4.80%) |
+| wrapped-multiline-text | 334,620 B | 329,500 B (-1.53%) | 3.00 ms | 3.02 ms (+0.67%) |
+
+Paint-generation allocation medians fall in every fixture. Timing moves in both directions and these short processes remain noisy, so no latency improvement is claimed. All four benchmark failure gates pass in every candidate process.
+
+Verification:
+
+- The exact allocation contract passes twice on the retained Release build; its detailed rerun records exactly `360,088 B`.
+- The allocation, paint-tree child traversal, pill rendering, P2 closure, text-layout typeface, and Skia typeface-cache slice passes `32/32`.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors.
+- A separate case-normalization experiment in paint-tree traversal was rejected and fully reverted: ten warmed wide-tree builds remained exactly `386,400 B` before and after replacing per-node normalization with ordinal-ignore-case comparisons, so the change added no measurable allocation benefit.
+- Test262 and WPT are not rerun because the retained change only replaces an internal result container while preserving paint glyph data and ordering; the focused paint contracts are the relevant semantic proof.
