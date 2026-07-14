@@ -9505,3 +9505,31 @@ Verification:
 - The included CSS slice has an established `6/9` baseline and returns to `6/9` on the fresh retained rerun with the same border and logical-projection values. One intermediate retained process reported `8/9`, exposing existing shared-state sensitivity; those intermittent passes are not attributed to this change.
 - The Release `FenBrowser.Tooling` build succeeds with zero warnings and zero errors, and all four benchmark failure gates pass in every candidate process.
 - A separate property-validation normalization experiment was reverted after a 256-declaration cascade remained exactly `77,904 B` before and after. Test262 and WPT categories are not rerun because the retained change only reduces dictionary work during selector-index construction and does not change web-observable matching semantics.
+
+## 2.350 Structured CSS Parse-Cache Keys (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - The post-token-pool Release trace attributed `309.535` sampled units to `BuildParsedRuleCacheKey`. Every completed-cache and in-flight-cache probe formatted the viewport dimensions, source order, and origin, then copied the base URI and complete stylesheet into a new composite string. A warmed lookup over a 32 KB stylesheet therefore allocated a stylesheet-sized key even though parsing was already cached.
+  - Both existing parse-cache dictionaries now use a private immutable `ParsedRuleCacheKey` containing the original CSS and absolute-URI strings plus nullable viewport dimensions, source order, and origin. Equality remains ordinal for strings and uses typed value equality for the remaining fields, while cache hits retain the caller's existing strings instead of constructing a new string.
+  - The completed and in-flight caches still share the same key type, locks, lifetime, `ClearCaches` invalidation, parsed-rule values, and async de-duplication flow. This adds no cache, pool, unsafe code, native resource, or concurrency boundary; cache size and eviction policy are unchanged from the pre-existing implementation.
+- `FenBrowser.Tests/Performance/CssParsedRuleCacheKeyTests.cs`
+  - One hundred warmed production `GetMatchedRules` cache hits over a 32 KB comment-heavy stylesheet move from exactly `6,589,208 B` to `13,600 B`, saving `6,575,608 B` (`99.79%`). The retained `14,000 B` ceiling allows the matched-result objects and rejects stylesheet-sized lookup-key copies.
+  - Included contracts verify that duplicate CSS remains partitioned by source order and origin and that identical relative-URL rules remain partitioned by base URI. These contracts previously existed only under the test project's excluded `Engine/**` directory.
+
+Five fresh Release processes compare the lazy-token-pool reports `160057`, `160059`, `160100`, `160101`, and `160102` with candidate reports `161116`, `161117`, `161118`, `161119`, and `161120`:
+
+| Scenario | Total before | Total after | CSS time before | CSS time after | CSS allocation before | CSS allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 171.34 ms | 170.35 ms (-0.58%) | 119.01 ms | 119.99 ms (+0.82%) | 9,749,648 B | 9,714,608 B (-0.36%) | 19,377,312 B | 19,366,968 B (-0.05%) |
+| steady-state-damage-animation | 15.85 ms | 15.45 ms (-2.52%) | 17.57 ms | 17.77 ms (+1.14%) | 5,543,880 B | 5,537,688 B (-0.11%) | 14,753,544 B | 14,747,112 B (-0.04%) |
+| dense-text-flow | 12.64 ms | 14.03 ms (+11.00%) | 5.46 ms | 5.61 ms (+2.75%) | 3,155,240 B | 3,137,888 B (-0.55%) | 8,761,840 B | 8,740,904 B (-0.24%) |
+| wrapped-multiline-text | 7.15 ms | 6.90 ms (-3.50%) | 8.70 ms | 8.66 ms (-0.46%) | 1,688,328 B | 1,674,776 B (-0.80%) | 4,063,328 B | 4,042,824 B (-0.50%) |
+
+CSS-stage and managed allocation medians fall in every fixture. CSS and total timing medians are mixed, including an `11.00%` dense-flow total regression, so no pipeline latency improvement is claimed. The fresh sampling trace contains no `BuildParsedRuleCacheKey` frame; the exact warmed production-call allocation delta remains the causal acceptance evidence.
+
+Verification:
+
+- The source-order, origin, base-URI, and allocation contracts pass `4/4` twice.
+- The included CSS background, logical-projection, Tailwind utility, and layout-stability slice remains at its established `6/9` state with the same border-initial-value failure and two logical-projection failures.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and all four benchmark failure gates pass in every candidate process.
+- Test262 and WPT are not rerun because the change preserves parse inputs, parsed-rule values, cache partitions, selector matching, and cascade behavior; the relevant key semantics are covered directly.

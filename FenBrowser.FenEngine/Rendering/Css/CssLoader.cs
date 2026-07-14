@@ -66,12 +66,21 @@ namespace FenBrowser.FenEngine.Rendering
             public NewCss.Specificity Specificity;
         }
 
+        private readonly record struct ParsedRuleCacheKey(
+            string Css,
+            string BaseUri,
+            double? ViewportWidth,
+            double? ViewportHeight,
+            int SourceOrder,
+            NewCss.CssOrigin Origin);
+
         // -------------------------------------------------------------------------
         // CSS PERFORMANCE CACHES
         // -------------------------------------------------------------------------
-        // Parse cache: shared across tabs (same URL+CSS → same parsed rules).
-        private static readonly Dictionary<string, List<NewCss.CssRule>> _parsedRulesCache = new Dictionary<string, List<NewCss.CssRule>>();
-        private static readonly Dictionary<string, Task<List<NewCss.CssRule>>> _inFlightParses = new Dictionary<string, Task<List<NewCss.CssRule>>>();
+        // Parse cache: shared across tabs when CSS, base URI, viewport, source order,
+        // and origin are all equivalent.
+        private static readonly Dictionary<ParsedRuleCacheKey, List<NewCss.CssRule>> _parsedRulesCache = new();
+        private static readonly Dictionary<ParsedRuleCacheKey, Task<List<NewCss.CssRule>>> _inFlightParses = new();
         private static readonly System.Threading.SemaphoreSlim _globalParseGate = new System.Threading.SemaphoreSlim(Environment.ProcessorCount > 2 ? Environment.ProcessorCount - 1 : 2);
         // Compute gate: was 1 (serialised ALL CSS work across tabs).  Now allows
         // concurrent computation per core so Tab1 and Tab2 cascade in parallel.
@@ -109,7 +118,7 @@ namespace FenBrowser.FenEngine.Rendering
             FontRegistry.Clear();
         }
 
-        private static string BuildParsedRuleCacheKey(
+        private static ParsedRuleCacheKey BuildParsedRuleCacheKey(
             string css,
             Uri baseUri,
             double? viewportWidth,
@@ -117,14 +126,13 @@ namespace FenBrowser.FenEngine.Rendering
             int sourceOrder = 0,
             NewCss.CssOrigin origin = NewCss.CssOrigin.Author)
         {
-            string widthKey = viewportWidth.HasValue
-                ? viewportWidth.Value.ToString("R", CultureInfo.InvariantCulture)
-                : "null";
-            string heightKey = viewportHeight.HasValue
-                ? viewportHeight.Value.ToString("R", CultureInfo.InvariantCulture)
-                : "null";
-            string baseKey = baseUri?.AbsoluteUri ?? "null";
-            return $"base={baseKey};vw={widthKey};vh={heightKey};order={sourceOrder};origin={origin};css={css}";
+            return new ParsedRuleCacheKey(
+                css ?? string.Empty,
+                baseUri?.AbsoluteUri ?? "null",
+                viewportWidth,
+                viewportHeight,
+                sourceOrder,
+                origin);
         }
         // -------------------------------------------------------------------------
 
@@ -231,7 +239,7 @@ namespace FenBrowser.FenEngine.Rendering
                  try
                  {
                      List<NewCss.CssRule> rules;
-                     string parseCacheKey = BuildParsedRuleCacheKey(
+                     ParsedRuleCacheKey parseCacheKey = BuildParsedRuleCacheKey(
                          source.CssText,
                          source.BaseUri,
                          viewportWidth,
@@ -843,7 +851,7 @@ namespace FenBrowser.FenEngine.Rendering
                         List<NewCss.CssRule> parsed = null;
                         Task<List<NewCss.CssRule>> inFlightTask = null;
                         
-                        string parseCacheKey = BuildParsedRuleCacheKey(
+                        ParsedRuleCacheKey parseCacheKey = BuildParsedRuleCacheKey(
                             processedCss,
                             blob.BaseUri,
                             viewportWidth,

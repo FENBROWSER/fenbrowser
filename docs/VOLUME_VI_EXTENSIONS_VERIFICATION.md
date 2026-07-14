@@ -3156,3 +3156,20 @@ Verification commands:
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore`: pass (`0` warnings, `0` errors).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.112 Structured CSS Parse-Cache Key Verification (2026-07-14)
+
+- `CssParsedRuleCacheKeyTests.CacheHit_DoesNotNeedToCopyStylesheetIntoLookupKey` measures 100 warmed production cache hits over a 32 KB comment-heavy stylesheet. The composite-string key allocates exactly `6,589,208 B`; the immutable value key allocates exactly `13,600 B` (`-6,575,608 B`, `-99.79%`) and passes the `14,000 B` ceiling on both retained runs.
+- Three included semantic contracts protect source-order, origin, and base-URI partitions. They reproduce the relevant coverage from `Engine/CssLoaderIsolationRegressionTests.cs`, which is excluded by the current `FenBrowser.Tests.csproj`, without changing project inclusion policy.
+- Candidate reports `161116`, `161117`, `161118`, `161119`, and `161120` pass every failure gate. CSS allocation medians fall `0.11%`-`0.80%` and managed allocation medians fall `0.04%`-`0.50%` across all four fixtures.
+- CSS and total timing medians are mixed, so no pipeline latency improvement is claimed. The fresh trace contains no `BuildParsedRuleCacheKey` frame after the preceding trace attributed `309.535` sampled units to it.
+- The included CSS slice remains `6/9` with the same `RegisteredBorderStyleInitialValue_ProducesEffectiveBorder` failure and two `CssLogicalProjectionTests` failures. Test262 and WPT are not rerun because the change is confined to the private representation of an existing cache key and the correctness-relevant partitions are tested directly.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CssParsedRuleCacheKeyTests" --logger "console;verbosity=minimal"`: pass (`4/4`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~CssParsedRuleCacheKeyTests" --logger "console;verbosity=minimal"`: pass (`4/4`) on the retained rerun.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~CssBackgroundShorthandTests|FullyQualifiedName~CssLogicalProjectionTests|FullyQualifiedName~TailwindUtilityCssContractTests|FullyQualifiedName~LayoutStabilityTests" --logger "console;verbosity=minimal"`: same three existing failures, `6/9`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
