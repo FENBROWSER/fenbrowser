@@ -10,6 +10,7 @@ using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Interaction;
 using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Rendering.Core;
+using FenBrowser.FenEngine.Rendering.Performance;
 using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Engine;
@@ -17,7 +18,6 @@ using FenBrowser.Core.Memory;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
-using FenBrowser.FenEngine.Rendering.Performance;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -257,6 +257,8 @@ namespace FenBrowser.FenEngine.Rendering
                 request.InvalidationReason,
                 request.RequestedBy,
                 request.EmitVerificationReport);
+
+            PerformanceDiagnosticsStore.RecordFrame(LastFrameTelemetry);
 
             return new RenderFrameResult
             {

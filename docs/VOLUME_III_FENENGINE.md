@@ -8687,3 +8687,28 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release -v minimal /nodeReuse:false`: pass (`0` errors).
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter "FullyQualifiedName~FenBrowser.Tests.Performance.RenderPerformanceBenchmarkRunnerTests" --logger "console;verbosity=minimal" /nodeReuse:false`: pass (`3/3`).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: pass; all three failure gates passed and the structured report captured phase, allocation, GC, and environment data.
+
+## 2.319 Bounded `fen://performance` Navigation Diagnostics (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Performance/PerformanceDiagnosticsStore.cs`
+  - Added a process-local, thread-safe navigation history bounded to the latest 20 entries.
+  - Recording can be started, stopped, or reset. Disabled recording returns before taking the store lock or constructing a navigation snapshot.
+  - Existing page-load and render-frame telemetry are merged by URL, allowing a navigation record to receive DOM, layout-object, paint-command, damage, incremental-layout, and raster data when its frame completes.
+- `FenBrowser.FenEngine/Rendering/Performance/PerformancePageRenderer.cs`
+- `FenBrowser.FenEngine/Rendering/NavigationManager.cs`
+  - `fen://performance` now uses the established internal-page routing path and performs no network fetch.
+  - The page exposes navigation, memory/GC, document, invalidation, FenJS, and renderer sections; unsupported counters are explicitly labelled `Not instrumented` rather than displayed as successful zero values.
+  - Start, stop, reset, copy, JSON export, recent-history, and latest-two-navigation comparison controls are available from the page.
+- `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - Completed navigations capture allocation, managed heap, working set, and Gen 0/1/2 deltas alongside the existing parse/style/script/load timings.
+  - Standard render-frame completion publishes the existing frame telemetry to the bounded diagnostics store.
+- `FenBrowser.Tests/Performance/PerformanceDiagnosticsTests.cs`
+  - Covers bounded retention, stop/reset behavior, frame/navigation merging, required page sections and controls, internal routing, and a real local `CustomHtmlEngine` navigation snapshot.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release -v minimal /nodeReuse:false`: pass (`0` errors).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenBrowser.Tests.Performance.PerformanceDiagnosticsTests|FullyQualifiedName~FenBrowser.Tests.Performance.RenderPerformanceBenchmarkRunnerTests" --logger "console;verbosity=minimal" /nodeReuse:false`: pass (`7/7`).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: pass; all three failure gates remained green after diagnostics integration.
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site fen://performance 2000`: pass. The exact internal URL completed with `0` network requests, `0` script failures, `436` DOM nodes, `428` layout boxes, `298` paint nodes, and a screenshot in `logs/real-site/performance/20260714T095850Z`.

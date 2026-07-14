@@ -23,6 +23,7 @@ using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Rendering.Core;
 using FenBrowser.FenEngine.Rendering.Css;
 using FenBrowser.FenEngine.Core.EventLoop; // Added for EventLoopCoordinator
+using FenBrowser.FenEngine.Rendering.Performance;
 using FenBrowser.Core.Engine; // Added for EnginePhase
 using SkiaSharp;
 
@@ -53,6 +54,14 @@ namespace FenBrowser.FenEngine.Rendering
         public long PostScriptVisualTreeMs { get; init; }
         public long TotalRenderMs { get; init; }
         public bool JavaScriptExecuted { get; init; }
+        public string Url { get; init; }
+        public DateTimeOffset NavigationStartedAtUtc { get; init; }
+        public long ManagedAllocatedBytes { get; init; }
+        public long ManagedHeapBytes { get; init; }
+        public long WorkingSetBytes { get; init; }
+        public int Gen0Collections { get; init; }
+        public int Gen1Collections { get; init; }
+        public int Gen2Collections { get; init; }
     }
 
     internal sealed class DomParseResult
@@ -2637,6 +2646,11 @@ public void Dispose()
             }
 
             await RaiseLoadingChangedAsync(true);
+            var navigationStartedAtUtc = DateTimeOffset.UtcNow;
+            long allocatedBytesBefore = GC.GetTotalAllocatedBytes(precise: false);
+            int gen0Before = GC.CollectionCount(0);
+            int gen1Before = GC.CollectionCount(1);
+            int gen2Before = GC.CollectionCount(2);
             var _pageLoadStopwatch = System.Diagnostics.Stopwatch.StartNew();
             long lastStageMarkMs = 0;
             long tokenizingMs = 0;
@@ -3041,6 +3055,12 @@ public void Dispose()
             finally
             {
                 var totalRenderMs = _pageLoadStopwatch.ElapsedMilliseconds;
+                long workingSetBytes;
+                using (var process = System.Diagnostics.Process.GetCurrentProcess())
+                {
+                    workingSetBytes = process.WorkingSet64;
+                }
+
                 LastRenderTelemetry = new RenderTelemetrySnapshot
                 {
                     TokenizingMs = tokenizingMs,
@@ -3064,8 +3084,17 @@ public void Dispose()
                     ScriptExecutionMs = scriptExecutionMs,
                     PostScriptVisualTreeMs = postScriptVisualTreeMs,
                     TotalRenderMs = totalRenderMs,
-                    JavaScriptExecuted = javascriptExecuted
+                    JavaScriptExecuted = javascriptExecuted,
+                    Url = baseUri?.AbsoluteUri ?? "about:blank",
+                    NavigationStartedAtUtc = navigationStartedAtUtc,
+                    ManagedAllocatedBytes = Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - allocatedBytesBefore),
+                    ManagedHeapBytes = GC.GetTotalMemory(forceFullCollection: false),
+                    WorkingSetBytes = workingSetBytes,
+                    Gen0Collections = Math.Max(0, GC.CollectionCount(0) - gen0Before),
+                    Gen1Collections = Math.Max(0, GC.CollectionCount(1) - gen1Before),
+                    Gen2Collections = Math.Max(0, GC.CollectionCount(2) - gen2Before)
                 };
+                PerformanceDiagnosticsStore.RecordNavigation(LastRenderTelemetry);
                 EngineLogCompat.Debug($"[PERF] FULL PAGE LOAD TIME: {totalRenderMs}ms", LogCategory.Rendering);
                 await RaiseLoadingChangedAsync(false);
             }

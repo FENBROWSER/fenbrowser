@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Security;
+using FenBrowser.FenEngine.Rendering.Performance;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -51,6 +52,19 @@ namespace FenBrowser.FenEngine.Rendering
             if (url.Equals("fen://newtab", StringComparison.OrdinalIgnoreCase) || url.Equals("about:newtab", StringComparison.OrdinalIgnoreCase))
             {
                  return new FetchResult { Status = FetchStatus.Success, Content = NewTabRenderer.Render(), FinalUri = new Uri("fen://newtab"), ContentType = "text/html" };
+            }
+
+            if (url.StartsWith("fen://performance", StringComparison.OrdinalIgnoreCase) &&
+                Uri.TryCreate(url, UriKind.Absolute, out var performanceUri) &&
+                string.Equals(performanceUri.Host, "performance", StringComparison.OrdinalIgnoreCase))
+            {
+                return new FetchResult
+                {
+                    Status = FetchStatus.Success,
+                    Content = PerformancePageRenderer.Render(performanceUri),
+                    FinalUri = performanceUri,
+                    ContentType = "text/html"
+                };
             }
 
             // Handle local file paths (only for trusted user input)
