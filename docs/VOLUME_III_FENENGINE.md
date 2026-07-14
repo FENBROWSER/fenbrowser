@@ -9628,3 +9628,33 @@ Verification:
   - The traversal, formatting, counters, and DOM ownership boundary are unchanged; no cache, retained state, synchronization, or native resource is introduced.
 
 The five candidate Release reports `164347`, `164349`, `164351`, `164354`, and `164356` pass every benchmark failure gate. HTML-stage allocation medians fall by `144 B` to `13,104 B`, depending on fixture composition, while timing remains mixed. The exact Core constructor contract supplies the causal measurement; no renderer latency improvement is claimed.
+
+## 2.355 Direct Selector-List Splitting (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Css/SelectorMatcher.cs`
+  - Two consecutive allocation traces ranked `SelectorMatcher.SplitByComma` at approximately `3.3%` exclusive sampled weight. The helper first built a `List<string>` of every top-level selector part, after which `ParseSelectorListInternal` immediately enumerated and discarded that collection.
+  - Selector-list parsing now performs the same parentheses/bracket depth scan while feeding each identical substring directly to `ParseChain`. Functional-pseudo and attribute-selector commas remain nested; only depth-zero commas split chains.
+  - The `MaxSelectorChains` limit now also stops scanning and slicing unused trailing chains instead of materializing the full parts list first. Result order, chain limits, recursion limits, specificity inputs, and selector matching are unchanged.
+  - The change adds no cache, pool, unsafe code, retained state, synchronization, or alternate parser representation.
+- `FenBrowser.Tests/Performance/SelectorListSplitAllocationTests.cs`
+  - One thousand warmed production parses of a three-chain selector list move from exactly `5,584,000 B` to `5,408,000 B`, saving `176,000 B` (`3.15%`, `176 B` per parse). The retained `5,450,000 B` ceiling rejects the intermediate collection.
+  - The fixture contains commas inside both `:is()` and an attribute value, verifies exactly three top-level chains, and matches each parsed chain against a corresponding DOM subtree.
+
+Five fresh Release processes compare reports `164904`, `164906`, `164909`, `164911`, and `164913` with candidate reports `165346`, `165349`, `165351`, `165353`, and `165355`:
+
+| Scenario | CSS allocation before | CSS allocation after | Managed allocation before | Managed allocation after | Total before | Total after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 9,311,344 B | 9,304,584 B (-0.07%) | 18,785,528 B | 18,779,448 B (-0.03%) | 170.50 ms | 171.46 ms (+0.56%) |
+| steady-state-damage-animation | 5,291,648 B | 5,291,904 B (flat) | 14,367,520 B | 14,367,800 B (flat) | 14.11 ms | 14.10 ms (-0.07%) |
+| dense-text-flow | 3,087,024 B | 2,778,984 B (-9.98%) | 8,607,320 B | 8,284,432 B (-3.75%) | 11.92 ms | 14.66 ms (+22.99%) |
+| wrapped-multiline-text | 1,654,240 B | 1,646,040 B (-0.50%) | 3,976,336 B | 3,966,456 B (-0.25%) | 6.26 ms | 6.28 ms (+0.32%) |
+
+The dense-text counters are explicitly treated as measurement noise: the apparent allocation drop coincides with a `22.99%` slower total median and is not attributable to the small selector-list change. First-frame and wrapped CSS medians provide directional confirmation only. The exact production parse measurement is the causal acceptance evidence, and no whole-render latency claim is made. A fresh `gc-verbose` trace no longer lists `SplitByComma` among the top 40 exclusive owners.
+
+Verification:
+
+- The allocation and three-chain matching contract passes twice at exactly `5,408,000 B` on the retained Release build.
+- The included dynamic-class, selector, pill-rendering, and layout-stability slice passes `14/14`.
+- The broader Tailwind-inclusive filter remains `16/17` because `RegisteredBorderStyleInitialValue_ProducesEffectiveBorder` reports the known unrelated `expected 1, actual 0` assertion.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five candidate processes.
+- Test262 and WPT are not rerun because the same selector substrings still enter the same parser and the direct included contract exercises top-level, functional-pseudo, attribute-value, combinator, and matching behavior.

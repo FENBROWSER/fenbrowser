@@ -3287,3 +3287,23 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_stack_search_after_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN` confirms the targeted allocation leaves are absent from the top 40.
+
+## 6.119 Selector-List Split Verification (2026-07-14)
+
+- `SelectorListSplitAllocationTests.ParseSelectorList_AvoidsIntermediatePartCollection` measures 1,000 warmed production parses of a three-chain selector containing nested `:is()` and attribute-value commas. Intermediate parts allocate exactly `5,584,000 B`; direct parsing allocates exactly `5,408,000 B` (`-176,000 B`, `-3.15%`) and passes the `5,450,000 B` ceiling.
+- The test verifies three top-level chains and successful matching for the functional-pseudo, attribute/combinator, and ID/class chains. Nested commas therefore remain inside their original chain boundaries.
+- The included selector/cascade/render filter passes `14/14`. The Tailwind-inclusive filter is `16/17` only because the established unrelated border-initial assertion still reports `expected 1, actual 0`.
+- Candidate reports `165346`, `165349`, `165351`, `165353`, and `165355` pass every failure gate against reports `164904`, `164906`, `164909`, `164911`, and `164913`. First-frame CSS allocation falls `0.07%`, wrapped CSS allocation falls `0.50%`, and steady-state is flat.
+- Dense-text process counters are rejected as causal evidence because their apparent allocation reduction coincides with a `22.99%` total-time regression. The exact selector parse contract remains the acceptance measurement, and no whole-render latency claim is made.
+- The fresh `gc-verbose` trace no longer lists `SelectorMatcher.SplitByComma` among the top 40 exclusive allocation owners.
+- Test262 and WPT are not rerun because selector chain boundaries and matching semantics are exercised by the direct included contract while the downstream parser is unchanged.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~SelectorListSplitAllocationTests" --logger "console;verbosity=detailed"`: pass (`1/1`), exactly `5,408,000 B` with all three chains matching.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~DynamicClassRecascadeTests|FullyQualifiedName~SelectorListSplitAllocationTests|FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~LayoutStabilityTests" --logger "console;verbosity=minimal"`: pass (`14/14`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~DynamicClassRecascadeTests|FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~TailwindUtilityCssContractTests|FullyQualifiedName~LayoutStabilityTests" --logger "console;verbosity=minimal"`: same existing border-initial assertion, `16/17`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_selector_split_after_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN` confirms the targeted helper is absent from the top 40.

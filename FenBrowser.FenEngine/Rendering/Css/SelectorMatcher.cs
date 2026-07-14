@@ -124,21 +124,45 @@ namespace FenBrowser.FenEngine.Rendering.Css
             if (depth > MaxSelectorParseDepth) return result;
             if (selector.Length > MaxSelectorLength) return result;
 
-            // Split by comma (respecting parentheses)
-            var parts = SplitByComma(selector);
-            
-            foreach (var part in parts)
+            // Split by comma while parsing so there is no transient parts collection.
+            int nestingDepth = 0;
+            int partStart = 0;
+            for (int i = 0; i <= selector.Length; i++)
             {
+                if (i < selector.Length)
+                {
+                    char current = selector[i];
+                    if (current == '(' || current == '[')
+                    {
+                        nestingDepth++;
+                        continue;
+                    }
+
+                    if (current == ')' || current == ']')
+                    {
+                        nestingDepth--;
+                        continue;
+                    }
+
+                    if (current != ',' || nestingDepth != 0)
+                    {
+                        continue;
+                    }
+                }
+
                 if (result.Count >= MaxSelectorChains)
                 {
                     break;
                 }
 
+                var part = selector.Substring(partStart, i - partStart);
                 var chain = ParseChain(part, depth);
                 if (chain != null && chain.Segments.Count > 0)
                 {
                     result.Add(chain);
                 }
+
+                partStart = i + 1;
             }
 
             return result;
@@ -670,27 +694,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
             {
                 caseInsensitive = true;
             }
-        }
-
-        private static List<string> SplitByComma(string s)
-        {
-            var result = new List<string>();
-            int depth = 0;
-            int start = 0;
-
-            for (int i = 0; i < s.Length; i++)
-            {
-                char c = s[i];
-                if (c == '(' || c == '[') depth++;
-                else if (c == ')' || c == ']') depth--;
-                else if (c == ',' && depth == 0)
-                {
-                    result.Add(s.Substring(start, i - start));
-                    start = i + 1;
-                }
-            }
-            result.Add(s.Substring(start));
-            return result;
         }
 
         #endregion
