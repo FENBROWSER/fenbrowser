@@ -1345,3 +1345,28 @@ Verification:
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `DomMutationNotificationTests` and `DomPerformanceBenchmarkRunnerTests`: focused Release slice passes.
 - All retained runs completed 20,000 mutations with the child detached at completion; the subscribed notification contract is checked independently so the allocation benchmark remains representative of the disabled-instrumentation path.
+
+### 1.65 Demand-Driven Child Mutation Records (2026-07-14)
+
+- `FenBrowser.Core/Dom/V2/ContainerNode.cs`
+  - Child insertion and removal previously created a `MutationRecord` plus an added/removed node array before checking whether the target or any ancestor had a registered `MutationObserver` list.
+  - The direct observer is now checked first, the DevTools notification retains its existing position, and ancestor traversal creates the shared record only when it encounters a registered observer list. This preserves direct-before-DevTools-before-subtree delivery order while making the common unobserved mutation path record-free.
+  - Attribute and character-data records are unchanged. A node whose observer list remains allocated after disconnect may still take the conservative record-building path; this preserves correctness and keeps the change local rather than adding global observer accounting.
+- `FenBrowser.Tests/Core/DomMutationNotificationTests.cs`
+  - Covers direct insertion, direct removal, ancestor-subtree insertion, and the independent DevTools payload contract.
+- `FenBrowser.Tests/Performance/DomPerformanceBenchmarkRunnerTests.cs`
+  - Tightens the broad append/remove allocation ceiling to detect eager MutationRecord or node-array construction.
+
+Five-process Release medians compare retained reports `113655`-`113659` with `113956`-`114000`:
+
+| Workload | Time before | Time after | Allocation before | Allocation after | Gen0 before | Gen0 after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10,000 append/remove cycles | 3.888 ms | 3.245 ms (-16.54%) | 3,824,016 B | 1,424,016 B (-62.76%) | 1 | 0 |
+
+Relative to the original DOM baseline, the two retained child-mutation units reduce allocation by 74.50% (`5,584,016 B` to `1,424,016 B`) and median time by 31.74% (`4.754 ms` to `3.245 ms`).
+
+Verification:
+
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `DomMutationNotificationTests` and `DomPerformanceBenchmarkRunnerTests`: focused Release slice passes.
+- Retained benchmark runs complete 20,000 mutations with zero Gen0/1/2 collections.

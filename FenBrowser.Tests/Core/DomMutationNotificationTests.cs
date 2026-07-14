@@ -6,6 +6,84 @@ namespace FenBrowser.Tests.Core;
 public sealed class DomMutationNotificationTests
 {
     [Fact]
+    public void RemovePublishesDirectMutationObserverRecord()
+    {
+        var parent = new Element("div");
+        var child = new Element("span");
+        parent.AppendChild(child);
+        var records = new List<MutationRecord>();
+        var observer = new MutationObserver((delivered, _) => records.AddRange(delivered));
+        observer.Observe(parent, new MutationObserverInit { ChildList = true });
+
+        try
+        {
+            parent.RemoveChild(child);
+        }
+        finally
+        {
+            observer.Disconnect();
+        }
+
+        var record = Assert.Single(records);
+        Assert.Equal(MutationRecordType.ChildList, record.Type);
+        Assert.Same(parent, record.Target);
+        Assert.Equal([child], record.RemovedNodes);
+        Assert.True(record.AddedNodes is null || record.AddedNodes.Count == 0);
+    }
+
+    [Fact]
+    public void AppendPublishesDirectMutationObserverRecord()
+    {
+        var parent = new Element("div");
+        var child = new Element("span");
+        var records = new List<MutationRecord>();
+        var observer = new MutationObserver((delivered, _) => records.AddRange(delivered));
+        observer.Observe(parent, new MutationObserverInit { ChildList = true });
+
+        try
+        {
+            parent.AppendChild(child);
+        }
+        finally
+        {
+            observer.Disconnect();
+        }
+
+        var record = Assert.Single(records);
+        Assert.Equal(MutationRecordType.ChildList, record.Type);
+        Assert.Same(parent, record.Target);
+        Assert.Equal([child], record.AddedNodes);
+        Assert.True(record.RemovedNodes is null || record.RemovedNodes.Count == 0);
+    }
+
+    [Fact]
+    public void AppendPublishesSubtreeMutationObserverRecord()
+    {
+        var ancestor = new Element("main");
+        var parent = new Element("div");
+        ancestor.AppendChild(parent);
+        var child = new Element("span");
+        var records = new List<MutationRecord>();
+        var observer = new MutationObserver((delivered, _) => records.AddRange(delivered));
+        observer.Observe(ancestor, new MutationObserverInit { ChildList = true, Subtree = true });
+
+        try
+        {
+            parent.AppendChild(child);
+        }
+        finally
+        {
+            observer.Disconnect();
+        }
+
+        var record = Assert.Single(records);
+        Assert.Equal(MutationRecordType.ChildList, record.Type);
+        Assert.Same(parent, record.Target);
+        Assert.Equal([child], record.AddedNodes);
+        Assert.True(record.RemovedNodes is null || record.RemovedNodes.Count == 0);
+    }
+
+    [Fact]
     public void AppendAndRemovePublishDevToolsMutationPayloads()
     {
         var parent = new Element("div");

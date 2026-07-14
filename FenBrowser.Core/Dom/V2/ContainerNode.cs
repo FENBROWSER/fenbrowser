@@ -649,21 +649,36 @@ namespace FenBrowser.Core.Dom.V2
 
         private void NotifyChildListMutation(Node removed, Node added)
         {
-            var record = new MutationRecord
+            MutationRecord record = null;
+            if (_registeredObservers is { } directObservers)
+            {
+                record = CreateChildListMutationRecord(removed, added);
+                directObservers.NotifyChildList(record);
+            }
+
+            // Notify static event for DevTools
+            Node.NotifyChildListMutation(this, added, removed);
+
+            // Propagate to ancestors with subtree observation
+            for (var parent = _parentNode; parent != null; parent = parent._parentNode)
+            {
+                if (parent is ContainerNode { _registeredObservers: { } } container)
+                {
+                    record ??= CreateChildListMutationRecord(removed, added);
+                    container._registeredObservers.NotifySubtree(record);
+                }
+            }
+        }
+
+        private MutationRecord CreateChildListMutationRecord(Node removed, Node added)
+        {
+            return new MutationRecord
             {
                 Type = MutationRecordType.ChildList,
                 Target = this,
                 RemovedNodes = removed != null ? new[] { removed } : null,
                 AddedNodes = added != null ? new[] { added } : null
             };
-
-            _registeredObservers?.NotifyChildList(record);
-
-            // Notify static event for DevTools
-            Node.NotifyChildListMutation(this, added, removed);
-
-            // Propagate to ancestors with subtree observation
-            PropagateToAncestors(record);
         }
 
         private void PropagateToAncestors(MutationRecord record)
