@@ -635,8 +635,10 @@ namespace FenBrowser.Core.Dom.V2
             if (!string.IsNullOrEmpty(id))
                 hash |= BloomHash("#" + id.ToUpperInvariant());
 
-            foreach (var cls in ClassList)
-                hash |= BloomHash("." + cls);
+            var classList = ClassList;
+            var classCount = classList.Length;
+            for (var i = 0; i < classCount; i++)
+                hash |= BloomHash("." + classList[i]);
 
             return hash;
         }

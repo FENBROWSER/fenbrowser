@@ -1370,3 +1370,26 @@ Verification:
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `DomMutationNotificationTests` and `DomPerformanceBenchmarkRunnerTests`: focused Release slice passes.
 - Retained benchmark runs complete 20,000 mutations with zero Gen0/1/2 collections.
+
+### 1.66 Allocation-Free Ancestor Class Iteration (2026-07-14)
+
+- `FenBrowser.Core/Dom/V2/Element.cs`
+  - Ancestor bloom-filter refresh previously enumerated the cached `DOMTokenList` through its `yield` iterator on every element attachment. Even an empty, already parsed class list allocated one iterator state object per `ComputeFeatureHash` call.
+  - The hot path now snapshots the token count and uses indexed access over the existing cached token array. Tag, ID, class, namespace, casing, bloom-bit, and descendant-propagation semantics are unchanged.
+- `FenBrowser.Tests/Core/AncestorFilterTests.cs`
+  - Adds included coverage for tag/ID/multi-class propagation, descendant selector behavior, and filter refresh when a subtree moves between parents. Equivalent historical tests under the excluded `Engine` directory did not participate in the active test project.
+- `FenBrowser.Tests/Performance/DomPerformanceBenchmarkRunnerTests.cs`
+  - Tightens the append/remove allocation ceiling to detect reintroduction of an iterator allocation per attachment.
+
+Five-process Release medians compare retained reports `113956`-`114000` with `114304`-`114308`:
+
+| Workload | Time before | Time after | Allocation before | Allocation after | Allocation removed |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 10,000 append/remove cycles | 3.245 ms | 2.599 ms (-19.91%) | 1,424,016 B | 944,016 B (-33.71%) | 480,000 B (48 B/attachment) |
+
+Relative to the original DOM baseline, the three retained mutation/ancestor-filter units reduce allocation by 83.09% (`5,584,016 B` to `944,016 B`) and median time by 45.33% (`4.754 ms` to `2.599 ms`), with zero Gen0/1/2 collections after optimization.
+
+Verification:
+
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `AncestorFilterTests`, `DomMutationNotificationTests`, and `DomPerformanceBenchmarkRunnerTests`: pass (`8/8`).
