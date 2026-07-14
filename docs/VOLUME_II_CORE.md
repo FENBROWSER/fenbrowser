@@ -1514,3 +1514,32 @@ Verification:
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - Focused pool, tokenizer, tree-builder, malformed-input, table, select, and html5lib slice: pass (`93/93`).
 - All four benchmark failure gates passed in every retained report.
+
+### 1.72 Lazy HTML Token-Pool Slot Storage (2026-07-14)
+
+- `FenBrowser.Core/Parsing/HtmlTokenPool.cs`
+  - A retained Release trace attributed `18.3687` sampled units to `HtmlTokenPool` construction. Every tree builder eagerly allocated reference arrays for 4,096 start tags, 4,096 end tags, 16,384 character tokens, 1,024 comments, and 64 doctypes before renting one token. The character array alone was approximately 128 KB and entered the Large Object Heap on every parse.
+  - The same bounded ring indices now address `List<T>` slot tables that begin on the shared empty backing array and grow sequentially only when a token type reaches a new high-water mark. Once a table reaches its existing cap, the index wraps and reuses the same token objects as before.
+  - Maximum sizes, rental order, token reset behavior, telemetry, end-of-parse `ResetAll`, pool ownership, and tokenizer/tree-builder contracts are unchanged. Slot lists are pool-owned and never exposed; no global cache, unsafe code, external pool, native resource, or concurrency boundary is added.
+- `FenBrowser.Tests/Performance/HtmlTokenPoolAllocationTests.cs`
+  - Constructing 100 warmed pools moves from exactly `20,560,984 B` to exactly `25,600 B`, saving `20,535,384 B` (`99.88%`, about `205.4 KB` per parse). The retained `26,000 B` ceiling rejects eager maximum-size tables.
+  - A full 4,096-entry start-tag cycle verifies that storage grows to the existing bound, the next rental wraps to the first token identity, and allocation/rental telemetry remains exact.
+
+Five fresh Release processes compare the cascade-index reports `155232`, `155233`, `155234`, `155235`, and `155237` with candidate reports `160057`, `160059`, `160100`, `160101`, and `160102`:
+
+| Scenario | Total before | Total after | HTML time before | HTML time after | HTML allocation before | HTML allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 169.94 ms | 171.34 ms (+0.82%) | 32.70 ms | 32.55 ms (-0.46%) | 1,114,320 B | 925,928 B (-16.91%) | 19,568,808 B | 19,377,312 B (-0.98%) |
+| steady-state-damage-animation | 15.89 ms | 15.85 ms (-0.25%) | 1.63 ms | 1.64 ms (+0.61%) | 723,664 B | 526,912 B (-27.19%) | 14,951,984 B | 14,753,544 B (-1.33%) |
+| dense-text-flow | 12.82 ms | 12.64 ms (-1.40%) | 0.92 ms | 0.91 ms (-1.09%) | 512,064 B | 315,312 B (-38.42%) | 8,922,752 B | 8,761,840 B (-1.80%) |
+| wrapped-multiline-text | 6.82 ms | 7.15 ms (+4.84%) | 0.45 ms | 0.44 ms (-2.22%) | 350,328 B | 149,432 B (-57.35%) | 4,263,672 B | 4,063,328 B (-4.70%) |
+
+HTML-stage and whole-process allocation fall in every fixture by the expected per-parser amount. HTML timing ranges from `-2.22%` to `+0.61%`, and total timing is mixed, so no latency improvement is claimed. Gen0/1/2 collection medians are unchanged. The fresh trace removes the pool constructor and reduces sampled `HtmlTokenizer.NextToken` attribution from `133.0734` to `0.3308` units; exact allocation measurements remain the primary evidence.
+
+Verification:
+
+- Existing pool contracts plus the new constructor and bounded-wrap contracts pass `5/5` twice.
+- The tokenizer, tree-builder, malformed recovery, tables, selects, interleaved builds, and local html5lib fixture slice passes `95/95`.
+- The broader included Core parsing slice remains `68/69`; `HtmlParserTraceTests.ParseDocumentDetailed_WritesHtmlParsingTraceEvents` is the same pre-existing trace-file assertion before and after.
+- Release builds of `FenBrowser.Core` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes.
+- Test262 and WPT are not rerun because this changes only private pool slot storage; local tokenizer/tree-builder output and recovery behavior are covered directly, including html5lib fixtures.

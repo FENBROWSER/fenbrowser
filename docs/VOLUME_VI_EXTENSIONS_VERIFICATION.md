@@ -3136,3 +3136,23 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~CssBackgroundShorthandTests|FullyQualifiedName~CssLogicalProjectionTests|FullyQualifiedName~TailwindUtilityCssContractTests|FullyQualifiedName~LayoutStabilityTests" --logger "console;verbosity=minimal"`: same three existing failures, `6/9`, on the fresh rerun.
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.111 Lazy HTML Token-Pool Verification (2026-07-14)
+
+- `HtmlTokenPoolAllocationTests.Constructor_DoesNotAllocateMaximumSlotTables` constructs 100 warmed production pools. Eager maximum-size arrays allocate exactly `20,560,984 B`; lazy bounded slot lists allocate exactly `25,600 B` (`-20,535,384 B`, `-99.88%`) and pass the `26,000 B` ceiling on both retained runs.
+- `StartTagRing_GrowsLazilyAndWrapsAtExistingLimit` rents one complete 4,096-token cycle and verifies the next rental returns the original first token, with exactly 4,096 allocations and 4,097 rentals. Existing reset/state and lazy-attribute contracts remain green.
+- The full parser regression filter passes `95/95`, covering tokenizer and tree-builder behavior, local html5lib fixtures, malformed-input guards, RAWTEXT/formatting recovery, tables, selects, foreign content, and interleaved parsing.
+- The broader Core parsing slice is `68/69` before and after. The sole failure remains `HtmlParserTraceTests.ParseDocumentDetailed_WritesHtmlParsingTraceEvents`, whose expected trace-file predicate is false on both builds.
+- Candidate reports `160057`, `160059`, `160100`, `160101`, and `160102` pass every failure gate. HTML allocation falls `16.91%`-`57.35%` and managed allocation falls `0.98%`-`4.70%` across all fixtures; HTML and total timing remain mixed.
+- Gen0/1/2 collection medians are unchanged. The fresh trace contains no `HtmlTokenPool` constructor owner and reduces sampled `HtmlTokenizer.NextToken` attribution from `133.0734` to `0.3308` units.
+- Test262 and WPT are not rerun because the private slot-container change preserves token types, values, order, reuse caps, and parser recovery; the included html5lib and parser contracts are the focused semantic proof.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~HtmlTokenPoolAllocationTests|FullyQualifiedName~HtmlTokenPoolTests" --logger "console;verbosity=minimal"`: pass (`5/5`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~HtmlTokenPoolAllocationTests|FullyQualifiedName~HtmlTokenPoolTests" --logger "console;verbosity=minimal"`: pass (`5/5`) on the retained rerun.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~HtmlTokenPoolTests|FullyQualifiedName~HtmlTokenPoolAllocationTests|FullyQualifiedName~Html5libTokenizerTests|FullyQualifiedName~Html5libTreeBuilderTests|FullyQualifiedName~HtmlTreeBuilder|FullyQualifiedName~TableParsingTests|FullyQualifiedName~AfterHeadParsingTests|FullyQualifiedName~SelectParsingTests|FullyQualifiedName~CanonicalHtmlParserEntrypointTests|FullyQualifiedName~ParserHardeningGuardTests" --logger "console;verbosity=minimal"`: pass (`95/95`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FenBrowser.Tests.Core.Parsing" --logger "console;verbosity=minimal"`: same existing trace assertion, `68/69`, before and after.
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.

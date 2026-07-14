@@ -3,6 +3,7 @@
 // Determinism: strict
 // FallbackPolicy: allocate-new (graceful degradation to heap allocation)
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 
 namespace FenBrowser.Core.Parsing
@@ -12,7 +13,8 @@ namespace FenBrowser.Core.Parsing
     /// parsing by reusing token instances instead of allocating new ones per emission.
     /// 
     /// Design:
-    ///   - Ring-buffer pool for each token type (tag, character, comment, doctype).
+    ///   - Bounded ring-buffer pool for each token type (tag, character, comment, doctype).
+    ///   - Slot storage grows lazily to the document's observed high-water mark.
     ///   - Tokens are rented via Rent*() and implicitly returned when the pool wraps.
     ///   - Tree builder must consume each token before the next is emitted (guaranteed
     ///     by the tokenizer's yield-based API).
@@ -29,11 +31,11 @@ namespace FenBrowser.Core.Parsing
         private const int CommentPoolSize = 1024;
         private const int DoctypePoolSize = 64;
 
-        private readonly PooledStartTagToken[] _startTagPool;
-        private readonly PooledEndTagToken[] _endTagPool;
-        private readonly PooledCharacterToken[] _charPool;
-        private readonly PooledCommentToken[] _commentPool;
-        private readonly PooledDoctypeToken[] _doctypePool;
+        private readonly List<PooledStartTagToken> _startTagPool;
+        private readonly List<PooledEndTagToken> _endTagPool;
+        private readonly List<PooledCharacterToken> _charPool;
+        private readonly List<PooledCommentToken> _commentPool;
+        private readonly List<PooledDoctypeToken> _doctypePool;
 
         private int _startTagIndex;
         private int _endTagIndex;
@@ -51,11 +53,11 @@ namespace FenBrowser.Core.Parsing
 
         public HtmlTokenPool()
         {
-            _startTagPool = new PooledStartTagToken[TagPoolSize];
-            _endTagPool = new PooledEndTagToken[TagPoolSize];
-            _charPool = new PooledCharacterToken[CharPoolSize];
-            _commentPool = new PooledCommentToken[CommentPoolSize];
-            _doctypePool = new PooledDoctypeToken[DoctypePoolSize];
+            _startTagPool = new List<PooledStartTagToken>();
+            _endTagPool = new List<PooledEndTagToken>();
+            _charPool = new List<PooledCharacterToken>();
+            _commentPool = new List<PooledCommentToken>();
+            _doctypePool = new List<PooledDoctypeToken>();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -64,11 +66,15 @@ namespace FenBrowser.Core.Parsing
             _rented++;
             var index = _startTagIndex;
             _startTagIndex = (index + 1) % TagPoolSize;
-            var token = _startTagPool[index];
-            if (token == null)
+            PooledStartTagToken token;
+            if (index < _startTagPool.Count)
+            {
+                token = _startTagPool[index];
+            }
+            else
             {
                 token = new PooledStartTagToken();
-                _startTagPool[index] = token;
+                _startTagPool.Add(token);
                 _allocated++;
             }
             token.Reset();
@@ -81,11 +87,15 @@ namespace FenBrowser.Core.Parsing
             _rented++;
             var index = _endTagIndex;
             _endTagIndex = (index + 1) % TagPoolSize;
-            var token = _endTagPool[index];
-            if (token == null)
+            PooledEndTagToken token;
+            if (index < _endTagPool.Count)
+            {
+                token = _endTagPool[index];
+            }
+            else
             {
                 token = new PooledEndTagToken();
-                _endTagPool[index] = token;
+                _endTagPool.Add(token);
                 _allocated++;
             }
             token.Reset();
@@ -98,11 +108,15 @@ namespace FenBrowser.Core.Parsing
             _rented++;
             var index = _charIndex;
             _charIndex = (index + 1) % CharPoolSize;
-            var token = _charPool[index];
-            if (token == null)
+            PooledCharacterToken token;
+            if (index < _charPool.Count)
+            {
+                token = _charPool[index];
+            }
+            else
             {
                 token = new PooledCharacterToken();
-                _charPool[index] = token;
+                _charPool.Add(token);
                 _allocated++;
             }
             token.ResetWith(c);
@@ -115,11 +129,15 @@ namespace FenBrowser.Core.Parsing
             _rented++;
             var index = _charIndex;
             _charIndex = (index + 1) % CharPoolSize;
-            var token = _charPool[index];
-            if (token == null)
+            PooledCharacterToken token;
+            if (index < _charPool.Count)
+            {
+                token = _charPool[index];
+            }
+            else
             {
                 token = new PooledCharacterToken();
-                _charPool[index] = token;
+                _charPool.Add(token);
                 _allocated++;
             }
             token.ResetWith(s);
@@ -132,11 +150,15 @@ namespace FenBrowser.Core.Parsing
             _rented++;
             var index = _commentIndex;
             _commentIndex = (index + 1) % CommentPoolSize;
-            var token = _commentPool[index];
-            if (token == null)
+            PooledCommentToken token;
+            if (index < _commentPool.Count)
+            {
+                token = _commentPool[index];
+            }
+            else
             {
                 token = new PooledCommentToken();
-                _commentPool[index] = token;
+                _commentPool.Add(token);
                 _allocated++;
             }
             token.Reset();
@@ -149,11 +171,15 @@ namespace FenBrowser.Core.Parsing
             _rented++;
             var index = _doctypeIndex;
             _doctypeIndex = (index + 1) % DoctypePoolSize;
-            var token = _doctypePool[index];
-            if (token == null)
+            PooledDoctypeToken token;
+            if (index < _doctypePool.Count)
+            {
+                token = _doctypePool[index];
+            }
+            else
             {
                 token = new PooledDoctypeToken();
-                _doctypePool[index] = token;
+                _doctypePool.Add(token);
                 _allocated++;
             }
             token.Reset();
