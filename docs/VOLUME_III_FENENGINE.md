@@ -9033,3 +9033,28 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - CSS/render benchmark and focused CSS correctness slice: pass (`4/4`).
 - All four benchmark failure gates passed in every retained report.
+
+## 2.333 Allocation-Free Normalized Inline Whitespace (2026-07-14)
+
+- `FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs`
+  - The post-CSS-handler allocation trace ranked `StringBuilder.ToString()` first at `31.3%` exclusive allocation weight. Reconstructed stacks identified `InlineFormattingContext.CollapseWhitespace` on normal block/inline layout and repeated Grid intrinsic-measurement paths.
+  - `CollapseWhitespace` previously constructed a `StringBuilder` and a replacement string even when the input already contained only normalized single ASCII spaces. It now performs a non-allocating scan and returns the original string when no tab/newline conversion or repeated-space collapse is required.
+  - Inputs that require normalization still use the existing builder algorithm unchanged. The fast path adds no cache, pool, unsafe code, or retained state, and preserves the existing leading/trailing-space behavior.
+
+Five fresh Release processes compare immediate reports `123710`-`123715` with retained reports `124343`-`124348`:
+
+| Scenario | Layout allocation before | Layout allocation after | Render allocation before | Render allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 9,360,928 B | 9,078,688 B (-3.02%) | 11,729,600 B | 11,450,784 B (-2.38%) |
+| steady-state-damage-animation | 184 B | 184 B (flat) | 11,892,440 B | 11,728,648 B (-1.38%) |
+| dense-text-flow | 1,596,464 B | 1,537,968 B (-3.66%) | 8,411,056 B | 8,294,152 B (-1.39%) |
+| wrapped-multiline-text | 855,652 B | 828,528 B (-3.17%) | 3,150,784 B | 3,099,568 B (-1.63%) |
+
+The exact 10,000-call normalized-input probe moved from `1,920,000 B` to `0 B`. A fresh allocation trace reduced `StringBuilder.ToString()` from `31.3%` to `0.04%` exclusive weight. GC counts were unchanged. Wall-clock medians moved uniformly upward by `1.9%`-`6.1%` across layout and total pipeline timings, so no timing improvement is claimed; that run-wide movement is treated as inconclusive rather than hidden.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- Focused whitespace semantics and allocation tests: pass (`6/6`).
+- Inline formatting and probe-reset tests: pass (`20/20`).
+- All four benchmark failure gates passed in every retained report.

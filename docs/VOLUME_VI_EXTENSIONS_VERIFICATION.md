@@ -2832,3 +2832,19 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~EngineLogSettingsTests" -v quiet /nodeReuse:false`: pass (`8/8`).
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests|FullyQualifiedName~MediaWikiDeduplicatedInlineStyleTests|FullyQualifiedName~CssBackgroundShorthandTests|FullyQualifiedName~CssBackgroundShorthandColorTests" -v quiet /nodeReuse:false`: pass (`4/4`).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every retained process.
+
+## 6.92 Inline Whitespace Fast-Path Verification (2026-07-14)
+
+- Before the implementation, the focused allocation assertion measured `1,920,000 B` for 10,000 calls with already-normalized text (`192 B` per call).
+- The retained implementation measures exactly `0 B` and returns the original string instance. Five semantic cases cover empty text, unchanged text, preserved single edge spaces, repeated spaces, and tab/CR/LF normalization.
+- The broader inline-formatting contract and probe-reset slice passes `20/20`.
+- Five-process Release comparisons use reports `123710`-`123715` before and `124343`-`124348` after. Median layout allocation falls `3.02%` for the heavy fixture, `3.66%` for dense text, and `3.17%` for wrapped text; the no-layout steady-state fixture remains at `184 B`.
+- Every benchmark failure gate passes and GC collection counts are unchanged. Uniform positive wall-clock movement is reported as inconclusive, not as a speedup.
+- Verbose GC allocation traces use the same Release `render-perf` command. Ranked `StringBuilder.ToString()` exclusive allocation weight falls from `31.3%` to `0.04%`.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~CollapseWhitespace" -v quiet /nodeReuse:false`: pass (`6/6`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~InlineFormattingContractTests|FullyQualifiedName~InlineFormattingContextProbeResetTests" -v quiet /nodeReuse:false`: pass (`20/20`).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every retained process.

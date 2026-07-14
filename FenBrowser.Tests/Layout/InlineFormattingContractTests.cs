@@ -13,6 +13,34 @@ namespace FenBrowser.Tests.Layout
     public class InlineFormattingContractTests
     {
         [Fact]
+        public void CollapseWhitespace_AlreadyNormalized_ReusesInputWithoutAllocating()
+        {
+            const string text = "already normalized text";
+            _ = InlineFormattingContext.CollapseWhitespace(text);
+
+            long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            string result = null;
+            for (int i = 0; i < 10_000; i++)
+            {
+                result = InlineFormattingContext.CollapseWhitespace(text);
+            }
+
+            Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - allocatedBefore);
+            Assert.Same(text, result);
+        }
+
+        [Theory]
+        [InlineData("", "")]
+        [InlineData("plain", "plain")]
+        [InlineData(" leading and trailing ", " leading and trailing ")]
+        [InlineData("alpha  beta", "alpha beta")]
+        [InlineData("alpha\tbeta\r\ngamma", "alpha beta gamma")]
+        public void CollapseWhitespace_PreservesExistingNormalizationSemantics(string input, string expected)
+        {
+            Assert.Equal(expected, InlineFormattingContext.CollapseWhitespace(input));
+        }
+
+        [Fact]
         public void InlineRuns_WrapToNextLine_WhenContainerWidthIsExceeded()
         {
             var root = new Element("div");

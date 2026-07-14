@@ -1560,11 +1560,36 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             LayoutBoxOps.ResetSubtreeToOrigin(box);
         }
 
-        private static string CollapseWhitespace(string text)
+        internal static string CollapseWhitespace(string text)
         {
             if (string.IsNullOrEmpty(text))
             {
                 return string.Empty;
+            }
+
+            bool previousWasCollapsible = false;
+            bool requiresNormalization = false;
+            for (int i = 0; i < text.Length; i++)
+            {
+                char ch = text[i];
+                if (!TextWhitespaceClassifier.IsCollapsibleWhitespaceChar(ch))
+                {
+                    previousWasCollapsible = false;
+                    continue;
+                }
+
+                if (ch != ' ' || previousWasCollapsible)
+                {
+                    requiresNormalization = true;
+                    break;
+                }
+
+                previousWasCollapsible = true;
+            }
+
+            if (!requiresNormalization)
+            {
+                return text;
             }
 
             var builder = new System.Text.StringBuilder(text.Length);
