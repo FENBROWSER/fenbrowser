@@ -2941,3 +2941,18 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~RecursivelyClearDirty_FlatTree|FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~IncrementalLayoutCacheTests|FullyQualifiedName~CompositorLayerAndIncrementalLayoutTests|FullyQualifiedName~BrowserIntegrationRepaintInvalidationTests" -v quiet /nodeReuse:false`: pass (`20/20`).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every immediate A/B process.
+
+## 6.99 Paint-Tree Flattening Verification (2026-07-14)
+
+- `CollectAllNodes_PreSizedResult_DoesNotAllocatePerNode` isolates the production paint-tree flattening helper from destination-list growth. Ten warmed 101-node traversals allocate `41,280 B` with per-node `Cast().ToList()` conversions and exactly `0 B` with direct indexed child-list traversal.
+- The same contract verifies pre-order output and sibling order.
+- An explicit source restore keeps overlay, renderer telemetry, repaint invalidation, and incremental-layout coverage at `19/19`; the retained candidate passes `20/20` including the allocation contract.
+- Immediate A/B reports `135106`-`135111` before and `135127`-`135132` after reduce render and managed allocation in three fixtures. The dense fixture instead records `+0.32%` render allocation and `+3.66%` managed allocation amid a `-17.31%` total-time swing, so neither its counters nor any timing movement are attributed to this small traversal change.
+- A fresh direct-executable `gc-verbose` trace removes `CollectAllNodes`, previously `4.07%` of FenBrowser-attributed allocation weight, as an allocation owner.
+- Every benchmark failure gate passes. This renderer-only change does not affect JavaScript semantics, so Test262 and WPT categories are not rerun.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CollectAllNodes_PreSizedResult|FullyQualifiedName~InputOverlayColorTests|FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~BrowserIntegrationRepaintInvalidationTests|FullyQualifiedName~IncrementalLayoutCacheTests|FullyQualifiedName~CompositorLayerAndIncrementalLayoutTests" -v quiet /nodeReuse:false`: pass (`20/20`).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every immediate A/B process.

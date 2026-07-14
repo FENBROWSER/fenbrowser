@@ -9173,3 +9173,29 @@ Verification:
 - Explicit source restore: renderer invalidation and incremental-layout slice passes `19/19` before and after; the retained allocation contract makes the candidate slice `20/20`.
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - All four benchmark failure gates passed in every immediate A/B report.
+
+## 2.338 Allocation-Free Paint-Tree Flattening (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - The post-dirty-walk allocation trace ranked `SkiaDomRenderer.CollectAllNodes` fifth at `4.07%` of FenBrowser-attributed allocation weight. The recursive helper received an already typed `IReadOnlyList<PaintNodeBase>` but executed `Cast<PaintNodeBase>().ToList()` for every node before descending.
+  - The renderer now indexes the existing read-only child list and recurses directly into it. Pre-order traversal and the caller-owned result list are unchanged; no paint nodes, overlays, caches, pools, unsafe code, retained state, or concurrency are added.
+  - The helper is internal only so the included allocation and traversal-order contract can exercise the production implementation.
+- `FenBrowser.Tests/Performance/SkiaDomRendererPaintTreeTraversalTests.cs`
+  - Ten warmed traversals of a root plus 100 leaf paint nodes, using a pre-sized destination list, move from `41,280 B` to exactly `0 B`. The contract also checks root-first and sibling-order output.
+
+An immediate source restore/reapply A/B compares original reports `135106`, `135107`, `135109`, `135110`, and `135111` with retained reports `135127`, `135128`, `135130`, `135131`, and `135132`:
+
+| Scenario | Total before | Total after | Render allocation before | Render allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 181.56 ms | 181.82 ms (+0.14%) | 10,714,536 B | 10,698,176 B (-0.15%) | 21,584,424 B | 21,567,808 B (-0.08%) |
+| steady-state-damage-animation | 14.21 ms | 14.31 ms (+0.70%) | 10,297,136 B | 10,215,600 B (-0.79%) | 16,588,752 B | 16,507,224 B (-0.49%) |
+| dense-text-flow | 15.48 ms | 12.80 ms (-17.31%) | 5,648,800 B | 5,667,104 B (+0.32%) | 9,026,800 B | 9,357,280 B (+3.66%) |
+| wrapped-multiline-text | 8.60 ms | 8.66 ms (+0.70%) | 2,375,968 B | 2,357,040 B (-0.80%) | 4,436,952 B | 4,419,680 B (-0.39%) |
+
+The exact helper allocation delta is the causal acceptance measurement. Three fixtures reduce render and managed allocation, while the dense batch moves in the opposite direction despite a large timing swing and despite the removed helper allocating nothing; that process-level signal is retained as instability and not presented as an improvement. No timing speedup is claimed. A fresh direct-executable `gc-verbose` trace removes `CollectAllNodes` as an allocation owner; `CollectOverlays` remains visible for its intentional result buffer, duplicate suppression set, and generated overlay objects.
+
+Verification:
+
+- Explicit source restore: overlay, renderer telemetry, repaint invalidation, and incremental-layout coverage passes `19/19`; the candidate passes the same tests plus the allocation/order contract (`20/20`).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- All four benchmark failure gates pass in every immediate A/B report.

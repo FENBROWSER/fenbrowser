@@ -2247,13 +2247,14 @@ namespace FenBrowser.FenEngine.Rendering
             return value;
         }
 
-        private void CollectAllNodes(IReadOnlyList<PaintNodeBase> nodes, List<PaintNodeBase> result)
+        internal void CollectAllNodes(IReadOnlyList<PaintNodeBase> nodes, List<PaintNodeBase> result)
         {
             if (nodes == null) return;
-            foreach (var node in nodes)
+            for (var index = 0; index < nodes.Count; index++)
             {
+                var node = nodes[index];
                 result.Add(node);
-                CollectAllNodes(node.Children.Cast<PaintNodeBase>().ToList(), result);
+                CollectAllNodes(node.Children, result);
             }
         }
 
