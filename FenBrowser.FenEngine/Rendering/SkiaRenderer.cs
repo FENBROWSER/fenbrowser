@@ -990,13 +990,23 @@ namespace FenBrowser.FenEngine.Rendering
             }
             else if (node.Glyphs != null && node.Glyphs.Count > 0)
             {
-                var glyphArray = System.Linq.Enumerable.ToArray(node.Glyphs.Select(g => new FenBrowser.FenEngine.Typography.PositionedGlyph
+                var glyphArray = new FenBrowser.FenEngine.Typography.PositionedGlyph[node.Glyphs.Count];
+                float minX = float.MaxValue;
+                float maxX = float.MinValue;
+                for (var index = 0; index < node.Glyphs.Count; index++)
                 {
-                    GlyphId = g.GlyphId,
-                    X = g.X,
-                    Y = g.Y,
-                    AdvanceX = 0
-                }));
+                    var glyph = node.Glyphs[index];
+                    glyphArray[index] = new FenBrowser.FenEngine.Typography.PositionedGlyph
+                    {
+                        GlyphId = glyph.GlyphId,
+                        X = glyph.X,
+                        Y = glyph.Y,
+                        AdvanceX = 0
+                    };
+
+                    if (glyph.X < minX) minX = glyph.X;
+                    if (glyph.X > maxX) maxX = glyph.X;
+                }
 
                 var run = new FenBrowser.FenEngine.Typography.GlyphRun
                 {
@@ -1005,18 +1015,7 @@ namespace FenBrowser.FenEngine.Rendering
                     Glyphs = glyphArray
                 };
 
-                if (glyphArray.Length > 0)
-                {
-                    float minX = float.MaxValue;
-                    float maxX = float.MinValue;
-                    foreach (var g in glyphArray)
-                    {
-                        if (g.X < minX) minX = g.X;
-                        if (g.X > maxX) maxX = g.X;
-                    }
-
-                    textWidth = maxX - minX + fontSize * 0.6f;
-                }
+                textWidth = maxX - minX + fontSize * 0.6f;
 
                 backend.DrawGlyphRun(SKPoint.Empty, run, node.Color);
             }

@@ -9562,3 +9562,31 @@ Verification:
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors.
 - A separate case-normalization experiment in paint-tree traversal was rejected and fully reverted: ten warmed wide-tree builds remained exactly `386,400 B` before and after replacing per-node normalization with ordinal-ignore-case comparisons, so the change added no measurable allocation benefit.
 - Test262 and WPT are not rerun because the retained change only replaces an internal result container while preserving paint glyph data and ordering; the focused paint contracts are the relevant semantic proof.
+
+## 2.352 Single-Pass Raster Glyph Conversion (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+  - The renderer audit found that glyph-only `TextPaintNode` draws projected the positioned glyph list through LINQ into the backend `GlyphRun`, then traversed the resulting array a second time to calculate decoration width.
+  - Glyph conversion and minimum/maximum X collection now share one indexed pass over the existing read-only glyph list. The required backend glyph array and `GlyphRun` remain unchanged; only the LINQ iterator and redundant second traversal are removed.
+  - Glyph IDs, X/Y coordinates, zero `AdvanceX`, typeface, font size, draw origin, color, and width formula remain identical. This adds no cache, pool, unsafe code, native resource, retained state, or concurrency boundary.
+- `FenBrowser.Tests/Performance/SkiaRendererGlyphConversionAllocationTests.cs`
+  - One thousand warmed production `DrawText` glyph-path calls move from exactly `664,000 B` to `608,000 B`, saving `56,000 B` (`8.43%`) and pass the retained `609,000 B` ceiling twice.
+  - A capturing backend verifies the converted glyph count and first/last glyph ID and coordinates before the allocation loop. Delegate creation and semantic capture occur outside measurement.
+
+Five fresh Release processes compare the fixed-size paint-glyph reports `162409`, `162410`, `162411`, `162413`, and `162414` with candidate reports `162921`, `162922`, `162923`, `162924`, and `162925`:
+
+| Scenario | Raster allocation before | Raster allocation after | Raster time before | Raster time after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 71,376 B | 71,376 B (flat) | 13.47 ms | 13.29 ms (-1.34%) |
+| steady-state-damage-animation | 112,620 B | 112,620 B (flat) | 7.02 ms | 6.99 ms (-0.43%) |
+| dense-text-flow | 32,040 B | 31,916 B (-0.39%) | 2.60 ms | 2.59 ms (-0.38%) |
+| wrapped-multiline-text | 32,192 B | 32,192 B (flat) | 1.79 ms | 1.95 ms (+8.94%) |
+
+The deterministic fixtures populate `FallbackText` and therefore normally take the renderer's source-text branch rather than the optimized glyph-only branch. Their raster counters are correspondingly flat or noisy, so no whole-page allocation or latency improvement is claimed. The exact glyph-only production-path measurement is the causal acceptance evidence, and all four benchmark failure gates pass in every candidate process.
+
+Verification:
+
+- The original included renderer baseline passes `1/1`; renderer-directory tests are excluded by the current test project.
+- The retained allocation contract passes twice at exactly `608,000 B`, and the neighboring included renderer, paint, telemetry, and benchmark slice passes `7/7`.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors.
+- Test262 and WPT are not rerun because the change preserves the backend glyph run and only removes managed iteration overhead in raster preparation.

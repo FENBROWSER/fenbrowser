@@ -3190,3 +3190,20 @@ Verification commands:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.114 Raster Glyph-Conversion Verification (2026-07-14)
+
+- `SkiaRendererGlyphConversionAllocationTests` drives the private production `DrawText` method through a delegate created before measurement and uses a non-logging headless backend. One thousand warmed glyph-only draws move from exactly `664,000 B` to exactly `608,000 B` (`-56,000 B`, `-8.43%`) and pass the `609,000 B` ceiling twice.
+- A capturing backend verifies that conversion preserves glyph count, IDs, and coordinates. The production change also preserves typeface, font size, draw origin, color, zero advance values, and the existing decoration-width formula.
+- The neighboring included renderer/paint filter passes `7/7`, covering renderer-root logging allocation, paint glyph generation, paint-tree traversal, frame telemetry, and the render benchmark runner.
+- Candidate reports `162921`, `162922`, `162923`, `162924`, and `162925` pass every failure gate. Raster-allocation medians are flat in three fixtures and differ by `124 B` in dense text because the fixtures normally take the source-text branch; raster timing is mixed and no end-to-end improvement is claimed.
+- Renderer-directory tests remain excluded by `FenBrowser.Tests.csproj`; the new contract is placed under the included performance surface. Test262 and WPT are not rerun because the exact converted values and neighboring render behavior are covered directly.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~SkiaRendererGlyphConversionAllocationTests" --logger "console;verbosity=detailed"`: pass (`1/1`), exactly `608,000 B`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~SkiaRendererGlyphConversionAllocationTests" --logger "console;verbosity=detailed"`: pass (`1/1`), exactly `608,000 B` on the retained rerun.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "SkiaRendererGlyphConversionAllocationTests|SkiaRendererRootLoggingAllocationTests|PaintGlyphAllocationTests|PaintTreeChildTraversalAllocationTests|RenderFrameTelemetryTests|RenderPerformanceBenchmarkRunnerTests" --logger "console;verbosity=minimal"`: pass (`7/7`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
