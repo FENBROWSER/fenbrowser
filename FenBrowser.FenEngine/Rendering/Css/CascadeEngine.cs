@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
@@ -311,12 +312,14 @@ private int _inlineStyleCacheEvictions;
             }
         }
         
-        private void AddToIndex(Dictionary<string, List<CssStyleRule>> index, string key, CssStyleRule rule)
+        internal static void AddToIndex(Dictionary<string, List<CssStyleRule>> index, string key, CssStyleRule rule)
         {
-            if (!index.TryGetValue(key, out var list))
+            // Index construction is engine-owned and synchronous. Keep the entry ref
+            // only for this insertion so a new key needs one hash/probe, not two.
+            ref List<CssStyleRule> list = ref CollectionsMarshal.GetValueRefOrAddDefault(index, key, out bool exists);
+            if (!exists)
             {
                 list = new List<CssStyleRule>();
-                index[key] = list;
             }
             list.Add(rule);
         }

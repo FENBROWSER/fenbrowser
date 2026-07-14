@@ -9477,3 +9477,31 @@ Verification:
 - The included CSS background, logical-projection, Tailwind utility, and layout-stability slice remains `6/9` before and after. The same existing border-initial-value failure (`1` expected, `0` actual) and two logical-projection failures (`30` expected, `57.6` actual) remain unchanged.
 - The Release `FenBrowser.Tooling` build succeeds with zero warnings and zero errors, and all four benchmark failure gates pass in every candidate process.
 - Engine-directory parser tests are excluded by the current test project, so the new contract is placed on the included performance surface. Test262 and WPT categories are not rerun because the change preserves the CSS preprocessing output and does not alter selector, cascade, layout, JavaScript, or DOM semantics.
+
+## 2.349 Single-Probe Cascade Index Insertion (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs`
+  - The post-comment-removal Release trace ranked `CascadeEngine.AddToIndex` at `41.3122` sampled units. A new ID, class, or tag key first called `TryGetValue` and then used the dictionary indexer to insert its list, hashing and probing the same key twice.
+  - Index construction now obtains the entry reference through `CollectionsMarshal.GetValueRefOrAddDefault`, initializes a missing rule list in place, and appends the rule. New keys require one hash/probe; existing keys retain their original one-probe path.
+  - The entry reference is method-local, index construction is synchronous and engine-owned, and no structural dictionary mutation occurs while the returned reference is used. The existing ordinal-ignore-case comparers, key strings, list allocation, rule order, duplicate-chain behavior, selector matching, and index lifetime remain unchanged. No unsafe code, cache, pool, retained reference, native resource, or concurrency boundary is added.
+- `FenBrowser.Tests/Performance/CascadeIndexInsertionTests.cs`
+  - A counting ordinal-ignore-case comparer records exactly two hash calls for an original new-key insertion and exactly one after the retained change, a `50%` operation-count reduction. Existing-key insertion remains one hash call.
+  - The same contract verifies case-insensitive key reuse and exact first/second rule order. The existing tag-index case and allocation contracts continue to pass.
+
+Five fresh Release processes compare the exact-size comment-removal reports `154124`, `154125`, `154127`, `154128`, and `154129` with candidate reports `155232`, `155233`, `155234`, `155235`, and `155237`:
+
+| Scenario | Total before | Total after | CSS time before | CSS time after | Cascade before | Cascade after | CSS allocation before | CSS allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 170.97 ms | 169.94 ms (-0.60%) | 119.41 ms | 118.76 ms (-0.54%) | 79.08 ms | 78.29 ms (-1.00%) | 9,733,760 B | 9,733,760 B (flat) | 19,572,968 B | 19,568,808 B (-0.02%) |
+| steady-state-damage-animation | 14.07 ms | 15.89 ms (+12.94%) | 17.89 ms | 17.68 ms (-1.17%) | 17.58 ms | 17.36 ms (-1.25%) | 5,546,744 B | 5,543,976 B (-0.05%) | 14,946,880 B | 14,951,984 B (+0.03%) |
+| dense-text-flow | 12.25 ms | 12.82 ms (+4.65%) | 5.56 ms | 5.52 ms (-0.72%) | 4.83 ms | 4.78 ms (-1.04%) | 3,156,448 B | 3,139,248 B (-0.54%) | 8,957,416 B | 8,922,752 B (-0.39%) |
+| wrapped-multiline-text | 6.27 ms | 6.82 ms (+8.77%) | 8.77 ms | 8.87 ms (+1.14%) | 4.28 ms | 4.23 ms (-1.17%) | 1,697,912 B | 1,694,904 B (-0.18%) | 4,266,680 B | 4,263,672 B (-0.07%) |
+
+The deterministic hash-count reduction is the causal acceptance measurement. Cascade medians improve by `1.00%`-`1.25%` in all four workloads, matching the owning stage, while total time regresses in three fixtures and wrapped CSS total also regresses; no total-time or allocation improvement is claimed. The immediate sampling trace is inconclusive (`41.3122` before versus `41.4902` after for `AddToIndex`) and is not used as supporting evidence.
+
+Verification:
+
+- The retained insertion and existing tag-index contracts pass `3/3` twice.
+- The included CSS slice has an established `6/9` baseline and returns to `6/9` on the fresh retained rerun with the same border and logical-projection values. One intermediate retained process reported `8/9`, exposing existing shared-state sensitivity; those intermittent passes are not attributed to this change.
+- The Release `FenBrowser.Tooling` build succeeds with zero warnings and zero errors, and all four benchmark failure gates pass in every candidate process.
+- A separate property-validation normalization experiment was reverted after a 256-declaration cascade remained exactly `77,904 B` before and after. Test262 and WPT categories are not rerun because the retained change only reduces dictionary work during selector-index construction and does not change web-observable matching semantics.

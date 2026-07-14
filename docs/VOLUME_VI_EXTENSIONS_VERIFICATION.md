@@ -3118,3 +3118,21 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CssBackgroundShorthandTests|FullyQualifiedName~CssLogicalProjectionTests|FullyQualifiedName~TailwindUtilityCssContractTests|FullyQualifiedName~LayoutStabilityTests"`: same three existing failures, `6/9`, before and after.
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.110 Cascade Index-Insertion Verification (2026-07-14)
+
+- `CascadeIndexInsertionTests` uses a counting ordinal-ignore-case comparer around the production insertion helper. A missing key moves from exactly two hash calls to one (`-50%`); an existing differently-cased key remains one hash call.
+- The same contract protects case-insensitive list reuse and insertion order. The retained insertion plus the existing tag-index matching/allocation contracts pass `3/3` on both candidate runs.
+- Candidate reports `155232`, `155233`, `155234`, `155235`, and `155237` pass every failure gate. Cascade medians improve `1.00%`-`1.25%` in all four fixtures; CSS totals are mixed and total render time regresses in three fixtures, so no whole-pipeline timing claim is made.
+- CSS and managed allocation medians are flat or mixed within `0.54%`; the change removes lookup work rather than an allocation, so no allocation reduction is claimed.
+- The immediate trace is explicitly inconclusive (`41.3122` before versus `41.4902` after for `CascadeEngine.AddToIndex`) and is not acceptance evidence.
+- The included CSS slice is normally `6/9` and reproduces the same three known failures and values on the fresh retained rerun. One intermediate candidate process reported `8/9`; because index insertion cannot alter those independent logical projection and border defaults, the intermittent passes are recorded as existing shared-state sensitivity rather than an improvement.
+- A separate property-validator normalization probe was rejected and removed after its 256-declaration production cascade stayed at exactly `77,904 B`. Test262 and WPT are not rerun for the retained internal index operation because candidate filtering and full selector matching semantics are unchanged.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CascadeIndexInsertionTests|FullyQualifiedName~CascadeTagIndexAllocationTests" --logger "console;verbosity=minimal"`: pass (`3/3`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~CascadeIndexInsertionTests|FullyQualifiedName~CascadeTagIndexAllocationTests" --logger "console;verbosity=minimal"`: pass (`3/3`) on the retained rerun.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~CssBackgroundShorthandTests|FullyQualifiedName~CssLogicalProjectionTests|FullyQualifiedName~TailwindUtilityCssContractTests|FullyQualifiedName~LayoutStabilityTests" --logger "console;verbosity=minimal"`: same three existing failures, `6/9`, on the fresh rerun.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
