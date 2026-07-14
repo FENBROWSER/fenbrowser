@@ -23,6 +23,7 @@ public sealed class DomPerformanceBenchmarkRunnerTests
         Assert.True(appendRemove.AverageAllocatedBytes < 1_200_000);
         var featureAppendRemove = report.Results.Single(result => result.Name == "append-remove-ancestor-features");
         Assert.Equal(20_000, featureAppendRemove.ObservedCallbacks);
+        Assert.True(featureAppendRemove.AverageAllocatedBytes < 1_200_000);
         var noListeners = report.Results.Single(result => result.Name == "event-dispatch-no-listeners");
         var listeners = report.Results.Single(result => result.Name == "event-dispatch-listeners");
         Assert.Equal(0, noListeners.ObservedCallbacks);

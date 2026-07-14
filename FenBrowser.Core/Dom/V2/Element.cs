@@ -173,6 +173,7 @@ namespace FenBrowser.Core.Dom.V2
             _ownerDocument = owner;
             _attributes = new NamedNodeMap(this);
             _flags |= NodeFlags.IsElement | NodeFlags.IsContainer;
+            _ancestorFeatureHash = BloomHash(TagName?.ToUpperInvariant());
         }
 
         protected override void ValidateChildType(Node node)
@@ -508,6 +509,7 @@ namespace FenBrowser.Core.Dom.V2
             if (name.Equals("id", StringComparison.OrdinalIgnoreCase) ||
                 name.Equals("class", StringComparison.OrdinalIgnoreCase))
             {
+                RecomputeAncestorFeatureHash();
                 UpdateAncestorFilter(forceDescendantRefresh: true);
             }
 
@@ -549,10 +551,15 @@ namespace FenBrowser.Core.Dom.V2
                 }
             }
 
-            UpdateAncestorFilter(
-                forceDescendantRefresh:
-                    name.Equals("id", StringComparison.OrdinalIgnoreCase) ||
-                    name.Equals("class", StringComparison.OrdinalIgnoreCase));
+            var changesAncestorFeatures =
+                name.Equals("id", StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("class", StringComparison.OrdinalIgnoreCase);
+            if (changesAncestorFeatures)
+            {
+                RecomputeAncestorFeatureHash();
+            }
+
+            UpdateAncestorFilter(forceDescendantRefresh: changesAncestorFeatures);
             NotifySlotAssignmentMayHaveChanged(name);
             NotifyAttributeMutation(attr, oldValue);
         }
@@ -604,6 +611,8 @@ namespace FenBrowser.Core.Dom.V2
 
         // --- Ancestor Bloom Filter (Selector Optimization) ---
 
+        private long _ancestorFeatureHash;
+
         public long AncestorFilter { get; private set; }
 
         internal void UpdateAncestorFilter(bool forceDescendantRefresh = false)
@@ -628,6 +637,11 @@ namespace FenBrowser.Core.Dom.V2
 
         internal long ComputeFeatureHash()
         {
+            return _ancestorFeatureHash;
+        }
+
+        private void RecomputeAncestorFeatureHash()
+        {
             long hash = 0;
             hash |= BloomHash(TagName?.ToUpperInvariant());
 
@@ -640,7 +654,7 @@ namespace FenBrowser.Core.Dom.V2
             for (var i = 0; i < classCount; i++)
                 hash |= BloomHash("." + classList[i]);
 
-            return hash;
+            _ancestorFeatureHash = hash;
         }
 
         private static long BloomHash(string s)

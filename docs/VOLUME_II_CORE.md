@@ -1393,3 +1393,29 @@ Verification:
 
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `AncestorFilterTests`, `DomMutationNotificationTests`, and `DomPerformanceBenchmarkRunnerTests`: pass (`8/8`).
+
+### 1.67 Precomputed Element Ancestor Features (2026-07-14)
+
+- `FenBrowser.Core/Dom/V2/Element.cs`
+  - Attaching a child previously recomputed its parent's ancestor bloom metadata from tag, ID, and every class token. Stable parents repeatedly performed the same casing, concatenation, token traversal, and FNV hashing work.
+  - Each element now owns one precomputed 64-bit feature value. Construction initializes the immutable tag contribution; ID/class add, value-change, and removal paths recompute the value before the existing forced descendant refresh. `ComputeFeatureHash` is therefore a constant-time field read during attachment.
+  - This is eagerly maintained selector metadata, not an evictable lookup cache: ownership and mutation remain on the DOM element, memory cost is one `long` per element, and there is no global lifetime, key table, stale-entry policy, or cross-thread synchronization.
+- `FenBrowser.Tests/Core/AncestorFilterTests.cs`
+  - Extends included coverage through ID/class mutation and removal, exact descendant-filter refresh, and positive/negative selector results.
+- `FenBrowser.Tests/Performance/DomPerformanceBenchmarkRunnerTests.cs`
+  - Adds the same broad allocation ceiling to plain and feature-rich attachment paths.
+
+Five-process Release medians compare feature-rich baseline reports `114446`-`114450` with retained reports `114820`-`114824`:
+
+| Workload | Time before | Time after | Allocation before | Allocation after | Gen0 before | Gen0 after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| feature-rich 10,000 append/remove cycles | 7.769 ms | 1.787 ms (-77.00%) | 3,664,232 B | 943,856 B (-74.24%) | 2 | 0 |
+| plain 10,000 append/remove cycles | 2.599 ms | 1.824 ms (-29.82%) | 944,016 B | 943,856 B (-0.02%) | 0 | 0 |
+
+Relative to the original plain DOM baseline, all retained DOM units reduce allocation by 83.10% (`5,584,016 B` to `943,856 B`) and median time by 61.63% (`4.754 ms` to `1.824 ms`).
+
+Verification:
+
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `AncestorFilterTests` and `DomPerformanceBenchmarkRunnerTests`: pass (`5/5`).
+- Both retained attachment workloads complete 20,000 mutations with zero Gen0/1/2 collections.

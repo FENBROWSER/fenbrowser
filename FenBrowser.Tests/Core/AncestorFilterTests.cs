@@ -43,4 +43,26 @@ public sealed class AncestorFilterTests
         Assert.True(SelectorEngine.Matches(child, "#second span"));
         Assert.False(SelectorEngine.Matches(child, "#first span"));
     }
+
+    [Fact]
+    public void ParentIdAndClassChangesRefreshDescendantFilter()
+    {
+        var parent = new Element("div");
+        var child = new Element("span");
+        parent.AppendChild(child);
+        var initialFilter = child.AncestorFilter;
+
+        parent.SetAttribute("id", "updated-root");
+        parent.SetAttribute("class", "updated active");
+
+        Assert.NotEqual(initialFilter, child.AncestorFilter);
+        Assert.Equal(parent.ComputeFeatureHash(), child.AncestorFilter);
+        Assert.True(SelectorEngine.Matches(child, "#updated-root.updated span"));
+
+        parent.RemoveAttribute("id");
+        parent.RemoveAttribute("class");
+
+        Assert.Equal(parent.ComputeFeatureHash(), child.AncestorFilter);
+        Assert.False(SelectorEngine.Matches(child, "#updated-root span"));
+    }
 }
