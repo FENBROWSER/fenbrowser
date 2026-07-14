@@ -8859,3 +8859,33 @@ Verification:
   - Verifies non-zero parser allocation capture and JSON persistence.
 
 The first use of this metric established the baseline and retained result for Core lazy token-pool initialization documented in `VOLUME_II_CORE.md` section 1.62. Baseline reports are `104748`–`104754`; optimized reports are `104909`–`104914`.
+
+## 2.326 Lazy FenJS Arguments-Object Materialization (2026-07-14)
+
+- `FenBrowser.Js/Bytecode/BytecodeCompiler.cs`
+- `FenBrowser.Js/Bytecode/BytecodeFunction.cs`
+  - Sampled profiling of the deterministic function-call workload ranked `CreateArgumentsObject` on the hottest call path. The compiler previously marked every ordinary function as requiring an arguments object, so each call allocated and populated an object even when the binding was unobservable.
+  - Bytecode compilation now records whether a function actually references its own `arguments` binding. Ordinary functions without such a reference omit the object; functions that reference it retain existing mapped or restricted semantics.
+  - Direct `eval` calls conservatively retain the object because the evaluated source can resolve `arguments` dynamically. Arrow functions propagate an outer-arguments dependency to their owning ordinary function, while nested ordinary functions stop that propagation because they own a distinct binding. A parameter named `arguments` continues to shadow the implicit binding.
+  - The decision is immutable bytecode metadata and has function lifetime. It adds no runtime cache, global table, native resource, or disabled-path counter cost.
+- `FenBrowser.Js.Tests/ArgumentsObjectElisionTests.cs`
+  - Covers the unused fast path, direct binding access, direct eval, arrow capture, and nested ordinary-function ownership.
+
+Five-process Release medians compare baseline reports `105847`-`105906` with retained reports `110318`-`110327`:
+
+| Workload | Execute before | Execute after | Allocation before | Allocation after | GC impact |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| arithmetic-loop | 44.304 ms | 42.480 ms (-4.12%) | 4,400 B | 3,296 B (-25.09%) | unchanged |
+| property-access | 32.447 ms | 31.694 ms (-2.32%) | 5,432 B | 4,328 B (-20.32%) | unchanged |
+| prototype-chain | 15.491 ms | 21.061 ms (+35.96%) | 5,712 B | 4,192 B (-26.61%) | unchanged |
+| function-calls | 71.193 ms | 38.679 ms (-45.67%) | 57,459,760 B | 19,044,856 B (-66.86%) | Gen0 20 to 7; Gen1 17 to 0; Gen2 1 to 0; FenJS minor 24 to 0 |
+
+The fixed-order prototype timing was investigated rather than attributed to the change. An isolated exact A/B run measured the original at 37.170 ms and the retained implementation at 37.916 ms (+2.01%), within the observed process/JIT spread, while preserving the 26.61% allocation reduction. The fixed-order increase is therefore recorded as a shared-process warm-state anomaly, not claimed as an improvement. The change is retained for the directly targeted function-call result and consistent allocation reductions.
+
+Verification:
+
+- `dotnet build FenBrowser.Js/FenBrowser.Js.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `ArgumentsObjectElisionTests`: pass (`5/5`).
+- Relevant arguments/eval/arrow/class slice: baseline `285/287`; retained `290/292` including five new tests. The same two pre-existing class/super failures remained; excluding them, the retained slice passed `290/290`.
+- Local Test262 exact-file checks used `--timeout-ms 2000` and a 30-second process stall watchdog: `language/arguments-object/10.5-1-s.js` and `language/expressions/arrow-function/lexical-arguments.js` both passed.
+- A broader post-change `FenBrowser.Js.Tests` run reached `1,189/1,204` before a recursive-call stack overflow aborted the host. The failure list includes known existing failures, but the aborted run is not used for attribution; the completed focused baseline/post-change slice is the correctness comparison for this unit.

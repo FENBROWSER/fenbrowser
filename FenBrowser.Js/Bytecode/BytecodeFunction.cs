@@ -45,6 +45,11 @@ public sealed class BytecodeFunction
     public bool HasOwnArgumentsObject { get; init; }
     public bool UsesRestrictedArgumentsObject { get; init; }
 
+    // True only for an arrow-like function that resolves `arguments` through
+    // its enclosing environment. The compiler propagates this through nested
+    // arrows so the nearest ordinary function retains its arguments object.
+    internal bool UsesOuterArguments { get; init; }
+
     public FunctionKind Kind { get; init; } = FunctionKind.Ordinary;
 
     // True when this function was compiled from eval() source; var/function

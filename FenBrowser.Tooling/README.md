@@ -81,6 +81,7 @@ Run the deterministic FenJS parse, bytecode-generation, and execution benchmark 
 
 ```powershell
 dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -- js-perf
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -- js-perf property-access
 ```
 
 ### `capability-ledger`

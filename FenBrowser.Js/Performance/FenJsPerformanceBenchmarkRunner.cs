@@ -68,8 +68,11 @@ public sealed record FenJsPerformanceReport(
 public sealed class FenJsPerformanceBenchmarkRunner
 {
     public FenJsPerformanceReport RunDefaultSuite()
+        => RunSuite(BuildDefaultSuite());
+
+    public FenJsPerformanceReport RunSuite(IReadOnlyList<FenJsPerformanceScenario> scenarios)
     {
-        var scenarios = BuildDefaultSuite();
+        ArgumentNullException.ThrowIfNull(scenarios);
         var results = new List<FenJsPerformanceResult>(scenarios.Count);
         foreach (var scenario in scenarios)
         {
@@ -182,7 +185,7 @@ public sealed class FenJsPerformanceBenchmarkRunner
             FindWorkspaceRoot(),
             "Results",
             "performance",
-            $"fenjs_perf_benchmark_{DateTime.UtcNow:yyyyMMdd_HHmmss}.json");
+            $"fenjs_perf_benchmark_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}.json");
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
         await File.WriteAllTextAsync(
             outputPath,

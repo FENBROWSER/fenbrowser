@@ -2710,3 +2710,10 @@ Verification:
 - `dotnet build FenBrowser.Js/FenBrowser.Js.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass, zero warnings/errors.
 - `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsPerformanceBenchmarkRunnerTests" -v quiet /nodeReuse:false`: pass (`2/2`).
 - Pre-change parser/interpreter/IC/JIT slice: `416/420`; the four failures were reproduced before this measurement unit and remain the known optional-chain AST expectation, module undeclared export, and two switch lexical-redeclaration expectations.
+
+## 6.84 FenJS Scenario-Isolated Performance Comparison (2026-07-14)
+
+- `FenBrowser.Tooling js-perf [scenario]` accepts an optional exact scenario name, such as `property-access` or `prototype-chain`, and rejects unknown names instead of silently running a different workload.
+- Scenario selection uses the same benchmark runner and structured report schema as the complete suite. Report filenames include milliseconds so repeated short-lived comparison processes cannot overwrite one another.
+- The isolated mode was used to investigate the fixed-order prototype-chain timing anomaly during arguments-object optimization. Five fresh processes per implementation separated scenario behavior from cross-scenario static/JIT warm state.
+- `FenBrowser.Tooling/README.md` records the command form; generated reports remain under ignored `Results/performance/`.

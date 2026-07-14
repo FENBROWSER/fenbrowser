@@ -74,7 +74,7 @@ namespace FenBrowser.Tooling
                     await RunRenderPerfAsync().ConfigureAwait(false);
                     return;
                 case "js-perf":
-                    await RunFenJsPerfAsync().ConfigureAwait(false);
+                    await RunFenJsPerfAsync(args).ConfigureAwait(false);
                     return;
                 case "capability-ledger":
                     RunCapabilityLedger(args);
@@ -2527,10 +2527,22 @@ namespace FenBrowser.Tooling
             Console.WriteLine($"failureGatePassed={report.FailureGatePassed}");
         }
 
-        private static async Task RunFenJsPerfAsync()
+        private static async Task RunFenJsPerfAsync(string[] args)
         {
             var runner = new FenJsPerformanceBenchmarkRunner();
-            var report = runner.RunDefaultSuite();
+            var scenarios = FenJsPerformanceBenchmarkRunner.BuildDefaultSuite();
+            if (args.Length > 1)
+            {
+                scenarios = scenarios
+                    .Where(scenario => string.Equals(scenario.Name, args[1], StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (scenarios.Count == 0)
+                {
+                    throw new ArgumentException($"Unknown FenJS performance scenario '{args[1]}'.");
+                }
+            }
+
+            var report = runner.RunSuite(scenarios);
             var artifactPath = await runner.WriteReportAsync(report).ConfigureAwait(false);
             Console.WriteLine(FenJsPerformanceBenchmarkRunner.FormatSummary(report));
             Console.WriteLine($"artifact={artifactPath}");
@@ -2566,7 +2578,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  acid2-layout-html [output_html]");
             Console.WriteLine("  webdriver [--port=4444] [--headless]");
             Console.WriteLine("  render-perf");
-            Console.WriteLine("  js-perf");
+            Console.WriteLine("  js-perf [scenario]");
             Console.WriteLine("  capability-ledger [output_json] [--require-live-evidence] [--logs-dir <path>]");
             Console.WriteLine("  debug-css");
             Console.WriteLine("  test");

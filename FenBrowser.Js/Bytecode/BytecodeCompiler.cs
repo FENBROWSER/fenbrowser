@@ -11,6 +11,8 @@ namespace FenBrowser.Js.Bytecode;
 
 public sealed class BytecodeCompiler
 {
+    private const int DirectEvalCallFlag = 1;
+
     public int? ParserMaxRecursionDepth { get; init; }
 
     private sealed class LoopContext
@@ -285,6 +287,10 @@ public sealed class BytecodeCompiler
             _instructions.Add(new Instruction(OpCode.Return, undefReg, 0, 0));
         }
 
+        var argumentsNameIsParameter = _parameterNames.Contains("arguments", StringComparer.Ordinal);
+        var referencesArguments = !argumentsNameIsParameter && ReferencesArgumentsBinding();
+        var needsOwnArgumentsObject = hasOwnArgumentsObject && referencesArguments;
+
         return new BytecodeFunction
         {
             Name = _name,
@@ -303,13 +309,43 @@ public sealed class BytecodeCompiler
             RestParameterIndex = restParameterIndex,
             ExpectedArgumentCount = ComputeExpectedArgumentCount(parameters.Count, restParameterIndex, parameterDefaults),
             BindsOwnNameInBody = bindOwnNameInBody && name is { Length: > 0 },
-            HasOwnArgumentsObject = hasOwnArgumentsObject,
-            UsesRestrictedArgumentsObject = hasOwnArgumentsObject && (_isStrictMode || !hasSimpleParameterList),
+            HasOwnArgumentsObject = needsOwnArgumentsObject,
+            UsesRestrictedArgumentsObject = needsOwnArgumentsObject && (_isStrictMode || !hasSimpleParameterList),
+            UsesOuterArguments = !hasOwnArgumentsObject && referencesArguments,
             NestedFunctions = _nestedFunctions.ToArray(),
             RegisterCount = Math.Max(2, _nextRegister),
             BrandTokens = _brandTokens.ToArray(),
             PrologueEndIp = prologueEndIp,
         };
+    }
+
+    private bool ReferencesArgumentsBinding()
+    {
+        if (_variables.ContainsKey("arguments"))
+        {
+            return true;
+        }
+
+        foreach (var instruction in _instructions)
+        {
+            if (instruction.E == DirectEvalCallFlag && instruction.OpCode is
+                OpCode.Call0 or OpCode.Call1 or OpCode.CallN or OpCode.CallSpread)
+            {
+                // Direct eval can resolve `arguments` dynamically even when the
+                // source function has no syntactic arguments reference.
+                return true;
+            }
+        }
+
+        foreach (var nested in _nestedFunctions)
+        {
+            if (nested.UsesOuterArguments)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // Slice the exact source text for a function node from the original source,
@@ -3372,7 +3408,7 @@ public sealed class BytecodeCompiler
                         calleeReg,
                         spreadArg,
                         thisReg,
-                        !isMethodCall && isDirectEvalCall ? 1 : 0));
+                        !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
                     if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                     return dest;
                 }
@@ -3382,7 +3418,7 @@ public sealed class BytecodeCompiler
                     case 0:
                         _instructions.Add(isMethodCall
                             ? new Instruction(OpCode.CallMethod0, dest, calleeReg, thisReg)
-                            : new Instruction(OpCode.Call0, dest, calleeReg, 0, 0, !isMethodCall && isDirectEvalCall ? 1 : 0));
+                            : new Instruction(OpCode.Call0, dest, calleeReg, 0, 0, !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
                         if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                         return dest;
                     case 1:
@@ -3390,7 +3426,7 @@ public sealed class BytecodeCompiler
                         var arg0 = CompileExpression(call.Arguments[0]);
                         _instructions.Add(isMethodCall
                             ? new Instruction(OpCode.CallMethod1, dest, calleeReg, thisReg, arg0)
-                            : new Instruction(OpCode.Call1, dest, calleeReg, arg0, 0, !isMethodCall && isDirectEvalCall ? 1 : 0));
+                            : new Instruction(OpCode.Call1, dest, calleeReg, arg0, 0, !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
                         if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                         return dest;
                     }
@@ -3409,7 +3445,7 @@ public sealed class BytecodeCompiler
 
                         _instructions.Add(isMethodCall
                             ? new Instruction(OpCode.CallMethodN, dest, calleeReg, thisReg, argStart, call.Arguments.Count)
-                            : new Instruction(OpCode.CallN, dest, calleeReg, argStart, call.Arguments.Count, !isMethodCall && isDirectEvalCall ? 1 : 0));
+                            : new Instruction(OpCode.CallN, dest, calleeReg, argStart, call.Arguments.Count, !isMethodCall && isDirectEvalCall ? DirectEvalCallFlag : 0));
                         if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                         return dest;
                     }
