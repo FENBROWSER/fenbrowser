@@ -9340,3 +9340,31 @@ Verification:
 - The retained font-cache, inline-formatting, probe-reset, and render-benchmark slice passes `25/25`.
 - All four benchmark failure gates pass in every candidate process.
 - Test262 and WPT categories are not rerun because the change is confined to the internal typeface-cache key; JavaScript, DOM, CSS, layout, and web-platform behavior are unchanged.
+
+## 2.344 Allocation-Free Paint Child Traversal (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - The retained Release allocation trace attributed `30.8202` of `31.1890` sampled `Node.Children` trace units (`98.82%`) to `NewPaintTreeBuilder.ProcessChildren`. That method evaluated the obsolete snapshotting property three times for a non-empty node and twice for a leaf before falling back to `ChildNodes`.
+  - Paint-tree traversal now follows the DOM's existing `FirstChild`/`NextSibling` links directly. It captures `NextSibling` before recursing so removal of the current child cannot terminate the walk; the paint pass remains read-only under its existing engine ownership. DOM order, pseudo-element ordering, recursion depth, style resolution, stacking-context routing, and form-control replacement behavior are unchanged.
+  - Sibling traversal is O(n) and allocation-free. It intentionally avoids indexed `NodeList` access because the live list's indexer walks from the first sibling and would make a wide sibling set O(n²). No DOM representation, public API, cache, pool, unsafe code, native resource, retained state, or ownership boundary changes.
+- `FenBrowser.Tests/Performance/PaintTreeChildTraversalAllocationTests.cs`
+  - Ten warmed production paint-tree builds over one root and 100 children move from exactly `516,160 B` to exactly `386,400 B`, saving `129,760 B` (`25.14%`). The retained `390,000 B` budget rejects the snapshotting path while allowing observed combined-slice movement to `388,816 B`.
+  - The contract verifies that all 101 source elements still produce their expected background paint nodes, protecting coverage and child order traversal rather than accepting an empty fast path.
+
+Five fresh Release processes compare the typeface-cache reports `150503`, `150504`, `150506`, `150507`, and `150508` with retained reports `151453`, `151454`, `151455`, `151504`, and `151506`:
+
+| Scenario | Total before | Total after | Paint time before | Paint time after | Paint allocation before | Paint allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 171.41 ms | 167.42 ms (-2.33%) | 63.91 ms | 58.84 ms (-7.93%) | 1,456,520 B | 1,314,400 B (-9.76%) | 20,054,320 B | 19,914,920 B (-0.70%) |
+| steady-state-damage-animation | 14.37 ms | 14.09 ms (-1.95%) | 7.43 ms | 7.11 ms (-4.31%) | 888,858 B | 808,154 B (-9.08%) | 15,605,760 B | 15,202,448 B (-2.58%) |
+| dense-text-flow | 12.58 ms | 11.94 ms (-5.09%) | 7.34 ms | 6.50 ms (-11.44%) | 1,281,292 B | 1,245,244 B (-2.81%) | 9,092,096 B | 9,042,192 B (-0.55%) |
+| wrapped-multiline-text | 6.35 ms | 6.23 ms (-1.89%) | 3.12 ms | 2.88 ms (-7.69%) | 353,852 B | 337,180 B (-4.71%) | 4,302,856 B | 4,265,000 B (-0.88%) |
+
+Paint time and paint allocation improve in every fixture, matching the isolated production-build result and the trace attribution. Layout timing still moves independently from `+0.43%` to `+5.41%`, so only the paint-stage and resulting total improvements are attributed. The retained `gc-verbose` trace reduces sampled `Node.Children` weight from `31.1890` to `0.6833` trace units and removes `ProcessChildren` as a caller; the remainder belongs to scroll-anchor selection and is left for a separate change.
+
+Verification:
+
+- The pre-change paint-tree traversal, pill-rendering, and style/layout contract slice passes `28/28`; the retained slice plus the new allocation contract passes `29/29`.
+- The new contract fails the original loop only on its allocation budget at exactly `516,160 B`; all 101 paint sources remain present on both implementations.
+- All four benchmark failure gates pass in every candidate process.
+- Test262 and WPT categories are not rerun because the change is confined to engine-owned paint-tree traversal and does not alter JavaScript or web-platform semantics.

@@ -3041,3 +3041,18 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~SkiaFontServiceTypefaceCacheAllocationTests|FullyQualifiedName~InlineFormattingContractTests|FullyQualifiedName~InlineFormattingContextProbeResetTests|FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests"`: pass (`25/25`).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.105 Paint Child-Walk Verification (2026-07-14)
+
+- Allocation-trace reconstruction attributes `98.82%` of sampled obsolete `Node.Children` allocation to `NewPaintTreeBuilder.ProcessChildren` before the change. The retained trace contains no paint-tree caller on that path and reduces total sampled weight from `31.1890` to `0.6833` trace units.
+- `Build_WideTreeStaysWithinChildTraversalAllocationBudget` executes ten warmed production paint-tree builds over 101 styled and boxed source elements. The original snapshotting loop allocates exactly `516,160 B`; sibling-link traversal allocates exactly `386,400 B` in isolation and `388,816 B` in the combined slice, within its `390,000 B` ceiling.
+- The same contract confirms all 101 source elements remain represented by background paint nodes.
+- The existing paint-tree traversal, pill rendering, and style/layout contract baseline passes `28/28`; the retained combined filter passes `29/29`.
+- Candidate reports `151453`, `151454`, `151455`, `151504`, and `151506` pass every failure gate. Paint-generation allocation falls `2.81%`-`9.76%`, paint time falls `4.31%`-`11.44%`, and total time falls `1.89%`-`5.09%` across all four fixtures.
+- Test262 and WPT are not rerun because the change is confined to paint-tree traversal with unchanged DOM, CSS, and JavaScript behavior.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~PaintTreeChildTraversalAllocationTests|FullyQualifiedName~PaintTreeTraversalTests|FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~StyleLayoutContractTests"`: pass (`29/29`).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.

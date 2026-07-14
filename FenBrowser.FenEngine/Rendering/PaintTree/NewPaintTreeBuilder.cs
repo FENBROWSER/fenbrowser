@@ -1383,19 +1383,11 @@ namespace FenBrowser.FenEngine.Rendering
                 BuildRecursive(style.Before.PseudoElementInstance, context, depth + 1, escapeContext, ancestorVisibilityHidden);
             }
 
-            if (node != null && node.Children != null && node.Children.Any())
+            for (var child = node?.FirstChild; child != null;)
             {
-                foreach (var child in node.Children)
-                {
-                    BuildRecursive(child, context, depth + 1, escapeContext, ancestorVisibilityHidden);
-                }
-            }
-            else if (node?.ChildNodes != null && node.ChildNodes.Length > 0)
-            {
-                foreach (var child in node.ChildNodes)
-                {
-                    BuildRecursive(child, context, depth + 1, escapeContext, ancestorVisibilityHidden);
-                }
+                var nextSibling = child.NextSibling;
+                BuildRecursive(child, context, depth + 1, escapeContext, ancestorVisibilityHidden);
+                child = nextSibling;
             }
 
             // 2. ::after
