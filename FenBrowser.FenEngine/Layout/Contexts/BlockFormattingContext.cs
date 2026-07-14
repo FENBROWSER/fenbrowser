@@ -371,6 +371,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
 
                     PositionInFlowBlockChild(child, childX, yOffset + childY, childState);
+                    CenterSingleButtonFlowChildIfNeeded(blockBox, child, state);
 
                     // position:sticky — apply sticky constraint after normal-flow
                     // positioning. The sticky offset shifts the visual position but
@@ -1648,6 +1649,73 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float borderToMarginTop = child.Geometry.BorderBox.Top - child.Geometry.MarginBox.Top;
             float targetMarginTop = targetBorderTop - borderToMarginTop;
             LayoutBoxOps.PositionSubtree(child, targetMarginLeft, targetMarginTop, state);
+        }
+
+        private static void CenterSingleButtonFlowChildIfNeeded(LayoutBox parent, LayoutBox child, LayoutState state)
+        {
+            if (parent?.Geometry == null ||
+                child?.Geometry == null ||
+                parent.SourceNode is not Element element ||
+                !string.Equals(element.TagName, "BUTTON", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (!HasSingleVisibleFlowChild(parent, child))
+            {
+                return;
+            }
+
+            var parentContent = parent.Geometry.ContentBox;
+            float childHeight = child.Geometry.MarginBox.Height;
+            if (parentContent.Height <= childHeight + 1f || childHeight <= 0f)
+            {
+                return;
+            }
+
+            float targetTop = parentContent.Top + (parentContent.Height - childHeight) * 0.5f;
+            if (Math.Abs(child.Geometry.MarginBox.Top - targetTop) <= 0.5f)
+            {
+                return;
+            }
+
+            LayoutBoxOps.PositionSubtree(child, child.Geometry.MarginBox.Left, targetTop, state);
+        }
+
+        private static bool HasSingleVisibleFlowChild(LayoutBox parent, LayoutBox expectedChild)
+        {
+            int count = 0;
+            LayoutBox visibleChild = null;
+            foreach (var child in parent.Children)
+            {
+                if (child == null || child.IsOutOfFlow || child.ComputedStyle?.Display == "none")
+                {
+                    continue;
+                }
+
+                if (child.SourceNode is Element element)
+                {
+                    var tag = element.TagName?.ToUpperInvariant();
+                    if (tag == "STYLE" || tag == "SCRIPT")
+                    {
+                        continue;
+                    }
+                }
+
+                if (child.Geometry?.MarginBox.Height <= 0.5f && child.Geometry?.MarginBox.Width <= 0.5f)
+                {
+                    continue;
+                }
+
+                count++;
+                visibleChild = child;
+                if (count > 1)
+                {
+                    return false;
+                }
+            }
+
+            return count == 1 && ReferenceEquals(visibleChild, expectedChild);
         }
 
         private static float ResolvePercentageHeightContainingBlock(LayoutBox box, LayoutState state)

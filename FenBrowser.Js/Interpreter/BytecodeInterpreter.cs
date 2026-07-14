@@ -337,6 +337,41 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private long _wallClockDeadlineTicks;
     private int _wallClockCheckCountdown;
 
+    public T RunWithExecutionBudget<T>(long wallClockTimeoutMs, int instructionBudget, Func<T> action)
+    {
+        if (action == null) throw new ArgumentNullException(nameof(action));
+
+        var previousInstructionBudget = InstructionBudget;
+        var previousInstructionCount = _instructionCount;
+        var previousDeadlineTicks = _wallClockDeadlineTicks;
+        var previousCheckCountdown = _wallClockCheckCountdown;
+
+        InstructionBudget = instructionBudget;
+        _instructionCount = 0;
+        if (wallClockTimeoutMs > 0)
+        {
+            _wallClockDeadlineTicks = Environment.TickCount64 + wallClockTimeoutMs;
+            _wallClockCheckCountdown = WallClockCheckInterval;
+        }
+        else
+        {
+            _wallClockDeadlineTicks = 0;
+            _wallClockCheckCountdown = WallClockCheckInterval;
+        }
+
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            InstructionBudget = previousInstructionBudget;
+            _instructionCount = previousInstructionCount;
+            _wallClockDeadlineTicks = previousDeadlineTicks;
+            _wallClockCheckCountdown = previousCheckCountdown;
+        }
+    }
+
     // Tier 5 #25: per-realm CSP eval policy. When false, eval() and the
     // Function/AsyncFunction/GeneratorFunction constructors throw EvalError,
     // mirroring the effect of a `script-src` directive without `'unsafe-eval'`.

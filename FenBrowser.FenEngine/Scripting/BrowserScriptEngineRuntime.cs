@@ -692,20 +692,43 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         if (element == null || string.IsNullOrWhiteSpace(eventName))
             return true;
 
-        return RunFenJsWithLargeStack(() =>
+        try
         {
-            lock (_fenJsLock)
+            var inputTimeoutMs = ResolveFenJsInputEventTimeoutMs();
+            return RunFenJsWithLargeStack(() =>
             {
-                using (ActivateSubdocumentWindowContext(element.OwnerDocument, null))
+                lock (_fenJsLock)
                 {
-                    var eventValue = CreateBrowserDomEventValue(element, eventName, eventInit, out var dispatchState);
-                    var defaultAllowed = DispatchEventFull(element, eventName, eventValue, dispatchState);
-                    _interpreter.PumpMicrotasks();
-                    RecordMicrotaskCheckpoint("event:" + eventName);
-                    return defaultAllowed;
+                    using (ActivateSubdocumentWindowContext(element.OwnerDocument, null))
+                    {
+                        return _interpreter.RunWithExecutionBudget(
+                            inputTimeoutMs,
+                            10_000_000,
+                            () =>
+                            {
+                                var eventValue = CreateBrowserDomEventValue(element, eventName, eventInit, out var dispatchState);
+                                var defaultAllowed = DispatchEventFull(element, eventName, eventValue, dispatchState);
+                                _interpreter.PumpMicrotasks();
+                                RecordMicrotaskCheckpoint("event:" + eventName);
+                                return defaultAllowed;
+                            });
+                    }
                 }
-            }
-        });
+            }, inputTimeoutMs);
+        }
+        catch (JsThrownException ex) when (IsFenJsInputEventTimeout(ex))
+        {
+            throw new FenBrowser.FenEngine.Errors.FenTimeoutError(
+                $"Timed out dispatching '{eventName}' event.");
+        }
+    }
+
+    private static bool IsFenJsInputEventTimeout(JsThrownException ex)
+    {
+        var message = ex?.Message ?? string.Empty;
+        return message.Contains("Script wall-clock timeout exceeded", StringComparison.Ordinal) ||
+               message.Contains("Maximum instruction budget exceeded", StringComparison.Ordinal) ||
+               message.Contains("Execution interrupted", StringComparison.Ordinal);
     }
 
     public object Evaluate(string script)
@@ -816,6 +839,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     {
         const long defaultTimeoutMs = 300000;
         var raw = Environment.GetEnvironmentVariable("FEN_FENJS_SCRIPT_TIMEOUT_MS");
+        if (!string.IsNullOrWhiteSpace(raw) &&
+            long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) &&
+            parsed >= 0)
+        {
+            return parsed;
+        }
+
+        return defaultTimeoutMs;
+    }
+
+    private static long ResolveFenJsInputEventTimeoutMs()
+    {
+        const long defaultTimeoutMs = 2000;
+        var raw = Environment.GetEnvironmentVariable("FEN_FENJS_INPUT_EVENT_TIMEOUT_MS");
         if (!string.IsNullOrWhiteSpace(raw) &&
             long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) &&
             parsed >= 0)
@@ -987,6 +1024,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private T RunFenJsWithLargeStack<T>(Func<T> work)
     {
+        return RunFenJsWithLargeStack(work, waitForWorkerMs: -1);
+    }
+
+    private T RunFenJsWithLargeStack<T>(Func<T> work, long waitForWorkerMs)
+    {
         if (_onFenJsLargeStackThread)
         {
             // Re-entrant call from within the large-stack thread itself —
@@ -999,8 +1041,23 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         // Serialise the whole dispatch/wait/result handshake. If the lock only
         // protects posting, a second timer or rAF callback can overwrite the
         // pending worker delegate before the first waiter observes its result.
-        lock (_fenJsWorkGate)
+        var lockTaken = false;
+        try
         {
+            if (waitForWorkerMs >= 0)
+            {
+                lockTaken = Monitor.TryEnter(_fenJsWorkGate, TimeSpan.FromMilliseconds(waitForWorkerMs));
+                if (!lockTaken)
+                {
+                    throw new FenBrowser.FenEngine.Errors.FenTimeoutError(
+                        $"Timed out waiting for FenJS worker after {waitForWorkerMs} ms.");
+                }
+            }
+            else
+            {
+                Monitor.Enter(_fenJsWorkGate, ref lockTaken);
+            }
+
             _fenJsWorkException = null;
             _fenJsWorkResult = null;
             _fenJsPendingWork = () => (object)work();
@@ -1023,6 +1080,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             }
 
             return (T)result;
+        }
+        finally
+        {
+            if (lockTaken)
+            {
+                Monitor.Exit(_fenJsWorkGate);
+            }
         }
 
     }

@@ -246,6 +246,77 @@ public sealed class HoverClickJavaScriptRegressionTests
             $"Rapid pointer movement left JavaScript with stale coordinates. Actual: '{pointerState.TextContent}'.");
     }
 
+    [Fact]
+    public async Task RenderedPage_BoundsBlockingInputHandler()
+    {
+        const int viewportWidth = 640;
+        const int viewportHeight = 360;
+        const string html = """
+<!doctype html>
+<html>
+<head>
+  <style>
+    body { margin: 0; }
+    #target {
+      display: block;
+      width: 180px;
+      height: 56px;
+      margin: 40px;
+    }
+  </style>
+</head>
+<body>
+  <button id="target" type="button">Block</button>
+  <script>
+    document.getElementById('target').addEventListener('mousedown', function () {
+      while (true) {}
+    });
+  </script>
+</body>
+</html>
+""";
+
+        var previousTimeout = Environment.GetEnvironmentVariable("FEN_FENJS_INPUT_EVENT_TIMEOUT_MS");
+        Environment.SetEnvironmentVariable("FEN_FENJS_INPUT_EVENT_TIMEOUT_MS", "100");
+        try
+        {
+            using var host = new BrowserHost();
+            var renderer = new SkiaDomRenderer();
+            host.EnableJavaScript = true;
+            host.SetActiveRenderer(renderer);
+            host.Engine.SetExternalRenderer(renderer);
+
+            await host.Engine.RenderAsync(
+                html,
+                new Uri("https://fen.test/blocking-input"),
+                _ => Task.FromResult(string.Empty),
+                _ => Task.FromResult<Stream>(null),
+                _ => { },
+                viewportWidth: viewportWidth,
+                viewportHeight: viewportHeight,
+                forceJavascript: true);
+
+            var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+            var target = FindById(root, "target");
+            RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+            Assert.True(renderer.LastLayout.TryGetElementRect(target, out var targetRect), "Missing target layout rect.");
+
+            var dispatch = Task.Run(() => host.OnMouseDown(
+                targetRect.Left + targetRect.Width / 2f,
+                targetRect.Top + targetRect.Height / 2f,
+                button: 0));
+
+            var completed = await Task.WhenAny(dispatch, Task.Delay(3000));
+
+            Assert.Same(dispatch, completed);
+            await dispatch;
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("FEN_FENJS_INPUT_EVENT_TIMEOUT_MS", previousTimeout);
+        }
+    }
+
     private static void RenderFrame(
         SkiaDomRenderer renderer,
         Element root,

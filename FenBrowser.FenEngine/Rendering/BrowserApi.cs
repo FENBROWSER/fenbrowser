@@ -7874,6 +7874,11 @@ pre {{
             // (e.g. a styled <div> wrapping a search input), we still keep the
             // legacy "promote to descendant editable" behavior so focus/typing
             // remains stable when the user clicks a decorative wrapper.
+            if (TryToggleCustomPopupActivation(element, allowDefaultActivation))
+            {
+                return;
+            }
+
             var activationAncestor = FindActivationAncestor(element);
             try
             {
@@ -8134,6 +8139,117 @@ pre {{
                 // Trigger repaint 
                 TryInvokeRepaintReady(_engine.GetActiveDom());
             }
+        }
+
+        private bool TryToggleCustomPopupActivation(Element element, bool allowDefaultActivation)
+        {
+            if (!allowDefaultActivation || element == null)
+            {
+                return false;
+            }
+
+            var trigger = FindPopupTrigger(element);
+            if (trigger == null)
+            {
+                return false;
+            }
+
+            var popup = trigger.ParentElement;
+            while (popup != null &&
+                   !string.Equals(popup.NodeName, "g-popup", StringComparison.OrdinalIgnoreCase))
+            {
+                popup = popup.ParentElement;
+            }
+
+            if (popup == null)
+            {
+                return false;
+            }
+
+            var menu = popup.ChildNodes
+                .OfType<Element>()
+                .FirstOrDefault(IsPopupMenuElement);
+            if (menu == null)
+            {
+                return false;
+            }
+
+            var isExpanded = string.Equals(trigger.GetAttribute("aria-expanded"), "true", StringComparison.OrdinalIgnoreCase) ||
+                             !InlineStyleHasDisplayNone(menu.GetAttribute("style"));
+            var nextExpanded = !isExpanded;
+            trigger.SetAttribute("aria-expanded", nextExpanded ? "true" : "false");
+            menu.SetAttribute("style", UpsertInlineDisplay(menu.GetAttribute("style"), nextExpanded ? "block" : "none"));
+
+            _engine.ScheduleRecascade();
+            TryInvokeRepaintReady(_engine.GetActiveDom());
+            return true;
+        }
+
+        private static Element FindPopupTrigger(Element element)
+        {
+            for (var current = element; current != null; current = current.ParentElement)
+            {
+                if (string.Equals(current.GetAttribute("aria-haspopup"), "true", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(current.GetAttribute("role"), "button", StringComparison.OrdinalIgnoreCase))
+                {
+                    return current;
+                }
+            }
+
+            return null;
+        }
+
+        private static bool IsPopupMenuElement(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            var className = element.GetAttribute("class") ?? string.Empty;
+            return className.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Any(token => string.Equals(token, "UjBGL", StringComparison.Ordinal));
+        }
+
+        private static bool InlineStyleHasDisplayNone(string style)
+        {
+            if (string.IsNullOrWhiteSpace(style))
+            {
+                return false;
+            }
+
+            return style.Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => part.Split(':', 2))
+                .Any(parts => parts.Length == 2 &&
+                              string.Equals(parts[0].Trim(), "display", StringComparison.OrdinalIgnoreCase) &&
+                              string.Equals(parts[1].Trim(), "none", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static string UpsertInlineDisplay(string style, string display)
+        {
+            var declarations = new List<string>();
+            var replaced = false;
+            foreach (var part in (style ?? string.Empty).Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var pieces = part.Split(':', 2);
+                if (pieces.Length == 2 &&
+                    string.Equals(pieces[0].Trim(), "display", StringComparison.OrdinalIgnoreCase))
+                {
+                    declarations.Add("display:" + display);
+                    replaced = true;
+                }
+                else
+                {
+                    declarations.Add(part.Trim());
+                }
+            }
+
+            if (!replaced)
+            {
+                declarations.Insert(0, "display:" + display);
+            }
+
+            return string.Join(';', declarations) + ";";
         }
 
         /// <summary>

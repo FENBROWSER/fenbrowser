@@ -83,6 +83,123 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public async System.Threading.Tasks.Task TextAlignCenter_MixedInlineChildren_PaintsAtLaidOutRunPositions()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+  <style>
+    body { margin: 0; }
+    #languages {
+      display: inline-block;
+      font-size: 14px;
+      line-height: 28px;
+      text-align: center;
+      width: 700px;
+    }
+    #languages a { display: inline; }
+  </style>
+</head>
+<body>
+  <div id='languages'>Google offered in: <a>Hindi</a> <a>Bangla</a></div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var styles = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+
+            var computer = new LayoutEngineComputer(styles, 800, 600);
+            computer.Measure(doc, new SKSize(800, 600));
+            computer.Arrange(doc, new SKRect(0, 0, 800, 600));
+
+            var boxes = new ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
+            var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 800, 600, null);
+            var nodes = Flatten(tree.Roots);
+            var promptText = doc.Descendants()
+                .OfType<Text>()
+                .First(t => t.Data?.Contains("Google offered in", StringComparison.Ordinal) == true);
+            var firstLinkText = doc.Descendants()
+                .OfType<Text>()
+                .First(t => string.Equals(t.Data, "Hindi", StringComparison.Ordinal));
+
+            Assert.True(boxes.TryGetValue(promptText, out var promptBox));
+            var promptPaint = nodes
+                .OfType<TextPaintNode>()
+                .FirstOrDefault(n => ReferenceEquals(n.SourceNode, promptText));
+            var linkPaint = nodes
+                .OfType<TextPaintNode>()
+                .FirstOrDefault(n => ReferenceEquals(n.SourceNode, firstLinkText));
+
+            Assert.NotNull(promptPaint);
+            Assert.NotNull(linkPaint);
+            Assert.InRange(Math.Abs(promptPaint.Bounds.Left - promptBox.ContentBox.Left), 0f, 2f);
+            Assert.True(promptPaint.Bounds.Right <= linkPaint.Bounds.Left + 1f,
+                $"Expected prompt to paint before the first language link. prompt={promptPaint.Bounds} link={linkPaint.Bounds}");
+        }
+
+        [Fact]
+        public async System.Threading.Tasks.Task NestedSpanPill_CentersTextAgainstOuterAnchor()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+  <style>
+    body { margin: 0; }
+    #pill {
+      background: #0b57d0;
+      box-sizing: border-box;
+      color: #fff;
+      display: inline-block;
+      font-size: 14px;
+      line-height: 18px;
+      min-height: 40px;
+      min-width: 85px;
+      padding: 10px 12px;
+      text-align: center;
+    }
+    #label {
+      display: inline;
+      max-width: 100%;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body><a id='pill'><span id='label'>Sign in</span></a></body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var styles = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+
+            var computer = new LayoutEngineComputer(styles, 800, 600);
+            computer.Measure(doc, new SKSize(800, 600));
+            computer.Arrange(doc, new SKRect(0, 0, 800, 600));
+
+            var boxes = new ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
+            var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 800, 600, null);
+            var nodes = Flatten(tree.Roots);
+            var pill = doc.GetElementById("pill");
+            var text = doc.Descendants()
+                .OfType<Text>()
+                .First(t => string.Equals(t.Data, "Sign in", StringComparison.Ordinal));
+
+            Assert.True(boxes.TryGetValue(pill, out var pillBox));
+            var textPaint = nodes
+                .OfType<TextPaintNode>()
+                .FirstOrDefault(n => ReferenceEquals(n.SourceNode, text));
+
+            Assert.NotNull(textPaint);
+            float pillCenter = pillBox.ContentBox.Left + pillBox.ContentBox.Width * 0.5f;
+            float textCenter = textPaint.Bounds.Left + textPaint.Bounds.Width * 0.5f;
+            Assert.InRange(Math.Abs(textCenter - pillCenter), 0f, 2.5f);
+        }
+
+        [Fact]
         public void InlineSvgWithEmIntrinsicSize_DoesNotPreserveOnePixelPaintBox()
         {
             ImageLoader.ClearCache();

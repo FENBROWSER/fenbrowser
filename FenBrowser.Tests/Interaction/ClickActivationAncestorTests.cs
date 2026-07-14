@@ -143,6 +143,37 @@ namespace FenBrowser.Tests.Interaction
             Assert.Equal("about:blank#section-2", host.CurrentUri!.AbsoluteUri);
         }
 
+        [Fact]
+        public async Task HandleElementClick_OnGooglePopupTrigger_TogglesMenuDisplay()
+        {
+            var host = new BrowserHost();
+            var popup = new Element("g-popup");
+            var trigger = new Element("div");
+            var label = new Element("span");
+            var menu = new Element("div");
+
+            trigger.SetAttribute("role", "button");
+            trigger.SetAttribute("aria-haspopup", "true");
+            trigger.SetAttribute("aria-expanded", "false");
+            label.AppendChild(new Text("Settings"));
+            trigger.AppendChild(label);
+            menu.SetAttribute("class", "UjBGL pkWBse iRQHZe");
+            menu.SetAttribute("style", "display:none;z-index:200");
+            menu.AppendChild(new Text("Search settings"));
+            popup.AppendChild(trigger);
+            popup.AppendChild(menu);
+
+            await host.HandleElementClick(label);
+
+            Assert.Equal("true", trigger.GetAttribute("aria-expanded"));
+            Assert.Contains("display:block", menu.GetAttribute("style"));
+
+            await host.HandleElementClick(label);
+
+            Assert.Equal("false", trigger.GetAttribute("aria-expanded"));
+            Assert.Contains("display:none", menu.GetAttribute("style"));
+        }
+
         private static Element? InvokeFindActivationAncestor(Element start)
         {
             var method = typeof(BrowserHost).GetMethod(

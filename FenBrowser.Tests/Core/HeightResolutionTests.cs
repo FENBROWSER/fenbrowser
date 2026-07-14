@@ -989,6 +989,9 @@ namespace FenBrowser.Tests.Core
             Assert.True(iconRect.Width >= 20f, $"Expected leading icon SVG to receive width, got {iconRect.Width}.");
             Assert.True(trailingRect.Width >= 20f, $"Expected trailing icon SVG to receive width, got {trailingRect.Width}.");
             Assert.True(contentRect.Right <= buttonRect.Right + 1f, "Expected content wrapper to stay within the button bounds.");
+            float buttonCenterY = (buttonRect.Top + buttonRect.Bottom) * 0.5f;
+            float contentCenterY = (contentRect.Top + contentRect.Bottom) * 0.5f;
+            Assert.InRange(Math.Abs(contentCenterY - buttonCenterY), 0f, 2f);
         }
 
         [Fact]

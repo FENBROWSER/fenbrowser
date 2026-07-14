@@ -3604,8 +3604,15 @@ namespace FenBrowser.FenEngine.Rendering
                     // Final containment correction: if the fitted line falls outside its parent
                     // content box after all adjustments, align it back using the parent's
                     // effective text alignment.
-                    if (textNode.ParentNode != null &&
-                        _boxes.TryGetValue(textNode.ParentNode, out var directParentBox) &&
+                    Node alignmentNode = ResolveSingleRunAlignmentNode(textNode);
+                    CssComputed alignmentStyle = parentStyle;
+                    if (alignmentNode != null && _styles.TryGetValue(alignmentNode, out var resolvedAlignmentStyle))
+                    {
+                        alignmentStyle = resolvedAlignmentStyle;
+                    }
+
+                    if (alignmentNode != null &&
+                        _boxes.TryGetValue(alignmentNode, out var directParentBox) &&
                         directParentBox != null)
                     {
                         var parentContent = directParentBox.ContentBox;
@@ -3613,12 +3620,15 @@ namespace FenBrowser.FenEngine.Rendering
                         bool shouldCenterSingleLineInParent =
                             box.Lines.Count == 1 &&
                             parentContent.Height > line.Height + 1f &&
-                            parentStyle?.TextAlign == SKTextAlign.Center;
+                            alignmentStyle?.TextAlign == SKTextAlign.Center;
+                        bool canUseParentTextAlignForSingleRun =
+                            alignmentNode != textNode.ParentNode || IsSingleRenderableTextRun(textNode);
                         bool shouldCenterLineXInParent =
                             box.Lines.Count == 1 &&
+                            canUseParentTextAlignForSingleRun &&
                             parentWidth > 0f &&
                             resolvedLineWidth <= parentWidth + 0.5f &&
-                            parentStyle?.TextAlign == SKTextAlign.Center;
+                            alignmentStyle?.TextAlign == SKTextAlign.Center;
 
                         if (shouldCenterSingleLineInParent)
                         {
@@ -3634,7 +3644,7 @@ namespace FenBrowser.FenEngine.Rendering
                             resolvedLineWidth <= parentWidth + 0.5f &&
                             (absX < parentContent.Left - 0.5f || absX + resolvedLineWidth > parentContent.Right + 0.5f))
                         {
-                            SKTextAlign align = parentStyle?.TextAlign ?? SKTextAlign.Left;
+                            SKTextAlign align = alignmentStyle?.TextAlign ?? SKTextAlign.Left;
                             if (align == SKTextAlign.Center)
                             {
                                 absX = parentContent.Left + (parentWidth - resolvedLineWidth) * 0.5f;
@@ -3847,7 +3857,7 @@ namespace FenBrowser.FenEngine.Rendering
                     LogCategory.Rendering);
             }
             
-            return new List<TextPaintNode> 
+            return new List<TextPaintNode>
             {
                 new TextPaintNode
                 {
@@ -4633,6 +4643,104 @@ namespace FenBrowser.FenEngine.Rendering
                     canvas.DrawRect(bounds, borderPaint);
                 }
             };
+        }
+
+        private static bool IsSingleRenderableTextRun(Text textNode)
+        {
+            if (textNode?.ParentNode == null)
+            {
+                return true;
+            }
+
+            int renderableRuns = 0;
+            foreach (var child in textNode.ParentNode.Children)
+            {
+                if (child is Text siblingText)
+                {
+                    if (!string.IsNullOrWhiteSpace(siblingText.Data))
+                    {
+                        renderableRuns++;
+                    }
+                }
+                else if (child is Element siblingElement)
+                {
+                    var tag = siblingElement.TagName?.ToUpperInvariant();
+                    if (tag == "STYLE" || tag == "SCRIPT")
+                    {
+                        continue;
+                    }
+
+                    renderableRuns++;
+                }
+
+                if (renderableRuns > 1)
+                {
+                    return false;
+                }
+            }
+
+            return renderableRuns <= 1;
+        }
+
+        private Node ResolveSingleRunAlignmentNode(Text textNode)
+        {
+            if (textNode?.ParentNode == null)
+            {
+                return null;
+            }
+
+            Node current = textNode.ParentNode;
+            Node best = current;
+            while (current != null && HasSingleRenderableChild(current))
+            {
+                if (_styles.TryGetValue(current, out var style) &&
+                    style?.TextAlign == SKTextAlign.Center &&
+                    _boxes.ContainsKey(current))
+                {
+                    best = current;
+                }
+
+                current = current.ParentNode;
+            }
+
+            return best;
+        }
+
+        private static bool HasSingleRenderableChild(Node node)
+        {
+            if (node == null)
+            {
+                return false;
+            }
+
+            int renderableChildren = 0;
+            foreach (var child in node.Children)
+            {
+                if (child is Text text)
+                {
+                    if (!string.IsNullOrWhiteSpace(text.Data))
+                    {
+                        renderableChildren++;
+                    }
+                }
+                else if (child is Element element)
+                {
+                    var tag = element.TagName?.ToUpperInvariant();
+                    if (tag == "STYLE" || tag == "SCRIPT")
+                    {
+                        continue;
+                    }
+
+                    renderableChildren++;
+                }
+
+                if (renderableChildren > 1)
+                {
+                    return false;
+                }
+            }
+
+            return renderableChildren == 1;
         }
         
         private PaintNodeBase BuildAudioPlaceholder(Element elem, Layout.BoxModel box, CssComputed style)

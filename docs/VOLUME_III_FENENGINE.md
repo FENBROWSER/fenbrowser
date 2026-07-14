@@ -8653,3 +8653,19 @@ Verification:
 - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrokeredInputRoutingTests" -v minimal`: pass (`9/9`) on `2026-06-29`.
 - `dotnet build FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -c Debug -v minimal`: pass on `2026-06-29`.
 - `dotnet build FenBrowser.Host\FenBrowser.Host.csproj -c Debug -v minimal`: pass on `2026-06-29`.
+
+## 2.317 Google Homepage Layout And Input Responsiveness (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - Text-align containment correction now only horizontally recenters single-run text. Mixed inline runs keep their laid-out x positions, preventing Google language-offer prompt text from painting over the language links while preserving centered single-label pills.
+- `FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs`
+  - Single visible in-flow child content inside `<button>` is vertically centered in the button content box, matching pill controls such as Google AI Mode.
+- `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`
+  - FenJS input event dispatch is bounded by a per-event wall-clock/instruction budget. The default is `2000ms`; `FEN_FENJS_INPUT_EVENT_TIMEOUT_MS` can override it for diagnostics/tests. A blocked page input handler now logs/returns instead of freezing the browser input path.
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - Google-style `g-popup` role-button activations toggle the adjacent hidden menu's inline display state and `aria-expanded`, covering footer Settings-style popups when site script does not complete the activation.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~HeightResolutionTests|FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~ClickActivationAncestorTests|FullyQualifiedName~HoverClickJavaScriptRegressionTests|FullyQualifiedName~BrokeredInputRoutingTests|FullyQualifiedName~IframeInputRetargetingTests" --no-restore`: pass (`50/50`) on `2026-07-14`.
+- `dotnet run --project FenBrowser.Tooling -- debug-site https://www.google.com/ 15000`: pass on `2026-07-14`; bundle `logs/real-site/www.google.com/20260714T075906Z` captured screenshot, `Scripts failed: 0`, and no navigation failures.
