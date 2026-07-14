@@ -9422,3 +9422,30 @@ Verification:
 - The existing grid slice is `44/45` before the change. The retained slice plus the new allocation contract is `45/46`; the sole failure on both implementations is the existing `GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl` zero-text-bounds failure.
 - The retained allocation contract passes twice after the Release build, and all four benchmark failure gates pass in every candidate process.
 - Test262 and WPT categories are not rerun because the change only reuses method-local parsed placement state and does not alter JavaScript, DOM, CSS parsing, or web-platform semantics.
+
+## 2.347 Shared Text Fallback-Family Definition (2026-07-14)
+
+- `FenBrowser.FenEngine/Layout/TextLayoutHelper.cs`
+  - The retained Release trace ranked `TextLayoutHelper.ResolveTypeface` among the largest remaining FenEngine owners. Every call allocated a new five-element fallback-family array before checking the requested family, including successful `FontRegistry` resolutions that never inspected the fallback chain.
+  - The fixed fallback names now live in one private static readonly array. Resolution order, generic-family mapping, registry lookup, character coverage checks, system-font matching, weight/slant handling, and ultimate fallback behavior are unchanged; callers only read the array through the existing `foreach`.
+  - This replaces one 64-byte array per call with one process-lifetime 64-byte array. The field is private and never mutated, so concurrent resolver calls only read stable data. No typeface cache, native-resource ownership change, pool, unsafe code, public API, or new synchronization is introduced.
+- `FenBrowser.Tests/Performance/TextLayoutTypefaceAllocationTests.cs`
+  - A unique registered family resolves to the platform default typeface so 10,000 calls isolate managed resolver setup without repeatedly creating native typefaces. Allocation moves from exactly `2,880,416 B` to exactly `2,240,416 B`, saving `640,000 B` (`22.22%`, exactly `64 B` per call).
+  - The retained `2,241,000 B` ceiling rejects the per-call fallback array and the identity assertion confirms every measured call still returns the registered native typeface.
+
+Five fresh Release processes compare the grid-position reports `152852`, `152853`, `152854`, `152855`, and `152857` with retained reports `153454`, `153456`, `153457`, `153458`, and `153459`:
+
+| Scenario | Total before | Total after | Paint allocation before | Paint allocation after | Render allocation before | Render allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 171.82 ms | 175.31 ms (+2.03%) | 1,314,400 B | 1,296,480 B (-1.36%) | 8,733,576 B | 8,717,176 B (-0.19%) | 19,595,144 B | 19,578,744 B (-0.08%) |
+| steady-state-damage-animation | 13.97 ms | 14.24 ms (+1.93%) | 808,380 B | 797,628 B (-1.33%) | 8,725,600 B | 8,668,144 B (-0.66%) | 15,013,880 B | 14,955,208 B (-0.39%) |
+| dense-text-flow | 12.17 ms | 12.74 ms (+4.68%) | 1,245,340 B | 1,239,516 B (-0.47%) | 5,297,640 B | 5,289,040 B (-0.16%) | 9,002,304 B | 8,982,824 B (-0.22%) |
+| wrapped-multiline-text | 6.58 ms | 6.48 ms (-1.52%) | 337,180 B | 334,620 B (-0.76%) | 2,222,168 B | 2,205,768 B (-0.74%) | 4,277,704 B | 4,249,408 B (-0.66%) |
+
+Paint, render, and managed allocation medians fall in every fixture. Layout allocation is flat in the first two fixtures and noisy in the other two; timing moves from `-1.52%` to `+4.68%`, so no latency or layout-allocation improvement is claimed. The immediate before/after sampling traces reduce `ResolveTypeface` attribution from `25.3195` to `4.6417` units (`-81.67%`), supporting the exact allocation contract without implying the remaining native lookup work was optimized.
+
+Verification:
+
+- The original focused font contracts pass `2/2` before the change; the retained allocation, font-metrics, font-service-cache, inline-formatting, and probe-reset slice passes `23/23`.
+- The retained allocation contract passes twice after the Release build, and all four benchmark failure gates pass in every candidate process.
+- Test262 and WPT categories are not rerun because the change only shares an immutable internal constant and does not alter JavaScript or web-platform semantics.

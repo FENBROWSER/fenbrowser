@@ -16,14 +16,20 @@ namespace FenBrowser.FenEngine.Layout
 
     public static class TextLayoutHelper
     {
+        private static readonly string[] s_sansSerifFallbacks =
+        {
+            "Segoe UI",
+            "Arial",
+            "Helvetica",
+            "Roboto",
+            "Open Sans"
+        };
+
         /// <summary>
         /// Resolves the appropriate Typeface based on font-family, weight, slant and content.
         /// </summary>
         public static SKTypeface ResolveTypeface(string fontFamily, string text, int weight = 400, SKFontStyleSlant slant = SKFontStyleSlant.Upright)
         {
-            // Default Sans-Serif fallback chain
-            string[] sansSerifFallbacks = { "Segoe UI", "Arial", "Helvetica", "Roboto", "Open Sans" };
-            
             // 1. Try FontRegistry (user-defined or already loaded)
             if (!string.IsNullOrEmpty(fontFamily))
             {
@@ -53,7 +59,7 @@ namespace FenBrowser.FenEngine.Layout
             }
 
             // 2. Try Sans-Serif fallback chain first (before character matching)
-            foreach (var fallbackFont in sansSerifFallbacks)
+            foreach (var fallbackFont in s_sansSerifFallbacks)
             {
                 var tf = SKTypeface.FromFamilyName(fallbackFont, (SKFontStyleWeight)weight, SKFontStyleWidth.Normal, slant);
                 if (tf != null && !string.IsNullOrEmpty(tf.FamilyName) && SupportsCharacters(tf, text))

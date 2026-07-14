@@ -3086,3 +3086,18 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~GridAutoPlacementAllocationTests" --logger "console;verbosity=minimal"`: pass (`1/1`).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.108 Text Fallback-Array Verification (2026-07-14)
+
+- `TextLayoutTypefaceAllocationTests` uses one uniquely registered platform-default typeface and measures 10,000 successful production resolver calls. The original per-call fallback array allocates exactly `2,880,416 B`; the shared definition allocates exactly `2,240,416 B` (`-640,000 B`, `-22.22%`) and returns the same native object.
+- The original focused font contracts pass `2/2`; the retained allocation, font-metrics, font-service-cache, inline-formatting, and probe-reset filter passes `23/23`.
+- Candidate reports `153454`, `153456`, `153457`, `153458`, and `153459` pass every failure gate. Paint allocation falls `0.47%`-`1.36%`, render allocation falls `0.16%`-`0.74%`, and managed allocation falls `0.08%`-`0.66%` across all fixtures.
+- Timing is mixed and no latency improvement is claimed. Immediate sampling traces reduce `TextLayoutHelper.ResolveTypeface` attribution from `25.3195` to `4.6417` units.
+- Test262 and WPT are not rerun because the change shares an internal constant without changing font-resolution or web semantics.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~TextLayoutTypefaceAllocationTests|FullyQualifiedName~NormalizedFontMetricsTests|FullyQualifiedName~SkiaFontServiceTypefaceCacheAllocationTests|FullyQualifiedName~InlineFormattingContractTests|FullyQualifiedName~InlineFormattingContextProbeResetTests" --logger "console;verbosity=minimal"`: pass (`23/23`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~TextLayoutTypefaceAllocationTests" --logger "console;verbosity=minimal"`: pass (`1/1`) on both retained reruns.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
