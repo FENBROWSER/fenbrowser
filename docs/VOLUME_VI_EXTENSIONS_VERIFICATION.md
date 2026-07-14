@@ -2804,3 +2804,17 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - Focused diagnostics and benchmark filter: pass (`10/10`).
 - Five fresh benchmark processes: all four failure gates passed in every report.
+
+## 6.90 Suppressed-Logging Performance Verification (2026-07-14)
+
+- `EngineLogSettingsTests` includes allocation assertions for compatibility Debug calls when the logger is disabled and when Debug is filtered by an Info threshold. Both use constant messages so the measurement isolates compatibility-pipeline overhead from caller interpolation.
+- The pre-change check measured exactly `4,320,000 B` for 10,000 disabled calls. The retained implementation measures `0 B` for both disabled and filtered calls.
+- The logging regression slice covers compatibility settings, BrowserScriptEngine, HTML parser, event loop, missing-API tracking, and navigation lifecycle (`9/9`). This specifically protects direct `EngineLog.Configure` callers from being hidden behind stale facade state.
+- A before/after GC allocation trace over the same deterministic render command removed `EngineLogCompat.Log`, `EngineLogCompat.Debug`, and `EngineLogCompatibility.FromLegacyCategory` from the filtered top allocation stacks.
+- Five-process render comparisons use reports `121725`-`121730` before and `122621`-`122626` after. Paint allocation improved in all four scenarios by `9.3%` to `32.9%`; total render allocation improved by `8.0%` to `21.0%`. The dense-text frame median moved from `20.91 ms` to `22.38 ms`, so that timing result is recorded as a regression/noise signal rather than hidden.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~EngineLogSettingsTests|FullyQualifiedName~BrowserScriptEngineTraceTests|FullyQualifiedName~CustomHtmlEngineDocumentTraceTests|FullyQualifiedName~EventLoopTraceTests|FullyQualifiedName~HtmlParserTraceTests|FullyQualifiedName~MissingApiTrackerTests|FullyQualifiedName~NavigationLifecycleTraceTests" -v quiet /nodeReuse:false`: pass (`9/9`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests|FullyQualifiedName~RenderDiagnosticsCostTests|FullyQualifiedName~PerformanceDiagnosticsTests" -v quiet /nodeReuse:false`: pass (`10/10`).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four scenario gates pass in each retained process.

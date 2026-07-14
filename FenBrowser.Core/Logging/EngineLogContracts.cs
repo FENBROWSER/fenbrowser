@@ -302,24 +302,24 @@ public static class EngineLogCompatibility
 
     public static LogSubsystem FromLegacyCategory(LogCategory category)
     {
-        if (category.HasFlag(LogCategory.HtmlParsing)) return LogSubsystem.Html;
-        if (category.HasFlag(LogCategory.DOM)) return LogSubsystem.Dom;
-        if (category.HasFlag(LogCategory.CssParsing)) return LogSubsystem.CssParse;
-        if (category.HasFlag(LogCategory.CSS)) return LogSubsystem.Style;
-        if (category.HasFlag(LogCategory.Layout)) return LogSubsystem.Layout;
-        if (category.HasFlag(LogCategory.Paint)) return LogSubsystem.Paint;
-        if (category.HasFlag(LogCategory.JavaScript) || category.HasFlag(LogCategory.JsExecution)) return LogSubsystem.Js;
-        if (category.HasFlag(LogCategory.Network)) return LogSubsystem.Net;
-        if (category.HasFlag(LogCategory.Navigation)) return LogSubsystem.Nav;
-        if (category.HasFlag(LogCategory.Events)) return LogSubsystem.Event;
-        if (category.HasFlag(LogCategory.Storage)) return LogSubsystem.Storage;
-        if (category.HasFlag(LogCategory.DevTools)) return LogSubsystem.DevTools;
-        if (category.HasFlag(LogCategory.Verification)) return LogSubsystem.Verification;
-        if (category.HasFlag(LogCategory.Security)) return LogSubsystem.Security;
-        if (category.HasFlag(LogCategory.Accessibility)) return LogSubsystem.Accessibility;
-        if (category.HasFlag(LogCategory.ProcessIsolation)) return LogSubsystem.ProcessIsolation;
-        if (category.HasFlag(LogCategory.Images)) return LogSubsystem.Img;
-        if (category.HasFlag(LogCategory.FeatureGaps)) return LogSubsystem.Verification;
+        if ((category & LogCategory.HtmlParsing) != 0) return LogSubsystem.Html;
+        if ((category & LogCategory.DOM) != 0) return LogSubsystem.Dom;
+        if ((category & LogCategory.CssParsing) != 0) return LogSubsystem.CssParse;
+        if ((category & LogCategory.CSS) != 0) return LogSubsystem.Style;
+        if ((category & LogCategory.Layout) != 0) return LogSubsystem.Layout;
+        if ((category & LogCategory.Paint) != 0) return LogSubsystem.Paint;
+        if ((category & (LogCategory.JavaScript | LogCategory.JsExecution)) != 0) return LogSubsystem.Js;
+        if ((category & LogCategory.Network) != 0) return LogSubsystem.Net;
+        if ((category & LogCategory.Navigation) != 0) return LogSubsystem.Nav;
+        if ((category & LogCategory.Events) != 0) return LogSubsystem.Event;
+        if ((category & LogCategory.Storage) != 0) return LogSubsystem.Storage;
+        if ((category & LogCategory.DevTools) != 0) return LogSubsystem.DevTools;
+        if ((category & LogCategory.Verification) != 0) return LogSubsystem.Verification;
+        if ((category & LogCategory.Security) != 0) return LogSubsystem.Security;
+        if ((category & LogCategory.Accessibility) != 0) return LogSubsystem.Accessibility;
+        if ((category & LogCategory.ProcessIsolation) != 0) return LogSubsystem.ProcessIsolation;
+        if ((category & LogCategory.Images) != 0) return LogSubsystem.Img;
+        if ((category & LogCategory.FeatureGaps) != 0) return LogSubsystem.Verification;
         return LogSubsystem.General;
     }
 

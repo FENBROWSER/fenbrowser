@@ -3440,7 +3440,9 @@ namespace FenBrowser.FenEngine.Rendering
             if (box.Lines != null && box.Lines.Count > 0)
             {
                 // DEBUG: Log geometry for alignment test nodes
-                if (textNode.NodeName == "#text" && (box.Lines.Count < 5 || box.Lines.Count > 50))
+                if (LogManager.IsEnabled(LogCategory.General, LogLevel.Debug) &&
+                    textNode.NodeName == "#text" &&
+                    (box.Lines.Count < 5 || box.Lines.Count > 50))
                 {
                     FenBrowser.Core.EngineLogCompat.Debug($"[PAINT-GEOMETRY] Node={textNode.GetHashCode()} Lines={box.Lines.Count} Box={box.ContentBox}");
                     foreach(var l in box.Lines)

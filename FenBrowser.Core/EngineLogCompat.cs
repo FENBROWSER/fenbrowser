@@ -56,6 +56,11 @@ public static class EngineLogCompat
         [CallerFilePath] string sourceFile = "",
         [CallerLineNumber] int sourceLine = 0)
     {
+        if (!LogManager.IsEnabled(category, level))
+        {
+            return;
+        }
+
         var fields = LogContext.CaptureData() ?? new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         if (ex != null)
         {

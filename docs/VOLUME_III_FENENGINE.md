@@ -8985,3 +8985,27 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - Included performance diagnostics, benchmark, and render-diagnostics slice: pass (`10/10`).
 - All four scenarios passed their existing timing and correctness gates in all five retained reports.
+
+## 2.331 Gated Text-Paint Geometry Diagnostics (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - The multiline text path previously interpolated one node-level and one line-level geometry message for qualifying text boxes before `EngineLogCompat.Debug` could reject them. The resulting strings were allocated even when General/Debug logging was disabled.
+  - The geometry block now checks the same General/Debug category-level pair used by its existing log calls before entering the loop. Enabled diagnostic contents and line order are unchanged; normal paint generation performs one numeric logger-state check and builds no geometry strings.
+  - The Core compatibility entry point also rejects disabled or filtered messages before context and metadata construction, covering constant-message call sites that cannot guard interpolation themselves.
+
+Five fresh Release processes compare the immediate pre-change reports `121725`-`121730` with retained reports `122621`-`122626`:
+
+| Scenario | Frame before | Frame after | Paint allocation before | Paint allocation after | Render allocation before | Render allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 176.21 ms | 173.48 ms (-1.5%) | 2,832,528 B | 1,899,952 B (-32.9%) | 13,541,296 B | 11,724,096 B (-13.4%) |
+| steady-state-damage-animation | 14.48 ms | 13.59 ms (-6.1%) | 1,660,242 B | 1,140,082 B (-31.3%) | 15,054,608 B | 11,892,848 B (-21.0%) |
+| dense-text-flow | 20.91 ms | 22.38 ms (+7.0%) | 2,802,784 B | 2,543,516 B (-9.3%) | 9,138,376 B | 8,407,664 B (-8.0%) |
+| wrapped-multiline-text | 7.88 ms | 7.43 ms (-5.7%) | 917,368 B | 662,636 B (-27.8%) | 3,658,568 B | 3,142,912 B (-14.1%) |
+
+Raster allocation also fell from `1,262,456 B` to `370,760 B` on the heavy first frame and from `162,796 B` to `66,700 B` on dense text because raster-path compatibility diagnostics now exit before allocating context and metadata. GC collection medians remained unchanged. The dense-text timing increase is retained as an explicit noisy regression alongside its repeatable allocation reduction; no universal timing improvement is claimed.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- Render diagnostics and deterministic benchmark slice: pass (`10/10`).
+- All four correctness and timing failure gates passed in each of the five retained reports.

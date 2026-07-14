@@ -1,3 +1,4 @@
+using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using System.Text.Json;
 
@@ -6,6 +7,62 @@ namespace FenBrowser.Tests.Logging;
 [Collection(EngineLogTestCollection.Name)]
 public class EngineLogSettingsTests
 {
+    [Fact]
+    public void DisabledCompatibilityLogging_DoesNotAllocateForConstantMessages()
+    {
+        bool wasEnabled = EngineLogCompat.IsEnabled;
+        try
+        {
+            EngineLogCompat.IsEnabled = false;
+            EngineLogCompat.Debug("suppressed paint diagnostic", LogCategory.Paint);
+
+            long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 10_000; i++)
+            {
+                EngineLogCompat.Debug("suppressed paint diagnostic", LogCategory.Paint);
+            }
+
+            Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - allocatedBefore);
+        }
+        finally
+        {
+            EngineLogCompat.IsEnabled = wasEnabled;
+        }
+    }
+
+    [Fact]
+    public void FilteredCompatibilityLogging_DoesNotAllocateForConstantMessages()
+    {
+        bool wasEnabled = EngineLogCompat.IsEnabled;
+        try
+        {
+            EngineLogCompat.IsEnabled = true;
+            EngineLog.Configure(new EngineLoggingOptions
+            {
+                Enabled = true,
+                GlobalMinimumSeverity = LogSeverity.Info,
+                EnableConsoleSink = false,
+                EnableDebugSink = false,
+                EnableNdjsonSink = false,
+                EnableRingBufferSink = false,
+                EnableTraceSink = false
+            });
+            EngineLogCompat.Debug("filtered paint diagnostic", LogCategory.Paint);
+
+            long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 10_000; i++)
+            {
+                EngineLogCompat.Debug("filtered paint diagnostic", LogCategory.Paint);
+            }
+
+            Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - allocatedBefore);
+        }
+        finally
+        {
+            EngineLogCompat.IsEnabled = wasEnabled;
+        }
+    }
+
     [Fact]
     public void DisabledLogging_BlocksWritesAndClearsCompatibilityBuffer()
     {

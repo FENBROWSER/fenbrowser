@@ -1419,3 +1419,23 @@ Verification:
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `AncestorFilterTests` and `DomPerformanceBenchmarkRunnerTests`: pass (`5/5`).
 - Both retained attachment workloads complete 20,000 mutations with zero Gen0/1/2 collections.
+
+### 1.68 Allocation-Free Suppressed Compatibility Logging (2026-07-14)
+
+- `FenBrowser.Core/EngineLogCompat.cs`
+  - Allocation tracing of the deterministic render fixtures ranked compatibility logging and legacy-category conversion on the paint path even though normal Release runs had no matching sink.
+  - The compatibility entry point now asks the authoritative `LogManager` whether the category and level are enabled before capturing ambient fields, allocating the fallback field dictionary, constructing source metadata, or entering the sink pipeline.
+  - The check deliberately uses the configured logger rather than the compatibility facade's cached `IsEnabled` value. Callers that configure `EngineLog` directly therefore retain their existing observable traces.
+- `FenBrowser.Core/Logging/EngineLogContracts.cs`
+  - Legacy flag-to-subsystem mapping now uses direct bit tests instead of repeated `Enum.HasFlag` calls. Category priority, combined flags, and the General fallback are unchanged; the mapping no longer boxes the enum on the hot check path.
+- `FenBrowser.Tests/Logging/EngineLogSettingsTests.cs`
+  - Measures 10,000 constant-message compatibility calls with logging disabled and with Debug filtered by an Info threshold. The original path allocated `4,320,000 B` (`432 B/call`); both retained paths allocate `0 B`.
+
+This is an early-exit optimization rather than removal of diagnostics. Enabled messages still flow through the existing context capture, source attribution, filtering, ring-buffer, and sink contracts.
+
+Verification:
+
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- Included compatibility allocation checks: pass (`2/2`, exactly `0 B` for both suppressed cases).
+- Logging contract slice spanning settings, script, parser, event-loop, missing-API, and navigation traces: pass (`9/9`).
+- A post-change GC allocation trace no longer contains `EngineLogCompat` or `EngineLogCompatibility.FromLegacyCategory` in the filtered top allocation stacks.
