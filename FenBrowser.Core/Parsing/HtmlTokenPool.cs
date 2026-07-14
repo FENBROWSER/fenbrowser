@@ -182,7 +182,7 @@ namespace FenBrowser.Core.Parsing
         {
             TagName = null;
             SelfClosing = false;
-            Attributes.Clear();
+            ClearAttributes();
             SourceOffset = -1;
             SourceLine = 0;
             SourceColumn = 0;
@@ -196,7 +196,7 @@ namespace FenBrowser.Core.Parsing
         {
             TagName = null;
             SelfClosing = false;
-            Attributes.Clear();
+            ClearAttributes();
             SourceOffset = -1;
             SourceLine = 0;
             SourceColumn = 0;

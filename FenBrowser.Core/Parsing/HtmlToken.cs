@@ -51,16 +51,24 @@ namespace FenBrowser.Core.Parsing
 
     public abstract class TagToken : HtmlToken
     {
+        private List<HtmlAttribute> _attributes;
+
         public string TagName { get; set; }
         public bool SelfClosing { get; set; }
-        public List<HtmlAttribute> Attributes { get; } = new List<HtmlAttribute>();
+        public List<HtmlAttribute> Attributes => _attributes ??= new List<HtmlAttribute>();
+        internal bool HasAttributes => _attributes != null && _attributes.Count != 0;
 
         protected TagToken(HtmlTokenType type) : base(type) { }
 
         public void AddAttribute(string name, string value)
         {
             // Duplicate attribute check could go here, or in the tokenizer
-            Attributes.Add(new HtmlAttribute(name, value));
+            (_attributes ??= new List<HtmlAttribute>()).Add(new HtmlAttribute(name, value));
+        }
+
+        internal void ClearAttributes()
+        {
+            _attributes?.Clear();
         }
     }
 

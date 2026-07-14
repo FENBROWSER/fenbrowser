@@ -504,7 +504,7 @@ namespace FenBrowser.Core.Parsing
                              curCls.Contains("WzNHm") || curCls.Contains("JUypV") ||
                              curCls.Contains("LRZwuc") || curCls.Contains("lJ9FBc");
                 // Also trace when token mentions FPdoLc
-                if (token is StartTagToken stDbg && stDbg.Attributes != null)
+                if (token is StartTagToken stDbg && stDbg.HasAttributes)
                 {
                     foreach (var attr in stDbg.Attributes)
                         if (attr.Name == "class" && attr.Value.Contains("FPdoLc")) trace = true;
@@ -824,7 +824,7 @@ namespace FenBrowser.Core.Parsing
                     if (tagLower == "link")
                     {
                         /* [PERF-REMOVED] */
-                        if (st.Attributes != null)
+                        if (st.HasAttributes)
                         {
                             // Debug logging removed for performance
                         }
@@ -1381,7 +1381,9 @@ namespace FenBrowser.Core.Parsing
                 if (st.TagName == "input")
                 {
                     // Special case: if hidden, append to table. Else foster parent.
-                    var type = st.Attributes.FirstOrDefault(a => a.Name.Equals("type", StringComparison.OrdinalIgnoreCase))?.Value;
+                    var type = st.HasAttributes
+                        ? st.Attributes.FirstOrDefault(a => a.Name.Equals("type", StringComparison.OrdinalIgnoreCase))?.Value
+                        : null;
                     if (string.Equals(type, "hidden", StringComparison.OrdinalIgnoreCase))
                     {
                         InsertHtmlElement(st);
@@ -1910,7 +1912,13 @@ namespace FenBrowser.Core.Parsing
                      FenBrowser.Core.EngineLogCompat.Warn($"[HTML] Simple Foster Parent for {st.TagName}", LogCategory.HtmlParsing);
                      
                 var el = new Element(st.TagName);
-                foreach(var a in st.Attributes) el.SetAttributeUnsafe(a.Name, a.Value);
+                if (st.HasAttributes)
+                {
+                    foreach (var a in st.Attributes)
+                    {
+                        el.SetAttributeUnsafe(a.Name, a.Value);
+                    }
+                }
                 
                  if (nextSibling != null && parent != null)
                     ((ContainerNode)parent).InsertBefore(el, nextSibling);
@@ -2262,9 +2270,12 @@ namespace FenBrowser.Core.Parsing
                  AdjustForeignAttributes(token);
             }
 
-            foreach (var attr in token.Attributes)
+            if (token.HasAttributes)
             {
-                el.SetAttributeUnsafe(attr.Name, attr.Value);
+                foreach (var attr in token.Attributes)
+                {
+                    el.SetAttributeUnsafe(attr.Name, attr.Value);
+                }
             }
             return el;
         }
@@ -2373,6 +2384,11 @@ namespace FenBrowser.Core.Parsing
         }
         private void AdjustForeignAttributes(StartTagToken token)
         {
+             if (!token.HasAttributes)
+             {
+                 return;
+             }
+
              for (int i = 0; i < token.Attributes.Count; i++)
              {
                  var attr = token.Attributes[i];
@@ -3005,7 +3021,7 @@ namespace FenBrowser.Core.Parsing
 
         private void ApplyMetaCharset(StartTagToken st)
         {
-            if (st?.Attributes == null || st.Attributes.Count == 0) return;
+            if (st == null || !st.HasAttributes) return;
 
             string charset = null;
             string httpEquiv = null;

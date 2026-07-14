@@ -1486,3 +1486,31 @@ Verification:
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - Same-object, liveness, allocation, parser, and hardening slice: pass (`20/20`).
 - All four benchmark failure gates passed in every retained report.
+
+### 1.71 Lazy HTML Tag-Attribute Storage (2026-07-14)
+
+- `FenBrowser.Core/Parsing/HtmlToken.cs`
+  - The post-paint allocation trace ranked `TagToken` construction as the largest FenBrowser allocation leaf (`16.15%`). Every start and end tag eagerly constructed a `List<HtmlAttribute>`, including the common attribute-free case and end tags whose lists remain empty.
+  - `TagToken` now creates its mutable attribute list on first observable access or first `AddAttribute`. The public `Attributes` object remains stable after creation and keeps the existing mutable-list API.
+  - Internal `HasAttributes` checks let the tree builder skip list materialization when it only needs to enumerate existing attributes. Pooled tokens clear an already-created list without forcing one into existence.
+- `FenBrowser.Core/Parsing/HtmlTreeBuilder.cs`
+  - Element construction, foreign-attribute adjustment, table foster parenting, meta processing, and attribute-sensitive branches now test `HasAttributes` before reading the list. Token order, duplicate handling, foreign-name adjustment, DOM attribute creation, and malformed-markup recovery are unchanged.
+- `FenBrowser.Tests/Core/Parsing/HtmlTokenPoolTests.cs`
+  - The 10,000-tag constructor probe failed before the change at `880,000 B` and measures `560,000 B` after it, removing `320,000 B` (`36.36%`, exactly `32 B` per attribute-free token) while still validating lazy list access and mutation.
+
+Five-process Release medians compare immediate reports `124856`-`124901` with retained reports `130712`-`130717`:
+
+| Scenario | HTML allocation before | HTML allocation after | Difference | HTML parse time before | HTML parse time after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 1,127,920 B | 1,114,320 B | -13,600 B (-1.21%) | 34.45 ms | 34.52 ms |
+| steady-state-damage-animation | 731,504 B | 723,664 B | -7,840 B (-1.07%) | 1.75 ms | 1.75 ms |
+| dense-text-flow | 523,712 B | 512,064 B | -11,648 B (-2.22%) | 0.97 ms | 0.97 ms |
+| wrapped-multiline-text | 355,608 B | 350,256 B | -5,352 B (-1.51%) | 0.48 ms | 0.48 ms |
+
+Parser timing is recorded as unchanged/inconclusive; only the deterministic allocation reduction is claimed. Gen0/1/2 collection medians are unchanged in all four fixtures. The post-change verbose allocation trace contains no exclusive `TagToken` constructor allocation stack.
+
+Verification:
+
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- Focused pool, tokenizer, tree-builder, malformed-input, table, select, and html5lib slice: pass (`93/93`).
+- All four benchmark failure gates passed in every retained report.

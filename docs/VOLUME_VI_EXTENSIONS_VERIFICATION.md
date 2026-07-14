@@ -2879,3 +2879,18 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~PaintTreeTraversalTests|FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~StyleLayoutContractTests" -v quiet /nodeReuse:false`: pass (`27/27`).
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every retained process.
+
+## 6.95 Lazy Tag-Attribute Storage Verification (2026-07-14)
+
+- The focused constructor contract records `880,000 B` before and `560,000 B` after for 10,000 alternating attribute-free start/end tags, while checking that later list access and `AddAttribute` retain their observable behavior.
+- Existing pool reuse still clears attributes that were materialized in an earlier rental. Unread pooled tokens remain list-free.
+- The parser regression slice passes `93/93`, covering tokenization, tree construction, non-interleaved and interleaved builds, RAWTEXT/formatting recovery, malformed-input guards, tables, selects, foreign content, and html5lib fixtures.
+- Five-process Release reports `124856`-`124901` before and `130712`-`130717` after reduce HTML-stage allocation in every fixture by `1.07%`-`2.22%`. HTML parse-time medians are flat within `0.20%`; no timing speedup is claimed.
+- Gen0/1/2 collection medians are unchanged. A fresh `gc-verbose` trace no longer attributes exclusive allocation weight to the `TagToken` constructor, previously the largest FenBrowser leaf at `16.15%`.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~HtmlTokenPoolTests|FullyQualifiedName~Html5libTokenizerTests|FullyQualifiedName~Html5libTreeBuilderTests|FullyQualifiedName~HtmlTreeBuilder|FullyQualifiedName~TableParsingTests|FullyQualifiedName~AfterHeadParsingTests|FullyQualifiedName~SelectParsingTests|FullyQualifiedName~CanonicalHtmlParserEntrypointTests|FullyQualifiedName~ParserHardeningGuardTests" -v quiet /nodeReuse:false`: pass (`93/93`).
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every retained process.

@@ -39,5 +39,31 @@ namespace FenBrowser.Tests.Core.Parsing
             Assert.Equal(4, pool.TotalRented);
             Assert.Equal(0.5, pool.ReuseRatio);
         }
+
+        [Fact]
+        public void AttributeFreeTagConstruction_DoesNotAllocateAttributeLists()
+        {
+            TagToken token = new StartTagToken();
+            GC.KeepAlive(token);
+
+            long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 10_000; i++)
+            {
+                token = (i & 1) == 0 ? new StartTagToken() : new EndTagToken();
+            }
+
+            long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+            GC.KeepAlive(token);
+
+            Assert.InRange(allocated, 0, 600_000);
+            var attributes = token.Attributes;
+            Assert.Empty(attributes);
+            Assert.Same(attributes, token.Attributes);
+
+            token.AddAttribute("class", "example");
+            Assert.Same(attributes, token.Attributes);
+            Assert.Single(attributes);
+            Assert.Equal("example", attributes[0].Value);
+        }
     }
 }
