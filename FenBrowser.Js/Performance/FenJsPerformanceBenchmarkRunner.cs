@@ -221,6 +221,12 @@ public sealed class FenJsPerformanceBenchmarkRunner
                 "(function(){ function add(a,b){ return a+b; } let total=0; for(let i=0;i<20000;i++){ total=add(total,1); } return total; })();",
                 20_000,
                 5,
+                2),
+            new(
+                "empty-function-calls",
+                "(function(){ function one(){ return 1; } let total=0; for(let i=0;i<20000;i++){ total=total+one(); } return total; })();",
+                20_000,
+                5,
                 2)
         ];
     }

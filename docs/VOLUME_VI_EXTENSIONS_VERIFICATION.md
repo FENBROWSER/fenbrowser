@@ -2717,3 +2717,10 @@ Verification:
 - Scenario selection uses the same benchmark runner and structured report schema as the complete suite. Report filenames include milliseconds so repeated short-lived comparison processes cannot overwrite one another.
 - The isolated mode was used to investigate the fixed-order prototype-chain timing anomaly during arguments-object optimization. Five fresh processes per implementation separated scenario behavior from cross-scenario static/JIT warm state.
 - `FenBrowser.Tooling/README.md` records the command form; generated reports remain under ignored `Results/performance/`.
+
+## 6.85 Binding-Free FenJS Call Baseline (2026-07-14)
+
+- The deterministic FenJS suite includes `empty-function-calls`, which invokes a parameterless, capture-free function 20,000 times. It isolates frame and environment setup from argument-array creation, parameter binding, property access, and JavaScript heap-object creation.
+- Five fresh Release processes established a median execution time of `59.975 ms` and a stable current-thread allocation result of `10,564,616 B`. Reports are `112355`-`112359` under ignored `Results/performance/`.
+- The fixture returns `20,000`, executes `300,046` bytecode instructions, leaves `1,405` FenJS heap cells, and triggers zero FenJS collections. The benchmark runner verifies the result before publishing metrics.
+- `FenJsPerformanceBenchmarkRunnerTests` passes `2/2` with the five-scenario suite and structured JSON contract.

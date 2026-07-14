@@ -11,7 +11,7 @@ public sealed class FenJsPerformanceBenchmarkRunnerTests
     {
         var report = new FenJsPerformanceBenchmarkRunner().RunDefaultSuite();
 
-        Assert.Equal(4, report.Results.Count);
+        Assert.Equal(5, report.Results.Count);
         Assert.False(string.IsNullOrWhiteSpace(report.Environment.BuildConfiguration));
         Assert.All(report.Results, result =>
         {
@@ -40,7 +40,7 @@ public sealed class FenJsPerformanceBenchmarkRunnerTests
             using var json = JsonDocument.Parse(await File.ReadAllTextAsync(writtenPath));
 
             Assert.Equal(outputPath, writtenPath);
-            Assert.Equal(4, json.RootElement.GetProperty("Results").GetArrayLength());
+            Assert.Equal(5, json.RootElement.GetProperty("Results").GetArrayLength());
             Assert.True(json.RootElement.GetProperty("Results")[0].TryGetProperty("AverageParseAllocatedBytes", out _));
             Assert.True(json.RootElement.GetProperty("Results")[0].TryGetProperty("InstructionsExecuted", out _));
         }
