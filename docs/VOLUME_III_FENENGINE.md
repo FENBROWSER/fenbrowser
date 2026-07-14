@@ -8889,3 +8889,25 @@ Verification:
 - Relevant arguments/eval/arrow/class slice: baseline `285/287`; retained `290/292` including five new tests. The same two pre-existing class/super failures remained; excluding them, the retained slice passed `290/290`.
 - Local Test262 exact-file checks used `--timeout-ms 2000` and a 30-second process stall watchdog: `language/arguments-object/10.5-1-s.js` and `language/expressions/arrow-function/lexical-arguments.js` both passed.
 - A broader post-change `FenBrowser.Js.Tests` run reached `1,189/1,204` before a recursive-call stack overflow aborted the host. The failure list includes known existing failures, but the aborted run is not used for attribution; the completed focused baseline/post-change slice is the correctness comparison for this unit.
+
+## 2.327 Lazy Interpreter Exception-Handler Stacks (2026-07-14)
+
+- `FenBrowser.Js/Interpreter/InterpreterFrame.cs`
+  - Post-arguments-elision profiling showed every function call still constructed three empty `Stack<T>` objects for catch targets, finally targets, and handler environments. The deterministic call workload executes 20,000 ordinary calls per measured run without handler opcodes, so all three objects were unobservable work.
+  - Each frame now holds three nullable stack references behind the existing public properties. The first property access creates the same `Stack<T>` implementation used previously, after which push, pop, suspension snapshots, and exception unwinding retain their existing behavior. Ordinary frames that never touch handler state keep all three references null.
+  - Storage ownership remains one interpreter frame. It is never shared across threads, pooled, retained after frame lifetime, or exposed to JavaScript.
+
+Five fresh isolated Release processes compared the exact original implementation with the retained implementation:
+
+| Metric | Original | Lazy stacks | Difference |
+| --- | ---: | ---: | ---: |
+| Function-call execution allocation | 19,044,856 B | 17,124,664 B | -1,920,192 B (-10.08%) |
+| Function-call execution median | 69.503 ms | 69.829 ms | +0.326 ms (+0.47%) |
+
+The wall-clock result is treated as neutral process/JIT noise, not as a speed improvement. The change is retained because it removes exactly three unused stack-object allocations per ordinary call and produces a deterministic allocation reduction without adding pooling or unsafe storage. Original reports are `111804`-`111808`; retained reports are `111732`-`111736`.
+
+Verification:
+
+- `dotnet build FenBrowser.Js/FenBrowser.Js.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- Try/finally, generator-yield, generator-function, async-function, async-method, and async-generator slice: baseline `76/83`; retained `76/83`, with the exact same seven existing `GeneratorFunctionTests` failures.
+- A final retained `js-perf function-calls` run reported `17,124,664 B`, `1,405` live FenJS heap cells, and zero FenJS collections.
