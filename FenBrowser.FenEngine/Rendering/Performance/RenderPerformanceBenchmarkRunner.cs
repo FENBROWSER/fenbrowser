@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -32,6 +35,18 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         int Iterations,
         double AverageTotalMs,
         double MaxTotalMs,
+        double HtmlParseMs,
+        double CssParseAndStyleMs,
+        double AverageLayoutMs,
+        double AveragePaintGenerationMs,
+        double AverageRasterMs,
+        double PipelineDurationMs,
+        long ManagedAllocatedBytes,
+        long ManagedHeapBytesAfter,
+        long WorkingSetBytesAfter,
+        int Gen0Collections,
+        int Gen1Collections,
+        int Gen2Collections,
         int DomNodeCount,
         int BoxCount,
         int PaintNodeCount,
@@ -39,8 +54,26 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         bool WarningGatePassed,
         bool FailureGatePassed);
 
+    public sealed record RenderPerformanceEnvironment(
+        string OperatingSystem,
+        string OsArchitecture,
+        string ProcessArchitecture,
+        string Framework,
+        string RuntimeVersion,
+        string BuildConfiguration,
+        string GitCommit,
+        string ProcessorName,
+        int ProcessorCount,
+        long TotalAvailableMemoryBytes,
+        bool ServerGc,
+        string GcLatencyMode,
+        string TieredCompilation,
+        string TieredPgo,
+        string ReadyToRun);
+
     public sealed record RenderPerformanceBenchmarkReport(
         DateTimeOffset CreatedAtUtc,
+        RenderPerformanceEnvironment Environment,
         IReadOnlyList<RenderPerformanceBenchmarkResult> Results)
     {
         public bool FailureGatePassed => Results.All(result => result.FailureGatePassed);
@@ -58,20 +91,33 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 results.Add(await RunScenarioAsync(scenario, cancellationToken).ConfigureAwait(false));
             }
 
-            return new RenderPerformanceBenchmarkReport(DateTimeOffset.UtcNow, results);
+            return new RenderPerformanceBenchmarkReport(DateTimeOffset.UtcNow, CaptureEnvironment(), results);
         }
 
         public async Task<RenderPerformanceBenchmarkResult> RunScenarioAsync(RenderPerformanceBenchmarkScenario scenario, CancellationToken cancellationToken = default)
         {
             using var measurementScope = BenchmarkMeasurementScope.Enter();
 
+            long allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
+            int gen0Before = GC.CollectionCount(0);
+            int gen1Before = GC.CollectionCount(1);
+            int gen2Before = GC.CollectionCount(2);
+            var pipelineStopwatch = Stopwatch.StartNew();
+
             var baseUri = new Uri("https://bench.fen/");
+            long parseStarted = Stopwatch.GetTimestamp();
             var parser = new HtmlParser(scenario.Html, baseUri);
             var document = parser.Parse();
+            double htmlParseMs = Stopwatch.GetElapsedTime(parseStarted).TotalMilliseconds;
             var root = document.DocumentElement;
+            long cssStarted = Stopwatch.GetTimestamp();
             var styles = await CssLoader.ComputeAsync(root, baseUri, null, scenario.ViewportWidth, scenario.ViewportHeight).ConfigureAwait(false);
+            double cssParseAndStyleMs = Stopwatch.GetElapsedTime(cssStarted).TotalMilliseconds;
             var renderer = new SkiaDomRenderer();
             var totals = new List<double>(scenario.Iterations);
+            var layoutTotals = new List<double>(scenario.Iterations);
+            var paintTotals = new List<double>(scenario.Iterations);
+            var rasterTotals = new List<double>(scenario.Iterations);
             var rasterModes = new Dictionary<RenderFrameRasterMode, int>();
             RenderFrameResult lastResult = null;
 
@@ -92,7 +138,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
 
             if (!scenario.PreferSteadyStateDamage)
             {
-                totals.Add(lastResult.Telemetry?.TotalDurationMs ?? 0);
+                RecordTelemetry(lastResult.Telemetry, totals, layoutTotals, paintTotals, rasterTotals);
                 CountRasterMode(rasterModes, lastResult.RasterMode);
             }
 
@@ -128,10 +174,11 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 });
 
                 canvas.Flush();
-                totals.Add(lastResult.Telemetry?.TotalDurationMs ?? 0);
+                RecordTelemetry(lastResult.Telemetry, totals, layoutTotals, paintTotals, rasterTotals);
                 CountRasterMode(rasterModes, lastResult.RasterMode);
             }
 
+            pipelineStopwatch.Stop();
             double average = totals.Count > 0 ? totals.Average() : 0;
             double max = totals.Count > 0 ? totals.Max() : 0;
             var dominantRasterMode = rasterModes.Count == 0
@@ -143,6 +190,18 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 totals.Count,
                 Math.Round(average, 2),
                 Math.Round(max, 2),
+                Math.Round(htmlParseMs, 2),
+                Math.Round(cssParseAndStyleMs, 2),
+                Math.Round(AverageOrZero(layoutTotals), 2),
+                Math.Round(AverageOrZero(paintTotals), 2),
+                Math.Round(AverageOrZero(rasterTotals), 2),
+                Math.Round(pipelineStopwatch.Elapsed.TotalMilliseconds, 2),
+                Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - allocatedBefore),
+                GC.GetTotalMemory(forceFullCollection: false),
+                GetWorkingSetBytes(),
+                Math.Max(0, GC.CollectionCount(0) - gen0Before),
+                Math.Max(0, GC.CollectionCount(1) - gen1Before),
+                Math.Max(0, GC.CollectionCount(2) - gen2Before),
                 lastResult?.Telemetry?.DomNodeCount ?? 0,
                 lastResult?.Telemetry?.BoxCount ?? 0,
                 lastResult?.Telemetry?.PaintNodeCount ?? 0,
@@ -158,7 +217,11 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 throw new ArgumentNullException(nameof(report));
             }
 
-            outputPath ??= DiagnosticPaths.GetLogArtifactPath($"render_perf_benchmark_{DateTime.UtcNow:yyyyMMdd_HHmmss}.json");
+            outputPath ??= Path.Combine(
+                DiagnosticPaths.GetWorkspaceRoot(),
+                "Results",
+                "performance",
+                $"render_perf_benchmark_{DateTime.UtcNow:yyyyMMdd_HHmmss}.json");
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
             await File.WriteAllTextAsync(
@@ -207,7 +270,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             foreach (var result in report.Results)
             {
                 builder.AppendLine(
-                    $"{result.Name}: avg={result.AverageTotalMs:0.##}ms max={result.MaxTotalMs:0.##}ms dom={result.DomNodeCount} boxes={result.BoxCount} paint={result.PaintNodeCount} raster={result.DominantRasterMode} failGate={result.FailureGatePassed}");
+                    $"{result.Name}: total={result.AverageTotalMs:0.##}ms parse={result.HtmlParseMs:0.##}ms css+style={result.CssParseAndStyleMs:0.##}ms layout={result.AverageLayoutMs:0.##}ms paint={result.AveragePaintGenerationMs:0.##}ms raster={result.AverageRasterMs:0.##}ms alloc={result.ManagedAllocatedBytes}B dom={result.DomNodeCount} boxes={result.BoxCount} paintNodes={result.PaintNodeCount} rasterMode={result.DominantRasterMode} failGate={result.FailureGatePassed}");
             }
 
             return builder.ToString();
@@ -217,6 +280,98 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         {
             rasterModes.TryGetValue(mode, out int count);
             rasterModes[mode] = count + 1;
+        }
+
+        private static void RecordTelemetry(
+            RenderFrameTelemetry telemetry,
+            List<double> totals,
+            List<double> layoutTotals,
+            List<double> paintTotals,
+            List<double> rasterTotals)
+        {
+            totals.Add(telemetry?.TotalDurationMs ?? 0);
+            layoutTotals.Add(telemetry?.LayoutDurationMs ?? 0);
+            paintTotals.Add(telemetry?.PaintDurationMs ?? 0);
+            rasterTotals.Add(telemetry?.RasterDurationMs ?? 0);
+        }
+
+        private static double AverageOrZero(List<double> values)
+        {
+            return values.Count == 0 ? 0 : values.Average();
+        }
+
+        private static RenderPerformanceEnvironment CaptureEnvironment()
+        {
+            var gcInfo = GC.GetGCMemoryInfo();
+            return new RenderPerformanceEnvironment(
+                RuntimeInformation.OSDescription,
+                RuntimeInformation.OSArchitecture.ToString(),
+                RuntimeInformation.ProcessArchitecture.ToString(),
+                RuntimeInformation.FrameworkDescription,
+                Environment.Version.ToString(),
+#if DEBUG
+                "Debug",
+#else
+                "Release",
+#endif
+                TryResolveGitCommit(),
+                Environment.GetEnvironmentVariable("PROCESSOR_IDENTIFIER") ?? RuntimeInformation.ProcessArchitecture.ToString(),
+                Environment.ProcessorCount,
+                gcInfo.TotalAvailableMemoryBytes,
+                GCSettings.IsServerGC,
+                GCSettings.LatencyMode.ToString(),
+                ReadRuntimeSetting("DOTNET_TieredCompilation"),
+                ReadRuntimeSetting("DOTNET_TieredPGO"),
+                ReadRuntimeSetting("DOTNET_ReadyToRun"));
+        }
+
+        private static string ReadRuntimeSetting(string name)
+        {
+            return Environment.GetEnvironmentVariable(name) ?? "runtime-default";
+        }
+
+        private static long GetWorkingSetBytes()
+        {
+            using var process = Process.GetCurrentProcess();
+            return process.WorkingSet64;
+        }
+
+        private static string TryResolveGitCommit()
+        {
+            foreach (var startPath in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory })
+            {
+                var directory = new DirectoryInfo(startPath);
+                while (directory != null)
+                {
+                    string gitPath = Path.Combine(directory.FullName, ".git");
+                    if (Directory.Exists(gitPath))
+                    {
+                        try
+                        {
+                            string head = File.ReadAllText(Path.Combine(gitPath, "HEAD")).Trim();
+                            if (!head.StartsWith("ref: ", StringComparison.Ordinal))
+                            {
+                                return head;
+                            }
+
+                            string refPath = Path.Combine(gitPath, head.Substring(5).Replace('/', Path.DirectorySeparatorChar));
+                            return File.Exists(refPath) ? File.ReadAllText(refPath).Trim() : "unknown";
+                        }
+                        catch (IOException)
+                        {
+                            return "unknown";
+                        }
+                        catch (UnauthorizedAccessException)
+                        {
+                            return "unknown";
+                        }
+                    }
+
+                    directory = directory.Parent;
+                }
+            }
+
+            return "unknown";
         }
 
         private sealed class BenchmarkMeasurementScope : IDisposable

@@ -8669,3 +8669,21 @@ Verification:
 
 - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~HeightResolutionTests|FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~ClickActivationAncestorTests|FullyQualifiedName~HoverClickJavaScriptRegressionTests|FullyQualifiedName~BrokeredInputRoutingTests|FullyQualifiedName~IframeInputRetargetingTests" --no-restore`: pass (`50/50`) on `2026-07-14`.
 - `dotnet run --project FenBrowser.Tooling -- debug-site https://www.google.com/ 15000`: pass on `2026-07-14`; bundle `logs/real-site/www.google.com/20260714T075906Z` captured screenshot, `Scripts failed: 0`, and no navigation failures.
+
+## 2.318 Release Render Benchmark Measurement Baseline (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Performance/RenderPerformanceBenchmarkRunner.cs`
+  - The deterministic `render-perf` suite now preserves the renderer's existing layout, paint-generation, raster, and total-frame telemetry instead of reporting only total frame time.
+  - Each scenario also records HTML parse time, combined CSS parse/style time, total pipeline duration, managed allocated bytes, ending managed heap and working set, and Gen 0/1/2 collection deltas.
+  - Reports carry environment metadata for the OS, architectures, runtime, build configuration, Git commit, CPU, available memory, GC mode, and explicit tiered-compilation/PGO/ReadyToRun overrides.
+  - Generated JSON reports now follow the repository report policy under `Results/performance/`; runtime logs remain under `logs/`.
+- `FenBrowser.Tests/Performance/RenderPerformanceBenchmarkRunnerTests.cs`
+  - The benchmark contract moved from the test project's excluded `Rendering/` tree to a compiled test surface and now verifies phase, memory, GC, environment, serialization, and report-path fields.
+
+Initial Release evidence on the local AMD Ryzen 9 5900X / .NET 10.0.301 environment identified different dominant stages by fixture: the heavy first frame was led by CSS/style and layout, while dense text was led by paint generation and rasterization. These are profiling directions, not optimization claims; timing comparisons require repeated samples after the measurement contract is stable.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release -v minimal /nodeReuse:false`: pass (`0` errors).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter "FullyQualifiedName~FenBrowser.Tests.Performance.RenderPerformanceBenchmarkRunnerTests" --logger "console;verbosity=minimal" /nodeReuse:false`: pass (`3/3`).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: pass; all three failure gates passed and the structured report captured phase, allocation, GC, and environment data.
