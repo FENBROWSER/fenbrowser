@@ -1321,3 +1321,27 @@ Verification:
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - `EventTargetDispatchTests` and `DomPerformanceBenchmarkRunnerTests`: pass (`6/6`).
 - All retained benchmark runs observed zero callbacks in the no-listener case and exactly 60,000 callbacks in the listener-bearing case.
+
+### 1.64 Lazy DevTools Child-Mutation Payloads (2026-07-14)
+
+- `FenBrowser.Core/Dom/V2/Node.cs`
+- `FenBrowser.Core/Dom/V2/ContainerNode.cs`
+  - Child insertion and removal previously allocated a `List<Node>` and backing array for the static DevTools mutation event even when no instrumentation subscriber was installed.
+  - Child-list notification now snapshots the static handler first and constructs the observable added/removed payload only when a subscriber exists. MutationObserver record creation and ancestor propagation are unchanged.
+  - The handler snapshot preserves one coherent subscriber set for the notification while avoiding formatted diagnostics or new process-global caches in the mutation path.
+- `FenBrowser.Tests/Core/DomMutationNotificationTests.cs`
+  - Adds included coverage that subscribed DevTools consumers still receive ordered insert/remove records with the original payload shape.
+- `FenBrowser.Tests/Performance/DomPerformanceBenchmarkRunnerTests.cs`
+  - Adds a broad append/remove allocation ceiling that detects eager child-list payload allocation without depending on wall-clock timing.
+
+Five-process Release medians compare the original DOM baseline with retained reports `113655`-`113659`:
+
+| Workload | Time before | Time after | Allocation before | Allocation after | Gen0 before | Gen0 after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10,000 append/remove cycles | 4.754 ms | 3.888 ms (-18.22%) | 5,584,016 B | 3,824,016 B (-31.52%) | 2 | 1 |
+
+Verification:
+
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `DomMutationNotificationTests` and `DomPerformanceBenchmarkRunnerTests`: focused Release slice passes.
+- All retained runs completed 20,000 mutations with the child detached at completion; the subscribed notification contract is checked independently so the allocation benchmark remains representative of the disabled-instrumentation path.

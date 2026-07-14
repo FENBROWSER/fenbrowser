@@ -660,9 +660,7 @@ namespace FenBrowser.Core.Dom.V2
             _registeredObservers?.NotifyChildList(record);
 
             // Notify static event for DevTools
-            Node.NotifyMutation(this, "childList", null, null, 
-                added != null ? new List<Node> { added } : null, 
-                removed != null ? new List<Node> { removed } : null);
+            Node.NotifyChildListMutation(this, added, removed);
 
             // Propagate to ancestors with subtree observation
             PropagateToAncestors(record);

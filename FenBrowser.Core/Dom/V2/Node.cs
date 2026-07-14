@@ -28,6 +28,23 @@ namespace FenBrowser.Core.Dom.V2
         {
             OnMutation?.Invoke(target, type, attrName, attrNamespace, addedNodes, removedNodes);
         }
+
+        internal static void NotifyChildListMutation(Node target, Node added, Node removed)
+        {
+            var handler = OnMutation;
+            if (handler is null)
+            {
+                return;
+            }
+
+            handler(
+                target,
+                "childList",
+                null,
+                null,
+                added is null ? null : new List<Node> { added },
+                removed is null ? null : new List<Node> { removed });
+        }
         // --- Internal State ---
         internal NodeFlags _flags;
         internal Node _parentNode;
