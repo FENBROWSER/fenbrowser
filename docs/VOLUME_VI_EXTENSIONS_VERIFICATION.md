@@ -3056,3 +3056,18 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~PaintTreeChildTraversalAllocationTests|FullyQualifiedName~PaintTreeTraversalTests|FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~StyleLayoutContractTests"`: pass (`29/29`).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.106 Renderer Root-Logging Verification (2026-07-14)
+
+- Allocation-trace reconstruction attributes `28.2457` of `31.8370` sampled string-construction trace units to filtered root diagnostics in `SkiaRenderer.DrawTree`. The retained trace contains no `DrawTree` string-construction caller and records `6.4591` units overall.
+- `Render_FilteredRootDiagnosticsStayWithinAllocationBudget` runs the real canvas renderer ten times over 100 culled roots at an Info threshold. The original eager call allocates exactly `318,160 B`; the retained interpolated handler allocates exactly `20,560 B`, within its `21,000 B` ceiling.
+- The existing compatibility-logging contracts verify that filtered interpolation does not format or allocate and that enabling Debug still emits the exact formatted message with source metadata.
+- The focused renderer-root, compatibility-logging, render-telemetry, and benchmark filter passes `12/12`.
+- Candidate reports `152130`, `152132`, `152133`, `152135`, and `152137` pass every failure gate. Heavy and dense raster allocation fall `80.75%` and `51.89%`; steady-state and wrapped raster counters are flat. Timing is mixed and no speedup is claimed.
+- Test262 and WPT are not rerun because this is a filtered-diagnostic formatting change with unchanged rendering and web semantics.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~SkiaRendererRootLoggingAllocationTests|FullyQualifiedName~EngineLogSettingsTests|FullyQualifiedName~RenderFrameTelemetryTests|FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests"`: pass (`12/12`).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v quiet /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.

@@ -9368,3 +9368,31 @@ Verification:
 - The new contract fails the original loop only on its allocation budget at exactly `516,160 B`; all 101 paint sources remain present on both implementations.
 - All four benchmark failure gates pass in every candidate process.
 - Test262 and WPT categories are not rerun because the change is confined to engine-owned paint-tree traversal and does not alter JavaScript or web-platform semantics.
+
+## 2.345 Deferred Renderer Root-Diagnostic Formatting (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+  - The retained Release allocation trace attributed `28.2457` of `31.8370` sampled `String(ReadOnlySpan<char>)` trace units (`88.73%`) to `DrawTree`, where the canvas path eagerly formatted a root-node Debug message before the normal Info threshold filtered it.
+  - That call site now uses the existing `EngineLogCompat` interpolated-string handler. The handler checks the original General/Debug category and severity before evaluating root type, bounds, opacity, or constructing the message; enabled diagnostics retain the same text, source metadata, category, and severity.
+  - Root traversal, culling, draw ordering, structured Info pass summaries, screenshot diagnostics, raster backend calls, and native resource ownership are unchanged. No logging is removed, and no cache, pool, unsafe code, native resource, retained state, or concurrency is added.
+- `FenBrowser.Tests/Performance/SkiaRendererRootLoggingAllocationTests.cs`
+  - Ten real canvas renders over 100 culled roots at the normal Info threshold move from exactly `318,160 B` to exactly `20,560 B`, saving `297,600 B` (`93.54%`). The retained `21,000 B` ceiling preserves the renderer's fixed pass objects and structured Info summary while rejecting per-root Debug strings.
+  - The test exercises the canvas overload that enables root diagnostics, owns and disposes its Skia surface, and restores the prior global compatibility-logging state.
+
+Five fresh Release processes compare the paint-child-walk reports `151453`, `151454`, `151455`, `151504`, and `151506` with retained reports `152130`, `152132`, `152133`, `152135`, and `152137`:
+
+| Scenario | Total before | Total after | Raster allocation before | Raster allocation after | Render allocation before | Render allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 167.42 ms | 164.91 ms (-1.50%) | 370,760 B | 71,376 B (-80.75%) | 9,053,352 B | 8,749,952 B (-3.35%) | 19,914,920 B | 19,611,520 B (-1.52%) |
+| steady-state-damage-animation | 14.09 ms | 13.75 ms (-2.41%) | 112,620 B | 112,620 B (flat) | 8,914,232 B | 8,737,160 B (-1.99%) | 15,202,448 B | 15,023,344 B (-1.18%) |
+| dense-text-flow | 11.94 ms | 13.01 ms (+8.96%) | 66,592 B | 32,040 B (-51.89%) | 5,366,144 B | 5,273,456 B (-1.73%) | 9,042,192 B | 8,913,584 B (-1.42%) |
+| wrapped-multiline-text | 6.23 ms | 6.21 ms (-0.32%) | 32,192 B | 32,192 B (flat) | 2,222,168 B | 2,222,168 B (flat) | 4,265,000 B | 4,282,280 B (+0.41%) |
+
+The exact filtered-diagnostic contract and trace removal are the causal acceptance measurements. Fixtures that raster full root sets record the expected allocation reduction; retained/damage paths that do not repeat that root logging are flat. Raster and total timing medians range from improvements to regressions, so no speedup is claimed. The retained trace reduces sampled string-construction weight from `31.8370` to `6.4591` trace units and contains no `DrawTree` caller; the remainder belongs to immutable paint-tree key generation.
+
+Verification:
+
+- The focused renderer-root, compatibility-logging, render-telemetry, and benchmark slice passes `12/12`.
+- Existing logging contracts verify both zero allocation when interpolated diagnostics are filtered and exact message emission when Debug logging is enabled.
+- All four benchmark failure gates pass in every candidate process.
+- Test262 and WPT categories are not rerun because the change only defers formatting of a renderer diagnostic and does not alter JavaScript or web-platform behavior.

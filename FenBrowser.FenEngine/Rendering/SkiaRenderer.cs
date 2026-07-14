@@ -236,7 +236,10 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (logRootNodes)
                 {
-                    EngineLogCompat.Debug($"[SkiaRenderer] Drawing Root Node {root.GetType().Name} Bounds={root.Bounds} Z={((root as OpacityGroupPaintNode)?.Opacity ?? 1)}");
+                    EngineLogCompat.Log(
+                        LogCategory.General,
+                        LogLevel.Debug,
+                        $"[SkiaRenderer] Drawing Root Node {root.GetType().Name} Bounds={root.Bounds} Z={((root as OpacityGroupPaintNode)?.Opacity ?? 1)}");
                 }
 
                 DrawNodeSafe(backend, root, viewport, stats, hoverPaintedSources);
