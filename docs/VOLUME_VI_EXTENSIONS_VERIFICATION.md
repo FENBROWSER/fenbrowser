@@ -2727,7 +2727,7 @@ Verification:
 
 ## 6.86 Deterministic DOM Performance Baseline (2026-07-14)
 
-- `FenBrowser.Core/Performance/DomPerformanceBenchmarkRunner.cs` owns three network-independent Release workloads: repeated append/remove of one node, bubbling dispatch through an eight-node chain without listeners, and the same dispatch with capture/target/bubble listeners.
+- `FenBrowser.Core/Performance/DomPerformanceBenchmarkRunner.cs` owns four network-independent Release workloads: repeated append/remove of one node, feature-rich ancestor append/remove, bubbling dispatch through an eight-node chain without listeners, and the same dispatch with capture/target/bubble listeners.
 - Setup is outside each measured region. Every scenario reports current-thread managed allocation, managed GC deltas, operation count, elapsed time, and observed callback count. Structured JSON includes the same OS, architecture, runtime, GC, tiering, processor, build, and commit metadata contract as the other performance runners.
 - `FenBrowser.Tooling dom-perf` writes reports below ignored `Results/performance/`; `DomPerformanceBenchmarkRunnerTests` verifies outcomes and JSON persistence (`2/2`).
 
@@ -2740,3 +2740,19 @@ Five-process Release medians from reports `112846`-`112848`:
 | event-dispatch-listeners | 20,000 | 28.182 ms | 24,000,000 B | 60,000 |
 
 The zero-listener result establishes that event-path and empty-listener processing allocate about 1,040 bytes per dispatch even when no callback is observable. The append/remove result separately exposes mutation-notification allocation without measuring node construction.
+
+## 6.87 Feature-Rich Ancestor Attachment Baseline (2026-07-14)
+
+- The DOM suite's `append-remove-ancestor-features` scenario attaches the same child 10,000 times beneath a parent with a stable ID and four stable classes. Setup and attribute mutation remain outside the measured region.
+- This isolates repeated ancestor bloom-filter feature hashing from node construction, networking, parsing, selector compilation, and MutationObserver delivery. It uses the same structured JSON and environment metadata contract as the original DOM scenarios.
+
+Five fresh Release processes produced reports `114446`-`114450`:
+
+| Workload | Operations | Median execution | Managed allocation | Gen0 collections | Completion proof |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| append-remove-ancestor-features | 20,000 | 7.769 ms | 3,664,232 B | 2 | 20,000 completed mutations |
+
+Verification:
+
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- `DomPerformanceBenchmarkRunnerTests` and included `AncestorFilterTests`: pass (`4/4`).

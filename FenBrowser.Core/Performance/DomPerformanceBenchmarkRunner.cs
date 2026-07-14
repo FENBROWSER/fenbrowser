@@ -54,6 +54,7 @@ public sealed class DomPerformanceBenchmarkRunner
             CaptureEnvironment(),
             [
                 RunAppendRemove(),
+                RunAncestorFeatureAppendRemove(),
                 RunEventDispatch(withListeners: false),
                 RunEventDispatch(withListeners: true)
             ]);
@@ -97,15 +98,39 @@ public sealed class DomPerformanceBenchmarkRunner
     {
         for (var i = 0; i < WarmupIterations; i++)
         {
-            _ = ExecuteAppendRemove(measure: false);
+            _ = ExecuteAppendRemove(withAncestorFeatures: false, measure: false);
         }
 
-        return Measure("append-remove", MutationCycles * 2, ExecuteAppendRemove);
+        return Measure(
+            "append-remove",
+            MutationCycles * 2,
+            measure => ExecuteAppendRemove(withAncestorFeatures: false, measure));
     }
 
-    private static (long Ticks, long Allocated, long Observed) ExecuteAppendRemove(bool measure)
+    private static DomPerformanceResult RunAncestorFeatureAppendRemove()
+    {
+        for (var i = 0; i < WarmupIterations; i++)
+        {
+            _ = ExecuteAppendRemove(withAncestorFeatures: true, measure: false);
+        }
+
+        return Measure(
+            "append-remove-ancestor-features",
+            MutationCycles * 2,
+            measure => ExecuteAppendRemove(withAncestorFeatures: true, measure));
+    }
+
+    private static (long Ticks, long Allocated, long Observed) ExecuteAppendRemove(
+        bool withAncestorFeatures,
+        bool measure)
     {
         var parent = new Element("div");
+        if (withAncestorFeatures)
+        {
+            parent.SetAttribute("id", "benchmark-root");
+            parent.SetAttribute("class", "card active interactive selected");
+        }
+
         var child = new Element("span");
         var allocatedBefore = measure ? GC.GetAllocatedBytesForCurrentThread() : 0;
         var started = measure ? Stopwatch.GetTimestamp() : 0;

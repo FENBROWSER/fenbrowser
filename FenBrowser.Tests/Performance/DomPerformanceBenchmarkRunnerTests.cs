@@ -11,7 +11,7 @@ public sealed class DomPerformanceBenchmarkRunnerTests
     {
         var report = new DomPerformanceBenchmarkRunner().RunDefaultSuite();
 
-        Assert.Equal(3, report.Results.Count);
+        Assert.Equal(4, report.Results.Count);
         Assert.All(report.Results, result =>
         {
             Assert.True(result.AverageExecutionMs > 0);
@@ -21,6 +21,8 @@ public sealed class DomPerformanceBenchmarkRunnerTests
         var appendRemove = report.Results.Single(result => result.Name == "append-remove");
         Assert.Equal(20_000, appendRemove.ObservedCallbacks);
         Assert.True(appendRemove.AverageAllocatedBytes < 1_200_000);
+        var featureAppendRemove = report.Results.Single(result => result.Name == "append-remove-ancestor-features");
+        Assert.Equal(20_000, featureAppendRemove.ObservedCallbacks);
         var noListeners = report.Results.Single(result => result.Name == "event-dispatch-no-listeners");
         var listeners = report.Results.Single(result => result.Name == "event-dispatch-listeners");
         Assert.Equal(0, noListeners.ObservedCallbacks);
@@ -42,7 +44,7 @@ public sealed class DomPerformanceBenchmarkRunnerTests
             using var json = JsonDocument.Parse(await File.ReadAllTextAsync(writtenPath));
 
             Assert.Equal(outputPath, writtenPath);
-            Assert.Equal(3, json.RootElement.GetProperty("Results").GetArrayLength());
+            Assert.Equal(4, json.RootElement.GetProperty("Results").GetArrayLength());
             Assert.True(json.RootElement.GetProperty("Results")[0].TryGetProperty("AverageAllocatedBytes", out _));
             Assert.True(json.RootElement.GetProperty("Environment").TryGetProperty("GitCommit", out _));
         }
