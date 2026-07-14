@@ -33,6 +33,8 @@ namespace FenBrowser.FenEngine.Rendering
         private const double AdaptiveLayoutDeadlinePerNodeMs = 12d;
         private const double MaxAdaptiveLayoutDeadlineMs = 25000d;
 
+        internal int DebugScreenshotRequestCount { get; private set; }
+
         private readonly SkiaRenderer _renderer = new SkiaRenderer();
         private readonly Dictionary<Node, BoxModel> _boxes = new Dictionary<Node, BoxModel>();
         private readonly Interaction.ScrollManager _scrollManager = new Interaction.ScrollManager();
@@ -828,7 +830,17 @@ namespace FenBrowser.FenEngine.Rendering
                             EngineLogCompat.Warn(
                                 "[SkiaDomRenderer] Watchdog budget exceeded before raster on a fresh paint tree; forcing full raster to avoid presenting stale content.",
                                 LogCategory.Performance);
-                            _renderer.Render(canvas, _lastPaintTree, viewport, bgColor);
+                            if (emitVerificationReport)
+                            {
+                                DebugScreenshotRequestCount++;
+                                _renderer.CaptureDebugScreenshot(_lastPaintTree, viewport, bgColor);
+                            }
+                            _renderer.Render(
+                                canvas,
+                                _lastPaintTree,
+                                viewport,
+                                bgColor,
+                                captureDebugScreenshot: false);
                         }
                     }
                     else if (hasBaseFrame && (_lastDamageRegions == null || _lastDamageRegions.Count == 0))
@@ -837,7 +849,11 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                     else
                     {
-                        _renderer.CaptureDebugScreenshot(_lastPaintTree, viewport, bgColor);
+                        if (emitVerificationReport)
+                        {
+                            DebugScreenshotRequestCount++;
+                            _renderer.CaptureDebugScreenshot(_lastPaintTree, viewport, bgColor);
+                        }
 
                         var tileStats = _retainedTileRasterizer.Rasterize(
                             canvas,
@@ -859,12 +875,23 @@ namespace FenBrowser.FenEngine.Rendering
                         else if (useDamageRasterization)
                         {
                             rasterMode = RenderFrameRasterMode.Damage;
-                            _renderer.RenderDamaged(canvas, _lastPaintTree, viewport, bgColor, _lastDamageRegions);
+                            _renderer.RenderDamaged(
+                                canvas,
+                                _lastPaintTree,
+                                viewport,
+                                bgColor,
+                                _lastDamageRegions,
+                                captureDebugScreenshot: false);
                         }
                         else
                         {
                             rasterMode = RenderFrameRasterMode.Full;
-                            _renderer.Render(canvas, _lastPaintTree, viewport, bgColor);
+                            _renderer.Render(
+                                canvas,
+                                _lastPaintTree,
+                                viewport,
+                                bgColor,
+                                captureDebugScreenshot: false);
                         }
                     }
                     RenderPipeline.EndPaint(); // State -> Composite
@@ -2241,7 +2268,12 @@ namespace FenBrowser.FenEngine.Rendering
                     // Render the entire paint tree clipped to this layer's bounds.
                     // Only this layer's promoted subtree is visible; other content
                     // is masked by the surface bounds.
-                    _renderer.Render(layerCanvas, _lastPaintTree, layer.Bounds, SKColors.Transparent);
+                    _renderer.Render(
+                        layerCanvas,
+                        _lastPaintTree,
+                        layer.Bounds,
+                        SKColors.Transparent,
+                        captureDebugScreenshot: false);
 
                     layerCanvas.Restore();
                     layerCanvas.Flush();

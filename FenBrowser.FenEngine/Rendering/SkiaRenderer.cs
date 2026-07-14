@@ -156,23 +156,37 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public void RenderDamaged(SKCanvas canvas, ImmutablePaintTree tree, SKRect viewport, SKColor backgroundColor, IReadOnlyList<SKRect> damageRegions)
         {
+            RenderDamaged(canvas, tree, viewport, backgroundColor, damageRegions, captureDebugScreenshot: true);
+        }
+
+        internal void RenderDamaged(
+            SKCanvas canvas,
+            ImmutablePaintTree tree,
+            SKRect viewport,
+            SKColor backgroundColor,
+            IReadOnlyList<SKRect> damageRegions,
+            bool captureDebugScreenshot)
+        {
             if (canvas == null || tree == null)
             {
                 return;
             }
 
-            CaptureDebugScreenshot(tree, viewport, backgroundColor);
+            if (captureDebugScreenshot)
+            {
+                CaptureDebugScreenshot(tree, viewport, backgroundColor);
+            }
 
             if (damageRegions == null || damageRegions.Count == 0)
             {
-                Render(canvas, tree, viewport, backgroundColor);
+                Render(canvas, tree, viewport, backgroundColor, captureDebugScreenshot: false);
                 return;
             }
 
             var normalizedRegions = new DamageRegionNormalizationPolicy().Normalize(damageRegions, viewport);
             if (normalizedRegions.Count == 0)
             {
-                Render(canvas, tree, viewport, backgroundColor);
+                Render(canvas, tree, viewport, backgroundColor, captureDebugScreenshot: false);
                 return;
             }
 

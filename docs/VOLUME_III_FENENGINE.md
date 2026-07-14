@@ -8933,3 +8933,31 @@ Verification:
 - `dotnet build FenBrowser.Js/FenBrowser.Js.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - Declarative, function, global, module, object, lexical-runtime, bytecode-interpreter, and closure-trace environment slice: pass (`85/85`).
 - Retained `empty-function-calls`: result `20,000`, `300,046` instructions, `1,405` live FenJS heap cells, and zero FenJS collections.
+
+## 2.329 Verification-Gated Debug Screenshot Rasterization (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+- `FenBrowser.FenEngine/Rendering/SkiaRenderer.cs`
+  - Sampled Release profiling showed normal frame rasterization entering `CaptureDebugScreenshot`; PNG encoding alone accounted for 1.79% of inclusive process samples. The frame pipeline requested an offscreen redraw and PNG encode even when `RenderFrameRequest.EmitVerificationReport` was explicitly false.
+  - Screenshot capture is now owned by the existing verification flag across normal, watchdog-forced, full-raster, damage-raster, and composited-layer paths. Verification-enabled frames retain one throttled capture request; disabled frames perform none.
+  - Internal raster fallbacks pass `captureDebugScreenshot: false` after the pipeline makes the one policy decision, preventing duplicate offscreen raster/encode work. Public direct `SkiaRenderer.Render` and `RenderDamaged` calls retain their prior default capture behavior for diagnostic callers.
+  - A per-`SkiaDomRenderer` request count is test-only internal state; it is incremented only on the already-enabled diagnostic path and adds no counter or formatted-string work to disabled frames.
+- `FenBrowser.Tests/Performance/RenderDiagnosticsCostTests.cs`
+  - The pre-change characterization proved that a verification-disabled frame requested a screenshot. The retained theory proves zero requests when disabled, one request when enabled, and successful presented-canvas rasterization in both cases.
+
+Five-process Release medians compare reports `115033`-`115039` with retained reports `115524`-`115529`:
+
+| Scenario | Frame before | Frame after | Raster before | Raster after | Pipeline before | Pipeline after | Managed allocation change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 229.94 ms | 188.27 ms (-18.12%) | 60.05 ms | 15.80 ms (-73.69%) | 411.82 ms | 373.67 ms (-9.26%) | 24,661,248 B to 24,445,560 B (-0.87%) |
+| dense-text-flow | 38.85 ms | 23.50 ms (-39.51%) | 19.53 ms | 2.85 ms (-85.41%) | 88.33 ms | 56.93 ms (-35.55%) | 13,065,648 B to 12,841,368 B (-1.72%) |
+| wrapped-multiline-text | 16.53 ms | 8.39 ms (-49.24%) | 9.95 ms | 1.87 ms (-81.21%) | 43.67 ms | 27.57 ms (-36.86%) | 5,912,352 B to 5,753,632 B (-2.68%) |
+| steady-state-damage-animation control | 14.37 ms | 15.43 ms (+7.38%) | 6.20 ms | 7.16 ms (+15.48%) | 154.26 ms | 123.02 ms (-20.25%) | 22,258,288 B to 22,020,456 B (-1.07%) |
+
+The steady-state frame metric excludes the scenario's initial diagnostic capture, so its frame/raster movement is retained as noise/regression evidence and is not claimed as an improvement. Its full scenario pipeline includes setup and fell after the initial capture was removed. Managed allocation changes are intentionally modest because the eliminated surface, image, and PNG work is primarily native Skia cost.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` errors; existing warnings remain).
+- `RenderDiagnosticsCostTests` and `RenderPerformanceBenchmarkRunnerTests`: pass (`5/5`). Rendering-directory tests requested in the same filter remain excluded by the active test project, so equivalent included coverage lives under `Performance`.
+- All four deterministic scenarios retained their operation counts and failure gates.
