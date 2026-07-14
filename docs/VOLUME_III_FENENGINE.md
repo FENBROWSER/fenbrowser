@@ -9590,3 +9590,32 @@ Verification:
 - The retained allocation contract passes twice at exactly `608,000 B`, and the neighboring included renderer, paint, telemetry, and benchmark slice passes `7/7`.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors.
 - Test262 and WPT are not rerun because the change preserves the backend glyph run and only removes managed iteration overhead in raster preparation.
+
+## 2.353 Lazy CSS Variable Recursion Tracking (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - The post-glyph allocation trace initially ranked `HtmlTreeBuilder.InsertCharacter` at `7.44%` exclusive weight; that Core-owned allocation was handled separately. The next directly actionable FenEngine leaf was `CssLoader.ResolveStyle` at `3.05%`.
+  - Every standard cascaded declaration previously constructed a new `HashSet<string>` before calling the custom-property resolver. Ordinary values without `var()` returned immediately, so the set was never read.
+  - Standard declarations now pass no recursion state. The existing resolver still creates the same ordinal set after it detects `var()`, preserving nested-variable lookup, cycle detection, fallback handling, custom-property inheritance, and the recursion-depth bound.
+  - The set remains call-local and is created on demand only for declarations that can recurse. No cache, pool, unsafe code, retained state, public API, synchronization, or ownership boundary is added.
+- `FenBrowser.Tests/Performance/CssStyleResolutionAllocationTests.cs`
+  - One thousand warmed production `ResolveStyle` calls over four ordinary declarations move from exactly `6,648,000 B` to `6,392,000 B`, saving `256,000 B` (`3.85%`, exactly `64 B` per declaration). The retained `6,400,000 B` ceiling rejects the eager-set path.
+  - The same included test surface verifies display, width, and margin projections and separately confirms that a `var(--accent)` declaration still resolves through the element's custom-property map.
+
+Five fresh Release processes compare the immediately preceding Core-allocation reports `163548`, `163550`, `163551`, `163552`, and `163553` with candidate reports `163657`, `163659`, `163700`, `163701`, and `163703`:
+
+| Scenario | CSS allocation before | CSS allocation after | Managed allocation before | Managed allocation after | Total time before | Total time after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 9,314,360 B | 9,314,360 B (flat) | 18,942,208 B | 18,949,944 B (+0.04%) | 172.03 ms | 172.64 ms (+0.35%) |
+| steady-state-damage-animation | 5,296,072 B | 5,291,800 B (-0.08%) | 14,462,024 B | 14,458,088 B (-0.03%) | 14.15 ms | 14.18 ms (+0.21%) |
+| dense-text-flow | 3,087,504 B | 3,095,952 B (+0.27%) | 8,687,824 B | 8,696,640 B (+0.10%) | 11.93 ms | 12.27 ms (+2.85%) |
+| wrapped-multiline-text | 1,650,176 B | 1,650,176 B (flat) | 4,009,992 B | 4,010,032 B (flat) | 6.36 ms | 6.28 ms (-1.26%) |
+
+Process-level CSS and managed-allocation medians are flat or noisy, and timing remains mixed, so no whole-render allocation or latency improvement is claimed. The fresh allocation trace reports `ResolveStyle` at `0.59%` exclusive weight versus `3.05%` in the earlier post-glyph sample; because the intervening Core allocation unit changed the profile mix, that comparison is directional only. The exact production-call allocation delta is the causal acceptance evidence.
+
+Verification:
+
+- The allocation and direct variable-resolution contracts pass `2/2`, with the allocation contract retained at exactly `6,392,000 B` on repeated runs.
+- The neighboring included pill-rendering, Tailwind-variable, and layout-stability slice passes `16/16`.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and all four benchmark failure gates pass in every candidate process.
+- Test262 and WPT are not rerun because the change only defers allocation of private recursion-tracking state; CSS variable semantics are exercised by the direct included contract and neighboring CSS/render tests.

@@ -3514,7 +3514,7 @@ private static double? ExtractPx(string text, string prop)
                     foreach (var kv in cascadedProperties)
                     {
                         if (kv.Key.StartsWith("--")) continue;
-                        var val = ResolveCustomPropertyReferences(kv.Value.Value, css, rawCustom, new HashSet<string>());
+                        var val = ResolveCustomPropertyReferences(kv.Value.Value, css, rawCustom, seen: null);
                         
                         // Handle CSS-wide keywords: inherit, initial, unset, revert, revert-layer
                         var lowerVal = val?.ToLowerInvariant()?.Trim();

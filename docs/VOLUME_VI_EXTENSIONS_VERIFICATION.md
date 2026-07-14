@@ -3226,3 +3226,22 @@ Verification commands:
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+
+## 6.116 Lazy CSS Variable-Tracking Verification (2026-07-14)
+
+- `CssStyleResolutionAllocationTests.ResolveStyle_OrdinaryDeclarationsAvoidUnusedVariableTracking` measures 1,000 warmed production style resolutions over four ordinary declarations. Eager recursion sets allocate exactly `6,648,000 B`; on-demand tracking allocates exactly `6,392,000 B` (`-256,000 B`, `-3.85%`) and passes the `6,400,000 B` ceiling.
+- `ResolveStyle_VariableDeclarationsStillResolveCustomProperties` verifies that the deferred path still resolves `var(--accent)` from the same element's case-sensitive custom-property map.
+- The neighboring included pill-rendering, Tailwind-variable, and layout-stability filter passes `16/16`. The legacy `Engine` CSS-variable tests are excluded by the current `FenBrowser.Tests.csproj`, so the new contract is deliberately placed on the included performance surface.
+- Candidate reports `163657`, `163659`, `163700`, `163701`, and `163703` pass every failure gate against the immediately preceding Core reports `163548`, `163550`, `163551`, `163552`, and `163553`. CSS-stage allocation medians range from `-0.08%` to `+0.27%`, and managed-allocation medians range from `-0.03%` to `+0.10%`.
+- Process-level allocation and timing medians are flat or mixed, so no whole-render or latency improvement is claimed. The fresh `gc-verbose` trace reports `CssLoader.ResolveStyle` at `0.59%` exclusive sampled weight versus `3.05%` in the earlier post-glyph sample; the intervening Core allocation unit changes the profile mix, so the exact production-call allocation delta remains the causal evidence.
+- Test262 and WPT are not rerun because the private recursion set is still created by the existing resolver whenever a value contains `var()`, and the included direct semantic contract covers that behavior.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CssStyleResolutionAllocationTests" --logger "console;verbosity=detailed"`: pass (`2/2`), exactly `6,392,000 B` for 1,000 ordinary resolutions.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~CssStyleResolutionAllocationTests" --logger "console;verbosity=detailed"`: pass (`2/2`), exactly `6,392,000 B` on the retained rerun.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~TailwindUtilityCssContractTests|FullyQualifiedName~LayoutStabilityTests" --logger "console;verbosity=minimal"`: pass (`16/16`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: all four gates pass in every candidate process.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_css_var_tracking_after_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture passes all four benchmark gates; `dotnet-trace report ... topN` reports the post-change allocation owners.
