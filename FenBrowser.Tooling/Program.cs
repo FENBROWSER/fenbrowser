@@ -24,6 +24,7 @@ using FenBrowser.Host;
 using FenBrowser.Host.Tabs;
 using FenBrowser.Host.WebDriver;
 using FenBrowser.FenEngine.Rendering.Performance;
+using FenBrowser.Js.Performance;
 using SkiaSharp;
 
 namespace FenBrowser.Tooling
@@ -71,6 +72,9 @@ namespace FenBrowser.Tooling
                     return;
                 case "render-perf":
                     await RunRenderPerfAsync().ConfigureAwait(false);
+                    return;
+                case "js-perf":
+                    await RunFenJsPerfAsync().ConfigureAwait(false);
                     return;
                 case "capability-ledger":
                     RunCapabilityLedger(args);
@@ -2523,6 +2527,15 @@ namespace FenBrowser.Tooling
             Console.WriteLine($"failureGatePassed={report.FailureGatePassed}");
         }
 
+        private static async Task RunFenJsPerfAsync()
+        {
+            var runner = new FenJsPerformanceBenchmarkRunner();
+            var report = runner.RunDefaultSuite();
+            var artifactPath = await runner.WriteReportAsync(report).ConfigureAwait(false);
+            Console.WriteLine(FenJsPerformanceBenchmarkRunner.FormatSummary(report));
+            Console.WriteLine($"artifact={artifactPath}");
+        }
+
         private static void WireToolingConsoleCapture()
         {
             void AttachTab(BrowserTab tab)
@@ -2553,6 +2566,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  acid2-layout-html [output_html]");
             Console.WriteLine("  webdriver [--port=4444] [--headless]");
             Console.WriteLine("  render-perf");
+            Console.WriteLine("  js-perf");
             Console.WriteLine("  capability-ledger [output_json] [--require-live-evidence] [--logs-dir <path>]");
             Console.WriteLine("  debug-css");
             Console.WriteLine("  test");

@@ -327,6 +327,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     public Func<bool>? InterruptCallback { get; set; }
     private int _instructionCount;
 
+    // Diagnostic access for explicitly instrumented runs. The normal execution
+    // path leaves InstructionBudget at zero and therefore does not increment
+    // this counter in the dispatch loop.
+    public int InstructionsExecuted => _instructionCount;
+
     // Tier 5 #27: wall-clock execution deadline in milliseconds. Zero = no
     // limit. Checked every WallClockCheckInterval instructions to keep the
     // hot path cheap; a small over-shoot beyond the deadline is acceptable

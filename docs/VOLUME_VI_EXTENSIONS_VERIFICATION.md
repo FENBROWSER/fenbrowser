@@ -2686,3 +2686,27 @@ _End of Volume VI_
   - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- debug-site https://example.com 2000`: pass on `2026-07-13`.
     - Bundle: `logs/real-site/example.com/20260713T074825Z`.
     - Evidence: navigation returned `True`, final URL `https://example.com/`, `18` DOM nodes, `12` computed styles, `10` layout boxes, `6` paint nodes, `1` network request, `0` navigation failures, `0` console messages, and screenshot capture succeeded.
+
+## 6.83 FenJS Deterministic Performance Baseline (2026-07-14)
+
+- `FenBrowser.Js/Performance/FenJsPerformanceBenchmarkRunner.cs` owns four deterministic, network-independent workloads for arithmetic, ordinary property access, prototype-chain access, and function calls.
+- Each workload reports parse, early-error validation plus bytecode generation, warmed execution, per-phase current-thread managed allocation, exact interpreted instruction count from a separate explicitly instrumented execution, managed GC deltas, FenJS heap collections, and live heap cells.
+- Normal interpreter runs keep instruction counting disabled (`InstructionBudget == 0`); the benchmark's counted run enables the existing budget branch explicitly, so merely exposing `InstructionsExecuted` adds no counter increment to production dispatch.
+- `FenBrowser.Tooling js-perf` writes structured JSON beneath `Results/performance/` with OS, architecture, runtime, GC, tiering, CPU, build configuration, commit, and memory metadata. No new package or parallel performance framework was introduced.
+
+Five-process Release baseline medians from reports `105847`, `105849`, `105852`, `105855`, and `105906`:
+
+| Workload | Parse | Parse allocation | Bytecode | Bytecode allocation | Execute | Execute allocation | Instructions | FenJS GC |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| arithmetic-loop | 0.044 ms | 13,992 B | 0.024 ms | 8,760 B | 44.304 ms | 4,400 B | 700,017 | 0 |
+| property-access | 0.097 ms | 24,328 B | 0.057 ms | 12,112 B | 32.447 ms | 5,432 B | 1,040,026 | 0 |
+| prototype-chain | 0.078 ms | 18,448 B | 0.029 ms | 12,456 B | 15.491 ms | 5,712 B | 450,026 | 0 |
+| function-calls | 0.086 ms | 18,216 B | 0.032 ms | 12,240 B | 71.193 ms | 57,459,760 B | 340,064 | 24 minor |
+
+The first sampled EventPipe trace ranks `StoreCallResult`, `CallFunction`, and `CreateArgumentsObject` on the function-call path. The 57.46 MB allocation median and 24 minor FenJS collections make ordinary calls the next measured FenJS optimization target; this baseline change does not yet alter call semantics.
+
+Verification:
+
+- `dotnet build FenBrowser.Js/FenBrowser.Js.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass, zero warnings/errors.
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsPerformanceBenchmarkRunnerTests" -v quiet /nodeReuse:false`: pass (`2/2`).
+- Pre-change parser/interpreter/IC/JIT slice: `416/420`; the four failures were reproduced before this measurement unit and remain the known optional-chain AST expectation, module undeclared export, and two switch lexical-redeclaration expectations.

@@ -75,6 +75,14 @@ Run render performance benchmark suite.
 dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- render-perf
 ```
 
+### `js-perf`
+
+Run the deterministic FenJS parse, bytecode-generation, and execution benchmark suite in Release mode. Structured reports are written under `Results/performance/`.
+
+```powershell
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -- js-perf
+```
+
 ### `capability-ledger`
 
 Generate a machine-readable capability ledger by reconciling:
