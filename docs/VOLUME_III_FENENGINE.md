@@ -8824,3 +8824,28 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~FenBrowser.Tests.Layout -v quiet /nodeReuse:false`: `225/227` pass; the two failures are the same pre-existing flex/grid failures present at the pushed parent commit.
 - The broader serial-configured suite passed `766/782`; its 16 failures are existing artifact-sensitive, WebDriver-state, and two known layout failures. The pushed parent comparison passed `750/775` with 25 existing failures, including the same two layout failures. The differing totals include the seven new tests and baseline-worktree snapshot discovery differences.
 - Five fresh `render-perf` processes: all failure gates passed; reports are under `Results/performance/`.
+
+## 2.324 Single Alignment-Ancestry Resolution Per Text Node (2026-07-14)
+
+- `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - Multi-line paint generation previously called `ResolveSingleRunAlignmentNode` for every visual line. Each call walked the same ancestor chain and rescanned every ancestor's children through `HasSingleRenderableChild`, even though the DOM, style map, and layout boxes are invariant during one `BuildTextNode` call.
+  - Paint generation now resolves the alignment node, its computed style, and its layout box once per source text node and reuses those references for every visual line. Line-specific bounds, containment correction, ellipsis, and alignment decisions are unchanged.
+- `FenBrowser.FenEngine/Rendering/Performance/RenderPerformanceBenchmarkRunner.cs`
+  - Added `wrapped-multiline-text`, a deterministic 320 px-wide local fixture containing 80 paragraphs. This closes the prior benchmark gap where `dense-text-flow` generally produced one visual line per text node and could not exercise repeated ancestry resolution.
+- `FenBrowser.Tests/Performance/RenderPerformanceBenchmarkRunnerTests.cs`
+  - The benchmark contract now requires the wrapped multi-line scenario.
+
+The optimized implementation was measured first, then the exact paint change was removed, rebuilt, and measured as the original implementation under the same new fixture before restoring the retained change. Five-process Release medians:
+
+| Metric | Original | Optimized | Difference |
+| --- | ---: | ---: | ---: |
+| Paint generation | 7.14 ms | 4.47 ms | -37.39% |
+| Total frame | 18.37 ms | 15.76 ms | -14.21% |
+| Managed allocations | 9,675,728 B | 7,602,264 B | -2,073,464 B (-21.43%) |
+
+Original reports are `104228`–`104234`; optimized reports are `104157`–`104203`. All failure gates passed in both groups.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~InlineFormattingContractTests" -v quiet /nodeReuse:false`: pass (`21/21`) before and after the change.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~RenderPerformanceBenchmarkRunnerTests|FullyQualifiedName~PaintTreePillRenderingContractTests" -v quiet /nodeReuse:false`: pass (`13/13`) with the new fixture.

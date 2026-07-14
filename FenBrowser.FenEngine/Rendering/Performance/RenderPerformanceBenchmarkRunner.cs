@@ -288,6 +288,14 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                     720,
                     2,
                     new RenderPerformanceThreshold(120, 400),
+                    PreferSteadyStateDamage: false),
+                new RenderPerformanceBenchmarkScenario(
+                    "wrapped-multiline-text",
+                    BuildWrappedTextPage(paragraphCount: 80),
+                    640,
+                    720,
+                    2,
+                    new RenderPerformanceThreshold(150, 500),
                     PreferSteadyStateDamage: false)
             };
         }
@@ -478,6 +486,18 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 builder.Append($"<p>Paragraph {i}: Fenbrowser aims for strong modularity, predictable rendering cost, and truthful diagnostics under steady-state pressure.</p>");
             }
             builder.Append("</body></html>");
+            return builder.ToString();
+        }
+
+        private static string BuildWrappedTextPage(int paragraphCount)
+        {
+            var builder = new StringBuilder();
+            builder.Append("<!doctype html><html><body style='margin:0;padding:16px;font-family:Georgia;font-size:16px;line-height:1.5'><main style='width:320px'>");
+            for (int i = 0; i < paragraphCount; i++)
+            {
+                builder.Append($"<p>Wrapped paragraph {i} exercises repeated visual lines in one text node while preserving deterministic local content and stable alignment ancestry.</p>");
+            }
+            builder.Append("</main></body></html>");
             return builder.ToString();
         }
     }

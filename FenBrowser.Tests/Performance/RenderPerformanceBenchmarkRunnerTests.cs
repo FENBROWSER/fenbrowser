@@ -25,6 +25,7 @@ namespace FenBrowser.Tests.Performance
             Assert.Contains(report.Results, result => result.Name == "first-frame-heavy-layout");
             Assert.Contains(report.Results, result => result.Name == "steady-state-damage-animation");
             Assert.Contains(report.Results, result => result.Name == "dense-text-flow");
+            Assert.Contains(report.Results, result => result.Name == "wrapped-multiline-text");
             Assert.All(report.Results, result =>
             {
                 Assert.True(result.Iterations > 0);

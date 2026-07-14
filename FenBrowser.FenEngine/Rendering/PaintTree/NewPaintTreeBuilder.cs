@@ -3508,6 +3508,21 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
+                // Alignment ancestry is stable for every visual line produced by this
+                // text node. Resolve it once instead of rescanning ancestor child lists per line.
+                Node alignmentNode = ResolveSingleRunAlignmentNode(textNode);
+                CssComputed alignmentStyle = parentStyle;
+                if (alignmentNode != null && _styles.TryGetValue(alignmentNode, out var resolvedAlignmentStyle))
+                {
+                    alignmentStyle = resolvedAlignmentStyle;
+                }
+
+                Layout.BoxModel alignmentParentBox = null;
+                if (alignmentNode != null)
+                {
+                    _boxes.TryGetValue(alignmentNode, out alignmentParentBox);
+                }
+
                 foreach (var line in box.Lines)
                 {
                     if (string.IsNullOrEmpty(line.Text))
@@ -3604,18 +3619,9 @@ namespace FenBrowser.FenEngine.Rendering
                     // Final containment correction: if the fitted line falls outside its parent
                     // content box after all adjustments, align it back using the parent's
                     // effective text alignment.
-                    Node alignmentNode = ResolveSingleRunAlignmentNode(textNode);
-                    CssComputed alignmentStyle = parentStyle;
-                    if (alignmentNode != null && _styles.TryGetValue(alignmentNode, out var resolvedAlignmentStyle))
+                    if (alignmentParentBox != null)
                     {
-                        alignmentStyle = resolvedAlignmentStyle;
-                    }
-
-                    if (alignmentNode != null &&
-                        _boxes.TryGetValue(alignmentNode, out var directParentBox) &&
-                        directParentBox != null)
-                    {
-                        var parentContent = directParentBox.ContentBox;
+                        var parentContent = alignmentParentBox.ContentBox;
                         float parentWidth = Math.Max(0f, parentContent.Width);
                         bool shouldCenterSingleLineInParent =
                             box.Lines.Count == 1 &&
