@@ -8911,3 +8911,25 @@ Verification:
 - `dotnet build FenBrowser.Js/FenBrowser.Js.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
 - Try/finally, generator-yield, generator-function, async-function, async-method, and async-generator slice: baseline `76/83`; retained `76/83`, with the exact same seven existing `GeneratorFunctionTests` failures.
 - A final retained `js-perf function-calls` run reported `17,124,664 B`, `1,405` live FenJS heap cells, and zero FenJS collections.
+
+## 2.328 Lazy Declarative-Environment Binding Storage (2026-07-14)
+
+- `FenBrowser.Js/Environments/DeclarativeEnvironmentRecord.cs`
+  - Allocation tracing of the binding-free call fixture ranked `DeclarativeEnvironmentRecord` construction even though the inner function declares no parameters, variables, or implicit arguments object. Each record eagerly constructed an empty ordinal string dictionary that was never observed.
+  - Binding storage is now null until the first mutable or immutable binding is created. Empty-record lookup, deletion, test diagnostics, and heap tracing return the same not-found or empty results without constructing storage. Once created, the same `Dictionary<string, Binding>` implementation, ordinal comparer, binding flags, mutation rules, and tracing behavior remain in force.
+  - The dictionary remains owned by one environment record and its existing runtime lifetime. This is deferred allocation, not a cache or pool; there is no eviction, cross-realm sharing, retained user-controlled name table, or new thread-safety contract.
+
+Five fresh isolated Release processes compare benchmark reports `112355`-`112359` with retained reports `112459`-`112503`:
+
+| Metric | Original | Lazy binding storage | Difference |
+| --- | ---: | ---: | ---: |
+| Binding-free call allocation | 10,564,616 B | 8,964,616 B | -1,600,000 B (-15.14%) |
+| Binding-free call median | 59.975 ms | 59.665 ms | -0.310 ms (-0.52%) |
+
+The exact 1.6 MB reduction is 80 bytes for each of 20,000 empty environments. The small timing movement is reported but not treated as the retention basis. The binding-bearing function-call control remained at `17,124,664 B`, confirming that records which need bindings still allocate their dictionary normally.
+
+Verification:
+
+- `dotnet build FenBrowser.Js/FenBrowser.Js.csproj -c Release --no-restore -v minimal /nodeReuse:false`: pass (`0` warnings, `0` errors).
+- Declarative, function, global, module, object, lexical-runtime, bytecode-interpreter, and closure-trace environment slice: pass (`85/85`).
+- Retained `empty-function-calls`: result `20,000`, `300,046` instructions, `1,405` live FenJS heap cells, and zero FenJS collections.

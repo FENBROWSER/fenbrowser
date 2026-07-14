@@ -11,7 +11,7 @@ namespace FenBrowser.Js.Environments;
 // by the declarations contained within its scope.
 public class DeclarativeEnvironmentRecord : EnvironmentRecord
 {
-    private readonly Dictionary<string, Binding> _bindings = new(StringComparer.Ordinal);
+    private Dictionary<string, Binding>? _bindings;
 
     public DeclarativeEnvironmentRecord(EnvironmentRecord? outerEnv)
         : base(outerEnv)
@@ -21,30 +21,31 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     public override bool HasBinding(string name)
     {
         ArgumentNullException.ThrowIfNull(name);
-        return _bindings.ContainsKey(name);
+        return _bindings?.ContainsKey(name) == true;
     }
 
     // Returns true if the binding exists and is a lexical (non-deletable) binding.
     public bool HasLexicalBinding(string name)
     {
-        return _bindings.TryGetValue(name, out var b) && !b.IsDeletable;
+        return _bindings?.TryGetValue(name, out var b) == true && !b.IsDeletable;
     }
 
     public bool HasVarBinding(string name)
     {
-        return _bindings.TryGetValue(name, out var b) && b.IsDeletable;
+        return _bindings?.TryGetValue(name, out var b) == true && b.IsDeletable;
     }
 
     public override BindingOpResult CreateMutableBinding(string name, bool deletable)
     {
         ArgumentNullException.ThrowIfNull(name);
 
-        if (_bindings.ContainsKey(name))
+        var bindings = _bindings ??= new Dictionary<string, Binding>(StringComparer.Ordinal);
+        if (bindings.ContainsKey(name))
         {
             return BindingOpResult.AlreadyDeclared;
         }
 
-        _bindings[name] = new Binding(
+        bindings[name] = new Binding(
             Value: JsValue.Undefined,
             IsMutable: true,
             IsInitialized: false,
@@ -57,12 +58,13 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     {
         ArgumentNullException.ThrowIfNull(name);
 
-        if (_bindings.ContainsKey(name))
+        var bindings = _bindings ??= new Dictionary<string, Binding>(StringComparer.Ordinal);
+        if (bindings.ContainsKey(name))
         {
             return BindingOpResult.AlreadyDeclared;
         }
 
-        _bindings[name] = new Binding(
+        bindings[name] = new Binding(
             Value: JsValue.Undefined,
             IsMutable: false,
             IsInitialized: false,
@@ -75,7 +77,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     {
         ArgumentNullException.ThrowIfNull(name);
 
-        if (!_bindings.TryGetValue(name, out var binding))
+        if (_bindings is null || !_bindings.TryGetValue(name, out var binding))
         {
             return BindingOpResult.NotFound;
         }
@@ -96,7 +98,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     {
         ArgumentNullException.ThrowIfNull(name);
 
-        if (!_bindings.TryGetValue(name, out var binding))
+        if (_bindings is null || !_bindings.TryGetValue(name, out var binding))
         {
             // 9.1.1.1.5 step 1: "If envRec does not have a binding for N..." Both
             // strict and non-strict callers receive NotFound; the caller (interpreter)
@@ -126,7 +128,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         ArgumentNullException.ThrowIfNull(name);
         _ = strict;
 
-        if (!_bindings.TryGetValue(name, out var binding))
+        if (_bindings is null || !_bindings.TryGetValue(name, out var binding))
         {
             value = JsValue.Undefined;
             return BindingOpResult.NotFound;
@@ -148,7 +150,7 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     {
         ArgumentNullException.ThrowIfNull(name);
 
-        if (!_bindings.TryGetValue(name, out var binding))
+        if (_bindings is null || !_bindings.TryGetValue(name, out var binding))
         {
             return BindingOpResult.NotFound;
         }
@@ -162,17 +164,22 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         return BindingOpResult.Ok;
     }
 
-    public int BindingCountForTest => _bindings.Count;
+    public int BindingCountForTest => _bindings?.Count ?? 0;
 
     public bool IsInitializedForTest(string name)
-        => _bindings.TryGetValue(name, out var b) && b.IsInitialized;
+        => _bindings?.TryGetValue(name, out var b) == true && b.IsInitialized;
 
     public bool IsMutableForTest(string name)
-        => _bindings.TryGetValue(name, out var b) && b.IsMutable;
+        => _bindings?.TryGetValue(name, out var b) == true && b.IsMutable;
 
     public override void Trace(IHeapTracer tracer)
     {
         base.Trace(tracer);
+        if (_bindings is null)
+        {
+            return;
+        }
+
         foreach (var binding in _bindings.Values)
         {
             if (binding.IsInitialized)
