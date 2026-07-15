@@ -3425,3 +3425,19 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five candidate processes.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_identifier_escape_fast_path_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `topN -n 75` confirms the targeted helper is absent.
+
+## 6.127 Rejected CSS Selector-Prelude Buffer Verification (2026-07-15)
+
+- `CssSyntaxParserAllocationTests.ParseStylesheet_SelectorPreludesHaveBoundedAllocations` establishes an exact shipped baseline of `22,923,200 B` for 100 parses of 32 valid complex preludes. `ParseStylesheet_UnterminatedSelectorPreludeHasBoundedAllocations` establishes `15,221,600 B` for 100 long EOF-recovery parses.
+- Direct string reconstruction reduced those paths to `15,601,600 B` (`-31.94%`) and `8,519,200 B` (`-44.03%`) in three fresh Release processes. The combined selector/declaration fixture moved from `32,011,200 B` to `24,689,600 B` (`-22.87%`).
+- Included explicit/implicit nesting and nested-media contracts verify resolved selector order, parent-selector substitution, declarations, and media conditions. The candidate and restored included parser/selector/recascade slice pass `18/18`.
+- Candidate reports `044315`, `044317`, `044319`, `044321`, and `044324` pass every correctness gate against identifier-fast-path reports `174215`, `174217`, `174219`, `174221`, and `174224`, but first-frame CSS-rule time regresses from `24.68 ms` to `31.47 ms` (`+27.51%`) and CSS/style time rises `4.94%`. The direct-builder production change is therefore fully reverted.
+- The two new allocation contracts remain with shipped-baseline ceilings of `23,100,000 B` and `15,300,000 B`. This preserves deterministic measurement infrastructure without representing the rejected allocation result as shipped behavior.
+- Test262 and WPT are not run because no production candidate remains; the direct included contracts cover the retained test-only change.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CssSyntaxParserAllocationTests.ParseStylesheet_SelectorPreludesHaveBoundedAllocations|FullyQualifiedName~CssSyntaxParserAllocationTests.ParseStylesheet_UnterminatedSelectorPreludeHasBoundedAllocations" --logger "console;verbosity=detailed"`: restored path passes (`2/2`) at exactly `22,923,200 B` and `15,221,600 B` in three fresh processes.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CssSyntaxParserAllocationTests|FullyQualifiedName~SelectorListSplitAllocationTests|FullyQualifiedName~PseudoSelectorCanonicalizationTests|FullyQualifiedName~DynamicClassRecascadeTests" --logger "console;verbosity=minimal"`: restored included slice passes (`18/18`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo --verbosity quiet`: restored production build passes (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: restored benchmark build passes (`0` warnings, `0` errors).

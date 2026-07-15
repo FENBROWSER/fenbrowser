@@ -9836,3 +9836,20 @@ Verification:
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five candidate processes.
 - A temporary leading-digit probe (`.\\31 abc` and `.-\\31 abc`) fails decoded-class matching under both the original implementation and the candidate. This is an existing tokenizer/serializer/matcher limitation, not a regression or a claimed success; the optimization deliberately preserves that path.
 - Test262 is unrelated to CSS selector reconstruction. WPT is not rerun because the included contracts directly exercise ordinary reconstruction, the escaped fallback, serialized selector text, and downstream punctuation matching; the pre-existing numeric-escape limitation remains visible here.
+
+## 2.363 Rejected Direct CSS Selector-Prelude Reconstruction (2026-07-15)
+
+- The final identifier-fast-path trace ranked `List<CssToken>.set_Capacity` at `2.65%` exclusive sampled allocation weight. Inspection found that `ConsumeQualifiedRule` stores every selector-prelude token in a list only for `ParseSelector` to reconstruct a string with LINQ and `string.Join`.
+- A candidate serialized tokens directly into one local `StringBuilder` and passed its result to `ParseSelector`. It preserved the existing token serializer, nesting resolution, selector-list parser, recovery limits, specificity, and matching paths while removing the temporary token list and LINQ join.
+- The isolated allocation result was substantial and exact across three fresh Release processes:
+  - 100 parses of 32 valid selector preludes: `22,923,200 B` to `15,601,600 B` (`-7,321,600 B`, `-31.94%`).
+  - 100 parses of one long unterminated prelude: `15,221,600 B` to `8,519,200 B` (`-6,702,400 B`, `-44.03%`).
+  - The existing 32-rule fixture with declarations: `32,011,200 B` to `24,689,600 B` (`-7,321,600 B`, `-22.87%`).
+- The candidate was rejected and fully reverted because the five-process first-frame CSS-rule median increased from `24.68 ms` to `31.47 ms` (`+27.51%`), with all five candidate samples near `31 ms`. First-frame CSS/style median rose `4.94%`. Other fixtures were mixed, so allocation reduction did not justify the reproducible parser-throughput regression.
+- `FenBrowser.Tests/Performance/CssSyntaxParserAllocationTests.cs` retains only measurement and correctness infrastructure: a `23,100,000 B` valid-prelude ceiling, a `15,300,000 B` unterminated-prelude ceiling, and included contracts for explicit/implicit nesting plus nested media. No production code from the experiment remains.
+
+Verification:
+
+- The restored production path repeats exactly at `22,923,200 B` and `15,221,600 B`; the included parser/selector/nesting/recascade slice passes `18/18`.
+- Candidate reports `044315`, `044317`, `044319`, `044321`, and `044324` are retained under `Results/performance/` for the local one-day evidence window; every failure gate passed despite the performance rejection.
+- Test262 and WPT are not run for an unshipped candidate. The retained included tests improve future falsification coverage without claiming that the rejected design shipped.
