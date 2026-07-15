@@ -62,8 +62,8 @@ The reality audit proceeds in this order:
 | `debug-site <url> [settle_ms]` | TESTED | Current Google, example.com, and `fen://performance` bundles exist |
 | Lifecycle, script, event-loop, network snapshots | INTEGRATED | Present in the Google bundle |
 | DOM/style/layout/paint/display-list dumps and screenshot | INTEGRATED | Present in the Google bundle |
-| Deterministic first-fatal-blocker classifier | STUBBED | Summary selects independent first console/navigation/API strings and misses callback failures |
-| Exception attribution | STUBBED | `exceptions.json` only derives from navigation and console strings; Google has 8 callback failures but an empty exception file |
+| Deterministic first-causal-blocker classifier | TESTED | `first_blocker.json` models 19 ordered milestones; fixture tests and Google report `none` while unattempted interaction remains explicit |
+| Exception attribution | TESTED | Typed callback records, `event_loop.json`, `exceptions.json`, trace, and summary share one drained snapshot; the current Google bundle agrees at zero |
 | Missing API bundle schema | STUBBED | Runtime tracker has provenance; bundle exports a smaller `EngineCapabilities` view with false positives |
 | `ipc.json` | NOT_STARTED | Not in the artifact manifest |
 | `sandbox_denials.json` | NOT_STARTED | Not in the artifact manifest |
@@ -72,16 +72,16 @@ The reality audit proceeds in this order:
 
 ## Primary real-site target
 
-Google is the current target because it has the freshest complete bundle and already crosses the boot pipeline. The 2026-07-14 run loaded the document, executed scripts, fired lifecycle events, built DOM/style/layout/paint state, and rendered the main UI. The first remaining runtime error is eight timer callbacks ending in `TypeError: Cannot use a host object where a JS object is expected`; it occurs after DOMContentLoaded and does not prevent load. The next acceptance work is not a speculative language fix: preserve each callback's source/receiver evidence, reduce the owning host-integration seam, remove missing-API false positives, and automate click/type/submit behavior.
+Google is the current target because it has the freshest complete bundle and already crosses the boot pipeline. The 2026-07-15 run loaded the document, completed 18 script executions without a direct script failure, fired lifecycle events, built DOM/style/layout/paint state, and rendered the main UI. The previously attributed eight timer failures shared one cause: the baseline JIT implementation of the ECMAScript `in` operator routed a DOM host handle through JS heap-object decoding. The general JIT host-property path is fixed, and the current bundle reports zero callback failures and zero exceptions. The next acceptance work is lifecycle normalization, missing-API classification, and automated click/type/submit behavior.
 
-Evidence: `logs/real-site/www.google.com/20260714T075906Z/`.
+Evidence: `logs/real-site/www.google.com/20260715T082100Z/`.
 
 ## Gate status
 
 | Gate | Status | Exit evidence still required |
 | --- | --- | --- |
 | Gate 0 reality audit | RESEARCHED | Fresh full unit/html5lib baselines and smoke coverage beyond the current sites |
-| Gate 1 diagnostic spine | INTEGRATED | Correct first blocker, rich exception/API export, IPC/sandbox/performance artifacts, included regression tests |
+| Gate 1 diagnostic spine | INTEGRATED | Lifecycle agreement, rich API classification, listener/promise diagnostic reductions, and IPC/sandbox/performance artifacts |
 | Gate 2 architecture freeze | RESEARCHED | Human decisions recorded for memory ownership, default process policy, network fallback, and IPC versioning |
 | Gate 3 build/test/trace infrastructure | INTEGRATED | Make diagnostic/process tests discoverable and establish repeatable selected WPT baselines |
 | Gate 4 real-site boot pipeline | TESTED | Google input/submit/network behavior and one regression-protected reduction |

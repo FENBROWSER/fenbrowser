@@ -1,6 +1,6 @@
 # FenBrowser Dependency-Ready Next Tasks
 
-Snapshot date: 2026-07-14. Only tasks whose current dependencies are satisfied are listed. Order follows the diagnostic-first mission; it is not a calendar plan.
+Snapshot date: 2026-07-15. Only tasks whose current dependencies are satisfied are listed. Order follows the diagnostic-first mission; it is not a calendar plan.
 
 ## Task TRACE-001
 
@@ -8,16 +8,16 @@ Task ID: TRACE-001
 Title: Preserve callback failures and drain logs before bundle export
 Area: Diagnostic spine / event loop / Tooling
 Owner Agent: Diagnostic Agent
-Status: RESEARCHED
+Status: INTEGRATED
 Priority: 1
 Risk Level: Medium
 Dependencies: Current event-loop snapshot, structured logger, and `debug-site` bundle writer are INTEGRATED
 Files likely involved: `FenBrowser.FenEngine/Rendering/EventLoopCoordinator.cs`, event-loop diagnostic record types, `FenBrowser.Core/Logging/EngineLog.cs`, `FenBrowser.Tooling/Program.cs`, included diagnostic test surface
 Specs/references: HTML event loops; `docs/SPEC_EVENT_LOOP.md`; `docs/DIAGNOSTICS.md`
-Current behavior: Google reports eight callback failures and retains `TypeError: Cannot use a host object where a JS object is expected` in `event_loop.json`, while `exceptions.json`, `summary.md`, and copied raw traces contain no per-callback source/receiver attribution. The asynchronous logger has no explicit bundle-drain boundary.
+Current behavior: Timer callback failures retain bounded task, callback, timer, source, receiver, exception, JS-stack, and host-stack fields. Tooling drains accepted log records before copying artifacts, and callback counts share one event-loop snapshot across `event_loop.json`, `exceptions.json`, trace, and summary. The attributed Google host-object cluster is fixed and the current bundle reports zero callback failures; event-listener, promise-rejection, and export-failure reductions remain.
 Expected behavior: Every failed timer/task/event/promise callback has timestamp, task/callback ID, error type/message/stack, realm/script/source where known, and appears before bundle finalization.
 Reproduction: Run the local callback-failure fixture and `debug-site https://www.google.com 20000`; compare `event_loop.json`, `exceptions.json`, `trace.jsonl`, and summary counts.
-Root cause hypothesis: Event-loop snapshots retain only aggregate failure state, exception provenance is discarded, and Tooling copies asynchronous logs before pending records are drained.
+Root cause: The old event-loop snapshot retained only aggregate failure state, function-owned source provenance was lost after top-level execution, and Tooling copied asynchronous logs without a drain boundary.
 Implementation plan: Add a bounded typed failure record; propagate it at the callback catch point; add an explicit asynchronous logger drain/export barrier; serialize typed exceptions; preserve behavior if diagnostic export fails.
 Tests required: Timer callback throw, event-listener throw, promise rejection, drain ordering, bounded stack/message, and bundle consistency tests on an included test surface.
 Evidence required: Before bundle with eight unattributed failures; after fixture and real-site bundle with matching counts and source/task identity.
@@ -26,7 +26,7 @@ Performance impact: Measure added record allocations and drain duration; no sync
 Compatibility impact: Diagnostic-only output change with versioned/additive JSON fields.
 Known risks: Flush deadlock, reordered events, or retaining callback/realm graphs through diagnostics.
 Blockers: None
-Next action: Write the minimal throwing-callback fixture and failing bundle assertion before changing runtime records.
+Next action: Add compiled event-listener and promise-rejection failure reductions that prove the existing typed record/export contract beyond timers.
 
 ## Task TRACE-002
 
@@ -57,19 +57,19 @@ Next action: Add the mixed-disposition local fixture and lock the v2 JSON schema
 ## Task TRACE-003
 
 Task ID: TRACE-003
-Title: Implement deterministic first-fatal-blocker classification
+Title: Implement deterministic first-causal-blocker classification
 Area: Diagnostic spine / real-site attribution
 Owner Agent: Diagnostic Agent
-Status: DESIGNED
+Status: TESTED
 Priority: 1
 Risk Level: Medium
 Dependencies: Lifecycle, network, script, event-loop, style/layout, and raw trace artifacts are INTEGRATED
 Files likely involved: New classifier under `FenBrowser.Tooling`, `FenBrowser.Tooling/Program.cs`, included Tooling/diagnostic tests
 Specs/references: `docs/DIAGNOSTICS.md`; `docs/REAL_SITE_DEBUGGING.md`
-Current behavior: Summary selects independent first strings and can report a non-causal missing property while omitting callback failures. Its terminal navigation detail also retains loading/DCL 0/load 0 while the event-loop snapshot and ready-state probe report completion.
+Current behavior: `first_blocker.json` deterministically evaluates 19 navigation-through-interaction milestones, keeps post-load callback defects non-fatal, emits contradiction warnings, and marks unattempted interaction explicitly. Google currently reports `none`; its historical terminal-detail string still needs lifecycle normalization.
 Expected behavior: `first_blocker.json` names one earliest causal blocker, affected milestone, A-L bucket, subsystem owner, evidence records, and confidence; `none` is explicit when boot succeeds.
 Reproduction: Use fixtures for navigation failure, script throw, missing API causing throw, late optional resource failure, zero-size root, and successful page.
-Root cause hypothesis: There is no normalized candidate model, milestone dependency graph, or fatality filter.
+Root cause: The prior summary had no normalized candidate model, milestone dependency graph, or fatality filter.
 Implementation plan: Parse typed artifacts; normalize sequence/time; derive required milestones; filter non-fatal probes/late optional errors; rank by blocked milestone then causal sequence; emit typed result and summary rendering.
 Tests required: One fixture per A-L-relevant implemented bucket, tie ordering, contradictory lifecycle sources, missing artifact, clock mismatch, successful page, and schema-version tests.
 Evidence required: Deterministic repeated output and correct blocker for every fixture plus current Google result of `none` with remaining gaps listed separately.
@@ -78,7 +78,7 @@ Performance impact: Offline/bundle-finalization work with bounded artifact sizes
 Compatibility impact: Changes diagnostics only; no page behavior.
 Known risks: Causal inference presented as certainty; guard with evidence IDs and confidence.
 Blockers: None
-Next action: Add fixture bundles and the candidate/milestone model before wiring real artifacts.
+Next action: Normalize the authoritative lifecycle model so terminal detail cannot retain an unlabeled earlier `loading` snapshot.
 
 ## Task TEST-001
 

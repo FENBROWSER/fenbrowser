@@ -1,6 +1,6 @@
 # FenBrowser Known Gaps
 
-Snapshot date: 2026-07-14. These are evidence-backed gaps from the current checkout and current local artifacts.
+Snapshot date: 2026-07-15. These are evidence-backed gaps from the current checkout and current local artifacts.
 
 | Priority | Gap | Failure bucket | Status | Evidence |
 | --- | --- | --- | --- | --- |
@@ -8,9 +8,7 @@ Snapshot date: 2026-07-14. These are evidence-backed gaps from the current check
 | 0 | Network coordinator permits an in-process `HttpClient` fallback and no active production caller of its `SendAsync` was found | B / K / L | BLOCKED_NEEDS_HUMAN_DECISION | `NetworkProcessCoordinator`; repository reference search |
 | 0 | IPC envelopes have validation and size caps but no common schema version, sender, receiver, permission ID, or per-message timeout/crash policy | L / K | BLOCKED_NEEDS_HUMAN_DECISION | Renderer, network, and target IPC contracts |
 | 0 | Host-object ownership and cycle collection are not closed; the table uses strong references while comments describe future weak tracking | E / K | BLOCKED_NEEDS_HUMAN_DECISION | `HostObjectTable`, `BrowserScriptEngineRuntime`, `MEMORY_MODEL.md` |
-| 1 | First-fatal-blocker output ignores event-loop callback failures and does not rank evidence across lifecycle stages | G / C / D / E / F | STUBBED | Google has 8 callback failures, empty `exceptions.json`, and "none captured" fatal summary |
 | 1 | Terminal lifecycle sources disagree: navigation detail retains `loading`/DCL 0/load 0 while the probe and event-loop snapshot are complete | A / G / L | STUBBED | Google `summary.md`, `lifecycle.json`, and `event_loop.json` |
-| 1 | Async logging is copied into the bundle without an explicit drain contract | L | RESEARCHED | Google event-loop snapshot reports callback failures not found in copied raw trace/log files |
 | 1 | Missing API export conflates Web APIs, wrong-receiver probes, legacy feature detection, and site expandos | E / F | STUBBED | Google `closure_*`, `$goog_Thenable`, `Document.getAttribute`, and standards candidates share one list |
 | 1 | Diagnostic, Host, Rendering, and Architecture test directories are excluded from `FenBrowser.Tests` | L | RESEARCHED | Test discovery found no `EventLoopTraceTests`, `RealSiteRenderDiagnostics`, or `RendererChildLoopIoTests` |
 | 1 | Google interaction acceptance is unproven even though the page renders | L / G / F | RESEARCHED | No automated click/type/submit trace in the current bundle |

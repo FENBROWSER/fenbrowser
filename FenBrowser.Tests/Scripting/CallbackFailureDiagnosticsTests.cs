@@ -99,6 +99,49 @@ public sealed class CallbackFailureDiagnosticsTests
         }
     }
 
+    [Fact]
+    public async Task HotTimerHelper_InOperatorAcceptsHostObjectAfterJitTierUp()
+    {
+        var baseUri = new Uri("https://fixture.test/host-object-in.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><script>" +
+                "function hasInactiveMarker(value){return '__GWS_INACTIVE' in value;}" +
+                "setTimeout(function hostObjectInTimer(){" +
+                "var result=false;" +
+                "for(var i=0;i<12;i++){result=hasInactiveMarker(document.body);}" +
+                "globalThis.__hostObjectInCompleted=!result;" +
+                "},1);" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            Assert.True(SpinWait.SpinUntil(
+                () =>
+                {
+                    var current = engine.GetEventLoopSnapshot();
+                    return current.TimersExecuted > 0 || current.CallbackFailures > 0;
+                },
+                millisecondsTimeout: 1000));
+
+            var snapshot = engine.GetEventLoopSnapshot();
+            Assert.True(
+                snapshot.CallbackFailures == 0,
+                snapshot.CallbackFailureRecords.FirstOrDefault()?.ExceptionMessage);
+            Assert.Equal("true", engine.Evaluate("String(globalThis.__hostObjectInCompleted)")?.ToString());
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
     private static JsHostAdapter CreateHost()
     {
         return new JsHostAdapter(

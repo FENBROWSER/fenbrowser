@@ -10140,3 +10140,16 @@ Verification:
 
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CallbackFailureDiagnosticsTests" --logger "console;verbosity=minimal"`: pass (`2/2`).
 - Fresh Google bundle `logs/real-site/www.google.com/20260715T081215Z/`: eight failures retained and counted consistently; all group to external `script-6` line 18, timers `12,13,15,17,18,19,20,21`, receiver `[object:JsObject]`, and the identical `XXa -> VXa -> map -> gya -> oa` TypeError stack.
+
+## 2.375 JIT Host-Object `in` Semantics (2026-07-15)
+
+- The eight attributed Google timer failures shared one general FenJS cause. The interpreted `in` opcode already validated DOM host handles and queried defined, prototype, and embedder properties, but `InForJit` unconditionally passed the right-hand value to `ResolveObject`. Once Google's helper crossed the tier-up threshold, the valid host handle was rejected as though a JS heap object were required.
+- `InForJit` now mirrors the interpreter boundary: it validates the right-hand type before property-key conversion, routes host objects through `HasHostObjectProperty`, preserves the JS-object proxy/prototype path, and preserves Symbol handling. It does not convert host objects into plain JS objects or weaken realm, generation, stale-handle, or wrapper-identity checks.
+- The compiled timer reduction invokes a host-object `in` helper twelve times, crosses the JIT threshold, and proves an absent expando returns `false` without callback failure.
+
+Verification:
+
+- Red: the focused reduction failed `0/1` with `Cannot use a host object where a JS object is expected` and the JS stack `hasInactiveMarker -> hostObjectInTimer`.
+- Green: the same focused test passes `1/1`; the complete callback diagnostic class is discovered and passes `3/3`; the existing FenJS `InOperator` slice passes `5/5`; `dotnet build FenBrowser.Js/FenBrowser.Js.csproj -c Release --no-restore -v minimal` succeeds with 0 warnings and 0 errors.
+- Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_host_object_in_timer.html/20260715T082004Z/` renders `passed` with zero callback failures, zero exceptions, and `first_blocker: none`.
+- Fresh Google bundle `logs/real-site/www.google.com/20260715T082100Z/` completes navigation, DOMContentLoaded, load, 18 script executions, layout, paint, and screenshot capture with zero direct script failures, zero callback failures, zero exceptions, and `first_blocker: none`.

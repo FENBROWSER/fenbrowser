@@ -18,15 +18,15 @@ The current CLI accepts a URL and optional settle time. The proposed `--trace`, 
 
 | Capability | Status | Current truth | Required closure |
 | --- | --- | --- | --- |
-| Structured NDJSON | INTEGRATED | `EngineLog` writes `logs.ndjson` | Add an explicit drain/export boundary |
+| Structured NDJSON | INTEGRATED | `EngineLog` writes `logs.ndjson` and Tooling flushes accepted records before bundle copy | Add export-failure isolation coverage |
 | Diagnostic trace JSONL | INTEGRATED | Core fields and category mapping exist | Populate stable session/document/frame/realm/request/task IDs at owners |
 | Navigation lifecycle | TESTED | Google has six ordered terminal transitions | Add redirect/failure/frame reductions |
 | Script loading snapshot | TESTED | Per-script identity, source coordinates, fetch, batch, and execution state | Normalize dynamic-script discovery/execution populations |
-| Event-loop snapshot | INTEGRATED | DCL/load, timers, rAF counters, callback failures, and event records | Preserve per-failure exception data and task/microtask start records in the bundle |
+| Event-loop snapshot | TESTED | DCL/load, timers, rAF counters, and bounded typed callback failures with task/source/receiver/stack provenance | Add event-listener, Promise, microtask, and invalidation reductions |
 | Network capture | INTEGRATED | Request/response records and counts | Correct non-HTTP schemes and add policy/cookie/CORS disposition |
 | Missing API runtime tracker | TESTED | Rich per-site records are written under `logs/missing_apis/` | Export that schema into the run bundle and classify probes/expandos |
-| First blocker summary | STUBBED | Independent first console/navigation/API strings | Rank causal candidates across every stage and emit one typed result |
-| Exceptions artifact | STUBBED | Navigation exception plus console string heuristics | Include script, promise, timer, event listener, parser, IPC, and crash failures |
+| First blocker summary | TESTED | Typed `first_blocker.json` models 19 milestones and separates non-fatal/unverified work | Normalize authoritative lifecycle detail and add missing-artifact fixtures |
+| Exceptions artifact | INTEGRATED | Callback totals and retained typed records share the drained event-loop snapshot | Add promise, event-listener, parser, IPC, and crash failure sources |
 | DOM/style/layout/paint dumps | INTEGRATED | Current bundle has text dumps and screenshot | Add HTML DOM serialization contract and selector inspection |
 | IPC/sandbox/performance artifacts | NOT_STARTED | Data sources exist outside the bundle | Emit typed files even when inactive, with an explicit inactive reason |
 
@@ -109,7 +109,7 @@ A missing property is not fatal merely because it was read. It becomes a fatal c
 | --- | --- | --- |
 | `summary.md`, `summary.json` | INTEGRATED | Human and machine run summary |
 | `trace.jsonl`, `logs.ndjson` | INTEGRATED | Structured event streams, flushed through the run boundary |
-| `console.log`, `exceptions.json` | STUBBED | Console plus typed exception records |
+| `console.log`, `exceptions.json` | INTEGRATED | Console plus typed callback exception records with agreeing totals |
 | `network.json` | INTEGRATED | Requests, responses, failures, policy disposition |
 | `missing_apis.json` | STUBBED | Rich classified records with provenance |
 | `script_loading.json` | INTEGRATED | Per-script lifecycle |
@@ -118,7 +118,7 @@ A missing property is not fatal merely because it was read. It becomes a fatal c
 | `ipc.json` | NOT_STARTED | IPC metadata; empty typed record with inactive reason in in-process mode |
 | `sandbox_denials.json` | NOT_STARTED | Policy denials; empty typed record with inactive reason if no sandbox |
 | `performance.json` | NOT_STARTED | Navigation/stage/frame/allocation/GC/long-task metrics |
-| `first_blocker.json` | NOT_STARTED | Deterministic classifier result and considered candidates |
+| `first_blocker.json` | TESTED | Deterministic typed result, evidence candidates, contradictions, non-fatal defects, and 19 milestone states |
 | `dom_dump.html` | NOT_STARTED | Current bundle emits `dom_dump.txt`; canonical HTML serialization remains to be added |
 | `style_dump.txt` | INTEGRATED | DOM-preorder computed-style snapshot |
 | `layout_dump.txt` | INTEGRATED | Box/LayoutBox geometry snapshot |

@@ -21755,7 +21755,6 @@ fallbackArraySpecies:
 
     internal void InForJit(InterpreterFrame frame, int destReg, int keyReg, int objReg)
     {
-        var key = ToPropertyKey(frame.Registers[keyReg]);
         var rhs = frame.Registers[objReg];
         if (rhs.Tag != JsValueTag.Object && rhs.Tag != JsValueTag.HostObject)
         {
@@ -21763,8 +21762,21 @@ fallbackArraySpecies:
             return;
         }
 
-        var obj = ResolveObject(rhs);
-        var has = HasPropertyIncludingProxy(obj, key);
+        var keyValue = frame.Registers[keyReg];
+        bool has;
+        if (rhs.Tag == JsValueTag.HostObject)
+        {
+            has = keyValue.Tag != JsValueTag.Symbol &&
+                  HasHostObjectProperty(rhs, ToPropertyKey(keyValue));
+        }
+        else
+        {
+            var obj = ResolveObject(rhs);
+            has = keyValue.Tag == JsValueTag.Symbol
+                ? HasSymbolProperty(obj, keyValue.AsSymbolId())
+                : HasPropertyIncludingProxy(obj, ToPropertyKey(keyValue));
+        }
+
         frame.Registers[destReg] = JsValue.FromBoolean(has);
     }
 
