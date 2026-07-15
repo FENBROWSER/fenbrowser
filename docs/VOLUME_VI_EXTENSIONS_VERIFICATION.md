@@ -3610,3 +3610,20 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
 - `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five retained processes.
 - `dotnet-trace collect --profile gc-verbose --output Results/performance/render_alloc_profile_after_css_name_lazy_builder_20260715.nettrace -- dotnet FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.dll render-perf`: capture succeeds; `dotnet-trace report ... topN -n 100` omits `CssTokenizer.ConsumeName`.
+
+## 6.138 Lazy Pseudo-Argument Verification (2026-07-15)
+
+- `SelectorListSplitAllocationTests.ParseSelectorList_NonFunctionalPseudosHaveBoundedAllocations` parses 10,000 selectors containing five nonfunctional pseudos. Lazy parsed-argument storage reduces allocation exactly from `11,360,000 B` to `9,760,000 B` (`-1,600,000 B`, `-14.08%`) in three fresh Release processes and passes the tightened `9,900,000 B` ceiling.
+- The same contract verifies all five parsed pseudos and the public non-null, stable, empty `ParsedArgs` collection. Existing functional-pseudo, specificity, matcher, stylesheet-parser, style-layout, and dynamic-recascade coverage protects populated argument lists; the complete included slice passes `42/42`.
+- Reports `071902`, `071904`, `071906`, `071907`, and `071909` pass every failure gate against reports `071004`, `071006`, `071008`, `071010`, and `071012`. The deterministic pages contain too few qualifying pseudos for a material signal: CSS/style allocation medians range from `-552 B` to `+3,640 B` and are reported as effectively flat.
+- Timing medians are mixed, so no page-latency claim is made. Gen0/1/2 medians are unchanged. The final `gc-verbose` trace omits the previously ranked `SelectorMatcher.ParseSimpleSelector` owner and parsed-argument access from the top 100.
+- Test262 is not applicable. WPT is not rerun because focused local tests exercise both empty and populated parsed-argument ownership through parsing, matching, specificity, and cascade-visible results.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName=FenBrowser.Tests.Performance.SelectorListSplitAllocationTests.ParseSelectorList_NonFunctionalPseudosHaveBoundedAllocations" --logger "console;verbosity=detailed"`: pass in three fresh processes at exactly `9,760,000 B` each.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CssSyntaxParserAllocationTests|FullyQualifiedName~SelectorListSplitAllocationTests|FullyQualifiedName~PseudoSelectorCanonicalizationTests|FullyQualifiedName~DynamicClassRecascadeTests|FullyQualifiedName~StyleLayoutContractTests" --logger "console;verbosity=minimal"`: pass (`42/42`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five retained processes.
+- `dotnet-trace collect --profile gc-verbose --output Results/performance/render_alloc_profile_after_lazy_pseudo_args_20260715.nettrace -- dotnet FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.dll render-perf`: capture succeeds; `dotnet-trace report ... topN -n 100` omits `SelectorMatcher.ParseSimpleSelector`.

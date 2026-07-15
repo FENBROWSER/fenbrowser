@@ -10084,3 +10084,35 @@ Verification:
 - The included CSS syntax parser, selector parser, pseudo canonicalization, style-layout, and dynamic recascade slice passes `41/41` in Release.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five retained candidate reports.
 - Test262 is unrelated to CSS token name materialization. WPT is not rerun because direct local tokenizer and parser contracts protect both materialization branches and cascade-visible results.
+
+## 2.372 Lazy Parsed Arguments for Ordinary Pseudos (2026-07-15)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssModel.cs`
+  - The post-name-builder allocation trace ranked `SelectorMatcher.ParseSimpleSelector` at `2.60%` exclusive sampled weight. Every `PseudoSelector` eagerly created an empty `List<SelectorChain>`, including nonfunctional pseudos such as `:hover`, `:focus`, and `:first-child` that never own parsed selector arguments.
+  - `ParsedArgs` now lazily creates its list on public access and remains non-null, empty, and reference-stable for a newly observed ordinary pseudo. An internal nullable view lets matching and specificity inspect whether parsed arguments actually exist without triggering public materialization.
+- `FenBrowser.FenEngine/Rendering/Css/SelectorMatcher.cs`
+  - Pseudo matching now passes the nullable internal parsed-argument view to the existing fallback logic. Functional `:is()`, `:not()`, `:where()`, `:has()`, and selector-bearing `:nth-child()` paths still store their parsed lists through the public property.
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - The compatibility matcher uses the same nullable view for `:not()`, `:is()`, and `:where()` before falling back to string arguments. Match decisions and fallback order are unchanged.
+  - The change adds no shared empty mutable list, cache, pool, unsafe code, global state, synchronization, or ownership change. Parsed argument lists remain owned by their pseudo object.
+- `FenBrowser.Tests/Performance/SelectorListSplitAllocationTests.cs`
+  - Ten thousand warmed parses of one selector with five nonfunctional pseudos move exactly from `11,360,000 B` to `9,760,000 B` in three fresh Release processes, saving `1,600,000 B` (`14.08%`, exactly `32 B` per avoided empty list). The retained `9,900,000 B` ceiling rejects eager list construction.
+  - The contract verifies all five pseudos and confirms that public `ParsedArgs` remains stable and empty once observed. Existing functional-pseudo, specificity, selector-match, stylesheet, and recascade tests protect nonempty argument ownership and behavior.
+
+Five immediate Release reports `071004`, `071006`, `071008`, `071010`, and `071012` compare with reports `071902`, `071904`, `071906`, `071907`, and `071909`:
+
+| Scenario | CSS/style allocation before | CSS/style allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 8,938,296 B | 8,937,872 B (-424 B, effectively flat) | 17,673,464 B | 17,671,600 B (-1,864 B, -0.01%) |
+| steady-state-damage-animation | 5,091,096 B | 5,091,096 B (flat) | 13,455,880 B | 13,455,880 B (flat) |
+| dense-text-flow | 2,856,592 B | 2,860,232 B (+3,640 B, +0.13%) | 6,079,048 B | 6,082,712 B (+3,664 B, +0.06%) |
+| wrapped-multiline-text | 1,497,024 B | 1,496,472 B (-552 B, -0.04%) | 3,316,736 B | 3,311,880 B (-4,856 B, -0.15%) |
+
+The deterministic page fixtures contain too few nonfunctional multi-pseudo selectors for a material stage-level signal; their allocation and timing medians are reported as mixed and effectively flat, with no page-latency claim. Gen0/1/2 medians are unchanged. A fresh final-code `gc-verbose` trace omits `SelectorMatcher.ParseSimpleSelector` and parsed-argument list access from the top 100 allocation owners; the exact selector probe remains the causal evidence.
+
+Verification:
+
+- The exact ordinary-pseudo allocation/public-contract test passes three fresh Release processes at `9,760,000 B` each.
+- The included CSS syntax parser, selector parser, pseudo canonicalization, style-layout, and dynamic recascade slice passes `42/42` in Release.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five retained candidate reports.
+- Test262 is unrelated to the private parsed-argument allocation timing. WPT is not rerun because local tests exercise ordinary pseudos, functional pseudos, specificity, matching, stylesheet parsing, and dynamic recascade.

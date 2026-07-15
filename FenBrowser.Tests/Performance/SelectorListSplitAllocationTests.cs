@@ -110,6 +110,32 @@ public sealed class SelectorListSplitAllocationTests
     }
 
     [Fact]
+    public void ParseSelectorList_NonFunctionalPseudosHaveBoundedAllocations()
+    {
+        const int iterations = 10_000;
+        const string selector = "button:hover:focus:active:first-child:enabled";
+        GC.KeepAlive(SelectorMatcher.ParseSelectorList(selector));
+
+        List<SelectorChain> parsed = null;
+        long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (var iteration = 0; iteration < iterations; iteration++)
+        {
+            parsed = SelectorMatcher.ParseSelectorList(selector);
+        }
+
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        _output.WriteLine($"Parsing {iterations:N0} nonfunctional pseudo lists allocated {allocated:N0} B.");
+
+        Assert.NotNull(parsed);
+        SelectorSegment segment = Assert.Single(Assert.Single(parsed).Segments);
+        Assert.Equal(5, segment.PseudoClasses.Count);
+        List<SelectorChain> publicArguments = segment.PseudoClasses[0].ParsedArgs;
+        Assert.Same(publicArguments, segment.PseudoClasses[0].ParsedArgs);
+        Assert.Empty(publicArguments);
+        Assert.InRange(allocated, 1, 9_900_000);
+    }
+
+    [Fact]
     public void ParseSelectorList_EscapedIdentifiersRetainDecodedValues()
     {
         List<SelectorChain> parsed = SelectorMatcher.ParseSelectorList(

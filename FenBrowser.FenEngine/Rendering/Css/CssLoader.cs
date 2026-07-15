@@ -5766,9 +5766,10 @@ private static double? ExtractPx(string text, string prop)
                     else if (string.Equals(normalizedPs, "not", StringComparison.OrdinalIgnoreCase))
                     {
                          // Handle :not with pre-parsed args or string args
-                         if (psObj.ParsedArgs != null && psObj.ParsedArgs.Count > 0)
+                         var parsedArgs = psObj.ParsedArgsOrNull;
+                         if (parsedArgs != null && parsedArgs.Count > 0)
                          {
-                             if (MatchesSelectorList(n, psObj.ParsedArgs)) return false;
+                             if (MatchesSelectorList(n, parsedArgs)) return false;
                          }
                          else if (!string.IsNullOrEmpty(args))
                          {
@@ -5780,9 +5781,10 @@ private static double? ExtractPx(string text, string prop)
                     else if (string.Equals(normalizedPs, "is", StringComparison.OrdinalIgnoreCase) || string.Equals(normalizedPs, "where", StringComparison.OrdinalIgnoreCase))
                     {
                          bool match = false;
-                         if (psObj.ParsedArgs != null && psObj.ParsedArgs.Count > 0)
+                         var parsedArgs = psObj.ParsedArgsOrNull;
+                         if (parsedArgs != null && parsedArgs.Count > 0)
                          {
-                             match = MatchesSelectorList(n, psObj.ParsedArgs);
+                             match = MatchesSelectorList(n, parsedArgs);
                          }
                          else if (!string.IsNullOrEmpty(args))
                          {

@@ -193,9 +193,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
             var highest = new Specificity { A = 0, B = 0, C = 0 };
 
             // If we have pre-parsed arguments, use them
-            if (pseudo.ParsedArgs != null && pseudo.ParsedArgs.Count > 0)
+            var parsedArgs = pseudo.ParsedArgsOrNull;
+            if (parsedArgs != null && parsedArgs.Count > 0)
             {
-                foreach (var chain in pseudo.ParsedArgs)
+                foreach (var chain in parsedArgs)
                 {
                     var spec = chain.Specificity;
                     if (spec.CompareTo(highest) > 0)
@@ -262,6 +263,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
     public class PseudoSelector
     {
         private string _name;
+        private List<SelectorChain> _parsedArgs;
 
         // Pseudo names are ASCII case-insensitive. Keep the parsed model canonical so
         // specificity and repeated matching do not normalize the same name again.
@@ -272,7 +274,13 @@ namespace FenBrowser.FenEngine.Rendering.Css
         }
 
         public string Args { get; set; }
-        public List<SelectorChain> ParsedArgs { get; set; } = new List<SelectorChain>();
+        public List<SelectorChain> ParsedArgs
+        {
+            get => _parsedArgs ??= new List<SelectorChain>();
+            set => _parsedArgs = value;
+        }
+
+        internal List<SelectorChain> ParsedArgsOrNull => _parsedArgs;
     }
 
     public class AttributeSelector

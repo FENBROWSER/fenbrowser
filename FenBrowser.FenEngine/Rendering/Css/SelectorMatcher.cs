@@ -834,7 +834,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             // Pseudo-classes
             foreach (var ps in seg.PseudoClasses)
             {
-                if (!MatchesPseudoClass(el, ps.Name, ps.Args, ps.ParsedArgs, depth + 1)) return false;
+                if (!MatchesPseudoClass(el, ps.Name, ps.Args, ps.ParsedArgsOrNull, depth + 1)) return false;
             }
             
             // Pseudo-elements (::slotted)
