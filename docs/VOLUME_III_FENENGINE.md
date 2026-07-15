@@ -9942,3 +9942,29 @@ Verification:
 - The included selector parser, escaped fallback, pseudo canonicalization, CSS syntax parser, and dynamic recascade slice passes `20/20`.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero errors, and every benchmark failure gate passes in all five retained reports.
 - Test262 is unrelated to CSS selector identifier reconstruction. WPT is not rerun because the included contracts exercise the ordinary path, escaped path, nested selector parsing, matching, and dynamic recascade without changing selector grammar or candidate selection.
+
+## 2.367 Exact Inline Line-Collection Capacity (2026-07-15)
+
+- `FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs`
+  - The post-selector allocation trace attributed `0.41%` exclusive sampled weight to `List<ComputedTextLine>.set_Capacity` under `InlineFormattingContext.LayoutCore`. The context had already completed line construction and text-segment grouping, but allocated the line-position, line-offset, and emitted `ComputedTextLine` lists at capacity zero before filling them from collections with exact known counts.
+  - The three lists now use `lines.Count` or `segments.Count` at construction. Enumeration order, line breaking, float avoidance, alignment, vertical positioning, side-bearing adjustment, geometry, and emitted line values are unchanged. The change adds no estimate, cache, pool, unsafe code, retained state, synchronization, or ownership change.
+- `FenBrowser.Tests/Performance/InlineTextLineCapacityTests.cs`
+  - A production box-tree/layout probe emits 13 wrapped text segments. Before the change, repeated list growth left 16 slots; after the change, `Count` and `Capacity` are both exactly 13. The contract also verifies that the text box and its emitted lines remain present.
+
+Five immediate Release reports `061213`, `061214`, `061215`, `061217`, and `061218` compare with reports `061329`, `061330`, `061331`, `061332`, and `061333`:
+
+| Scenario | Layout allocation before | Layout allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 7,274,816 B | 7,158,336 B (-116,480 B, -1.60%) | 18,283,272 B | 18,176,104 B (-107,168 B, -0.59%) |
+| steady-state-damage-animation | 184 B | 184 B (flat) | 13,966,640 B | 13,898,584 B (-68,056 B, -0.49%) |
+| dense-text-flow | 1,349,364 B | 1,350,228 B (+864 B, +0.06%) | 8,349,064 B | 8,329,224 B (-19,840 B, -0.24%) |
+| wrapped-multiline-text | 730,000 B | 730,036 B (+36 B, effectively flat) | 3,833,104 B | 3,834,216 B (+1,112 B, +0.03%) |
+
+The heavy-layout fixture supplies the expected stage-local allocation reduction. Dense and wrapped layout allocation are flat within process noise and are reported without attribution. Layout and total timing medians move between `-1.18%` and `+1.59%`, so no latency improvement is claimed. Gen0/1/2 collection counts are identical in all ten reports. The final `gc-verbose` trace no longer lists `List<ComputedTextLine>.set_Capacity` among the top 75 exclusive owners.
+
+Verification:
+
+- The pre-change focused probe fails with `Count=13`, `Capacity=16`; the final contract passes with exact capacity 13.
+- The included inline formatting, whitespace-allocation, probe-reset, and layout-fidelity slice passes `21/21` in Release.
+- Every benchmark failure gate passes in all five candidate processes, and the final allocation trace completes successfully.
+- Test262 is unrelated to private layout-list capacity. WPT is not rerun because the focused layout slice exercises the changed construction path and the change cannot alter selector, style, geometry, or line values.

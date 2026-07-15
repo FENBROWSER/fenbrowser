@@ -3512,3 +3512,17 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -clp:ErrorsOnly`: pass (`0` warnings, `0` errors on the final incremental build).
 - `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five retained processes.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_selector_identifier_fast_path_20260715.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` confirms the targeted selector-list owner is absent.
+
+## 6.132 Inline Line-Capacity Verification (2026-07-15)
+
+- `InlineTextLineCapacityTests.WrappedText_PreallocatesExactComputedLineStorage` runs the production box-tree and inline formatting context on a narrow wrapped-text fixture. The pre-change run records 13 emitted lines in a 16-slot list and fails the exact-capacity assertion; the final run preserves all 13 lines in exactly 13 slots.
+- The included `InlineTextLineCapacityTests`, `InlineFormattingContextProbeResetTests`, `InlineFormattingContractTests`, and `LayoutFidelityTests` filter passes `21/21` in Release.
+- Reports `061213`, `061214`, `061215`, `061217`, and `061218` versus `061329`, `061330`, `061331`, `061332`, and `061333` pass every failure gate. The first-frame heavy-layout allocation median falls from `7,274,816 B` to `7,158,336 B` (`-116,480 B`, `-1.60%`), with managed allocation down `107,168 B` (`0.59%`). Dense and wrapped layout-allocation medians are effectively flat; timing is mixed, so no latency claim is made.
+- Gen0/1/2 counts are unchanged in all ten reports. The before trace lists `List<ComputedTextLine>.set_Capacity` at `0.41%` exclusive sampled weight; the final trace omits that owner from the top 75.
+- Test262 is not applicable. WPT is not rerun because the focused production-path layout contract and the 21-test neighboring slice directly protect the changed list-construction boundary.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~InlineTextLineCapacityTests|FullyQualifiedName~InlineFormattingContextProbeResetTests|FullyQualifiedName~InlineFormattingContractTests|FullyQualifiedName~LayoutFidelityTests" --logger "console;verbosity=minimal"`: pass (`21/21`).
+- `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five final processes.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_inline_line_preallocation_20260715.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` confirms that `List<ComputedTextLine>.set_Capacity` is absent.

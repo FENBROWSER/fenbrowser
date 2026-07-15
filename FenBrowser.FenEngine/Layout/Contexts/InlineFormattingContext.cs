@@ -521,8 +521,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // Calculate line Y positions
             var textAlign = box.ComputedStyle?.TextAlign ?? SKTextAlign.Left;
             float curY = 0;
-            var lineYPositions = new List<float>();
-            var lineXOffsets = new List<float>();
+            var lineYPositions = new List<float>(lines.Count);
+            var lineXOffsets = new List<float>(lines.Count);
 
             foreach (var line in lines)
             {
@@ -562,7 +562,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 if (textBox.Geometry == null) textBox.Geometry = new BoxModel();
 
                 // Initialize Lines list
-                textBox.Geometry.Lines = new List<ComputedTextLine>();
+                textBox.Geometry.Lines = new List<ComputedTextLine>(segments.Count);
 
                 float minX = float.MaxValue, minY = float.MaxValue;
                 float maxX = float.MinValue, maxY = float.MinValue;
