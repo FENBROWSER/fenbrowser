@@ -3643,3 +3643,15 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~EngineLogSettingsTests.Flush_DrainsAcceptedEventsBeforeArtifactCopy|FullyQualifiedName~DebugSiteExceptionSummaryTests" --logger "console;verbosity=minimal"`: pass (`3/3`).
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsXmlHttpRequestTests.TimerAndRafCallbacks_DoNotOverwriteLargeStackWorkerDispatch" --logger "console;verbosity=minimal"`: pass (`1/1`).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site "file:///C:/Users/udayk/Videos/fenbrowser-test/logs/fixtures/throwing_timer_callback.html" 3000`: navigation succeeds, lifecycle completes, screenshot is captured, and the final bundle path above is emitted.
+
+## 6.140 Deterministic First-Causal-Blocker Classification (2026-07-15)
+
+- `debug-site` now emits mandatory `first_blocker.json` and includes it in `artifact_manifest.json`. The typed result contains the result class, failure bucket, subsystem owner, blocked milestone, first causal sequence/time, evidence IDs, confidence, explanation, alternative candidates, non-fatal failures, contradiction warnings, unverified milestones, and the status of all 19 navigation-through-interaction milestones.
+- Classification orders explicit required evidence by sequence, then timestamp and evidence ID. Lifecycle contradictions return `insufficient-evidence`; a failed interaction attempt returns an input/default-action blocker; optional evidence and post-load callback failures remain non-fatal. An absent unattempted interaction stage is `unverified`, not fake success and not a boot blocker.
+- The included `FirstBlockerClassifierTests` table covers navigation failure, required-resource failure, parser-blocking script failure, missing-standard-API throw, non-fatal feature probe, lifecycle contradiction, zero-size-root equivalent, successful page, post-load callback failure, input failure, and submit failure. A second contract protects non-fatal ordering and the five explicit unverified interaction milestones.
+- Final local evidence is `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_throwing_timer_callback.html/20260715T080257Z/`: result `none`, boot/render milestones complete, one `callback-1` timer failure listed as non-fatal, no contradictions, five interaction milestones unverified, and all expected artifacts present.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FirstBlockerClassifierTests" --logger "console;verbosity=minimal"`: pass (`12/12`).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site "file:///C:/Users/udayk/Videos/fenbrowser-test/logs/fixtures/throwing_timer_callback.html" 3000`: lifecycle completes and emits the final-code bundle above with `first_blocker.json` present in the manifest.

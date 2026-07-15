@@ -674,6 +674,7 @@ namespace FenBrowser.Tooling
 
             var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
             var exceptionSummary = BuildExceptionSummary(report);
+            var firstBlocker = BuildFirstBlocker(report);
             File.WriteAllText(
                 Path.Combine(bundleDir, "summary.json"),
                 JsonSerializer.Serialize(report, jsonOptions),
@@ -713,6 +714,10 @@ namespace FenBrowser.Tooling
             File.WriteAllText(
                 Path.Combine(bundleDir, "event_loop.json"),
                 JsonSerializer.Serialize(report.EventLoop ?? new BrowserEventLoopSnapshot(), jsonOptions),
+                new UTF8Encoding(false));
+            File.WriteAllText(
+                Path.Combine(bundleDir, "first_blocker.json"),
+                JsonSerializer.Serialize(firstBlocker, jsonOptions),
                 new UTF8Encoding(false));
             File.WriteAllText(
                 Path.Combine(bundleDir, "style_layout.json"),
@@ -827,6 +832,7 @@ namespace FenBrowser.Tooling
             sb.AppendLine("- `lifecycle_timeline.json`: ordered navigation lifecycle transitions captured from `BrowserHost.NavigationLifecycleChanged`.");
             sb.AppendLine("- `script_loading.json`: script discovery, fetch, execution, failure, and async-pending counts.");
             sb.AppendLine("- `event_loop.json`: DOMContentLoaded/load, microtask, timer, and requestAnimationFrame counters.");
+            sb.AppendLine("- `first_blocker.json`: deterministic milestone dependency and first-causal-blocker classification.");
             sb.AppendLine("- `style_layout.json`: style/layout/paint counters, timing, status, and first blocker classification.");
             sb.AppendLine("- `style_dump.txt`: DOM preorder computed-style snapshot.");
             sb.AppendLine("- `layout_dump.txt`: layout Box tree snapshot with geometry.");
@@ -1556,6 +1562,7 @@ namespace FenBrowser.Tooling
                 "lifecycle_timeline.json",
                 "script_loading.json",
                 "event_loop.json",
+                "first_blocker.json",
                 "style_layout.json",
                 "exceptions.json",
                 "missing_apis.json",
@@ -1609,6 +1616,94 @@ namespace FenBrowser.Tooling
         {
             var otherExceptions = ExtractExceptionRecords(report?.ConsoleMessages, report?.NavigateException);
             return DebugSiteExceptionSummaryBuilder.Build(report?.EventLoop, otherExceptions);
+        }
+
+        private static FirstBlockerResult BuildFirstBlocker(DebugSiteReport report)
+        {
+            var lifecycle = report?.Lifecycle ?? new DebugSiteLifecycleSummary();
+            var eventLoop = report?.EventLoop ?? new BrowserEventLoopSnapshot();
+            var scripts = report?.ScriptLoading ?? new BrowserScriptLoadingSnapshot();
+            var style = report?.StyleLayout ?? new DebugSiteStyleLayoutSummary();
+            var phases = new HashSet<string>(lifecycle.TransitionPhases ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+            var evidence = new List<FirstBlockerEvidence>();
+            var contradictions = new List<string>();
+
+            if (!string.IsNullOrWhiteSpace(report?.NavigateException) || lifecycle.IsFailureTerminalPhase)
+            {
+                evidence.Add(new FirstBlockerEvidence(
+                    "navigation-terminal-failure",
+                    "Navigation",
+                    "Core/Network",
+                    "ResponseReceived",
+                    1,
+                    lifecycle.TerminalTransitionUtc ?? string.Empty,
+                    true,
+                    report?.NavigateException ?? lifecycle.Detail ?? "navigation failed"));
+            }
+
+            var firstScriptFailure = scripts.Scripts?.FirstOrDefault(static script =>
+                !string.IsNullOrWhiteSpace(script.Failure) || string.Equals(script.Status, "failed", StringComparison.OrdinalIgnoreCase));
+            if (scripts.ExecutionFailed > 0 && !eventLoop.DomContentLoadedFired)
+            {
+                evidence.Add(new FirstBlockerEvidence(
+                    firstScriptFailure?.ScriptId ?? "script-execution-failure",
+                    "ECMAScriptSemantics",
+                    "FenEngine/Scripting",
+                    "RequiredScriptsExecuted",
+                    firstScriptFailure?.Ordinal ?? 8,
+                    firstScriptFailure?.CompletedUtc ?? string.Empty,
+                    true,
+                    firstScriptFailure?.Failure ?? "script execution failed before DOMContentLoaded"));
+            }
+
+            if (style.DomRootPresent && style.LayoutRan && style.BoxCount == 0)
+            {
+                evidence.Add(new FirstBlockerEvidence(
+                    "layout-root-no-boxes", "Layout", "FenEngine/Layout", "MainUiLaidOut", 12, "", true,
+                    "The document root exists but layout produced no boxes."));
+            }
+
+            if (lifecycle.IsSuccessfulTerminalPhase &&
+                !string.Equals(lifecycle.DocumentReadyState, eventLoop.DocumentReadyState, StringComparison.OrdinalIgnoreCase))
+            {
+                contradictions.Add(
+                    $"Lifecycle readyState '{lifecycle.DocumentReadyState}' disagrees with event-loop readyState '{eventLoop.DocumentReadyState}'.");
+            }
+            if (lifecycle.IsSuccessfulTerminalPhase && (!eventLoop.DomContentLoadedFired || !eventLoop.LoadFired))
+            {
+                contradictions.Add("Successful terminal lifecycle disagrees with DOMContentLoaded/load event-loop state.");
+            }
+
+            var nonFatal = (eventLoop.CallbackFailureRecords ?? new List<BrowserCallbackFailureRecord>())
+                .Where(static failure => !failure.BlockedProgress)
+                .OrderBy(static failure => failure.Sequence)
+                .Select(static failure => $"callback:{failure.CallbackId} {failure.ExceptionType}: {failure.ExceptionMessage}")
+                .ToList();
+
+            var interactive = phases.Contains("Interactive") || phases.Contains("Complete");
+            var successful = lifecycle.IsSuccessfulTerminalPhase;
+            var input = new FirstBlockerInput(
+                NavigationRequested: phases.Contains("Requested") || !string.IsNullOrWhiteSpace(report?.Url),
+                ResponseReceived: phases.Contains("ResponseReceived"),
+                DocumentCreated: phases.Contains("Committing") || interactive,
+                ParsingStarted: phases.Contains("Committing") || interactive,
+                RequiredStylesDiscovered: interactive,
+                RequiredScriptsDiscovered: string.IsNullOrWhiteSpace(scripts.InfrastructureError),
+                RequiredResourcesFetched: successful,
+                RequiredScriptsExecuted: scripts.ExecutionFailed == 0 || eventLoop.DomContentLoadedFired,
+                ParsingCompleted: interactive,
+                DomContentLoadedFired: eventLoop.DomContentLoadedFired,
+                LoadFired: eventLoop.LoadFired,
+                MainUiLaidOut: style.LayoutRan && style.BoxCount > 0,
+                MainUiPainted: style.PaintRan && style.PaintNodeCount > 0,
+                FrameSubmitted: style.RasterRan && style.ScreenshotCaptured)
+            {
+                Evidence = evidence,
+                NonFatalFailures = nonFatal,
+                ContradictoryArtifactWarnings = contradictions
+            };
+
+            return FirstBlockerClassifier.Classify(input);
         }
 
         private static List<MissingApiRecord> ExtractMissingApiRecords(
