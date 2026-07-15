@@ -7260,29 +7260,33 @@ private static double? ExtractPx(string text, string prop)
             var scale = NormalizeTransformLonghandValue(Safe(DictGet(map, "scale")), "scale");
             var transform = Safe(DictGet(map, "transform"));
 
-            var segments = new List<string>(4);
+            List<string> segments = null;
             if (!string.IsNullOrEmpty(translate))
             {
+                segments ??= new List<string>(4);
                 segments.Add(translate);
             }
 
             if (!string.IsNullOrEmpty(rotate))
             {
+                segments ??= new List<string>(4);
                 segments.Add(rotate);
             }
 
             if (!string.IsNullOrEmpty(scale))
             {
+                segments ??= new List<string>(4);
                 segments.Add(scale);
             }
 
             if (!string.IsNullOrWhiteSpace(transform) &&
                 !string.Equals(transform.Trim(), "none", StringComparison.OrdinalIgnoreCase))
             {
+                segments ??= new List<string>(4);
                 segments.Add(transform.Trim());
             }
 
-            if (segments.Count > 0)
+            if (segments != null)
             {
                 return string.Join(" ", segments);
             }

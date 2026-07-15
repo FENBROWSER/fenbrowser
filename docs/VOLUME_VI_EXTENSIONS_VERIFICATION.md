@@ -3459,3 +3459,20 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass with zero errors.
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five final candidate processes.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_cascade_winner_reuse_20260715.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` confirms that `CloneDeclaration` is absent.
+
+## 6.129 Lazy Transform Composition Verification (2026-07-15)
+
+- `CssStyleResolutionAllocationTests.ResolveStyle_OrdinaryDeclarationsAvoidUnusedVariableTracking` measures 1,000 warmed production `ResolveStyle` calls without transform properties. Lazy segment storage reduces allocation exactly from `6,392,000 B` to `6,304,000 B` (`-88,000 B`, `-1.38%`) in three fresh Release processes and passes the tightened `6,320,000 B` ceiling.
+- `ResolveStyle_TransformLonghandsPreserveCompositionOrder` verifies that `translate`, `rotate`, `scale`, and `transform` retain their normalized composition order when segment storage is required; `ResolveStyle_TransformNonePreservesNone` protects the no-segment `none` result.
+- Candidate reports `051603`, `051605`, `051608`, `051610`, and `051613` pass every failure gate against reports `051004`, `051007`, `051009`, `051011`, and `051014`. CSS/style allocation medians fall `0.19%`-`1.47%`, and managed allocation medians fall `0.17%`-`0.51%`, across all four fixtures. Timing remains mixed, so no page-latency claim is made.
+- The before trace ranks `CssLoader.ComposeEffectiveTransform` at `6.24%` exclusive sampled allocation weight. The final trace omits it from the top 75.
+- Test262 is not applicable. WPT is not rerun because included tests exercise both the allocation-free common branch and the complete transformed counter-path.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CssStyleResolutionAllocationTests.ResolveStyle_OrdinaryDeclarationsAvoidUnusedVariableTracking" --logger "console;verbosity=detailed"`: pass (`1/1`) in three fresh processes, exactly `6,304,000 B` each time.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CssStyleResolutionAllocationTests|FullyQualifiedName~StyleLayoutContractTests|FullyQualifiedName~CssBackgroundShorthandTests|FullyQualifiedName~DynamicClassRecascadeTests" --logger "console;verbosity=minimal"`: pass (`22/22`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo --verbosity quiet`: pass with zero errors.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass with zero errors.
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five candidate processes.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_lazy_transform_segments_20260715.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` confirms that `ComposeEffectiveTransform` is absent.

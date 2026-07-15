@@ -9882,3 +9882,31 @@ Verification:
 - The included cascade, style-layout, inline-cache, parsed-rule-cache, style-resolution, background-shorthand, and dynamic-recascade slice passes `32/32`.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero errors, and every benchmark failure gate passes in all final candidate processes.
 - Test262 is unrelated to CSS cascade object materialization. WPT is not rerun for this unit because the included tests directly cover the changed ownership, order, shorthand, importance, cache, and recascade boundaries; excluded legacy `FenBrowser.Tests/Engine` sources are not counted as executed verification.
+
+## 2.365 Lazy Transform Composition Segments (2026-07-15)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssLoader.cs`
+  - The post-cascade allocation trace ranked `CssLoader.ComposeEffectiveTransform` at `6.24%` exclusive sampled allocation weight. Every computed style eagerly created a four-slot `List<string>` even when its map contained no `translate`, `rotate`, `scale`, or `transform`, which is the common element path.
+  - Transform segment storage is now created only when the first effective transform component is found. Longhand normalization, the `translate`/`rotate`/`scale`/`transform` composition order, CSS function detection, whitespace trimming, `none`, and the final `string.Join` path for transformed elements are unchanged.
+  - The change adds no transform cache, pool, unsafe code, retained state, synchronization, or ownership change. It avoids work for untransformed elements while preserving the existing allocation and behavior for transformed elements.
+- `FenBrowser.Tests/Performance/CssStyleResolutionAllocationTests.cs`
+  - One thousand warmed ordinary style resolutions move exactly from `6,392,000 B` to `6,304,000 B`, saving `88,000 B` (`1.38%`, exactly `88 B` per untransformed element) in each of three fresh Release processes. The ceiling tightens to `6,320,000 B`.
+  - Included semantic contracts verify the allocation-free null result, composition of all three individual transform longhands with a `transform` value in the required order, and the `transform: none` fallback.
+
+Five fresh Release reports `051603`, `051605`, `051608`, `051610`, and `051613` compare with immediate pre-change reports `051004`, `051007`, `051009`, `051011`, and `051014`:
+
+| Scenario | CSS/style allocation before | CSS/style allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 9,026,728 B | 9,009,664 B (-17,064 B, -0.19%) | 18,420,664 B | 18,386,248 B (-34,416 B, -0.19%) |
+| steady-state-damage-animation | 5,115,696 B | 5,099,304 B (-16,392 B, -0.32%) | 14,025,720 B | 14,001,152 B (-24,568 B, -0.18%) |
+| dense-text-flow | 2,975,528 B | 2,931,928 B (-43,600 B, -1.47%) | 8,485,360 B | 8,441,872 B (-43,488 B, -0.51%) |
+| wrapped-multiline-text | 1,580,440 B | 1,572,240 B (-8,200 B, -0.52%) | 3,878,912 B | 3,872,488 B (-6,424 B, -0.17%) |
+
+CSS/style time improves in three fixtures and regresses `2.02%` in wrapped text; total time is mixed, so no page-latency claim is made. The exact production style-resolution contract and consistent page-allocation reductions are the acceptance evidence. A fresh final-code `gc-verbose` trace no longer lists `ComposeEffectiveTransform` among the top 75 exclusive allocation owners.
+
+Verification:
+
+- The exact ordinary-style allocation contract passes three fresh Release processes at `6,304,000 B`; the transform composition and `none` counter-cases pass with it.
+- The included style-resolution, style-layout, background-shorthand, and dynamic-recascade slice passes `22/22`.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero errors, and every benchmark failure gate passes in all five candidate processes.
+- Test262 is unrelated to computed CSS transform storage. WPT is not rerun because the included contract directly exercises all changed transform-composition branches and the allocation change only controls creation of private temporary storage.
