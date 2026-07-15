@@ -3406,3 +3406,22 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five candidate processes.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_lazy_layer_promotion_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `topN -n 75` confirms the targeted method is absent.
+
+## 6.126 CSS Identifier Reconstruction Verification (2026-07-15)
+
+- `CssSyntaxParserAllocationTests.ParseStylesheet_OrdinarySelectorIdentifiersHaveBoundedAllocations` parses 32 ordinary selector rules 100 times through `CssTokenizer`, `CssSyntaxParser`, selector reconstruction, and selector-list parsing. Allocation falls exactly from `34,494,400 B` to `32,011,200 B` (`-2,483,200 B`, `-7.20%`) in three fresh Release processes and passes the `32,100,000 B` ceiling.
+- Two included fallback contracts preserve escaped-whitespace selector text and verify downstream matching of escaped punctuation. Together with the ordinary fixture, they cover both the no-builder fast path and the unchanged builder path.
+- The included CSS parser, selector allocation, pseudo canonicalization, and dynamic recascade filter passes `14/14`. The legacy `FenBrowser.Tests/Engine` parser sources are excluded by the test project and are not counted as executed verification.
+- Candidate reports `174215`, `174217`, `174219`, `174221`, and `174224` pass every failure gate against reports `173400`, `173402`, `173404`, `173406`, and `173409`. CSS/style allocation medians fall `0.08%`-`1.37%` and managed allocation falls `0.03%`-`0.60%` in all four fixtures. Timing is mixed, so no page-latency claim is made.
+- The before trace ranks `CssSyntaxParser.EscapeIdentifier` at `2.62%` exclusive sampled allocation weight. The final-code trace no longer lists it among the top 75 exclusive owners.
+- Temporary leading-digit escape cases fail decoded-class matching under both baseline and candidate. This existing limitation is reported rather than attributed to, fixed by, or hidden by the allocation change.
+- Test262 is not applicable. WPT is not rerun because direct included contracts cover the changed allocation boundary and retained escaped fallback.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CssSyntaxParserAllocationTests" --logger "console;verbosity=detailed"`: pass (`3/3`) in three fresh processes, exactly `32,011,200 B` each time.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CssSyntaxParserAllocationTests|FullyQualifiedName~SelectorListSplitAllocationTests|FullyQualifiedName~PseudoSelectorCanonicalizationTests|FullyQualifiedName~DynamicClassRecascadeTests" --logger "console;verbosity=minimal"`: pass (`14/14`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five candidate processes.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_identifier_escape_fast_path_20260714.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `topN -n 75` confirms the targeted helper is absent.

@@ -921,20 +921,28 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return string.Empty;
             }
 
-            var sb = new System.Text.StringBuilder(value.Length);
+            int firstEscape = -1;
             for (int i = 0; i < value.Length; i++)
+            {
+                if (RequiresIdentifierEscape(value, i))
+                {
+                    firstEscape = i;
+                    break;
+                }
+            }
+
+            if (firstEscape < 0)
+            {
+                return value;
+            }
+
+            var sb = new System.Text.StringBuilder(value.Length);
+            sb.Append(value, 0, firstEscape);
+            for (int i = firstEscape; i < value.Length; i++)
             {
                 char c = value[i];
 
-                bool mustEscape =
-                    char.IsWhiteSpace(c) ||
-                    c == '\\' ||
-                    c == '\0' ||
-                    (!IsNameChar(c) && !(i == 0 && c == '-')) ||
-                    (i == 0 && char.IsDigit(c)) ||
-                    (i == 1 && value[0] == '-' && char.IsDigit(c));
-
-                if (mustEscape)
+                if (RequiresIdentifierEscape(value, i))
                 {
                     if (c == '\0')
                     {
@@ -953,6 +961,17 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
 
             return sb.ToString();
+        }
+
+        private static bool RequiresIdentifierEscape(string value, int index)
+        {
+            char c = value[index];
+            return char.IsWhiteSpace(c) ||
+                   c == '\\' ||
+                   c == '\0' ||
+                   (!IsNameChar(c) && !(index == 0 && c == '-')) ||
+                   (index == 0 && char.IsDigit(c)) ||
+                   (index == 1 && value[0] == '-' && char.IsDigit(c));
         }
 
         private static bool IsNameStart(char c)

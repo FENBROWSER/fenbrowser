@@ -9808,3 +9808,31 @@ Verification:
 - The included layerizer, Paint Tree pill, paint traversal, and root-raster logging slice passes `14/14`.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five candidate processes.
 - Test262 and WPT are not rerun because the change is confined to private Paint Tree layerization storage and traversal; the focused contracts directly exercise both the allocation-free and promoted semantic paths.
+
+## 2.362 Allocation-Free Ordinary CSS Identifier Reconstruction (2026-07-15)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssSyntaxParser.cs`
+  - The post-layerization allocation trace ranked `CssSyntaxParser.EscapeIdentifier` at `2.62%` exclusive sampled weight. Selector reconstruction called it for identifier, hash, at-keyword, function, and dimension tokens, and the helper created a `StringBuilder` plus a duplicate string even when an identifier already required no escaping.
+  - The helper now scans for the first character that meets the existing escape predicate and returns the tokenizer-owned value unchanged when none does. If an escape is required, it copies the unchanged prefix once and runs the original replacement/escaping behavior from that point onward.
+  - Whitespace, backslash, null replacement, punctuation, leading-digit, and hyphen-digit decisions are unchanged. Tokenization, selector-list parsing, specificity, matching, recovery, and serialized escaped output retain their existing paths. The change adds no interning, cache, pool, unsafe code, retained state, synchronization, or ownership change.
+- `FenBrowser.Tests/Performance/CssSyntaxParserAllocationTests.cs`
+  - One hundred warmed production parses of 32 ordinary selector rules move from exactly `34,494,400 B` to `32,011,200 B`, saving `2,483,200 B` (`7.20%`, `776 B` per rule). Both values are exact across three fresh Release test processes, and the retained `32,100,000 B` ceiling rejects rebuilding ordinary identifier strings.
+  - Included semantic contracts preserve escaped-whitespace selector text and verify that escaped punctuation still matches the decoded class through the downstream selector matcher.
+
+Five fresh Release processes compare lazy-layerization reports `173400`, `173402`, `173404`, `173406`, and `173409` with identifier-fast-path reports `174215`, `174217`, `174219`, `174221`, and `174224`:
+
+| Scenario | CSS/style allocation before | CSS/style allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 9,063,528 B | 9,043,056 B (-0.23%) | 18,462,288 B | 18,443,168 B (-0.10%) |
+| steady-state-damage-animation | 5,148,248 B | 5,144,368 B (-0.08%) | 14,062,144 B | 14,058,616 B (-0.03%) |
+| dense-text-flow | 2,961,144 B | 2,932,536 B (-0.97%) | 8,449,384 B | 8,412,192 B (-0.44%) |
+| wrapped-multiline-text | 1,596,152 B | 1,574,312 B (-1.37%) | 3,900,784 B | 3,877,296 B (-0.60%) |
+
+CSS-rule timing medians improve in three fixtures and regress in dense text; total timing also remains mixed, so no latency improvement is claimed. The exact production parser contract and consistent allocation reductions are the acceptance evidence. A fresh `gc-verbose` trace no longer lists `EscapeIdentifier` among the top 75 exclusive allocation owners.
+
+Verification:
+
+- The allocation and two escape-path contracts pass three fresh Release processes (`3/3` each time); the broader included parser/selector/recascade slice passes `14/14`.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five candidate processes.
+- A temporary leading-digit probe (`.\\31 abc` and `.-\\31 abc`) fails decoded-class matching under both the original implementation and the candidate. This is an existing tokenizer/serializer/matcher limitation, not a regression or a claimed success; the optimization deliberately preserves that path.
+- Test262 is unrelated to CSS selector reconstruction. WPT is not rerun because the included contracts directly exercise ordinary reconstruction, the escaped fallback, serialized selector text, and downstream punctuation matching; the pre-existing numeric-escape limitation remains visible here.
