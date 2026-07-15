@@ -627,14 +627,14 @@ namespace FenBrowser.Tooling
             });
         }
 
-        private static DebugSiteScreenshotResult CaptureDebugSiteScreenshot(
+        internal static DebugSiteScreenshotResult CaptureDebugSiteScreenshot(
             FenBrowser.Core.Dom.V2.Node root,
             Dictionary<FenBrowser.Core.Dom.V2.Node, CssComputed> styles,
             string baseUrl)
         {
             const int width = DebugSiteViewportWidth;
             const int height = DebugSiteViewportHeight;
-            var screenshotPath = DiagnosticPaths.GetRootArtifactPath("debug_screenshot.png");
+            var screenshotPath = DiagnosticPaths.GetRootArtifactPath("debug_site_screenshot.png");
 
             if (root == null)
             {
@@ -821,7 +821,7 @@ namespace FenBrowser.Tooling
             File.WriteAllText(Path.Combine(bundleDir, "paint_dump.txt"), report.PaintDump ?? string.Empty, new UTF8Encoding(false));
             File.WriteAllText(Path.Combine(bundleDir, "display_list.txt"), report.DisplayListDump ?? string.Empty, new UTF8Encoding(false));
 
-            TryCopyLogArtifact("debug_screenshot.png", Path.Combine(bundleDir, "screenshot.png"));
+            TryCopyLogArtifact("debug_site_screenshot.png", Path.Combine(bundleDir, "screenshot.png"));
             if (report.Interaction != null)
             {
                 if (report.Interaction.BeforeScreenshotCaptured)
@@ -830,7 +830,7 @@ namespace FenBrowser.Tooling
                 }
                 if (report.Interaction.AfterScreenshotCaptured)
                 {
-                    TryCopyLogArtifact("debug_screenshot.png", Path.Combine(bundleDir, "interaction_after.png"));
+                    TryCopyLogArtifact("debug_site_screenshot.png", Path.Combine(bundleDir, "interaction_after.png"));
                 }
             }
             TryCopyLogArtifact("dom_dump.txt", Path.Combine(bundleDir, "dom_dump.txt"));
@@ -946,7 +946,7 @@ namespace FenBrowser.Tooling
             sb.AppendLine("- `summary.json`: structured run summary.");
             sb.AppendLine("- `trace.jsonl`: copied from latest engine trace when present.");
             sb.AppendLine("- `logs.ndjson`: copied from latest structured engine log when present.");
-            sb.AppendLine("- `screenshot.png`: copied from `logs/debug_screenshot.png` when present.");
+            sb.AppendLine("- `screenshot.png`: copied from Tooling-owned `logs/debug_site_screenshot.png` when present.");
             sb.AppendLine("- `lifecycle.json`: final navigation lifecycle snapshot and document readyState probe.");
             sb.AppendLine("- `lifecycle_timeline.json`: ordered navigation lifecycle transitions captured from `BrowserHost.NavigationLifecycleChanged`.");
             sb.AppendLine("- `script_loading.json`: script discovery, fetch, execution, failure, and async-pending counts.");
@@ -2145,7 +2145,7 @@ namespace FenBrowser.Tooling
             string Evidence,
             int EncounterCount);
 
-        private sealed record DebugSiteScreenshotResult(
+        internal sealed record DebugSiteScreenshotResult(
             bool Captured,
             string Path,
             int Width,

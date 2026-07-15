@@ -8,6 +8,31 @@ namespace FenBrowser.Tests.Tooling;
 public sealed class DebugSiteInteractionRunnerTests
 {
     [Fact]
+    public async Task DebugSiteScreenshot_UsesASeparateArtifactFromTheLiveRenderer()
+    {
+        ElementStateManager.Reset();
+        BrowserScriptEngineRuntime.Reset();
+        try
+        {
+            using var browser = Program.CreateDebugSiteBrowserHost();
+            Assert.True(await browser.NavigateAsync(GetCenteredViewportFixtureUri()));
+
+            var capture = Program.CaptureDebugSiteScreenshot(
+                browser.GetDomRoot(),
+                browser.ComputedStyles,
+                browser.CurrentUri.AbsoluteUri);
+
+            Assert.True(capture.Captured, capture.Error);
+            Assert.Equal("debug_site_screenshot.png", Path.GetFileName(capture.Path));
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+            ElementStateManager.Reset();
+        }
+    }
+
+    [Fact]
     public async Task DebugSiteHost_UsesTheScreenshotViewportForCenteredElementGeometry()
     {
         ElementStateManager.Reset();
@@ -22,6 +47,32 @@ public sealed class DebugSiteInteractionRunnerTests
 
             Assert.InRange(rect.X + (rect.Width / 2), 639, 641);
             Assert.InRange(rect.Width, 199, 210);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+            ElementStateManager.Reset();
+        }
+    }
+
+    [Fact]
+    public async Task LocalFormInteraction_WaitsForChainedResultNavigationToSettle()
+    {
+        ElementStateManager.Reset();
+        BrowserScriptEngineRuntime.Reset();
+        try
+        {
+            using var browser = new BrowserHost();
+            Assert.True(await browser.NavigateAsync(GetChainedNavigationFixtureUri()));
+
+            var result = await DebugSiteInteractionRunner.RunAsync(
+                browser,
+                new DebugSiteInteractionRequest("#query", "fen-chain", "#submit", 2000),
+                static () => 0);
+
+            Assert.Equal("passed", result.Status);
+            Assert.EndsWith("final_navigation.html", result.AfterUrl, StringComparison.Ordinal);
+            Assert.Equal("settled", browser.GetDomRoot()?.QuerySelector("#final-result")?.TextContent);
         }
         finally
         {
@@ -105,6 +156,17 @@ public sealed class DebugSiteInteractionRunnerTests
             "Fixtures",
             "Interaction",
             "centered_viewport.html");
+        return new Uri(fixturePath).AbsoluteUri;
+    }
+
+    private static string GetChainedNavigationFixtureUri()
+    {
+        var fixturePath = Path.Combine(
+            FindRepositoryRoot(),
+            "FenBrowser.Tests",
+            "Fixtures",
+            "Interaction",
+            "form_chained_navigation.html");
         return new Uri(fixturePath).AbsoluteUri;
     }
 

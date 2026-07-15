@@ -3746,3 +3746,18 @@ Verification commands:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v:minimal`: pass with 0 warnings and 0 errors.
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v:minimal`: pass with 0 warnings and 0 errors.
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site-interact "https://www.google.com/" "#APjFqb" "fen715f" ".FPdoLc input[name=btnK]" 20000 10000`: interaction pass with the bundle above.
+
+## 6.148 Terminal Interaction Settlement and Artifact Ownership (2026-07-15)
+
+- Submission outcome waiting now retains the latest terminal navigation ID and URL for a bounded quiet window instead of returning on the first terminal generation. A three-document local form reduction failed before the change by returning the intermediate URL and now reaches the timer-driven final document.
+- Tooling offscreen captures now use `logs/debug_site_screenshot.png`, distinct from the live renderer's `logs/debug_screenshot.png`. A compiled regression failed before the change on the shared path and protects the bundle-copy ownership boundary.
+- Eight form tests and five Tooling tests are compiled and listed on the active surface. The combined focused run passes `13/13`; the Tooling Release build passes with zero warnings and zero errors.
+- Fresh Google evidence at `logs/real-site/www.google.com/20260715T102729Z/` records focus, seven accepted nonce characters, ordinary input/change/blur/click/submit events, a 200 GET `/search` navigation, and a delayed replacement navigation to Google's genuine HTTP 429 `/sorry/` challenge. No challenge or security behavior was bypassed. Callback and exception counts agree at zero, and `first_blocker.json` reports `none` for the terminal navigation.
+- The run exposes a separate engine defect: lifecycle and the navigation DOM artifact describe navigation 3's challenge document, while `BrowserHost.GetDomRoot()`, rendered text, and the after screenshot retain the prior homepage document. This is not treated as visual acceptance; the next reduction must prevent stale cross-navigation render-state publication.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~BrowserFormInteractionAcceptanceTests|FullyQualifiedName~DebugSiteInteractionRunnerTests" --list-tests --logger "console;verbosity=minimal"`: lists all 13 tests.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~BrowserFormInteractionAcceptanceTests|FullyQualifiedName~DebugSiteInteractionRunnerTests" --logger "console;verbosity=minimal"`: pass (`13/13`).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --verbosity:minimal`: pass with 0 warnings and 0 errors.
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site-interact "https://www.google.com/" "#APjFqb" "fen715i" ".FPdoLc input[name=btnK]" 20000 10000`: interaction pass with the bundle above and a terminal Google challenge response.

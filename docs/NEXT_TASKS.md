@@ -144,11 +144,11 @@ Risk Level: Medium
 Dependencies: Google document, scripts, DOM, layout, paint, and screenshot are TESTED in the current bundle
 Files likely involved: `FenBrowser.Tooling`, WebDriver/automation hooks, Host input routing, BrowserApi activation/focus paths, local regression fixture
 Specs/references: UI Events; HTML forms; WebDriver; `docs/REAL_SITE_TRACKER.md`
-Current behavior: The current Google interaction bundle proves hit-tested textarea focus, seven accepted nonce characters, keyboard/input/change/blur ordering, visible submit-control click, form submit, and a successful 200 GET navigation to `/search?q=fen715f...`. Eight compiled form tests and three Tooling tests protect current-layout/pointer-events hit testing, full CSS lookup, fixed diagnostic viewport, ordinary local form behavior, event bounding, and terminal navigation. The after screenshot still shows the submitted homepage state, and the post-navigation classifier reports insufficient required-resource evidence despite the successful request.
+Current behavior: The current Google interaction bundle proves hit-tested textarea focus, seven accepted nonce characters, keyboard/input/change/blur ordering, visible submit-control click, form submit, a successful 200 GET `/search` navigation, and Google's delayed redirect to a genuine HTTP 429 `/sorry/` challenge. Eight compiled form tests and five Tooling tests protect current-layout/pointer-events hit testing, full CSS lookup, fixed diagnostic viewport, ordinary and chained local form navigation, bounded event export, and screenshot artifact ownership. Terminal lifecycle and the DOM artifact reach navigation 3, but the active root, rendered text, and after screenshot retain the prior homepage.
 Expected behavior: Automation clicks the search control, enters a nonce, submits, observes value/input events and a terminal network/navigation outcome, and captures before/after screenshots.
 Reproduction: Current Google URL at 1280x800 plus the same interaction on a local form fixture.
-Root cause hypothesis: The resolved Google blockers were stale layout/style/paint snapshots, a Tooling viewport mismatch, and a concrete-host lookup overload that bypassed full WebDriver selector semantics. The residual result-page/classifier mismatch likely crosses navigation-generation settlement/export and needs a local two-document reduction before any change.
-Implementation plan: Reduce the successful-submit/post-navigation screenshot and classifier disagreement with a deterministic local two-document fixture; align lifecycle/resource evidence to the committed navigation without weakening the classifier.
+Root cause hypothesis: The resolved Google blockers were stale layout/style/paint snapshots, a Tooling viewport mismatch, and a concrete-host lookup overload that bypassed full WebDriver selector semantics. Terminal-generation waiting and Tooling artifact isolation are now proven. The residual mismatch is an older document/render continuation republishing active DOM/style/frame state after the replacement navigation committed.
+Implementation plan: Create a deterministic overlapping-navigation fixture whose first document has delayed render/script work and whose replacement document commits before that work completes; make active render publication generation-aware without changing navigation or challenge policy, then add classifier contradiction coverage.
 Tests required: Hit test, focus, keyboard/text input, input/change/submit ordering, preventDefault, successful submit/navigation.
 Evidence required: Before/after screenshots, input trace, DOM value, event/default-action records, request/navigation result, no crash/hang.
 Security impact: Automation must not bypass page security or challenge behavior; do not persist user data.
@@ -156,7 +156,7 @@ Performance impact: Record input-to-visible-update and input-to-request latency.
 Compatibility impact: Directly validates real-site usability.
 Known risks: Site variation, consent UI, or network challenge; retain exact URL/run evidence.
 Blockers: None
-Next action: Add a local two-document interaction fixture that asserts the after screenshot/DOM and `first_blocker.json` come from the completed result navigation, then rerun the identical Google command.
+Next action: Add one deterministic overlapping-navigation regression that fails when an older document republishes active DOM/style/frame state after the replacement navigation commits.
 
 ## Task WPT-001
 

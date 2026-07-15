@@ -52,6 +52,7 @@ internal static class DebugSiteInteractionRunner
     internal const string EventMarker = "[fen-interaction-event]|";
     internal const int MaxEventRecords = 256;
     internal const int MaxEventRecordLength = 300;
+    internal const int MaxNavigationStabilityWindowMs = 3000;
 
     private static readonly string InstallEventObserverScript =
         "(function(){" +
@@ -256,12 +257,20 @@ internal static class DebugSiteInteractionRunner
         Func<int> getNetworkRequestCount,
         int settleMs)
     {
-        var deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(0, settleMs));
+        var boundedSettleMs = Math.Max(0, settleMs);
+        var navigationStabilityWindowMs = Math.Min(
+            MaxNavigationStabilityWindowMs,
+            Math.Max(250, boundedSettleMs / 2));
+        var deadline = DateTime.UtcNow.AddMilliseconds(boundedSettleMs);
         DateTime? requestObservedUtc = null;
+        DateTime? terminalNavigationObservedUtc = null;
+        long terminalNavigationId = 0;
+        string terminalNavigationUrl = string.Empty;
         do
         {
+            var currentUrl = host.CurrentUri?.AbsoluteUri ?? string.Empty;
             var navigationObserved = !string.Equals(
-                host.CurrentUri?.AbsoluteUri ?? string.Empty,
+                currentUrl,
                 beforeUrl,
                 StringComparison.Ordinal);
             var requestObserved = getNetworkRequestCount() > networkBefore;
@@ -279,7 +288,25 @@ internal static class DebugSiteInteractionRunner
                         or FenBrowser.Core.Engine.NavigationLifecyclePhase.Failed
                         or FenBrowser.Core.Engine.NavigationLifecyclePhase.Cancelled)
                 {
-                    return true;
+                    if (terminalNavigationId != lifecycle.NavigationId ||
+                        !string.Equals(terminalNavigationUrl, currentUrl, StringComparison.Ordinal))
+                    {
+                        terminalNavigationId = lifecycle.NavigationId;
+                        terminalNavigationUrl = currentUrl;
+                        terminalNavigationObservedUtc = DateTime.UtcNow;
+                    }
+                    else if (terminalNavigationObservedUtc.HasValue &&
+                             DateTime.UtcNow - terminalNavigationObservedUtc.Value >=
+                             TimeSpan.FromMilliseconds(navigationStabilityWindowMs))
+                    {
+                        return true;
+                    }
+                }
+                else
+                {
+                    terminalNavigationObservedUtc = null;
+                    terminalNavigationId = 0;
+                    terminalNavigationUrl = string.Empty;
                 }
             }
             else if (requestObservedUtc.HasValue &&
