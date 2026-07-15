@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Rendering.Css;
 using Xunit;
@@ -60,6 +61,44 @@ public sealed class SelectorListSplitAllocationTests
         Assert.True(SelectorMatcher.MatchesChain(labelled, parsed[0]));
         Assert.True(SelectorMatcher.MatchesChain(link, parsed[1]));
         Assert.True(SelectorMatcher.MatchesChain(item, parsed[2]));
+    }
+
+    [Fact]
+    public void ParseSelectorList_OrdinaryIdentifiersAvoidBuilderAllocations()
+    {
+        const int iterations = 10_000;
+        const string selector = "main#content > article.card[data-state='ready']:first-child";
+        GC.KeepAlive(SelectorMatcher.ParseSelectorList(selector));
+
+        List<SelectorChain> parsed = null;
+        long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        long started = Stopwatch.GetTimestamp();
+        for (var iteration = 0; iteration < iterations; iteration++)
+        {
+            parsed = SelectorMatcher.ParseSelectorList(selector);
+        }
+
+        double elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        _output.WriteLine(
+            $"Parsing {iterations:N0} single-chain selectors took {elapsedMs:F3} ms and allocated {allocated:N0} B.");
+
+        Assert.NotNull(parsed);
+        Assert.Single(parsed);
+        Assert.InRange(allocated, 1, 16_100_000);
+    }
+
+    [Fact]
+    public void ParseSelectorList_EscapedIdentifiersRetainDecodedValues()
+    {
+        List<SelectorChain> parsed = SelectorMatcher.ParseSelectorList(
+            @"art\69 cle.c\61 rd#he\61 d:first-\63 hild");
+
+        SelectorSegment segment = Assert.Single(Assert.Single(parsed).Segments);
+        Assert.Equal("article", segment.TagName);
+        Assert.Contains("card", segment.Classes);
+        Assert.Equal("head", segment.Id);
+        Assert.Equal("first-child", Assert.Single(segment.PseudoClasses).Name);
     }
 
     [Fact]

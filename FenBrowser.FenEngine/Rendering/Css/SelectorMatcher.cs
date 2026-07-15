@@ -393,20 +393,27 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static string ReadIdent(string s, ref int i)
         {
-            var result = new System.Text.StringBuilder();
+            int start = i;
+            System.Text.StringBuilder result = null;
 
             while (i < s.Length)
             {
                 char c = s[i];
                 if (char.IsLetterOrDigit(c) || c == '-' || c == '_' || c > 127)
                 {
-                    result.Append(c);
+                    result?.Append(c);
                     i++;
                     continue;
                 }
 
                 if (c == '\\')
                 {
+                    if (result == null)
+                    {
+                        result = new System.Text.StringBuilder();
+                        result.Append(s, start, i - start);
+                    }
+
                     if (!TryReadEscapedCodePoint(s, ref i, out var escaped))
                     {
                         break;
@@ -419,7 +426,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 break;
             }
 
-            return result.ToString();
+            return result == null ? s.Substring(start, i - start) : result.ToString();
         }
 
         private static string UnescapeCssValue(string raw)

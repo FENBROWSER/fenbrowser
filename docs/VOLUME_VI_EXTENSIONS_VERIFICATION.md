@@ -3495,3 +3495,20 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five candidate processes.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_dom_phase_guard_overload_20260715.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` confirms that the targeted guard path is absent.
+
+## 6.131 Selector Identifier Fast-Path Verification (2026-07-15)
+
+- `SelectorListSplitAllocationTests.ParseSelectorList_OrdinaryIdentifiersAvoidBuilderAllocations` measures 10,000 warmed parses through the production selector-list parser. Allocation is exactly `21,200,000 B` before and `16,000,000 B` after in three fresh Release processes (`-24.53%`), with a retained `16,100,000 B` ceiling.
+- Five isolated processes move the median from `49.713 ms` to `46.010 ms` (`-7.45%`). Timing is reported but not asserted. `ParseSelectorList_EscapedIdentifiersRetainDecodedValues` preserves the builder-backed escape path for tag, class, ID, and pseudo names.
+- A one-slot result-list experiment was rejected and fully reverted because its `1.13%` allocation reduction accompanied a `6.43%` isolated timing regression. The retained change is limited to identifier materialization.
+- The included selector/parser/recascade slice passes `20/20`. All five retained page reports pass their failure gates; CSS and managed allocation medians improve in the first-frame, dense, and wrapped fixtures and remain effectively flat in steady state. Page timing is mixed, so no end-to-end latency claim is made.
+- The final allocation trace omits `ParseSelectorListInternal` from the top 75 and reduces `StringBuilder.ToString` from `1.49%` to `0.89%` exclusive sampled weight. Test262 and WPT are not rerun for this parser-local representation change.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName=FenBrowser.Tests.Performance.SelectorListSplitAllocationTests.ParseSelectorList_OrdinaryIdentifiersAvoidBuilderAllocations" --logger "console;verbosity=detailed"`: pass in three fresh processes at exactly `16,000,000 B`; the final five-process median is `46.010 ms`.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CssSyntaxParserAllocationTests|FullyQualifiedName~SelectorListSplitAllocationTests|FullyQualifiedName~PseudoSelectorCanonicalizationTests|FullyQualifiedName~DynamicClassRecascadeTests" --logger "console;verbosity=minimal"`: pass (`20/20`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -clp:ErrorsOnly`: pass (`0` errors; existing warnings remain when a full rebuild is required).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -clp:ErrorsOnly`: pass (`0` warnings, `0` errors on the final incremental build).
+- `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five retained processes.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_selector_identifier_fast_path_20260715.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` confirms the targeted selector-list owner is absent.

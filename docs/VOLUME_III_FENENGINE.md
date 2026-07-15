@@ -9910,3 +9910,35 @@ Verification:
 - The included style-resolution, style-layout, background-shorthand, and dynamic-recascade slice passes `22/22`.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero errors, and every benchmark failure gate passes in all five candidate processes.
 - Test262 is unrelated to computed CSS transform storage. WPT is not rerun because the included contract directly exercises all changed transform-composition branches and the allocation change only controls creation of private temporary storage.
+
+## 2.366 Lazy Selector Identifier Decoding (2026-07-15)
+
+- `FenBrowser.FenEngine/Rendering/Css/SelectorMatcher.cs`
+  - The post-DOM-guard allocation trace ranked `SelectorMatcher.ParseSelectorListInternal` at `3.31%` exclusive sampled weight. Its `ReadIdent` path eagerly created a `StringBuilder` and then a second result string for every ordinary tag, class, ID, and pseudo identifier, even though the builder is only required when an escape must be decoded.
+  - `ReadIdent` now records the source range and returns one substring for an ordinary identifier. It creates a builder only at the first backslash, copies the unchanged prefix once, and then continues through the existing `TryReadEscapedCodePoint` decoder. Identifier boundaries, non-ASCII acceptance, escape decoding, pseudo canonicalization, selector limits, parsed-chain ownership, and matching behavior are unchanged.
+  - The returned names remain owned strings; no span escapes the method, and the change adds no interning table, cache, pool, unsafe code, retained state, or synchronization.
+- `FenBrowser.Tests/Performance/SelectorListSplitAllocationTests.cs`
+  - Ten thousand warmed production parses of one ordinary compound selector move exactly from `21,200,000 B` to `16,000,000 B`, saving `5,200,000 B` (`24.53%`, `520 B` per parse) in each of three fresh Release processes. The retained `16,100,000 B` ceiling rejects rebuilding ordinary identifiers.
+  - Five-process isolated medians improve from `49.713 ms` to `46.010 ms` (`-7.45%`). An escaped tag/class/ID/pseudo counter-case verifies that prefix copying and hexadecimal escape decoding still produce `article.card#head:first-child`.
+
+Five immediate restored-path reports `055215`, `055217`, `055219`, `055221`, and `055223` compare with retained reports `060319`, `060321`, `060323`, `060324`, and `060326`:
+
+| Scenario | CSS/style allocation before | CSS/style allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 9,011,648 B | 8,995,520 B (-0.18%) | 18,299,888 B | 18,283,552 B (-0.09%) |
+| steady-state-damage-animation | 5,098,744 B | 5,099,296 B (+0.01%) | 13,966,640 B | 13,966,640 B (flat) |
+| dense-text-flow | 2,923,576 B | 2,900,240 B (-0.80%) | 8,377,336 B | 8,336,856 B (-0.48%) |
+| wrapped-multiline-text | 1,570,064 B | 1,537,264 B (-2.09%) | 3,849,504 B | 3,808,504 B (-1.07%) |
+
+Page timing is mixed: CSS-rule medians are flat or better in three fixtures and `1.68%` slower in the first-frame fixture; total medians range from `-0.30%` to `+2.21%`. No page-latency claim is made. Collection-count medians are unchanged. The exact production-path allocation and timing probe supplies causal acceptance evidence. A fresh final-code `gc-verbose` trace omits `ParseSelectorListInternal` from the top 75 and reduces `StringBuilder.ToString` from `1.49%` to `0.89%` exclusive sampled weight.
+
+Rejected experiment:
+
+- Deferring selector-result storage and reserving one slot for a single valid chain reduced the exact probe only from `21,200,000 B` to `20,960,000 B` (`-1.13%`) while increasing its five-process median from `49.713 ms` to `52.910 ms` (`+6.43%`). That representation was fully reverted before the identifier change; result-list construction and multi-chain growth remain unchanged.
+
+Verification:
+
+- The exact ordinary-identifier allocation contract passes three fresh Release processes at `16,000,000 B`, and its final five-process timing batch has a `46.010 ms` median.
+- The included selector parser, escaped fallback, pseudo canonicalization, CSS syntax parser, and dynamic recascade slice passes `20/20`.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero errors, and every benchmark failure gate passes in all five retained reports.
+- Test262 is unrelated to CSS selector identifier reconstruction. WPT is not rerun because the included contracts exercise the ordinary path, escaped path, nested selector parsing, matching, and dynamic recascade without changing selector grammar or candidate selection.
