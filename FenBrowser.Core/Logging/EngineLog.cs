@@ -128,6 +128,18 @@ public static class EngineLog
         return _logger.IsEnabled(subsystem, severity);
     }
 
+    public static bool Flush(TimeSpan timeout)
+    {
+        EnsureInitialized();
+        EngineLogger logger;
+        lock (Sync)
+        {
+            logger = _logger;
+        }
+
+        return logger?.Flush(timeout) ?? true;
+    }
+
     public static void Write(
         LogSubsystem subsystem,
         LogSeverity severity,

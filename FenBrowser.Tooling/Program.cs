@@ -313,6 +313,8 @@ namespace FenBrowser.Tooling
             var url = args[1];
             var settleMs = args.Length > 2 && int.TryParse(args[2], out var parsed) ? parsed : 20000;
             var report = await CollectDebugSiteDiagnosticsAsync(url, settleMs).ConfigureAwait(false);
+            report.LoggerDrainTimeoutMs = 2000;
+            report.LoggerDrainSucceeded = EngineLog.Flush(TimeSpan.FromMilliseconds(report.LoggerDrainTimeoutMs));
             var bundleDir = WriteDebugSiteBundle(report);
 
             PrintDebugSiteReport(report);
@@ -671,13 +673,14 @@ namespace FenBrowser.Tooling
             Directory.CreateDirectory(bundleDir);
 
             var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
+            var exceptionSummary = BuildExceptionSummary(report);
             File.WriteAllText(
                 Path.Combine(bundleDir, "summary.json"),
                 JsonSerializer.Serialize(report, jsonOptions),
                 new UTF8Encoding(false));
             File.WriteAllText(
                 Path.Combine(bundleDir, "summary.md"),
-                BuildDebugSiteSummary(report, runId),
+                BuildDebugSiteSummary(report, runId, exceptionSummary),
                 new UTF8Encoding(false));
             File.WriteAllLines(Path.Combine(bundleDir, "console.log"), report.ConsoleMessages, new UTF8Encoding(false));
             File.WriteAllLines(Path.Combine(bundleDir, "navigation_failures.log"), report.NavigationFailures, new UTF8Encoding(false));
@@ -685,7 +688,7 @@ namespace FenBrowser.Tooling
             File.WriteAllText(Path.Combine(bundleDir, "probes.json"), JsonSerializer.Serialize(report.Probes, jsonOptions), new UTF8Encoding(false));
             File.WriteAllText(
                 Path.Combine(bundleDir, "exceptions.json"),
-                JsonSerializer.Serialize(ExtractExceptionRecords(report.ConsoleMessages, report.NavigateException), jsonOptions),
+                JsonSerializer.Serialize(exceptionSummary, jsonOptions),
                 new UTF8Encoding(false));
             File.WriteAllText(
                 Path.Combine(bundleDir, "missing_apis.json"),
@@ -736,7 +739,10 @@ namespace FenBrowser.Tooling
             return bundleDir;
         }
 
-        private static string BuildDebugSiteSummary(DebugSiteReport report, string runId)
+        private static string BuildDebugSiteSummary(
+            DebugSiteReport report,
+            string runId,
+            DebugSiteExceptionSummary exceptionSummary)
         {
             var firstConsoleError = report.ConsoleMessages.FirstOrDefault(IsLikelyErrorMessage) ?? "(none captured)";
             var firstNavFailure = report.NavigationFailures.FirstOrDefault() ?? "(none captured)";
@@ -788,6 +794,12 @@ namespace FenBrowser.Tooling
             sb.AppendLine($"Microtask checkpoints: {report.EventLoop?.MicrotaskCheckpoints ?? 0}");
             sb.AppendLine($"Timers scheduled: {report.EventLoop?.TimersScheduled ?? 0}");
             sb.AppendLine($"Animation frames executed: {report.EventLoop?.AnimationFramesExecuted ?? 0}");
+            sb.AppendLine($"Callback failures: {report.EventLoop?.CallbackFailures ?? 0}");
+            sb.AppendLine($"Callback failure records retained: {report.EventLoop?.CallbackFailureRecords?.Count ?? 0}");
+            sb.AppendLine($"Exceptions total: {exceptionSummary?.TotalCount ?? 0}");
+            sb.AppendLine($"Other exceptions: {exceptionSummary?.OtherExceptionCount ?? 0}");
+            sb.AppendLine($"Logger drain before export: {(report.LoggerDrainSucceeded ? "succeeded" : "timed-out")}");
+            sb.AppendLine($"Logger drain timeout: {report.LoggerDrainTimeoutMs} ms");
             sb.AppendLine($"Network requests: {report.NetworkRequests.Count}");
             sb.AppendLine($"Failed network requests: {failedNetworkRequests}");
             sb.AppendLine($"Navigation failures: {report.NavigationFailures.Count}");
@@ -1574,23 +1586,29 @@ namespace FenBrowser.Tooling
                 .ToList();
         }
 
-        private static List<ExceptionRecord> ExtractExceptionRecords(IEnumerable<string> consoleMessages, string navigateException)
+        private static List<DebugSiteExceptionRecord> ExtractExceptionRecords(IEnumerable<string> consoleMessages, string navigateException)
         {
-            var records = new List<ExceptionRecord>();
+            var records = new List<DebugSiteExceptionRecord>();
             if (!string.IsNullOrWhiteSpace(navigateException))
             {
-                records.Add(new ExceptionRecord("NavigateAsync", "Exception", navigateException));
+                records.Add(new DebugSiteExceptionRecord("NavigateAsync", "Exception", navigateException));
             }
 
             foreach (var message in consoleMessages ?? Enumerable.Empty<string>())
             {
                 if (IsLikelyErrorMessage(message))
                 {
-                    records.Add(new ExceptionRecord("Console", "Error", message));
+                    records.Add(new DebugSiteExceptionRecord("Console", "Error", message));
                 }
             }
 
             return records;
+        }
+
+        private static DebugSiteExceptionSummary BuildExceptionSummary(DebugSiteReport report)
+        {
+            var otherExceptions = ExtractExceptionRecords(report?.ConsoleMessages, report?.NavigateException);
+            return DebugSiteExceptionSummaryBuilder.Build(report?.EventLoop, otherExceptions);
         }
 
         private static List<MissingApiRecord> ExtractMissingApiRecords(
@@ -1827,9 +1845,9 @@ namespace FenBrowser.Tooling
             public int ScreenshotWidth { get; init; }
             public int ScreenshotHeight { get; init; }
             public string ScreenshotError { get; init; }
+            public bool LoggerDrainSucceeded { get; set; }
+            public int LoggerDrainTimeoutMs { get; set; }
         }
-
-        private sealed record ExceptionRecord(string Source, string Type, string Message);
 
         private sealed record MissingApiRecord(
             string Api,

@@ -141,6 +141,11 @@ internal sealed class EngineLogger : IEngineLogger, IDisposable
         return _ringBuffer?.Snapshot(count) ?? new List<EngineLogEvent>();
     }
 
+    public bool Flush(TimeSpan timeout)
+    {
+        return _dispatcher.Flush(timeout);
+    }
+
     public void Dispose()
     {
         _dispatcher.Dispose();

@@ -299,6 +299,54 @@ public class EngineLogSettingsTests
         }
     }
 
+    [Fact]
+    public void Flush_DrainsAcceptedEventsBeforeArtifactCopy()
+    {
+        var tracePath = Path.Combine(Path.GetTempPath(), $"fenbrowser-flush-{Guid.NewGuid():N}.jsonl");
+        try
+        {
+            EngineLog.Configure(new EngineLoggingOptions
+            {
+                Enabled = true,
+                GlobalMinimumSeverity = LogSeverity.Trace,
+                EnableConsoleSink = false,
+                EnableDebugSink = false,
+                EnableNdjsonSink = false,
+                EnableRingBufferSink = false,
+                EnableTraceSink = true,
+                TraceFilePath = tracePath
+            });
+
+            for (var i = 0; i < 64; i++)
+            {
+                EngineLog.Write(
+                    LogSubsystem.Verification,
+                    LogSeverity.Info,
+                    "flush-fixture",
+                    fields: new Dictionary<string, object> { ["sequence"] = i });
+            }
+
+            Assert.True(EngineLog.Flush(TimeSpan.FromSeconds(2)));
+            Assert.Equal(64, File.ReadAllLines(tracePath).Length);
+        }
+        finally
+        {
+            EngineLog.Configure(new EngineLoggingOptions
+            {
+                Enabled = false,
+                EnableConsoleSink = false,
+                EnableDebugSink = false,
+                EnableNdjsonSink = false,
+                EnableRingBufferSink = false,
+                EnableTraceSink = false
+            });
+            if (File.Exists(tracePath))
+            {
+                File.Delete(tracePath);
+            }
+        }
+    }
+
     private sealed class FormattingProbe
     {
         public int ToStringCalls { get; private set; }

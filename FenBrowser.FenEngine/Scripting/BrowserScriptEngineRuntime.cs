@@ -178,6 +178,7 @@ public sealed class BrowserEventLoopSnapshot
     public int CallbackFailures { get; set; }
     public string LastCallbackOrigin { get; set; } = string.Empty;
     public string LastError { get; set; } = string.Empty;
+    public List<BrowserCallbackFailureRecord> CallbackFailureRecords { get; set; } = new();
     public List<BrowserEventLoopRecord> Events { get; set; } = new();
 
     public BrowserEventLoopSnapshot Clone()
@@ -206,9 +207,43 @@ public sealed class BrowserEventLoopSnapshot
             CallbackFailures = CallbackFailures,
             LastCallbackOrigin = LastCallbackOrigin,
             LastError = LastError,
+            CallbackFailureRecords = CallbackFailureRecords?.ToList() ?? new List<BrowserCallbackFailureRecord>(),
             Events = Events?.Select(entry => entry.Clone()).ToList() ?? new List<BrowserEventLoopRecord>()
         };
     }
+}
+
+public sealed record BrowserCallbackFailureRecord
+{
+    public int SchemaVersion { get; init; } = 1;
+    public long Sequence { get; init; }
+    public string TimestampUtc { get; init; } = string.Empty;
+    public string NavigationId { get; init; } = string.Empty;
+    public string DocumentId { get; init; } = string.Empty;
+    public string RealmId { get; init; } = string.Empty;
+    public string TaskId { get; init; } = string.Empty;
+    public string CallbackId { get; init; } = string.Empty;
+    public string CallbackCategory { get; init; } = string.Empty;
+    public long? TimerId { get; init; }
+    public string EventType { get; init; } = string.Empty;
+    public string ScriptId { get; init; } = string.Empty;
+    public string ScriptUrl { get; init; } = string.Empty;
+    public string ScriptSourceLabel { get; init; } = string.Empty;
+    public int SourceLine { get; init; }
+    public int SourceColumn { get; init; }
+    public string CallbackFunctionName { get; init; } = string.Empty;
+    public string ReceiverRepresentation { get; init; } = string.Empty;
+    public string ReceiverHostType { get; init; } = string.Empty;
+    public string ReceiverJsType { get; init; } = string.Empty;
+    public string ArgumentTypeSummary { get; init; } = string.Empty;
+    public string ExceptionType { get; init; } = string.Empty;
+    public string ExceptionMessage { get; init; } = string.Empty;
+    public string JsStack { get; init; } = string.Empty;
+    public string HostStack { get; init; } = string.Empty;
+    public string DocumentReadyState { get; init; } = string.Empty;
+    public string LifecycleMilestone { get; init; } = string.Empty;
+    public bool BlockedProgress { get; init; }
+    public string RedactionStatus { get; init; } = "metadata-only";
 }
 
 public sealed class BrowserEventLoopRecord
@@ -310,6 +345,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private readonly System.Diagnostics.Stopwatch _fenJsClock = System.Diagnostics.Stopwatch.StartNew();
     private readonly BrowserFenJsHostHooks _hostHooks = new();
     private readonly NavigationEpoch _navigationEpoch = NavigationEpoch.Initial;
+    private string _currentDocumentId = string.Empty;
+    private long _callbackFailureSequence;
     private readonly Dictionary<object, HostObjectHandle> _hostHandleCache =
         new(ReferenceEqualityComparer.Instance);
     private readonly List<BrowserEventListener> _documentEventListeners = new();
@@ -1377,6 +1414,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private void BeginEventLoopSnapshot(Node domRoot, Uri baseUri)
     {
+        _currentDocumentId = "document-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+        Interlocked.Exchange(ref _callbackFailureSequence, 0);
         lock (_eventLoopLock)
         {
             _lastEventLoopSnapshot = new BrowserEventLoopSnapshot
@@ -4496,6 +4535,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var delayMs = args.Count > 1 ? ToFiniteDelay(args[1]) : 0;
         var extraArgs = args.Count > 2 ? args.Skip(2).ToArray() : Array.Empty<JsValue>();
         var callbackContext = CaptureActiveWindowCallbackContext();
+        var callbackProvenance = CaptureCallbackProvenance(callback);
 
         var id = Interlocked.Increment(ref _fenJsTimerIdCounter);
         FenBrowser.Core.EngineLogCompat.Debug(
@@ -4550,7 +4590,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         ["timerType"] = repeat ? "interval" : "timeout",
                         ["callbackTag"] = callback.Tag.ToString()
                     });
-                InvokeFenJsCallbackSafely(callback, extraArgs, repeat ? "setInterval" : "setTimeout", id, callbackContext);
+                InvokeFenJsCallbackSafely(
+                    callback,
+                    extraArgs,
+                    repeat ? "setInterval" : "setTimeout",
+                    id,
+                    callbackContext,
+                    callbackProvenance);
             },
             null,
             Math.Max(0, delayMs),
@@ -4569,6 +4615,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         var callback = args[0];
         var callbackContext = CaptureActiveWindowCallbackContext();
+        var callbackProvenance = CaptureCallbackProvenance(callback);
         var id = Interlocked.Increment(ref _fenJsTimerIdCounter);
         UpdateEventLoopSnapshot(snapshot => snapshot.AnimationFramesScheduled++);
         AddEventLoopRecord("RequestAnimationFrameScheduled", callback.Tag.ToString(), id, 16);
@@ -4602,7 +4649,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         ["delayMs"] = 16,
                         ["callbackTag"] = callback.Tag.ToString()
                     });
-                InvokeFenJsCallbackSafely(callback, new[] { timestamp }, "requestAnimationFrame", id, callbackContext);
+                InvokeFenJsCallbackSafely(
+                    callback,
+                    new[] { timestamp },
+                    "requestAnimationFrame",
+                    id,
+                    callbackContext,
+                    callbackProvenance);
             },
             null,
             16,
@@ -4654,6 +4707,252 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         };
     }
 
+    private CallbackSourceProvenance CaptureCallbackProvenance(JsValue callback)
+    {
+        var script = GetCurrentScriptRecord();
+        return new CallbackSourceProvenance(
+            ScriptId: script?.ScriptId ?? string.Empty,
+            ScriptUrl: ResolveMissingApiScriptUrl(script, null, _currentBaseUri),
+            ScriptSourceLabel: script?.SourceLabel ?? string.Empty,
+            SourceLine: script?.SourceLine ?? 0,
+            SourceColumn: script?.SourceColumn ?? 0,
+            CallbackFunctionName: GetCallbackFunctionName(callback));
+    }
+
+    private string GetCallbackFunctionName(JsValue callback)
+    {
+        if (callback.Tag != JsValueTag.Object)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var callbackObject = _interpreter.Heap.GetObject(callback.AsObjectHandle());
+            return callbackObject switch
+            {
+                JsFunctionObject function => function.Function.Name ?? string.Empty,
+                NativeFunctionObject native => native.Name ?? string.Empty,
+                _ when callbackObject.TryGetOwnProperty("name", out var descriptor) &&
+                       descriptor.Value.Tag == JsValueTag.String => descriptor.Value.AsString(),
+                _ => string.Empty
+            };
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private BrowserCallbackFailureRecord RecordCallbackFailure(
+        JsValue callback,
+        JsValue receiver,
+        IReadOnlyList<JsValue> args,
+        string origin,
+        long callbackId,
+        CallbackSourceProvenance provenance,
+        Exception exception)
+    {
+        const int maxFailureRecords = 128;
+        var callbackCategory = origin ?? string.Empty;
+        var functionName = provenance?.CallbackFunctionName ?? GetCallbackFunctionName(callback);
+        var (receiverRepresentation, receiverHostType) = DescribeCallbackReceiver(receiver);
+        var (exceptionType, exceptionMessage, jsStack) = DescribeCallbackException(exception, functionName);
+        var hostStack = TruncateDiagnosticText(RedactPotentialSecrets(exception?.StackTrace), 8192);
+        var taskPrefix = callbackCategory switch
+        {
+            "setTimeout" or "setInterval" => "timer",
+            "requestAnimationFrame" => "raf",
+            _ => "callback"
+        };
+        var isTimer = callbackCategory is "setTimeout" or "setInterval";
+        var readyState = GetDocumentReadyState();
+        var record = new BrowserCallbackFailureRecord
+        {
+            Sequence = Interlocked.Increment(ref _callbackFailureSequence),
+            TimestampUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+            NavigationId = _currentNavigationId ?? LogContext.CurrentCorrelationId ?? string.Empty,
+            DocumentId = _currentDocumentId ?? string.Empty,
+            RealmId = "realm-0",
+            TaskId = taskPrefix + "-" + callbackId.ToString(CultureInfo.InvariantCulture),
+            CallbackId = "callback-" + callbackId.ToString(CultureInfo.InvariantCulture),
+            CallbackCategory = callbackCategory,
+            TimerId = isTimer ? callbackId : null,
+            ScriptId = provenance?.ScriptId ?? string.Empty,
+            ScriptUrl = provenance?.ScriptUrl ?? string.Empty,
+            ScriptSourceLabel = provenance?.ScriptSourceLabel ?? string.Empty,
+            SourceLine = provenance?.SourceLine ?? 0,
+            SourceColumn = provenance?.SourceColumn ?? 0,
+            CallbackFunctionName = functionName,
+            ReceiverRepresentation = receiverRepresentation,
+            ReceiverHostType = receiverHostType,
+            ReceiverJsType = receiver.Tag.ToString(),
+            ArgumentTypeSummary = TruncateDiagnosticText(
+                args == null ? string.Empty : string.Join(",", args.Select(static value => value.Tag.ToString())),
+                1024),
+            ExceptionType = exceptionType,
+            ExceptionMessage = exceptionMessage,
+            JsStack = jsStack,
+            HostStack = hostStack,
+            DocumentReadyState = readyState,
+            LifecycleMilestone = GetLifecycleMilestone(readyState),
+            BlockedProgress = false,
+            RedactionStatus = "metadata-only; secret-like stack lines redacted"
+        };
+
+        UpdateEventLoopSnapshot(snapshot =>
+        {
+            snapshot.CallbackFailures++;
+            snapshot.LastCallbackOrigin = callbackCategory;
+            snapshot.LastError = exceptionType + ": " + exceptionMessage;
+            snapshot.CallbackFailureRecords.Add(record);
+            if (snapshot.CallbackFailureRecords.Count > maxFailureRecords)
+            {
+                snapshot.CallbackFailureRecords.RemoveRange(
+                    0,
+                    snapshot.CallbackFailureRecords.Count - maxFailureRecords);
+            }
+        });
+
+        return record;
+    }
+
+    private (string Representation, string HostType) DescribeCallbackReceiver(JsValue receiver)
+    {
+        if (receiver.Tag == JsValueTag.HostObject)
+        {
+            var hostType = TryResolveHostObject(receiver, out var hostObject)
+                ? hostObject.GetType().Name
+                : "unresolved";
+            return ("[host:" + hostType + "]", hostType);
+        }
+
+        if (receiver.Tag == JsValueTag.Object)
+        {
+            try
+            {
+                return ("[object:" + _interpreter.Heap.GetObject(receiver.AsObjectHandle()).GetType().Name + "]", string.Empty);
+            }
+            catch
+            {
+                return ("[object:unresolved]", string.Empty);
+            }
+        }
+
+        return ("[" + receiver.Tag + "]", string.Empty);
+    }
+
+    private (string Type, string Message, string JsStack) DescribeCallbackException(
+        Exception exception,
+        string callbackFunctionName)
+    {
+        var type = exception?.GetType().Name ?? "Exception";
+        var message = exception?.Message ?? string.Empty;
+        var jsStack = string.Empty;
+
+        if (exception is JsThrownException jsThrown)
+        {
+            var description = string.Empty;
+            try
+            {
+                description = _interpreter.DescribeThrownValue(jsThrown.Value) ?? string.Empty;
+            }
+            catch
+            {
+                description = jsThrown.Description ?? string.Empty;
+            }
+
+            var separator = description.IndexOf(':');
+            if (separator > 0)
+            {
+                type = description.Substring(0, separator).Trim();
+                message = description.Substring(separator + 1).Trim();
+            }
+            else if (!string.IsNullOrWhiteSpace(description))
+            {
+                message = description;
+            }
+
+            jsStack = string.IsNullOrWhiteSpace(message)
+                ? type
+                : type + ": " + message;
+        }
+
+        if (!string.IsNullOrWhiteSpace(callbackFunctionName) &&
+            jsStack.IndexOf(callbackFunctionName, StringComparison.Ordinal) < 0)
+        {
+            jsStack = string.IsNullOrWhiteSpace(jsStack)
+                ? "at " + callbackFunctionName + " [callback entry]"
+                : jsStack + Environment.NewLine + "    at " + callbackFunctionName + " [callback entry]";
+        }
+
+        return (
+            TruncateDiagnosticText(type, 256),
+            TruncateDiagnosticText(RedactPotentialSecrets(message), 2048),
+            TruncateDiagnosticText(RedactPotentialSecrets(jsStack), 8192));
+    }
+
+    private string GetLifecycleMilestone(string readyState)
+    {
+        lock (_eventLoopLock)
+        {
+            if (_lastEventLoopSnapshot?.LoadFired == true)
+            {
+                return "load-fired";
+            }
+
+            if (_lastEventLoopSnapshot?.DomContentLoadedFired == true)
+            {
+                return "dom-content-loaded";
+            }
+        }
+
+        return string.Equals(readyState, "interactive", StringComparison.OrdinalIgnoreCase)
+            ? "interactive"
+            : "loading";
+    }
+
+    private static string RedactPotentialSecrets(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        var lines = value.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            if (line.IndexOf("authorization", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                line.IndexOf("cookie", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                line.IndexOf("bearer ", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                line.IndexOf("token=", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                lines[i] = "[redacted secret-like diagnostic line]";
+            }
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string TruncateDiagnosticText(string value, int maxLength)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length <= maxLength)
+        {
+            return value ?? string.Empty;
+        }
+
+        return value.Substring(0, maxLength) + "...";
+    }
+
+    private sealed record CallbackSourceProvenance(
+        string ScriptId,
+        string ScriptUrl,
+        string ScriptSourceLabel,
+        int SourceLine,
+        int SourceColumn,
+        string CallbackFunctionName);
+
     // Invoke a FenJS callback from a host timer thread, holding the interpreter lock so
     // it can never race with page-script evaluation, then drain microtasks and request
     // a repaint so DOM mutations made by the callback become visible.
@@ -4662,8 +4961,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         IReadOnlyList<JsValue> args,
         string origin,
         long callbackId = 0,
-        FenJsWindowCallbackContext windowContext = null)
+        FenJsWindowCallbackContext windowContext = null,
+        CallbackSourceProvenance callbackProvenance = null)
     {
+        var callbackThis = windowContext?.WindowTarget ?? _fenJsGlobalThis;
+        callbackProvenance ??= CaptureCallbackProvenance(callback);
         try
         {
             RunFenJsWithLargeStack<object>(() =>
@@ -4675,7 +4977,6 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         using var callbackWindowScope = windowContext != null
                             ? ActivateWindowCallbackContext(windowContext.WindowTarget, windowContext.WindowListeners)
                             : null;
-                        var callbackThis = windowContext?.WindowTarget ?? _fenJsGlobalThis;
                         var invoked = false;
                         LogEventLoop(
                             "TaskStarted",
@@ -4762,12 +5063,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     }
                     catch (Exception ex)
                     {
-                        UpdateEventLoopSnapshot(snapshot =>
-                        {
-                            snapshot.CallbackFailures++;
-                            snapshot.LastCallbackOrigin = origin ?? string.Empty;
-                            snapshot.LastError = ex.GetType().Name + ": " + ex.Message;
-                        });
+                        var failure = RecordCallbackFailure(
+                            callback,
+                            callbackThis,
+                            args,
+                            origin,
+                            callbackId,
+                            callbackProvenance,
+                            ex);
                         AddEventLoopRecord("CallbackFailed", origin ?? string.Empty, callbackId);
                         LogEventLoop(
                             "TaskFailed",
@@ -4777,8 +5080,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             {
                                 ["origin"] = origin ?? string.Empty,
                                 ["id"] = callbackId,
-                                ["errorType"] = ex.GetType().Name,
-                                ["error"] = ex.Message
+                                ["taskId"] = failure.TaskId,
+                                ["callbackId"] = failure.CallbackId,
+                                ["scriptId"] = failure.ScriptId,
+                                ["scriptSourceLabel"] = failure.ScriptSourceLabel,
+                                ["scriptSourceLine"] = failure.SourceLine,
+                                ["scriptSourceColumn"] = failure.SourceColumn,
+                                ["callbackFunctionName"] = failure.CallbackFunctionName,
+                                ["receiverJsType"] = failure.ReceiverJsType,
+                                ["receiverHostType"] = failure.ReceiverHostType,
+                                ["errorType"] = failure.ExceptionType,
+                                ["error"] = failure.ExceptionMessage,
+                                ["jsStack"] = failure.JsStack,
+                                ["hostStack"] = failure.HostStack,
+                                ["redactionStatus"] = failure.RedactionStatus
                             },
                             LogMarker.EngineBug);
                         LogEventLoop(
@@ -4815,12 +5130,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
         catch (Exception ex)
         {
-            UpdateEventLoopSnapshot(snapshot =>
-            {
-                snapshot.CallbackFailures++;
-                snapshot.LastCallbackOrigin = origin ?? string.Empty;
-                snapshot.LastError = ex.GetType().Name + ": " + ex.Message;
-            });
+            var failure = RecordCallbackFailure(
+                callback,
+                callbackThis,
+                args,
+                origin,
+                callbackId,
+                callbackProvenance,
+                ex);
             AddEventLoopRecord("CallbackCrashed", origin ?? string.Empty, callbackId);
             LogEventLoop(
                 "TaskFailed",
@@ -4830,8 +5147,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 {
                     ["origin"] = origin ?? string.Empty,
                     ["id"] = callbackId,
-                    ["errorType"] = ex.GetType().Name,
-                    ["error"] = ex.Message
+                    ["taskId"] = failure.TaskId,
+                    ["callbackId"] = failure.CallbackId,
+                    ["scriptId"] = failure.ScriptId,
+                    ["scriptSourceLabel"] = failure.ScriptSourceLabel,
+                    ["scriptSourceLine"] = failure.SourceLine,
+                    ["scriptSourceColumn"] = failure.SourceColumn,
+                    ["callbackFunctionName"] = failure.CallbackFunctionName,
+                    ["receiverJsType"] = failure.ReceiverJsType,
+                    ["receiverHostType"] = failure.ReceiverHostType,
+                    ["errorType"] = failure.ExceptionType,
+                    ["error"] = failure.ExceptionMessage,
+                    ["jsStack"] = failure.JsStack,
+                    ["hostStack"] = failure.HostStack,
+                    ["redactionStatus"] = failure.RedactionStatus
                 },
                 LogMarker.EngineBug);
             LogEventLoop(

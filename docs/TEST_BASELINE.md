@@ -8,13 +8,14 @@ Snapshot date: 2026-07-14; focused build/test revalidated 2026-07-15. All paths 
 | --- | --- | --- | --- |
 | Tooling dependency graph, Release | `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -v minimal` | 0 errors, 498 warnings | TESTED |
 | Diagnostic/process focused tests | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~MissingApiTrackerTests|FullyQualifiedName~NavigationLifecycleTraceTests|FullyQualifiedName~RendererIpcMetadataTests|FullyQualifiedName~RendererIsolationPoliciesTests"` | 44 passed, 0 failed, 0 skipped | TESTED |
+| Callback provenance/export focused tests | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~EngineLogSettingsTests.Flush_DrainsAcceptedEventsBeforeArtifactCopy|FullyQualifiedName~DebugSiteExceptionSummaryTests" --logger "console;verbosity=minimal"` | 3 passed, 0 failed, 0 skipped | TESTED |
 | Tooling dependency graph, Debug | Same build in Debug | Reached project compilation, then failed copying Host dependencies because Visual Studio and a running FenBrowser.Host locked Debug DLLs | RESEARCHED |
 
 The current Release warnings are primarily existing obsolete-API, platform-guard, analyzer, and Tooling unreachable-code warnings. They do not fail the build, but they remain visible baseline debt. The Debug result is an environment lock, not a source compilation failure. The active processes were not terminated because they belong to the user's live workspace session.
 
 ## Test discovery gap
 
-`FenBrowser.Tests/FenBrowser.Tests.csproj` removes `Engine/**`, `DOM/**`, `WebAPIs/**`, `Workers/**`, `Interaction/**`, `Integration/**`, `Diagnostics/**`, `Host/**`, `Rendering/**`, and `Architecture/**` from compilation.
+`FenBrowser.Tests/FenBrowser.Tests.csproj` removes `Engine/**`, `DOM/**`, `WebAPIs/**`, `Workers/**`, `Interaction/**`, `Integration/**`, `Diagnostics/**`, `Host/**`, `Testing/**`, `Rendering/**`, `DevTools/**`, and `Architecture/**` from compilation, plus four explicit Core test files.
 
 The Release discovery check found:
 
@@ -22,11 +23,15 @@ The Release discovery check found:
 | --- | --- |
 | `MissingApiTrackerTests` | yes |
 | `RendererIpcMetadataTests` | yes |
+| `CallbackFailureDiagnosticsTests` | yes |
+| `DebugSiteExceptionSummaryTests` | yes |
 | `EventLoopTraceTests` | no |
 | `RealSiteRenderDiagnostics` | no |
 | `RendererChildLoopIoTests` | no |
 
-Passing the normal test project therefore does not currently protect every diagnostic, render, host, or IPC path.
+The included `Scripting/CallbackFailureDiagnosticsTests.cs` and `Tooling/DebugSiteExceptionSummaryTests.cs` files activate only the first callback/export slice; no excluded tree was broadly re-enabled. The compile-removal patterns currently cover 246 C# files under excluded directory trees plus the four explicit Core files. Passing the normal test project therefore does not yet protect every diagnostic, render, host, or IPC path.
+
+A combined parallel filter containing two independent FenJS runtime classes reproduced the existing shared-bootstrap isolation defect (`TypeError: Cannot read properties of undefined (reading 'prototype')`). Each timer class passes when run alone. FenJS test serialization remains verification-infrastructure work; the focused callback command above contains one FenJS runtime test and is deterministic.
 
 ## Test262 source of truth
 
@@ -64,6 +69,7 @@ The latest retained focused `dom/lists` summary at `Results/wpt_20260704_175911/
 | Target | Evidence | Observed result | Status |
 | --- | --- | --- | --- |
 | Google | `logs/real-site/www.google.com/20260714T075906Z/` | Main page rendered; DCL/load true; 17 completed script executions; input not automated | TESTED |
+| Throwing timer local fixture | `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_throwing_timer_callback.html/20260715T075651Z/` | Complete lifecycle; one typed timer failure; `event_loop.json`, `exceptions.json`, and `summary.md` all report 1; logger drain true; trace contains the attributed failure | TESTED |
 | example.com control | `logs/real-site/example.com/20260713T074825Z/` | Complete lifecycle and screenshot, no failure | TESTED |
 | `fen://performance` control | `logs/real-site/performance/20260714T102820Z/` | 518 boxes, screenshot, complete lifecycle | TESTED |
 

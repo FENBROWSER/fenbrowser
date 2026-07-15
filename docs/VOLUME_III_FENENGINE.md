@@ -10116,3 +10116,16 @@ Verification:
 - The included CSS syntax parser, selector parser, pseudo canonicalization, style-layout, and dynamic recascade slice passes `42/42` in Release.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five retained candidate reports.
 - Test262 is unrelated to the private parsed-argument allocation timing. WPT is not rerun because local tests exercise ordinary pseudos, functional pseudos, specificity, matching, stylesheet parsing, and dynamic recascade.
+
+## 2.373 Typed Callback-Failure Provenance (2026-07-15)
+
+- `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs` now records callback failures at the host callback catch point in a bounded 128-record per-document list. Each immutable record carries sequence/time, navigation/document/realm identity, task/callback/timer identity, callback category and function name, script label/URL/source position, receiver JS and host type metadata, argument type summary, JS callback-entry stack, host stack, lifecycle state, blocked-progress status, and redaction status.
+- Timer and animation-frame scheduling capture script/function provenance before the asynchronous callback runs. Diagnostics retain type metadata only for arguments and receiver values; message and stack fields are bounded, and secret-like stack lines are redacted. The existing callback exception behavior is unchanged.
+- The aggregate `CallbackFailures` and `LastError` fields remain for compatibility, while `CallbackFailureRecords` supplies ordered causal detail. Record retention is bounded without retaining callback object graphs.
+- The deterministic `CallbackFailureDiagnosticsTests.ThrowingTimer_PreservesTypedFailureProvenance` fixture is compiled from the included `Scripting/` test surface and proves timer source line/label, task and callback IDs, receiver metadata, exception message, JS callback-entry frame, and host stack.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~EngineLogSettingsTests.Flush_DrainsAcceptedEventsBeforeArtifactCopy|FullyQualifiedName~DebugSiteExceptionSummaryTests" --logger "console;verbosity=minimal"`: pass (`3/3`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsXmlHttpRequestTests.TimerAndRafCallbacks_DoNotOverwriteLargeStackWorkerDispatch" --logger "console;verbosity=minimal"`: pass (`1/1`).
+- Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_throwing_timer_callback.html/20260715T075651Z/`: complete lifecycle and screenshot; one callback failure retained with `timer-1`, `callback-1`, `timerFixtureReceiver`, `inline#1` line 6, receiver `[object:JsObject]`, exception `timer-fixture-boom`, JS callback-entry frame, and host stack.
