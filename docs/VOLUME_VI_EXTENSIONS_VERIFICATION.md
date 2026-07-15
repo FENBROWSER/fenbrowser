@@ -3593,3 +3593,20 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
 - `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five retained processes.
 - `dotnet-trace collect --profile gc-verbose --output Results/performance/render_alloc_profile_after_specificity_linear_max_20260715.nettrace -- dotnet FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.dll render-perf`: capture succeeds; `dotnet-trace report ... topN -n 100` omits `OrderByDescending`.
+
+## 6.137 Lazy CSS Name-Builder Verification (2026-07-15)
+
+- `CssSyntaxParserAllocationTests.CssTokenizer_OrdinaryNamesHaveBoundedAllocations` consumes 10,000 28-character ordinary names through the production tokenizer. Deferring `StringBuilder` creation until the first valid escape reduces allocation exactly from `2,880,032 B` to `800,032 B` (`-2,080,000 B`, `-72.22%`) in three fresh Release processes and passes the tightened `830,000 B` ceiling.
+- `CssTokenizer_EscapedNameRetainsDecodedValue` protects multiple hexadecimal escapes and their terminating whitespace. Existing escaped-selector, punctuation, nested-selector, selector-match, style-layout, and dynamic-recascade contracts protect downstream behavior; the complete included slice passes `41/41`.
+- Reports `071004`, `071006`, `071008`, `071010`, and `071012` pass every failure gate against reports `070109`, `070111`, `070112`, `070114`, and `070116`. CSS/style allocation medians fall `34,160 B` heavy, `55,088 B` dense text, and `41,000 B` wrapped text; steady state is exactly flat. Managed allocation improves in all four fixtures.
+- CSS-rule, CSS/style, and total timing medians are mixed, so no page-latency claim is made. Gen0/1/2 medians are unchanged. The final `gc-verbose` trace omits the previously ranked `CssTokenizer.ConsumeName` owner from the top 100.
+- Test262 is not applicable. WPT is not rerun because the focused local contracts exercise both ordinary and escaped name materialization through the tokenizer, parser, matcher, and cascade.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName=FenBrowser.Tests.Performance.CssSyntaxParserAllocationTests.CssTokenizer_OrdinaryNamesHaveBoundedAllocations" --logger "console;verbosity=detailed"`: pass in three fresh processes at exactly `800,032 B` each.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CssSyntaxParserAllocationTests|FullyQualifiedName~SelectorListSplitAllocationTests|FullyQualifiedName~PseudoSelectorCanonicalizationTests|FullyQualifiedName~DynamicClassRecascadeTests|FullyQualifiedName~StyleLayoutContractTests" --logger "console;verbosity=minimal"`: pass (`41/41`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five retained processes.
+- `dotnet-trace collect --profile gc-verbose --output Results/performance/render_alloc_profile_after_css_name_lazy_builder_20260715.nettrace -- dotnet FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.dll render-perf`: capture succeeds; `dotnet-trace report ... topN -n 100` omits `CssTokenizer.ConsumeName`.

@@ -509,25 +509,36 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private string ConsumeName()
         {
-            var sb = new StringBuilder();
+            int nameStart = _position;
+            int segmentStart = _position;
+            StringBuilder sb = null;
             while (_position < _length)
             {
                 char c = _input[_position];
                 if (IsNameChar(c))
                 {
-                    sb.Append(c);
                     _position++;
                 }
                 else if (IsValidEscape(_position))
                 {
+                    sb ??= new StringBuilder();
+                    sb.Append(_input, segmentStart, _position - segmentStart);
                     _position++;
                     sb.Append(ConsumeEscape());
+                    segmentStart = _position;
                 }
                 else
                 {
                     break;
                 }
             }
+
+            if (sb == null)
+            {
+                return _input.Substring(nameStart, _position - nameStart);
+            }
+
+            sb.Append(_input, segmentStart, _position - segmentStart);
             return sb.ToString();
         }
         

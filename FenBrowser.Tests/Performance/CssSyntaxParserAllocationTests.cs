@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Text;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Rendering.Css;
 using Xunit;
@@ -131,6 +132,44 @@ public sealed class CssSyntaxParserAllocationTests
     }
 
     [Fact]
+    public void CssTokenizer_OrdinaryNamesHaveBoundedAllocations()
+    {
+        const int nameCount = 10_000;
+        const string name = "ordinaryidentifierwithlength";
+        var source = new StringBuilder(nameCount * (name.Length + 1));
+        for (var index = 0; index < nameCount; index++)
+        {
+            if (index != 0)
+            {
+                source.Append(' ');
+            }
+
+            source.Append(name);
+        }
+
+        string css = source.ToString();
+        ConsumeIdentifierTokens(css, name, out _);
+
+        long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        int consumedNames = ConsumeIdentifierTokens(css, name, out bool allNamesMatch);
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+
+        _output.WriteLine($"Tokenizing {consumedNames:N0} ordinary CSS names allocated {allocated:N0} B.");
+        Assert.Equal(nameCount, consumedNames);
+        Assert.True(allNamesMatch);
+        Assert.InRange(allocated, 1, 830_000);
+    }
+
+    [Fact]
+    public void CssTokenizer_EscapedNameRetainsDecodedValue()
+    {
+        var tokenizer = new CssTokenizer(@"ord\69 n\61 ry");
+
+        Assert.Equal("ordinary", tokenizer.Consume().Value);
+        Assert.Equal(CssTokenType.EOF, tokenizer.Consume().Type);
+    }
+
+    [Fact]
     public void ParseStylesheet_EscapedIdentifierPreservesSelectorText()
     {
         const string selector = @".component\ name";
@@ -205,5 +244,28 @@ public sealed class CssSyntaxParserAllocationTests
             Environment.NewLine,
             Enumerable.Range(0, RuleCount).Select(index =>
                 $".component-{index} article[data-state='ready'] > span.label-{index}:hover {{ {declarations} }}"));
+    }
+
+    private static int ConsumeIdentifierTokens(string css, string expectedName, out bool allNamesMatch)
+    {
+        var tokenizer = new CssTokenizer(css);
+        int nameCount = 0;
+        allNamesMatch = true;
+        while (true)
+        {
+            CssToken token = tokenizer.Consume();
+            if (token.Type == CssTokenType.EOF)
+            {
+                return nameCount;
+            }
+
+            if (token.Type != CssTokenType.Ident)
+            {
+                continue;
+            }
+
+            nameCount++;
+            allNamesMatch &= string.Equals(token.Value, expectedName, StringComparison.Ordinal);
+        }
     }
 }

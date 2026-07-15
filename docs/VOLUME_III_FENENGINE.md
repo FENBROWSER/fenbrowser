@@ -10056,3 +10056,31 @@ Verification:
 - The included CSS syntax parser, selector parser, pseudo canonicalization, style-layout, and dynamic recascade slice passes `39/39` in Release.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five retained candidate reports.
 - Test262 is unrelated to CSS specificity selection. WPT is not rerun because direct local contracts protect ordering, stored specificity, matching, stylesheet parsing, and cascade behavior.
+
+## 2.371 Lazy CSS Name Builder (2026-07-15)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssTokenizer.cs`
+  - The post-specificity allocation trace ranked `CssTokenizer.ConsumeName` at `1.98%` exclusive sampled weight. Every identifier, hash, at-keyword, function name, and dimension unit constructed a `StringBuilder`, appended ordinary characters one by one, and then copied into the required owned token string.
+  - `ConsumeName` now records source ranges for ordinary characters and returns one substring when no escape occurs. At the first valid escape it creates a builder, copies the preceding unchanged range once, decodes through the existing `ConsumeEscape`, and continues with source-range appends around later escapes.
+  - Token ownership, token types, name boundaries, non-ASCII handling, escaped code-point decoding, hex-escape whitespace consumption, invalid-escape termination, parser recovery, and downstream selector/cascade behavior are unchanged. No span escapes, and the change adds no interning, cache, pool, unsafe code, retained state, synchronization, or ownership change.
+- `FenBrowser.Tests/Performance/CssSyntaxParserAllocationTests.cs`
+  - A warmed production tokenizer processes 10,000 28-character ordinary names separated by whitespace. Allocation moves exactly from `2,880,032 B` to `800,032 B` in three fresh Release processes, saving `2,080,000 B` (`72.22%`, `208 B` per name). The retained `830,000 B` ceiling rejects eager builders.
+  - A direct multi-escape counter-case requires `ord\69 n\61 ry` to decode to `ordinary`; existing escaped-selector and punctuation contracts continue to protect stylesheet reconstruction and matching.
+
+Five immediate Release reports `070109`, `070111`, `070112`, `070114`, and `070116` compare with reports `071004`, `071006`, `071008`, `071010`, and `071012`:
+
+| Scenario | CSS/style allocation before | CSS/style allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 8,972,456 B | 8,938,296 B (-34,160 B, -0.38%) | 17,722,232 B | 17,673,464 B (-48,768 B, -0.28%) |
+| steady-state-damage-animation | 5,091,096 B | 5,091,096 B (flat) | 13,464,048 B | 13,455,880 B (-8,168 B, -0.06%) |
+| dense-text-flow | 2,911,680 B | 2,856,592 B (-55,088 B, -1.89%) | 6,131,464 B | 6,079,048 B (-52,416 B, -0.85%) |
+| wrapped-multiline-text | 1,538,024 B | 1,497,024 B (-41,000 B, -2.67%) | 3,354,064 B | 3,316,736 B (-37,328 B, -1.11%) |
+
+CSS/style allocation falls in every fixture that parses names during the measured phase and is exactly flat in steady state. CSS-rule, CSS/style, and total timing medians are mixed, so no page-latency claim is made. Gen0/1/2 medians are unchanged. A fresh final-code `gc-verbose` trace omits `CssTokenizer.ConsumeName` from the top 100 allocation owners.
+
+Verification:
+
+- The exact ordinary-name allocation contract passes three fresh Release processes at `800,032 B` each, and the escaped-name counter-path passes with it.
+- The included CSS syntax parser, selector parser, pseudo canonicalization, style-layout, and dynamic recascade slice passes `41/41` in Release.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five retained candidate reports.
+- Test262 is unrelated to CSS token name materialization. WPT is not rerun because direct local tokenizer and parser contracts protect both materialization branches and cascade-visible results.
