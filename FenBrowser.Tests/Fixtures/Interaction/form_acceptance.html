@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Form interaction acceptance</title>
+<style>
+  body { font: 16px sans-serif; margin: 32px; }
+  label, input, button { display: block; margin: 8px 0; }
+  input, button { width: 320px; min-height: 36px; }
+</style>
+<form id="search-form" action="result.html" method="get">
+  <label for="query">Query</label>
+  <input id="query" name="q" type="text" autocomplete="off">
+  <input name="source" type="hidden" value="local-fixture">
+  <input name="ignored" type="text" value="disabled-value" disabled>
+  <label><input id="include" name="include" type="checkbox" value="yes" checked> Include</label>
+  <button id="submit" name="submitter" type="submit" value="go">Search</button>
+  <button id="hidden-submit" type="button" style="display:none">Hidden</button>
+</form>
+<p id="status">pending</p>
+<script>
+globalThis.__events = [];
+globalThis.__submission = null;
+globalThis.__cancelBeforeInput = false;
+globalThis.__preventSubmit = true;
+
+var trackedTypes = [
+  'pointerdown', 'mousedown', 'focus', 'keydown', 'keypress',
+  'beforeinput', 'input', 'keyup', 'change', 'blur',
+  'pointerup', 'mouseup', 'click', 'submit'
+];
+
+trackedTypes.forEach(function (type) {
+  document.addEventListener(type, function (event) {
+    var target = event.target && event.target.id ? event.target.id : event.target && event.target.tagName;
+    globalThis.__events.push(type + ':' + String(target || 'unknown'));
+    if (type === 'keydown') {
+      globalThis.__lastKey = String(event.key) + '|' + String(event.keyCode);
+    }
+    if (type === 'beforeinput') {
+      globalThis.__lastBeforeInput = String(event.data) + '|' + String(event.inputType);
+    }
+  }, true);
+});
+
+document.getElementById('query').addEventListener('beforeinput', function (event) {
+  if (globalThis.__cancelBeforeInput) {
+    event.preventDefault();
+  }
+});
+
+document.getElementById('search-form').addEventListener('submit', function (event) {
+  if (globalThis.__preventSubmit) {
+    event.preventDefault();
+  }
+  var query = document.getElementById('query');
+  var include = document.getElementById('include');
+  globalThis.__submission = {
+    query: query.value,
+    source: 'local-fixture',
+    include: include.checked ? include.value : '',
+    disabledIncluded: false,
+    submitter: 'go'
+  };
+  document.getElementById('status').textContent = 'submitted:' + query.value;
+});
+</script>

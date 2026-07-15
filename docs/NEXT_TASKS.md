@@ -26,7 +26,7 @@ Performance impact: Measure added record allocations and drain duration; no sync
 Compatibility impact: Diagnostic-only output change with versioned/additive JSON fields.
 Known risks: Flush deadlock, reordered events, or retaining callback/realm graphs through diagnostics.
 Blockers: None
-Next action: Add the deterministic local input/form acceptance fixture, then automate Google focus/type/submit through ordinary hit testing and default action.
+Next action: Expose the green local interaction sequence through Tooling, then automate Google focus/type/submit with screenshot, trace, and request/navigation evidence.
 
 ## Task TRACE-002
 
@@ -144,10 +144,10 @@ Risk Level: Medium
 Dependencies: Google document, scripts, DOM, layout, paint, and screenshot are TESTED in the current bundle
 Files likely involved: `FenBrowser.Tooling`, WebDriver/automation hooks, Host input routing, BrowserApi activation/focus paths, local regression fixture
 Specs/references: UI Events; HTML forms; WebDriver; `docs/REAL_SITE_TRACKER.md`
-Current behavior: The search UI renders, but the current run does not prove focus, text editing, submit/default action, or resulting network/navigation.
+Current behavior: The search UI renders, but the current Google run does not prove focus, text editing, submit/default action, or resulting network/navigation. The deterministic local fixture now passes six compiled/discovered tests covering hit-tested pointer/mouse order, focus, key/beforeinput/input/change, cancellation, checkedness/activation, successful-control GET navigation, and explicit non-interactable rejection.
 Expected behavior: Automation clicks the search control, enters a nonce, submits, observes value/input events and a terminal network/navigation outcome, and captures before/after screenshots.
 Reproduction: Current Google URL at 1280x800 plus the same interaction on a local form fixture.
-Root cause hypothesis: Unknown until input, focus, event phase/default action, and request/navigation are correlated in one trace.
+Root cause hypothesis: The local defects were split event registries, a click-only WebDriver path, and missing checkable-input checkedness. Google-specific residual behavior is unknown until the same sequence is correlated in one trace.
 Implementation plan: Add deterministic automation steps and trace markers; run local fixture first; then Google; stop at the earliest failed acceptance milestone and reduce it.
 Tests required: Hit test, focus, keyboard/text input, input/change/submit ordering, preventDefault, successful submit/navigation.
 Evidence required: Before/after screenshots, input trace, DOM value, event/default-action records, request/navigation result, no crash/hang.
@@ -156,7 +156,7 @@ Performance impact: Record input-to-visible-update and input-to-request latency.
 Compatibility impact: Directly validates real-site usability.
 Known risks: Site variation, consent UI, or network challenge; retain exact URL/run evidence.
 Blockers: None
-Next action: Build the local form acceptance fixture and expose the same automation sequence through current Tooling/WebDriver hooks.
+Next action: Expose the tested sequence through current Tooling/WebDriver hooks, emit before/after screenshots and correlated input records, then run it against Google.
 
 ## Task WPT-001
 

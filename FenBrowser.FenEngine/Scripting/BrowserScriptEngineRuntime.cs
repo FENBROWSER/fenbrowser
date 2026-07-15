@@ -329,6 +329,12 @@ public sealed class BrowserDomEventInit
     public bool Cancelable { get; init; } = true;
     public bool Composed { get; init; } = true;
     public bool IsTrusted { get; init; } = true;
+    public string Key { get; init; } = string.Empty;
+    public string Code { get; init; } = string.Empty;
+    public int KeyCode { get; init; }
+    public string Data { get; init; }
+    public string InputType { get; init; } = string.Empty;
+    public bool IsComposing { get; init; }
 }
 
 /// <summary>
@@ -10143,6 +10149,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return string.Equals(element?.TagName, "iframe", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsCheckableInputElement(Element element)
+    {
+        if (!string.Equals(element?.TagName, "input", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var type = element.GetAttribute("type");
+        return string.Equals(type, "checkbox", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(type, "radio", StringComparison.OrdinalIgnoreCase);
+    }
+
     private void QueueFrameElementLoad(Element element)
     {
         if (element == null ||
@@ -10290,6 +10308,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 {
                     element.TextContent = CoerceToHostString(value);
                 }
+                break;
+            case "checked" when IsCheckableInputElement(element):
+                ElementStateManager.Instance.SetChecked(element, CoerceToHostBoolean(value));
                 break;
             case "tabIndex":
                 element.SetAttribute(
@@ -11589,6 +11610,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             ["pointerType"] = JsValue.FromString(string.IsNullOrWhiteSpace(eventInit.PointerType) ? "mouse" : eventInit.PointerType),
             ["pressure"] = JsValue.FromNumber(eventInit.Pressure),
             ["isPrimary"] = JsValue.FromBoolean(eventInit.IsPrimary),
+            ["key"] = JsValue.FromString(eventInit.Key ?? string.Empty),
+            ["code"] = JsValue.FromString(eventInit.Code ?? string.Empty),
+            ["which"] = JsValue.FromInt32(eventInit.KeyCode),
+            ["keyCode"] = JsValue.FromInt32(eventInit.KeyCode),
+            ["charCode"] = JsValue.FromInt32(eventInit.KeyCode),
+            ["data"] = eventInit.Data == null ? JsValue.Null : JsValue.FromString(eventInit.Data),
+            ["inputType"] = JsValue.FromString(eventInit.InputType ?? string.Empty),
+            ["isComposing"] = JsValue.FromBoolean(eventInit.IsComposing),
             ["timeStamp"] = JsValue.FromNumber(_fenJsClock.Elapsed.TotalMilliseconds)
         });
 
@@ -13628,6 +13657,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case Element element when string.Equals(property, "value", StringComparison.Ordinal):
                     SetElementValue(element, CoerceToHostString(value));
                     return true;
+                case Element element when
+                    string.Equals(property, "checked", StringComparison.Ordinal) &&
+                    IsCheckableInputElement(element):
+                    ElementStateManager.Instance.SetChecked(element, CoerceToHostBoolean(value));
+                    return true;
                 case Element element when string.Equals(property, "tabIndex", StringComparison.Ordinal):
                     element.SetAttribute(
                         "tabindex",
@@ -14372,6 +14406,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return true;
                 case "value":
                     value = JsValue.FromString(ReadElementValue(element));
+                    return true;
+                case "checked" when IsCheckableInputElement(element):
+                    value = JsValue.FromBoolean(ElementStateManager.Instance.IsChecked(element));
                     return true;
                 case "tabIndex":
                     value = JsValue.FromInt32(ReadElementTabIndex(element));
@@ -17076,6 +17113,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         private static bool IsIFrameElement(Element element)
         {
             return string.Equals(element?.TagName, "iframe", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsCheckableInputElement(Element element)
+        {
+            if (!string.Equals(element?.TagName, "input", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var type = element.GetAttribute("type");
+            return string.Equals(type, "checkbox", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(type, "radio", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string ReadElementValue(Element element)

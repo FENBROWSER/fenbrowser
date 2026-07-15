@@ -16,12 +16,12 @@ namespace FenBrowser.Tests.Core
             checkbox.SetAttribute("type", "checkbox");
 
             await host.HandleElementClick(checkbox);
-            Assert.True(checkbox.HasAttribute("checked"));
             Assert.True(ElementStateManager.Instance.IsChecked(checkbox));
+            Assert.False(checkbox.HasAttribute("checked"));
 
             await host.HandleElementClick(checkbox);
-            Assert.False(checkbox.HasAttribute("checked"));
             Assert.False(ElementStateManager.Instance.IsChecked(checkbox));
+            Assert.False(checkbox.HasAttribute("checked"));
         }
 
         [Fact]
@@ -42,13 +42,14 @@ namespace FenBrowser.Tests.Core
 
             await host.HandleElementClick(second);
 
-            Assert.False(first.HasAttribute("checked"));
             Assert.False(ElementStateManager.Instance.IsChecked(first));
-            Assert.True(second.HasAttribute("checked"));
             Assert.True(ElementStateManager.Instance.IsChecked(second));
+            Assert.True(first.HasAttribute("checked"));
+            Assert.False(second.HasAttribute("checked"));
 
             await host.HandleElementClick(second);
-            Assert.True(second.HasAttribute("checked"));
+            Assert.True(ElementStateManager.Instance.IsChecked(second));
+            Assert.False(second.HasAttribute("checked"));
         }
 
         [Fact]
@@ -63,8 +64,8 @@ namespace FenBrowser.Tests.Core
 
             await host.HandleElementClick(label);
 
-            Assert.True(checkbox.HasAttribute("checked"));
             Assert.True(ElementStateManager.Instance.IsChecked(checkbox));
+            Assert.False(checkbox.HasAttribute("checked"));
         }
     }
 }

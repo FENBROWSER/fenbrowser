@@ -13,12 +13,12 @@ This tracker separates implementation presence from browser-like binding behavio
 | Selector APIs | INTEGRATED | Style/real-site paths depend on selectors | WPT selector API slice plus `--inspect-selector` command |
 | Collections and liveness | INTEGRATED | Host-backed `HTMLCollection` iteration is tested through direct, `for...of`, and spread paths; mutation liveness is unverified | NodeList coverage, mutation liveness, descriptors, and selected WPT |
 | `EventTarget` and propagation | INTEGRATED | Browser/input/event paths exist | Capture/target/bubble/cancel/default-action matrix |
-| Mouse/keyboard/input/focus events | INTEGRATED | Host input routing exists | Automated Google click/type/submit trace |
+| Mouse/keyboard/input/focus events | TESTED | Compiled local acceptance covers hit-tested pointer/mouse order, focus, key/beforeinput/input/change delivery, and cancellation | Automated Google click/type/submit trace |
 | `MutationObserver` | IMPLEMENTED | Source surface exists | Microtask delivery/order/disconnect reductions |
 | Custom elements | IMPLEMENTED | Source surface exists | Reaction-stack and upgrade timing WPT |
 | Shadow DOM | IMPLEMENTED | Source surface exists | Tree-scope, event retargeting, style boundary tests |
 | Templates/fragments | IMPLEMENTED | Parser/DOM sources exist | Clone/adoption/template-content WPT |
-| Forms and activation | INTEGRATED | Form/input paths and focused tests exist | Real-site submit and successful-controls matrix |
+| Forms and activation | TESTED | Local fixture protects submit cancellation, successful-control GET serialization, and live checkable-input checkedness | Real-site submit plus broader validation/control matrix |
 | CSSOM/getComputedStyle/measurements | INTEGRATED | Google style/layout probe succeeded | Browser-compatible computed and geometry WPT |
 
 ## Google missing-member disposition

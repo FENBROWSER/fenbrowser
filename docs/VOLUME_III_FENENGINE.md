@@ -741,13 +741,21 @@ Because drawing text inputs via Skia is complex (cursor, selection, IME), the en
 - Pointer input dispatch now executes immediately (instead of being queued), and `mousemove` updates `ElementStateManager` hover chain with repaint trigger, restoring `:hover` visual feedback and interactive responsiveness.
 - FenJS-era pointer dispatch now resolves `InputEvent.Target` through the active render context, falls back from paint-tree misses to layout boxes, full-recascades dynamic pseudo-class state changes, dispatches element `addEventListener(...)` / `on*` handlers through the active browser script runtime, and lets brokered hover wait for the renderer child's hover-updated frame instead of queuing a competing local input repaint; `FenBrowser.Tests/ProcessIsolation/HoverClickJavaScriptRegressionTests.cs` covers JavaScript detection, `:hover`, and button click handlers together.
 - `Rendering/Interaction/ScrollManager` now guards null element access in scroll-state APIs, preventing `ArgumentNullException (Parameter 'key')` during paint-tree build when scroll queries receive a transient null element.
-- `Rendering/BrowserApi.HandleElementClick(...)` now forces native control default activation (`input`, `textarea`, `button`, `select`, and `contenteditable`) even when wrapper-level script handlers call `preventDefault()`, restoring reliable focus/typing and form submit behavior on modern script-heavy pages.
+- `Rendering/BrowserApi.HandleElementClick(...)` performs native control default activation only when the dispatched click remains uncanceled; `preventDefault()` suppresses the related activation instead of being ignored.
 - `Rendering/BrowserApi.HandleElementClick(...)` now performs native `input[type=checkbox]` and named radio-group activation, updates `checked`, dispatches `input`/`change` when state changes, and forwards nested-label activation to those controls.
 - `Rendering/BrowserApi` now exposes viewport-space DOM fallback hit testing (`HitTestElementAtViewportPoint(...)`) so host integration can recover click targets when paint-tree `NativeElement` is transiently unavailable.
 - Event-dispatch execution-budget hardening (2026-03-07):
   - `DOM/EventTarget.DispatchEvent(...)` now resets `ExecutionContext` timing at each event entry so pointer and DOM events do not inherit an already-expired script budget from a prior long-running page script.
   - This closed the reproduced Google fatal path where `mousemove` hit `DocumentWrapper.Get(...)` with a stale 5-second budget and crashed the host with `FenTimeoutError`.
   - Regression coverage: `FenBrowser.Tests/DOM/InputEventTests.cs` includes `DispatchEvent_ResetsExpiredExecutionBudget`.
+
+### 5.5 WebDriver Form Interaction Acceptance (2026-07-15)
+
+- WebDriver element clicks now use the ordinary hit-tested pointer/mouse sequence (`pointerdown`, `mousedown`, `pointerup`, `mouseup`, `click`) before `HandleElementClick(...)` performs the related default action.
+- A click with no interactable center or hit-test target now fails explicitly instead of synthesizing a script click at `(0,0)`; an unrelated center target reports interception.
+- Native focus, keyboard, `beforeinput`, `input`, `change`, blur, and submit dispatch reaches both the active FenJS listener surface and the legacy DOM registry. Canceling `keydown`, `keypress`, or `beforeinput` suppresses text mutation; canceling submit suppresses navigation.
+- Checkable input `checked` reads and writes use `ElementStateManager` live checkedness. Assigning the IDL property does not rewrite the `checked` content attribute.
+- `FenBrowser.Tests/Scripting/BrowserFormInteractionAcceptanceTests.cs` protects focus/typing/event order, canceled `beforeinput`, canceled submit, successful-control GET serialization, and checkbox checkedness against a deterministic local fixture.
 
 ---
 

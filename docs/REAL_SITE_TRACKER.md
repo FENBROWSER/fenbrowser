@@ -60,10 +60,10 @@ Minimal reproduction: `dotnet run --project FenBrowser.Tooling/FenBrowser.Toolin
 
 Engine subsystem owner: FenJS iterator/host-prototype dispatch and the manual DOM collection surface for the resolved callback defect; Host input/default-action for the next acceptance work.
 
-Fix task: Callback attribution, both attributed host-object defects, and transition-sample lifecycle normalization are complete. `SITE-001` now proceeds to local and Google interaction acceptance.
+Fix task: Callback attribution, both attributed host-object defects, transition-sample lifecycle normalization, and the compiled local form interaction acceptance are complete. `SITE-001` now proceeds to Tooling-driven Google interaction evidence.
 
-Regression test: TESTED. `FenJsDomCollectionIterationTests` is compiled/discovered and protects direct iteration, `for...of`, and spread over a host-backed `HTMLCollection`; the earlier hot JIT timer reduction remains active.
+Regression test: TESTED. `FenJsDomCollectionIterationTests` protects the last callback defect. The six discovered `BrowserFormInteractionAcceptanceTests` protect ordinary hit-tested click, focus, typing, input/change order, canceled `beforeinput`, canceled submit, live checkedness/activation, successful-control GET navigation, and non-interactable rejection on a local fixture.
 
 Evidence: `logs/real-site/www.google.com/20260715T085915Z/summary.md`, `lifecycle.json`, `event_loop.json`, `exceptions.json`, `first_blocker.json`, `network.json`, `style_layout.json`, and `screenshot.png`.
 
-Status: TESTED for load/render; interaction acceptance remains RESEARCHED.
+Status: TESTED for load/render and local interaction semantics; Google interaction acceptance remains RESEARCHED.

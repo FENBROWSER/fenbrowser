@@ -12,6 +12,8 @@ Snapshot date: 2026-07-14; focused build/test revalidated 2026-07-15. All paths 
 | First-causal-blocker classifier fixtures | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FirstBlockerClassifierTests" --logger "console;verbosity=minimal"` | 12 passed, 0 failed, 0 skipped | TESTED |
 | Lifecycle transition-detail and classifier slice | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~BrowserLifecycleDetailTests|FullyQualifiedName~NavigationLifecycleTrackerTests|FullyQualifiedName~FirstBlockerClassifierTests" --logger "console;verbosity=minimal"` | 18 passed, 0 failed, 0 skipped | TESTED |
 | DOM host-collection iteration | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsDomCollectionIterationTests" --logger "console;verbosity=minimal"` | 3 passed, 0 failed, 0 skipped; all 3 listed by `--list-tests` | REGRESSION_PROTECTED |
+| Local form interaction acceptance | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter FullyQualifiedName~BrowserFormInteractionAcceptanceTests --no-restore --logger "console;verbosity=minimal"` | 6 passed, 0 failed, 0 skipped; all 6 listed by `--list-tests` | REGRESSION_PROTECTED |
+| Adjacent form/input event slice | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FormControlActivationTests|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_DeliversDoubleClickContextMenuAndPointerPayload|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_EventListenerCanAccessFreshClassList" --logger "console;verbosity=minimal"` | 5 passed, 0 failed, 0 skipped | TESTED |
 | FenJS iterator and stale-handle slice | `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~AtIteratorDispatchTests|FullyQualifiedName~ForOfTests|FullyQualifiedName~IteratorStaleHandleTests" --logger "console;verbosity=minimal"` | 24 passed, 0 failed, 0 skipped | TESTED |
 | FenJS host-handle table slice | `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~HostObjectTableTests" --logger "console;verbosity=minimal"` | 7 passed, 0 failed, 0 skipped | TESTED |
 | Tooling dependency graph, Debug | Same build in Debug | Reached project compilation, then failed copying Host dependencies because Visual Studio and a running FenBrowser.Host locked Debug DLLs | RESEARCHED |
@@ -31,6 +33,7 @@ The Release discovery check found:
 | `CallbackFailureDiagnosticsTests` | yes |
 | `DebugSiteExceptionSummaryTests` | yes |
 | `FirstBlockerClassifierTests` | yes |
+| `BrowserFormInteractionAcceptanceTests` | yes; 6 tests |
 | `EventLoopTraceTests` | no |
 | `RealSiteRenderDiagnostics` | no |
 | `RendererChildLoopIoTests` | no |
@@ -91,4 +94,4 @@ The latest retained focused `dom/lists` summary at `Results/wpt_20260704_175911/
 | Core-focused tests inside `FenBrowser.Tests` | RESEARCHED | Fresh discovered and executed result for active Core paths |
 | html5lib | NOT_STARTED | Runner command, totals, failures, and local result bundle |
 | Selected boot-critical WPT | RESEARCHED | `html`, `dom`, `fetch`, `cors`, `cookies`, `custom-elements`, `cssom`, and focused layout categories |
-| WebDriver interaction smoke | NOT_STARTED | Click/type/submit/screenshot proof against Google or a deterministic local reduction |
+| WebDriver interaction smoke | TESTED | Local click/type/canceled-and-successful-submit behavior is regression-protected; screenshot/trace proof and the same sequence against Google remain required |

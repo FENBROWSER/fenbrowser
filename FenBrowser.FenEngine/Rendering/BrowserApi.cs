@@ -1981,7 +1981,6 @@ pre {{
             var element = ResolveElementInActiveContextOrThrow(elementId);
             if (element != null)
             {
-                var dispatchedByScript = false;
                 _pendingWebDriverClickPointValid = false;
                 for (var attempt = 0; attempt < 8 && !_pendingWebDriverClickPointValid; attempt++)
                 {
@@ -2017,21 +2016,37 @@ pre {{
 
                 if (!_pendingWebDriverClickPointValid)
                 {
-                    _pendingWebDriverClickClientX = 0;
-                    _pendingWebDriverClickClientY = 0;
+                    throw new InvalidOperationException("element not interactable");
                 }
 
-                dispatchedByScript = await TryDispatchWebDriverClickViaScriptAsync(
-                    elementId,
+                DispatchInputEvent(
+                    "mousedown",
                     _pendingWebDriverClickClientX,
-                    _pendingWebDriverClickClientY).ConfigureAwait(false);
+                    _pendingWebDriverClickClientY,
+                    button: 0);
+                DispatchInputEvent(
+                    "mouseup",
+                    _pendingWebDriverClickClientX,
+                    _pendingWebDriverClickClientY,
+                    button: 0);
+                DispatchInputEvent(
+                    "click",
+                    _pendingWebDriverClickClientX,
+                    _pendingWebDriverClickClientY,
+                    button: 0);
 
-                if (!dispatchedByScript && _pendingWebDriverClickPointValid)
+                if (!_lastClickHadTarget)
                 {
+                    throw new InvalidOperationException("element not interactable");
                 }
 
-                _suppressNextDomClickDispatchInHandleElementClick = dispatchedByScript;
-                await HandleElementClick(element);
+                var activationTarget = _lastClickTarget;
+                if (!AreElementsRelated(activationTarget, element))
+                {
+                    throw new InvalidOperationException("element click intercepted");
+                }
+
+                await HandleElementClick(activationTarget);
             }
         }
 
@@ -2075,37 +2090,6 @@ pre {{
                     return true;
                 }
 
-            }
-            catch
-            {
-            }
-
-            return false;
-        }
-
-        private async Task<bool> TryDispatchWebDriverClickViaScriptAsync(string elementId, int clientX, int clientY)
-        {
-            try
-            {
-                var dispatchResult = await ExecuteScriptAsync(
-                    "var el = arguments[0];" +
-                    "if (!el) return false;" +
-                    "var cx = Number(arguments[1]); var cy = Number(arguments[2]);" +
-                    "if (!isFinite(cx)) cx = 0; if (!isFinite(cy)) cy = 0;" +
-                    "var evt;" +
-                    "try {" +
-                    "  evt = new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, clientX: cx, clientY: cy, screenX: cx, screenY: cy });" +
-                    "} catch (e) {" +
-                    "  evt = document.createEvent('MouseEvents');" +
-                    "  evt.initMouseEvent('click', true, true, window, 1, cx, cy, cx, cy, false, false, false, false, 0, null);" +
-                    "}" +
-                    "return el.dispatchEvent(evt);",
-                    new object[] { elementId, clientX, clientY }).ConfigureAwait(false);
-
-                if (dispatchResult is bool boolResult)
-                {
-                    return boolResult;
-                }
             }
             catch
             {
@@ -3186,12 +3170,14 @@ pre {{
 
             if (inputEvent.Target != null && IsScriptDomInputEvent(type))
             {
-                defaultAllowed = _engine.DispatchPointerEvent(inputEvent.Target, type, eventInit);
                 var pointerAlias = MapMouseInputToPointerAlias(type);
                 if (!string.IsNullOrEmpty(pointerAlias))
                 {
-                    defaultAllowed = _engine.DispatchPointerEvent(inputEvent.Target, pointerAlias, eventInit) && defaultAllowed;
+                    defaultAllowed = _engine.DispatchPointerEvent(inputEvent.Target, pointerAlias, eventInit);
                 }
+
+                var mouseDefaultAllowed = _engine.DispatchPointerEvent(inputEvent.Target, type, eventInit);
+                defaultAllowed = mouseDefaultAllowed && defaultAllowed;
             }
 
             if (isClick)
@@ -5250,21 +5236,36 @@ pre {{
                     string.Equals(candidate.TagName, "body", StringComparison.OrdinalIgnoreCase));
         }
 
-        private static void DispatchDomEvent(Element target, string type, FenBrowser.FenEngine.Core.ExecutionContext context, bool bubbles)
+        private bool DispatchDomEvent(
+            Element target,
+            string type,
+            FenBrowser.FenEngine.Core.ExecutionContext context,
+            bool bubbles,
+            bool cancelable = false,
+            FenBrowser.FenEngine.Scripting.BrowserDomEventInit eventInit = null)
         {
             if (target == null || string.IsNullOrWhiteSpace(type))
             {
-                return;
+                return true;
             }
+
+            eventInit ??= new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
+            {
+                Bubbles = bubbles,
+                Cancelable = cancelable,
+                Composed = true
+            };
+            var scriptDefaultAllowed = _engine.DispatchPointerEvent(target, type, eventInit);
 
             var domEvent = new FenBrowser.FenEngine.DOM.DomEvent(
                 type,
                 bubbles: bubbles,
-                cancelable: false,
+                cancelable: cancelable,
                 composed: true,
                 context: context);
 
-            FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(target, domEvent, context);
+            var legacyDefaultAllowed = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(target, domEvent, context);
+            return scriptDefaultAllowed && legacyDefaultAllowed;
         }
 
         public async Task SendKeysToElementAsync(string elementId, string text, bool strictFileInteractability = false)
@@ -5577,12 +5578,37 @@ pre {{
             var eventContext = _engine.Context as FenBrowser.FenEngine.Core.ExecutionContext
                 ?? new FenBrowser.FenEngine.Core.ExecutionContext();
 
-            DispatchKeyboardEvent(eventTarget, "keydown", key, eventContext);
-            DispatchKeyboardEvent(eventTarget, "keypress", key, eventContext);
+            var keydownDefaultAllowed = DispatchKeyboardEvent(eventTarget, "keydown", key, eventContext);
+            var keypressDefaultAllowed = keydownDefaultAllowed &&
+                DispatchKeyboardEvent(eventTarget, "keypress", key, eventContext);
 
             bool valueChanged = false;
-            if (shouldMutateFocusedElement)
+            var inputTarget = _focusedElement ?? eventTarget;
+            if (shouldMutateFocusedElement && keydownDefaultAllowed && keypressDefaultAllowed)
             {
+                var keyCode = string.IsNullOrEmpty(key) ? 0 : key[0];
+                var beforeInputDefaultAllowed = DispatchDomEvent(
+                    inputTarget,
+                    "beforeinput",
+                    eventContext,
+                    bubbles: true,
+                    cancelable: true,
+                    eventInit: new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
+                    {
+                        Bubbles = true,
+                        Cancelable = true,
+                        Composed = true,
+                        Data = key,
+                        InputType = "insertText",
+                        Key = key,
+                        KeyCode = keyCode
+                    });
+                if (!beforeInputDefaultAllowed)
+                {
+                    DispatchKeyboardEvent(eventTarget, "keyup", key, eventContext);
+                    return;
+                }
+
                 var beforeValue = ReadEditableValue(_focusedElement);
                 await HandleKeyPress(key).ConfigureAwait(false);
                 var afterValue = ReadEditableValue(_focusedElement);
@@ -5591,7 +5617,22 @@ pre {{
 
             if (valueChanged)
             {
-                DispatchDomEvent(_focusedElement ?? eventTarget, "input", eventContext, bubbles: true);
+                DispatchDomEvent(
+                    _focusedElement ?? eventTarget,
+                    "input",
+                    eventContext,
+                    bubbles: true,
+                    cancelable: false,
+                    eventInit: new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
+                    {
+                        Bubbles = true,
+                        Cancelable = false,
+                        Composed = true,
+                        Data = key,
+                        InputType = "insertText",
+                        Key = key,
+                        KeyCode = string.IsNullOrEmpty(key) ? 0 : key[0]
+                    });
             }
 
             DispatchKeyboardEvent(eventTarget, "keyup", key, eventContext);
@@ -5662,7 +5703,7 @@ pre {{
             }
         }
 
-        private static void DispatchKeyboardEvent(
+        private bool DispatchKeyboardEvent(
             Element target,
             string type,
             string key,
@@ -5670,8 +5711,21 @@ pre {{
         {
             if (target == null || string.IsNullOrWhiteSpace(type))
             {
-                return;
+                return true;
             }
+
+            var keyCode = string.IsNullOrEmpty(key) ? 0 : key[0];
+            var scriptDefaultAllowed = _engine.DispatchPointerEvent(
+                target,
+                type,
+                new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
+                {
+                    Bubbles = true,
+                    Cancelable = true,
+                    Composed = true,
+                    Key = key ?? string.Empty,
+                    KeyCode = keyCode
+                });
 
             var domEvent = new FenBrowser.FenEngine.DOM.DomEvent(
                 type,
@@ -5681,7 +5735,6 @@ pre {{
                 context: context);
             domEvent.Set("key", FenBrowser.FenEngine.Core.FenValue.FromString(key ?? string.Empty));
 
-            var keyCode = string.IsNullOrEmpty(key) ? 0 : key[0];
             domEvent.Set("which", FenBrowser.FenEngine.Core.FenValue.FromNumber(keyCode));
             domEvent.Set("keyCode", FenBrowser.FenEngine.Core.FenValue.FromNumber(keyCode));
 
@@ -5700,7 +5753,7 @@ pre {{
                 context.Environment.Set("event", FenBrowser.FenEngine.Core.FenValue.FromObject(domEvent));
             }
 
-            FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(target, domEvent, context);
+            var legacyDefaultAllowed = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(target, domEvent, context);
 
             if (windowValue.IsObject)
             {
@@ -5710,6 +5763,8 @@ pre {{
             {
                 context.Environment.Set("event", previousGlobalEvent);
             }
+
+            return scriptDefaultAllowed && legacyDefaultAllowed;
         }
 
         private static string ReadEditableValue(Element element)
@@ -7329,6 +7384,7 @@ pre {{
         }
 
         private Element _focusedElement;
+        private string _focusedElementValueAtFocus;
 
         private int _cursorIndex = 0;
         private int _selectionAnchor = -1;
@@ -7346,6 +7402,12 @@ pre {{
             }
 
             _focusedElement = element;
+            if (!ReferenceEquals(previousFocused, element))
+            {
+                _focusedElementValueAtFocus = IsTextEntryElement(element)
+                    ? ReadEditableValue(element)
+                    : null;
+            }
 
             var ownerDocument = element?.OwnerDocument;
             if (ownerDocument != null)
@@ -7354,6 +7416,40 @@ pre {{
             }
 
             ElementStateManager.Instance.SetFocusedElement(element, fromKeyboard);
+        }
+
+        private void SetFocusedElementWithEvents(Element element, bool fromKeyboard = false)
+        {
+            var previousFocused = _focusedElement;
+            if (ReferenceEquals(previousFocused, element))
+            {
+                SetFocusedElementState(element, fromKeyboard);
+                return;
+            }
+
+            var eventContext = _engine.Context as FenBrowser.FenEngine.Core.ExecutionContext
+                ?? new FenBrowser.FenEngine.Core.ExecutionContext();
+            if (previousFocused != null)
+            {
+                if (IsTextEntryElement(previousFocused) &&
+                    !string.Equals(
+                        _focusedElementValueAtFocus,
+                        ReadEditableValue(previousFocused),
+                        StringComparison.Ordinal))
+                {
+                    DispatchDomEvent(previousFocused, "change", eventContext, bubbles: true);
+                }
+
+                DispatchDomEvent(previousFocused, "blur", eventContext, bubbles: false);
+                DispatchDomEvent(previousFocused, "focusout", eventContext, bubbles: true);
+            }
+
+            SetFocusedElementState(element, fromKeyboard);
+            if (element != null)
+            {
+                DispatchDomEvent(element, "focus", eventContext, bubbles: false);
+                DispatchDomEvent(element, "focusin", eventContext, bubbles: true);
+            }
         }
 
         private static string GetStableDomElementId(Element element)
@@ -7691,7 +7787,7 @@ pre {{
 
             if (directFocusable)
             {
-                SetFocusedElementState(target);
+                SetFocusedElementWithEvents(target);
                 if (directEditable)
                 {
                     bool isContentEditable = string.Equals(target.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
@@ -7714,7 +7810,7 @@ pre {{
 
             if (descendantEditable != null)
             {
-                SetFocusedElementState(descendantEditable);
+                SetFocusedElementWithEvents(descendantEditable);
                 bool descendantIsContentEditable = string.Equals(descendantEditable.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase);
                 var val = descendantIsContentEditable ? (descendantEditable.TextContent ?? string.Empty) : GetTextEntryValue(descendantEditable);
                 _cursorIndex = val.Length;
@@ -7722,7 +7818,7 @@ pre {{
             }
             else
             {
-                SetFocusedElementState(null);
+                SetFocusedElementWithEvents(null);
             }
         }
 
@@ -8963,9 +9059,9 @@ pre {{
             if (type == "checkbox")
             {
                 changed = true;
-                SetCheckableCheckedState(element, !element.HasAttribute("checked"));
+                SetCheckableCheckedState(element, !ElementStateManager.Instance.IsChecked(element));
             }
-            else if (!element.HasAttribute("checked"))
+            else if (!ElementStateManager.Instance.IsChecked(element))
             {
                 ClearRadioGroupCheckedState(element);
                 SetCheckableCheckedState(element, true);
@@ -8989,16 +9085,7 @@ pre {{
                 return;
             }
 
-            if (isChecked)
-            {
-                element.SetAttribute("checked", string.Empty);
-                ElementStateManager.Instance.SetChecked(element, true);
-            }
-            else
-            {
-                ElementStateManager.Instance.SetChecked(element, false);
-                element.RemoveAttribute("checked");
-            }
+            ElementStateManager.Instance.SetChecked(element, isChecked);
         }
 
         private void DispatchFormControlStateEvent(Element element, string eventName)
@@ -9008,14 +9095,14 @@ pre {{
                 return;
             }
 
-            _engine.DispatchPointerEvent(
+            var eventContext = _engine.Context as FenBrowser.FenEngine.Core.ExecutionContext
+                ?? new FenBrowser.FenEngine.Core.ExecutionContext();
+            DispatchDomEvent(
                 element,
                 eventName,
-                new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
-                {
-                    Bubbles = true,
-                    Cancelable = false
-                });
+                eventContext,
+                bubbles: true,
+                cancelable: false);
         }
 
         private static void ClearRadioGroupCheckedState(Element radio)
@@ -9066,6 +9153,16 @@ pre {{
             var form = FindAncestorForm(submitter);
             if (form == null) return false;
 
+            var scriptSubmitAllowed = _engine.DispatchPointerEvent(
+                form,
+                "submit",
+                new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
+                {
+                    Bubbles = true,
+                    Cancelable = true,
+                    Composed = false
+                });
+
             var context = _engine.Context ?? new FenBrowser.FenEngine.Core.ExecutionContext();
             var submitEvent = new FenBrowser.FenEngine.DOM.DomEvent(
                 "submit",
@@ -9074,7 +9171,8 @@ pre {{
                 composed: true,
                 context: context);
 
-            bool allowSubmit = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(form, submitEvent, context);
+            var legacySubmitAllowed = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(form, submitEvent, context);
+            bool allowSubmit = scriptSubmitAllowed && legacySubmitAllowed;
             if (!allowSubmit)
             {
                 TryLogDebug("[BrowserApi] Form submit canceled by script.", LogCategory.Events);

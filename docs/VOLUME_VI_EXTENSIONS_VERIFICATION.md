@@ -149,6 +149,7 @@ Standard xUnit tests covering internal components:
 - **Core**: DOM node logic, Attribute parsing.
 - **Engine**: CSS Parser correctness, Layout arithmetic.
 - **Html5lib**: Tests the Tokenizer against the tricky edge cases of the HTML5 spec.
+- **Active form interaction acceptance (2026-07-15)**: `FenBrowser.Tests/Scripting/BrowserFormInteractionAcceptanceTests.cs` is on the compiled `Scripting/` surface. Its six discovered tests exercise a local form through `BrowserHost` WebDriver hooks and cover checkedness, checkable activation without content-attribute mutation, real hit-tested pointer/mouse ordering, focus, key and input events, `beforeinput.preventDefault()`, submit cancellation, successful-control GET navigation, and explicit rejection of a hidden non-interactable control. Run with `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter FullyQualifiedName~BrowserFormInteractionAcceptanceTests --no-restore`.
 - **Architecture Governance (2026-04-21)**:
   - Added `FenBrowser.Tests/Architecture/SpecGovernanceTests.cs` to enforce spec-contract wiring:
     - `docs/COMPLIANCE_MATRIX.md` capability IDs must be parseable and unique.
