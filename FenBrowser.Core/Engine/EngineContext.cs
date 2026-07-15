@@ -124,6 +124,25 @@ namespace FenBrowser.Core.Engine
         }
 
         /// <summary>
+        /// Validates that the engine is not in any of three specified phases without
+        /// allocating the temporary array required by the general params overload.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void AssertNotInPhase(
+            EnginePhase firstForbiddenPhase,
+            EnginePhase secondForbiddenPhase,
+            EnginePhase thirdForbiddenPhase)
+        {
+            var current = _currentPhase;
+            if (current == firstForbiddenPhase ||
+                current == secondForbiddenPhase ||
+                current == thirdForbiddenPhase)
+            {
+                throw new InvalidOperationException($"Operation forbidden in phase {current}. Current Pass={_passIndex}");
+            }
+        }
+
+        /// <summary>
         /// Validates phase transition follows explicit engine ordering.
         /// </summary>
         private static void ValidatePhaseTransition(EnginePhase from, EnginePhase to)

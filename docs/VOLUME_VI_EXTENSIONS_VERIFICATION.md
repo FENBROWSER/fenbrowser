@@ -3476,3 +3476,22 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass with zero errors.
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five candidate processes.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_lazy_transform_segments_20260715.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` confirms that `ComposeEffectiveTransform` is absent.
+
+## 6.130 Three-Phase Mutation-Guard Verification (2026-07-15)
+
+- `DomMutationPhaseGuardAllocationTests.ThreePhaseGuard_KeepsRepeatedChecksAllocationBounded` measures 10,000 warmed calls to the production three-phase `EngineContext` guard. The `params` path allocates exactly `1,119,928 B`; the dedicated overload allocates exactly `0 B` in each of three fresh Release processes.
+- `AppendAndRemove_InIdleKeepPhaseGuardAllocationBounded` measures 10,000 public append/remove pairs. Allocation falls exactly from `2,239,856 B` to `0 B`. The restricted-phase theory preserves the counter-path by verifying that child insertion and attribute setting both throw and leave state unchanged in Measure, Layout, and Paint.
+- The included neighboring mutation/filter/collection slice passes `18/18`, and the focused parser construction slice passes `96/96`.
+- Candidate reports `052327`, `052329`, `052331`, `052333`, and `052335` pass every failure gate against reports `051603`, `051605`, `051608`, `051610`, and `051613`. HTML allocation medians fall `10.39%`-`17.49%`, and managed allocation medians fall `0.25%`-`0.90%`, across all four fixtures.
+- Timing samples are unstable, so no latency claim is made. The before trace ranks `ContainerNode.AssertNotInRestrictedPhase` at `9.40%` exclusive sampled allocation weight; the final trace omits it and the three-phase guard path from the top 75.
+- Test262 and WPT are not rerun because the change preserves the existing DOM mutation guard and is directly covered at both the invariant and public mutation boundaries.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~DomMutationPhaseGuardAllocationTests" --logger "console;verbosity=detailed"`: pass (`5/5`) in three fresh processes; both allocation contracts report exactly `0 B` each time.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~DomMutationPhaseGuardAllocationTests|FullyQualifiedName~DomMutationNotificationTests|FullyQualifiedName~ChildNodeListTests|FullyQualifiedName~AncestorFilterTests|FullyQualifiedName~TreeWalkerCoreTests|FullyQualifiedName~ElementAttributeStorageAllocationTests" --logger "console;verbosity=minimal"`: pass (`18/18`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "HtmlTokenPoolTests|HtmlTokenPoolAllocationTests|Html5libTokenizerTests|Html5libTreeBuilderTests|HtmlTreeBuilder|TableParsingTests|AfterHeadParsingTests|SelectParsingTests|CanonicalHtmlParserEntrypointTests|ParserHardeningGuardTests" --logger "console;verbosity=minimal"`: pass (`96/96`).
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five candidate processes.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_dom_phase_guard_overload_20260715.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` confirms that the targeted guard path is absent.

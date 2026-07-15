@@ -1634,3 +1634,31 @@ Verification:
 - The broader Core parsing slice remains `68/69` with the same existing `HtmlParserTraceTests` trace-file assertion.
 - Release builds of `FenBrowser.Core` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and all four benchmark failure gates pass in every candidate process.
 - Test262 and WPT are not rerun because this replaces private collection iteration without changing HTML tree-construction decisions; focused malformed, table, select, formatting, tokenizer, and local html5lib coverage exercises the affected parser.
+
+### 1.76 Allocation-Free Three-Phase Mutation Guards (2026-07-15)
+
+- `FenBrowser.Core/Engine/EngineContext.cs`
+  - The post-transform Release allocation trace ranked `ContainerNode.AssertNotInRestrictedPhase` at `9.40%` exclusive sampled allocation weight. Every guarded child or attribute mutation passed Measure, Layout, and Paint through `AssertNotInPhase(params EnginePhase[])`, creating a temporary array on the allowed path before any DOM work began.
+  - `EngineContext` now has a dedicated three-phase overload that compares the current phase directly. The general `params` overload remains available for other arities, while existing three-argument mutation call sites bind to the allocation-free overload without duplicating the guard in DOM classes.
+  - Measure, Layout, and Paint remain forbidden, the exception type and diagnostic text remain unchanged, and Idle or other permitted phases still follow the same mutation path. The change adds no cache, pool, unsafe code, native resource, retained state, synchronization, or ownership change.
+- `FenBrowser.Tests/Performance/DomMutationPhaseGuardAllocationTests.cs`
+  - Ten thousand warmed three-phase checks move exactly from `1,119,928 B` to `0 B` in each of three fresh Release processes.
+  - Ten thousand warmed public append/remove pairs move exactly from `2,239,856 B` to `0 B`, removing all measured allocation from the unobserved mutation loop. Counter-tests verify that both child insertion and attribute setting still throw without mutating state in Measure, Layout, and Paint.
+
+Five fresh Release processes compare reports `051603`, `051605`, `051608`, `051610`, and `051613` with candidate reports `052327`, `052329`, `052331`, `052333`, and `052335`:
+
+| Scenario | HTML allocation before | HTML allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 760,256 B | 681,296 B (-78,960 B, -10.39%) | 18,386,248 B | 18,299,904 B (-86,344 B, -0.47%) |
+| steady-state-damage-animation | 434,224 B | 387,968 B (-46,256 B, -10.65%) | 14,001,152 B | 13,966,384 B (-34,768 B, -0.25%) |
+| dense-text-flow | 233,088 B | 192,320 B (-40,768 B, -17.49%) | 8,441,872 B | 8,366,240 B (-75,632 B, -0.90%) |
+| wrapped-multiline-text | 112,352 B | 93,872 B (-18,480 B, -16.45%) | 3,872,488 B | 3,849,576 B (-22,912 B, -0.59%) |
+
+Allocation falls in every fixture by an element-count-dependent amount. Timing samples are unstable, including a transient dense-text HTML-parse cluster, so no parser or page-latency improvement is claimed. The exact mutation contracts and deterministic allocation counters are the causal evidence. A fresh final-code `gc-verbose` trace no longer lists `ContainerNode.AssertNotInRestrictedPhase` or the three-phase `EngineContext.AssertNotInPhase` path among the top 75 exclusive allocation owners.
+
+Verification:
+
+- The allocation and restricted-phase contracts pass `5/5` in three fresh Release processes, with both allocation probes reporting exactly `0 B` each time.
+- The included mutation, attribute, child-list, ancestor-filter, and tree-walker slice passes `18/18`; the focused tokenizer/tree-builder/parser slice passes `96/96`.
+- Release builds of `FenBrowser.Core` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every render benchmark failure gate passes in all five candidate processes.
+- Test262 and WPT are not rerun because this preserves the existing DOM phase invariant and mutation semantics; direct included tests exercise the guarded child and attribute paths plus focused parser construction.
