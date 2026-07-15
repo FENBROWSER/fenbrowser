@@ -3698,3 +3698,18 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore`: pass with 2 existing Tooling warnings and 0 errors.
 - Local bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_event_promise_callback_failures.html/20260715T084728Z/`.
 - Google bundle: `logs/real-site/www.google.com/20260715T084802Z/`.
+
+## 6.145 DOM Host-Collection Iterator Verification (2026-07-15)
+
+- `FenBrowser.Tests/Scripting/FenJsDomCollectionIterationTests.cs` is compiled by the active test project and lists three focused tests. The pre-fix `for...of` test failed with the same `EnumerateValues` TypeError attributed to Google's `k0c` callback.
+- The tests protect direct iterator shape, lazy `for...of`, and spread over the active host-backed `HTMLCollection`. They assert returned DOM wrapper values rather than internal handle layout.
+- The focused class passes `3/3`; adjacent FenJS iterator and stale-handle tests pass `24/24`; host table generation tests pass `7/7`. The owning FenJS, FenEngine, and Tooling Release builds each succeed with zero warnings and zero errors.
+- Local `debug-site` evidence at `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_host_collection_iterator.html/20260715T085843Z/` completes an async timer iteration and renders `passed:first,second`, with zero callback failures and exceptions.
+- The same current build produces `logs/real-site/www.google.com/20260715T085915Z/`: 18 completed script executions, zero direct script failures, zero callback failures, zero exceptions, complete current lifecycle, visible main UI, and deterministic `first_blocker: none`. The five interaction milestones remain explicitly unverified.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --list-tests --filter "FullyQualifiedName~FenJsDomCollectionIterationTests"`: lists all three tests.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsDomCollectionIterationTests" --logger "console;verbosity=minimal"`: pass (`3/3`).
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~AtIteratorDispatchTests|FullyQualifiedName~ForOfTests|FullyQualifiedName~IteratorStaleHandleTests" --logger "console;verbosity=minimal"`: pass (`24/24`).
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~HostObjectTableTests" --logger "console;verbosity=minimal"`: pass (`7/7`).

@@ -40,12 +40,12 @@ The reality audit proceeds in this order:
 | Subsystem | Current status | Confirmed behavior | Unclosed behavior |
 | --- | --- | --- | --- |
 | Navigation/document lifecycle | TESTED | Google transitioned Requested -> Fetching -> ResponseReceived -> Committing -> Interactive -> Complete | Cross-frame and failure-path coverage is not current |
-| HTML parsing/DOM construction | INTEGRATED | Google produced 572 DOM nodes and a DOM dump | html5lib baseline is not current |
-| Classic script loading | TESTED | Google discovered 13 script elements with 17 completed executions and no script execution failure | Execution/discovery count semantics need normalization; modules were not exercised |
-| Event loop/timers/microtasks | INTEGRATED | Google fired DOMContentLoaded/load and recorded 10 microtask checkpoints and 22 timers | Eight timer callbacks threw a retained host-object/JS-object `TypeError`, but individual attribution was not promoted into `exceptions.json` or the summary blocker |
+| HTML parsing/DOM construction | INTEGRATED | Current Google produced a populated DOM dump with 568 elements | html5lib baseline is not current |
+| Classic script loading | TESTED | Google discovered 14 script elements with 18 completed executions and no script execution failure | Execution/discovery count semantics need normalization; modules were not exercised |
+| Event loop/timers/microtasks | TESTED | Current Google fired DOMContentLoaded/load, recorded 9 microtask checkpoints, and reports zero callback failures consistently | Broader repeating-timer, navigation-invalidation, and rAF reductions remain |
 | Missing API observation | TESTED | Dedicated tracker tests passed and Google emitted missing-property observations | Bundle export loses rich fields and reports site expandos as APIs |
-| Fetch/network visibility | INTEGRATED | Google captured 27 requests | A `data:` image is counted as failed; CORS/cookie/security decisions are not summarized |
-| CSS/style/layout/paint | TESTED | Google styled 446 nodes, built 172 boxes and 93 paint nodes, and captured a usable screenshot | Input interaction and screenshot comparison are not automated; the frame exceeded budget |
+| Fetch/network visibility | INTEGRATED | Google captured 25 requests | One request is counted as failed; CORS/cookie/security decisions are not summarized |
+| CSS/style/layout/paint | TESTED | Google styled 569 nodes, built 184 boxes and 98 paint nodes, and captured a usable screenshot | Input interaction and screenshot comparison are not automated; the frame exceeded budget |
 | WebIDL-generated bindings | IMPLEMENTED | Parser and generator exist | `FenBrowser.FenEngine.csproj` explicitly removes `Bindings/Generated/**/*.cs`; runtime exposure remains manual |
 | DOM host bindings | INTEGRATED | Manual FenJS host dispatch supports enough APIs for Google boot | The monolithic dispatch path lacks generated conversions, overload resolution, and complete brand/descriptor coverage |
 | Per-tab renderer process | IMPLEMENTED | Brokered coordinator, renderer child, authenticated IPC, shared-memory frames, crash policy exist | Default mode is in-process; a current brokered real-site proof is absent |
@@ -72,9 +72,9 @@ The reality audit proceeds in this order:
 
 ## Primary real-site target
 
-Google is the current target because it has the freshest complete bundle and already crosses the boot pipeline. The 2026-07-15 run loaded the document, completed 18 script executions without a direct script failure, fired lifecycle events, built DOM/style/layout/paint state, and rendered the main UI. The previously attributed eight timer failures shared one cause: the baseline JIT implementation of the ECMAScript `in` operator routed a DOM host handle through JS heap-object decoding. That general JIT host-property defect is fixed. Typed Promise diagnostics expose one distinct non-fatal rejection in `script-5` function `k0c`: FenJS `EnumerateValues` reports `TypeError: Value is not iterable.` Navigation transition samples are now explicitly historical; current lifecycle and event-loop fields agree on complete/DCL/load. The next acceptance work is reduction of the iterable rejection, missing-API classification, and automated click/type/submit behavior.
+Google is the current target because it has the freshest complete bundle and already crosses the boot pipeline. The 2026-07-15 run loaded the document, completed 18 script executions without a direct script failure, fired lifecycle events, built DOM/style/layout/paint state, and rendered the main UI. The previously attributed eight timer failures shared one cause: the baseline JIT implementation of the ECMAScript `in` operator routed a DOM host handle through JS heap-object decoding. A later attributed Promise rejection in `script-5` function `k0c` exposed a second general boundary defect: FenJS iterator acquisition ignored a valid `HTMLCollection` host prototype, and the manual DOM surface did not define the collection's WebIDL iterator. Host collections now preserve their opaque handle and acquire a live `Symbol.iterator` through the validated prototype path. The current Google bundle reports zero direct script failures, zero callback failures, and zero exceptions. Navigation transition samples are explicitly historical; current lifecycle and event-loop fields agree on complete/DCL/load. The next acceptance work is missing-API classification and automated click/type/submit behavior.
 
-Evidence: `logs/real-site/www.google.com/20260715T084802Z/`.
+Evidence: `logs/real-site/www.google.com/20260715T085915Z/`.
 
 ## Gate status
 

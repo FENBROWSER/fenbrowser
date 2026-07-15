@@ -1,6 +1,6 @@
 # FenBrowser DOM API Tracker
 
-Status: INTEGRATED. Snapshot date: 2026-07-14.
+Status: INTEGRATED. Snapshot date: 2026-07-15.
 
 This tracker separates implementation presence from browser-like binding behavior. A manual host member can be INTEGRATED while its WebIDL conversions, descriptors, brand checks, liveness, or exception behavior remain STUBBED.
 
@@ -11,7 +11,7 @@ This tracker separates implementation presence from browser-like binding behavio
 | `Node`, `Element`, `Document`, text/comment | INTEGRATED | Google built 572 DOM nodes and booted scripts | Included DOM/binding tests and selected WPT |
 | Attributes, `classList`, `dataset` | INTEGRATED | Active manual bridge and real-site use | Descriptor/conversion/live-token tests |
 | Selector APIs | INTEGRATED | Style/real-site paths depend on selectors | WPT selector API slice plus `--inspect-selector` command |
-| Collections and liveness | IMPLEMENTED | DOM collection code exists | Static versus live collection reductions |
+| Collections and liveness | INTEGRATED | Host-backed `HTMLCollection` iteration is tested through direct, `for...of`, and spread paths; mutation liveness is unverified | NodeList coverage, mutation liveness, descriptors, and selected WPT |
 | `EventTarget` and propagation | INTEGRATED | Browser/input/event paths exist | Capture/target/bubble/cancel/default-action matrix |
 | Mouse/keyboard/input/focus events | INTEGRATED | Host input routing exists | Automated Google click/type/submit trace |
 | `MutationObserver` | IMPLEMENTED | Source surface exists | Microtask delivery/order/disconnect reductions |

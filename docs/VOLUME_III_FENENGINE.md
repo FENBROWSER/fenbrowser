@@ -10180,3 +10180,18 @@ Verification:
 - Green: the focused test passes `1/1` and is discoverable; the combined lifecycle/detail/classifier slice passes `18/18`.
 - Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_event_promise_callback_failures.html/20260715T084728Z/` records a settled transition-time sample and current complete/DCL/load state with no classifier contradiction.
 - Google bundle `logs/real-site/www.google.com/20260715T084802Z/` records `eventLoopObservationTimedOut=1` and the earlier loading/DCL0/load0 values only as `AtObservation` fields. Current lifecycle and event-loop fields agree on complete/DCL/load, and `first_blocker.json` reports no contradiction.
+
+## 2.378 Host-Backed DOM Collection Iteration (2026-07-15)
+
+- The attributed Google `script-5` / `k0c` rejection came from `for...of` over `document.getElementsByTagName('img')`. `HTMLCollection` was a valid opaque host handle with indexed getters, but the manual DOM constructor surface did not expose its WebIDL iterator and FenJS iterator acquisition only inspected JS heap objects.
+- `NodeList.prototype` and `HTMLCollection.prototype` now expose a live `Symbol.iterator` that reads the receiver's current `length` and indexed values. FenJS `for...of`, eager iterator consumers, and spread acquire that method through the existing host-prototype symbol path after `RequireHostObject` validates realm, slot, and generation state.
+- The implementation neither converts host objects to plain JS objects nor bypasses stale-handle checks. Iterator results are ordinary JS objects and use the existing lazy `next`/IteratorClose machinery.
+
+Verification:
+
+- Red: `FenJsDomCollectionIterationTests.HtmlCollection_ForOfUsesIndexedHostValues` failed `0/1` with `TypeError: Value is not iterable` at `EnumerateValues`.
+- Green/discovery: all three included tests are listed and pass `3/3`, covering `for...of`, spread, and a well-formed self-iterable iterator result.
+- Adjacent FenJS iterator/stale-handle tests pass `24/24`; `HostObjectTableTests` pass `7/7`. A broader mixed host-integration filter exposed one unrelated existing `RefusedWriteThrowsTypeError` failure and is not reported green.
+- Release builds of `FenBrowser.Js`, `FenBrowser.FenEngine`, and `FenBrowser.Tooling` succeed with zero warnings and zero errors.
+- Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_host_collection_iterator.html/20260715T085843Z/` renders `passed:first,second`, completes lifecycle, and reports zero callback failures, zero exceptions, and `first_blocker: none`.
+- Fresh Google bundle `logs/real-site/www.google.com/20260715T085915Z/` renders the main UI with 18 completed script executions, zero direct script failures, zero callback failures, zero exceptions, complete current lifecycle, and `first_blocker: none`. Interaction remains unverified.

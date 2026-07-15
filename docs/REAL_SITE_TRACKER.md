@@ -36,34 +36,34 @@ Expected visible result: The same main UI plus verified focus, typing, submit/cl
 
 First fatal console error: None captured.
 
-First remaining runtime error: One unhandled Promise rejection. It is attributed to external `script-5`, line 18/column 14425, function `k0c`, receiver `PromiseInstance`, and FenJS `EnumerateValues`: `TypeError: Value is not iterable.` The earlier eight `setTimeout` host-object failures remain fixed and did not recur.
+First remaining runtime error: None captured. The attributed `script-5` / `k0c` rejection was a `for...of` over `document.getElementsByTagName('img')`: FenJS ignored host-object prototype iterators and the manual `HTMLCollection` surface lacked `Symbol.iterator`. The general host collection iterator path is now regression-protected; the earlier eight `setTimeout` host-object failures also remain fixed.
 
 First fatal network error: None confirmed. The only failed request is a `data:image/gif` URI, which is a capture-classification defect rather than an HTTP failure.
 
 First missing API: The summary reports `Element.closure_listenable_498696`; this is a site-expando candidate, not a confirmed Web API. Standards candidates include `Document.compareDocumentPosition`, `Location.toString`, and `CharacterData.childNodes`; none is confirmed fatal.
 
-First layout blocker: None captured. There are 31 zero-area boxes, but the main UI is visible.
+First layout blocker: None captured. There are 34 zero-area boxes, but the main UI is visible.
 
 Script loading status: Completed. 14 script elements, 18 execution completions, 0 execution failures.
 
-DOMContentLoaded fired: Yes, at `2026-07-15T08:48:02.0069418Z`.
+DOMContentLoaded fired: Yes.
 
-Load fired: Yes, at `2026-07-15T08:48:02.1974136Z`.
+Load fired: Yes.
 
 Main framework detected: Google Closure-style property names are present; this is an inference from `closure_*` and `$goog_Thenable`, not a confirmed framework detector result.
 
-Likely failure bucket: L for missing interaction proof and lifecycle-detail normalization; F/E remain candidates only for unclassified missing-property observations.
+Likely failure bucket: L for missing interaction proof; F/E remain candidates only for unclassified missing-property observations.
 
 Confirmed failure bucket: The previous E/G defect was a baseline-JIT `in`-operator divergence and is regression-protected. The current boot result is `none`; interaction is unverified rather than reported as successful.
 
 Minimal reproduction: `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site https://www.google.com/ 20000`.
 
-Engine subsystem owner: FenJS JIT/host-property dispatch for the resolved callback defect; Host input/default-action and lifecycle owners for the next acceptance work.
+Engine subsystem owner: FenJS iterator/host-prototype dispatch and the manual DOM collection surface for the resolved callback defect; Host input/default-action for the next acceptance work.
 
-Fix task: Callback attribution, host-object interop, and transition-sample lifecycle normalization are complete. Reduce the one iterable rejection, then `SITE-001` verifies local and Google interaction acceptance.
+Fix task: Callback attribution, both attributed host-object defects, and transition-sample lifecycle normalization are complete. `SITE-001` now proceeds to local and Google interaction acceptance.
 
-Regression test: TESTED. `CallbackFailureDiagnosticsTests.HotTimerHelper_InOperatorAcceptsHostObjectAfterJitTierUp` is compiled/discovered and crosses the JIT threshold inside a deterministic timer callback.
+Regression test: TESTED. `FenJsDomCollectionIterationTests` is compiled/discovered and protects direct iteration, `for...of`, and spread over a host-backed `HTMLCollection`; the earlier hot JIT timer reduction remains active.
 
-Evidence: `logs/real-site/www.google.com/20260715T084802Z/summary.md`, `lifecycle.json`, `event_loop.json`, `exceptions.json`, `first_blocker.json`, `network.json`, `style_layout.json`, and `screenshot.png`.
+Evidence: `logs/real-site/www.google.com/20260715T085915Z/summary.md`, `lifecycle.json`, `event_loop.json`, `exceptions.json`, `first_blocker.json`, `network.json`, `style_layout.json`, and `screenshot.png`.
 
 Status: TESTED for load/render; interaction acceptance remains RESEARCHED.

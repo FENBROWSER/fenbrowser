@@ -14,7 +14,7 @@ Risk Level: Medium
 Dependencies: Current event-loop snapshot, structured logger, and `debug-site` bundle writer are INTEGRATED
 Files likely involved: `FenBrowser.FenEngine/Rendering/EventLoopCoordinator.cs`, event-loop diagnostic record types, `FenBrowser.Core/Logging/EngineLog.cs`, `FenBrowser.Tooling/Program.cs`, included diagnostic test surface
 Specs/references: HTML event loops; `docs/SPEC_EVENT_LOOP.md`; `docs/DIAGNOSTICS.md`
-Current behavior: Timer and event-listener throws plus unhandled Promise rejections retain bounded task, callback, source, receiver, exception, JS-stack, and host-stack fields. Promise reporting waits until the microtask checkpoint, so a same-turn handler suppresses a false failure, and multiple rejections retain observation order. Tooling drains accepted log records before copying artifacts, and callback counts share one event-loop snapshot across `event_loop.json`, `exceptions.json`, trace, and summary. The attributed Google host-object cluster is fixed; the current bundle exposes one distinct iterable rejection with source and stack provenance.
+Current behavior: Timer and event-listener throws plus unhandled Promise rejections retain bounded task, callback, source, receiver, exception, JS-stack, and host-stack fields. Promise reporting waits until the microtask checkpoint, so a same-turn handler suppresses a false failure, and multiple rejections retain observation order. Tooling drains accepted log records before copying artifacts, and callback counts share one event-loop snapshot across `event_loop.json`, `exceptions.json`, trace, and summary. Both attributed Google host-object clusters are fixed; the current bundle reports zero callback failures and zero exceptions.
 Expected behavior: Every failed timer/task/event/promise callback has timestamp, task/callback ID, error type/message/stack, realm/script/source where known, and appears before bundle finalization.
 Reproduction: Run the local callback-failure fixture and `debug-site https://www.google.com 20000`; compare `event_loop.json`, `exceptions.json`, `trace.jsonl`, and summary counts.
 Root cause: The old event-loop snapshot retained only aggregate failure state, function-owned source provenance was lost after top-level execution, and Tooling copied asynchronous logs without a drain boundary.
@@ -26,7 +26,7 @@ Performance impact: Measure added record allocations and drain duration; no sync
 Compatibility impact: Diagnostic-only output change with versioned/additive JSON fields.
 Known risks: Flush deadlock, reordered events, or retaining callback/realm graphs through diagnostics.
 Blockers: None
-Next action: Normalize lifecycle truth, then reduce the attributed Google `k0c` iterable rejection without widening into unrelated FenJS conformance work.
+Next action: Add the deterministic local input/form acceptance fixture, then automate Google focus/type/submit through ordinary hit testing and default action.
 
 ## Task TRACE-002
 

@@ -17,6 +17,15 @@ public sealed partial class BytecodeInterpreter
     {
         var values = new List<JsValue>();
 
+        if (source.Tag == JsValueTag.HostObject &&
+            TryGetHostObjectIteratorMethod(source, out var hostIteratorMethod))
+        {
+            var iterator = CallFunction(hostIteratorMethod, Array.Empty<JsValue>(), source);
+            DrainIteratorIntoList(iterator, values);
+            var producer = new ForOfIteratorObject(values);
+            return JsValue.FromObject(_heap.AllocateObject(producer, AllocationSite.Current()));
+        }
+
         if (source.Tag == JsValueTag.Object)
         {
             var obj = _heap.GetObject(source.AsObjectHandle());
@@ -108,6 +117,13 @@ public sealed partial class BytecodeInterpreter
     // IteratorClose on the break.
     private JsValue CreateForOfIteratorState(JsValue source, bool requireIterable = false)
     {
+        if (source.Tag == JsValueTag.HostObject &&
+            TryGetHostObjectIteratorMethod(source, out var hostIteratorMethod))
+        {
+            var iterator = CallFunction(hostIteratorMethod, Array.Empty<JsValue>(), source);
+            return CreateLazyForOfIteratorState(iterator);
+        }
+
         if (source.Tag == JsValueTag.Object)
         {
             var obj = _heap.GetObject(source.AsObjectHandle());
@@ -117,28 +133,58 @@ public sealed partial class BytecodeInterpreter
                 iterDesc.Value.Tag == JsValueTag.Object)
             {
                 var iterator = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), source);
-                if (iterator.Tag != JsValueTag.Object)
-                {
-                    throw new JsThrownException(CreateTypeError(
-                        "Result of the Symbol.iterator method is not an object."));
-                }
-
-                var iterObj = _heap.GetObject(iterator.AsObjectHandle());
-                if (!TryGetPropertyValue(iterObj, iterator, "next", out var nextFn) ||
-                    nextFn.Tag != JsValueTag.Object)
-                {
-                    throw new JsThrownException(CreateTypeError(
-                        "Iterator has no callable 'next' method."));
-                }
-
-                var lazy = new ForOfIteratorObject(iterator, nextFn);
-                return JsValue.FromObject(_heap.AllocateObject(lazy, AllocationSite.Current()));
+                return CreateLazyForOfIteratorState(iterator);
             }
         }
 
         // Arrays, strings, array-likes, and the not-iterable error paths keep the
         // existing eager buffering semantics.
         return CreateForOfIterator(source, requireIterable);
+    }
+
+    private bool TryGetHostObjectIteratorMethod(JsValue source, out JsValue iteratorMethod)
+    {
+        _ = RequireHostObject(source, "get Symbol.iterator");
+        var handle = source.AsHostObjectHandle();
+        var iteratorSymbolId = GetWellKnownSymbolId("iterator");
+        if (iteratorSymbolId == 0 ||
+            !TryGetHostObjectPrototypeSymbolProperty(
+                handle,
+                source,
+                iteratorSymbolId,
+                out iteratorMethod))
+        {
+            iteratorMethod = JsValue.Undefined;
+            return false;
+        }
+
+        if (!IsCallable(iteratorMethod))
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Value is not iterable (Symbol.iterator is not callable)."));
+        }
+
+        return true;
+    }
+
+    private JsValue CreateLazyForOfIteratorState(JsValue iterator)
+    {
+        if (iterator.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Result of the Symbol.iterator method is not an object."));
+        }
+
+        var iterObj = _heap.GetObject(iterator.AsObjectHandle());
+        if (!TryGetPropertyValue(iterObj, iterator, "next", out var nextFn) ||
+            !IsCallable(nextFn))
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Iterator has no callable 'next' method."));
+        }
+
+        var lazy = new ForOfIteratorObject(iterator, nextFn);
+        return JsValue.FromObject(_heap.AllocateObject(lazy, AllocationSite.Current()));
     }
 
     // Advances a for-of iterator state by one step. Returns true when the
@@ -254,6 +300,14 @@ public sealed partial class BytecodeInterpreter
     private List<JsValue> CollectSpreadValues(JsValue source)
     {
         var values = new List<JsValue>();
+
+        if (source.Tag == JsValueTag.HostObject &&
+            TryGetHostObjectIteratorMethod(source, out var hostIteratorMethod))
+        {
+            var iterator = CallFunction(hostIteratorMethod, Array.Empty<JsValue>(), source);
+            DrainIteratorIntoList(iterator, values);
+            return values;
+        }
 
         if (source.Tag == JsValueTag.Object)
         {

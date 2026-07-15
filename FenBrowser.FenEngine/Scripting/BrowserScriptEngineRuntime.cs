@@ -5618,16 +5618,46 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         typeof candidate.toggle === 'function';
                 });
 
-                defineCtor('NodeList', null, ['NodeList'], function (candidate) {
+                function createCollectionIterator() {
+                    var collection = this;
+                    var index = 0;
+                    var iterator = {
+                        next: function () {
+                            if (index >= Number(collection.length)) {
+                                return { value: undefined, done: true };
+                            }
+
+                            return { value: collection[index++], done: false };
+                        }
+                    };
+                    Object.defineProperty(iterator, Symbol.iterator, {
+                        value: function () { return this; },
+                        configurable: true
+                    });
+                    return iterator;
+                }
+
+                var NodeList = defineCtor('NodeList', null, ['NodeList'], function (candidate) {
                     return typeof candidate.length !== 'undefined' &&
                         typeof candidate.item === 'function' &&
                         typeof candidate.namedItem === 'undefined';
                 });
 
-                defineCtor('HTMLCollection', null, ['HTMLCollection'], function (candidate) {
+                var HTMLCollection = defineCtor('HTMLCollection', null, ['HTMLCollection'], function (candidate) {
                     return typeof candidate.length !== 'undefined' &&
                         typeof candidate.item === 'function' &&
                         typeof candidate.namedItem === 'function';
+                });
+
+                Object.defineProperty(NodeList.prototype, Symbol.iterator, {
+                    value: createCollectionIterator,
+                    writable: true,
+                    configurable: true
+                });
+                Object.defineProperty(HTMLCollection.prototype, Symbol.iterator, {
+                    value: createCollectionIterator,
+                    writable: true,
+                    configurable: true
                 });
 
                 function describeFenHostProbeNode(node) {
