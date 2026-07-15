@@ -3729,3 +3729,20 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --list-tests --filter "FullyQualifiedName~DebugSiteInteractionRunnerTests"`: lists two tests.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~DebugSiteInteractionRunnerTests|FullyQualifiedName~BrowserFormInteractionAcceptanceTests" --logger "console;verbosity=minimal"`: pass (`8/8`).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site-interact <local-form-file-url> "#query" "fen-local-20260715-4" "#submit" 2000 1500`: pass with the bundle above.
+
+## 6.147 Current-Layout WebDriver and Google Interaction Verification (2026-07-15)
+
+- WebDriver rect/click operations now wait for pending recascade work and refresh layout at the current viewport. Geometry refresh replaces the renderer style snapshot and drops stale paint hit data, so moved controls and `pointer-events:none` overlays are handled from one current rendering state.
+- The diagnostic host now uses the same 1280x800 viewport as its screenshots. A centered-control regression protects the host/screenshot coordinate contract.
+- The concrete two-argument `BrowserHost.FindElementAsync(...)` overload now forwards to the active frame-aware selector implementation instead of its legacy ID/class/tag-only parser. Compound descendant and attribute selectors therefore behave consistently for Tooling and protocol callers.
+- Eight form tests and three Tooling tests are compiled and listed on the active test surface. The combined focused run passes `11/11`; the FenEngine and Tooling Release builds both pass with zero warnings and zero errors.
+- Google evidence at `logs/real-site/www.google.com/20260715T101621Z/` records target geometry `(346,327,437,50)`, focus on `TEXTAREA#APjFqb`, seven accepted nonce characters, the full input/change/blur and submit-control click sequence, a form submit event, and a successful 200 GET navigation to `/search?q=fen715f...`. Callback and exception counts agree at zero.
+- Both screenshots are present. The after screenshot shows the nonce and focused submit control but not a settled search-results document. The interaction record is `passed` because request/navigation completion was observed; `first_blocker.json` separately and incorrectly reports insufficient required-resource evidence after navigation. This remaining generation/settlement disagreement is not treated as complete visual result-page acceptance.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --list-tests --filter "FullyQualifiedName~BrowserFormInteractionAcceptanceTests|FullyQualifiedName~DebugSiteInteractionRunnerTests"`: lists all 11 tests.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~BrowserFormInteractionAcceptanceTests|FullyQualifiedName~DebugSiteInteractionRunnerTests" --logger "console;verbosity=minimal"`: pass (`11/11`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v:minimal`: pass with 0 warnings and 0 errors.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v:minimal`: pass with 0 warnings and 0 errors.
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site-interact "https://www.google.com/" "#APjFqb" "fen715f" ".FPdoLc input[name=btnK]" 20000 10000`: interaction pass with the bundle above.

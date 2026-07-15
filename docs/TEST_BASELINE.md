@@ -12,8 +12,9 @@ Snapshot date: 2026-07-14; focused build/test revalidated 2026-07-15. All paths 
 | First-causal-blocker classifier fixtures | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FirstBlockerClassifierTests" --logger "console;verbosity=minimal"` | 12 passed, 0 failed, 0 skipped | TESTED |
 | Lifecycle transition-detail and classifier slice | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~BrowserLifecycleDetailTests|FullyQualifiedName~NavigationLifecycleTrackerTests|FullyQualifiedName~FirstBlockerClassifierTests" --logger "console;verbosity=minimal"` | 18 passed, 0 failed, 0 skipped | TESTED |
 | DOM host-collection iteration | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsDomCollectionIterationTests" --logger "console;verbosity=minimal"` | 3 passed, 0 failed, 0 skipped; all 3 listed by `--list-tests` | REGRESSION_PROTECTED |
-| Local form interaction acceptance | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter FullyQualifiedName~BrowserFormInteractionAcceptanceTests --no-restore --logger "console;verbosity=minimal"` | 6 passed, 0 failed, 0 skipped; all 6 listed by `--list-tests` | REGRESSION_PROTECTED |
-| Tooling interaction bundle runner | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~DebugSiteInteractionRunnerTests" --logger "console;verbosity=minimal"` | 2 passed, 0 failed, 0 skipped; both listed by `--list-tests` | REGRESSION_PROTECTED |
+| Form and Tooling interaction acceptance | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~BrowserFormInteractionAcceptanceTests|FullyQualifiedName~DebugSiteInteractionRunnerTests" --logger "console;verbosity=minimal"` | 11 passed, 0 failed, 0 skipped; all 11 listed by `--list-tests` | REGRESSION_PROTECTED |
+| FenEngine, Release | `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v:minimal` | 0 warnings, 0 errors | TESTED |
+| Tooling, Release | `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v:minimal` | 0 warnings, 0 errors | TESTED |
 | Adjacent form/input event slice | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FormControlActivationTests|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_DeliversDoubleClickContextMenuAndPointerPayload|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_EventListenerCanAccessFreshClassList" --logger "console;verbosity=minimal"` | 5 passed, 0 failed, 0 skipped | TESTED |
 | FenJS iterator and stale-handle slice | `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~AtIteratorDispatchTests|FullyQualifiedName~ForOfTests|FullyQualifiedName~IteratorStaleHandleTests" --logger "console;verbosity=minimal"` | 24 passed, 0 failed, 0 skipped | TESTED |
 | FenJS host-handle table slice | `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~HostObjectTableTests" --logger "console;verbosity=minimal"` | 7 passed, 0 failed, 0 skipped | TESTED |
@@ -34,7 +35,8 @@ The Release discovery check found:
 | `CallbackFailureDiagnosticsTests` | yes |
 | `DebugSiteExceptionSummaryTests` | yes |
 | `FirstBlockerClassifierTests` | yes |
-| `BrowserFormInteractionAcceptanceTests` | yes; 6 tests |
+| `BrowserFormInteractionAcceptanceTests` | yes; 8 tests |
+| `DebugSiteInteractionRunnerTests` | yes; 3 tests |
 | `EventLoopTraceTests` | no |
 | `RealSiteRenderDiagnostics` | no |
 | `RendererChildLoopIoTests` | no |
@@ -78,7 +80,7 @@ The latest retained focused `dom/lists` summary at `Results/wpt_20260704_175911/
 
 | Target | Evidence | Observed result | Status |
 | --- | --- | --- | --- |
-| Google | `logs/real-site/www.google.com/20260715T085915Z/` | Main page rendered; current lifecycle/event loop agree on complete/DCL/load; the earlier loading sample is explicitly transition-time/timed-out; 18 completed script executions; 0 direct script failures, 0 callback failures, 0 exceptions; `first_blocker.json` is `none`; input not automated | TESTED |
+| Google interaction | `logs/real-site/www.google.com/20260715T101621Z/` | At 1280x800, hit-tested `TEXTAREA#APjFqb`, focused it, accepted nonce `fen715f`, emitted keyboard/input/change/blur plus submit-control pointer/click and form submit records, then completed a 200 GET navigation to `/search?q=fen715f...`; 0 callback failures and 0 exceptions. The after screenshot retains the submitted homepage state, and post-navigation `first_blocker.json` incorrectly reports insufficient required-resource evidence; result-page visual settlement and classifier normalization remain open. | TESTED |
 | Local form Tooling interaction | `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_interaction_result.html_q_fen-local-20260715-4_source_local-fixture_include_yes_submitter_go/20260715T094724Z/` | Hit-tested click acquired focus, accepted 20 characters, emitted 233 bounded event records, submitted successful controls, reached terminal `result.html`, captured before/after screenshots, and completed all 19 blocker milestones with result `none` | REGRESSION_PROTECTED |
 | Host collection iterator local fixture | `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_host_collection_iterator.html/20260715T085843Z/` | Async timer iterates a host-backed `HTMLCollection` and renders `passed:first,second`; 0 callback failures; 0 exceptions; complete lifecycle; `first_blocker.json` is `none` | REGRESSION_PROTECTED |
 | Event/Promise failure local fixture | `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_event_promise_callback_failures.html/20260715T083850Z/` | Complete lifecycle; event-listener and unhandled-Promise records retain source/receiver/task/stack in order; event-loop, exceptions, trace, and summary agree at 2; `first_blocker.json` keeps both non-fatal | TESTED |
@@ -96,4 +98,4 @@ The latest retained focused `dom/lists` summary at `Results/wpt_20260704_175911/
 | Core-focused tests inside `FenBrowser.Tests` | RESEARCHED | Fresh discovered and executed result for active Core paths |
 | html5lib | NOT_STARTED | Runner command, totals, failures, and local result bundle |
 | Selected boot-critical WPT | RESEARCHED | `html`, `dom`, `fetch`, `cors`, `cookies`, `custom-elements`, `cssom`, and focused layout categories |
-| WebDriver interaction smoke | TESTED | Local click/type/canceled-and-successful-submit behavior plus Tooling screenshot/event/navigation evidence is regression-protected; the same sequence against Google remains required |
+| WebDriver interaction smoke | REGRESSION_PROTECTED | Local click/type/canceled-and-successful-submit, current-layout hit testing, compound selector lookup, and Tooling viewport behavior are covered; Google focus/type/submit/navigation is captured, while result-page visual settlement remains required |

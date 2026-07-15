@@ -30,7 +30,7 @@ Site: Google
 
 URL: `https://www.google.com/`
 
-Current visible result: The 1280x800 screenshot contains the Google logo, search control, buttons, language links, navigation, and footer. The document, script, event-loop, layout, paint, and raster stages completed.
+Current visible result: The 1280x800 before screenshot contains the Google logo, search control, buttons, language links, navigation, and footer. The after screenshot shows nonce `fen715f` in the focused search control and the focused submit button. The interaction then recorded a successful 200 GET navigation to `/search?q=fen715f...`; the after screenshot does not yet prove the search-results document rendered.
 
 Expected visible result: The same main UI plus verified focus, typing, submit/click navigation, and visible network/input trace records.
 
@@ -52,18 +52,18 @@ Load fired: Yes.
 
 Main framework detected: Google Closure-style property names are present; this is an inference from `closure_*` and `$goog_Thenable`, not a confirmed framework detector result.
 
-Likely failure bucket: L for missing interaction proof; F/E remain candidates only for unclassified missing-property observations.
+Likely failure bucket: Diagnostics/lifecycle evidence for the post-submit document: interaction succeeds, but the final classifier reports `insufficient-evidence` for `RequiredResourcesFetched` and the after screenshot remains on the submitted homepage state. F/E remain candidates only for unclassified missing-property observations.
 
-Confirmed failure bucket: The previous E/G defect was a baseline-JIT `in`-operator divergence and is regression-protected. The current boot result is `none`; interaction is unverified rather than reported as successful.
+Confirmed failure bucket: The previous E/G defect was a baseline-JIT `in`-operator divergence and is regression-protected. Google focus, typing, submit activation, and result navigation are now verified. Result-page visual settlement and consistent post-navigation blocker classification remain unverified.
 
 Minimal reproduction: Passive: `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site https://www.google.com/ 20000`. Interaction: use `debug-site-interact` with selectors confirmed from the fresh Google DOM; do not hardcode them into engine behavior.
 
-Engine subsystem owner: FenJS iterator/host-prototype dispatch and the manual DOM collection surface for the resolved callback defect; Host input/default-action for the next acceptance work.
+Engine subsystem owner: FenJS iterator/host-prototype dispatch and the manual DOM collection surface for the resolved callback defect; FenEngine layout/hit testing and WebDriver lookup for the resolved interaction defects; Tooling/classifier lifecycle capture for the remaining post-navigation evidence gap.
 
-Fix task: Callback attribution, both attributed host-object defects, transition-sample lifecycle normalization, compiled local form interaction acceptance, and Tooling-driven local screenshot/event/navigation evidence are complete. `SITE-001` now proceeds to the same generic command on Google.
+Fix task: Callback attribution, both attributed host-object defects, transition-sample lifecycle normalization, compiled local form interaction acceptance, current-layout WebDriver geometry, viewport-consistent hit testing, full selector lookup, and Tooling-driven Google focus/type/submit/navigation evidence are complete. Next reduce the result-page screenshot/classifier disagreement.
 
-Regression test: TESTED. `FenJsDomCollectionIterationTests` protects the last callback defect. The six discovered `BrowserFormInteractionAcceptanceTests` protect ordinary hit-tested click, focus, typing, input/change order, canceled `beforeinput`, canceled submit, live checkedness/activation, successful-control GET navigation, and non-interactable rejection. The two discovered `DebugSiteInteractionRunnerTests` protect bounded event export, value privacy fields, terminal navigation waiting, and local result-DOM agreement.
+Regression test: REGRESSION_PROTECTED. `FenJsDomCollectionIterationTests` protects the last callback defect. Eight discovered `BrowserFormInteractionAcceptanceTests` protect ordinary hit-tested click, current-layout/pointer-events geometry, compound selector lookup, focus, typing, input/change order, canceled `beforeinput`, canceled submit, live checkedness/activation, successful-control GET navigation, and non-interactable rejection. Three discovered `DebugSiteInteractionRunnerTests` protect bounded event export, value privacy fields, terminal navigation waiting, local result-DOM agreement, and the fixed 1280x800 diagnostic viewport.
 
-Evidence: Google boot: `logs/real-site/www.google.com/20260715T085915Z/`. Local interaction: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_interaction_result.html_q_fen-local-20260715-4_source_local-fixture_include_yes_submitter_go/20260715T094724Z/`.
+Evidence: Google boot: `logs/real-site/www.google.com/20260715T085915Z/`. Google interaction: `logs/real-site/www.google.com/20260715T101621Z/`. Local interaction: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_interaction_result.html_q_fen-local-20260715-4_source_local-fixture_include_yes_submitter_go/20260715T094724Z/`.
 
-Status: TESTED for load/render and local interaction semantics; Google interaction acceptance remains RESEARCHED.
+Status: TESTED for load/render plus Google focus/type/submit/navigation; result-page visual settlement and post-navigation classifier agreement remain RESEARCHED.

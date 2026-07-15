@@ -45,9 +45,9 @@ The reality audit proceeds in this order:
 | Event loop/timers/microtasks | TESTED | Current Google fired DOMContentLoaded/load, recorded 9 microtask checkpoints, and reports zero callback failures consistently | Broader repeating-timer, navigation-invalidation, and rAF reductions remain |
 | Missing API observation | TESTED | Dedicated tracker tests passed and Google emitted missing-property observations | Bundle export loses rich fields and reports site expandos as APIs |
 | Fetch/network visibility | INTEGRATED | Google captured 25 requests | One request is counted as failed; CORS/cookie/security decisions are not summarized |
-| CSS/style/layout/paint | TESTED | Google styled 569 nodes, built 184 boxes and 98 paint nodes, and captured a usable screenshot | Input interaction and screenshot comparison are not automated; the frame exceeded budget |
+| CSS/style/layout/paint | TESTED | Google renders at the diagnostic 1280x800 viewport; WebDriver geometry refreshes current layout/styles before hit testing | The post-submit after screenshot does not yet show a settled results document; the frame exceeded budget |
 | WebIDL-generated bindings | IMPLEMENTED | Parser and generator exist | `FenBrowser.FenEngine.csproj` explicitly removes `Bindings/Generated/**/*.cs`; runtime exposure remains manual |
-| DOM host bindings | INTEGRATED | Manual FenJS host dispatch supports Google boot plus tested local focus/type/input/change/submit behavior and live checkable-input checkedness | The monolithic dispatch path lacks generated conversions, overload resolution, and complete brand/descriptor coverage |
+| DOM host bindings | INTEGRATED | Manual FenJS host dispatch supports Google boot and live Google focus/type/input/change/submit behavior plus local checkable-input checkedness | The monolithic dispatch path lacks generated conversions, overload resolution, and complete brand/descriptor coverage |
 | Per-tab renderer process | IMPLEMENTED | Brokered coordinator, renderer child, authenticated IPC, shared-memory frames, crash policy exist | Default mode is in-process; a current brokered real-site proof is absent |
 | Network process | IMPLEMENTED | Child host, session, coordinator, capability token and payload limits exist | No active caller of `NetworkCoordinator.SendAsync` was found; fallback uses in-process `HttpClient` |
 | GPU/utility child targets | INTEGRATED | Target sessions auto-start in brokered mode; compositor submissions are wired | Raster/composite isolation and recovery are not acceptance-tested here |
@@ -60,10 +60,10 @@ The reality audit proceeds in this order:
 | --- | --- | --- |
 | Structured NDJSON and trace JSONL | INTEGRATED | `EngineLog` emits both formats; many session/document/realm IDs are still null in the Google trace |
 | `debug-site <url> [settle_ms]` | TESTED | Current Google, example.com, and `fen://performance` bundles exist |
-| `debug-site-interact <url> <target_selector> <text> <submit_selector> ...` | TESTED | Local form bundle has ordinary click/focus/type/submit, terminal navigation, event records, and before/after screenshots |
+| `debug-site-interact <url> <target_selector> <text> <submit_selector> ...` | TESTED | Local form and Google bundles have ordinary click/focus/type/submit, terminal navigation, event records, and before/after screenshots |
 | Lifecycle, script, event-loop, network snapshots | INTEGRATED | Present in the Google bundle |
 | DOM/style/layout/paint/display-list dumps and screenshot | INTEGRATED | Present in the Google bundle |
-| Deterministic first-causal-blocker classifier | TESTED | `first_blocker.json` models 19 ordered milestones; fixture tests and Google report `none` while unattempted interaction remains explicit |
+| Deterministic first-causal-blocker classifier | TESTED | `first_blocker.json` models 19 ordered milestones and fixture tests remain green | The successful post-submit Google bundle incorrectly reports insufficient required-resource evidence and needs navigation-generation normalization |
 | Exception attribution | TESTED | Typed callback records, `event_loop.json`, `exceptions.json`, trace, and summary share one drained snapshot; the current Google bundle agrees at zero |
 | Missing API bundle schema | STUBBED | Runtime tracker has provenance; bundle exports a smaller `EngineCapabilities` view with false positives |
 | `ipc.json` | NOT_STARTED | Not in the artifact manifest |
@@ -73,9 +73,9 @@ The reality audit proceeds in this order:
 
 ## Primary real-site target
 
-Google is the current target because it has the freshest complete bundle and already crosses the boot pipeline. The 2026-07-15 run loaded the document, completed 18 script executions without a direct script failure, fired lifecycle events, built DOM/style/layout/paint state, and rendered the main UI. The previously attributed eight timer failures shared one cause: the baseline JIT implementation of the ECMAScript `in` operator routed a DOM host handle through JS heap-object decoding. A later attributed Promise rejection in `script-5` function `k0c` exposed a second general boundary defect: FenJS iterator acquisition ignored a valid `HTMLCollection` host prototype, and the manual DOM surface did not define the collection's WebIDL iterator. Host collections now preserve their opaque handle and acquire a live `Symbol.iterator` through the validated prototype path. The current Google bundle reports zero direct script failures, zero callback failures, and zero exceptions. Navigation transition samples are explicitly historical; current lifecycle and event-loop fields agree on complete/DCL/load. The selector-driven Tooling interaction command now proves the deterministic local form through click, focus, typing, submit, terminal navigation, bounded event records, and before/after screenshots. The next acceptance work is running the same generic command on Google; missing-API classification remains separately open.
+Google remains the current target because it crosses the boot and interaction pipeline. The 2026-07-15 passive run loaded the document, completed 18 script executions without a direct script failure, fired lifecycle events, built DOM/style/layout/paint state, and rendered the main UI. The earlier timer and Promise host-object defects remain regression-protected, and the current interaction bundle reports zero callback failures and zero exceptions. `logs/real-site/www.google.com/20260715T101621Z/` uses the generic Tooling command at 1280x800 to hit-test `TEXTAREA#APjFqb`, focus it, accept nonce `fen715f`, dispatch the expected input/change/blur/click/submit sequence, and complete a 200 GET navigation to `/search?q=fen715f...`. Current-layout flushing, renderer style snapshots, stale paint invalidation, and unified full-selector lookup fixed the general interaction blockers without site-specific engine behavior. The after screenshot still shows the submitted homepage state, and `first_blocker.json` incorrectly reports insufficient required-resource evidence for the post-navigation document; result-page visual settlement and classifier generation alignment are the next acceptance gap. Missing-API classification remains separately open.
 
-Evidence: `logs/real-site/www.google.com/20260715T085915Z/`.
+Evidence: `logs/real-site/www.google.com/20260715T101621Z/`.
 
 ## Gate status
 

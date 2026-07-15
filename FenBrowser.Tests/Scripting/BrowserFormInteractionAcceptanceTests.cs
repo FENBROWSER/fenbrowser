@@ -130,6 +130,62 @@ public sealed class BrowserFormInteractionAcceptanceTests
     }
 
     [Fact]
+    public async Task WebDriverFindElement_UsesFullCssSelectorSemantics()
+    {
+        ElementStateManager.Reset();
+        BrowserScriptEngineRuntime.Reset();
+        try
+        {
+            using var browser = new BrowserHost();
+            Assert.True(await browser.NavigateAsync(GetFixtureUri()));
+
+            Assert.NotNull(browser.GetDomRoot()?.QuerySelector("#search-form button"));
+            Assert.NotNull(browser.GetDomRoot()?.QuerySelector("button[name=submitter]"));
+            Assert.NotNull(browser.GetDomRoot()?.QuerySelector("#search-form button[name=submitter]"));
+
+            var submitId = await browser.FindElementAsync(
+                "css selector",
+                "#search-form button[name=submitter]");
+
+            Assert.NotNull(submitId);
+            Assert.Equal(
+                "submit",
+                (await browser.GetElementAttributeAsync(submitId, "id"))?.ToString());
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+            ElementStateManager.Reset();
+        }
+    }
+
+    [Fact]
+    public async Task WebDriverClick_NestedFlexTextAreaUsesItsRenderedInViewCenter()
+    {
+        ElementStateManager.Reset();
+        BrowserScriptEngineRuntime.Reset();
+        try
+        {
+            using var browser = new BrowserHost();
+            Assert.True(await browser.NavigateAsync(GetNestedFlexFixtureUri()));
+            await Task.Delay(250);
+
+            var queryId = await browser.FindElementAsync("css selector", "#query");
+            var rect = await browser.GetElementRectAsync(queryId);
+
+            Assert.True(rect.Width > 0 && rect.Height > 0);
+            Assert.InRange(rect.X, 314, 316);
+            await browser.ClickElementAsync(queryId);
+            Assert.Equal(queryId, await browser.GetActiveElementAsync());
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+            ElementStateManager.Reset();
+        }
+    }
+
+    [Fact]
     public async Task WebDriverClickTypeAndPreventedSubmit_UsesOrdinaryInputPipeline()
     {
         ElementStateManager.Reset();
@@ -230,6 +286,17 @@ public sealed class BrowserFormInteractionAcceptanceTests
             "Fixtures",
             "Interaction",
             "form_acceptance.html");
+        return new Uri(fixturePath).AbsoluteUri;
+    }
+
+    private static string GetNestedFlexFixtureUri()
+    {
+        var fixturePath = Path.Combine(
+            FindRepositoryRoot(),
+            "FenBrowser.Tests",
+            "Fixtures",
+            "Interaction",
+            "nested_flex_click.html");
         return new Uri(fixturePath).AbsoluteUri;
     }
 

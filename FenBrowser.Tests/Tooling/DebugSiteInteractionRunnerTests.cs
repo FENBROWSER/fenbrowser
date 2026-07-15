@@ -8,6 +8,29 @@ namespace FenBrowser.Tests.Tooling;
 public sealed class DebugSiteInteractionRunnerTests
 {
     [Fact]
+    public async Task DebugSiteHost_UsesTheScreenshotViewportForCenteredElementGeometry()
+    {
+        ElementStateManager.Reset();
+        BrowserScriptEngineRuntime.Reset();
+        try
+        {
+            using var browser = Program.CreateDebugSiteBrowserHost();
+            Assert.True(await browser.NavigateAsync(GetCenteredViewportFixtureUri()));
+
+            var targetId = await browser.FindElementAsync("css selector", "#target");
+            var rect = await browser.GetElementRectAsync(targetId);
+
+            Assert.InRange(rect.X + (rect.Width / 2), 639, 641);
+            Assert.InRange(rect.Width, 199, 210);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+            ElementStateManager.Reset();
+        }
+    }
+
+    [Fact]
     public async Task LocalFormInteraction_RecordsOrdinaryBrowserOutcomeWithoutTextPayload()
     {
         ElementStateManager.Reset();
@@ -71,6 +94,17 @@ public sealed class DebugSiteInteractionRunnerTests
             "Fixtures",
             "Interaction",
             "form_acceptance.html");
+        return new Uri(fixturePath).AbsoluteUri;
+    }
+
+    private static string GetCenteredViewportFixtureUri()
+    {
+        var fixturePath = Path.Combine(
+            FindRepositoryRoot(),
+            "FenBrowser.Tests",
+            "Fixtures",
+            "Interaction",
+            "centered_viewport.html");
         return new Uri(fixturePath).AbsoluteUri;
     }
 

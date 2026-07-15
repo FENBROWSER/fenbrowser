@@ -1936,44 +1936,9 @@ pre {{
             return PostProcessFenJsResult(result);
         }
 
-        public async Task<string> FindElementAsync(string strategy, string value)
+        public Task<string> FindElementAsync(string strategy, string value)
         {
-            await Task.CompletedTask;
-            var searchRoot = ResolveSearchRoot();
-            if (searchRoot == null) throw new InvalidOperationException("No active frame DOM");
-
-            Element found = null;
-            if (strategy == "css selector")
-            {
-                if (value.StartsWith("#"))
-                {
-                    var id = value.Substring(1);
-                    found = searchRoot.SelfAndDescendants().OfType<Element>().FirstOrDefault(n => n.Id == id);
-                }
-                else if (value.StartsWith("."))
-                {
-                    var cls = value.Substring(1);
-                    found = searchRoot.SelfAndDescendants().OfType<Element>().FirstOrDefault(n => n.GetAttribute("class") != null && n.GetAttribute("class").Contains(cls));
-                }
-                else
-                {
-                    found = searchRoot.SelfAndDescendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.TagName, value, StringComparison.OrdinalIgnoreCase));
-                }
-            }
-            else if (strategy == "xpath")
-            {
-                if (value.StartsWith("//"))
-                {
-                    var tag = value.Substring(2);
-                    found = searchRoot.SelfAndDescendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.TagName, tag, StringComparison.OrdinalIgnoreCase));
-                }
-            }
-
-            if (found != null)
-            {
-                return GetOrRegisterElementId(found);
-            }
-            throw new KeyNotFoundException("Element not found");
+            return FindElementAsync(strategy, value, parentId: null);
         }
 
         public async Task ClickElementAsync(string elementId)
@@ -1981,6 +1946,7 @@ pre {{
             var element = ResolveElementInActiveContextOrThrow(elementId);
             if (element != null)
             {
+                await RefreshWebDriverLayoutAsync().ConfigureAwait(false);
                 _pendingWebDriverClickPointValid = false;
                 for (var attempt = 0; attempt < 8 && !_pendingWebDriverClickPointValid; attempt++)
                 {
@@ -4844,12 +4810,14 @@ pre {{
 
         public async Task<ElementRect> GetElementRectAsync(string elementId)
         {
-            var layout = _engine?.LastLayout;
             var element = ResolveElementInActiveContextOrThrow(elementId);
             if (element == null)
             {
                 return new ElementRect { X = 0, Y = 0, Width = 0, Height = 0 };
             }
+
+            await RefreshWebDriverLayoutAsync().ConfigureAwait(false);
+            var layout = _engine?.LastLayout;
 
             var scriptRect = await TryResolveElementRectViaScriptAsync(elementId).ConfigureAwait(false);
             if (scriptRect != null)
@@ -4917,6 +4885,15 @@ pre {{
                 Width = width,
                 Height = height
             };
+        }
+
+        private async Task RefreshWebDriverLayoutAsync()
+        {
+            // WebDriver element geometry and the in-view click center must reflect
+            // DOM/style mutations that occurred after the initial page render.
+            // Headless BrowserHost consumers do not have BrowserIntegration's
+            // RepaintReady subscriber, so explicitly flush the active render tree.
+            await _engine.FlushPendingLayoutAsync().ConfigureAwait(false);
         }
 
         public Task<bool> IsElementEnabledAsync(string elementId)

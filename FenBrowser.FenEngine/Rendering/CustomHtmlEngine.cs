@@ -2096,6 +2096,34 @@ public void Dispose()
         }
 
         /// <summary>
+        /// Waits for any scheduled style recascade and synchronously refreshes the
+        /// renderer's geometry snapshot. WebDriver uses this before reading an
+        /// element rectangle or deriving an in-view click center.
+        /// </summary>
+        public async Task FlushPendingLayoutAsync()
+        {
+            var pendingRecascade = _pendingRecascade;
+            if (pendingRecascade != null)
+            {
+                await pendingRecascade.ConfigureAwait(false);
+            }
+
+            var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
+            var renderer = _externalRenderer ?? _cachedRenderer;
+            if (root == null || renderer == null)
+            {
+                return;
+            }
+
+            renderer.EnsureLayout(
+                root,
+                LastComputedStyles,
+                (float)(_activeViewportWidth ?? 1920),
+                (float)(_activeViewportHeight ?? GetPrimaryWindowHeight()),
+                _activeBaseUri?.AbsoluteUri);
+        }
+
+        /// <summary>
         /// Re-runs the CSS cascade on the currently active DOM using cached parameters.
         /// Updates LastComputedStyles and fires RepaintReady so the engine loop redraws.
         /// </summary>

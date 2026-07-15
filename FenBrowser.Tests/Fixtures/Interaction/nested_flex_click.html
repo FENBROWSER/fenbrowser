@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Nested flex click geometry</title>
+  <style>
+    html, body { margin: 0; }
+    form { margin: 120px 0 0 616px; width: 688px; }
+    .search-shell { display: flex; width: 688px; height: 50px; }
+    .leading { flex: 0 0 50px; }
+    .input-shell { display: flex; flex: 1; position: relative; }
+    .overlay {
+      position: absolute;
+      left: 0;
+      top: 14px;
+      width: 100%;
+      height: 22px;
+      pointer-events: none;
+    }
+    textarea {
+      display: flex;
+      flex: 100%;
+      width: 100%;
+      height: 28px;
+      line-height: 22px;
+      padding: 14px 0 0;
+      border: 0;
+      border-bottom: 8px solid transparent;
+      margin: 0;
+      resize: none;
+    }
+    .tools { display: flex; flex: 0 0 192px; }
+  </style>
+</head>
+<body>
+  <form id="search-form">
+    <div class="search-shell">
+      <div class="leading">+</div>
+      <div class="input-shell">
+        <div class="overlay"></div>
+        <textarea id="query" name="q" rows="1"></textarea>
+      </div>
+      <div class="tools">tools</div>
+    </div>
+  </form>
+  <script>
+    setTimeout(function () {
+      document.getElementById('search-form').style.marginLeft = '296px';
+    }, 50);
+  </script>
+</body>
+</html>

@@ -32,6 +32,9 @@ namespace FenBrowser.Tooling
 {
     internal static class Program
     {
+        internal const int DebugSiteViewportWidth = 1280;
+        internal const int DebugSiteViewportHeight = 800;
+
         public static async Task Main(string[] args)
         {
             if (args.Length == 0)
@@ -325,6 +328,13 @@ namespace FenBrowser.Tooling
             Console.WriteLine($"[debug-site] Bundle: {bundleDir}");
         }
 
+        internal static FenBrowser.FenEngine.Rendering.BrowserHost CreateDebugSiteBrowserHost()
+        {
+            var host = new FenBrowser.FenEngine.Rendering.BrowserHost();
+            host.UpdateViewportHint(DebugSiteViewportWidth, DebugSiteViewportHeight);
+            return host;
+        }
+
         private static async Task RunDebugSiteInteractionAsync(string[] args)
         {
             if (args.Length < 5)
@@ -363,7 +373,7 @@ namespace FenBrowser.Tooling
             var lifecycleTransitions = new List<DebugSiteLifecycleTransition>();
             var networkCapture = new DebugSiteNetworkCapture();
 
-            using var host = new FenBrowser.FenEngine.Rendering.BrowserHost();
+            using var host = CreateDebugSiteBrowserHost();
             host.ConsoleMessage += msg => { lock (consoleMessages) consoleMessages.Add(msg); };
             host.NavigationFailed += (_, msg) => { lock (navFailures) navFailures.Add(msg); };
             host.NavigationLifecycleChanged += (_, transition) =>
@@ -622,8 +632,8 @@ namespace FenBrowser.Tooling
             Dictionary<FenBrowser.Core.Dom.V2.Node, CssComputed> styles,
             string baseUrl)
         {
-            const int width = 1280;
-            const int height = 800;
+            const int width = DebugSiteViewportWidth;
+            const int height = DebugSiteViewportHeight;
             var screenshotPath = DiagnosticPaths.GetRootArtifactPath("debug_screenshot.png");
 
             if (root == null)

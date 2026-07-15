@@ -208,6 +208,9 @@ namespace FenBrowser.FenEngine.Rendering
             CssParser.MediaViewportHeight = _viewportHeight;
 
             var effectiveStyles = styles ?? new Dictionary<Node, CssComputed>();
+            _lastStyles = effectiveStyles is Dictionary<Node, CssComputed> styleDictionary
+                ? styleDictionary
+                : new Dictionary<Node, CssComputed>(effectiveStyles);
             var layoutEngine = GetOrCreateLayoutEngine(effectiveStyles, baseUrl);
             _lastLayout = layoutEngine.ComputeLayout(
                 root,
@@ -224,6 +227,9 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 _boxes[box.Key] = box.Value;
             }
+            // A layout-only flush changes hit-test geometry without rebuilding paint.
+            // Do not let callers prefer a paint tree from an older geometry snapshot.
+            _lastPaintTree = null;
             _lastRoot = root;
             _lastViewportWidth = _viewportWidth;
             _lastViewportHeight = _viewportHeight;
