@@ -3161,6 +3161,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             FenLogger.Info($"[JS:{level}] {msg}", category);
                             break;
                     }
+                    _host.Log(msg);
                     return JsValue.Undefined;
                 },
                 length: 2));

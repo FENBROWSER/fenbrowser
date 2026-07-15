@@ -754,6 +754,7 @@ Because drawing text inputs via Skia is complex (cursor, selection, IME), the en
 - WebDriver element clicks now use the ordinary hit-tested pointer/mouse sequence (`pointerdown`, `mousedown`, `pointerup`, `mouseup`, `click`) before `HandleElementClick(...)` performs the related default action.
 - A click with no interactable center or hit-test target now fails explicitly instead of synthesizing a script click at `(0,0)`; an unrelated center target reports interception.
 - Native focus, keyboard, `beforeinput`, `input`, `change`, blur, and submit dispatch reaches both the active FenJS listener surface and the legacy DOM registry. Canceling `keydown`, `keypress`, or `beforeinput` suppresses text mutation; canceling submit suppresses navigation.
+- FenJS `console.log`/`warn`/`error` output now reaches the active browser host console callback as well as the severity-aware engine logger, so Tooling and DevTools consumers observe page console records through the ordinary host bridge.
 - Checkable input `checked` reads and writes use `ElementStateManager` live checkedness. Assigning the IDL property does not rewrite the `checked` content attribute.
 - `FenBrowser.Tests/Scripting/BrowserFormInteractionAcceptanceTests.cs` protects focus/typing/event order, canceled `beforeinput`, canceled submit, successful-control GET serialization, and checkbox checkedness against a deterministic local fixture.
 

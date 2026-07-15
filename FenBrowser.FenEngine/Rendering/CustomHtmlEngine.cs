@@ -2405,7 +2405,6 @@ public void Dispose()
                  },
                  log: (msg) =>
                  {
-                     EngineLogCompat.Debug($"[CustomHtmlEngine] Received log from JS Engine: {msg}", LogCategory.JavaScript);
                      try
                      {
                          FenBrowser.FenEngine.Diagnostics.JsDiagnosticsRecorder.RecordConsole(
