@@ -1,6 +1,6 @@
 # FenBrowser Engine State
 
-Live Gate 0 snapshot: 2026-07-14. Base commit: `e3fa7a41bfd5f803d086f1bf27412c0a879eb90e` on branch `new`, with unrelated user changes present in the working tree. This file reports observed state; it does not turn implemented code into a completion claim.
+Live Gate 0 snapshot: 2026-07-14; completion audit revalidated 2026-07-15. Original audit base: `e3fa7a41bfd5f803d086f1bf27412c0a879eb90e` on branch `new`, with unrelated user changes present in the working tree. This file reports observed state; it does not turn implemented code into a completion claim.
 
 Allowed status values in this tracker are the execution-system status values. `DONE` is intentionally unused.
 
@@ -31,7 +31,7 @@ The reality audit proceeds in this order:
 | `FenBrowser.Js.Shell` | Standalone JavaScript shell | IMPLEMENTED | Project is in the solution; no fresh shell smoke |
 | `FenBrowser.WebIdlGen` | WebIDL parser/generator CLI | IMPLEMENTED | Ten IDL inputs and generator code exist; generated outputs are excluded from FenEngine compilation |
 | `FenBrowser.WebDriver` | Automation protocol implementation | IMPLEMENTED | Project builds; no fresh end-to-end WebDriver run |
-| `FenBrowser.Tooling` | `debug-site`, WPT orchestration, performance and diagnostic commands | TESTED | Release build passed with 0 errors and 0 warnings |
+| `FenBrowser.Tooling` | `debug-site`, WPT orchestration, performance and diagnostic commands | TESTED | Current Release dependency-graph build passed with 0 errors and 498 warnings |
 | `FenBrowser.Conformance` | Conformance support project | IMPLEMENTED | Project builds through focused test dependency graph |
 | `FenBrowser.Tests` | Browser integration/unit tests | TESTED | Focused diagnostic/process filter passed 44/44; important directories remain excluded |
 

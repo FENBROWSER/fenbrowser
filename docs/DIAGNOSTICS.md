@@ -1,6 +1,6 @@
 # FenBrowser Diagnostic Spine
 
-Status: INTEGRATED with documented Gate 1 gaps. Snapshot date: 2026-07-14.
+Status: INTEGRATED with documented Gate 1 gaps. Snapshot date: 2026-07-14; bundle contract revalidated 2026-07-15.
 
 Runtime artifacts follow the repository path policy and live under `logs/`, not at repository root or in `docs/`. The per-site bundle path is:
 
@@ -119,7 +119,11 @@ A missing property is not fatal merely because it was read. It becomes a fatal c
 | `sandbox_denials.json` | NOT_STARTED | Policy denials; empty typed record with inactive reason if no sandbox |
 | `performance.json` | NOT_STARTED | Navigation/stage/frame/allocation/GC/long-task metrics |
 | `first_blocker.json` | NOT_STARTED | Deterministic classifier result and considered candidates |
-| `dom_dump.html`, style/layout/paint/display-list dumps | INTEGRATED | Current DOM filename is `dom_dump.txt`; canonical HTML form remains to be added |
+| `dom_dump.html` | NOT_STARTED | Current bundle emits `dom_dump.txt`; canonical HTML serialization remains to be added |
+| `style_dump.txt` | INTEGRATED | DOM-preorder computed-style snapshot |
+| `layout_dump.txt` | INTEGRATED | Box/LayoutBox geometry snapshot |
+| `paint_dump.txt` | INTEGRATED | Paint Tree snapshot |
+| `display_list.txt` | STUBBED | Current file is a flattened Paint Tree proxy, not a canonical display-list command stream |
 | `screenshot.png` | INTEGRATED | 1280x800 current tooling viewport |
 | `artifact_manifest.json` | INTEGRATED | Must list the full required contract, not only files already implemented |
 

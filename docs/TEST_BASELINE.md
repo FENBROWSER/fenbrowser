@@ -1,16 +1,16 @@
 # FenBrowser Test Baseline
 
-Snapshot date: 2026-07-14. All paths and results are local. No conformance data in this file was fetched from the internet.
+Snapshot date: 2026-07-14; focused build/test revalidated 2026-07-15. All paths and results are local. No conformance data in this file was fetched from the internet.
 
 ## Verification run in this audit
 
 | Surface | Command | Result | Status |
 | --- | --- | --- | --- |
-| Tooling dependency graph, Release | `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -v minimal` | 0 errors, 0 warnings | TESTED |
+| Tooling dependency graph, Release | `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -v minimal` | 0 errors, 498 warnings | TESTED |
 | Diagnostic/process focused tests | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~MissingApiTrackerTests|FullyQualifiedName~NavigationLifecycleTraceTests|FullyQualifiedName~RendererIpcMetadataTests|FullyQualifiedName~RendererIsolationPoliciesTests"` | 44 passed, 0 failed, 0 skipped | TESTED |
 | Tooling dependency graph, Debug | Same build in Debug | Reached project compilation, then failed copying Host dependencies because Visual Studio and a running FenBrowser.Host locked Debug DLLs | RESEARCHED |
 
-The Debug result is an environment lock, not a source compilation failure. The active processes were not terminated because they belong to the user's live workspace session.
+The current Release warnings are primarily existing obsolete-API, platform-guard, analyzer, and Tooling unreachable-code warnings. They do not fail the build, but they remain visible baseline debt. The Debug result is an environment lock, not a source compilation failure. The active processes were not terminated because they belong to the user's live workspace session.
 
 ## Test discovery gap
 
