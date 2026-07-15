@@ -10129,3 +10129,14 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~EngineLogSettingsTests.Flush_DrainsAcceptedEventsBeforeArtifactCopy|FullyQualifiedName~DebugSiteExceptionSummaryTests" --logger "console;verbosity=minimal"`: pass (`3/3`).
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsXmlHttpRequestTests.TimerAndRafCallbacks_DoNotOverwriteLargeStackWorkerDispatch" --logger "console;verbosity=minimal"`: pass (`1/1`).
 - Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_throwing_timer_callback.html/20260715T075651Z/`: complete lifecycle and screenshot; one callback failure retained with `timer-1`, `callback-1`, `timerFixtureReceiver`, `inline#1` line 6, receiver `[object:JsObject]`, exception `timer-fixture-boom`, JS callback-entry frame, and host stack.
+
+## 2.374 Function-Owned Async Callback Source Provenance (2026-07-15)
+
+- The active script record is intentionally cleared after top-level script execution, so timers created later from an earlier timer/event callback previously lost their script ID, URL, label, and source position. This was a diagnostic ownership defect, not eight unrelated Google failures.
+- FenEngine now associates each compiled function and its nested functions with the creating `BrowserScriptLoadingRecord` before execution. Timer/rAF scheduling first resolves provenance from the callback's compiled-function identity, then falls back to the currently executing script. The per-document map is cleared with the event-loop snapshot and does not retain callback objects or host wrapper graphs.
+- Diagnostic script identifiers, URL/label, function name, and receiver fields are bounded before retention. The deterministic nested-timer test proves the second timer still reports `script-1` / `inline#1` after the active script has cleared.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CallbackFailureDiagnosticsTests" --logger "console;verbosity=minimal"`: pass (`2/2`).
+- Fresh Google bundle `logs/real-site/www.google.com/20260715T081215Z/`: eight failures retained and counted consistently; all group to external `script-6` line 18, timers `12,13,15,17,18,19,20,21`, receiver `[object:JsObject]`, and the identical `XXa -> VXa -> map -> gya -> oa` TypeError stack.

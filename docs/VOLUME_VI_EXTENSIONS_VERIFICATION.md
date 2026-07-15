@@ -3655,3 +3655,9 @@ Verification commands:
 
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FirstBlockerClassifierTests" --logger "console;verbosity=minimal"`: pass (`12/12`).
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site "file:///C:/Users/udayk/Videos/fenbrowser-test/logs/fixtures/throwing_timer_callback.html" 3000`: lifecycle completes and emits the final-code bundle above with `first_blocker.json` present in the manifest.
+
+## 6.141 Google Callback Failure Attribution (2026-07-15)
+
+- Fresh final-code bundle `logs/real-site/www.google.com/20260715T081215Z/` completes navigation, DOMContentLoaded, load, layout, paint, raster, and screenshot capture with 663 DOM nodes, 521 computed styles, 184 boxes, 98 paint nodes, 15 discovered scripts, 19 completed executions, and zero direct script failures.
+- `event_loop.json` and `exceptions.json` both report eight callback failures/eight retained records. All eight group to the same external `script-6` at source line 18, the same JS receiver shape, the same TypeError, and the same FenJS stack; only timer identity differs (`12,13,15,17-21`). This is one identical failure cluster suitable for local reduction.
+- `first_blocker.json` reports no boot blocker, lists all eight callbacks as non-fatal runtime defects, and marks the five interaction milestones unverified. The terminal lifecycle fields agree on `complete`/DOMContentLoaded/load; the historical navigation-detail string still embeds a stale earlier `loading` snapshot and remains lifecycle-normalization work.

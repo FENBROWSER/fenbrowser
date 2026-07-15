@@ -63,6 +63,42 @@ public sealed class CallbackFailureDiagnosticsTests
         }
     }
 
+    [Fact]
+    public async Task NestedTimer_PreservesCreatingScriptAfterActiveScriptClears()
+    {
+        var baseUri = new Uri("https://fixture.test/nested-timer.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><script>" +
+                "setTimeout(function firstTimer(){" +
+                "setTimeout(function nestedTimer(){throw new Error('nested-timer-boom');},1);" +
+                "},1);" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            Assert.True(SpinWait.SpinUntil(
+                () => engine.GetEventLoopSnapshot().CallbackFailures > 0,
+                millisecondsTimeout: 1000));
+
+            var failure = Assert.Single(engine.GetEventLoopSnapshot().CallbackFailureRecords);
+            Assert.Equal("nestedTimer", failure.CallbackFunctionName);
+            Assert.Equal("script-1", failure.ScriptId);
+            Assert.Equal("inline#1", failure.ScriptSourceLabel);
+            Assert.True(failure.SourceLine > 0);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
     private static JsHostAdapter CreateHost()
     {
         return new JsHostAdapter(

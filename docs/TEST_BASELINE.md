@@ -8,7 +8,7 @@ Snapshot date: 2026-07-14; focused build/test revalidated 2026-07-15. All paths 
 | --- | --- | --- | --- |
 | Tooling dependency graph, Release | `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release -v minimal` | 0 errors, 498 warnings | TESTED |
 | Diagnostic/process focused tests | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~MissingApiTrackerTests|FullyQualifiedName~NavigationLifecycleTraceTests|FullyQualifiedName~RendererIpcMetadataTests|FullyQualifiedName~RendererIsolationPoliciesTests"` | 44 passed, 0 failed, 0 skipped | TESTED |
-| Callback provenance/export focused tests | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~EngineLogSettingsTests.Flush_DrainsAcceptedEventsBeforeArtifactCopy|FullyQualifiedName~DebugSiteExceptionSummaryTests" --logger "console;verbosity=minimal"` | 3 passed, 0 failed, 0 skipped | TESTED |
+| Callback provenance/export focused tests | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~EngineLogSettingsTests.Flush_DrainsAcceptedEventsBeforeArtifactCopy|FullyQualifiedName~DebugSiteExceptionSummaryTests" --logger "console;verbosity=minimal"` | 4 passed, 0 failed, 0 skipped | TESTED |
 | First-causal-blocker classifier fixtures | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FirstBlockerClassifierTests" --logger "console;verbosity=minimal"` | 12 passed, 0 failed, 0 skipped | TESTED |
 | Tooling dependency graph, Debug | Same build in Debug | Reached project compilation, then failed copying Host dependencies because Visual Studio and a running FenBrowser.Host locked Debug DLLs | RESEARCHED |
 
@@ -70,7 +70,7 @@ The latest retained focused `dom/lists` summary at `Results/wpt_20260704_175911/
 
 | Target | Evidence | Observed result | Status |
 | --- | --- | --- | --- |
-| Google | `logs/real-site/www.google.com/20260714T075906Z/` | Main page rendered; DCL/load true; 17 completed script executions; input not automated | TESTED |
+| Google | `logs/real-site/www.google.com/20260715T081215Z/` | Main page rendered; DCL/load true; 19 completed script executions; all 8 timer failures attributed to external `script-6` line 18 and one identical FenJS stack; input not automated | TESTED |
 | Throwing timer local fixture | `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_throwing_timer_callback.html/20260715T080257Z/` | Complete lifecycle; one typed post-load timer failure; `first_blocker.json` reports no boot blocker, records the callback as non-fatal, and marks all five interaction milestones unverified | TESTED |
 | example.com control | `logs/real-site/example.com/20260713T074825Z/` | Complete lifecycle and screenshot, no failure | TESTED |
 | `fen://performance` control | `logs/real-site/performance/20260714T102820Z/` | 518 boxes, screenshot, complete lifecycle | TESTED |

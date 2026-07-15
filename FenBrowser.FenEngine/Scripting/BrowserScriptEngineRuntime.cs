@@ -347,6 +347,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private readonly NavigationEpoch _navigationEpoch = NavigationEpoch.Initial;
     private string _currentDocumentId = string.Empty;
     private long _callbackFailureSequence;
+    private readonly Dictionary<BytecodeFunction, CallbackSourceProvenance> _callbackFunctionProvenance = new();
     private readonly Dictionary<object, HostObjectHandle> _hostHandleCache =
         new(ReferenceEqualityComparer.Instance);
     private readonly List<BrowserEventListener> _documentEventListeners = new();
@@ -938,6 +939,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     }
                     _fenJsEvaluationCount++;
                     var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-eval>"));
+                    RegisterCallbackFunctionProvenance(function, GetCurrentScriptRecord());
                     new BytecodeVerifier().Verify(function);
                     return _interpreter.Execute(function);
                 }
@@ -1416,6 +1418,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     {
         _currentDocumentId = "document-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
         Interlocked.Exchange(ref _callbackFailureSequence, 0);
+        _callbackFunctionProvenance.Clear();
         lock (_eventLoopLock)
         {
             _lastEventLoopSnapshot = new BrowserEventLoopSnapshot
@@ -4709,6 +4712,25 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private CallbackSourceProvenance CaptureCallbackProvenance(JsValue callback)
     {
+        if (callback.Tag == JsValueTag.Object)
+        {
+            try
+            {
+                if (_interpreter.Heap.GetObject(callback.AsObjectHandle()) is JsFunctionObject function &&
+                    _callbackFunctionProvenance.TryGetValue(function.Function, out var functionProvenance))
+                {
+                    return functionProvenance with
+                    {
+                        CallbackFunctionName = function.Function.Name ?? functionProvenance.CallbackFunctionName
+                    };
+                }
+            }
+            catch
+            {
+                // Fall through to the currently executing script record.
+            }
+        }
+
         var script = GetCurrentScriptRecord();
         return new CallbackSourceProvenance(
             ScriptId: script?.ScriptId ?? string.Empty,
@@ -4717,6 +4739,37 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             SourceLine: script?.SourceLine ?? 0,
             SourceColumn: script?.SourceColumn ?? 0,
             CallbackFunctionName: GetCallbackFunctionName(callback));
+    }
+
+    private void RegisterCallbackFunctionProvenance(BytecodeFunction function, BrowserScriptLoadingRecord script)
+    {
+        if (function == null || script == null)
+        {
+            return;
+        }
+
+        var provenance = new CallbackSourceProvenance(
+            ScriptId: script.ScriptId ?? string.Empty,
+            ScriptUrl: ResolveMissingApiScriptUrl(script, null, _currentBaseUri),
+            ScriptSourceLabel: script.SourceLabel ?? string.Empty,
+            SourceLine: script.SourceLine,
+            SourceColumn: script.SourceColumn,
+            CallbackFunctionName: function.Name ?? string.Empty);
+        RegisterCallbackFunctionProvenance(function, provenance);
+    }
+
+    private void RegisterCallbackFunctionProvenance(
+        BytecodeFunction function,
+        CallbackSourceProvenance provenance)
+    {
+        _callbackFunctionProvenance[function] = provenance with
+        {
+            CallbackFunctionName = function.Name ?? provenance.CallbackFunctionName
+        };
+        foreach (var nested in function.NestedFunctions ?? Array.Empty<BytecodeFunction>())
+        {
+            RegisterCallbackFunctionProvenance(nested, provenance);
+        }
     }
 
     private string GetCallbackFunctionName(JsValue callback)
@@ -4778,14 +4831,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             CallbackId = "callback-" + callbackId.ToString(CultureInfo.InvariantCulture),
             CallbackCategory = callbackCategory,
             TimerId = isTimer ? callbackId : null,
-            ScriptId = provenance?.ScriptId ?? string.Empty,
-            ScriptUrl = provenance?.ScriptUrl ?? string.Empty,
-            ScriptSourceLabel = provenance?.ScriptSourceLabel ?? string.Empty,
+            ScriptId = TruncateDiagnosticText(provenance?.ScriptId, 256),
+            ScriptUrl = TruncateDiagnosticText(provenance?.ScriptUrl, 2048),
+            ScriptSourceLabel = TruncateDiagnosticText(provenance?.ScriptSourceLabel, 2048),
             SourceLine = provenance?.SourceLine ?? 0,
             SourceColumn = provenance?.SourceColumn ?? 0,
-            CallbackFunctionName = functionName,
-            ReceiverRepresentation = receiverRepresentation,
-            ReceiverHostType = receiverHostType,
+            CallbackFunctionName = TruncateDiagnosticText(functionName, 256),
+            ReceiverRepresentation = TruncateDiagnosticText(receiverRepresentation, 512),
+            ReceiverHostType = TruncateDiagnosticText(receiverHostType, 256),
             ReceiverJsType = receiver.Tag.ToString(),
             ArgumentTypeSummary = TruncateDiagnosticText(
                 args == null ? string.Empty : string.Join(",", args.Select(static value => value.Tag.ToString())),
