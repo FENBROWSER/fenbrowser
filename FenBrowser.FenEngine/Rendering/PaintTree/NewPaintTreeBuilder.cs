@@ -1176,6 +1176,18 @@ namespace FenBrowser.FenEngine.Rendering
             return renderableGlyphCount > 0 ? glyphs : null;
         }
 
+        private static IReadOnlyList<PositionedGlyph> BuildDiagnosticPaintGlyphs(
+            string text,
+            string fontFamily,
+            float fontSize,
+            int fontWeight,
+            SKPoint origin)
+        {
+            return FenBrowser.Core.Logging.DebugConfig.LogPaintCommands
+                ? BuildPaintGlyphs(text, fontFamily, fontSize, fontWeight, origin)
+                : null;
+        }
+
         private static bool TryParseSvgLengthAttribute(Element element, string attributeName, CssComputed style, out float value)
         {
             value = 0f;
@@ -3693,7 +3705,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                     // Origin for text drawing (Baseline)
                     var textOrigin = new SKPoint(absX, absY + line.Baseline);
-                    var glyphs = BuildPaintGlyphs(lineDisplayText, fontFamily, fontSize, weight, textOrigin);
+                    var glyphs = BuildDiagnosticPaintGlyphs(lineDisplayText, fontFamily, fontSize, weight, textOrigin);
 
                     if (string.Equals(lineDisplayText, "Sign in", StringComparison.OrdinalIgnoreCase))
                     {
@@ -3867,7 +3879,7 @@ namespace FenBrowser.FenEngine.Rendering
                     Color = color,
                     FontSize = fontSize,
                     Typeface = typeface,
-                    Glyphs = BuildPaintGlyphs(displayText, fontFamily, fontSize, weight, new SKPoint(drawBounds.Left, baselineY)),
+                    Glyphs = BuildDiagnosticPaintGlyphs(displayText, fontFamily, fontSize, weight, new SKPoint(drawBounds.Left, baselineY)),
                     TextOrigin = new SKPoint(drawBounds.Left, baselineY),
                     FallbackText = displayText,
                     TextDecorations = textDecorations,

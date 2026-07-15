@@ -3526,3 +3526,19 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~InlineTextLineCapacityTests|FullyQualifiedName~InlineFormattingContextProbeResetTests|FullyQualifiedName~InlineFormattingContractTests|FullyQualifiedName~LayoutFidelityTests" --logger "console;verbosity=minimal"`: pass (`21/21`).
 - `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five final processes.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_inline_line_preallocation_20260715.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` confirms that `List<ComputedTextLine>.set_Capacity` is absent.
+
+## 6.133 Lazy Diagnostic Glyph Verification (2026-07-15)
+
+- `PaintGlyphAllocationTests.BuildPaintTree_FallbackTextHasBoundedPaintGenerationAllocations` measures 1,000 warmed production Paint Tree builds. Allocation falls exactly from `3,632,088 B` to `3,208,048 B` (`-424,040 B`, `-11.68%`) in three fresh Release processes and passes the `3,230,000 B` ceiling.
+- The contract verifies the normal source-text representation and then enables `DebugConfig.LogPaintCommands` to verify that diagnostic glyph construction remains available. `BuildPaintGlyphs_UsesOneFixedSizeResultContainer` retains direct coverage of the helper, while `SkiaRendererGlyphConversionAllocationTests` protects explicit glyph-only rasterization.
+- The included paint-glyph, glyph renderer, source-text color, Paint Tree pill, and decoration filter passes `13/13`. Reports `062119`, `062121`, `062123`, `062124`, and `062126` pass every failure gate against `061329`, `061330`, `061331`, `061332`, and `061333`.
+- Paint allocation falls `10.46%`-`91.38%`, paint time falls `7.74%`-`77.48%`, total time falls `2.96%`-`37.30%`, and managed allocation falls `2.12%`-`26.30%` across all four fixtures. Gen0/1/2 counts are unchanged.
+- The before trace lists `BuildPaintGlyphs` at `3.63%` inclusive sampled allocation weight and includes Skia glyph-position/information arrays. The final trace omits the builder, shaping, and those arrays from the top 75.
+- Test262 is not applicable. WPT is not rerun because focused tests exercise the unchanged source-text raster branch, glyph-only branch, paint-node semantics, and diagnostics counter-path directly.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName=FenBrowser.Tests.Performance.PaintGlyphAllocationTests.BuildPaintTree_FallbackTextHasBoundedPaintGenerationAllocations" --logger "console;verbosity=detailed"`: pass in three fresh processes at exactly `3,208,048 B` each.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~PaintGlyphAllocationTests|FullyQualifiedName~SkiaRendererGlyphConversionAllocationTests|FullyQualifiedName~PaintTreeTextColorTests|FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~SkiaRendererTextDecorationTests" --logger "console;verbosity=minimal"`: pass (`13/13`).
+- `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five retained processes.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_lazy_diagnostic_glyphs_20260715.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` omits the targeted shaping/materialization path.

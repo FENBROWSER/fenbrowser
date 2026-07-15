@@ -9968,3 +9968,33 @@ Verification:
 - The included inline formatting, whitespace-allocation, probe-reset, and layout-fidelity slice passes `21/21` in Release.
 - Every benchmark failure gate passes in all five candidate processes, and the final allocation trace completes successfully.
 - Test262 is unrelated to private layout-list capacity. WPT is not rerun because the focused layout slice exercises the changed construction path and the change cannot alter selector, style, geometry, or line values.
+
+## 2.368 Lazy Diagnostic Paint Glyphs (2026-07-15)
+
+- `FenBrowser.FenEngine/Rendering/PaintTree/NewPaintTreeBuilder.cs`
+  - The post-inline-capacity trace attributed `3.63%` inclusive sampled allocation weight to `BuildPaintGlyphs`, including Skia shaping arrays and a second origin-adjusted FenBrowser glyph array. Inspection of every `TextPaintNode.Glyphs` consumer found that normal text nodes also carry non-empty `FallbackText`, and `SkiaRenderer.DrawText` deliberately chooses that direct source-text branch before consulting glyphs. Immutable Paint Tree equality likewise compares text, origin, font size, and color rather than the ignored glyph array.
+  - Normal paint generation now leaves glyphs unset and avoids shaping work that rasterization would discard. When `DebugConfig.LogPaintCommands` is enabled, `BuildDiagnosticPaintGlyphs` retains the existing glyph construction so the glyph-count diagnostic remains available. Explicit glyph-only nodes still use the unchanged renderer/backend glyph-run path.
+  - Source text, typeface selection for rasterization, text origin, bounds, color, decorations, writing mode, direct-text measurement, tight-clip correction, glyph-only fallback rendering, and diagnostic logging are unchanged. The change adds no cache, pool, unsafe code, retained state, native lifetime change, or synchronization.
+- `FenBrowser.FenEngine/Rendering/PaintTree/PaintNodeBase.cs`
+  - The `TextPaintNode` ownership comments now describe the shipped contract: source text is the preferred raster input, while positioned glyphs are optional for glyph-only nodes and paint diagnostics.
+- `FenBrowser.Tests/Performance/PaintGlyphAllocationTests.cs`
+  - One thousand warmed production Paint Tree builds for one source-text line move exactly from `3,632,088 B` to `3,208,048 B` in three fresh Release processes, saving `424,040 B` (`11.68%`). The final `3,230,000 B` ceiling rejects eager source-text glyph materialization.
+  - The same contract verifies that normal nodes retain their exact `FallbackText` with no glyph list, then enables paint-command diagnostics and verifies that positioned glyphs are still built. The existing helper test continues to protect the fixed-size glyph result, and the glyph-only renderer test protects the alternate backend branch.
+
+Five immediate Release reports `061329`, `061330`, `061331`, `061332`, and `061333` compare with reports `062119`, `062121`, `062123`, `062124`, and `062126`:
+
+| Scenario | Paint allocation before | Paint allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 1,212,560 B | 836,208 B (-31.04%) | 18,176,104 B | 17,791,456 B (-2.12%) |
+| steady-state-damage-animation | 756,980 B | 677,780 B (-10.46%) | 13,898,584 B | 13,495,920 B (-2.90%) |
+| dense-text-flow | 1,230,956 B | 106,060 B (-91.38%) | 8,329,224 B | 6,138,880 B (-26.30%) |
+| wrapped-multiline-text | 319,132 B | 86,692 B (-72.84%) | 3,834,216 B | 3,369,352 B (-12.12%) |
+
+Paint-time medians fall `7.74%`-`77.48%`, and total medians fall `2.96%`-`37.30%`, across all four fixtures. Render allocation falls `4.39%`-`42.32%`. These improvements match the exact removed production work; no unrelated CSS or layout movement is attributed. Gen0/1/2 counts are identical in all ten reports. A fresh final-code `gc-verbose` trace omits `BuildPaintGlyphs`, `ShapeText`, `SKShaper`, `GlyphPosition.ToArray`, and `GlyphInfo.ToArray` from the top 75.
+
+Verification:
+
+- The exact allocation/diagnostic contract passes three fresh Release processes at `3,208,048 B` each.
+- The included paint-glyph, glyph-only renderer, source-text color, Paint Tree pill geometry, and text-decoration slice passes `13/13` in Release.
+- Both normal source-text rasterization and explicit glyph-only rendering remain directly covered; every benchmark failure gate passes in all five retained candidate reports.
+- Test262 is unrelated to Paint Tree text representation. WPT is not rerun because this unit changes only materialization of data the current normal raster branch does not read, with both raster branches and the diagnostics counter-path covered by focused tests.

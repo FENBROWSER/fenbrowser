@@ -144,7 +144,9 @@ namespace FenBrowser.FenEngine.Rendering
     public sealed class TextPaintNode : PaintNodeBase
     {
         /// <summary>
-        /// Pre-positioned glyphs to render.
+        /// Optional pre-positioned glyphs for glyph-only rendering and paint diagnostics.
+        /// Source-text nodes leave this unset in normal execution because the renderer
+        /// deliberately prefers <see cref="FallbackText"/>.
         /// </summary>
         public IReadOnlyList<PositionedGlyph> Glyphs { get; init; }
         
@@ -164,8 +166,7 @@ namespace FenBrowser.FenEngine.Rendering
         public SKColor Color { get; init; } = SKColors.Black;
         
         /// <summary>
-        /// Fallback: raw text string if glyphs not available.
-        /// Used during migration - eventually all text should use glyphs.
+        /// Raw source text used by the renderer's preferred text path.
         /// </summary>
         public string FallbackText { get; init; }
         
