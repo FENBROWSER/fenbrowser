@@ -28,6 +28,7 @@ namespace FenBrowser.Core.Parsing
         
         // Current buffers
         private StringBuilder _buffer = new StringBuilder();
+        private readonly StringBuilder _tagNameBuffer = new StringBuilder();
         private TagToken _currentTag;
         private CommentToken _currentComment;
         private DoctypeToken _currentDoctype;
@@ -511,7 +512,7 @@ namespace FenBrowser.Core.Parsing
                         }
                         else if (char.IsLetter(c))
                         {
-                            _currentTag = _pool != null ? _pool.RentStartTag() : new StartTagToken();
+                            BeginCurrentTag(_pool != null ? _pool.RentStartTag() : new StartTagToken());
                             SetTokenSourceLocation(_currentTag, Math.Max(0, _position - 1), _line, Math.Max(1, _column - 1));
                             SwitchTo(TokenizerState.TagName);
                              // Don't consume here, TagName state will handle it (reconsume)
@@ -577,11 +578,10 @@ namespace FenBrowser.Core.Parsing
                     case TokenizerState.RcDataEndTagOpen:
                         if (char.IsLetter(c))
                         {
-                            _currentTag = _pool != null ? _pool.RentEndTag() : new EndTagToken();
-                            _currentTag.TagName = ""; // New tag
+                            BeginCurrentTag(_pool != null ? _pool.RentEndTag() : new EndTagToken());
                              // Reconsume in RcDataEndTagName?
                              // No, spec says: create end tag token, append current char to tag name, switch to RcDataEndTagName
-                             _currentTag.TagName += char.ToLowerInvariant(c);
+                             AppendCurrentTagName(c);
                              Consume();
                              SwitchTo(TokenizerState.RcDataEndTagName);
                         }
@@ -595,7 +595,7 @@ namespace FenBrowser.Core.Parsing
                         
                     case TokenizerState.RcDataEndTagName:
                         // Scan until we match the LastStartTagName or fail
-                        bool isAppropriate = _currentTag.TagName == LastStartTagName;
+                        bool isAppropriate = CurrentTagNameEquals(LastStartTagName);
                         
                         if (char.IsWhiteSpace(c))
                         {
@@ -609,7 +609,7 @@ namespace FenBrowser.Core.Parsing
                                  // Fail -> Treat as raw text
                                  SwitchTo(TokenizerState.RcData);
                                  _pendingChars.Enqueue('/');
-                                 foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                 AppendCurrentTagNameToPendingCharacters();
                                  return EmitCharacter('<');
                             }
                         }
@@ -624,7 +624,7 @@ namespace FenBrowser.Core.Parsing
                             {
                                  SwitchTo(TokenizerState.RcData);
                                  _pendingChars.Enqueue('/');
-                                 foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                 AppendCurrentTagNameToPendingCharacters();
                                  return EmitCharacter('<');
                             }
                         }
@@ -640,20 +640,20 @@ namespace FenBrowser.Core.Parsing
                             {
                                  SwitchTo(TokenizerState.RcData);
                                  _pendingChars.Enqueue('/');
-                                 foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                 AppendCurrentTagNameToPendingCharacters();
                                  return EmitCharacter('<'); 
                             }
                         }
                         else if (char.IsLetter(c))
                         {
                             Consume();
-                            _currentTag.TagName += char.ToLowerInvariant(c);
+                            AppendCurrentTagName(c);
                         }
                         else
                         {
                              SwitchTo(TokenizerState.RcData);
                              _pendingChars.Enqueue('/');
-                             foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                             AppendCurrentTagNameToPendingCharacters();
                              return EmitCharacter('<');
                         }
                         break;
@@ -702,9 +702,8 @@ namespace FenBrowser.Core.Parsing
                     case TokenizerState.RawTextEndTagOpen:
                         if (char.IsLetter(c))
                         {
-                            _currentTag = _pool != null ? _pool.RentEndTag() : new EndTagToken();
-                            _currentTag.TagName = "";
-                            _currentTag.TagName += char.ToLowerInvariant(c);
+                            BeginCurrentTag(_pool != null ? _pool.RentEndTag() : new EndTagToken());
+                            AppendCurrentTagName(c);
                             Consume();
                             SwitchTo(TokenizerState.RawTextEndTagName);
                         }
@@ -717,7 +716,7 @@ namespace FenBrowser.Core.Parsing
                         break;
                         
                     case TokenizerState.RawTextEndTagName:
-                         bool isAppropriateRaw = _currentTag.TagName == LastStartTagName;
+                         bool isAppropriateRaw = CurrentTagNameEquals(LastStartTagName);
                          if (c == '>')
                         {
                             if (isAppropriateRaw)
@@ -730,14 +729,14 @@ namespace FenBrowser.Core.Parsing
                             {
                                  SwitchTo(TokenizerState.RawText);
                                  _pendingChars.Enqueue('/');
-                                 foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                 AppendCurrentTagNameToPendingCharacters();
                                  return EmitCharacter('<'); 
                             }
                         }
                         else if (char.IsLetter(c))
                         {
                             Consume();
-                            _currentTag.TagName += char.ToLowerInvariant(c);
+                            AppendCurrentTagName(c);
                         }
                         else if (c == '/')
                         {
@@ -750,7 +749,7 @@ namespace FenBrowser.Core.Parsing
                             {
                                 SwitchTo(TokenizerState.RawText);
                                 _pendingChars.Enqueue('/');
-                                foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                AppendCurrentTagNameToPendingCharacters();
                                 return EmitCharacter('<');
                             }
                         }
@@ -766,7 +765,7 @@ namespace FenBrowser.Core.Parsing
                              {
                                 SwitchTo(TokenizerState.RawText);
                                 _pendingChars.Enqueue('/');
-                                foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                AppendCurrentTagNameToPendingCharacters();
                                 return EmitCharacter('<');
                              }
                         }
@@ -831,9 +830,8 @@ namespace FenBrowser.Core.Parsing
                     case TokenizerState.ScriptDataEndTagOpen:
                         if (char.IsLetter(c))
                         {
-                            _currentTag = _pool != null ? _pool.RentEndTag() : new EndTagToken();
-                            _currentTag.TagName = "";
-                            _currentTag.TagName += char.ToLowerInvariant(c);
+                            BeginCurrentTag(_pool != null ? _pool.RentEndTag() : new EndTagToken());
+                            AppendCurrentTagName(c);
                             Consume();
                             SwitchTo(TokenizerState.ScriptDataEndTagName);
                         }
@@ -845,7 +843,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                      case TokenizerState.ScriptDataEndTagName:
-                         bool isAppropriateScript = _currentTag.TagName == LastStartTagName; // Usually "script"
+                         bool isAppropriateScript = CurrentTagNameEquals(LastStartTagName); // Usually "script"
                          if (char.IsWhiteSpace(c))
                         {
                             if (isAppropriateScript)
@@ -857,7 +855,7 @@ namespace FenBrowser.Core.Parsing
                             {
                                 SwitchTo(TokenizerState.ScriptData);
                                 _pendingChars.Enqueue('/');
-                                foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                AppendCurrentTagNameToPendingCharacters();
                                 return EmitCharacter('<');
                             }
                         }
@@ -872,7 +870,7 @@ namespace FenBrowser.Core.Parsing
                             {
                                 SwitchTo(TokenizerState.ScriptData);
                                 _pendingChars.Enqueue('/');
-                                foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                AppendCurrentTagNameToPendingCharacters();
                                 return EmitCharacter('<');
                             }
                         }
@@ -889,21 +887,21 @@ namespace FenBrowser.Core.Parsing
                                 // Not an appropriate end tag. Emit '<', '/' and the accumulated tag name chars as script data.
                                 SwitchTo(TokenizerState.ScriptData);
                                 _pendingChars.Enqueue('/');
-                                foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                AppendCurrentTagNameToPendingCharacters();
                                 return EmitCharacter('<'); 
                             }
                         }
                         else if (char.IsLetter(c))
                         {
                             Consume();
-                            _currentTag.TagName += char.ToLowerInvariant(c);
+                            AppendCurrentTagName(c);
                         }
                          else
                         {
                             // Not a letter and not '>': emit '<', '/' and accumulated tag name chars, then reconsume.
                             SwitchTo(TokenizerState.ScriptData);
                             _pendingChars.Enqueue('/');
-                            foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                            AppendCurrentTagNameToPendingCharacters();
                             return EmitCharacter('<');
                         }
                         break;
@@ -1061,8 +1059,7 @@ namespace FenBrowser.Core.Parsing
                     case TokenizerState.ScriptDataEscapedEndTagOpen:
                         if (char.IsLetter(c))
                         {
-                            _currentTag = _pool != null ? _pool.RentEndTag() : new EndTagToken();
-                            _currentTag.TagName = "";
+                            BeginCurrentTag(_pool != null ? _pool.RentEndTag() : new EndTagToken());
                             // Reconsume in end tag name
                             SwitchTo(TokenizerState.ScriptDataEscapedEndTagName);
                         }
@@ -1079,7 +1076,7 @@ namespace FenBrowser.Core.Parsing
                     // ================================================================
                     case TokenizerState.ScriptDataEscapedEndTagName:
                     {
-                        bool isAppropriateEscaped = _currentTag.TagName == LastStartTagName;
+                        bool isAppropriateEscaped = CurrentTagNameEquals(LastStartTagName);
                         if ((c == '\t' || c == '\n' || c == '\f' || c == ' ') && isAppropriateEscaped)
                         {
                             Consume();
@@ -1099,14 +1096,13 @@ namespace FenBrowser.Core.Parsing
                         else if (char.IsLetter(c))
                         {
                             Consume();
-                            _currentTag.TagName += char.ToLowerInvariant(c);
+                            AppendCurrentTagName(c);
                         }
                         else
                         {
                             // Not appropriate â€” emit buffered chars and reconsume
                             _pendingChars.Enqueue('/');
-                            foreach (char ch in _currentTag.TagName)
-                                _pendingChars.Enqueue(ch);
+                            AppendCurrentTagNameToPendingCharacters();
                             SwitchTo(TokenizerState.ScriptDataEscaped);
                             return EmitCharacter('<');
                         }
@@ -1277,7 +1273,7 @@ namespace FenBrowser.Core.Parsing
                     case TokenizerState.EndTagOpen:
                         if (char.IsLetter(c))
                         {
-                            _currentTag = _pool != null ? _pool.RentEndTag() : new EndTagToken();
+                            BeginCurrentTag(_pool != null ? _pool.RentEndTag() : new EndTagToken());
                             SwitchTo(TokenizerState.TagName);
                         }
                         else if (c == '>')
@@ -1327,7 +1323,7 @@ namespace FenBrowser.Core.Parsing
                         else
                         {
                             Consume();
-                            _currentTag.TagName += char.ToLowerInvariant(c);
+                            AppendCurrentTagName(c);
                         }
                         break;
 
@@ -2258,8 +2254,46 @@ namespace FenBrowser.Core.Parsing
         private TagToken EmitCurrentTag()
         {
             var tag = _currentTag;
+            tag.TagName = _tagNameBuffer.ToString();
             _currentTag = null;
             return tag;
+        }
+
+        private void BeginCurrentTag(TagToken tag)
+        {
+            _currentTag = tag;
+            _tagNameBuffer.Clear();
+        }
+
+        private void AppendCurrentTagName(char c)
+        {
+            _tagNameBuffer.Append(char.ToLowerInvariant(c));
+        }
+
+        private bool CurrentTagNameEquals(string expected)
+        {
+            if (expected == null || expected.Length != _tagNameBuffer.Length)
+            {
+                return false;
+            }
+
+            for (var index = 0; index < expected.Length; index++)
+            {
+                if (_tagNameBuffer[index] != expected[index])
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private void AppendCurrentTagNameToPendingCharacters()
+        {
+            for (var index = 0; index < _tagNameBuffer.Length; index++)
+            {
+                _pendingChars.Enqueue(_tagNameBuffer[index]);
+            }
         }
         
         private CommentToken EmitCurrentComment()

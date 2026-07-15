@@ -1662,3 +1662,31 @@ Verification:
 - The included mutation, attribute, child-list, ancestor-filter, and tree-walker slice passes `18/18`; the focused tokenizer/tree-builder/parser slice passes `96/96`.
 - Release builds of `FenBrowser.Core` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every render benchmark failure gate passes in all five candidate processes.
 - Test262 and WPT are not rerun because this preserves the existing DOM phase invariant and mutation semantics; direct included tests exercise the guarded child and attribute paths plus focused parser construction.
+
+### 1.77 Buffered HTML Tag-Name Construction (2026-07-15)
+
+- `FenBrowser.Core/Parsing/HtmlTokenizer.cs`
+  - The post-CSS-tokenizer allocation trace retained sampled `String.Concat`, `Char.ToString`, and substring allocation below HTML parsing. Source inspection found eight tag-name states rebuilding the immutable `TagToken.TagName` string for every accepted character.
+  - Tag-name states now append normalized characters to one tokenizer-owned `StringBuilder` and materialize the public token string exactly once in `EmitCurrentTag`. RCDATA, raw-text, script-data, and escaped-script appropriate-end-tag checks compare the builder directly, and malformed-end-tag recovery replays its characters without an intermediate string.
+  - ASCII case folding, token lifetime, token-pool reuse, source positions, attribute parsing, appropriate-end-tag decisions, pending-character order, and malformed recovery remain unchanged. The builder is cleared for every new tag, retained only for the tokenizer lifetime, and remains subject to the existing `8,000,000`-character input limit. The change adds no global atom table, cache, unsafe code, pooling contract, synchronization, or ownership change.
+- `FenBrowser.Tests/Performance/HtmlTokenizerTagNameAllocationTests.cs`
+  - A warmed production tokenizer with reused tag tokens processes 4,000 31-character ordinary start/end tags. Allocation moves exactly from `7,072,600 B` to `352,904 B` in three fresh Release processes, saving `6,719,696 B` (`95.01%`). The retained `380,000 B` ceiling rejects per-character string reconstruction.
+  - The probe verifies every emitted tag count and normalized name. Existing html5lib and tree-builder contracts cover ordinary tags, attributes, self-closing tags, RCDATA, raw text, script data, malformed end-tag replay, tables, selects, and parser hardening.
+
+Five immediate Release reports `063050`, `063052`, `063054`, `063057`, and `063059` compare with reports `065311`, `065313`, `065315`, `065316`, and `065318`:
+
+| Scenario | HTML allocation before | HTML allocation after | Managed allocation before | Managed allocation after | HTML time before | HTML time after | Total before | Total after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 681,296 B | 620,400 B (-60,896 B, -8.94%) | 17,790,504 B | 17,730,368 B (-0.34%) | 31.08 ms | 29.89 ms (-3.83%) | 139.22 ms | 135.53 ms (-2.65%) |
+| steady-state-damage-animation | 387,968 B | 352,032 B (-35,936 B, -9.26%) | 13,495,440 B | 13,463,920 B (-0.23%) | 1.50 ms | 1.47 ms (-2.00%) | 12.61 ms | 12.30 ms (-2.46%) |
+| dense-text-flow | 191,208 B | 190,968 B (-240 B, -0.13%) | 6,092,632 B | 6,086,760 B (-0.10%) | 0.81 ms | 0.86 ms (+6.17%) | 7.79 ms | 7.78 ms (-0.13%) |
+| wrapped-multiline-text | 94,984 B | 94,568 B (-416 B, -0.44%) | 3,366,776 B | 3,366,680 B (effectively flat) | 0.43 ms | 0.42 ms (-2.33%) | 4.18 ms | 4.03 ms (-3.59%) |
+
+HTML allocation falls in every fixture and HTML time improves in three; dense-text HTML time rises `0.05 ms`, so timing is reported without a universal parser-latency claim. Gen0/1/2 collection counts are unchanged. In the final `gc-verbose` trace, generic two-string `String.Concat` falls from `0.59%` to `0.32%` exclusive sampled weight; the exact production tokenizer probe remains the causal evidence.
+
+Verification:
+
+- The tag-name allocation contract passes three fresh Release processes at exactly `352,904 B` each.
+- The included tokenizer, token-pool, html5lib, tree-builder, raw-text, table, select, parser-entrypoint, and hardening slice passes `97/97` in Release.
+- Release builds of `FenBrowser.Core` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five retained candidate reports.
+- Test262 and WPT are not rerun because this changes private token-name construction without changing HTML parsing decisions; the focused local tokenizer and tree-builder suite exercises every changed state family.

@@ -3559,3 +3559,20 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
 - `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five retained processes.
 - `dotnet-trace collect --profile gc-verbose --output Results/performance/render_alloc_profile_after_css_preprocess_fast_path_20260715.nettrace -- dotnet FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.dll render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` omits `CssTokenizer.Preprocess`.
+
+## 6.135 HTML Tag-Name Buffer Verification (2026-07-15)
+
+- `HtmlTokenizerTagNameAllocationTests.OrdinaryTagNames_HaveBoundedTokenizerAllocations` processes 4,000 31-character ordinary start/end tags through the production tokenizer with warmed reusable tag tokens. Buffering each name until emission reduces allocation exactly from `7,072,600 B` to `352,904 B` (`-6,719,696 B`, `-95.01%`) in three fresh Release processes and passes the tightened `380,000 B` ceiling.
+- The probe verifies all 4,000 names. The existing local html5lib and parser contracts protect start/end tags, attributes, self-closing syntax, case folding, RCDATA, raw text, script data, escaped script data, malformed end-tag replay, token pooling, and tree construction; the complete focused slice passes `97/97`.
+- Reports `065311`, `065313`, `065315`, `065316`, and `065318` pass every failure gate against reports `063050`, `063052`, `063054`, `063057`, and `063059`. HTML allocation medians fall `8.94%` heavy, `9.26%` steady state, `0.13%` dense text, and `0.44%` wrapped text. HTML time improves in three fixtures and rises `0.05 ms` in dense text; total time is lower in all four five-process medians.
+- Managed allocation improves or is effectively flat, and Gen0/1/2 counts are unchanged. Generic two-string `String.Concat` falls from `0.59%` to `0.32%` exclusive sampled weight in the final `gc-verbose` trace. The exact tokenizer probe supplies the causal evidence.
+- Test262 is not applicable. WPT is not rerun because the local tokenizer/tree-builder suite covers every changed tokenizer state family and the public token stream remains unchanged.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName=FenBrowser.Tests.Performance.HtmlTokenizerTagNameAllocationTests.OrdinaryTagNames_HaveBoundedTokenizerAllocations" --logger "console;verbosity=detailed"`: pass in three fresh processes at exactly `352,904 B` each.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "HtmlTokenizerTagNameAllocationTests|HtmlTokenPoolTests|HtmlTokenPoolAllocationTests|Html5libTokenizerTests|Html5libTreeBuilderTests|HtmlTreeBuilder|TableParsingTests|AfterHeadParsingTests|SelectParsingTests|CanonicalHtmlParserEntrypointTests|ParserHardeningGuardTests" --logger "console;verbosity=minimal"`: pass (`97/97`).
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five retained processes.
+- `dotnet-trace collect --profile gc-verbose --output Results/performance/render_alloc_profile_after_html_tag_name_buffer_20260715.nettrace -- dotnet FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.dll render-perf`: capture succeeds; `dotnet-trace report ... topN -n 100` reports `String.Concat(string,string)` at `0.32%` exclusive sampled weight.
