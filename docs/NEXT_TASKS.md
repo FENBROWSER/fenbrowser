@@ -144,11 +144,11 @@ Risk Level: Medium
 Dependencies: Google document, scripts, DOM, layout, paint, and screenshot are TESTED in the current bundle
 Files likely involved: `FenBrowser.Tooling`, WebDriver/automation hooks, Host input routing, BrowserApi activation/focus paths, local regression fixture
 Specs/references: UI Events; HTML forms; WebDriver; `docs/REAL_SITE_TRACKER.md`
-Current behavior: The search UI renders, but the current Google run does not prove focus, text editing, submit/default action, or resulting network/navigation. The deterministic local fixture now passes six compiled/discovered tests covering hit-tested pointer/mouse order, focus, key/beforeinput/input/change, cancellation, checkedness/activation, successful-control GET navigation, and explicit non-interactable rejection.
+Current behavior: The search UI renders, but the current Google run does not prove focus, text editing, submit/default action, or resulting network/navigation. The deterministic local fixture passes six compiled/discovered behavior tests, and the generic `debug-site-interact` runner has two discovered tests plus a bundle proving hit-tested click, focus, typing, successful-control submit, terminal navigation, bounded event records, and before/after screenshots.
 Expected behavior: Automation clicks the search control, enters a nonce, submits, observes value/input events and a terminal network/navigation outcome, and captures before/after screenshots.
 Reproduction: Current Google URL at 1280x800 plus the same interaction on a local form fixture.
 Root cause hypothesis: The local defects were split event registries, a click-only WebDriver path, and missing checkable-input checkedness. Google-specific residual behavior is unknown until the same sequence is correlated in one trace.
-Implementation plan: Add deterministic automation steps and trace markers; run local fixture first; then Google; stop at the earliest failed acceptance milestone and reduce it.
+Implementation plan: Run the selector-driven command on Google; stop at the earliest failed acceptance milestone and reduce it without page-specific engine behavior.
 Tests required: Hit test, focus, keyboard/text input, input/change/submit ordering, preventDefault, successful submit/navigation.
 Evidence required: Before/after screenshots, input trace, DOM value, event/default-action records, request/navigation result, no crash/hang.
 Security impact: Automation must not bypass page security or challenge behavior; do not persist user data.
@@ -156,7 +156,7 @@ Performance impact: Record input-to-visible-update and input-to-request latency.
 Compatibility impact: Directly validates real-site usability.
 Known risks: Site variation, consent UI, or network challenge; retain exact URL/run evidence.
 Blockers: None
-Next action: Expose the tested sequence through current Tooling/WebDriver hooks, emit before/after screenshots and correlated input records, then run it against Google.
+Next action: Run `debug-site-interact` against the current Google page with fresh selectors and a short unique nonce, then reduce the earliest failed milestone or record the terminal request/navigation result.
 
 ## Task WPT-001
 

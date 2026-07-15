@@ -153,6 +153,7 @@ public sealed class BrowserFormInteractionAcceptanceTests
             await browser.SendKeysToElementAsync(queryId, nonce);
             Assert.Equal(nonce, (await browser.GetElementPropertyAsync(queryId, "value"))?.ToString());
 
+            await browser.ExecuteScriptAsync("globalThis.__preventSubmit=true;");
             await browser.ClickElementAsync(submitId);
 
             Assert.Equal(fixtureUri, browser.CurrentUri.AbsoluteUri);

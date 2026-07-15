@@ -3714,3 +3714,18 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsDomCollectionIterationTests" --logger "console;verbosity=minimal"`: pass (`3/3`).
 - `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~AtIteratorDispatchTests|FullyQualifiedName~ForOfTests|FullyQualifiedName~IteratorStaleHandleTests" --logger "console;verbosity=minimal"`: pass (`24/24`).
 - `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~HostObjectTableTests" --logger "console;verbosity=minimal"`: pass (`7/7`).
+
+## 6.146 Selector-Driven Interaction Bundle Verification (2026-07-15)
+
+- Tooling now exposes `debug-site-interact <url> <target_selector> <text> <submit_selector> [settle_ms] [interaction_settle_ms]`. It uses the active `BrowserHost` WebDriver path for hit-tested click, focus, typing, and submit; no site name or page-specific engine selector is embedded in production behavior.
+- The runner observes capture/bubble pointer, mouse, focus, keyboard, `beforeinput`, `input`, `change`, blur, click, and submit records through the ordinary page-console bridge. Records are bounded to 256 while retaining both the beginning and end of long sequences. Direct structured fields store only text length and value-match status; the resulting URL remains in the bundle as request/navigation evidence.
+- Submission waits for the new navigation lifecycle to reach `Complete`, `Failed`, or `Cancelled`, or for a request-only outcome to settle. This prevents an early URL update from being mislabeled as a completed after-screenshot.
+- Bundles add `interaction.json`, `interaction_before.png`, and `interaction_after.png`; summary and artifact manifest include them. `first_blocker.json` fills the five interaction milestones and emits causal input/default-action evidence on failure.
+- `DebugSiteInteractionRunnerTests` is compiled on the active `Tooling/` test surface. Its two discovered tests protect a full local form result, final-DOM agreement, event bounding, and omission of a direct text field. Combined with the six form behavior contracts, the focused slice passes `8/8`.
+- Local evidence is `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_interaction_result.html_q_fen-local-20260715-4_source_local-fixture_include_yes_submitter_go/20260715T094724Z/`: 20 characters accepted, 233 event records retained, successful controls serialized, terminal `result.html` reached, both screenshots captured, and all 19 blocker milestones completed with result `none`.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --list-tests --filter "FullyQualifiedName~DebugSiteInteractionRunnerTests"`: lists two tests.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~DebugSiteInteractionRunnerTests|FullyQualifiedName~BrowserFormInteractionAcceptanceTests" --logger "console;verbosity=minimal"`: pass (`8/8`).
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site-interact <local-form-file-url> "#query" "fen-local-20260715-4" "#submit" 2000 1500`: pass with the bundle above.

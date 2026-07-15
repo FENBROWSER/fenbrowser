@@ -25,7 +25,7 @@ Status: DESIGNED from the current `debug-site` workflow and 2026-07-14 Google ev
 2. Stop only FenBrowser processes that belong to the intended clean repro; do not disrupt unrelated tools.
 3. Clear only the relevant workspace `logs/` artifacts.
 4. Build the smallest executable surface in an unlocked configuration.
-5. Run `debug-site` with an explicit settle value.
+5. Run `debug-site` with an explicit settle value. For interaction acceptance, run `debug-site-interact <url> <target_selector> <text> <submit_selector> <settle_ms> <interaction_settle_ms>` after the passive bundle is stable.
 6. Inspect, in order: screenshot, summary/lifecycle, script loading, event loop, exceptions, missing APIs, network, DOM, style/layout/paint, raw trace/log.
 7. Identify the earliest candidate that blocks the next missing milestone.
 8. Confirm causality with a second run or a minimized local fixture.

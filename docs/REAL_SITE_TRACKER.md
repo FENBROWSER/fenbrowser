@@ -56,14 +56,14 @@ Likely failure bucket: L for missing interaction proof; F/E remain candidates on
 
 Confirmed failure bucket: The previous E/G defect was a baseline-JIT `in`-operator divergence and is regression-protected. The current boot result is `none`; interaction is unverified rather than reported as successful.
 
-Minimal reproduction: `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site https://www.google.com/ 20000`.
+Minimal reproduction: Passive: `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site https://www.google.com/ 20000`. Interaction: use `debug-site-interact` with selectors confirmed from the fresh Google DOM; do not hardcode them into engine behavior.
 
 Engine subsystem owner: FenJS iterator/host-prototype dispatch and the manual DOM collection surface for the resolved callback defect; Host input/default-action for the next acceptance work.
 
-Fix task: Callback attribution, both attributed host-object defects, transition-sample lifecycle normalization, and the compiled local form interaction acceptance are complete. `SITE-001` now proceeds to Tooling-driven Google interaction evidence.
+Fix task: Callback attribution, both attributed host-object defects, transition-sample lifecycle normalization, compiled local form interaction acceptance, and Tooling-driven local screenshot/event/navigation evidence are complete. `SITE-001` now proceeds to the same generic command on Google.
 
-Regression test: TESTED. `FenJsDomCollectionIterationTests` protects the last callback defect. The six discovered `BrowserFormInteractionAcceptanceTests` protect ordinary hit-tested click, focus, typing, input/change order, canceled `beforeinput`, canceled submit, live checkedness/activation, successful-control GET navigation, and non-interactable rejection on a local fixture.
+Regression test: TESTED. `FenJsDomCollectionIterationTests` protects the last callback defect. The six discovered `BrowserFormInteractionAcceptanceTests` protect ordinary hit-tested click, focus, typing, input/change order, canceled `beforeinput`, canceled submit, live checkedness/activation, successful-control GET navigation, and non-interactable rejection. The two discovered `DebugSiteInteractionRunnerTests` protect bounded event export, value privacy fields, terminal navigation waiting, and local result-DOM agreement.
 
-Evidence: `logs/real-site/www.google.com/20260715T085915Z/summary.md`, `lifecycle.json`, `event_loop.json`, `exceptions.json`, `first_blocker.json`, `network.json`, `style_layout.json`, and `screenshot.png`.
+Evidence: Google boot: `logs/real-site/www.google.com/20260715T085915Z/`. Local interaction: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_interaction_result.html_q_fen-local-20260715-4_source_local-fixture_include_yes_submitter_go/20260715T094724Z/`.
 
 Status: TESTED for load/render and local interaction semantics; Google interaction acceptance remains RESEARCHED.

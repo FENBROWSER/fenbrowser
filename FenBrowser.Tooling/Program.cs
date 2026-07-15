@@ -54,6 +54,9 @@ namespace FenBrowser.Tooling
                 case "debug-site":
                     await RunDebugSiteAsync(args).ConfigureAwait(false);
                     return;
+                case "debug-site-interact":
+                    await RunDebugSiteInteractionAsync(args).ConfigureAwait(false);
+                    return;
                 case "jstime":
                     RunJsTime(args);
                     return;
@@ -322,7 +325,34 @@ namespace FenBrowser.Tooling
             Console.WriteLine($"[debug-site] Bundle: {bundleDir}");
         }
 
-        private static async Task<DebugSiteReport> CollectDebugSiteDiagnosticsAsync(string url, int settleMs)
+        private static async Task RunDebugSiteInteractionAsync(string[] args)
+        {
+            if (args.Length < 5)
+            {
+                throw new ArgumentException(
+                    "debug-site-interact requires <url> <target_selector> <text> <submit_selector> [settle_ms] [interaction_settle_ms]");
+            }
+
+            var url = args[1];
+            var settleMs = args.Length > 5 && int.TryParse(args[5], out var parsedSettle) ? parsedSettle : 20000;
+            var interactionSettleMs = args.Length > 6 && int.TryParse(args[6], out var parsedInteractionSettle)
+                ? parsedInteractionSettle
+                : 5000;
+            var request = new DebugSiteInteractionRequest(args[2], args[3], args[4], interactionSettleMs);
+            var report = await CollectDebugSiteDiagnosticsAsync(url, settleMs, request).ConfigureAwait(false);
+            report.LoggerDrainTimeoutMs = 2000;
+            report.LoggerDrainSucceeded = EngineLog.Flush(TimeSpan.FromMilliseconds(report.LoggerDrainTimeoutMs));
+            var bundleDir = WriteDebugSiteBundle(report);
+
+            PrintDebugSiteReport(report);
+            Console.WriteLine();
+            Console.WriteLine($"[debug-site-interact] Bundle: {bundleDir}");
+        }
+
+        private static async Task<DebugSiteReport> CollectDebugSiteDiagnosticsAsync(
+            string url,
+            int settleMs,
+            DebugSiteInteractionRequest interactionRequest = null)
         {
             CssEngineConfig.CurrentEngine = CssEngineType.Custom;
             EngineCapabilities.Reset();
@@ -419,6 +449,38 @@ namespace FenBrowser.Tooling
                 }
             }
             catch (Exception ex) { Console.WriteLine($"[debug-site] Script hydration error: {ex.Message}"); }
+
+            DebugSiteInteractionResult interaction = null;
+            if (interactionRequest != null)
+            {
+                var beforeRoot = host.GetDomRoot();
+                var beforeStyles = SafeCall(() => host.ComputedStyles);
+                var beforeScreenshot = CaptureDebugSiteScreenshot(
+                    beforeRoot,
+                    beforeStyles,
+                    host.CurrentUri?.AbsoluteUri ?? url);
+                if (beforeScreenshot.Captured)
+                {
+                    TryCopyFile(
+                        beforeScreenshot.Path,
+                        DiagnosticPaths.GetRootArtifactPath("debug_interaction_before.png"));
+                }
+                else
+                {
+                    TryDeleteFile(DiagnosticPaths.GetRootArtifactPath("debug_interaction_before.png"));
+                }
+
+                interaction = await DebugSiteInteractionRunner.RunAsync(
+                        host,
+                        interactionRequest,
+                        () => networkCapture.Snapshot().Count)
+                    .ConfigureAwait(false);
+                interaction = interaction with
+                {
+                    BeforeScreenshotCaptured = beforeScreenshot.Captured,
+                    BeforeScreenshotError = beforeScreenshot.Error ?? string.Empty
+                };
+            }
             sw.Stop();
 
             // ── Capture screenshot early ─────────────────────────────────
@@ -432,6 +494,14 @@ namespace FenBrowser.Tooling
             string text = SafeCall(() => host.GetTextContent()) ?? string.Empty;
             var styles = SafeCall(() => host.ComputedStyles);
             var screenshot = CaptureDebugSiteScreenshot(root, styles, host.CurrentUri?.AbsoluteUri ?? url);
+            if (interaction != null)
+            {
+                interaction = interaction with
+                {
+                    AfterScreenshotCaptured = screenshot.Captured,
+                    AfterScreenshotError = screenshot.Error ?? string.Empty
+                };
+            }
 
             string[] probes =
             {
@@ -521,7 +591,8 @@ namespace FenBrowser.Tooling
                 ScreenshotPath = screenshot.Path,
                 ScreenshotWidth = screenshot.Width,
                 ScreenshotHeight = screenshot.Height,
-                ScreenshotError = screenshot.Error
+                ScreenshotError = screenshot.Error,
+                Interaction = interaction
             };
         }
 
@@ -639,6 +710,11 @@ namespace FenBrowser.Tooling
             Console.WriteLine($"Load fired             : {report.EventLoop?.LoadFired ?? false}");
             Console.WriteLine($"Microtask checkpoints  : {report.EventLoop?.MicrotaskCheckpoints ?? 0}");
             Console.WriteLine($"Network requests       : {report.NetworkRequests.Count}");
+            Console.WriteLine($"Interaction status     : {report.Interaction?.Status ?? "not-run"}");
+            if (report.Interaction != null && !string.IsNullOrWhiteSpace(report.Interaction.Error))
+            {
+                Console.WriteLine($"Interaction error      : {report.Interaction.Error}");
+            }
             if (!report.ScreenshotCaptured && !string.IsNullOrWhiteSpace(report.ScreenshotError))
             {
                 Console.WriteLine($"Screenshot error       : {report.ScreenshotError}");
@@ -719,6 +795,13 @@ namespace FenBrowser.Tooling
                 Path.Combine(bundleDir, "first_blocker.json"),
                 JsonSerializer.Serialize(firstBlocker, jsonOptions),
                 new UTF8Encoding(false));
+            if (report.Interaction != null)
+            {
+                File.WriteAllText(
+                    Path.Combine(bundleDir, "interaction.json"),
+                    JsonSerializer.Serialize(report.Interaction, jsonOptions),
+                    new UTF8Encoding(false));
+            }
             File.WriteAllText(
                 Path.Combine(bundleDir, "style_layout.json"),
                 JsonSerializer.Serialize(report.StyleLayout ?? new DebugSiteStyleLayoutSummary(), jsonOptions),
@@ -729,6 +812,17 @@ namespace FenBrowser.Tooling
             File.WriteAllText(Path.Combine(bundleDir, "display_list.txt"), report.DisplayListDump ?? string.Empty, new UTF8Encoding(false));
 
             TryCopyLogArtifact("debug_screenshot.png", Path.Combine(bundleDir, "screenshot.png"));
+            if (report.Interaction != null)
+            {
+                if (report.Interaction.BeforeScreenshotCaptured)
+                {
+                    TryCopyLogArtifact("debug_interaction_before.png", Path.Combine(bundleDir, "interaction_before.png"));
+                }
+                if (report.Interaction.AfterScreenshotCaptured)
+                {
+                    TryCopyLogArtifact("debug_screenshot.png", Path.Combine(bundleDir, "interaction_after.png"));
+                }
+            }
             TryCopyLogArtifact("dom_dump.txt", Path.Combine(bundleDir, "dom_dump.txt"));
             TryCopyLatestLogArtifact("raw_source_*.html", Path.Combine(bundleDir, "raw_source.html"));
             TryCopyLatestLogArtifact("rendered_text_*.txt", Path.Combine(bundleDir, "rendered_text_artifact.txt"));
@@ -738,7 +832,7 @@ namespace FenBrowser.Tooling
 
             File.WriteAllText(
                 Path.Combine(bundleDir, "artifact_manifest.json"),
-                JsonSerializer.Serialize(BuildArtifactManifest(bundleDir), jsonOptions),
+                JsonSerializer.Serialize(BuildArtifactManifest(bundleDir, report.Interaction != null), jsonOptions),
                 new UTF8Encoding(false));
 
             return bundleDir;
@@ -809,6 +903,21 @@ namespace FenBrowser.Tooling
             sb.AppendLine($"Failed network requests: {failedNetworkRequests}");
             sb.AppendLine($"Navigation failures: {report.NavigationFailures.Count}");
             sb.AppendLine($"Console messages: {report.ConsoleMessages.Count}");
+            sb.AppendLine($"Interaction status: {report.Interaction?.Status ?? "not-run"}");
+            if (report.Interaction != null)
+            {
+                sb.AppendLine($"Interaction target found: {report.Interaction.InputTargetFound}");
+                sb.AppendLine($"Interaction focus acquired: {report.Interaction.FocusAcquired}");
+                sb.AppendLine($"Interaction text accepted: {report.Interaction.TextAccepted}");
+                sb.AppendLine($"Interaction submit attempted: {report.Interaction.SubmitAttempted}");
+                sb.AppendLine($"Interaction outcome observed: {report.Interaction.SubmissionOutcomeObserved}");
+                sb.AppendLine($"Interaction outcome settled: {report.Interaction.SubmissionOutcomeSettled}");
+                sb.AppendLine($"Interaction event records: {report.Interaction.EventRecords.Count}");
+                if (!string.IsNullOrWhiteSpace(report.Interaction.Error))
+                {
+                    sb.AppendLine($"Interaction error: {report.Interaction.Error}");
+                }
+            }
             sb.AppendLine();
             sb.AppendLine("## First Blocker Signals");
             sb.AppendLine();
@@ -832,6 +941,8 @@ namespace FenBrowser.Tooling
             sb.AppendLine("- `lifecycle_timeline.json`: ordered navigation lifecycle transitions captured from `BrowserHost.NavigationLifecycleChanged`.");
             sb.AppendLine("- `script_loading.json`: script discovery, fetch, execution, failure, and async-pending counts.");
             sb.AppendLine("- `event_loop.json`: DOMContentLoaded/load, microtask, timer, and requestAnimationFrame counters.");
+            sb.AppendLine("- `interaction.json`: click, focus, text, submit, request/navigation, and bounded event evidence when interaction was requested.");
+            sb.AppendLine("- `interaction_before.png` / `interaction_after.png`: correlated screenshots when interaction was requested.");
             sb.AppendLine("- `first_blocker.json`: deterministic milestone dependency and first-causal-blocker classification.");
             sb.AppendLine("- `style_layout.json`: style/layout/paint counters, timing, status, and first blocker classification.");
             sb.AppendLine("- `style_dump.txt`: DOM preorder computed-style snapshot.");
@@ -1548,9 +1659,9 @@ namespace FenBrowser.Tooling
             };
         }
 
-        private static List<object> BuildArtifactManifest(string bundleDir)
+        private static List<object> BuildArtifactManifest(string bundleDir, bool includeInteraction)
         {
-            string[] expected =
+            var expected = new List<string>
             {
                 "summary.md",
                 "summary.json",
@@ -1576,6 +1687,13 @@ namespace FenBrowser.Tooling
                 "rendered_text.txt",
                 "screenshot.png"
             };
+
+            if (includeInteraction)
+            {
+                expected.Add("interaction.json");
+                expected.Add("interaction_before.png");
+                expected.Add("interaction_after.png");
+            }
 
             return expected
                 .Select(name =>
@@ -1680,6 +1798,31 @@ namespace FenBrowser.Tooling
                 .Select(static failure => $"callback:{failure.CallbackId} {failure.ExceptionType}: {failure.ExceptionMessage}")
                 .ToList();
 
+            if (report?.Interaction?.Attempted == true &&
+                !string.Equals(report.Interaction.Status, "passed", StringComparison.Ordinal))
+            {
+                var (milestone, sequence) = !report.Interaction.InputTargetFound
+                    ? ("InputTargetFound", 15L)
+                    : !report.Interaction.FocusAcquired
+                        ? ("FocusAcquired", 16L)
+                        : !report.Interaction.TextAccepted
+                            ? ("TextAccepted", 17L)
+                            : !report.Interaction.SubmitTargetFound || !report.Interaction.SubmitAttempted
+                                ? ("SubmitDefaultActionCompleted", 18L)
+                                : ("ResultRequestNavigationCompleted", 19L);
+                evidence.Add(new FirstBlockerEvidence(
+                    "interaction-acceptance-failure",
+                    "InputEventDefaultAction",
+                    "Host/Input",
+                    milestone,
+                    sequence,
+                    report.Interaction.CompletedUtc,
+                    true,
+                    string.IsNullOrWhiteSpace(report.Interaction.Error)
+                        ? "The requested browser interaction did not complete."
+                        : report.Interaction.Error));
+            }
+
             var interactive = phases.Contains("Interactive") || phases.Contains("Complete");
             var successful = lifecycle.IsSuccessfulTerminalPhase;
             var input = new FirstBlockerInput(
@@ -1698,6 +1841,15 @@ namespace FenBrowser.Tooling
                 MainUiPainted: style.PaintRan && style.PaintNodeCount > 0,
                 FrameSubmitted: style.RasterRan && style.ScreenshotCaptured)
             {
+                InputTargetFound = report?.Interaction?.Attempted == true ? report.Interaction.InputTargetFound : null,
+                FocusAcquired = report?.Interaction?.Attempted == true ? report.Interaction.FocusAcquired : null,
+                TextAccepted = report?.Interaction?.Attempted == true ? report.Interaction.TextAccepted : null,
+                SubmitCompleted = report?.Interaction?.Attempted == true
+                    ? report.Interaction.SubmitAttempted && report.Interaction.SubmissionOutcomeObserved && report.Interaction.SubmissionOutcomeSettled
+                    : null,
+                ResultNavigationCompleted = report?.Interaction?.Attempted == true
+                    ? report.Interaction.SubmissionOutcomeObserved && report.Interaction.SubmissionOutcomeSettled
+                    : null,
                 Evidence = evidence,
                 NonFatalFailures = nonFatal,
                 ContradictoryArtifactWarnings = contradictions
@@ -1834,6 +1986,36 @@ namespace FenBrowser.Tooling
             return Regex.Replace(candidate.ToLowerInvariant(), @"[^a-z0-9._-]+", "_").Trim('_');
         }
 
+        private static void TryCopyFile(string sourcePath, string destinationPath)
+        {
+            try
+            {
+                if (File.Exists(sourcePath))
+                {
+                    File.Copy(sourcePath, destinationPath, overwrite: true);
+                }
+            }
+            catch
+            {
+                // Best-effort diagnostic copy.
+            }
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch
+            {
+                // Best-effort diagnostic cleanup.
+            }
+        }
+
         private static void TryCopyLogArtifact(string sourceName, string destinationPath)
         {
             try
@@ -1940,6 +2122,7 @@ namespace FenBrowser.Tooling
             public int ScreenshotWidth { get; init; }
             public int ScreenshotHeight { get; init; }
             public string ScreenshotError { get; init; }
+            public DebugSiteInteractionResult Interaction { get; init; }
             public bool LoggerDrainSucceeded { get; set; }
             public int LoggerDrainTimeoutMs { get; set; }
         }
@@ -2699,6 +2882,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  verify <html_path>");
             Console.WriteLine("  diagnose <url> [settle_ms]");
             Console.WriteLine("  debug-site <url> [settle_ms]");
+            Console.WriteLine("  debug-site-interact <url> <target_selector> <text> <submit_selector> [settle_ms] [interaction_settle_ms]");
             Console.WriteLine("  acid2");
             Console.WriteLine("  acid2-compare");
             Console.WriteLine("  acid2-layout-html [output_html]");

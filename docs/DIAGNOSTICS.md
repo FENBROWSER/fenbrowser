@@ -10,9 +10,10 @@ Runtime artifacts follow the repository path policy and live under `logs/`, not 
 
 ```powershell
 dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site <url> <settle_ms>
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site-interact <url> <target_selector> <text> <submit_selector> <settle_ms> <interaction_settle_ms>
 ```
 
-The current CLI accepts a URL and optional settle time. The proposed `--trace`, `--output`, standalone dump commands, and selector inspection are NOT_STARTED and must not be documented as working commands.
+`debug-site-interact` uses the ordinary WebDriver hit-test/click/type path, waits for a terminal navigation or a settled request-only outcome, and emits bounded event records plus correlated before/after screenshots. It stores text length and match status as direct fields; the resulting request URL can still contain the typed value because that URL is acceptance evidence. The proposed `--trace`, `--output`, standalone dump commands, and selector inspection are NOT_STARTED and must not be documented as working commands.
 
 ## Current versus required capability
 
@@ -27,6 +28,7 @@ The current CLI accepts a URL and optional settle time. The proposed `--trace`, 
 | Missing API runtime tracker | TESTED | Rich per-site records are written under `logs/missing_apis/` | Export that schema into the run bundle and classify probes/expandos |
 | First blocker summary | TESTED | Typed `first_blocker.json` models 19 milestones, separates non-fatal/unverified work, and treats labeled transition-time lifecycle samples as historical | Add missing-artifact and clock-mismatch fixtures |
 | Exceptions artifact | TESTED | Timer, event-listener, and unhandled-Promise totals and retained typed records share the drained event-loop snapshot | Add microtask, parser, IPC, crash, redaction, and export-failure sources |
+| Interaction acceptance | TESTED | Generic selector-driven local form run records target, focus, typing, submit, terminal navigation, bounded capture/bubble events, and before/after screenshots | Run the same command on Google and reduce its earliest failed milestone if any |
 | DOM/style/layout/paint dumps | INTEGRATED | Current bundle has text dumps and screenshot | Add HTML DOM serialization contract and selector inspection |
 | IPC/sandbox/performance artifacts | NOT_STARTED | Data sources exist outside the bundle | Emit typed files even when inactive, with an explicit inactive reason |
 
