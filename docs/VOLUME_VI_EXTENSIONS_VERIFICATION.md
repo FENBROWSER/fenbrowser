@@ -3684,3 +3684,17 @@ Verification commands:
 - `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~PromiseRejectionTrackerTests"`: pass (`4/4`).
 - `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~PromiseRuntimeTests"`: pass (`14/14`).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore`: pass with 215 existing warnings and 0 errors.
+
+## 6.144 Lifecycle Observation Label Verification (2026-07-15)
+
+- The new included `Scripting/BrowserLifecycleDetailTests.cs` contract calls the pure active `BrowserHost` lifecycle-detail formatter with a deterministic running/loading snapshot at the 1.5-second boundary. It requires an explicit transition-time scope, timeout flag, `AtObservation` field names, and absence of the ambiguous `documentReadyState=loading` key.
+- The production formatter is active in `FenBrowser.FenEngine/Rendering/BrowserApi.cs`; that file is compiled by the owning project and its output flows into the current navigation lifecycle snapshot, Tooling console, `summary.md`, `summary.json`, `lifecycle.json`, and timeline artifacts.
+- The local and Google bundles prove both branches: a settled sample reports timeout 0 with complete/DCL/load at observation, while Google reports timeout 1 with the earlier loading sample explicitly historical and current lifecycle/event-loop truth complete.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --list-tests --filter "FullyQualifiedName~BrowserLifecycleDetailTests"`: lists the intended test.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~BrowserLifecycleDetailTests|FullyQualifiedName~NavigationLifecycleTrackerTests|FullyQualifiedName~FirstBlockerClassifierTests" --logger "console;verbosity=minimal"`: pass (`18/18`).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore`: pass with 2 existing Tooling warnings and 0 errors.
+- Local bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_event_promise_callback_failures.html/20260715T084728Z/`.
+- Google bundle: `logs/real-site/www.google.com/20260715T084802Z/`.

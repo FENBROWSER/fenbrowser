@@ -66,7 +66,7 @@ Risk Level: Medium
 Dependencies: Lifecycle, network, script, event-loop, style/layout, and raw trace artifacts are INTEGRATED
 Files likely involved: New classifier under `FenBrowser.Tooling`, `FenBrowser.Tooling/Program.cs`, included Tooling/diagnostic tests
 Specs/references: `docs/DIAGNOSTICS.md`; `docs/REAL_SITE_DEBUGGING.md`
-Current behavior: `first_blocker.json` deterministically evaluates 19 navigation-through-interaction milestones, keeps post-load callback defects non-fatal, emits contradiction warnings, and marks unattempted interaction explicitly. Google currently reports `none`; its historical terminal-detail string still needs lifecycle normalization.
+Current behavior: `first_blocker.json` deterministically evaluates 19 navigation-through-interaction milestones, keeps post-load callback defects non-fatal, emits contradiction warnings, and marks unattempted interaction explicitly. Google reports `none`. The navigation transition's bounded event-loop sample is explicitly labeled `transition-time` and timed out, while current lifecycle/event-loop fields agree on complete/DCL/load.
 Expected behavior: `first_blocker.json` names one earliest causal blocker, affected milestone, A-L bucket, subsystem owner, evidence records, and confidence; `none` is explicit when boot succeeds.
 Reproduction: Use fixtures for navigation failure, script throw, missing API causing throw, late optional resource failure, zero-size root, and successful page.
 Root cause: The prior summary had no normalized candidate model, milestone dependency graph, or fatality filter.
@@ -78,7 +78,7 @@ Performance impact: Offline/bundle-finalization work with bounded artifact sizes
 Compatibility impact: Changes diagnostics only; no page behavior.
 Known risks: Causal inference presented as certainty; guard with evidence IDs and confidence.
 Blockers: None
-Next action: Normalize the authoritative lifecycle model so terminal detail cannot retain an unlabeled earlier `loading` snapshot.
+Next action: Add missing-artifact and clock-mismatch classifier fixtures; expand lifecycle coverage for async/defer/module/destruction separately from the now-labeled transition observation.
 
 ## Task TEST-001
 

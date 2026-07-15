@@ -2706,14 +2706,16 @@ pre {{
             if (_engine == null || !_engine.EnableJavaScript || scriptEngine == null)
             {
                 return
+                    "eventLoopObservation=transition-time;" +
+                    "eventLoopObservationTimedOut=0;" +
                     "eventLoop=disabled;" +
-                    "eventLoopStatus=not-run;" +
-                    "documentReadyState=unknown;" +
-                    "domContentLoaded=0;" +
-                    "load=0;" +
-                    "pendingHostTimers=0;" +
-                    "eventLoopWaitMs=0;" +
-                    $"eventLoopTimeoutMs={settleTimeoutMs};" +
+                    "eventLoopStatusAtObservation=not-run;" +
+                    "documentReadyStateAtObservation=unknown;" +
+                    "domContentLoadedAtObservation=0;" +
+                    "loadAtObservation=0;" +
+                    "pendingHostTimersAtObservation=0;" +
+                    "eventLoopObservationWaitMs=0;" +
+                    $"eventLoopObservationTimeoutMs={settleTimeoutMs};" +
                     $"navId={navigationId}";
             }
 
@@ -2750,21 +2752,39 @@ pre {{
             var elapsedMs = (int)Math.Min(
                 settleTimeoutMs,
                 Math.Max(0, (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds));
+            var settled = IsDocumentLifecycleSettled(snapshot);
+
+            return FormatDocumentLifecycleSettleDetail(
+                navigationId,
+                snapshot,
+                settled,
+                elapsedMs,
+                settleTimeoutMs);
+        }
+
+        internal static string FormatDocumentLifecycleSettleDetail(
+            long navigationId,
+            FenBrowser.FenEngine.Scripting.BrowserEventLoopSnapshot snapshot,
+            bool settled,
+            int elapsedMs,
+            int settleTimeoutMs)
+        {
             var status = snapshot?.Status ?? "not-run";
             var readyState = string.IsNullOrWhiteSpace(snapshot?.DocumentReadyState)
                 ? "unknown"
                 : snapshot.DocumentReadyState;
-            var settled = IsDocumentLifecycleSettled(snapshot);
 
             return
+                "eventLoopObservation=transition-time;" +
+                $"eventLoopObservationTimedOut={(!settled && elapsedMs >= settleTimeoutMs ? 1 : 0)};" +
                 $"eventLoop={(settled ? status : "partial")};" +
-                $"eventLoopStatus={status};" +
-                $"documentReadyState={readyState};" +
-                $"domContentLoaded={(snapshot?.DomContentLoadedFired == true ? 1 : 0)};" +
-                $"load={(snapshot?.LoadFired == true ? 1 : 0)};" +
-                $"pendingHostTimers={snapshot?.PendingHostTimers ?? 0};" +
-                $"eventLoopWaitMs={elapsedMs};" +
-                $"eventLoopTimeoutMs={settleTimeoutMs};" +
+                $"eventLoopStatusAtObservation={status};" +
+                $"documentReadyStateAtObservation={readyState};" +
+                $"domContentLoadedAtObservation={(snapshot?.DomContentLoadedFired == true ? 1 : 0)};" +
+                $"loadAtObservation={(snapshot?.LoadFired == true ? 1 : 0)};" +
+                $"pendingHostTimersAtObservation={snapshot?.PendingHostTimers ?? 0};" +
+                $"eventLoopObservationWaitMs={elapsedMs};" +
+                $"eventLoopObservationTimeoutMs={settleTimeoutMs};" +
                 $"navId={navigationId}";
         }
 

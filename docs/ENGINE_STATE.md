@@ -72,9 +72,9 @@ The reality audit proceeds in this order:
 
 ## Primary real-site target
 
-Google is the current target because it has the freshest complete bundle and already crosses the boot pipeline. The 2026-07-15 run loaded the document, completed 18 script executions without a direct script failure, fired lifecycle events, built DOM/style/layout/paint state, and rendered the main UI. The previously attributed eight timer failures shared one cause: the baseline JIT implementation of the ECMAScript `in` operator routed a DOM host handle through JS heap-object decoding. That general JIT host-property defect is fixed. Typed Promise diagnostics now expose one distinct non-fatal rejection in `script-5` function `k0c`: FenJS `EnumerateValues` reports `TypeError: Value is not iterable.` The next acceptance work is lifecycle normalization, reduction of that attributed rejection, missing-API classification, and automated click/type/submit behavior.
+Google is the current target because it has the freshest complete bundle and already crosses the boot pipeline. The 2026-07-15 run loaded the document, completed 18 script executions without a direct script failure, fired lifecycle events, built DOM/style/layout/paint state, and rendered the main UI. The previously attributed eight timer failures shared one cause: the baseline JIT implementation of the ECMAScript `in` operator routed a DOM host handle through JS heap-object decoding. That general JIT host-property defect is fixed. Typed Promise diagnostics expose one distinct non-fatal rejection in `script-5` function `k0c`: FenJS `EnumerateValues` reports `TypeError: Value is not iterable.` Navigation transition samples are now explicitly historical; current lifecycle and event-loop fields agree on complete/DCL/load. The next acceptance work is reduction of the iterable rejection, missing-API classification, and automated click/type/submit behavior.
 
-Evidence: `logs/real-site/www.google.com/20260715T083923Z/`.
+Evidence: `logs/real-site/www.google.com/20260715T084802Z/`.
 
 ## Gate status
 

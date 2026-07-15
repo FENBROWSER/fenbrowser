@@ -25,7 +25,7 @@ The current CLI accepts a URL and optional settle time. The proposed `--trace`, 
 | Event-loop snapshot | TESTED | DCL/load, timers, rAF counters, and bounded typed timer/event/unhandled-Promise failures with task/source/receiver/stack provenance | Add microtask, rAF, repeating-timer, and invalidation reductions |
 | Network capture | INTEGRATED | Request/response records and counts | Correct non-HTTP schemes and add policy/cookie/CORS disposition |
 | Missing API runtime tracker | TESTED | Rich per-site records are written under `logs/missing_apis/` | Export that schema into the run bundle and classify probes/expandos |
-| First blocker summary | TESTED | Typed `first_blocker.json` models 19 milestones and separates non-fatal/unverified work | Normalize authoritative lifecycle detail and add missing-artifact fixtures |
+| First blocker summary | TESTED | Typed `first_blocker.json` models 19 milestones, separates non-fatal/unverified work, and treats labeled transition-time lifecycle samples as historical | Add missing-artifact and clock-mismatch fixtures |
 | Exceptions artifact | TESTED | Timer, event-listener, and unhandled-Promise totals and retained typed records share the drained event-loop snapshot | Add microtask, parser, IPC, crash, redaction, and export-failure sources |
 | DOM/style/layout/paint dumps | INTEGRATED | Current bundle has text dumps and screenshot | Add HTML DOM serialization contract and selector inspection |
 | IPC/sandbox/performance artifacts | NOT_STARTED | Data sources exist outside the bundle | Emit typed files even when inactive, with an explicit inactive reason |

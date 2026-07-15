@@ -630,7 +630,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine($"Paint nodes            : {report.StyleLayout?.PaintNodeCount ?? 0}");
             Console.WriteLine($"Screenshot captured    : {report.ScreenshotCaptured}");
             Console.WriteLine($"Navigation phase       : {report.Lifecycle?.Phase ?? "(unknown)"}");
-            Console.WriteLine($"Navigation detail      : {report.Lifecycle?.Detail ?? "(none)"}");
+            Console.WriteLine($"Navigation transition detail: {report.Lifecycle?.Detail ?? "(none)"}");
             Console.WriteLine($"Lifecycle transitions  : {report.Lifecycle?.TransitionCount ?? 0}");
             Console.WriteLine($"Scripts discovered     : {report.ScriptLoading?.TotalScripts ?? 0}");
             Console.WriteLine($"Scripts executed       : {report.ScriptLoading?.ExecutionCompleted ?? 0}");
@@ -782,7 +782,7 @@ namespace FenBrowser.Tooling
                 sb.AppendLine($"Screenshot error: {report.ScreenshotError}");
             }
             sb.AppendLine($"Navigation lifecycle phase: {report.Lifecycle?.Phase ?? "(unknown)"}");
-            sb.AppendLine($"Navigation lifecycle detail: {report.Lifecycle?.Detail ?? "(none)"}");
+            sb.AppendLine($"Navigation transition detail: {report.Lifecycle?.Detail ?? "(none)"}");
             sb.AppendLine($"Navigation lifecycle transitions: {report.Lifecycle?.TransitionCount ?? 0}");
             sb.AppendLine($"Navigation lifecycle phases: {FormatLifecyclePhasePath(report.Lifecycle?.TransitionPhases)}");
             sb.AppendLine($"Document readyState probe: {report.Lifecycle?.DocumentReadyState ?? "(not captured)"}");

@@ -22,6 +22,6 @@ Snapshot date: 2026-07-15.
 - Animation frames scheduled/executed: 0/0.
 - Callback failures: 1; `event_loop.json`, `exceptions.json`, trace, and summary agree. The retained unhandled rejection is attributed to external `script-5`, line 18/column 14425, function `k0c`, and FenJS `EnumerateValues` with `TypeError: Value is not iterable.`
 - The previous eight failures were fully attributed, reduced to a hot `in`-operator helper receiving a DOM host object, and fixed in the JIT host-property path.
-- The terminal navigation detail still says `documentReadyState=loading`, `domContentLoaded=0`, and `load=0`, contradicting the event-loop snapshot and ready-state probe. The classifier must select authoritative terminal records and report the disagreement.
+- The navigation-complete transition now labels its bounded sample as `eventLoopObservation=transition-time`. On Google it explicitly reports `eventLoopObservationTimedOut=1` with `documentReadyStateAtObservation=loading`; current `lifecycle.json` and `event_loop.json` both report `complete`, DOMContentLoaded, and load. Historical state no longer masquerades as terminal truth.
 
-The next event-loop slice is lifecycle normalization, followed by a local reduction of the attributed Google iterable rejection. Interaction automation remains blocked on coherent readiness evidence.
+The next event-loop-adjacent slice is a local reduction of the attributed Google iterable rejection. The coherent current readiness fields can then gate interaction automation; broader async/defer/module/destruction lifecycle matrices remain required.

@@ -46,9 +46,9 @@ First layout blocker: None captured. There are 31 zero-area boxes, but the main 
 
 Script loading status: Completed. 14 script elements, 18 execution completions, 0 execution failures.
 
-DOMContentLoaded fired: Yes, at `2026-07-15T08:39:23.2221794Z`.
+DOMContentLoaded fired: Yes, at `2026-07-15T08:48:02.0069418Z`.
 
-Load fired: Yes, at `2026-07-15T08:39:23.4146008Z`.
+Load fired: Yes, at `2026-07-15T08:48:02.1974136Z`.
 
 Main framework detected: Google Closure-style property names are present; this is an inference from `closure_*` and `$goog_Thenable`, not a confirmed framework detector result.
 
@@ -60,10 +60,10 @@ Minimal reproduction: `dotnet run --project FenBrowser.Tooling/FenBrowser.Toolin
 
 Engine subsystem owner: FenJS JIT/host-property dispatch for the resolved callback defect; Host input/default-action and lifecycle owners for the next acceptance work.
 
-Fix task: The callback attribution and host-object interop reduction are complete. `SITE-001` now verifies local and Google interaction acceptance after lifecycle normalization.
+Fix task: Callback attribution, host-object interop, and transition-sample lifecycle normalization are complete. Reduce the one iterable rejection, then `SITE-001` verifies local and Google interaction acceptance.
 
 Regression test: TESTED. `CallbackFailureDiagnosticsTests.HotTimerHelper_InOperatorAcceptsHostObjectAfterJitTierUp` is compiled/discovered and crosses the JIT threshold inside a deterministic timer callback.
 
-Evidence: `logs/real-site/www.google.com/20260715T083923Z/summary.md`, `event_loop.json`, `exceptions.json`, `first_blocker.json`, `network.json`, `style_layout.json`, and `screenshot.png`.
+Evidence: `logs/real-site/www.google.com/20260715T084802Z/summary.md`, `lifecycle.json`, `event_loop.json`, `exceptions.json`, `first_blocker.json`, `network.json`, `style_layout.json`, and `screenshot.png`.
 
 Status: TESTED for load/render; interaction acceptance remains RESEARCHED.

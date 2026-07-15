@@ -10167,3 +10167,16 @@ Verification:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore`: pass with 215 existing warnings and 0 errors.
 - Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_event_promise_callback_failures.html/20260715T083850Z/` completes lifecycle and retains one listener throw plus one unhandled rejection in order. `event_loop.json`, `exceptions.json`, trace, and summary agree at two; `first_blocker.json` reports no boot blocker and lists both as non-fatal.
 - Fresh Google bundle `logs/real-site/www.google.com/20260715T083923Z/` completes navigation, DOMContentLoaded, load, 18 script executions, layout, paint, raster, and screenshot capture. It exposes one distinct non-fatal unhandled rejection from external `script-5`, line 18/column 14425, function `k0c`, receiver `PromiseInstance`, with FenJS `EnumerateValues` reporting `TypeError: Value is not iterable.` The earlier eight host-object timer failures do not recur.
+
+## 2.377 Transition-Time Lifecycle Observation Semantics (2026-07-15)
+
+- `BrowserHost` previously embedded a bounded 1.5-second event-loop sample in the navigation-complete transition with current-looking names such as `documentReadyState=loading`. On long script loads the document later reached complete/DCL/load, so a historical sample looked like contradictory terminal truth.
+- The transition detail now declares `eventLoopObservation=transition-time`, records whether that observation timed out, and names sampled fields with `AtObservation`. It does not change the navigation timeout, script execution, or document lifecycle; current truth remains the ready-state probe and event-loop snapshot serialized in `lifecycle.json` and `event_loop.json`.
+- Disabled-script observations use the same explicit transition-time vocabulary. Tooling labels the string as navigation transition detail in console and summary output.
+
+Verification:
+
+- Red: `BrowserLifecycleDetailTests.TimedOutEventLoopSample_IsExplicitlyHistorical` failed `0/1` because the extracted existing formatter emitted unlabeled `documentReadyState=loading`.
+- Green: the focused test passes `1/1` and is discoverable; the combined lifecycle/detail/classifier slice passes `18/18`.
+- Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_event_promise_callback_failures.html/20260715T084728Z/` records a settled transition-time sample and current complete/DCL/load state with no classifier contradiction.
+- Google bundle `logs/real-site/www.google.com/20260715T084802Z/` records `eventLoopObservationTimedOut=1` and the earlier loading/DCL0/load0 values only as `AtObservation` fields. Current lifecycle and event-loop fields agree on complete/DCL/load, and `first_blocker.json` reports no contradiction.
