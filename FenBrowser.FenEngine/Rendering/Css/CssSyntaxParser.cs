@@ -851,7 +851,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             var chains = SelectorMatcher.ParseSelectorList(raw);
             if (chains.Count == 0) return null;
 
-            var specificity = chains.Select(c => c.Specificity).OrderByDescending(s => s).FirstOrDefault();
+            var specificity = SelectorMatcher.GetMaximumSpecificity(chains);
 
             foreach (var chain in chains)
             {

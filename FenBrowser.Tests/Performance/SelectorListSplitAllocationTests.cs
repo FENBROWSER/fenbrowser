@@ -89,6 +89,27 @@ public sealed class SelectorListSplitAllocationTests
     }
 
     [Fact]
+    public void GetSpecificity_SelectorListHasBoundedSelectionAllocations()
+    {
+        const int iterations = 10_000;
+        const string selector = "article .item, main#content, #hero.banner";
+        GC.KeepAlive(SelectorMatcher.GetSpecificity(selector));
+
+        (int a, int b, int c) specificity = default;
+        long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (var iteration = 0; iteration < iterations; iteration++)
+        {
+            specificity = SelectorMatcher.GetSpecificity(selector);
+        }
+
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        _output.WriteLine($"Selecting specificity for {iterations:N0} selector lists allocated {allocated:N0} B.");
+
+        Assert.Equal((1, 1, 0), specificity);
+        Assert.InRange(allocated, 1, 17_100_000);
+    }
+
+    [Fact]
     public void ParseSelectorList_EscapedIdentifiersRetainDecodedValues()
     {
         List<SelectorChain> parsed = SelectorMatcher.ParseSelectorList(

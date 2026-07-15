@@ -3576,3 +3576,20 @@ Verification commands:
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
 - `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five retained processes.
 - `dotnet-trace collect --profile gc-verbose --output Results/performance/render_alloc_profile_after_html_tag_name_buffer_20260715.nettrace -- dotnet FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.dll render-perf`: capture succeeds; `dotnet-trace report ... topN -n 100` reports `String.Concat(string,string)` at `0.32%` exclusive sampled weight.
+
+## 6.136 Linear Specificity-Maximum Verification (2026-07-15)
+
+- `SelectorListSplitAllocationTests.GetSpecificity_SelectorListHasBoundedSelectionAllocations` invokes the production selector parser and specificity API 10,000 times over three chains whose maximum is not first. Replacing projection/sort/first with one shared linear maximum scan reduces allocation exactly from `18,720,000 B` to `16,960,000 B` (`-1,760,000 B`, `-9.40%`) in three fresh Release processes and passes the tightened `17,100,000 B` ceiling.
+- The probe requires `(1,1,0)`, while the included stylesheet-parser, selector, pseudo, style-layout, and dynamic-recascade slice passes `39/39`. This protects both helper call sites and cascade-visible ordering.
+- Reports `070109`, `070111`, `070112`, `070114`, and `070116` pass every failure gate against reports `065311`, `065313`, `065315`, `065316`, and `065318`. Heavy and wrapped CSS/style allocation medians fall `22,744 B` and `15,728 B`; steady state is effectively flat. Dense text rises `47,288 B`, but its five baseline processes span `438,768 B`, so the movement is documented as attribution noise rather than hidden or credited.
+- CSS-rule, CSS/style, and total timing medians are mixed; no page-latency claim is made. Gen0/1/2 medians are unchanged. The final `gc-verbose` trace omits the previously ranked `OrderByDescending` owner from the top 100.
+- Test262 is not applicable. WPT is not rerun because the local contracts exercise specificity ordering through both parser APIs and the cascade-visible style result.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName=FenBrowser.Tests.Performance.SelectorListSplitAllocationTests.GetSpecificity_SelectorListHasBoundedSelectionAllocations" --logger "console;verbosity=detailed"`: pass in three fresh processes at exactly `16,960,000 B` each.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CssSyntaxParserAllocationTests|FullyQualifiedName~SelectorListSplitAllocationTests|FullyQualifiedName~PseudoSelectorCanonicalizationTests|FullyQualifiedName~DynamicClassRecascadeTests|FullyQualifiedName~StyleLayoutContractTests" --logger "console;verbosity=minimal"`: pass (`39/39`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five retained processes.
+- `dotnet-trace collect --profile gc-verbose --output Results/performance/render_alloc_profile_after_specificity_linear_max_20260715.nettrace -- dotnet FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.dll render-perf`: capture succeeds; `dotnet-trace report ... topN -n 100` omits `OrderByDescending`.

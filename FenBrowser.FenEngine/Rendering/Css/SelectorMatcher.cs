@@ -99,10 +99,29 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             var parsed = ParseSelectorList(selector);
             if (parsed.Count == 0) return (0, 0, 0);
-            
-            // CRITICAL FIX: Use FirstOrDefault to prevent "Sequence contains no elements" exception
-            var s = parsed.Select(c => c.Specificity).OrderByDescending(x => x).FirstOrDefault();
+
+            var s = GetMaximumSpecificity(parsed);
             return (s.A, s.B, s.C);
+        }
+
+        internal static Specificity GetMaximumSpecificity(List<SelectorChain> chains)
+        {
+            if (chains.Count == 0)
+            {
+                return default;
+            }
+
+            var maximum = chains[0].Specificity;
+            for (var index = 1; index < chains.Count; index++)
+            {
+                var candidate = chains[index].Specificity;
+                if (candidate.CompareTo(maximum) > 0)
+                {
+                    maximum = candidate;
+                }
+            }
+
+            return maximum;
         }
 
         #endregion

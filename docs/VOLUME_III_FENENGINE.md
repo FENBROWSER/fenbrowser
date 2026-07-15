@@ -10026,3 +10026,33 @@ Verification:
 - The included CSS syntax parser, selector parser, pseudo canonicalization, and dynamic recascade slice passes `22/22` in Release.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five retained candidate reports.
 - Test262 is unrelated to CSS token preprocessing. WPT is not rerun because the focused contracts exercise both preprocessing branches and the retained change does not alter grammar, selector matching, cascade, or DOM behavior.
+
+## 2.370 Linear Maximum-Specificity Selection (2026-07-15)
+
+- `FenBrowser.FenEngine/Rendering/Css/SelectorMatcher.cs`
+  - The post-HTML-tokenizer allocation trace ranked `Enumerable.OrderByDescending` at `0.72%` exclusive sampled weight. `GetSpecificity` parsed every selector chain, projected all specificities, fully sorted them, and consumed only the maximum.
+  - A shared internal helper now seeds from the first chain and performs one linear scan with the existing `Specificity.CompareTo` ordering. Empty input still produces default specificity, and public tuple values are unchanged.
+- `FenBrowser.FenEngine/Rendering/Css/CssSyntaxParser.cs`
+  - Stylesheet selector construction now uses the same helper instead of repeating the projection, sort, and first-element iterator chain. Selector parsing, chain order, stored chains, pseudo-argument parsing, nesting resolution, specificity semantics, and cascade behavior are unchanged.
+  - The change adds no cache, pool, unsafe code, retained state, synchronization, ownership change, or public representation; it removes unnecessary O(n log n) work and temporary LINQ objects from two parser paths.
+- `FenBrowser.Tests/Performance/SelectorListSplitAllocationTests.cs`
+  - Ten thousand warmed production `GetSpecificity` calls over three differently weighted chains move exactly from `18,720,000 B` to `16,960,000 B` in three fresh Release processes, saving `1,760,000 B` (`9.40%`, `176 B` per call). The `17,100,000 B` ceiling rejects restoring the sort.
+  - The probe requires the most specific non-first chain to produce `(1,1,0)`. Included stylesheet parser, pseudo canonicalization, style-layout specificity, selector matching, and dynamic recascade contracts protect the shared call sites.
+
+Five immediate Release reports `065311`, `065313`, `065315`, `065316`, and `065318` compare with reports `070109`, `070111`, `070112`, `070114`, and `070116`:
+
+| Scenario | CSS/style allocation before | CSS/style allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 8,995,200 B | 8,972,456 B (-22,744 B, -0.25%) | 17,730,368 B | 17,722,232 B (-8,136 B, -0.05%) |
+| steady-state-damage-animation | 5,090,944 B | 5,091,096 B (+152 B, effectively flat) | 13,463,920 B | 13,464,048 B (+128 B, effectively flat) |
+| dense-text-flow | 2,864,392 B | 2,911,680 B (+47,288 B, +1.65%) | 6,086,760 B | 6,131,464 B (+44,704 B, +0.73%) |
+| wrapped-multiline-text | 1,553,752 B | 1,538,024 B (-15,728 B, -1.01%) | 3,366,680 B | 3,354,064 B (-12,616 B, -0.37%) |
+
+The dense-text current-thread CSS counter ranged over `438,768 B` across the five immediate baseline processes, far exceeding the exact `176 B` per selector-list effect, so its median increase is reported but not attributed to the candidate. CSS-rule, CSS/style, and total timings are mixed; no page-latency claim is made. Gen0/1/2 collection medians are unchanged. A fresh final-code `gc-verbose` trace omits `OrderByDescending` and the new helper from the top 100 allocation owners.
+
+Verification:
+
+- The exact specificity-selection contract passes three fresh Release processes at `16,960,000 B` each.
+- The included CSS syntax parser, selector parser, pseudo canonicalization, style-layout, and dynamic recascade slice passes `39/39` in Release.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five retained candidate reports.
+- Test262 is unrelated to CSS specificity selection. WPT is not rerun because direct local contracts protect ordering, stored specificity, matching, stylesheet parsing, and cascade behavior.
