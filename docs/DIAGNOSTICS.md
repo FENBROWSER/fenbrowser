@@ -22,11 +22,11 @@ The current CLI accepts a URL and optional settle time. The proposed `--trace`, 
 | Diagnostic trace JSONL | INTEGRATED | Core fields and category mapping exist | Populate stable session/document/frame/realm/request/task IDs at owners |
 | Navigation lifecycle | TESTED | Google has six ordered terminal transitions | Add redirect/failure/frame reductions |
 | Script loading snapshot | TESTED | Per-script identity, source coordinates, fetch, batch, and execution state | Normalize dynamic-script discovery/execution populations |
-| Event-loop snapshot | TESTED | DCL/load, timers, rAF counters, and bounded typed callback failures with task/source/receiver/stack provenance | Add event-listener, Promise, microtask, and invalidation reductions |
+| Event-loop snapshot | TESTED | DCL/load, timers, rAF counters, and bounded typed timer/event/unhandled-Promise failures with task/source/receiver/stack provenance | Add microtask, rAF, repeating-timer, and invalidation reductions |
 | Network capture | INTEGRATED | Request/response records and counts | Correct non-HTTP schemes and add policy/cookie/CORS disposition |
 | Missing API runtime tracker | TESTED | Rich per-site records are written under `logs/missing_apis/` | Export that schema into the run bundle and classify probes/expandos |
 | First blocker summary | TESTED | Typed `first_blocker.json` models 19 milestones and separates non-fatal/unverified work | Normalize authoritative lifecycle detail and add missing-artifact fixtures |
-| Exceptions artifact | INTEGRATED | Callback totals and retained typed records share the drained event-loop snapshot | Add promise, event-listener, parser, IPC, and crash failure sources |
+| Exceptions artifact | TESTED | Timer, event-listener, and unhandled-Promise totals and retained typed records share the drained event-loop snapshot | Add microtask, parser, IPC, crash, redaction, and export-failure sources |
 | DOM/style/layout/paint dumps | INTEGRATED | Current bundle has text dumps and screenshot | Add HTML DOM serialization contract and selector inspection |
 | IPC/sandbox/performance artifacts | NOT_STARTED | Data sources exist outside the bundle | Emit typed files even when inactive, with an explicit inactive reason |
 
@@ -91,7 +91,7 @@ Current `MissingApiTracker` emits category `MissingAPI`, which is outside this c
 
 ## First fatal blocker algorithm
 
-The classifier is currently STUBBED. The required algorithm is:
+The classifier is TESTED for the current typed milestone model. Further artifact families must join the same algorithm rather than introduce independent first-error strings:
 
 1. Load lifecycle, network, script, event-loop, exception, missing-API, style/layout, IPC, sandbox, crash, and raw trace records.
 2. Normalize every candidate to one timestamp/sequence domain and attach its blocked milestone.

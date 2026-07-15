@@ -142,6 +142,140 @@ public sealed class CallbackFailureDiagnosticsTests
         }
     }
 
+    [Fact]
+    public async Task ThrowingEventListener_PreservesTypedFailureProvenance()
+    {
+        var baseUri = new Uri("https://fixture.test/throwing-listener.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><button id='target'>target</button><script>" +
+                "document.getElementById('target').addEventListener('click'," +
+                "function clickFixtureReceiver(){throw new Error('listener-fixture-boom');});" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            Assert.True(engine.DispatchEventForElement(document.GetElementById("target"), "click"));
+
+            var failure = Assert.Single(engine.GetEventLoopSnapshot().CallbackFailureRecords);
+            Assert.Equal("event-listener", failure.CallbackCategory);
+            Assert.Equal("click", failure.EventType);
+            Assert.StartsWith("event-", failure.TaskId);
+            Assert.Equal("clickFixtureReceiver", failure.CallbackFunctionName);
+            Assert.Equal("script-1", failure.ScriptId);
+            Assert.Equal("inline#1", failure.ScriptSourceLabel);
+            Assert.Equal("HostObject", failure.ReceiverJsType);
+            Assert.False(string.IsNullOrWhiteSpace(failure.ReceiverHostType));
+            Assert.Contains("listener-fixture-boom", failure.ExceptionMessage);
+            Assert.Contains("clickFixtureReceiver", failure.JsStack);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
+    [Fact]
+    public async Task RejectedPromise_PreservesTypedFailureProvenance()
+    {
+        var baseUri = new Uri("https://fixture.test/rejected-promise.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><script>" +
+                "Promise.reject(new Error('promise-fixture-boom'));" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var failure = Assert.Single(engine.GetEventLoopSnapshot().CallbackFailureRecords);
+            Assert.Equal("promise-rejection", failure.CallbackCategory);
+            Assert.Equal("reject", failure.EventType);
+            Assert.StartsWith("promise-", failure.TaskId);
+            Assert.Equal("script-1", failure.ScriptId);
+            Assert.Equal("inline#1", failure.ScriptSourceLabel);
+            Assert.Equal("Object", failure.ReceiverJsType);
+            Assert.Contains("promise-fixture-boom", failure.ExceptionMessage);
+            Assert.Contains("promise-fixture-boom", failure.JsStack);
+            Assert.False(string.IsNullOrWhiteSpace(failure.HostStack));
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
+    [Fact]
+    public async Task RejectionHandledBeforeCheckpoint_IsNotReportedAsFailure()
+    {
+        var baseUri = new Uri("https://fixture.test/handled-promise.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><script>" +
+                "Promise.reject(new Error('handled-promise')).catch(function () {});" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Empty(engine.GetEventLoopSnapshot().CallbackFailureRecords);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
+    [Fact]
+    public async Task MultiplePromiseRejections_PreserveObservationOrder()
+    {
+        var baseUri = new Uri("https://fixture.test/ordered-rejections.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><script>" +
+                "Promise.reject(new Error('first-rejection'));" +
+                "Promise.reject(new Error('second-rejection'));" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var failures = engine.GetEventLoopSnapshot().CallbackFailureRecords;
+            Assert.Equal(2, failures.Count);
+            Assert.Contains("first-rejection", failures[0].ExceptionMessage);
+            Assert.Contains("second-rejection", failures[1].ExceptionMessage);
+            Assert.True(failures[0].Sequence < failures[1].Sequence);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
     private static JsHostAdapter CreateHost()
     {
         return new JsHostAdapter(

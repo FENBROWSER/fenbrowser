@@ -36,7 +36,7 @@ Expected visible result: The same main UI plus verified focus, typing, submit/cl
 
 First fatal console error: None captured.
 
-First remaining runtime error: None in the current bundle. The earlier eight `setTimeout` failures were attributed to one hot `in`-operator helper receiving a DOM host object; the JIT host-property path is fixed and both callback and exception totals are now zero.
+First remaining runtime error: One unhandled Promise rejection. It is attributed to external `script-5`, line 18/column 14425, function `k0c`, receiver `PromiseInstance`, and FenJS `EnumerateValues`: `TypeError: Value is not iterable.` The earlier eight `setTimeout` host-object failures remain fixed and did not recur.
 
 First fatal network error: None confirmed. The only failed request is a `data:image/gif` URI, which is a capture-classification defect rather than an HTTP failure.
 
@@ -46,9 +46,9 @@ First layout blocker: None captured. There are 31 zero-area boxes, but the main 
 
 Script loading status: Completed. 14 script elements, 18 execution completions, 0 execution failures.
 
-DOMContentLoaded fired: Yes, at `2026-07-15T08:20:59.5770944Z`.
+DOMContentLoaded fired: Yes, at `2026-07-15T08:39:23.2221794Z`.
 
-Load fired: Yes, at `2026-07-15T08:20:59.8000277Z`.
+Load fired: Yes, at `2026-07-15T08:39:23.4146008Z`.
 
 Main framework detected: Google Closure-style property names are present; this is an inference from `closure_*` and `$goog_Thenable`, not a confirmed framework detector result.
 
@@ -64,6 +64,6 @@ Fix task: The callback attribution and host-object interop reduction are complet
 
 Regression test: TESTED. `CallbackFailureDiagnosticsTests.HotTimerHelper_InOperatorAcceptsHostObjectAfterJitTierUp` is compiled/discovered and crosses the JIT threshold inside a deterministic timer callback.
 
-Evidence: `logs/real-site/www.google.com/20260715T082100Z/summary.md`, `event_loop.json`, `exceptions.json`, `first_blocker.json`, `network.json`, `style_layout.json`, and `screenshot.png`.
+Evidence: `logs/real-site/www.google.com/20260715T083923Z/summary.md`, `event_loop.json`, `exceptions.json`, `first_blocker.json`, `network.json`, `style_layout.json`, and `screenshot.png`.
 
 Status: TESTED for load/render; interaction acceptance remains RESEARCHED.

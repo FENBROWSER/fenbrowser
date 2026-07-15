@@ -3668,3 +3668,19 @@ Verification commands:
 - `dotnet test ... --list-tests` lists all three `CallbackFailureDiagnosticsTests`; their focused class run passes `3/3`. The adjacent FenJS `ObjectAndBytecodeTests.InOperator` slice passes `5/5`, and the owning FenJS Release build succeeds with 0 warnings and 0 errors.
 - Local `debug-site` evidence at `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_host_object_in_timer.html/20260715T082004Z/` renders `passed`; event-loop and exception totals agree at zero and `first_blocker.json` reports `none`.
 - The same 20-second Google protocol now produces `logs/real-site/www.google.com/20260715T082100Z/`: navigation, DOMContentLoaded, load, 18 script executions, layout, paint, raster, and screenshot capture complete; direct script failures, callback failures, and exceptions are all zero. `first_blocker.json` reports `none`; interaction remains unverified and the historical lifecycle-detail string remains separate normalization work.
+
+## 6.143 Event and Promise Diagnostic Verification (2026-07-15)
+
+- The included `Scripting/CallbackFailureDiagnosticsTests.cs` surface now contains seven discovered contracts: the three timer/JIT provenance tests plus event-listener attribution, unhandled-Promise attribution, same-turn handled-rejection suppression, and ordered multiple-rejection retention. No excluded legacy tree was enabled.
+- The event-listener test fails before the production catch point records typed state; the Promise test fails before rejection tracking feeds the typed collection; and the handled-rejection guard fails against immediate reporting. The retained implementation reports only still-unhandled rejections at the microtask checkpoint and preserves insertion order.
+- The local exporter fixture at `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_event_promise_callback_failures.html/20260715T083850Z/` reports exactly two failures/two retained exceptions/two total exceptions. Both structured `TaskFailed` records are present before bundle copy, and `first_blocker.json` lists them as non-fatal after successful boot/render milestones.
+- The fresh Google bundle at `logs/real-site/www.google.com/20260715T083923Z/` reports one failure consistently across event-loop, exception, trace, summary, and first-blocker outputs. Source provenance identifies `script-5` line 18/column 14425 and function `k0c`; receiver/reason/stack data reduces the next investigation to FenJS iterable semantics rather than the resolved host-object timer boundary.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --list-tests --filter "FullyQualifiedName~CallbackFailureDiagnosticsTests"`: lists seven tests.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~EngineLogSettingsTests.Flush_DrainsAcceptedEventsBeforeArtifactCopy|FullyQualifiedName~DebugSiteExceptionSummaryTests" --logger "console;verbosity=minimal"`: pass (`9/9`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FenJsInputEventDispatchTests.DispatchEventForElement"`: pass (`2/2`).
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~PromiseRejectionTrackerTests"`: pass (`4/4`).
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~PromiseRuntimeTests"`: pass (`14/14`).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore`: pass with 215 existing warnings and 0 errors.

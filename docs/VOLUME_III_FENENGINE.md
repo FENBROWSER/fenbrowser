@@ -10153,3 +10153,17 @@ Verification:
 - Green: the same focused test passes `1/1`; the complete callback diagnostic class is discovered and passes `3/3`; the existing FenJS `InOperator` slice passes `5/5`; `dotnet build FenBrowser.Js/FenBrowser.Js.csproj -c Release --no-restore -v minimal` succeeds with 0 warnings and 0 errors.
 - Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_host_object_in_timer.html/20260715T082004Z/` renders `passed` with zero callback failures, zero exceptions, and `first_blocker: none`.
 - Fresh Google bundle `logs/real-site/www.google.com/20260715T082100Z/` completes navigation, DOMContentLoaded, load, 18 script executions, layout, paint, and screenshot capture with zero direct script failures, zero callback failures, zero exceptions, and `first_blocker: none`.
+
+## 2.376 Event-Listener and Unhandled-Promise Failure Provenance (2026-07-15)
+
+- Event-listener catch points now add the same bounded typed failure record used by timers while preserving DOM listener exception behavior. Records identify the event type, actual function or `handleEvent` callable, receiver host/JS type, script source, JS stack, and caught host stack.
+- Promise rejection observation is deferred until the microtask checkpoint. A handler attached during the same turn removes the pending rejection, while still-unhandled rejections are emitted in observation order with promise receiver, reason, creating script source, JS reason stack, and a bounded diagnostic host stack. Pending diagnostic retention is capped at 128 and cleared with the document snapshot.
+- The shared diagnostic path emits `CallbackFailed` snapshot state and structured `TaskFailed` trace data without synchronous file I/O or changing callback/Promise behavior.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~EngineLogSettingsTests.Flush_DrainsAcceptedEventsBeforeArtifactCopy|FullyQualifiedName~DebugSiteExceptionSummaryTests" --logger "console;verbosity=minimal"`: pass (`9/9`). Discovery lists all seven callback-diagnostic methods.
+- `FenJsInputEventDispatchTests.DispatchEventForElement*`: pass (`2/2`); `PromiseRejectionTrackerTests`: pass (`4/4`); `PromiseRuntimeTests`: pass (`14/14`).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore`: pass with 215 existing warnings and 0 errors.
+- Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_event_promise_callback_failures.html/20260715T083850Z/` completes lifecycle and retains one listener throw plus one unhandled rejection in order. `event_loop.json`, `exceptions.json`, trace, and summary agree at two; `first_blocker.json` reports no boot blocker and lists both as non-fatal.
+- Fresh Google bundle `logs/real-site/www.google.com/20260715T083923Z/` completes navigation, DOMContentLoaded, load, 18 script executions, layout, paint, raster, and screenshot capture. It exposes one distinct non-fatal unhandled rejection from external `script-5`, line 18/column 14425, function `k0c`, receiver `PromiseInstance`, with FenJS `EnumerateValues` reporting `TypeError: Value is not iterable.` The earlier eight host-object timer failures do not recur.

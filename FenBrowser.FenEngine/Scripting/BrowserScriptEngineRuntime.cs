@@ -347,7 +347,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private readonly NavigationEpoch _navigationEpoch = NavigationEpoch.Initial;
     private string _currentDocumentId = string.Empty;
     private long _callbackFailureSequence;
+    private long _diagnosticCallbackIdSequence;
+    private FenJsDiagnosticPromiseRejectionTracker _diagnosticPromiseRejectionTracker;
     private readonly Dictionary<BytecodeFunction, CallbackSourceProvenance> _callbackFunctionProvenance = new();
+    private readonly Dictionary<JsValue, PendingPromiseRejectionDiagnostic> _pendingPromiseRejectionDiagnostics = new();
     private readonly Dictionary<object, HostObjectHandle> _hostHandleCache =
         new(ReferenceEqualityComparer.Instance);
     private readonly List<BrowserEventListener> _documentEventListeners = new();
@@ -1418,7 +1421,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     {
         _currentDocumentId = "document-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
         Interlocked.Exchange(ref _callbackFailureSequence, 0);
+        Interlocked.Exchange(ref _diagnosticCallbackIdSequence, 0);
+        _diagnosticPromiseRejectionTracker?.Reset();
         _callbackFunctionProvenance.Clear();
+        _pendingPromiseRejectionDiagnostics.Clear();
         lock (_eventLoopLock)
         {
             _lastEventLoopSnapshot = new BrowserEventLoopSnapshot
@@ -1478,6 +1484,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private void RecordMicrotaskCheckpoint(string detail)
     {
+        _diagnosticPromiseRejectionTracker?.FlushPending();
         var timestamp = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
         UpdateEventLoopSnapshot(snapshot =>
         {
@@ -1497,6 +1504,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private void MarkEventLoopCompleted()
     {
+        _diagnosticPromiseRejectionTracker?.FlushPending();
         UpdateEventLoopSnapshot(snapshot =>
         {
             snapshot.Status = "completed";
@@ -2613,10 +2621,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             };
 
             // Wire a diagnostic Promise rejection tracker so unhandled rejections
-            // surface in engine logs with the rejection reason. This is critical for
-            // debugging SPA boot failures (e.g., WhatsApp Web).
-            _interpreter.PromiseRejectionTracker = new FenJsDiagnosticPromiseRejectionTracker(
-                _interpreter.PromiseRejectionTracker);
+            // surface in engine logs with the rejection reason and source ownership.
+            _diagnosticPromiseRejectionTracker = new FenJsDiagnosticPromiseRejectionTracker(
+                _interpreter.PromiseRejectionTracker,
+                TrackPromiseRejection,
+                RecordPromiseRejection);
+            _interpreter.PromiseRejectionTracker = _diagnosticPromiseRejectionTracker;
 
             // The generational nursery GC (tier-4 scaffold) does not yet root every
             // transient handle that real-world bundles keep live across an allocation
@@ -4804,18 +4814,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         string origin,
         long callbackId,
         CallbackSourceProvenance provenance,
-        Exception exception)
+        Exception exception,
+        string eventType = "")
     {
         const int maxFailureRecords = 128;
         var callbackCategory = origin ?? string.Empty;
         var functionName = provenance?.CallbackFunctionName ?? GetCallbackFunctionName(callback);
         var (receiverRepresentation, receiverHostType) = DescribeCallbackReceiver(receiver);
         var (exceptionType, exceptionMessage, jsStack) = DescribeCallbackException(exception, functionName);
-        var hostStack = TruncateDiagnosticText(RedactPotentialSecrets(exception?.StackTrace), 8192);
+        var hostStackSource = string.IsNullOrWhiteSpace(exception?.StackTrace)
+            ? Environment.StackTrace
+            : exception.StackTrace;
+        var hostStack = TruncateDiagnosticText(RedactPotentialSecrets(hostStackSource), 8192);
         var taskPrefix = callbackCategory switch
         {
             "setTimeout" or "setInterval" => "timer",
             "requestAnimationFrame" => "raf",
+            "event-listener" => "event",
+            "promise-rejection" => "promise",
             _ => "callback"
         };
         var isTimer = callbackCategory is "setTimeout" or "setInterval";
@@ -4831,6 +4847,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             CallbackId = "callback-" + callbackId.ToString(CultureInfo.InvariantCulture),
             CallbackCategory = callbackCategory,
             TimerId = isTimer ? callbackId : null,
+            EventType = TruncateDiagnosticText(eventType, 256),
             ScriptId = TruncateDiagnosticText(provenance?.ScriptId, 256),
             ScriptUrl = TruncateDiagnosticText(provenance?.ScriptUrl, 2048),
             ScriptSourceLabel = TruncateDiagnosticText(provenance?.ScriptSourceLabel, 2048),
@@ -4868,6 +4885,122 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         });
 
         return record;
+    }
+
+    private BrowserCallbackFailureRecord RecordDiagnosticCallbackFailure(
+        JsValue callback,
+        JsValue receiver,
+        IReadOnlyList<JsValue> args,
+        string category,
+        string eventType,
+        Exception exception)
+    {
+        var callbackId = Interlocked.Increment(ref _diagnosticCallbackIdSequence);
+        var failure = RecordCallbackFailure(
+            callback,
+            receiver,
+            args,
+            category,
+            callbackId,
+            CaptureCallbackProvenance(callback),
+            exception,
+            eventType);
+        LogDiagnosticCallbackFailure(failure, callbackId, category, eventType);
+        return failure;
+    }
+
+    private void LogDiagnosticCallbackFailure(
+        BrowserCallbackFailureRecord failure,
+        long callbackId,
+        string category,
+        string eventType)
+    {
+        AddEventLoopRecord("CallbackFailed", category + ":" + eventType, callbackId);
+        LogEventLoop(
+            "TaskFailed",
+            LogSeverity.Warn,
+            "[FenJsBridge] diagnostic callback failed",
+            new Dictionary<string, object>
+            {
+                ["origin"] = category,
+                ["eventType"] = eventType ?? string.Empty,
+                ["id"] = callbackId,
+                ["taskId"] = failure.TaskId,
+                ["callbackId"] = failure.CallbackId,
+                ["scriptId"] = failure.ScriptId,
+                ["scriptSourceLabel"] = failure.ScriptSourceLabel,
+                ["scriptSourceLine"] = failure.SourceLine,
+                ["scriptSourceColumn"] = failure.SourceColumn,
+                ["callbackFunctionName"] = failure.CallbackFunctionName,
+                ["receiverJsType"] = failure.ReceiverJsType,
+                ["receiverHostType"] = failure.ReceiverHostType,
+                ["errorType"] = failure.ExceptionType,
+                ["error"] = failure.ExceptionMessage,
+                ["jsStack"] = failure.JsStack,
+                ["hostStack"] = failure.HostStack,
+                ["redactionStatus"] = failure.RedactionStatus
+            },
+            LogMarker.EngineBug);
+    }
+
+    private void TrackPromiseRejection(JsValue promise, PromiseRejectionOperation operation)
+    {
+        if (operation == PromiseRejectionOperation.Handle)
+        {
+            _pendingPromiseRejectionDiagnostics.Remove(promise);
+            return;
+        }
+
+        const int maxPendingRejections = 128;
+        if (_pendingPromiseRejectionDiagnostics.Count >= maxPendingRejections &&
+            !_pendingPromiseRejectionDiagnostics.ContainsKey(promise))
+        {
+            return;
+        }
+
+        var reason = JsValue.Undefined;
+        try
+        {
+            if (promise.Tag == JsValueTag.Object &&
+                _interpreter.Heap.GetObject(promise.AsObjectHandle()) is PromiseInstance promiseInstance)
+            {
+                reason = promiseInstance.Promise.GetResultUnchecked();
+            }
+        }
+        catch
+        {
+            // Preserve the rejection observation even if its reason is no longer resolvable.
+        }
+
+        _pendingPromiseRejectionDiagnostics[promise] = new PendingPromiseRejectionDiagnostic(
+            reason,
+            CaptureCallbackProvenance(JsValue.Undefined));
+    }
+
+    private void RecordPromiseRejection(JsValue promise)
+    {
+        var pending = _pendingPromiseRejectionDiagnostics.TryGetValue(promise, out var captured)
+            ? captured
+            : new PendingPromiseRejectionDiagnostic(
+                JsValue.Undefined,
+                CaptureCallbackProvenance(JsValue.Undefined));
+        _pendingPromiseRejectionDiagnostics.Remove(promise);
+
+        var exception = new JsThrownException(pending.Reason)
+        {
+            Description = DescribePromiseRejectionReason(pending.Reason)
+        };
+        var callbackId = Interlocked.Increment(ref _diagnosticCallbackIdSequence);
+        var failure = RecordCallbackFailure(
+            JsValue.Undefined,
+            promise,
+            new[] { pending.Reason },
+            "promise-rejection",
+            callbackId,
+            pending.Provenance,
+            exception,
+            "reject");
+        LogDiagnosticCallbackFailure(failure, callbackId, "promise-rejection", "reject");
     }
 
     private (string Representation, string HostType) DescribeCallbackReceiver(JsValue receiver)
@@ -5005,6 +5138,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         int SourceLine,
         int SourceColumn,
         string CallbackFunctionName);
+
+    private sealed record PendingPromiseRejectionDiagnostic(
+        JsValue Reason,
+        CallbackSourceProvenance Provenance);
 
     // Invoke a FenJS callback from a host timer thread, holding the interpreter lock so
     // it can never race with page-script evaluation, then drain microtasks and request
@@ -11524,6 +11661,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private bool TryInvokeFenJsEventCallback(JsValue callback, JsValue thisValue, JsValue eventValue, string eventType)
     {
+        var invokedCallback = callback;
         try
         {
             if (_interpreter.CanCallValue(callback))
@@ -11538,6 +11676,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return false;
                 }
 
+                invokedCallback = handleEvent;
                 InvokeFenJsCallback(handleEvent, callback, eventValue);
             }
 
@@ -11545,6 +11684,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
         catch (JsThrownException ex)
         {
+            _ = RecordDiagnosticCallbackFailure(
+                invokedCallback,
+                thisValue,
+                new[] { eventValue },
+                "event-listener",
+                eventType,
+                ex);
             var description = ex.Description;
             if (string.IsNullOrEmpty(description))
             {
@@ -11558,6 +11704,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
         catch (Exception ex)
         {
+            _ = RecordDiagnosticCallbackFailure(
+                invokedCallback,
+                thisValue,
+                new[] { eventValue },
+                "event-listener",
+                eventType,
+                ex);
             EngineLogCompat.Warn(
                 $"[FenJsBridge] Event listener for '{eventType ?? string.Empty}' failed: {ex.GetType().Name}: {ex.Message}",
                 LogCategory.JavaScript);
@@ -16998,48 +17151,110 @@ public static class BrowserScriptEngineRuntime
 }
 
 /// <summary>
-/// Diagnostic Promise rejection tracker that logs every unhandled rejection
-/// to FenLogger with the WhatsApp category so SPA boot failures are visible
-/// in engine logs. Delegates to the inner tracker for normal operation.
+/// Diagnostic Promise rejection tracker that defers reporting until the
+/// microtask checkpoint so same-turn handlers do not produce false failures.
+/// Delegates to the inner tracker for normal operation.
 /// </summary>
 internal sealed class FenJsDiagnosticPromiseRejectionTracker : IHostPromiseRejectionTracker
 {
     private readonly IHostPromiseRejectionTracker _inner;
+    private readonly Action<JsValue, PromiseRejectionOperation> _lifecycleObserver;
+    private readonly Action<JsValue> _unhandledObserver;
+    private readonly object _sync = new();
+    private readonly List<JsValue> _pending = new();
     private int _rejectedCount;
     private int _handledCount;
 
-    public FenJsDiagnosticPromiseRejectionTracker(IHostPromiseRejectionTracker inner)
+    public FenJsDiagnosticPromiseRejectionTracker(
+        IHostPromiseRejectionTracker inner,
+        Action<JsValue, PromiseRejectionOperation> lifecycleObserver,
+        Action<JsValue> unhandledObserver)
     {
         _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        _lifecycleObserver = lifecycleObserver ?? throw new ArgumentNullException(nameof(lifecycleObserver));
+        _unhandledObserver = unhandledObserver ?? throw new ArgumentNullException(nameof(unhandledObserver));
     }
 
     public void Track(JsValue promise, PromiseRejectionOperation operation)
     {
         _inner.Track(promise, operation);
-        if (operation == PromiseRejectionOperation.Reject)
+        var observed = false;
+        lock (_sync)
         {
-            var count = Interlocked.Increment(ref _rejectedCount);
-            // Only log first 20 rejections to avoid flooding logs;
-            // the inner InMemoryPromiseRejectionTracker retains the full list.
-            if (count <= 20)
+            if (operation == PromiseRejectionOperation.Reject)
             {
-                try
+                if (_pending.Count < 128 || _pending.Contains(promise))
                 {
-                    FenLogger.Warn(
-                        $"[PromiseRejection] Unhandled rejection #{count} detected (promise: {promise})",
-                        LogCategory.WhatsApp | LogCategory.JavaScript);
-                }
-                catch
-                {
-                    FenLogger.Warn(
-                        $"[PromiseRejection] Unhandled rejection #{count} detected",
-                        LogCategory.WhatsApp);
+                    if (!_pending.Contains(promise))
+                    {
+                        _pending.Add(promise);
+                    }
+                    observed = true;
                 }
             }
+            else if (operation == PromiseRejectionOperation.Handle)
+            {
+                _pending.Remove(promise);
+                Interlocked.Increment(ref _handledCount);
+                observed = true;
+            }
         }
-        else if (operation == PromiseRejectionOperation.Handle)
+
+        if (observed)
         {
-            Interlocked.Increment(ref _handledCount);
+            try
+            {
+                _lifecycleObserver(promise, operation);
+            }
+            catch
+            {
+                // Diagnostics must not change Promise settlement or handler behavior.
+            }
         }
+    }
+
+    public void FlushPending()
+    {
+        JsValue[] pending;
+        lock (_sync)
+        {
+            if (_pending.Count == 0)
+            {
+                return;
+            }
+
+            pending = _pending.ToArray();
+            _pending.Clear();
+        }
+
+        foreach (var promise in pending)
+        {
+            var count = Interlocked.Increment(ref _rejectedCount);
+            try
+            {
+                _unhandledObserver(promise);
+            }
+            catch
+            {
+                // Diagnostics must not change Promise settlement or handler behavior.
+            }
+
+            if (count <= 20)
+            {
+                FenLogger.Warn(
+                    $"[PromiseRejection] Unhandled rejection #{count} detected",
+                    LogCategory.JavaScript);
+            }
+        }
+    }
+
+    public void Reset()
+    {
+        lock (_sync)
+        {
+            _pending.Clear();
+        }
+        Interlocked.Exchange(ref _rejectedCount, 0);
+        Interlocked.Exchange(ref _handledCount, 0);
     }
 }

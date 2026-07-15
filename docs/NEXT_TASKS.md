@@ -8,25 +8,25 @@ Task ID: TRACE-001
 Title: Preserve callback failures and drain logs before bundle export
 Area: Diagnostic spine / event loop / Tooling
 Owner Agent: Diagnostic Agent
-Status: INTEGRATED
+Status: TESTED
 Priority: 1
 Risk Level: Medium
 Dependencies: Current event-loop snapshot, structured logger, and `debug-site` bundle writer are INTEGRATED
 Files likely involved: `FenBrowser.FenEngine/Rendering/EventLoopCoordinator.cs`, event-loop diagnostic record types, `FenBrowser.Core/Logging/EngineLog.cs`, `FenBrowser.Tooling/Program.cs`, included diagnostic test surface
 Specs/references: HTML event loops; `docs/SPEC_EVENT_LOOP.md`; `docs/DIAGNOSTICS.md`
-Current behavior: Timer callback failures retain bounded task, callback, timer, source, receiver, exception, JS-stack, and host-stack fields. Tooling drains accepted log records before copying artifacts, and callback counts share one event-loop snapshot across `event_loop.json`, `exceptions.json`, trace, and summary. The attributed Google host-object cluster is fixed and the current bundle reports zero callback failures; event-listener, promise-rejection, and export-failure reductions remain.
+Current behavior: Timer and event-listener throws plus unhandled Promise rejections retain bounded task, callback, source, receiver, exception, JS-stack, and host-stack fields. Promise reporting waits until the microtask checkpoint, so a same-turn handler suppresses a false failure, and multiple rejections retain observation order. Tooling drains accepted log records before copying artifacts, and callback counts share one event-loop snapshot across `event_loop.json`, `exceptions.json`, trace, and summary. The attributed Google host-object cluster is fixed; the current bundle exposes one distinct iterable rejection with source and stack provenance.
 Expected behavior: Every failed timer/task/event/promise callback has timestamp, task/callback ID, error type/message/stack, realm/script/source where known, and appears before bundle finalization.
 Reproduction: Run the local callback-failure fixture and `debug-site https://www.google.com 20000`; compare `event_loop.json`, `exceptions.json`, `trace.jsonl`, and summary counts.
 Root cause: The old event-loop snapshot retained only aggregate failure state, function-owned source provenance was lost after top-level execution, and Tooling copied asynchronous logs without a drain boundary.
 Implementation plan: Add a bounded typed failure record; propagate it at the callback catch point; add an explicit asynchronous logger drain/export barrier; serialize typed exceptions; preserve behavior if diagnostic export fails.
-Tests required: Timer callback throw, event-listener throw, promise rejection, drain ordering, bounded stack/message, and bundle consistency tests on an included test surface.
+Tests required: Add microtask throw, callback after navigation invalidation, repeating timer, bounded record/message/stack, redaction, and export-failure isolation to the compiled timer/event/Promise/drain/bundle coverage.
 Evidence required: Before bundle with eight unattributed failures; after fixture and real-site bundle with matching counts and source/task identity.
 Security impact: Redact page secrets and cap error/stack sizes; logging must not alter exception propagation.
 Performance impact: Measure added record allocations and drain duration; no synchronous logging in callback hot paths.
 Compatibility impact: Diagnostic-only output change with versioned/additive JSON fields.
 Known risks: Flush deadlock, reordered events, or retaining callback/realm graphs through diagnostics.
 Blockers: None
-Next action: Add compiled event-listener and promise-rejection failure reductions that prove the existing typed record/export contract beyond timers.
+Next action: Normalize lifecycle truth, then reduce the attributed Google `k0c` iterable rejection without widening into unrelated FenJS conformance work.
 
 ## Task TRACE-002
 
