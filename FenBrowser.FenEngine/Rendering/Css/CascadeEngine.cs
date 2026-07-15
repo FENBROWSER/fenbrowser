@@ -787,7 +787,7 @@ return computed;
                 return;
             }
 
-            computed[property] = CloneDeclaration(declaration, property, value);
+            SetComputedDeclaration(computed, property, value, declaration);
 
             switch (property)
             {
@@ -1065,9 +1065,26 @@ return computed;
             return true;
         }
 
-        private static CssDeclaration CloneDeclaration(CssDeclaration source, string property, string value)
+        private static void SetComputedDeclaration(
+            Dictionary<string, CssDeclaration> computed,
+            string property,
+            string value,
+            CssDeclaration source)
         {
-            return new CssDeclaration
+            // Keep the entry reference local to this update. This performs one
+            // hash/probe for both new properties and later cascade overwrites.
+            ref CssDeclaration existing = ref CollectionsMarshal.GetValueRefOrAddDefault(
+                computed,
+                property,
+                out bool exists);
+            if (exists)
+            {
+                existing.Value = value;
+                existing.IsImportant = source?.IsImportant ?? false;
+                return;
+            }
+
+            existing = new CssDeclaration
             {
                 Property = property,
                 Value = value,
@@ -1077,7 +1094,7 @@ return computed;
 
         private static void SetExpanded(Dictionary<string, CssDeclaration> computed, string property, string value, CssDeclaration source)
         {
-            computed[property] = CloneDeclaration(source, property, value);
+            SetComputedDeclaration(computed, property, value, source);
         }
 
         private static void ApplyBoxShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value,

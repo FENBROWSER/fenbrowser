@@ -9853,3 +9853,32 @@ Verification:
 - The restored production path repeats exactly at `22,923,200 B` and `15,221,600 B`; the included parser/selector/nesting/recascade slice passes `18/18`.
 - Candidate reports `044315`, `044317`, `044319`, `044321`, and `044324` are retained under `Results/performance/` for the local one-day evidence window; every failure gate passed despite the performance rejection.
 - Test262 and WPT are not run for an unshipped candidate. The retained included tests improve future falsification coverage without claiming that the rejected design shipped.
+
+## 2.364 Reused Engine-Owned Cascade Winners (2026-07-15)
+
+- `FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs`
+  - The post-selector trace ranked `CascadeEngine.CloneDeclaration` at `2.60%` exclusive sampled allocation weight. Cascade declarations are applied in increasing priority so shorthands participate correctly, but every intermediate loser allocated a new `CssDeclaration` before a later declaration replaced the same dictionary entry.
+  - Cascade output declarations are already engine-owned copies. `SetComputedDeclaration` now uses one dictionary hash/probe to create that copy for a property's first value, then updates the same output object when a later longhand or shorthand expansion wins. Parsed stylesheet and inline-cache declarations are never exposed or mutated, and the returned object remains independent of its source.
+  - Property normalization, value validation, cascade sorting, origin, importance, specificity, source order, shorthand expansion, custom-property casing, style-cache materialization, and the public result shape are unchanged. The change adds no cache, pool, unsafe code, retained state, synchronization, or cross-thread ownership change.
+- `FenBrowser.Tests/Performance/CascadeDeclarationMaterializationAllocationTests.cs`
+  - One hundred warmed cascades with 64 matching `color` declarations move exactly from `2,565,176 B` to `2,313,176 B`, saving `252,000 B` (`9.82%`) in each of three fresh Release processes. The retained `2,400,000 B` ceiling rejects per-loser declaration materialization.
+  - A semantic counter-case verifies shorthand-versus-longhand order, `!important`, normalization, final value selection, and independent result ownership.
+- A first candidate stored pending winners as struct dictionary values and materialized them after the cascade. It reduced the exact fixture to `2,337,176 B` but increased representative CSS allocations by `1.27%`-`4.71%` because every dictionary slot became larger. That representation was rejected and fully replaced by engine-owned object reuse.
+
+Five immediate same-environment Release baseline reports `050928`, `050930`, `050932`, `050935`, and `050937` compare with final reports `051004`, `051007`, `051009`, `051011`, and `051014`:
+
+| Scenario | CSS/style allocation before | CSS/style allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 9,060,888 B | 9,020,120 B (-40,768 B, -0.45%) | 18,457,400 B | 18,420,664 B (-36,736 B, -0.20%) |
+| steady-state-damage-animation | 5,148,520 B | 5,115,696 B (-32,824 B, -0.64%) | 14,050,568 B | 14,025,720 B (-24,848 B, -0.18%) |
+| dense-text-flow | 2,817,576 B | 2,965,712 B (+148,136 B, +5.26%) | 8,327,168 B | 8,475,744 B (+148,576 B, +1.78%) |
+| wrapped-multiline-text | 1,570,432 B | 1,580,440 B (+10,008 B, +0.64%) | 3,866,176 B | 3,878,824 B (+12,648 B, +0.33%) |
+
+The two larger cascade-conflict fixtures show the expected allocation decrease; the smaller fixtures retain substantial between-process variation and are reported without attributing their mixed medians to this non-allocating overwrite path. Cascade timing medians range from `+0.23%` to `+5.12%`, so no latency improvement is claimed. The exact production-path allocation contract is the causal acceptance evidence. A fresh final-code `gc-verbose` trace no longer lists `CloneDeclaration` among the top 75 exclusive owners; `SetComputedDeclaration` accounts for `0.24%` exclusive sampled allocation weight.
+
+Verification:
+
+- The exact allocation and semantic contracts pass three fresh Release processes (`2/2` each time), with allocation fixed at `2,313,176 B`.
+- The included cascade, style-layout, inline-cache, parsed-rule-cache, style-resolution, background-shorthand, and dynamic-recascade slice passes `32/32`.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero errors, and every benchmark failure gate passes in all final candidate processes.
+- Test262 is unrelated to CSS cascade object materialization. WPT is not rerun for this unit because the included tests directly cover the changed ownership, order, shorthand, importance, cache, and recascade boundaries; excluded legacy `FenBrowser.Tests/Engine` sources are not counted as executed verification.

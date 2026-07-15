@@ -3441,3 +3441,21 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CssSyntaxParserAllocationTests|FullyQualifiedName~SelectorListSplitAllocationTests|FullyQualifiedName~PseudoSelectorCanonicalizationTests|FullyQualifiedName~DynamicClassRecascadeTests" --logger "console;verbosity=minimal"`: restored included slice passes (`18/18`).
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo --verbosity quiet`: restored production build passes (`0` warnings, `0` errors).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: restored benchmark build passes (`0` warnings, `0` errors).
+
+## 6.128 Cascade Winner Reuse Verification (2026-07-15)
+
+- `CascadeDeclarationMaterializationAllocationTests.RepeatedWinningProperty_HasBoundedCascadeAllocations` applies 64 matching declarations to 100 fresh elements through the production cascade path. Reusing the engine-owned output declaration reduces allocation exactly from `2,565,176 B` to `2,313,176 B` (`-252,000 B`, `-9.82%`) in three fresh Release processes and passes the `2,400,000 B` ceiling.
+- `MaterializedWinners_PreserveCascadeShorthandsAndOwnership` protects normalization, shorthand/longhand ordering, `!important`, final values, and the rule that a returned declaration is not the parsed source declaration.
+- A rejected struct-valued pending map measured `2,337,176 B` in the exact fixture but raised representative CSS allocations `1.27%`-`4.71%`; no code from that representation remains.
+- Immediate A/B reports `050928`, `050930`, `050932`, `050935`, and `050937` versus `051004`, `051007`, `051009`, `051011`, and `051014` pass every failure gate. CSS/style allocation medians fall by `40,768 B` (`0.45%`) on the heavy first frame and `32,824 B` (`0.64%`) on the steady-state fixture. Smaller-fixture allocations and all timing medians are mixed, so no page-latency claim is made.
+- The before trace ranks `CascadeEngine.CloneDeclaration` at `2.60%` exclusive sampled allocation weight. The final trace omits it from the top 75; `SetComputedDeclaration` is `0.24%` exclusive.
+- Test262 is not applicable. WPT is not rerun because included contracts exercise the changed cascade semantics and ownership directly.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CascadeDeclarationMaterializationAllocationTests" --logger "console;verbosity=detailed"`: pass (`2/2`) in three fresh processes, exactly `2,313,176 B` each time.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CascadeDeclarationMaterializationAllocationTests|FullyQualifiedName~CascadeIndexInsertionTests|FullyQualifiedName~CascadeTagIndexAllocationTests|FullyQualifiedName~InlineStyleCacheTests|FullyQualifiedName~CssParsedRuleCacheKeyTests|FullyQualifiedName~CssStyleResolutionAllocationTests|FullyQualifiedName~StyleLayoutContractTests|FullyQualifiedName~CssBackgroundShorthandTests|FullyQualifiedName~DynamicClassRecascadeTests" --logger "console;verbosity=minimal"`: pass (`32/32`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo --verbosity quiet`: pass with zero errors.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass with zero errors.
+- `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- render-perf`: every gate passes in all five final candidate processes.
+- `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_cascade_winner_reuse_20260715.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` confirms that `CloneDeclaration` is absent.
