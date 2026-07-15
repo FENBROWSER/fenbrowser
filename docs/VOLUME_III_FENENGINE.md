@@ -9998,3 +9998,31 @@ Verification:
 - The included paint-glyph, glyph-only renderer, source-text color, Paint Tree pill geometry, and text-decoration slice passes `13/13` in Release.
 - Both normal source-text rasterization and explicit glyph-only rendering remain directly covered; every benchmark failure gate passes in all five retained candidate reports.
 - Test262 is unrelated to Paint Tree text representation. WPT is not rerun because this unit changes only materialization of data the current normal raster branch does not read, with both raster branches and the diagnostics counter-path covered by focused tests.
+
+## 2.369 CSS Tokenizer Ordinary-Input Preprocessing Fast Path (2026-07-15)
+
+- `FenBrowser.FenEngine/Rendering/Css/CssTokenizer.cs`
+  - Post-paint allocation-call-stack inspection found `CssTokenizer.Preprocess` below a sampled `GC.AllocateUninitializedArray` owner. Every tokenizer constructed a `StringBuilder` sized to the complete source, appended every character, and materialized a second string even though ordinary CSS requires no preprocessing.
+  - Preprocessing now scans for the first carriage return or null. If neither occurs, it retains the immutable input string directly. If either occurs, it copies the unchanged prefix once and continues through the existing CRLF-to-LF, CR-to-LF, and null-to-replacement-character path.
+  - Token boundaries, token values, CSS recovery, position handling, source lifetime, and normalization semantics are unchanged. The change adds no span lifetime, cache, pool, unsafe code, retained mutable state, synchronization, or interning.
+- `FenBrowser.Tests/Performance/CssSyntaxParserAllocationTests.cs`
+  - Ten thousand warmed tokenizer constructions over one 256-character ordinary input move exactly from `11,520,000 B` to `320,000 B` in three fresh Release processes, saving `11,200,000 B` (`97.22%`, `1,120 B` per tokenizer). The retained `350,000 B` ceiling rejects rebuilding ordinary source strings.
+  - A normalization counter-case verifies CRLF, lone CR, and null replacement through the production token stream.
+
+Five immediate Release reports `062119`, `062121`, `062123`, `062124`, and `062126` compare with reports `063050`, `063052`, `063054`, `063057`, and `063059`:
+
+| Scenario | CSS/style allocation before | CSS/style allocation after | Managed allocation before | Managed allocation after |
+| --- | ---: | ---: | ---: | ---: |
+| first-frame-heavy-layout | 8,995,464 B | 8,969,768 B (-25,696 B, -0.29%) | 17,791,456 B | 17,790,504 B (-952 B, -0.01%) |
+| steady-state-damage-animation | 5,098,272 B | 5,097,840 B (-432 B, -0.01%) | 13,495,920 B | 13,495,440 B (-480 B, effectively flat) |
+| dense-text-flow | 2,916,424 B | 2,894,656 B (-21,768 B, -0.75%) | 6,138,880 B | 6,092,632 B (-46,248 B, -0.75%) |
+| wrapped-multiline-text | 1,552,856 B | 1,551,056 B (-1,800 B, -0.12%) | 3,369,352 B | 3,366,776 B (-2,576 B, -0.08%) |
+
+CSS-rule, CSS/style, and total timing medians are mixed within the short-run process variance, so no page-latency claim is made. All four fixtures reduce CSS/style allocation, and the exact isolated contract establishes the causal common-path improvement. A fresh final-code `gc-verbose` trace omits `CssTokenizer.Preprocess` from the top 75; the remaining `StringBuilder.ToString` sample is attributed to benchmark-fixture construction rather than tokenization.
+
+Verification:
+
+- The exact ordinary-input allocation contract passes three fresh Release processes at `320,000 B`; the CR/CRLF/null normalization counter-case passes with it.
+- The included CSS syntax parser, selector parser, pseudo canonicalization, and dynamic recascade slice passes `22/22` in Release.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five retained candidate reports.
+- Test262 is unrelated to CSS token preprocessing. WPT is not rerun because the focused contracts exercise both preprocessing branches and the retained change does not alter grammar, selector matching, cascade, or DOM behavior.

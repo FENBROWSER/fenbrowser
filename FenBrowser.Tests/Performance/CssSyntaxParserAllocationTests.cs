@@ -95,6 +95,42 @@ public sealed class CssSyntaxParserAllocationTests
     }
 
     [Fact]
+    public void CssTokenizer_OrdinaryInputHasBoundedPreprocessAllocations()
+    {
+        const int iterations = 10_000;
+        string css = new('a', 256);
+
+        GC.KeepAlive(new CssTokenizer(css));
+
+        CssTokenizer tokenizer = null;
+        long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (var iteration = 0; iteration < iterations; iteration++)
+        {
+            tokenizer = new CssTokenizer(css);
+        }
+
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        _output.WriteLine($"Constructing {iterations:N0} ordinary CSS tokenizers allocated {allocated:N0} B.");
+
+        Assert.NotNull(tokenizer);
+        Assert.Equal(css, tokenizer!.Consume().Value);
+        Assert.InRange(allocated, 1, 350_000);
+    }
+
+    [Fact]
+    public void CssTokenizer_PreprocessesCarriageReturnsAndNulls()
+    {
+        var tokenizer = new CssTokenizer("one\r\ntwo\rthree\0four");
+
+        Assert.Equal("one", tokenizer.Consume().Value);
+        Assert.Equal(CssTokenType.Whitespace, tokenizer.Consume().Type);
+        Assert.Equal("two", tokenizer.Consume().Value);
+        Assert.Equal(CssTokenType.Whitespace, tokenizer.Consume().Type);
+        Assert.Equal("three\uFFFDfour", tokenizer.Consume().Value);
+        Assert.Equal(CssTokenType.EOF, tokenizer.Consume().Type);
+    }
+
+    [Fact]
     public void ParseStylesheet_EscapedIdentifierPreservesSelectorText()
     {
         const string selector = @".component\ name";

@@ -47,9 +47,27 @@ namespace FenBrowser.FenEngine.Rendering.Css
         private static string Preprocess(string input)
         {
             if (string.IsNullOrEmpty(input)) return "";
-            
+
+            int firstSpecialCharacter = 0;
+            while (firstSpecialCharacter < input.Length)
+            {
+                char c = input[firstSpecialCharacter];
+                if (c == '\r' || c == '\0')
+                {
+                    break;
+                }
+
+                firstSpecialCharacter++;
+            }
+
+            if (firstSpecialCharacter == input.Length)
+            {
+                return input;
+            }
+
             var sb = new StringBuilder(input.Length);
-            for (int i = 0; i < input.Length; i++)
+            sb.Append(input, 0, firstSpecialCharacter);
+            for (int i = firstSpecialCharacter; i < input.Length; i++)
             {
                 char c = input[i];
                 if (c == '\r')

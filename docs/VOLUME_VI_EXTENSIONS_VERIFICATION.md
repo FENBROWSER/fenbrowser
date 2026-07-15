@@ -3542,3 +3542,20 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~PaintGlyphAllocationTests|FullyQualifiedName~SkiaRendererGlyphConversionAllocationTests|FullyQualifiedName~PaintTreeTextColorTests|FullyQualifiedName~PaintTreePillRenderingContractTests|FullyQualifiedName~SkiaRendererTextDecorationTests" --logger "console;verbosity=minimal"`: pass (`13/13`).
 - `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five retained processes.
 - `dotnet-trace collect --profile gc-verbose --format Speedscope --output Results/performance/render_alloc_profile_after_lazy_diagnostic_glyphs_20260715.nettrace -- FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` omits the targeted shaping/materialization path.
+
+## 6.134 CSS Tokenizer Preprocessing Fast-Path Verification (2026-07-15)
+
+- `CssSyntaxParserAllocationTests.CssTokenizer_OrdinaryInputHasBoundedPreprocessAllocations` measures 10,000 warmed production tokenizer constructions over one 256-character ordinary input. Returning the immutable input when no preprocessing character exists reduces allocation exactly from `11,520,000 B` to `320,000 B` (`-11,200,000 B`, `-97.22%`) in three fresh Release processes and passes the tightened `350,000 B` ceiling.
+- `CssTokenizer_PreprocessesCarriageReturnsAndNulls` protects CRLF-to-LF, lone-CR-to-LF, and null-to-replacement-character behavior through the token stream. The included parser/selector/pseudo/recascade slice passes `22/22`.
+- Reports `063050`, `063052`, `063054`, `063057`, and `063059` pass every failure gate against reports `062119`, `062121`, `062123`, `062124`, and `062126`. CSS/style allocation medians fall in all four fixtures: `25,696 B` heavy, `432 B` steady state, `21,768 B` dense text, and `1,800 B` wrapped text. Managed allocation improves or is effectively flat.
+- Timing medians are mixed, so no page-latency claim is made. The exact allocation probe supplies the causal evidence. The final `gc-verbose` trace omits `CssTokenizer.Preprocess` from the top 75; the surviving `StringBuilder.ToString` sample belongs to benchmark-page construction.
+- Test262 is not applicable. WPT is not rerun because the focused tests exercise both the unchanged normalization path and the new immutable ordinary-input path without changing CSS grammar or downstream semantics.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName=FenBrowser.Tests.Performance.CssSyntaxParserAllocationTests.CssTokenizer_OrdinaryInputHasBoundedPreprocessAllocations" --logger "console;verbosity=detailed"`: pass in three fresh processes at exactly `320,000 B` each.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CssSyntaxParserAllocationTests|FullyQualifiedName~SelectorListSplitAllocationTests|FullyQualifiedName~PseudoSelectorCanonicalizationTests|FullyQualifiedName~DynamicClassRecascadeTests" --logger "console;verbosity=minimal"`: pass (`22/22`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --nologo --verbosity quiet`: pass (`0` warnings, `0` errors).
+- `FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.exe render-perf`: every failure gate passes in all five retained processes.
+- `dotnet-trace collect --profile gc-verbose --output Results/performance/render_alloc_profile_after_css_preprocess_fast_path_20260715.nettrace -- dotnet FenBrowser.Tooling/bin/Release/net10.0/FenBrowser.Tooling.dll render-perf`: capture succeeds; `dotnet-trace report ... topN -n 75` omits `CssTokenizer.Preprocess`.
