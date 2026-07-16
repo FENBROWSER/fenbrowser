@@ -1439,3 +1439,13 @@ Verification:
 Verification:
 
 - Before the fix, `AggregateResponseBodyOverLimit_IsRejected` accepted two five-byte chunks under an eight-byte test limit and threw no exception. The fixed network coordinator class passes `6/6`; the adjacent network/renderer process slice passes `52/52`, both with zero failures or skips.
+
+### 6.69 Malformed Network-Response Body Failure (2026-07-16)
+
+- A malformed base64 body chunk was previously logged and discarded. If that envelope also marked the body complete, the broker returned an HTTP success with an empty or partial body.
+- The decode catch point now completes the pending body with `HttpRequestException` and returns before completion processing. Malformed child wire data can no longer become a successful browser response.
+- The IPC schema, public coordinator API, network fallback policy, and valid body assembly are unchanged.
+
+Verification:
+
+- Red result: `MalformedResponseBodyBase64_IsRejected` failed because no exception was thrown. The fixed network coordinator class passes `7/7`; the adjacent network/renderer process slice passes `53/53`, both with zero failures or skips.

@@ -328,6 +328,8 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     catch (FormatException ex)
                     {
                         EngineLogBridge.Warn($"[NetworkCoordinator] Body base64 decode failed: {ex.Message}", LogCategory.Network);
+                        pending.SetBodyFailed("Response body was malformed.");
+                        return;
                     }
                 }
 

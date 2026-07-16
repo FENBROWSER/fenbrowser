@@ -195,6 +195,36 @@ public sealed class NetworkProcessCoordinatorTests
         await childTask;
     }
 
+    [Fact]
+    public async Task MalformedResponseBodyBase64_IsRejected()
+    {
+        var pipeName = $"fen_network_test_{Guid.NewGuid():N}";
+        var authToken = Guid.NewGuid().ToString("N");
+        using var session = new NetworkProcessSession(pipeName, authToken);
+        using var coordinator = new NetworkProcessCoordinator();
+
+        session.Start(childProcess: null);
+        var childTask = RunDeterministicChildAsync(
+            pipeName,
+            authToken,
+            malformedBodyBase64: "not-valid-base64!");
+        Assert.True(await session.WaitForReadyAsync(TimeSpan.FromSeconds(5)));
+        coordinator.AttachSession(session);
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            "https://fixture.test/network/parity");
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            coordinator.SendAsync(
+                request,
+                initiatorOrigin: "https://fixture.test",
+                cancellation.Token));
+
+        Assert.Contains("malformed", exception.Message, StringComparison.OrdinalIgnoreCase);
+        await childTask;
+    }
+
     private static async Task<NetworkFetchRequestPayload> RunDeterministicChildAsync(
         string pipeName,
         string expectedAuthToken,
@@ -202,7 +232,8 @@ public sealed class NetworkProcessCoordinatorTests
         string? responseCapabilityToken = null,
         string? payloadRequestId = null,
         string? failureErrorCode = null,
-        IReadOnlyList<string>? responseBodyChunks = null)
+        IReadOnlyList<string>? responseBodyChunks = null,
+        string? malformedBodyBase64 = null)
     {
         using var pipe = new NamedPipeClientStream(
             ".",
@@ -283,7 +314,7 @@ public sealed class NetworkProcessCoordinatorTests
                     RequestId = payloadRequestId ?? fetch.RequestId,
                     IsComplete = chunkIndex == bodyChunks.Count - 1,
                     ChunkIndex = chunkIndex,
-                    BodyChunkBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(bodyChunk)),
+                    BodyChunkBase64 = malformedBodyBase64 ?? Convert.ToBase64String(Encoding.UTF8.GetBytes(bodyChunk)),
                     BytesTotal = bodyChunks.Sum(static chunk => Encoding.UTF8.GetByteCount(chunk))
                 })
             });

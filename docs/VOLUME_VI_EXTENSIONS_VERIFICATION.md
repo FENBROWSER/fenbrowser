@@ -3930,7 +3930,7 @@ Verification:
 
 ## 6.163 Required Browser-Integration Discovery Guard (2026-07-16)
 
-- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 28 selected timer/event/Promise/microtask provenance, callback invalidation, post-load lifecycle attribution, logger-drain/export, terminal-lifecycle agreement, host-conversion/receiver, form, renderer/network IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
+- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 29 selected timer/event/Promise/microtask provenance, callback invalidation, post-load lifecycle attribution, logger-drain/export, terminal-lifecycle agreement, host-conversion/receiver, form, renderer/network IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
 - The first combined run exposed a real parallel-isolation defect: the FenJS timer/rAF trace failed during native browser-constructor bootstrap while other browser tests ran concurrently. The global `EngineLog` collection is now explicitly non-parallel, matching its process-wide logger configuration and FenJS diagnostic usage.
 - This guard does not treat the skipped real-process brokered acceptance as passing. The AppContainer development-runtime provisioning decision remains the separately documented `BLOCK-PROC-002` boundary.
 
@@ -4071,3 +4071,10 @@ Verification:
 - The regression uses a small internal test limit; the public coordinator retains its existing 64 MiB production limit. The active discovery guard protects this sixth network-process contract as selected browser-integration test 28.
 - Red result: fail (`0/1`) because no exception was thrown. Fixed network-process class: pass (`6/6`, zero failed/skipped).
 - `NetworkProcessCoordinatorTests|RequiredBrowserIntegrationDiscoveryTests|RendererIpcMetadataTests|RendererIsolationPoliciesTests|RendererChildLoopIoTests`: pass (`52/52`, zero failed/skipped).
+
+## 6.175 Malformed Network-Response Body Regression (2026-07-16)
+
+- `MalformedResponseBodyBase64_IsRejected` sends an authenticated response head followed by an invalid base64 completion chunk. It requires an explicit `HttpRequestException` instead of the prior successful empty-body response.
+- Red result: fail (`0/1`) because no exception was thrown. Fixed network-process class: pass (`7/7`, zero failed/skipped).
+- The active discovery guard protects this seventh network-process contract as selected browser-integration test 29.
+- `NetworkProcessCoordinatorTests|RequiredBrowserIntegrationDiscoveryTests|RendererIpcMetadataTests|RendererIsolationPoliciesTests|RendererChildLoopIoTests`: pass (`53/53`, zero failed/skipped).
