@@ -119,7 +119,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
     public sealed class NetworkProcessCoordinator : IDisposable
     {
         private readonly ConcurrentDictionary<string, PendingNetworkRequest> _pending = new();
-        private readonly ConcurrentDictionary<string, string> _requestIdToCapToken = new();
         private NetworkProcessSession _session;
         private readonly HttpClient _fallbackClient;
         private volatile bool _disposed;
@@ -219,8 +218,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             });
 
             // Mint capability token and send
-            var capToken = session.SendFetch(fetchPayload, initiatorOrigin ?? "");
-            _requestIdToCapToken[requestId] = capToken.Value;
+            var capToken = session.SendFetch(fetchPayload, initiatorOrigin ?? "", requestId);
 
             try
             {
@@ -230,10 +228,10 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     .ConfigureAwait(false);
 
                 // Validate capability token on head
-                if (!string.IsNullOrEmpty(head.RequestId) &&
-                    _requestIdToCapToken.TryGetValue(head.RequestId, out var expectedToken))
+                if (!string.IsNullOrEmpty(head.RequestId))
                 {
-                    if (!session.ValidateCapabilityToken(expectedToken, head.Url ?? ""))
+                    if (!TryGetHttpOrigin(head.Url, out var responseOrigin) ||
+                        !capToken.IsValidFor(responseOrigin))
                     {
                         EngineLogBridge.Warn(
                             $"[NetworkCoordinator] Capability token validation failed for request {requestId}.",
@@ -259,11 +257,24 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             finally
             {
                 _pending.TryRemove(requestId, out _);
-                _requestIdToCapToken.TryRemove(requestId, out _);
+                session.ReleaseCapabilityToken(requestId);
             }
         }
 
         // ── Session event handlers ────────────────────────────────────────────
+
+        private static bool TryGetHttpOrigin(string url, out string origin)
+        {
+            origin = string.Empty;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                return false;
+            }
+
+            origin = uri.GetLeftPart(UriPartial.Authority);
+            return !string.IsNullOrWhiteSpace(origin);
+        }
 
         private void OnResponseHeadReceived(NetworkFetchResponseHeadPayload head)
         {
@@ -331,7 +342,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 kv.Value.SetCancelled();
             }
             _pending.Clear();
-            _requestIdToCapToken.Clear();
             DetachSession();
         }
 

@@ -1414,3 +1414,18 @@ Verification:
 - `HostExecutablePathResolverTests`, `RendererChildEnvironmentTests`, and `WindowsAppContainerEnvironmentTests` pass `3/3`.
 - The focused process slice passes `43`, fails `0`, and skips the one blocked real-process acceptance test; all four new tests appear in `--list-tests`.
 - `FenBrowser.Host` Release builds with `496` warnings and `0` errors.
+
+### 6.67 Network-Process Request Identity And Origin Validation (2026-07-16)
+
+- The coordinator previously registered pending response state under one generated request ID while `NetworkProcessSession.SendFetch` generated a second wire ID. A valid child response therefore could not resolve the waiting broker request and timed out.
+- The coordinator now supplies its request ID through an internal session overload. The existing public session method and IPC envelope fields are unchanged.
+- Capability validation now compares the locked initiator origin with the HTTP(S) origin derived from the returned final URL, rather than incorrectly comparing it with the entire URL. Malformed and non-HTTP(S) response URLs fail closed.
+- The session binds each request ID to its minted capability token, rejects response envelopes whose token does not match, and requires every response/failure payload request ID to equal its envelope request ID before dispatch. Request-token state is released on completion, cancellation, failure, or disposal.
+- Network-child `FetchFailed` envelopes now echo the request capability token like response head/body envelopes, so legitimate failures remain attributable and fail immediately instead of degrading into a timeout.
+- This change does not select or alter the in-process fallback policy, make the coordinator the active resource-loading path, change default process mode, or weaken child authentication. `BLOCK-NET-001` remains unresolved.
+
+Verification:
+
+- `NetworkProcessCoordinatorTests` uses a deterministic named-pipe child and exercises the real hello/ready/fetch/head/body/failure paths. The success contract passes three additional clean repetitions; security companions cover cross-origin URLs, invalid tokens, and payload/envelope ID mismatches; a compatibility control covers valid child failure propagation.
+- Before the fix the success contract first timed out with `TaskCanceledException`; after request-ID unification it reached and exposed the second origin-validation failure. The invalid-token reduction then showed no exception, and the mismatched-payload reduction timed out rather than rejecting the response. The completed focused class passes `5/5`.
+- The adjacent active renderer/network process slice passes `51/51` with zero failures or skips; the guarded browser/process matrix passes `81/81`.

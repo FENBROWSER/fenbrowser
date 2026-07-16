@@ -261,6 +261,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         private readonly TaskCompletionSource<bool> _readyTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly ConcurrentDictionary<string, TaskCompletionSource<NetworkFetchResponseHeadPayload>> _pending = new();
         private readonly ConcurrentDictionary<string, NetworkCapabilityToken> _capTokens = new();
+        private readonly ConcurrentDictionary<string, string> _requestCapabilityTokens = new();
         private readonly object _writeLock = new();
         private StreamReader _reader;
         private StreamWriter _writer;
@@ -377,6 +378,14 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                         EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] Rejected unexpected IPC message type: {messageType}.");
                         continue;
                     }
+                    if (RequiresRequestCapability(messageType) && !HasExpectedRequestCapability(env))
+                    {
+                        RejectResponse(
+                            env.RequestId,
+                            "invalid-capability-token",
+                            "Network process response capability token did not match the request.");
+                        continue;
+                    }
                     DispatchInbound(env);
                 }
             }
@@ -388,6 +397,19 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             }
         }
 
+        private static bool RequiresRequestCapability(NetworkIpcMessageType messageType) =>
+            messageType == NetworkIpcMessageType.FetchResponseHead ||
+            messageType == NetworkIpcMessageType.FetchResponseBody ||
+            messageType == NetworkIpcMessageType.FetchFailed;
+
+        private bool HasExpectedRequestCapability(NetworkIpcEnvelope envelope)
+        {
+            return !string.IsNullOrWhiteSpace(envelope?.RequestId) &&
+                   !string.IsNullOrWhiteSpace(envelope.CapabilityToken) &&
+                   _requestCapabilityTokens.TryGetValue(envelope.RequestId, out var expectedToken) &&
+                   string.Equals(expectedToken, envelope.CapabilityToken, StringComparison.Ordinal);
+        }
+
         private void DispatchInbound(NetworkIpcEnvelope env)
         {
             if (!NetworkIpc.TryValidateInboundEnvelope(env, out var msgType, out _)) return;
@@ -396,17 +418,37 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             {
                 case NetworkIpcMessageType.FetchResponseHead:
                     var head = NetworkIpc.DeserializePayload<NetworkFetchResponseHeadPayload>(env);
-                    if (head != null) ResponseHeadReceived?.Invoke(head);
+                    if (head == null || !PayloadRequestIdMatchesEnvelope(env, head.RequestId))
+                    {
+                        RejectResponse(env.RequestId, "response-requestid-mismatch", "Response-head request ID did not match its envelope.");
+                        break;
+                    }
+                    ResponseHeadReceived?.Invoke(head);
                     break;
 
                 case NetworkIpcMessageType.FetchResponseBody:
                     var body = NetworkIpc.DeserializePayload<NetworkFetchResponseBodyPayload>(env);
-                    if (body != null) ResponseBodyReceived?.Invoke(body);
+                    if (body == null || !PayloadRequestIdMatchesEnvelope(env, body.RequestId))
+                    {
+                        RejectResponse(env.RequestId, "response-requestid-mismatch", "Response-body request ID did not match its envelope.");
+                        break;
+                    }
+                    ResponseBodyReceived?.Invoke(body);
+                    if (body.IsComplete)
+                    {
+                        ReleaseCapabilityToken(env.RequestId);
+                    }
                     break;
 
                 case NetworkIpcMessageType.FetchFailed:
                     var fail = NetworkIpc.DeserializePayload<NetworkFetchFailedPayload>(env);
-                    if (fail != null) RequestFailed?.Invoke(fail);
+                    if (fail == null || !PayloadRequestIdMatchesEnvelope(env, fail.RequestId))
+                    {
+                        RejectResponse(env.RequestId, "response-requestid-mismatch", "Failure-payload request ID did not match its envelope.");
+                        break;
+                    }
+                    RequestFailed?.Invoke(fail);
+                    ReleaseCapabilityToken(env.RequestId);
                     break;
 
                 case NetworkIpcMessageType.LogBatch:
@@ -428,20 +470,49 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             }
         }
 
+        private static bool PayloadRequestIdMatchesEnvelope(NetworkIpcEnvelope envelope, string payloadRequestId) =>
+            !string.IsNullOrWhiteSpace(payloadRequestId) &&
+            string.Equals(envelope.RequestId, payloadRequestId, StringComparison.Ordinal);
+
+        private void RejectResponse(string requestId, string errorCode, string errorMessage)
+        {
+            EngineLog.Write(
+                LogSubsystem.ProcessIsolation,
+                LogSeverity.Warn,
+                $"[NetworkProcess] Rejected response for request {requestId}: {errorCode}.");
+            RequestFailed?.Invoke(new NetworkFetchFailedPayload
+            {
+                RequestId = requestId,
+                ErrorCode = errorCode,
+                ErrorMessage = errorMessage
+            });
+            ReleaseCapabilityToken(requestId);
+        }
+
         /// <summary>
         /// Issue a fetch request to the Network process.
         /// Returns the capability token so the Broker can validate responses.
         /// </summary>
-        public NetworkCapabilityToken SendFetch(NetworkFetchRequestPayload request, string initiatorOrigin)
+        public NetworkCapabilityToken SendFetch(NetworkFetchRequestPayload request, string initiatorOrigin) =>
+            SendFetch(request, initiatorOrigin, Guid.NewGuid().ToString("N"));
+
+        internal NetworkCapabilityToken SendFetch(
+            NetworkFetchRequestPayload request,
+            string initiatorOrigin,
+            string requestId)
         {
+            if (!Guid.TryParse(requestId, out _))
+            {
+                throw new ArgumentException("Network request ID must be a GUID.", nameof(requestId));
+            }
+
             var cap = new NetworkCapabilityToken(
                 originLock: initiatorOrigin ?? "",
                 allowCredentials: request.Credentials != "omit",
                 ttl: TimeSpan.FromMinutes(5));
 
             _capTokens[cap.Value] = cap;
-
-            var requestId = Guid.NewGuid().ToString("N");
+            _requestCapabilityTokens[requestId] = cap.Value;
 
             Send(new NetworkIpcEnvelope
             {
@@ -461,6 +532,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 Type = NetworkIpcMessageType.CancelRequest.ToString(),
                 RequestId = requestId,
             });
+            ReleaseCapabilityToken(requestId);
         }
 
         public void SendShutdown()
@@ -472,6 +544,15 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         {
             if (!_capTokens.TryGetValue(tokenValue, out var token)) return false;
             return token.IsValidFor(requestOrigin);
+        }
+
+        internal void ReleaseCapabilityToken(string requestId)
+        {
+            if (!string.IsNullOrWhiteSpace(requestId) &&
+                _requestCapabilityTokens.TryRemove(requestId, out var tokenValue))
+            {
+                _capTokens.TryRemove(tokenValue, out _);
+            }
         }
 
         private void Send(NetworkIpcEnvelope env)
@@ -501,6 +582,8 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             TryDispose(_reader, "reader");
             TryDispose(_pipe, "pipe");
             TryDispose(_cts, "cts");
+            _requestCapabilityTokens.Clear();
+            _capTokens.Clear();
         }
 
         private static void TryDispose(IDisposable disposable, string resourceName)

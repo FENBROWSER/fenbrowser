@@ -977,7 +977,7 @@ namespace FenBrowser.Host
                         var payload = NetworkIpc.DeserializePayload<NetworkFetchRequestPayload>(envelope);
                         if (payload == null || string.IsNullOrWhiteSpace(payload.Url))
                         {
-                            SendFetchFailure(writer, envelope.RequestId, "invalid_request", "Missing fetch URL.");
+                            SendFetchFailure(writer, envelope.RequestId, envelope.CapabilityToken, "invalid_request", "Missing fetch URL.");
                             continue;
                         }
 
@@ -1068,11 +1068,11 @@ namespace FenBrowser.Host
                             }
                             catch (OperationCanceledException)
                             {
-                                SendFetchFailure(writer, envelope.RequestId, "cancelled", "Request cancelled.");
+                                SendFetchFailure(writer, envelope.RequestId, envelope.CapabilityToken, "cancelled", "Request cancelled.");
                             }
                             catch (Exception ex)
                             {
-                                SendFetchFailure(writer, envelope.RequestId, "fetch_failed", ex.Message);
+                                SendFetchFailure(writer, envelope.RequestId, envelope.CapabilityToken, "fetch_failed", ex.Message);
                             }
                             finally
                             {
@@ -1568,12 +1568,18 @@ namespace FenBrowser.Host
             }
         }
 
-        private static void SendFetchFailure(StreamWriter writer, string requestId, string errorCode, string errorMessage)
+        private static void SendFetchFailure(
+            StreamWriter writer,
+            string requestId,
+            string capabilityToken,
+            string errorCode,
+            string errorMessage)
         {
             SendNetworkEnvelope(writer, new NetworkIpcEnvelope
             {
                 Type = NetworkIpcMessageType.FetchFailed.ToString(),
                 RequestId = requestId,
+                CapabilityToken = capabilityToken,
                 Payload = NetworkIpc.SerializePayload(new NetworkFetchFailedPayload
                 {
                     RequestId = requestId,

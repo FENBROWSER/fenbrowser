@@ -27,6 +27,11 @@ public sealed class RequiredBrowserIntegrationDiscoveryTests
         ("FenBrowser.Tests.Scripting.BrowserFormInteractionAcceptanceTests", "WebDriverClickTypeAndPreventedSubmit_UsesOrdinaryInputPipeline"),
         ("FenBrowser.Tests.Scripting.BrowserFormInteractionAcceptanceTests", "WebDriverSubmitWithoutCancellation_NavigatesWithSuccessfulControls"),
         ("FenBrowser.Tests.Core.RendererIpcMetadataTests", "BrokerAllowlist_AcceptsMetadataChanged"),
+        ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "ChildResponse_RetainsRequestIdentityAndHttpSemantics"),
+        ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "CrossOriginResponse_IsRejectedByCapabilityLock"),
+        ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "InvalidResponseCapabilityToken_IsRejected"),
+        ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "MismatchedPayloadRequestId_IsRejected"),
+        ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "MatchingCapabilityFetchFailure_IsPropagated"),
         ("FenBrowser.Tests.Core.RendererIsolationPoliciesTests", "RendererTabIsolationRegistry_UnexpectedExit_SchedulesRestartWithReplay"),
         ("FenBrowser.Tests.Architecture.RendererChildLoopIoTests", "ReadLineWithTimeoutAsync_ReusesPendingRead_AcrossTimeoutPolls")
     ];
