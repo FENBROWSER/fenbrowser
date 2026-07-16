@@ -22,6 +22,7 @@ public sealed class RequiredBrowserIntegrationDiscoveryTests
         ("FenBrowser.Tests.Tooling.DebugSiteArtifactContractTests", "WriteBundle_ContinuesAfterExceptionsArtifactExportFailure"),
         ("FenBrowser.Tests.Scripting.HostReceiverValidationTests", "ElementGetAttribute_UsesCallReceiverAndRejectsNonElementReceiver"),
         ("FenBrowser.Tests.Scripting.BrowserLifecycleDetailTests", "TimedOutEventLoopSample_IsExplicitlyHistorical"),
+        ("FenBrowser.Tests.Scripting.BrowserLifecycleDetailTests", "CompletedDocument_HasOneConsistentTerminalLifecycleState"),
         ("FenBrowser.Tests.Scripting.BrowserFormInteractionAcceptanceTests", "WebDriverClickTypeAndPreventedSubmit_UsesOrdinaryInputPipeline"),
         ("FenBrowser.Tests.Scripting.BrowserFormInteractionAcceptanceTests", "WebDriverSubmitWithoutCancellation_NavigatesWithSuccessfulControls"),
         ("FenBrowser.Tests.Core.RendererIpcMetadataTests", "BrokerAllowlist_AcceptsMetadataChanged"),

@@ -3930,7 +3930,7 @@ Verification:
 
 ## 6.163 Required Browser-Integration Discovery Guard (2026-07-16)
 
-- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 20 selected timer/event/Promise/microtask provenance, callback invalidation, logger-drain/export, lifecycle, host-conversion/receiver, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
+- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 21 selected timer/event/Promise/microtask provenance, callback invalidation, logger-drain/export, terminal-lifecycle agreement, host-conversion/receiver, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
 - The first combined run exposed a real parallel-isolation defect: the FenJS timer/rAF trace failed during native browser-constructor bootstrap while other browser tests ran concurrently. The global `EngineLog` collection is now explicitly non-parallel, matching its process-wide logger configuration and FenJS diagnostic usage.
 - This guard does not treat the skipped real-process brokered acceptance as passing. The AppContainer development-runtime provisioning decision remains the separately documented `BLOCK-PROC-002` boundary.
 
@@ -4025,3 +4025,15 @@ Verification:
 - Focused stale-handle methods plus the guard: pass (`3/3`, zero failed/skipped).
 - `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~RequiredHostBridgeDiscoveryTests|FullyQualifiedName~HostObjectIntegrationTests.StaleGenerationThrowsTypeError|FullyQualifiedName~HostObjectTableTests.FreeMarksSlotInvalidAndRecyclesWithNewGeneration" --list-tests --logger "console;verbosity=minimal"`: lists all three methods.
 - Guard plus the relevant host-table, stale-generation, document-epoch, navigation-epoch, and cross-realm safety slice: pass (`12/12`, zero failed/skipped).
+
+## 6.171 Completed-Document Lifecycle Agreement Coverage (2026-07-16)
+
+- `CompletedDocument_HasOneConsistentTerminalLifecycleState` loads a deterministic no-network, no-script document and requires the JavaScript `document.readyState`, event-loop snapshot status/state, DOMContentLoaded/load flags, terminal timestamp, and recorded lifecycle transition order to agree.
+- The transition records must identify the DOMContentLoaded state as `interactive` and the load state as `complete`, with DOMContentLoaded preceding load. This is regression coverage for the existing lifecycle model; it does not change runtime lifecycle behavior.
+- The active discovery guard protects this contract as the twenty-first selected browser-integration test.
+
+Verification:
+
+- `BrowserLifecycleDetailTests|RequiredBrowserIntegrationDiscoveryTests`: pass (`3/3`, zero failed/skipped).
+- Discovery lists both lifecycle-detail tests and the required browser-integration guard.
+- The guarded browser/process/export/receiver/lifecycle slice passes `75/75` with zero failures or skips.
