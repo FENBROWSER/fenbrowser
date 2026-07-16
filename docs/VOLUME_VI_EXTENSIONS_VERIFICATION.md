@@ -3930,7 +3930,7 @@ Verification:
 
 ## 6.163 Required Browser-Integration Discovery Guard (2026-07-16)
 
-- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 31 selected timer/event/Promise/microtask provenance, callback invalidation, post-load lifecycle attribution, logger-drain/export, terminal-lifecycle agreement, host-conversion/receiver, form, renderer/network IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
+- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 32 selected timer/event/Promise/microtask provenance, callback invalidation, post-load lifecycle attribution, logger-drain/export, terminal-lifecycle agreement, host-conversion/receiver, form, renderer/network IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
 - The first combined run exposed a real parallel-isolation defect: the FenJS timer/rAF trace failed during native browser-constructor bootstrap while other browser tests ran concurrently. The global `EngineLog` collection is now explicitly non-parallel, matching its process-wide logger configuration and FenJS diagnostic usage.
 - This guard does not treat the skipped real-process brokered acceptance as passing. The AppContainer development-runtime provisioning decision remains the separately documented `BLOCK-PROC-002` boundary.
 
@@ -4092,3 +4092,10 @@ Verification:
 - Red result: fail (`0/1`) because the child-facing read timed out. Fixed focused result: pass (`1/1`) in 84 ms; the network-process class passes `9/9` with zero failures or skips.
 - The active discovery guard protects this ninth network-process contract as selected browser-integration test 31.
 - `NetworkProcessCoordinatorTests|RequiredBrowserIntegrationDiscoveryTests|RendererIpcMetadataTests|RendererIsolationPoliciesTests|RendererChildLoopIoTests`: pass (`55/55`, zero failed/skipped).
+
+## 6.178 Network-Response Chunk-Sequence Regression (2026-07-16)
+
+- `OutOfOrderResponseChunk_IsRejected` sends two authenticated body chunks with indices `1, 0` and requires an explicit sequence failure rather than successful concatenation.
+- Red result: fail (`0/1`) because no exception was thrown. Fixed network-process class: pass (`10/10`, zero failed/skipped).
+- The active discovery guard protects this tenth network-process contract as selected browser-integration test 32.
+- `NetworkProcessCoordinatorTests|RequiredBrowserIntegrationDiscoveryTests|RendererIpcMetadataTests|RendererIsolationPoliciesTests|RendererChildLoopIoTests`: pass (`56/56`, zero failed/skipped).

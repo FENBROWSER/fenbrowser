@@ -288,6 +288,37 @@ public sealed class NetworkProcessCoordinatorTests
         await childTask;
     }
 
+    [Fact]
+    public async Task OutOfOrderResponseChunk_IsRejected()
+    {
+        var pipeName = $"fen_network_test_{Guid.NewGuid():N}";
+        var authToken = Guid.NewGuid().ToString("N");
+        using var session = new NetworkProcessSession(pipeName, authToken);
+        using var coordinator = new NetworkProcessCoordinator();
+
+        session.Start(childProcess: null);
+        var childTask = RunDeterministicChildAsync(
+            pipeName,
+            authToken,
+            responseBodyChunks: ["first", "second"],
+            responseChunkIndexes: [1, 0]);
+        Assert.True(await session.WaitForReadyAsync(TimeSpan.FromSeconds(5)));
+        coordinator.AttachSession(session);
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            "https://fixture.test/network/parity");
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            coordinator.SendAsync(
+                request,
+                initiatorOrigin: "https://fixture.test",
+                cancellation.Token));
+
+        Assert.Contains("sequence", exception.Message, StringComparison.OrdinalIgnoreCase);
+        await childTask;
+    }
+
     private static async Task<NetworkFetchRequestPayload> RunDeterministicChildAsync(
         string pipeName,
         string expectedAuthToken,
@@ -299,7 +330,8 @@ public sealed class NetworkProcessCoordinatorTests
         string? malformedBodyBase64 = null,
         bool disconnectAfterFetch = false,
         TaskCompletionSource<bool>? fetchReceived = null,
-        bool waitForCancellation = false)
+        bool waitForCancellation = false,
+        IReadOnlyList<int>? responseChunkIndexes = null)
     {
         using var pipe = new NamedPipeClientStream(
             ".",
@@ -393,13 +425,27 @@ public sealed class NetworkProcessCoordinatorTests
                 Payload = NetworkIpc.SerializePayload(new NetworkFetchResponseBodyPayload
                 {
                     RequestId = payloadRequestId ?? fetch.RequestId,
-                    IsComplete = chunkIndex == bodyChunks.Count - 1,
-                    ChunkIndex = chunkIndex,
+                    IsComplete = false,
+                    ChunkIndex = responseChunkIndexes?[chunkIndex] ?? chunkIndex,
                     BodyChunkBase64 = malformedBodyBase64 ?? Convert.ToBase64String(Encoding.UTF8.GetBytes(bodyChunk)),
                     BytesTotal = bodyChunks.Sum(static chunk => Encoding.UTF8.GetByteCount(chunk))
                 })
             });
         }
+        await WriteEnvelopeAsync(writer, new NetworkIpcEnvelope
+        {
+            Type = NetworkIpcMessageType.FetchResponseBody.ToString(),
+            RequestId = fetch.RequestId,
+            CapabilityToken = responseCapabilityToken ?? fetch.CapabilityToken,
+            Payload = NetworkIpc.SerializePayload(new NetworkFetchResponseBodyPayload
+            {
+                RequestId = payloadRequestId ?? fetch.RequestId,
+                IsComplete = true,
+                ChunkIndex = bodyChunks.Count,
+                BodyChunkBase64 = string.Empty,
+                BytesTotal = bodyChunks.Sum(static chunk => Encoding.UTF8.GetByteCount(chunk))
+            })
+        });
 
         return payload;
     }

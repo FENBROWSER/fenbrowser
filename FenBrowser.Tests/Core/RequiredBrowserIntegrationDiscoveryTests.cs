@@ -36,6 +36,7 @@ public sealed class RequiredBrowserIntegrationDiscoveryTests
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "MalformedResponseBodyBase64_IsRejected"),
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "ChildDisconnectDuringFetch_FailsAsNetworkError"),
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "CallerCancellation_SendsCancelForWireRequestId"),
+        ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "OutOfOrderResponseChunk_IsRejected"),
         ("FenBrowser.Tests.Core.RendererIsolationPoliciesTests", "RendererTabIsolationRegistry_UnexpectedExit_SchedulesRestartWithReplay"),
         ("FenBrowser.Tests.Architecture.RendererChildLoopIoTests", "ReadLineWithTimeoutAsync_ReusesPendingRead_AcrossTimeoutPolls")
     ];

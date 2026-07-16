@@ -1469,3 +1469,13 @@ Verification:
 Verification:
 
 - Red result: `CallerCancellation_SendsCancelForWireRequestId` timed out waiting for the child envelope. The fixed test passes in 84 ms; the network coordinator class passes `9/9`, and the adjacent network/renderer process slice passes `55/55`, all with zero failures or skips.
+
+### 6.72 Network-Response Chunk Sequence Validation (2026-07-16)
+
+- The broker previously ignored `NetworkFetchResponseBodyPayload.ChunkIndex` and appended authenticated chunks in arrival order. Duplicate or out-of-order child output could therefore become a successful but corrupted HTTP body.
+- Pending response accumulation now requires zero-based monotonically increasing chunk indices. Sequence validation and aggregate-size accounting occur under the same accumulator lock, and the first mismatch completes the body with `HttpRequestException`.
+- Valid body assembly, the IPC schema, default process mode, and network fallback policy are unchanged.
+
+Verification:
+
+- Red result: `OutOfOrderResponseChunk_IsRejected` accepted chunk indices `1, 0` and threw no exception. The fixed network coordinator class passes `10/10`; the adjacent network/renderer process slice passes `56/56`, both with zero failures or skips.

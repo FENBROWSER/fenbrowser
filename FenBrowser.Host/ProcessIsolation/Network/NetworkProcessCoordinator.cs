@@ -12,6 +12,13 @@ using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Host.ProcessIsolation.Network
 {
+    internal enum BodyChunkAppendResult
+    {
+        Accepted,
+        SequenceMismatch,
+        SizeExceeded
+    }
+
     // ── NetworkProcessCoordinator ─────────────────────────────────────────────
     // Broker-side coordinator that bridges ResourceManager's HttpClient calls
     // to the sandboxed Network child process over IPC.
@@ -48,6 +55,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         private readonly List<byte[]> _bodyChunks = new();
         private readonly SemaphoreSlim _bodyLock = new(1, 1);
         private long _bodyBytes;
+        private int _nextChunkIndex;
         private readonly TaskCompletionSource<bool> _bodyCompleteTcs =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -84,19 +92,31 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             SetBodyFailed(error);
         }
 
-        public async Task<bool> TryAppendBodyChunkAsync(byte[] chunk, int maxBodyBytes)
+        public async Task<BodyChunkAppendResult> TryAppendBodyChunkAsync(
+            byte[] chunk,
+            int chunkIndex,
+            int maxBodyBytes)
         {
             await _bodyLock.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (chunk.LongLength > maxBodyBytes - _bodyBytes)
+                if (chunkIndex != _nextChunkIndex)
                 {
-                    return false;
+                    return BodyChunkAppendResult.SequenceMismatch;
                 }
 
-                _bodyChunks.Add(chunk);
+                if (chunk.LongLength > maxBodyBytes - _bodyBytes)
+                {
+                    return BodyChunkAppendResult.SizeExceeded;
+                }
+
+                if (chunk.Length > 0)
+                {
+                    _bodyChunks.Add(chunk);
+                }
                 _bodyBytes += chunk.LongLength;
-                return true;
+                _nextChunkIndex++;
+                return BodyChunkAppendResult.Accepted;
             }
             finally { _bodyLock.Release(); }
         }
@@ -316,26 +336,39 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
             if (_pending.TryGetValue(body.RequestId, out var pending))
             {
-                if (!string.IsNullOrEmpty(body.BodyChunkBase64))
+                if (body.BodyChunkBase64 == null)
                 {
-                    try
+                    pending.SetBodyFailed("Response body was malformed.");
+                    return;
+                }
+
+                try
+                {
+                    var bytes = Convert.FromBase64String(body.BodyChunkBase64);
+                    var appendResult = pending
+                        .TryAppendBodyChunkAsync(bytes, body.ChunkIndex, _maxBodyBytes)
+                        .GetAwaiter()
+                        .GetResult();
+                    if (appendResult != BodyChunkAppendResult.Accepted)
                     {
-                        var bytes = Convert.FromBase64String(body.BodyChunkBase64);
-                        if (!pending.TryAppendBodyChunkAsync(bytes, _maxBodyBytes).GetAwaiter().GetResult())
-                        {
-                            EngineLogBridge.Warn(
-                                $"[NetworkCoordinator] Aggregate body exceeds max size for request {body.RequestId}; rejecting.",
-                                LogCategory.Network);
-                            pending.SetBodyFailed("Response body exceeded maximum allowed size.");
-                            return;
-                        }
-                    }
-                    catch (FormatException ex)
-                    {
-                        EngineLogBridge.Warn($"[NetworkCoordinator] Body base64 decode failed: {ex.Message}", LogCategory.Network);
-                        pending.SetBodyFailed("Response body was malformed.");
+                        var sequenceMismatch = appendResult == BodyChunkAppendResult.SequenceMismatch;
+                        EngineLogBridge.Warn(
+                            sequenceMismatch
+                                ? $"[NetworkCoordinator] Body chunk sequence mismatch for request {body.RequestId}; rejecting."
+                                : $"[NetworkCoordinator] Aggregate body exceeds max size for request {body.RequestId}; rejecting.",
+                            LogCategory.Network);
+                        pending.SetBodyFailed(
+                            sequenceMismatch
+                                ? "Response body chunk sequence was invalid."
+                                : "Response body exceeded maximum allowed size.");
                         return;
                     }
+                }
+                catch (FormatException ex)
+                {
+                    EngineLogBridge.Warn($"[NetworkCoordinator] Body base64 decode failed: {ex.Message}", LogCategory.Network);
+                    pending.SetBodyFailed("Response body was malformed.");
+                    return;
                 }
 
                 if (body.IsComplete)
