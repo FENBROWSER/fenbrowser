@@ -234,7 +234,7 @@ Performance impact: Offline tooling only.
 Compatibility impact: Enables evidence-based migration.
 Known risks: Reflection-based extraction could misrepresent dynamic registrations; prefer source/generator metadata.
 Blockers: None for inventory; activation remains `BLOCK-MEM-001`.
-Next action: Measure current wrapper identity, host-handle counts, and navigation teardown behavior to prepare evidence for `BLOCK-MEM-001`; do not activate `EventInit` or other generated bindings yet.
+Next action: `BLOCKED_NEEDS_HUMAN_DECISION` for generated-binding activation: select the authoritative wrapper/cross-heap ownership model using `docs/MEMORY_MODEL.md`. Independently continue with the brokered-renderer local proof; do not activate `EventInit` or other generated bindings.
 
 ## Task PERF-001
 

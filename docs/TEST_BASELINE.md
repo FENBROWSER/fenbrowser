@@ -17,6 +17,7 @@ Snapshot date: 2026-07-14; focused build/test and selected WPT evidence revalida
 | DOMTokenList value binding and ordered-set parsing | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~DomTokenListValueBindingTests" --logger "console;verbosity=minimal"` | 2 passed, 0 failed, 0 skipped; both listed by `--list-tests` | REGRESSION_PROTECTED |
 | FenJS checkbox click activation | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsCheckboxActivationTests" --logger "console;verbosity=minimal"` | 4 passed, 0 failed, 0 skipped; all 4 listed by `--list-tests` | REGRESSION_PROTECTED |
 | WebIDL manual-binding inventory | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~WebIdlInventoryRunnerTests|FullyQualifiedName~WebIdlBindingGeneratorTests" --logger "console;verbosity=minimal"` | 2 passed, 0 failed, 0 skipped; inventory fixture listed by `--list-tests` | TESTED |
+| FenJS host lifetime measurement | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsHostLifetimeMeasurementTests" --logger "console;verbosity=detailed"` | 2 passed, 0 failed, 0 skipped; both listed; six resets remain 6 live handles at baseline and 38 with 32 retained nodes | TESTED |
 | FenEngine, Release | `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v:minimal` | 0 warnings, 0 errors | TESTED |
 | Tooling, Release | `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v:minimal` | 0 warnings, 0 errors | TESTED |
 | Adjacent form/input event slice | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FormControlActivationTests|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_DeliversDoubleClickContextMenuAndPointerPayload|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_EventListenerCanAccessFreshClassList" --logger "console;verbosity=minimal"` | 5 passed, 0 failed, 0 skipped | TESTED |
@@ -46,6 +47,7 @@ The Release discovery check found:
 | `HostBrowserDriverNewWindowTests` | yes; 1 test |
 | `FenJsCheckboxActivationTests` | yes; 4 tests |
 | `WebIdlInventoryRunnerTests` | yes; 1 test |
+| `FenJsHostLifetimeMeasurementTests` | yes; 2 tests |
 | `EventLoopTraceTests` | no |
 | `RealSiteRenderDiagnostics` | no |
 | `RendererChildLoopIoTests` | no |

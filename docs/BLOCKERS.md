@@ -1,17 +1,18 @@
 # FenBrowser Human-Decision Blockers
 
-Snapshot date: 2026-07-14. These blockers do not prevent local diagnostic work. They do prevent agents from silently changing memory ownership, security fallbacks, public IPC, or production process policy.
+Snapshot date: 2026-07-16. These blockers do not prevent local diagnostic work. They do prevent agents from silently changing memory ownership, security fallbacks, public IPC, or production process policy.
 
 ## BLOCK-MEM-001
 
 - Area: JS/DOM memory ownership
 - Status: BLOCKED_NEEDS_HUMAN_DECISION
 - Decision required: Choose the authoritative wrapper/DOM ownership and cross-heap cycle strategy.
-- Current evidence: `HostObjectTable` holds strong host-object references; `_hostHandleCache` holds reference-keyed handles; listener/property caches use `ConditionalWeakTable`; automatic browser minor GC is disabled because transient roots are incomplete.
+- Current evidence: `HostObjectTable` holds strong host-object references; `_hostHandleCache` holds reference-keyed handles; listener/property caches use `ConditionalWeakTable`; automatic browser minor GC is disabled because transient roots are incomplete. At commit `6a208540`, same-session lookup reuses one handle, retaining 32 detached nodes grows live/cache/slot counts from 6 to 38, and six document/session resets return all counts to 6 with a stable two-listener window baseline.
 - Conflict: `HostObjectEntry` comments describe a weak-reference slot that the current table does not implement.
 - Choices that require an ADR: strong table with explicit document teardown; weak host rows plus JS-root retention; an ephemeron/bridge tracer; or another explicit model.
 - Work allowed before decision: diagnostics, leak measurement, teardown probes, and GC stress reductions.
 - Work blocked: broad generated binding rollout or a change to wrapper lifetime semantics.
+- Remaining decision evidence gap: within-document detached-node reclamation, DOM-to-JS cycle collection, callback/observer roots, cross-realm identity, and post-reset managed-graph collection are not proven by the session-reset measurement.
 
 ## BLOCK-PROC-001
 

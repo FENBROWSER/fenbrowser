@@ -1,6 +1,6 @@
 # FenBrowser Memory and Lifetime Model
 
-Status: BLOCKED_NEEDS_HUMAN_DECISION. Snapshot date: 2026-07-14.
+Status: BLOCKED_NEEDS_HUMAN_DECISION. Snapshot date: 2026-07-16.
 
 This block applies to broad WebIDL/DOM binding expansion. Existing localized fixes may continue when they preserve current ownership, but no new complex wrapper graph should be introduced until the questions below have an accepted decision record.
 
@@ -17,6 +17,19 @@ This block applies to broad WebIDL/DOM binding expansion. Existing localized fix
 | Shared-memory/frame handles | Process-session owners | Must be invalidated on exit/generation change | IMPLEMENTED |
 
 `HostObjectTable` explicitly says its first version uses strong references and depends on the host calling `Free`; weak GC-aware tracking is future work. FenEngine also preserves host-object identity with a strong cache. These facts prevent an honest claim that DOM/JS cycles and wrapper lifetime are fully specified.
+
+## Measured session behavior
+
+The compiled `FenJsHostLifetimeMeasurementTests` characterize the active session boundary without changing ownership:
+
+- repeated lookup of the same DOM body in one FenJS session returns the same host handle and does not grow the table;
+- a fresh bound document has 6 live table entries, 6 slots, and 6 strong identity-cache entries;
+- retaining 32 newly created detached elements in JavaScript raises all three counts to 38;
+- each of six document/session resets replaces the interpreter/table and returns all three counts to 6;
+- the two default window listeners remain stable across every reset; document listeners, pending rejection diagnostics, and WebSocket hosts return to zero;
+- the adjacent stale-generation/free tests pass `7/7`, and the weak-collection host-object test passes `1/1`.
+
+This proves current session reset bounds the active strong table and preserves same-session identity. It does not prove that an unreferenced detached node can be reclaimed within a live document, that DOM-to-JS cycles are collectible, that cross-realm identity is correct, or that old managed document graphs are collected after reset. No ownership choice follows automatically from these measurements.
 
 ## Required ownership decisions
 
@@ -47,11 +60,11 @@ This proposal is not an accepted architecture contract.
 
 ## Required verification
 
-- wrapper identity within a realm and across realms;
+- wrapper identity within a realm: TESTED for repeated lookup in one active session; across realms remains untested;
 - detached-node survival while JS holds a wrapper;
 - listener/observer/timer callback survival and release;
 - adopted-node and navigation replacement behavior;
-- repeated navigation/renderer teardown with stable live-handle counts;
+- repeated document/session teardown with stable live-handle counts: TESTED across six resets; renderer-process teardown remains untested;
 - stale handle rejection after slot reuse and process restart;
 - forced .NET and FenJS collection stress;
 - native-resource and shared-memory leak checks;

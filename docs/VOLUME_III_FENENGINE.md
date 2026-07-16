@@ -10254,3 +10254,16 @@ Verification:
 - Green/discovery: all four `FenJsCheckboxActivationTests` are listed and pass `4/4`; `BrowserFormInteractionAcceptanceTests` pass `8/8`; `FormControlActivationTests` pass `3/3`.
 - Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors.
 - The selected three-file WPT matrix now passes all three files with zero unexpected tests or subtests in two clean-tree repetitions at commit `76bfb83290b65dab532acc81560236523ab64995`.
+
+## 2.383 FenJS Host-Lifetime Session Measurement (2026-07-16)
+
+- An internal observation-only snapshot now reports the active FenJS session generation, document/navigation epochs, strong host-table live/slot counts, identity-cache and prototype counts, document/window listener counts, pending rejection diagnostics, and WebSocket host count. It does not free handles, weaken roots, force collection, or change wrapper identity.
+- Repeated lookup of the same DOM object within one session reuses its host handle. Across six document resets, the active strong table/cache baseline is stable at 6 entries, 32 JavaScript-retained detached elements raise it to 38, and the next session returns it to 6. The default two window listeners are also stable.
+- The result supports explicit session teardown as one observable boundary but does not choose an ownership architecture. Within-document detached-node collection, cross-heap cycles, cross-realm identity, and managed graph collection after navigation remain unresolved under `BLOCK-MEM-001`.
+
+Verification:
+
+- `FenJsHostLifetimeMeasurementTests`: pass (`2/2`) and both tests are discovered.
+- `HostObjectTableTests`: pass (`7/7`), including stale generation and freed-slot reuse rejection.
+- `FenJsWeakCollectionsHostObjectTests`: pass (`1/1`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v:minimal`: pass with 0 warnings and 0 errors.
