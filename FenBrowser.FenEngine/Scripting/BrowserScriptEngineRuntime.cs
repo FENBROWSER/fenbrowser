@@ -337,6 +337,19 @@ public sealed class BrowserDomEventInit
     public bool IsComposing { get; init; }
 }
 
+internal sealed record BrowserHostLifetimeSnapshot(
+    int RuntimeSessionGeneration,
+    long DocumentEpoch,
+    long NavigationEpoch,
+    int HostTableLiveCount,
+    int HostTableSlotCount,
+    int HostHandleIdentityCacheCount,
+    int HostPrototypeNameCount,
+    int DocumentEventListenerCount,
+    int WindowEventListenerCount,
+    int PendingPromiseRejectionCount,
+    int ActiveWebSocketCount);
+
 /// <summary>
 /// FenJS browser script engine — the sole JS runtime for the browser pipeline.
 /// All page scripts execute through FenJS; there is no legacy fallback.
@@ -410,6 +423,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     }
 
     internal int FenJsEvaluationCount => _fenJsEvaluationCount;
+
+    internal BrowserHostLifetimeSnapshot GetHostLifetimeSnapshotForTest()
+    {
+        lock (_fenJsLock)
+        {
+            var table = _interpreter?.HostObjectTable;
+            lock (_webSocketHosts)
+            {
+                return new BrowserHostLifetimeSnapshot(
+                    RuntimeSessionGeneration: _fenJsSessionGeneration,
+                    DocumentEpoch: _documentEpoch.Value,
+                    NavigationEpoch: _navigationEpoch.Value,
+                    HostTableLiveCount: table?.LiveCount ?? 0,
+                    HostTableSlotCount: table?.SlotCountForTest ?? 0,
+                    HostHandleIdentityCacheCount: _hostHandleCache.Count,
+                    HostPrototypeNameCount: _hostPrototypeNames.Count,
+                    DocumentEventListenerCount: _documentEventListeners.Count,
+                    WindowEventListenerCount: _windowEventListeners.Count,
+                    PendingPromiseRejectionCount: _pendingPromiseRejectionDiagnostics.Count,
+                    ActiveWebSocketCount: _webSocketHosts.Count);
+            }
+        }
+    }
 
     public BrowserScriptLoadingSnapshot GetScriptLoadingSnapshot()
     {
