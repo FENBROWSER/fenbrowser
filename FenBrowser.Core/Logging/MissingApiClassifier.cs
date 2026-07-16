@@ -32,7 +32,8 @@ public sealed record MissingApiClassificationInput(
     bool AssignmentBeforeRead = false,
     bool KnownWebIdlMember = false,
     string DefinedInterface = "",
-    bool? ReceiverMatchesDefinedInterface = null);
+    bool? ReceiverMatchesDefinedInterface = null,
+    bool AssignmentObserved = false);
 
 public sealed record MissingApiClassificationResult(
     MissingApiClassification Classification,
@@ -116,13 +117,15 @@ public static class MissingApiClassifier
                 true);
         }
 
-        if (input.AssignmentBeforeRead)
+        if (input.AssignmentBeforeRead || input.AssignmentObserved)
         {
             return new MissingApiClassificationResult(
                 MissingApiClassification.SiteExpando,
                 input.OperationKind,
                 false,
-                "assignment-before-read");
+                input.AssignmentBeforeRead
+                    ? "assignment-before-read"
+                    : "page-assignment-observed");
         }
 
         return new MissingApiClassificationResult(

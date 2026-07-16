@@ -119,6 +119,16 @@ public sealed class MissingApiTrackerTests
             "compareDocumentPosition",
             MissingApiOperationKind.Write,
             AssignmentBeforeRead: true));
+        var assignedStandardAfterRead = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Document",
+            "compareDocumentPosition",
+            MissingApiOperationKind.Write,
+            AssignmentObserved: true));
+        var assignedWrongReceiver = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Document",
+            "className",
+            MissingApiOperationKind.Write,
+            AssignmentObserved: true));
 
         Assert.Equal("UNCLASSIFIED", MissingApiClassifier.ToToken(unknown.Classification));
         Assert.Equal("SITE_EXPANDO", MissingApiClassifier.ToToken(expando.Classification));
@@ -128,6 +138,8 @@ public sealed class MissingApiTrackerTests
         Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(standard.Classification));
         Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(inheritedStandard.Classification));
         Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(assignedStandard.Classification));
+        Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(assignedStandardAfterRead.Classification));
+        Assert.Equal("WRONG_RECEIVER", MissingApiClassifier.ToToken(assignedWrongReceiver.Classification));
         Assert.False(unknown.StandardPriorityEligible);
         Assert.False(expando.StandardPriorityEligible);
         Assert.False(legacy.StandardPriorityEligible);
@@ -136,6 +148,8 @@ public sealed class MissingApiTrackerTests
         Assert.True(standard.StandardPriorityEligible);
         Assert.True(inheritedStandard.StandardPriorityEligible);
         Assert.True(assignedStandard.StandardPriorityEligible);
+        Assert.True(assignedStandardAfterRead.StandardPriorityEligible);
+        Assert.False(assignedWrongReceiver.StandardPriorityEligible);
         Assert.Equal("Element", wrongReceiver.DefinedInterface);
         Assert.False(wrongReceiver.ReceiverMatchesDefinedInterface);
         Assert.Equal("Node", standard.DefinedInterface);
@@ -217,6 +231,55 @@ public sealed class MissingApiTrackerTests
             Assert.Equal("SITE_EXPANDO", record.GetProperty("classification").GetString());
             Assert.Equal("WRITE", record.GetProperty("operationKind").GetString());
             Assert.True(record.GetProperty("assignmentBeforeRead").GetBoolean());
+            Assert.False(record.GetProperty("standardPriorityEligible").GetBoolean());
+        }
+        finally
+        {
+            MissingApiTracker.ResetForTests();
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            TryDeleteDirectory(outputRoot);
+        }
+    }
+
+    [Fact]
+    public async Task HostExpandoReadThenAssignment_PreservesBothOperationsAndPageOwnership()
+    {
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
+        var baseUri = new Uri("https://example.test/read-then-write.html");
+
+        try
+        {
+            MissingApiTracker.ConfigureForTests(outputRoot);
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            DisableTrace();
+
+            var document = new HtmlParser(
+                "<html><body><div id=\"app\">ok</div></body></html>",
+                baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.Sandbox = SandboxPolicy.AllowAll;
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("42", engine.Evaluate(@"
+                var target = document.getElementById('app');
+                var state = target.closure_state_probe;
+                if (!state) target.closure_state_probe = 42;
+                String(target.closure_state_probe);")?.ToString());
+
+            using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
+            var record = Assert.Single(outputJson.RootElement.GetProperty("records").EnumerateArray());
+            Assert.Equal("HTMLDivElement.closure_state_probe", record.GetProperty("apiName").GetString());
+            Assert.Equal("SITE_EXPANDO", record.GetProperty("classification").GetString());
+            Assert.Equal("page-assignment-observed", record.GetProperty("classificationReason").GetString());
+            Assert.Equal("READ", record.GetProperty("operationKind").GetString());
+            Assert.Equal(
+                new[] { "READ", "WRITE" },
+                record.GetProperty("operationKindsObserved").EnumerateArray().Select(value => value.GetString()));
+            Assert.True(record.GetProperty("assignmentObserved").GetBoolean());
+            Assert.False(record.GetProperty("assignmentBeforeRead").GetBoolean());
             Assert.False(record.GetProperty("standardPriorityEligible").GetBoolean());
         }
         finally

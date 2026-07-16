@@ -3847,3 +3847,11 @@ Verification:
 - Green/discovery: all 10 `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests` methods are listed and pass (`10/10`, zero failed/skipped). Release builds of Core, FenEngine, and Tooling pass with zero warnings and zero errors.
 - The canonical offline inventory command now reports 58 definitions, 407 members, 256 members with manual evidence, 305 with active-test correlations, 73 with selected-WPT correlations, and zero generated outputs active. `EventInit` remains the candidate; no generated binding was activated.
 - Fresh Google bundle `logs/real-site/www.google.com/20260716T110854Z/` preserves 25/25 rich records and classifies them as 9 standard, 2 wrong-receiver, 1 legacy probe, and 13 unclassified. Lifecycle is complete, callback failures and exceptions are zero, `first_blocker.json` is `none`, the main UI screenshot is present, logger drain succeeds, and the 26-entry artifact manifest has no missing file.
+
+## 6.156 Read-Then-Write Missing-Property Regression (2026-07-16)
+
+- `HostExpandoReadThenAssignment_PreservesBothOperationsAndPageOwnership` is compiled on the active test surface and reduces the ordinary framework pattern that reads a host property before initializing page-owned state.
+- Red: page behavior returned `42`, but the diagnostic record remained `READ`/`UNCLASSIFIED` because the later write was discarded.
+- Green: the record keeps first operation `READ`, ordered observed operations `[READ, WRITE]`, `assignmentObserved: true`, `assignmentBeforeRead: false`, and `SITE_EXPANDO`/`page-assignment-observed`. Classifier assertions prove checked-in WebIDL and wrong-receiver evidence still take precedence.
+- Discovery lists all 11 `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests`; the focused command passes `11/11` with no failures or skips.
+- Local exporter evidence is `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_read_then_write.html/20260716T111926Z/`. Fresh Google evidence is `logs/real-site/www.google.com/20260716T112412Z/`, where 5 previously unclassified Closure bookkeeping records become evidence-backed site expandos and 8 read-only observations remain unclassified. Both bundles have zero callback failures/exceptions, blocker `none`, successful logger drain, screenshots, and complete 26-entry manifests.

@@ -1720,3 +1720,9 @@ Verification:
 - Core's existing `HtmlElementInterfaceCatalog` is now the authoritative tag/namespace-to-interface mapping used by missing-property diagnostics. Non-HTML elements still fall back to the generic `Element` receiver.
 - Selected metadata-only `HTMLImageElement`, `HTMLLinkElement`, and `HTMLScriptElement` IDL files describe `fetchPriority`, `as`, and `async` for receiver classification. Their declarations are sourced from the local WPT checkout's `interfaces/html.idl` at revision `88152b842c3f60c2a5f95e0106ded4a375f710b0`.
 - These selected declarations do not activate generated bindings or claim complete interface conformance. The regenerated offline inventory reports 58 definitions, 407 members, 256 with bounded manual evidence, 305 with active-test correlations, 73 with selected-WPT correlations, and zero generated outputs present or compiled.
+
+### 1.82 Page-Assignment Evidence Precedence (2026-07-16)
+
+- `MissingApiClassificationInput` now distinguishes any observed page assignment from the narrower assignment-before-read case. A non-WebIDL property with a real page assignment is `SITE_EXPANDO`; its reason remains `assignment-before-read` when that ordering is known and becomes `page-assignment-observed` after an earlier read.
+- Checked-in WebIDL membership and wrong-receiver evidence are evaluated before assignment evidence. A page write therefore cannot demote a known standards member or hide an illegal receiver.
+- Unknown read-only observations remain `UNCLASSIFIED`; property-name patterns do not affect classification.

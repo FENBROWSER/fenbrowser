@@ -10294,3 +10294,16 @@ Verification:
 - Red: `StandardElementAssignments_UseConcreteWebIdlReceiver` failed because `HTMLScriptElement.async` was recorded only as `Element.async`.
 - Green/discovery: `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests` list and pass `10/10`. Release builds of Core, FenEngine, and Tooling succeed with zero warnings and zero errors.
 - Fresh Google bundle `logs/real-site/www.google.com/20260716T110854Z/` completes navigation, DOMContentLoaded, load, 18 script executions, layout, paint, and screenshot capture. It retains 25/25 missing-property records: 9 standard, 2 wrong-receiver, 1 legacy probe, and 13 unclassified. Callback failures and exceptions remain zero, `first_blocker` is `none`, logger drain succeeds, and all 26 artifacts are present.
+
+## 2.386 Read-Then-Write Missing-Property Evidence (2026-07-16)
+
+- Fresh script-11 source showed that retained Closure names use ordinary read-then-write patterns such as `h = target[key]; h || (target[key] = state)`, not the initially suspected host-object descriptor path.
+- The bridge previously stopped assignment tracking once the same receiver/property had been read. The tracker now retains the first operation for compatibility, an ordered distinct set of observed operation kinds, and explicit assignment/assignment-before-read flags. A later successful page write reclassifies only the matching receiver/member/script/navigation record.
+- Engine bootstrap assignments remain suppressed. Checked-in WebIDL and wrong-receiver evidence still outrank page assignment, and unknown read-only observations remain unclassified. No JavaScript property value or host storage behavior changed.
+
+Verification:
+
+- Red: `HostExpandoReadThenAssignment_PreservesBothOperationsAndPageOwnership` returned the correct value but retained only `READ`/`UNCLASSIFIED`.
+- Green/discovery: all 11 `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests` methods are listed and pass (`11/11`, zero failed/skipped).
+- Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_read_then_write.html/20260716T111926Z/` renders `42` and retains one `SITE_EXPANDO` record with first operation `READ`, observed operations `[READ, WRITE]`, assignment observed after read, zero callback failures/exceptions, blocker `none`, and 26/26 artifacts.
+- Fresh Google bundle `logs/real-site/www.google.com/20260716T112412Z/` retains 25/25 records: 9 standard, 5 site expandos, 2 wrong-receiver, 1 legacy probe, and 8 unclassified. Callback failures and exceptions remain zero, `first_blocker` is `none`, lifecycle completes, logger drain succeeds, and all 26 artifacts are present.

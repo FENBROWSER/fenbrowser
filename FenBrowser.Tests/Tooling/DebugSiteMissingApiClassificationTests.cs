@@ -88,6 +88,7 @@ public sealed class DebugSiteMissingApiClassificationTests
                 Column = 9,
                 Reason = "host property assigned before read",
                 OperationKind = MissingApiOperationKind.Write,
+                AssignmentObserved = true,
                 AssignmentBeforeRead = true
             });
 
@@ -128,6 +129,10 @@ public sealed class DebugSiteMissingApiClassificationTests
             Assert.Equal("Document.applicationState", record.GetProperty("apiName").GetString());
             Assert.Equal("SITE_EXPANDO", record.GetProperty("classification").GetString());
             Assert.Equal("WRITE", record.GetProperty("operationKind").GetString());
+            Assert.Equal(
+                new[] { "WRITE" },
+                record.GetProperty("operationKindsObserved").EnumerateArray().Select(value => value.GetString()));
+            Assert.True(record.GetProperty("assignmentObserved").GetBoolean());
             Assert.Equal("Document", record.GetProperty("receiverType").GetString());
             Assert.Equal("script-7", record.GetProperty("scriptId").GetString());
             Assert.Equal("nav-3", record.GetProperty("navigationId").GetString());

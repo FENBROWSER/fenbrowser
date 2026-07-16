@@ -40,11 +40,11 @@ Risk Level: Medium
 Dependencies: Runtime `MissingApiTracker` and Tooling bundle export are INTEGRATED
 Files likely involved: `FenBrowser.FenEngine` missing-API tracker and host dispatch, `FenBrowser.Tooling/Program.cs`, included tracker tests
 Specs/references: Web IDL; DOM; `docs/MISSING_API_TRACKER.md`
-Current behavior: Runtime sidecars and the bounded `debug-site` bundle use schema v2. The post-drain bundle retains up to 512 rich records across navigation/site transitions, includes expando writes and source/script/navigation/receiver timing fields, and reports truncation. Prototype and descriptor operations are not wired, and Google has not been freshly reclassified.
+Current behavior: Runtime sidecars and the bounded `debug-site` bundle use schema v2. The post-drain bundle retains up to 512 rich records across navigation/site transitions, preserves the first and ordered observed operation kinds plus assignment timing, and reports truncation. Fresh Google evidence classifies 5 read-then-write page expandos while leaving 8 read-only observations unclassified; prototype and descriptor operations are not wired.
 Expected behavior: The bundle preserves provenance and classifies `STANDARD_API`, `SITE_EXPANDO`, `WRONG_RECEIVER`, `LEGACY_PROBE`, or `UNCLASSIFIED`; only confirmed standard APIs feed priority counts.
 Reproduction: Run a local page that reads one missing standard member, assigns/reads an expando, probes a wrong receiver, and performs legacy feature detection; then inspect `missing_apis.json`.
-Root cause: The remaining gap is operation instrumentation: current host-property hooks provide read and first-write evidence but do not identify prototype, delete, call, construct, or descriptor operations.
-Implementation plan: Schema/classifier, assignment evidence, concrete HTML receiver resolution, checked-in-IDL matching, stable per-navigation identity, bounded rich export, and fresh Google classification are implemented. Next add only the descriptor/prototype operation capture required to distinguish the 13 retained unclassified observations.
+Root cause: The ordinary-operation gap is closed for direct reads and writes. Remaining observations may depend on JS prototype markers, descriptor operations, calls, construction, deletion, or intentional feature probing.
+Implementation plan: Schema/classifier, multi-operation assignment evidence, concrete HTML receiver resolution, checked-in-IDL matching, stable per-navigation identity, bounded rich export, and fresh Google classification are implemented. Inspect the eight exact read-only observations, then add only the next operation capture justified by a deterministic reduction.
 Tests required: All five dispositions, dedup/count/first-seen, source identity, cross-navigation isolation, redaction, and Google-name regression cases.
 Evidence required: Before false-positive list and after classified local/Google bundles with no loss of provenance.
 Security impact: Script URLs and messages require redaction/length limits.
@@ -52,7 +52,7 @@ Performance impact: Bound unique records per document and avoid allocating stack
 Compatibility impact: Improves attribution; does not add fake browser members.
 Known risks: Misclassifying a true standard member or suppressing a causal probe.
 Blockers: None
-Next action: Add a deterministic descriptor/prototype assignment reduction, then instrument that operation path so fresh Closure-style observations can be classified from evidence rather than name patterns.
+Next action: Reduce `closure_listenable_*` as a framework prototype-marker probe and determine the smallest general provenance seam that can relate the script-defined marker to host-object reads without instrumenting all JS property writes.
 
 ## Task TRACE-003
 

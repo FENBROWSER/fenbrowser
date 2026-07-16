@@ -40,7 +40,7 @@ First remaining runtime error: None captured. The attributed `script-5` / `k0c` 
 
 First fatal network error: Google returned HTTP 429 and redirected the submitted search to its `/sorry/` challenge. This is an external security response, not an engine assertion failure, and the run did not attempt to bypass it.
 
-First missing API: The fresh passive summary reports `Navigator.msPointerEnabled`, classified `LEGACY_PROBE`. The 25 retained records comprise 9 `STANDARD_API`, 2 `WRONG_RECEIVER`, 1 `LEGACY_PROBE`, and 13 `UNCLASSIFIED`; none is confirmed fatal. Concrete `HTMLScriptElement`/`HTMLLinkElement` metadata prevents standard `async`, `fetchPriority`, and `as` writes from being mislabeled as page expandos.
+First missing API: The fresh passive summary reports `Navigator.msPointerEnabled`, classified `LEGACY_PROBE`. The 25 retained records comprise 9 `STANDARD_API`, 5 `SITE_EXPANDO`, 2 `WRONG_RECEIVER`, 1 `LEGACY_PROBE`, and 8 `UNCLASSIFIED`; none is confirmed fatal. Five Closure bookkeeping records carry ordinary `[READ, WRITE]` evidence rather than name-based classification.
 
 First layout blocker: None captured. There are 34 zero-area boxes, but the main UI is visible.
 
@@ -64,6 +64,6 @@ Fix task: Callback attribution, both attributed host-object defects, transition-
 
 Regression test: REGRESSION_PROTECTED. `FenJsDomCollectionIterationTests` protects the last callback defect. Eight discovered `BrowserFormInteractionAcceptanceTests` protect ordinary hit-tested click, current-layout/pointer-events geometry, compound selector lookup, focus, typing, input/change order, canceled `beforeinput`, canceled submit, live checkedness/activation, successful-control GET navigation, and non-interactable rejection. Five discovered `DebugSiteInteractionRunnerTests` protect bounded event export, value privacy fields, chained terminal-navigation quieting, local result-DOM agreement, the fixed 1280x800 diagnostic viewport, and Tooling-owned screenshot artifacts. The discovered `CustomHtmlEngineNavigationGenerationTests` reduction blocks an older delayed CSS render from replacing the newer DOM, styles, or telemetry.
 
-Evidence: Google classified passive run: `logs/real-site/www.google.com/20260716T110854Z/`. Google interaction: `logs/real-site/www.google.com/20260715T103925Z/`. Local interaction: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_interaction_result.html_q_fen-local-20260715-4_source_local-fixture_include_yes_submitter_go/20260715T094724Z/`.
+Evidence: Google classified passive run: `logs/real-site/www.google.com/20260716T112412Z/`. Google interaction: `logs/real-site/www.google.com/20260715T103925Z/`. Local read/write reduction: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_read_then_write.html/20260716T111926Z/`.
 
 Status: REGRESSION_PROTECTED for load/render plus Google focus/type/submit/request/challenge navigation and terminal active-DOM/frame agreement. Normal result rendering remains externally blocked by Google's HTTP 429 challenge, not bypassed.

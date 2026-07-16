@@ -2414,12 +2414,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
 
         var reads = _missingHostPropertyReads.GetOrCreateValue(receiver);
+        bool assignmentBeforeRead;
         lock (reads)
         {
-            if (reads.Contains(property))
-            {
-                return;
-            }
+            assignmentBeforeRead = !reads.Contains(property);
         }
 
         if (GetHostPropertyStore(receiver).ContainsKey(property))
@@ -2430,12 +2428,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         RecordMissingBrowserApi(
             ownerName,
             property,
-            "host property assigned before read",
+            assignmentBeforeRead
+                ? "host property assigned before read"
+                : "host property assigned after read",
             string.Empty,
             GetCurrentScriptRecord(),
             baseUri ?? _currentBaseUri,
             MissingApiOperationKind.Write,
-            assignmentBeforeRead: true);
+            assignmentBeforeRead,
+            assignmentObserved: true);
     }
 
     private void RecordMissingBrowserApi(
@@ -2446,7 +2447,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         BrowserScriptLoadingRecord scriptRecord,
         Uri baseUri,
         MissingApiOperationKind operationKind = MissingApiOperationKind.Read,
-        bool assignmentBeforeRead = false)
+        bool assignmentBeforeRead = false,
+        bool assignmentObserved = false)
     {
         if (string.IsNullOrWhiteSpace(objectOrPrototype) || string.IsNullOrWhiteSpace(propertyName))
         {
@@ -2477,7 +2479,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             ExceptionText = exceptionText ?? string.Empty,
             OperationKind = operationKind,
             ReceiverType = ownerName,
-            AssignmentBeforeRead = assignmentBeforeRead
+            AssignmentBeforeRead = assignmentBeforeRead,
+            AssignmentObserved = assignmentObserved
         });
     }
 

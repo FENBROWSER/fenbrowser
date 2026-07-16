@@ -24,6 +24,7 @@ internal sealed class MissingApiObservation
     public string ExceptionText { get; init; } = string.Empty;
     public MissingApiOperationKind OperationKind { get; init; } = MissingApiOperationKind.Read;
     public string ReceiverType { get; init; } = string.Empty;
+    public bool AssignmentObserved { get; init; }
     public bool AssignmentBeforeRead { get; init; }
     public bool KnownWebIdlMember { get; init; }
     public string DefinedInterface { get; init; } = string.Empty;
@@ -62,9 +63,11 @@ internal sealed class BrowserMissingApiRecordSnapshot
     public string ExceptionText { get; init; } = string.Empty;
     public string Classification { get; init; } = "UNCLASSIFIED";
     public string OperationKind { get; init; } = "READ";
+    public List<string> OperationKindsObserved { get; init; } = new();
     public string ClassificationReason { get; init; } = string.Empty;
     public bool StandardPriorityEligible { get; init; }
     public string ReceiverType { get; init; } = string.Empty;
+    public bool AssignmentObserved { get; init; }
     public bool AssignmentBeforeRead { get; init; }
     public bool KnownWebIdlMember { get; init; }
     public string DefinedInterface { get; init; } = string.Empty;
@@ -114,6 +117,23 @@ internal static class MissingApiTracker
                 {
                     record.EncounterCount++;
                     record.LastSeenUtc = Now();
+                    var evidenceChanged = record.AddOperation(observation.OperationKind);
+                    var assignmentObserved = observation.AssignmentObserved ||
+                        observation.OperationKind == MissingApiOperationKind.Write;
+                    if (assignmentObserved && !record.AssignmentObserved)
+                    {
+                        record.AssignmentObserved = true;
+                        evidenceChanged = true;
+                    }
+                    if (observation.AssignmentBeforeRead && !record.AssignmentBeforeRead)
+                    {
+                        record.AssignmentBeforeRead = true;
+                        evidenceChanged = true;
+                    }
+                    if (evidenceChanged)
+                    {
+                        record.RefreshClassification();
+                    }
                     if (string.IsNullOrWhiteSpace(record.ExceptionText) &&
                         !string.IsNullOrWhiteSpace(observation.ExceptionText))
                     {
@@ -218,6 +238,8 @@ internal static class MissingApiTracker
     private static MissingApiRecord CreateRecord(MissingApiObservation observation)
     {
         var now = Now();
+        var assignmentObserved = observation.AssignmentObserved ||
+            observation.OperationKind == MissingApiOperationKind.Write;
         var classification = MissingApiClassifier.Classify(new MissingApiClassificationInput(
             observation.ObjectOrPrototype,
             observation.PropertyName,
@@ -225,7 +247,8 @@ internal static class MissingApiTracker
             observation.AssignmentBeforeRead,
             observation.KnownWebIdlMember,
             observation.DefinedInterface,
-            observation.ReceiverMatchesDefinedInterface));
+            observation.ReceiverMatchesDefinedInterface,
+            assignmentObserved));
         return new MissingApiRecord
         {
             ApiName = observation.ApiName.Trim(),
@@ -245,9 +268,14 @@ internal static class MissingApiTracker
             ExceptionText = observation.ExceptionText ?? string.Empty,
             Classification = MissingApiClassifier.ToToken(classification.Classification),
             OperationKind = MissingApiClassifier.ToToken(classification.OperationKind),
+            OperationKindsObserved = new List<string>
+            {
+                MissingApiClassifier.ToToken(observation.OperationKind)
+            },
             ClassificationReason = classification.Reason,
             StandardPriorityEligible = classification.StandardPriorityEligible,
             ReceiverType = observation.ReceiverType ?? string.Empty,
+            AssignmentObserved = assignmentObserved,
             AssignmentBeforeRead = observation.AssignmentBeforeRead,
             KnownWebIdlMember = classification.KnownWebIdlMember,
             DefinedInterface = classification.DefinedInterface,
@@ -285,9 +313,11 @@ internal static class MissingApiTracker
             ExceptionText = record.ExceptionText,
             Classification = record.Classification,
             OperationKind = record.OperationKind,
+            OperationKindsObserved = new List<string>(record.OperationKindsObserved),
             ClassificationReason = record.ClassificationReason,
             StandardPriorityEligible = record.StandardPriorityEligible,
             ReceiverType = record.ReceiverType,
+            AssignmentObserved = record.AssignmentObserved,
             AssignmentBeforeRead = record.AssignmentBeforeRead,
             KnownWebIdlMember = record.KnownWebIdlMember,
             DefinedInterface = record.DefinedInterface,
@@ -359,9 +389,11 @@ internal static class MissingApiTracker
             ["exceptionText"] = record.ExceptionText,
             ["classification"] = record.Classification,
             ["operationKind"] = record.OperationKind,
+            ["operationKindsObserved"] = record.OperationKindsObserved.ToArray(),
             ["classificationReason"] = record.ClassificationReason,
             ["standardPriorityEligible"] = record.StandardPriorityEligible,
             ["receiverType"] = record.ReceiverType,
+            ["assignmentObserved"] = record.AssignmentObserved,
             ["assignmentBeforeRead"] = record.AssignmentBeforeRead,
             ["knownWebIdlMember"] = record.KnownWebIdlMember,
             ["definedInterface"] = record.DefinedInterface,
@@ -481,15 +513,61 @@ internal static class MissingApiTracker
         public int EncounterCount { get; set; }
         public string Reason { get; init; } = string.Empty;
         public string ExceptionText { get; set; } = string.Empty;
-        public string Classification { get; init; } = "UNCLASSIFIED";
+        public string Classification { get; set; } = "UNCLASSIFIED";
         public string OperationKind { get; init; } = "READ";
-        public string ClassificationReason { get; init; } = string.Empty;
-        public bool StandardPriorityEligible { get; init; }
+        public List<string> OperationKindsObserved { get; init; } = new();
+        public string ClassificationReason { get; set; } = string.Empty;
+        public bool StandardPriorityEligible { get; set; }
         public string ReceiverType { get; init; } = string.Empty;
-        public bool AssignmentBeforeRead { get; init; }
-        public bool KnownWebIdlMember { get; init; }
-        public string DefinedInterface { get; init; } = string.Empty;
-        public bool? ReceiverMatchesDefinedInterface { get; init; }
+        public bool AssignmentObserved { get; set; }
+        public bool AssignmentBeforeRead { get; set; }
+        public bool KnownWebIdlMember { get; set; }
+        public string DefinedInterface { get; set; } = string.Empty;
+        public bool? ReceiverMatchesDefinedInterface { get; set; }
+
+        public bool AddOperation(MissingApiOperationKind operationKind)
+        {
+            var token = MissingApiClassifier.ToToken(operationKind);
+            if (OperationKindsObserved.Contains(token, StringComparer.Ordinal))
+            {
+                return false;
+            }
+
+            OperationKindsObserved.Add(token);
+            return true;
+        }
+
+        public void RefreshClassification()
+        {
+            var classification = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+                ObjectOrPrototype,
+                PropertyName,
+                ParseOperationKind(OperationKind),
+                AssignmentBeforeRead,
+                KnownWebIdlMember,
+                DefinedInterface,
+                ReceiverMatchesDefinedInterface,
+                AssignmentObserved));
+            Classification = MissingApiClassifier.ToToken(classification.Classification);
+            ClassificationReason = classification.Reason;
+            StandardPriorityEligible = classification.StandardPriorityEligible;
+            KnownWebIdlMember = classification.KnownWebIdlMember;
+            DefinedInterface = classification.DefinedInterface;
+            ReceiverMatchesDefinedInterface = classification.ReceiverMatchesDefinedInterface;
+        }
+
+        private static MissingApiOperationKind ParseOperationKind(string token)
+            => token switch
+            {
+                "WRITE" => MissingApiOperationKind.Write,
+                "DELETE" => MissingApiOperationKind.Delete,
+                "IN_CHECK" => MissingApiOperationKind.InCheck,
+                "PROTOTYPE_ACCESS" => MissingApiOperationKind.PrototypeAccess,
+                "CALL" => MissingApiOperationKind.Call,
+                "CONSTRUCT" => MissingApiOperationKind.Construct,
+                "DESCRIPTOR_OPERATION" => MissingApiOperationKind.DescriptorOperation,
+                _ => MissingApiOperationKind.Read
+            };
 
         public MissingApiRecord Clone()
             => new()
@@ -511,9 +589,11 @@ internal static class MissingApiTracker
                 ExceptionText = ExceptionText,
                 Classification = Classification,
                 OperationKind = OperationKind,
+                OperationKindsObserved = new List<string>(OperationKindsObserved),
                 ClassificationReason = ClassificationReason,
                 StandardPriorityEligible = StandardPriorityEligible,
                 ReceiverType = ReceiverType,
+                AssignmentObserved = AssignmentObserved,
                 AssignmentBeforeRead = AssignmentBeforeRead,
                 KnownWebIdlMember = KnownWebIdlMember,
                 DefinedInterface = DefinedInterface,
