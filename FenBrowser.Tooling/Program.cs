@@ -103,6 +103,9 @@ namespace FenBrowser.Tooling
                 case "wpt":
                     await WptToolRunner.RunAsync(args).ConfigureAwait(false);
                     return;
+                case "webidl-inventory":
+                    WebIdlInventoryRunner.Run(args);
+                    return;
                 case "multitab":
                     // await MultiTabHeadlessRunner.RunAsync(args.Skip(1).ToArray()).ConfigureAwait(false);
                     Console.WriteLine("[tooling] Multitab removed with legacy engine.");
@@ -2905,6 +2908,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  test");
             Console.WriteLine("  test262 --root <path> [--workers N] [--timeout-ms N] [--max N] [--filter <substring>] [--output <json_path>] [--event-log <jsonl_path>]");
             Console.WriteLine("  wpt [--root <wpt_path>] [--binary <host_exe>] [--webdriver-binary <launcher>] [--processes N] [--timeout-seconds N] [--venv <path>] [--skip-venv-setup] [--manifest <path>] [--manifest-update] [--output-dir <dir>] [--tests <paths>]");
+            Console.WriteLine("  webidl-inventory [--root <repo_path>] [--idl <idl_dir>] [--output-dir <dir>] [--wpt-root <wpt_path>] [--selected-wpt <paths>]");
         }
 
         private static async Task<SKBitmap> CaptureWindowScreenshotAsync(string url, int settleMs = 3500)
