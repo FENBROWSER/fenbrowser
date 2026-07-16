@@ -2414,7 +2414,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             Line = line,
             Column = column,
             Reason = reason ?? string.Empty,
-            ExceptionText = exceptionText ?? string.Empty
+            ExceptionText = exceptionText ?? string.Empty,
+            OperationKind = MissingApiOperationKind.Read,
+            ReceiverType = ownerName
         });
     }
 

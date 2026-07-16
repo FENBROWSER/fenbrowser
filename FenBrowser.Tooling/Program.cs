@@ -2023,13 +2023,21 @@ namespace FenBrowser.Tooling
                 return;
             }
 
+            var classification = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+                objectName,
+                propertyName,
+                MissingApiOperationKind.Read));
             records.Add(new MissingApiRecord(
                 api,
                 objectName ?? string.Empty,
                 propertyName ?? string.Empty,
                 source ?? string.Empty,
                 evidence ?? string.Empty,
-                Math.Max(1, encounterCount)));
+                Math.Max(1, encounterCount),
+                MissingApiClassifier.ToToken(classification.Classification),
+                MissingApiClassifier.ToToken(classification.OperationKind),
+                classification.Reason,
+                classification.StandardPriorityEligible));
         }
 
         private static (string ObjectName, string PropertyName) SplitApiName(string api)
@@ -2247,7 +2255,11 @@ namespace FenBrowser.Tooling
             string PropertyName,
             string Source,
             string Evidence,
-            int EncounterCount);
+            int EncounterCount,
+            string Classification,
+            string OperationKind,
+            string ClassificationReason,
+            bool StandardPriorityEligible);
 
         internal sealed record DebugSiteScreenshotResult(
             bool Captured,

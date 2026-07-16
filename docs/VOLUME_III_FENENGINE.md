@@ -10267,3 +10267,15 @@ Verification:
 - `HostObjectTableTests`: pass (`7/7`), including stale generation and freed-slot reuse rejection.
 - `FenJsWeakCollectionsHostObjectTests`: pass (`1/1`).
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v:minimal`: pass with 0 warnings and 0 errors.
+
+## 2.384 Missing-Property Classification Provenance (2026-07-16)
+
+- `MissingApiTracker` schema v2 adds classification, operation kind, classification reason, standards-priority eligibility, receiver type, and explicit assignment/WebIDL evidence fields without changing property-read semantics.
+- Current host misses identify their receiver and `READ` operation. Unknown reads remain visible as `UNCLASSIFIED`; they are not discarded or promoted to standards work.
+- Trace events carry the same classification fields as the per-site sidecar. Tooling uses the shared Core classifier for its compact bundle projection, avoiding a divergent classification policy.
+
+Verification:
+
+- Red: both existing tracker tests failed because the v1 record lacked classification and operation fields.
+- Green: `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests` pass `4/4`.
+- Fresh local fixture `FenBrowser.Tests/Fixtures/Diagnostics/missing_api_classification.html` completes without script failures and produces the expected unknown-read and legacy-probe classifications.

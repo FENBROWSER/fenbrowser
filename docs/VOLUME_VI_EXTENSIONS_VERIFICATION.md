@@ -3652,20 +3652,6 @@ Verification commands:
 - The included `FirstBlockerClassifierTests` table covers navigation failure, required-resource failure, parser-blocking script failure, missing-standard-API throw, non-fatal feature probe, lifecycle contradiction, zero-size-root equivalent, successful page, post-load callback failure, input failure, and submit failure. A second contract protects non-fatal ordering and the five explicit unverified interaction milestones.
 - Final local evidence is `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_throwing_timer_callback.html/20260715T080257Z/`: result `none`, boot/render milestones complete, one `callback-1` timer failure listed as non-fatal, no contradictions, five interaction milestones unverified, and all expected artifacts present.
 
-## 6.141 Mandatory IPC, Sandbox, and Performance Bundle Artifacts (2026-07-16)
-
-- `debug-site` now always writes schema-v1 `ipc.json`, `sandbox_denials.json`, and `performance.json` before generating `artifact_manifest.json`.
-- The current in-process host reports IPC and sandbox systems as `inactive` and `not-configured` with zero events/denials instead of implying success through missing files. No token, payload body, cookie, authorization header, or page data is serialized.
-- `performance.json` is explicitly a `partial` single diagnostic sample, not a benchmark. It contains only already-captured elapsed navigation, lifecycle, layout/paint/raster, watchdog, callback, timer, and microtask values and lists unavailable metrics.
-- `DebugSiteArtifactContractTests` failed before the exporter change because `ipc.json` was absent, then passed after the fix. The test invokes the real bundle writer, validates all three schemas, and verifies that the manifest marks each file present.
-
-Verification:
-
-- Discovery lists `DebugSiteArtifactContractTests.WriteBundle_AlwaysEmitsTypedSupplementalArtifactsAndManifestEntries`.
-- The focused artifact/exception slice passes `2/2` with no failures or skips.
-- `FenBrowser.Tooling` Release builds with `2` warnings and `0` errors.
-- Fresh local evidence: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_interaction_form_acceptance.html/20260716T101850Z/`; navigation completed, screenshot capture succeeded, and the manifest has no missing entries.
-
 Verification commands:
 
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FirstBlockerClassifierTests" --logger "console;verbosity=minimal"`: pass (`12/12`).
@@ -3759,6 +3745,7 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~BrowserFormInteractionAcceptanceTests|FullyQualifiedName~DebugSiteInteractionRunnerTests" --logger "console;verbosity=minimal"`: pass (`11/11`).
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v:minimal`: pass with 0 warnings and 0 errors.
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v:minimal`: pass with 0 warnings and 0 errors.
+
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site-interact "https://www.google.com/" "#APjFqb" "fen715f" ".FPdoLc input[name=btnK]" 20000 10000`: interaction pass with the bundle above.
 
 ## 6.148 Terminal Interaction Settlement and Artifact Ownership (2026-07-15)
@@ -3826,3 +3813,28 @@ Verification:
 - The fixture proves active/excluded compile classification, manual evidence, test/WPT correlation, low-lifetime candidate selection, and byte-identical serialization.
 - Two identical repo-scale runs at revision `d95f74e0a5f725675a66f96652bb81a339d6ca15` produced JSON SHA-256 `FEB06F6BFAAC52F548F54F7FCB76900968937376653D62797646C1607636ACE5` and Markdown SHA-256 `70BF0A279BF48BBA937162A9523ECAC12D2E1E5EB57187C0F73886492A5F58B8`.
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v:minimal`: pass with 0 warnings and 0 errors.
+
+## 6.153 Mandatory IPC, Sandbox, and Performance Bundle Artifacts (2026-07-16)
+
+- `debug-site` now always writes schema-v1 `ipc.json`, `sandbox_denials.json`, and `performance.json` before generating `artifact_manifest.json`.
+- The current in-process host reports IPC and sandbox systems as `inactive` and `not-configured` with zero events/denials instead of implying success through missing files. No token, payload body, cookie, authorization header, or page data is serialized.
+- `performance.json` is explicitly a `partial` single diagnostic sample, not a benchmark. It contains only already-captured elapsed navigation, lifecycle, layout/paint/raster, watchdog, callback, timer, and microtask values and lists unavailable metrics.
+- `DebugSiteArtifactContractTests` failed before the exporter change because `ipc.json` was absent, then passed after the fix. The test invokes the real bundle writer, validates all three schemas, and verifies that the manifest marks each file present.
+
+Verification:
+
+- Discovery lists `DebugSiteArtifactContractTests.WriteBundle_AlwaysEmitsTypedSupplementalArtifactsAndManifestEntries`.
+- The focused artifact/exception slice passes `2/2` with no failures or skips.
+- `FenBrowser.Tooling` Release builds with `2` warnings and `0` errors.
+- Fresh local evidence: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_interaction_form_acceptance.html/20260716T101850Z/`; navigation completed, screenshot capture succeeded, and the manifest has no missing entries.
+
+## 6.154 Evidence-Based Missing-API Classification (2026-07-16)
+
+- FenEngine runtime sidecars now use `fenbrowser.missing-apis.v2` and preserve classification, operation kind, classification reason, standards-priority eligibility, receiver type, assignment/IDL evidence flags, and the existing script/navigation/source provenance.
+- Tooling's compact `missing_apis.json` projection uses the same Core classifier. Unknown reads remain `UNCLASSIFIED`; the explicit legacy inventory classifies `Navigator.msPointerEnabled` as `LEGACY_PROBE`; neither is standards-priority eligible.
+- The classifier can produce all five required dispositions, but live assignment-before-read, prototype/descriptor operations, and checked-in-IDL receiver evidence are not wired yet. Rich sidecar records are not yet merged into the bundle.
+
+Verification:
+
+- `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests`: pass (`4/4`).
+- Fresh local bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_classification.html/20260716T103201Z/`; navigation completed, scripts passed `1/1`, first blocker is `none`, screenshot is present, and the artifact manifest has no missing entries.

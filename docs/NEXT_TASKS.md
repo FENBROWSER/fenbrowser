@@ -34,17 +34,17 @@ Task ID: TRACE-002
 Title: Export rich missing-API records and reject false positives
 Area: WebIDL / DOM diagnostics
 Owner Agent: Bindings Diagnostic Agent
-Status: RESEARCHED
+Status: STUBBED
 Priority: 1
 Risk Level: Medium
 Dependencies: Runtime `MissingApiTracker` and Tooling bundle export are INTEGRATED
 Files likely involved: `FenBrowser.FenEngine` missing-API tracker and host dispatch, `FenBrowser.Tooling/Program.cs`, included tracker tests
 Specs/references: Web IDL; DOM; `docs/MISSING_API_TRACKER.md`
-Current behavior: Runtime records provenance, but the bundle exports a smaller capability list. Google observations include Closure expandos, wrong-receiver probes, legacy feature checks, and standards candidates as one undifferentiated list.
+Current behavior: Runtime sidecars use schema v2 and the compact bundle includes classification, operation, reason, and priority eligibility. Unknown reads default to `UNCLASSIFIED`; the legacy inventory classifies `Navigator.msPointerEnabled` as `LEGACY_PROBE`; neither feeds standards priority. The bundle still drops rich source/navigation/receiver timing fields, and runtime assignment/prototype/IDL evidence is not wired.
 Expected behavior: The bundle preserves provenance and classifies `STANDARD_API`, `SITE_EXPANDO`, `WRONG_RECEIVER`, `LEGACY_PROBE`, or `UNCLASSIFIED`; only confirmed standard APIs feed priority counts.
 Reproduction: Run a local page that reads one missing standard member, assigns/reads an expando, probes a wrong receiver, and performs legacy feature detection; then inspect `missing_apis.json`.
-Root cause hypothesis: Tooling reads `EngineCapabilities` rather than the richer per-run tracker, and property-miss instrumentation lacks assignment/prototype/IDL-aware classification.
-Implementation plan: Define v2 record, merge runtime records by stable key, add classifier inputs without mutating page behavior, map trace category to `WebIDL` or `DOM`, export classifications and causal links.
+Root cause: Tooling reads `EngineCapabilities` rather than the richer per-run tracker, and property-miss instrumentation supplies only read/receiver evidence today.
+Implementation plan: Schema/classifier and compact projection are implemented. Next record assignment/prototype/descriptor operations, resolve checked-in-IDL membership/receiver inheritance, and merge bounded rich records by stable per-navigation key.
 Tests required: All five dispositions, dedup/count/first-seen, source identity, cross-navigation isolation, redaction, and Google-name regression cases.
 Evidence required: Before false-positive list and after classified local/Google bundles with no loss of provenance.
 Security impact: Script URLs and messages require redaction/length limits.
@@ -52,7 +52,7 @@ Performance impact: Bound unique records per document and avoid allocating stack
 Compatibility impact: Improves attribution; does not add fake browser members.
 Known risks: Misclassifying a true standard member or suppressing a causal probe.
 Blockers: None
-Next action: Add the mixed-disposition local fixture and lock the v2 JSON schema with a snapshot test.
+Next action: Add assignment-before-read and checked-in-IDL receiver instrumentation to the local fixture, then merge the rich per-navigation tracker records into the bundle.
 
 ## Task TRACE-003
 

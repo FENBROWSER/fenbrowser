@@ -1,6 +1,6 @@
 # FenBrowser Missing API Tracker
 
-Status: TESTED at the runtime recorder, STUBBED at the `debug-site` bundle boundary. Snapshot date: 2026-07-14.
+Status: TESTED for schema-v2 runtime classification and the compact `debug-site` projection; STUBBED for assignment/prototype/IDL evidence collection and rich-record bundle merging. Snapshot date: 2026-07-16.
 
 ## Evidence model
 
@@ -8,48 +8,45 @@ A missing host property observation must be classified before it becomes an engi
 
 | Disposition | Meaning |
 | --- | --- |
-| `standards-member` | Confirmed interface member on the receiver/prototype |
-| `wrong-receiver` | Standards member may exist, but not on the observed receiver brand |
-| `site-expando` | Page-owned bookkeeping property; returning `undefined` is normal until assigned |
-| `feature-detection` | Optional or legacy probe whose absence is non-fatal |
-| `binding-mismatch` | Member exists in C# but JS exposure/conversion/descriptor is wrong |
-| `unclassified` | Needs spec/source/reduction evidence |
+| `STANDARD_API` | Checked-in WebIDL evidence confirms the member on the receiver/interface |
+| `WRONG_RECEIVER` | Checked-in WebIDL evidence confirms the member, but not on the observed receiver brand |
+| `SITE_EXPANDO` | Assignment-before-read evidence identifies page-owned bookkeeping state |
+| `LEGACY_PROBE` | The owner/member pair is in the explicit legacy API inventory |
+| `UNCLASSIFIED` | Evidence is insufficient; this is the default for unknown reads |
 
-Only `standards-member` and `binding-mismatch` entries can be promoted directly to implementation tasks. Fatality still requires a causal exception or blocked milestone.
+Only `STANDARD_API` records set `standardPriorityEligible: true`. Fatality still requires a causal exception or blocked milestone.
 
 ## Target record format
 
 ```json
 {
-  "schema": "fenbrowser.missing-api.v2",
-  "api_name": "Node.prototype.compareDocumentPosition",
-  "object_or_prototype": "Node.prototype",
-  "observed_receiver": "Document",
-  "property_name": "compareDocumentPosition",
-  "site_url": "https://www.google.com/",
-  "script_url": "https://...",
-  "script_id": "script-10",
+  "schema": "fenbrowser.missing-apis.v2",
+  "apiName": "Document.compareDocumentPosition",
+  "objectOrPrototype": "Document",
+  "receiverType": "Document",
+  "propertyName": "compareDocumentPosition",
+  "siteUrl": "https://example.test/",
+  "scriptUrl": "https://example.test/app.js",
+  "scriptId": "script-10",
   "line": 33,
   "column": 21079,
-  "navigation_id": "1",
-  "first_seen_trace_id": "missing-api-...",
-  "first_seen_utc": "...",
-  "last_seen_utc": "...",
-  "encounter_count": 6,
-  "exception_text": "",
-  "disposition": "standards-member",
-  "fatal": false,
-  "failure_bucket": "F",
-  "priority": 2,
-  "linked_wpt": [],
-  "owner": "DOM bindings",
-  "status": "RESEARCHED",
-  "evidence": ["bundle path and reduction"],
-  "notes": "Inherited from Node; confirm JS prototype exposure."
+  "navigationId": "1",
+  "firstSeenTraceId": "missing-api-...",
+  "firstSeenUtc": "...",
+  "lastSeenUtc": "...",
+  "encounterCount": 6,
+  "exceptionText": "",
+  "classification": "STANDARD_API",
+  "operationKind": "READ",
+  "classificationReason": "known-webidl-member-defined-on-Node",
+  "standardPriorityEligible": true,
+  "assignmentBeforeRead": false,
+  "knownWebIdlMember": true,
+  "definedInterface": "Node"
 }
 ```
 
-The bundle must preserve the runtime tracker's script, navigation, source, first-seen, last-seen, reason, and exception fields. The current simplified bundle record drops those fields.
+The compact bundle now preserves classification, operation kind, reason, and standards-priority eligibility. Merging the runtime tracker's script, navigation, source, receiver, first-seen, last-seen, reason, and exception fields into that bundle remains open.
 
 ## Current Google observations
 
@@ -78,4 +75,4 @@ No Google observation is currently confirmed as the first fatal blocker.
 
 ## Verification
 
-`MissingApiTrackerTests` is discovered and passed in the 44-test focused Release filter on 2026-07-14. Required next proof is a local expando-versus-standard-member reduction followed by a fresh Google bundle whose first missing API is classified rather than merely listed.
+`MissingApiTrackerTests` and `DebugSiteMissingApiClassificationTests` are compiled and discovered. The focused 2026-07-16 command passes `4/4`. Fresh local evidence is `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_classification.html/20260716T103201Z/`: `Document.applicationSpecificMarker` is `UNCLASSIFIED`, `Navigator.msPointerEnabled` is `LEGACY_PROBE`, both are `READ`, and neither is standards-priority eligible. Required next proof is assignment-before-read and checked-in-IDL receiver instrumentation followed by a fresh Google rerun.

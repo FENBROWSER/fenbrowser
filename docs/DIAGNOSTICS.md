@@ -25,7 +25,7 @@ dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --n
 | Script loading snapshot | TESTED | Per-script identity, source coordinates, fetch, batch, and execution state | Normalize dynamic-script discovery/execution populations |
 | Event-loop snapshot | TESTED | DCL/load, timers, rAF counters, and bounded typed timer/event/unhandled-Promise failures with task/source/receiver/stack provenance | Add microtask, rAF, repeating-timer, and invalidation reductions |
 | Network capture | INTEGRATED | Request/response records and counts | Correct non-HTTP schemes and add policy/cookie/CORS disposition |
-| Missing API runtime tracker | TESTED | Rich per-site records are written under `logs/missing_apis/` | Export that schema into the run bundle and classify probes/expandos |
+| Missing API runtime tracker | TESTED | Schema-v2 per-site records include classification, operation, receiver, reason, priority eligibility, and source/navigation provenance | Add assignment/prototype/checked-in-IDL evidence and merge rich records into the bundle |
 | First blocker summary | TESTED | Typed `first_blocker.json` models 19 milestones, separates non-fatal/unverified work, and treats labeled transition-time lifecycle samples as historical | Add missing-artifact and clock-mismatch fixtures |
 | Exceptions artifact | TESTED | Timer, event-listener, and unhandled-Promise totals and retained typed records share the drained event-loop snapshot | Add microtask, parser, IPC, crash, redaction, and export-failure sources |
 | Interaction acceptance | TESTED | Generic selector-driven local form run records target, focus, typing, submit, terminal navigation, bounded capture/bubble events, and before/after screenshots | Run the same command on Google and reduce its earliest failed milestone if any |
@@ -113,7 +113,7 @@ A missing property is not fatal merely because it was read. It becomes a fatal c
 | `trace.jsonl`, `logs.ndjson` | INTEGRATED | Structured event streams, flushed through the run boundary |
 | `console.log`, `exceptions.json` | INTEGRATED | Console plus typed callback exception records with agreeing totals |
 | `network.json` | INTEGRATED | Requests, responses, failures, policy disposition |
-| `missing_apis.json` | STUBBED | Rich classified records with provenance |
+| `missing_apis.json` | STUBBED | Compact bundle records are classified and exclude legacy/unclassified reads from standards priority; rich runtime provenance is not yet merged |
 | `script_loading.json` | INTEGRATED | Per-script lifecycle |
 | `event_loop.json` | INTEGRATED | Tasks, microtasks, timers, rAF, lifecycle |
 | `style_layout.json` | INTEGRATED | Style/layout/paint/raster summary |

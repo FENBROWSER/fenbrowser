@@ -1707,3 +1707,9 @@ Verification:
 - The custom AppContainer path previously supplied `lpEnvironment = null`, so renderer pipe, authentication-token, parent-PID, sandbox-profile, and capability variables were discarded even when the child executable could launch.
 - The managed and unmanaged environment copies are cleared before the native allocation is released because the block contains the renderer authentication token.
 - `WindowsAppContainerEnvironmentTests` locks ordering, termination, and preservation of the renderer startup variables. The test validates environment construction; real AppContainer startup remains blocked by runtime-path ACL policy recorded in `BLOCK-PROC-002`.
+
+### 1.80 Evidence-Based Missing-API Classification (2026-07-16)
+
+- `MissingApiClassifier` defines the shared `STANDARD_API`, `SITE_EXPANDO`, `WRONG_RECEIVER`, `LEGACY_PROBE`, and `UNCLASSIFIED` dispositions plus read/write/delete/in/prototype/call/construct/descriptor operation kinds.
+- Unknown reads never become standards work by default. Only explicit checked-in-WebIDL membership with a matching receiver sets standards-priority eligibility; assignment-before-read identifies expandos, and a bounded explicit legacy inventory identifies legacy probes.
+- The classifier does not change JavaScript return values, add browser members, or suppress observations.

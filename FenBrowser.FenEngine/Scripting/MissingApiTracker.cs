@@ -22,11 +22,17 @@ internal sealed class MissingApiObservation
     public int? Column { get; init; }
     public string Reason { get; init; } = string.Empty;
     public string ExceptionText { get; init; } = string.Empty;
+    public MissingApiOperationKind OperationKind { get; init; } = MissingApiOperationKind.Read;
+    public string ReceiverType { get; init; } = string.Empty;
+    public bool AssignmentBeforeRead { get; init; }
+    public bool KnownWebIdlMember { get; init; }
+    public string DefinedInterface { get; init; } = string.Empty;
+    public bool? ReceiverMatchesDefinedInterface { get; init; }
 }
 
 internal static class MissingApiTracker
 {
-    private const string Schema = "fenbrowser.missing-apis.v1";
+    private const string Schema = "fenbrowser.missing-apis.v2";
     private const string TraceCategory = "MissingAPI";
     private const string EventName = "MissingApiObserved";
 
@@ -111,6 +117,14 @@ internal static class MissingApiTracker
     private static MissingApiRecord CreateRecord(MissingApiObservation observation)
     {
         var now = Now();
+        var classification = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            observation.ObjectOrPrototype,
+            observation.PropertyName,
+            observation.OperationKind,
+            observation.AssignmentBeforeRead,
+            observation.KnownWebIdlMember,
+            observation.DefinedInterface,
+            observation.ReceiverMatchesDefinedInterface));
         return new MissingApiRecord
         {
             ApiName = observation.ApiName.Trim(),
@@ -127,7 +141,15 @@ internal static class MissingApiTracker
             LastSeenUtc = now,
             EncounterCount = 1,
             Reason = observation.Reason ?? string.Empty,
-            ExceptionText = observation.ExceptionText ?? string.Empty
+            ExceptionText = observation.ExceptionText ?? string.Empty,
+            Classification = MissingApiClassifier.ToToken(classification.Classification),
+            OperationKind = MissingApiClassifier.ToToken(classification.OperationKind),
+            ClassificationReason = classification.Reason,
+            StandardPriorityEligible = classification.StandardPriorityEligible,
+            ReceiverType = observation.ReceiverType ?? string.Empty,
+            AssignmentBeforeRead = observation.AssignmentBeforeRead,
+            KnownWebIdlMember = observation.KnownWebIdlMember,
+            DefinedInterface = observation.DefinedInterface ?? string.Empty
         };
     }
 
@@ -194,6 +216,14 @@ internal static class MissingApiTracker
             ["encounterCount"] = record.EncounterCount,
             ["reason"] = record.Reason,
             ["exceptionText"] = record.ExceptionText,
+            ["classification"] = record.Classification,
+            ["operationKind"] = record.OperationKind,
+            ["classificationReason"] = record.ClassificationReason,
+            ["standardPriorityEligible"] = record.StandardPriorityEligible,
+            ["receiverType"] = record.ReceiverType,
+            ["assignmentBeforeRead"] = record.AssignmentBeforeRead,
+            ["knownWebIdlMember"] = record.KnownWebIdlMember,
+            ["definedInterface"] = record.DefinedInterface,
             ["outputPath"] = outputPath ?? string.Empty
         };
 
@@ -309,6 +339,14 @@ internal static class MissingApiTracker
         public int EncounterCount { get; set; }
         public string Reason { get; init; } = string.Empty;
         public string ExceptionText { get; set; } = string.Empty;
+        public string Classification { get; init; } = "UNCLASSIFIED";
+        public string OperationKind { get; init; } = "READ";
+        public string ClassificationReason { get; init; } = string.Empty;
+        public bool StandardPriorityEligible { get; init; }
+        public string ReceiverType { get; init; } = string.Empty;
+        public bool AssignmentBeforeRead { get; init; }
+        public bool KnownWebIdlMember { get; init; }
+        public string DefinedInterface { get; init; } = string.Empty;
 
         public MissingApiRecord Clone()
             => new()
@@ -327,7 +365,15 @@ internal static class MissingApiTracker
                 LastSeenUtc = LastSeenUtc,
                 EncounterCount = EncounterCount,
                 Reason = Reason,
-                ExceptionText = ExceptionText
+                ExceptionText = ExceptionText,
+                Classification = Classification,
+                OperationKind = OperationKind,
+                ClassificationReason = ClassificationReason,
+                StandardPriorityEligible = StandardPriorityEligible,
+                ReceiverType = ReceiverType,
+                AssignmentBeforeRead = AssignmentBeforeRead,
+                KnownWebIdlMember = KnownWebIdlMember,
+                DefinedInterface = DefinedInterface
             };
     }
 }

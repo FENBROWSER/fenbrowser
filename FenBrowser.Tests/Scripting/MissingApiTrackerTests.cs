@@ -43,7 +43,7 @@ public sealed class MissingApiTrackerTests
 
             using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
             var outputRootElement = outputJson.RootElement;
-            Assert.Equal("fenbrowser.missing-apis.v1", outputRootElement.GetProperty("schema").GetString());
+            Assert.Equal("fenbrowser.missing-apis.v2", outputRootElement.GetProperty("schema").GetString());
             Assert.Equal("example.test", outputRootElement.GetProperty("siteKey").GetString());
             Assert.Equal(baseUri.AbsoluteUri, outputRootElement.GetProperty("siteUrl").GetString());
 
@@ -57,6 +57,9 @@ public sealed class MissingApiTrackerTests
             Assert.Equal(3, record.GetProperty("line").GetInt32());
             Assert.Equal(1, record.GetProperty("column").GetInt32());
             Assert.Equal(1, record.GetProperty("encounterCount").GetInt32());
+            Assert.Equal("UNCLASSIFIED", record.GetProperty("classification").GetString());
+            Assert.Equal("READ", record.GetProperty("operationKind").GetString());
+            Assert.False(record.GetProperty("standardPriorityEligible").GetBoolean());
             Assert.False(string.IsNullOrWhiteSpace(record.GetProperty("firstSeenTraceId").GetString()));
             Assert.Contains("ReferenceError: FenMissingGlobalProbe is not defined", record.GetProperty("exceptionText").GetString());
 
@@ -67,6 +70,9 @@ public sealed class MissingApiTrackerTests
             Assert.Equal("script-1", traceEvent.GetProperty("script_id").GetString());
             var traceData = traceEvent.GetProperty("data");
             Assert.Equal("globalThis.FenMissingGlobalProbe", traceData.GetProperty("apiName").GetString());
+            Assert.Equal("UNCLASSIFIED", traceData.GetProperty("classification").GetString());
+            Assert.Equal("READ", traceData.GetProperty("operationKind").GetString());
+            Assert.False(traceData.GetProperty("standardPriorityEligible").GetBoolean());
             Assert.Equal(3, traceData.GetProperty("line").GetInt32());
             Assert.Equal(1, traceData.GetProperty("column").GetInt32());
         }
@@ -79,6 +85,51 @@ public sealed class MissingApiTrackerTests
             TryDeleteFile(tracePath);
             TryDeleteDirectory(outputRoot);
         }
+    }
+
+    [Fact]
+    public void Classifier_RequiresPositiveEvidenceBeforeStandardsPrioritization()
+    {
+        var unknown = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Document",
+            "closure_uid"));
+        var expando = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Element",
+            "applicationState",
+            AssignmentBeforeRead: true));
+        var legacy = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Navigator",
+            "msPointerEnabled"));
+        var wrongReceiver = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Document",
+            "className",
+            KnownWebIdlMember: true,
+            DefinedInterface: "Element",
+            ReceiverMatchesDefinedInterface: false));
+        var unresolvedReceiver = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Document",
+            "compareDocumentPosition",
+            KnownWebIdlMember: true,
+            DefinedInterface: "Node"));
+        var standard = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Document",
+            "compareDocumentPosition",
+            KnownWebIdlMember: true,
+            DefinedInterface: "Node",
+            ReceiverMatchesDefinedInterface: true));
+
+        Assert.Equal("UNCLASSIFIED", MissingApiClassifier.ToToken(unknown.Classification));
+        Assert.Equal("SITE_EXPANDO", MissingApiClassifier.ToToken(expando.Classification));
+        Assert.Equal("LEGACY_PROBE", MissingApiClassifier.ToToken(legacy.Classification));
+        Assert.Equal("WRONG_RECEIVER", MissingApiClassifier.ToToken(wrongReceiver.Classification));
+        Assert.Equal("UNCLASSIFIED", MissingApiClassifier.ToToken(unresolvedReceiver.Classification));
+        Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(standard.Classification));
+        Assert.False(unknown.StandardPriorityEligible);
+        Assert.False(expando.StandardPriorityEligible);
+        Assert.False(legacy.StandardPriorityEligible);
+        Assert.False(wrongReceiver.StandardPriorityEligible);
+        Assert.False(unresolvedReceiver.StandardPriorityEligible);
+        Assert.True(standard.StandardPriorityEligible);
     }
 
     [Fact]
@@ -112,6 +163,9 @@ public sealed class MissingApiTrackerTests
             Assert.Equal("fenMissingApiProbe", record.GetProperty("propertyName").GetString());
             Assert.Equal(baseUri.AbsoluteUri, record.GetProperty("siteUrl").GetString());
             Assert.Equal(2, record.GetProperty("encounterCount").GetInt32());
+            Assert.Equal("UNCLASSIFIED", record.GetProperty("classification").GetString());
+            Assert.Equal("READ", record.GetProperty("operationKind").GetString());
+            Assert.False(record.GetProperty("standardPriorityEligible").GetBoolean());
             Assert.False(string.IsNullOrWhiteSpace(record.GetProperty("firstSeenTraceId").GetString()));
         }
         finally

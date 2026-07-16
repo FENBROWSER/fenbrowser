@@ -1,0 +1,10 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>missing API classification fixture</title>
+<main id="result">pending</main>
+<script>
+  const unknownRead = document.applicationSpecificMarker;
+  const legacyProbe = navigator.msPointerEnabled;
+  document.querySelector('#result').textContent =
+    typeof unknownRead + '|' + typeof legacyProbe;
+</script>
