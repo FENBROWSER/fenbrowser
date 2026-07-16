@@ -1,6 +1,5 @@
 using System.Text.Json;
 using FenBrowser.Core;
-using FenBrowser.Core.Engine;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Core;
@@ -20,7 +19,6 @@ public sealed class EventLoopTraceTests
         try
         {
             ConfigureTrace(tracePath);
-            EnginePhaseManager.EnterPhase(EnginePhase.Idle);
 
             var loop = EventLoopCoordinator.CreateIsolated();
             loop.ScheduleTask(
@@ -80,13 +78,22 @@ public sealed class EventLoopTraceTests
                 "</script></body></html>",
                 baseUri).Parse();
             var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.Sandbox = SandboxPolicy.AllowAll;
 
             await engine.SetDomAsync(document.DocumentElement, baseUri);
 
             var completed = SpinWait.SpinUntil(
-                () => Equals(true, engine.Evaluate("Boolean(globalThis.__timerDone)&&Boolean(globalThis.__rafDone)&&Boolean(globalThis.__timerMicrotask)")),
+                () =>
+                {
+                    var snapshot = engine.GetEventLoopSnapshot();
+                    return snapshot.TimersExecuted == 1 && snapshot.AnimationFramesExecuted == 1;
+                },
                 millisecondsTimeout: 1000);
             Assert.True(completed);
+            Assert.Equal(
+                "true",
+                engine.Evaluate(
+                    "String(Boolean(globalThis.__timerDone)&&Boolean(globalThis.__rafDone)&&Boolean(globalThis.__timerMicrotask))")?.ToString());
 
             DisableTrace();
 

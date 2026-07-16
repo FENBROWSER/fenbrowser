@@ -60,4 +60,10 @@
     <Compile Remove="Core\EventInvariantTests.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Current FenJS/event-loop diagnostic regression; keep this explicit so the
+         broader legacy Engine tree remains excluded. -->
+    <Compile Include="Engine\EventLoopTraceTests.cs" />
+  </ItemGroup>
+
 </Project>

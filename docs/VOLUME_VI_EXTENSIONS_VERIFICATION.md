@@ -3903,3 +3903,15 @@ Verification:
 - Green/discovery: the lifecycle/classifier slice lists the two new methods and passes `20/20`; the artifact/exception contract passes `2/2`. Tooling Release builds with zero warnings and zero errors.
 - Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_stringifier_partial_interface.html/20260716T120850Z/` reports blocker `none`, zero evidence-quality warnings/contradictions, and 26/26 artifacts.
 - Fresh Google bundle `logs/real-site/www.google.com/20260716T120932Z/` reports the same evidence-quality result, zero callback failures/exceptions, complete lifecycle, visible main UI, and all 26 artifacts.
+
+## 6.161 Event-Loop Trace Test Activation (2026-07-16)
+
+- `FenBrowser.Tests.csproj` explicitly includes only `Engine/EventLoopTraceTests.cs`; the broad `Engine/**` tree remains excluded. `RealSiteRenderDiagnostics` and other optional/networked legacy probes were not activated.
+- The activated test was migrated from the removed phase-transition test API to the current event-loop contract. Its FenJS timer/rAF case now enables the explicit test sandbox, waits on event-loop execution counters without repeatedly taking the interpreter lock, and then verifies timer, animation-frame, and Promise-microtask page state.
+- Discovery lists exactly two methods: the isolated coordinator trace contract and the FenJS browser timer/rAF/microtask trace contract.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~EventLoopTraceTests" --list-tests --logger "console;verbosity=minimal"`: lists both methods.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~EventLoopTraceTests" --logger "console;verbosity=minimal"`: pass (`2/2`, zero failed/skipped).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~EventLoopTraceTests|FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~BrowserLifecycleDetailTests" --logger "console;verbosity=minimal"`: pass (`10/10`, zero failed/skipped).
