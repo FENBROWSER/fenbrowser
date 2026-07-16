@@ -3652,6 +3652,20 @@ Verification commands:
 - The included `FirstBlockerClassifierTests` table covers navigation failure, required-resource failure, parser-blocking script failure, missing-standard-API throw, non-fatal feature probe, lifecycle contradiction, zero-size-root equivalent, successful page, post-load callback failure, input failure, and submit failure. A second contract protects non-fatal ordering and the five explicit unverified interaction milestones.
 - Final local evidence is `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_throwing_timer_callback.html/20260715T080257Z/`: result `none`, boot/render milestones complete, one `callback-1` timer failure listed as non-fatal, no contradictions, five interaction milestones unverified, and all expected artifacts present.
 
+## 6.141 Mandatory IPC, Sandbox, and Performance Bundle Artifacts (2026-07-16)
+
+- `debug-site` now always writes schema-v1 `ipc.json`, `sandbox_denials.json`, and `performance.json` before generating `artifact_manifest.json`.
+- The current in-process host reports IPC and sandbox systems as `inactive` and `not-configured` with zero events/denials instead of implying success through missing files. No token, payload body, cookie, authorization header, or page data is serialized.
+- `performance.json` is explicitly a `partial` single diagnostic sample, not a benchmark. It contains only already-captured elapsed navigation, lifecycle, layout/paint/raster, watchdog, callback, timer, and microtask values and lists unavailable metrics.
+- `DebugSiteArtifactContractTests` failed before the exporter change because `ipc.json` was absent, then passed after the fix. The test invokes the real bundle writer, validates all three schemas, and verifies that the manifest marks each file present.
+
+Verification:
+
+- Discovery lists `DebugSiteArtifactContractTests.WriteBundle_AlwaysEmitsTypedSupplementalArtifactsAndManifestEntries`.
+- The focused artifact/exception slice passes `2/2` with no failures or skips.
+- `FenBrowser.Tooling` Release builds with `2` warnings and `0` errors.
+- Fresh local evidence: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_interaction_form_acceptance.html/20260716T101850Z/`; navigation completed, screenshot capture succeeded, and the manifest has no missing entries.
+
 Verification commands:
 
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FirstBlockerClassifierTests" --logger "console;verbosity=minimal"`: pass (`12/12`).

@@ -66,9 +66,9 @@ The reality audit proceeds in this order:
 | Deterministic first-causal-blocker classifier | TESTED | `first_blocker.json` models 19 ordered milestones, fixture tests remain green, and the terminal Google navigation reports `none` with lifecycle/DOM/frame agreement | Missing-artifact and clock-mismatch fixture coverage remains |
 | Exception attribution | TESTED | Typed callback records, `event_loop.json`, `exceptions.json`, trace, and summary share one drained snapshot; the current Google bundle agrees at zero |
 | Missing API bundle schema | STUBBED | Runtime tracker has provenance; bundle exports a smaller `EngineCapabilities` view with false positives |
-| `ipc.json` | NOT_STARTED | Not in the artifact manifest |
-| `sandbox_denials.json` | NOT_STARTED | Not in the artifact manifest |
-| `performance.json` | NOT_STARTED | Render telemetry exists but is not exported as the required artifact |
+| `ipc.json` | INTEGRATED | Always emitted and manifested; current in-process runs truthfully report inactive/not-configured/no-events, while brokered event capture is open |
+| `sandbox_denials.json` | INTEGRATED | Always emitted and manifested; current in-process runs truthfully report inactive/not-configured/no-denials, while active denial capture is open |
+| `performance.json` | INTEGRATED | Exports one clearly labeled partial diagnostic sample from existing navigation/render/event-loop telemetry; repeatable profiles remain open |
 | Individual dump/selector CLI commands | NOT_STARTED | Current Tooling usage exposes only `diagnose` and `debug-site` for this workflow |
 
 ## Primary real-site target

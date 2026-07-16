@@ -18,6 +18,12 @@ Source: `logs/real-site/www.google.com/20260714T075906Z/style_layout.json`.
 
 This is one diagnostic frame, not a benchmark distribution. Paint is the largest reported stage, but no CPU/allocation profile in this audit proves its internal cause.
 
+## Debug-site performance artifact
+
+Every debug-site bundle now includes schema-v1 `performance.json`. The artifact is explicitly marked `partial`, `diagnosticMode: true`, and `sampleCount: 1`; it records elapsed navigation, lifecycle outcome, layout/paint/raster totals, watchdog state, and event-loop counts already available to Tooling. It also names unavailable timing, memory, responsiveness, and distribution metrics, so a single run cannot be mistaken for a benchmark.
+
+Local contract evidence: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_interaction_form_acceptance.html/20260716T101850Z/performance.json`.
+
 ## Required metrics
 
 | Group | Metrics | Status |

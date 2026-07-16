@@ -14,7 +14,7 @@ Snapshot date: 2026-07-15. These are evidence-backed gaps from the current check
 | 1 | Google interaction acceptance is unproven even though the page renders | L / G / F | RESEARCHED | No automated click/type/submit trace in the current bundle |
 | 1 | Generated WebIDL bindings are not compiled into FenEngine | E | STUBBED | Generator and IDLs exist; `FenBrowser.FenEngine.csproj` removes generated binding sources |
 | 1 | Browser-page nursery collection is disabled because transient roots are incomplete | D / E | RESEARCHED | `YoungAllocationsPerMinorGc = 0` with an explicit stale-handle correctness comment |
-| 2 | `ipc.json`, `sandbox_denials.json`, and `performance.json` are absent from the bundle contract | L / K | NOT_STARTED | Current artifact manifest and Tooling writer |
+| 2 | Brokered IPC events, sandbox denials, and repeatable performance distributions are not yet populated in their now-mandatory bundle files | L / K | STUBBED | 2026-07-16 local bundle emits typed inactive IPC/sandbox records and a partial single performance sample |
 | 2 | Required standalone dump and selector-inspection commands are not exposed by Tooling | H / I / J | NOT_STARTED | Current Tooling command switch and usage text |
 | 2 | Script discovery and execution counters use different populations for dynamic scripts | C | RESEARCHED | Google reports 13 script elements and 17 completed executions |
 | 2 | A `data:` image is counted as a failed network request | B | RESEARCHED | Google `network.json` failed request record |

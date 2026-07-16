@@ -808,6 +808,18 @@ namespace FenBrowser.Tooling
                 Path.Combine(bundleDir, "first_blocker.json"),
                 JsonSerializer.Serialize(firstBlocker, jsonOptions),
                 new UTF8Encoding(false));
+            File.WriteAllText(
+                Path.Combine(bundleDir, "ipc.json"),
+                JsonSerializer.Serialize(BuildInactiveIpcArtifact(), jsonOptions),
+                new UTF8Encoding(false));
+            File.WriteAllText(
+                Path.Combine(bundleDir, "sandbox_denials.json"),
+                JsonSerializer.Serialize(BuildInactiveSandboxDenialsArtifact(), jsonOptions),
+                new UTF8Encoding(false));
+            File.WriteAllText(
+                Path.Combine(bundleDir, "performance.json"),
+                JsonSerializer.Serialize(BuildPerformanceArtifact(report), jsonOptions),
+                new UTF8Encoding(false));
             if (report.Interaction != null)
             {
                 File.WriteAllText(
@@ -957,6 +969,9 @@ namespace FenBrowser.Tooling
             sb.AppendLine("- `interaction.json`: click, focus, text, submit, request/navigation, and bounded event evidence when interaction was requested.");
             sb.AppendLine("- `interaction_before.png` / `interaction_after.png`: correlated screenshots when interaction was requested.");
             sb.AppendLine("- `first_blocker.json`: deterministic milestone dependency and first-causal-blocker classification.");
+            sb.AppendLine("- `ipc.json`: typed IPC state; inactive with zero events for the current in-process debug-site host.");
+            sb.AppendLine("- `sandbox_denials.json`: typed sandbox state; inactive with zero denials when no sandbox is configured.");
+            sb.AppendLine("- `performance.json`: single diagnostic sample from already-captured navigation and render-stage telemetry; not a benchmark.");
             sb.AppendLine("- `style_layout.json`: style/layout/paint counters, timing, status, and first blocker classification.");
             sb.AppendLine("- `style_dump.txt`: DOM preorder computed-style snapshot.");
             sb.AppendLine("- `layout_dump.txt`: layout Box tree snapshot with geometry.");
@@ -1672,6 +1687,89 @@ namespace FenBrowser.Tooling
             };
         }
 
+        private static object BuildInactiveIpcArtifact()
+        {
+            return new
+            {
+                schemaVersion = 1,
+                status = "NOT_STARTED",
+                state = "inactive",
+                configuration = "not-configured",
+                processMode = "in-process",
+                eventState = "no-events",
+                eventCount = 0,
+                reason = "The current debug-site host runs in process; brokered IPC capture is not configured.",
+                events = Array.Empty<object>()
+            };
+        }
+
+        private static object BuildInactiveSandboxDenialsArtifact()
+        {
+            return new
+            {
+                schemaVersion = 1,
+                status = "NOT_STARTED",
+                state = "inactive",
+                configuration = "not-configured",
+                processMode = "in-process",
+                denialState = "no-denials",
+                denialCount = 0,
+                reason = "The current debug-site host has no renderer sandbox configured.",
+                denials = Array.Empty<object>()
+            };
+        }
+
+        private static object BuildPerformanceArtifact(DebugSiteReport report)
+        {
+            var styleLayout = report.StyleLayout ?? new DebugSiteStyleLayoutSummary();
+            var eventLoop = report.EventLoop ?? new BrowserEventLoopSnapshot();
+            return new
+            {
+                schemaVersion = 1,
+                status = "IMPLEMENTED",
+                state = "partial",
+                processMode = "in-process",
+                diagnosticMode = true,
+                sampleCount = 1,
+                reason = "Single debug-site diagnostic sample; this artifact is not a repeatable performance benchmark.",
+                navigation = new
+                {
+                    elapsedMs = report.ElapsedMs,
+                    completed = report.NavigateReturned,
+                    lifecyclePhase = report.Lifecycle?.Phase ?? string.Empty
+                },
+                rendering = new
+                {
+                    layoutRan = styleLayout.LayoutRan,
+                    paintRan = styleLayout.PaintRan,
+                    rasterRan = styleLayout.RasterRan,
+                    layoutMs = styleLayout.LayoutDurationMs,
+                    paintMs = styleLayout.PaintDurationMs,
+                    rasterMs = styleLayout.RasterDurationMs,
+                    totalMs = styleLayout.TotalRenderDurationMs,
+                    watchdogTriggered = styleLayout.WatchdogTriggered
+                },
+                eventLoop = new
+                {
+                    callbackFailureCount = eventLoop.CallbackFailures,
+                    timerCallbackCount = eventLoop.TimersExecuted,
+                    microtaskCheckpointCount = eventLoop.MicrotaskCheckpoints
+                },
+                unavailableMetrics = new[]
+                {
+                    "start-to-response",
+                    "start-to-commit",
+                    "js-compile",
+                    "js-execute",
+                    "managed-allocations",
+                    "gc-pause",
+                    "fenjs-live-objects",
+                    "input-latency",
+                    "frame-interval-distribution"
+                }
+            };
+        }
+
         private static List<object> BuildArtifactManifest(string bundleDir, bool includeInteraction)
         {
             var expected = new List<string>
@@ -1687,6 +1785,9 @@ namespace FenBrowser.Tooling
                 "script_loading.json",
                 "event_loop.json",
                 "first_blocker.json",
+                "ipc.json",
+                "sandbox_denials.json",
+                "performance.json",
                 "style_layout.json",
                 "exceptions.json",
                 "missing_apis.json",

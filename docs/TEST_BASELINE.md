@@ -19,9 +19,10 @@ Snapshot date: 2026-07-14; focused build/test and selected WPT evidence revalida
 | WebIDL manual-binding inventory | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~WebIdlInventoryRunnerTests|FullyQualifiedName~WebIdlBindingGeneratorTests" --logger "console;verbosity=minimal"` | 2 passed, 0 failed, 0 skipped; inventory fixture listed by `--list-tests` | TESTED |
 | FenJS host lifetime measurement | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsHostLifetimeMeasurementTests" --logger "console;verbosity=detailed"` | 2 passed, 0 failed, 0 skipped; both listed; six resets remain 6 live handles at baseline and 38 with 32 retained nodes | TESTED |
 | Brokered renderer startup components and policy | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~RendererIsolationPoliciesTests|FullyQualifiedName~BrokeredRendererProcessAcceptanceTests|FullyQualifiedName~HostExecutablePathResolverTests|FullyQualifiedName~RendererChildEnvironmentTests|FullyQualifiedName~WindowsAppContainerEnvironmentTests" --logger "console;verbosity=minimal"` | 43 passed, 0 failed, 1 skipped; the skip is `BLOCK-PROC-002`, not accepted brokered startup | TESTED |
+| Debug-site supplemental artifact contract | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~DebugSiteArtifactContractTests|FullyQualifiedName~DebugSiteExceptionSummaryTests" --logger "console;verbosity=minimal"` | 2 passed, 0 failed, 0 skipped; artifact-contract test listed by `--list-tests` | REGRESSION_PROTECTED |
 | Host process-isolation surface, Release | `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Release --no-restore --verbosity quiet` | 496 warnings, 0 errors | TESTED |
 | FenEngine, Release | `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v:minimal` | 0 warnings, 0 errors | TESTED |
-| Tooling, Release | `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v:minimal` | 0 warnings, 0 errors | TESTED |
+| Tooling, Release | `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --verbosity quiet` | 2 warnings, 0 errors | TESTED |
 | Adjacent form/input event slice | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FormControlActivationTests|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_DeliversDoubleClickContextMenuAndPointerPayload|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_EventListenerCanAccessFreshClassList" --logger "console;verbosity=minimal"` | 5 passed, 0 failed, 0 skipped | TESTED |
 | FenJS iterator and stale-handle slice | `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~AtIteratorDispatchTests|FullyQualifiedName~ForOfTests|FullyQualifiedName~IteratorStaleHandleTests" --logger "console;verbosity=minimal"` | 24 passed, 0 failed, 0 skipped | TESTED |
 | FenJS host-handle table slice | `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~HostObjectTableTests" --logger "console;verbosity=minimal"` | 7 passed, 0 failed, 0 skipped | TESTED |
@@ -54,6 +55,7 @@ The Release discovery check found:
 | `HostExecutablePathResolverTests` | yes; 1 test |
 | `RendererChildEnvironmentTests` | yes; 1 test |
 | `WindowsAppContainerEnvironmentTests` | yes; 1 test |
+| `DebugSiteArtifactContractTests` | yes; 1 test |
 | `EventLoopTraceTests` | no |
 | `RealSiteRenderDiagnostics` | no |
 | `RendererChildLoopIoTests` | no |

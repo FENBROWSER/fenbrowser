@@ -112,25 +112,25 @@ Task ID: TRACE-004
 Title: Complete required bundle artifacts for IPC, sandbox, and performance
 Area: Diagnostic spine / process / performance
 Owner Agent: Process Diagnostic Agent
-Status: NOT_STARTED
+Status: IMPLEMENTED
 Priority: 1
 Risk Level: Medium
 Dependencies: Current bundle manifest, IPC logging, sandbox profiles, and render telemetry exist
 Files likely involved: `FenBrowser.Tooling/Program.cs`, Host process-isolation diagnostics, render telemetry types, included tests
 Specs/references: `docs/DIAGNOSTICS.md`; `docs/IPC_MODEL.md`; `docs/PERFORMANCE_DASHBOARD.md`
-Current behavior: `ipc.json`, `sandbox_denials.json`, and `performance.json` are absent from the artifact manifest.
+Current behavior: Every in-process local run emits and manifests schema-v1 `ipc.json`, `sandbox_denials.json`, and `performance.json`. IPC/sandbox records truthfully state inactive/not-configured with zero events/denials; performance is labeled as one partial diagnostic sample and names unavailable metrics.
 Expected behavior: Every run emits schema-versioned files, including explicit `inactive`/`no-denials` records when the process mode or data source is inactive.
 Reproduction: Run one in-process local page, one explicit brokered local page, an IPC rejection fixture, and a frame-budget fixture.
-Root cause hypothesis: Data producers and Tooling snapshots were developed separately and the bundle contract only lists implemented outputs.
-Implementation plan: Define schemas; adapt bounded metadata snapshots; emit empty/inactive reason records; add manifest validation; preserve token/header redaction.
+Root cause: The Tooling writer and manifest omitted all three artifacts even though partial render telemetry and process-mode knowledge were available.
+Implementation plan: Completed for the in-process empty/partial contract. Next adapt bounded brokered IPC and sandbox-denial snapshots, then add repeatable performance metadata without serializing tokens or payload bodies.
 Tests required: Inactive mode, send/receive/reject/timeout, sandbox deny, frame/allocation metrics, manifest completeness, and redaction.
 Evidence required: Four fixture bundles with complete manifests and cross-file correlation IDs.
 Security impact: Never serialize tokens, payload bodies, cookies, or authorization headers.
 Performance impact: Metadata must be bounded and collected without blocking hot paths.
 Compatibility impact: Diagnostic-only additive artifacts.
 Known risks: Sensitive-data leakage or high-volume IPC trace growth.
-Blockers: None
-Next action: Lock the three JSON schemas and an artifact-manifest completeness test.
+Blockers: `BLOCK-PROC-002` prevents brokered local evidence; it does not block the in-process artifact contract.
+Next action: After `BLOCK-PROC-002`, populate `ipc.json` and `sandbox_denials.json` from one local brokered rejection/denial fixture without changing public IPC contracts.
 
 ## Task SITE-001
 

@@ -117,9 +117,9 @@ A missing property is not fatal merely because it was read. It becomes a fatal c
 | `script_loading.json` | INTEGRATED | Per-script lifecycle |
 | `event_loop.json` | INTEGRATED | Tasks, microtasks, timers, rAF, lifecycle |
 | `style_layout.json` | INTEGRATED | Style/layout/paint/raster summary |
-| `ipc.json` | NOT_STARTED | IPC metadata; empty typed record with inactive reason in in-process mode |
-| `sandbox_denials.json` | NOT_STARTED | Policy denials; empty typed record with inactive reason if no sandbox |
-| `performance.json` | NOT_STARTED | Navigation/stage/frame/allocation/GC/long-task metrics |
+| `ipc.json` | INTEGRATED | Schema v1 typed inactive/not-configured/no-events record in in-process mode; active brokered event capture remains open |
+| `sandbox_denials.json` | INTEGRATED | Schema v1 typed inactive/not-configured/no-denials record when no sandbox is active; active denial capture remains open |
+| `performance.json` | INTEGRATED | Schema v1 partial single-sample navigation/render/event-loop metrics with unavailable metrics named explicitly; not a benchmark |
 | `first_blocker.json` | TESTED | Deterministic typed result, evidence candidates, contradictions, non-fatal defects, and 19 milestone states |
 | `dom_dump.html` | NOT_STARTED | Current bundle emits `dom_dump.txt`; canonical HTML serialization remains to be added |
 | `style_dump.txt` | INTEGRATED | DOM-preorder computed-style snapshot |
@@ -127,7 +127,7 @@ A missing property is not fatal merely because it was read. It becomes a fatal c
 | `paint_dump.txt` | INTEGRATED | Paint Tree snapshot |
 | `display_list.txt` | STUBBED | Current file is a flattened Paint Tree proxy, not a canonical display-list command stream |
 | `screenshot.png` | INTEGRATED | 1280x800 current tooling viewport |
-| `artifact_manifest.json` | INTEGRATED | Must list the full required contract, not only files already implemented |
+| `artifact_manifest.json` | INTEGRATED | Lists the full current contract and records present/missing status; the 2026-07-16 local fixture had no missing entries |
 
 ## Security and privacy
 
@@ -144,8 +144,8 @@ Trace output may contain sensitive URLs, query strings, headers, cookies, local 
 1. Preserve and classify event-loop/script/promise exceptions; add log drain.
 2. Implement deterministic first blocker output.
 3. Unify and classify missing API records.
-4. Export `ipc.json`.
-5. Export `sandbox_denials.json`.
-6. Export `performance.json`.
+4. Populate `ipc.json` from bounded brokered send/receive/reject/timeout metadata.
+5. Populate `sandbox_denials.json` from bounded sandbox-denial metadata.
+6. Expand `performance.json` through the repeatable measurement protocol before using it as a benchmark.
 7. Add standalone dump and selector-inspection commands.
 8. Move regression tests onto included test surfaces and verify with a local failure fixture plus a fresh Google run.
