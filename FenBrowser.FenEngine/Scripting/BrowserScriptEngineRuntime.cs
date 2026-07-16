@@ -10387,8 +10387,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             CreateDomTokenListToggleMethod(tokenList, view), Writable: true, Enumerable: false, Configurable: true));
         viewObj.DefineOwnProperty("replace", new JsPropertyDescriptor(
             CreateDomTokenListReplaceMethod(tokenList, view), Writable: true, Enumerable: false, Configurable: true));
+        viewObj.DefineOwnProperty(
+            "value",
+            JsPropertyDescriptor.Accessor(
+                _interpreter.AllocateNativeFunction(
+                    "get value",
+                    (_, _) => JsValue.FromString(tokenList.Value ?? string.Empty),
+                    length: 0),
+                _interpreter.AllocateNativeFunction(
+                    "set value",
+                    (_, args) =>
+                    {
+                        tokenList.Value = args.Count > 0
+                            ? CoerceToHostString(args[0])
+                            : string.Empty;
+                        RefreshDomTokenIndices(view, tokenList);
+                        return JsValue.Undefined;
+                    },
+                    length: 1),
+                Enumerable: true,
+                Configurable: true));
 
-        // Set length, value, and numeric indices as plain data properties.
+        // Set length and numeric indices as refreshed data properties. `value`
+        // remains a live accessor so writes update the associated DOM attribute.
         RefreshDomTokenIndices(view, tokenList);
 
         // Install Symbol.iterator.
@@ -10535,16 +10556,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private void RefreshDomTokenIndices(JsValue view, DOMTokenList tokenList)
     {
         var viewObj = _interpreter.Heap.GetObject(view.AsObjectHandle());
-        // Update length and value as plain properties (accessors aren't
-        // reliably invoked by FenJS's [[Set]]/[[Get]] on plain objects).
+        // Update the derived length and numeric indices. The live `value`
+        // accessor installed at view creation owns associated-attribute writes.
         viewObj.DefineOwnProperty("length",
             new JsPropertyDescriptor(
                 JsValue.FromInt32(tokenList.Length),
                 Writable: true, Enumerable: false, Configurable: true));
-        viewObj.DefineOwnProperty("value",
-            new JsPropertyDescriptor(
-                JsValue.FromString(tokenList.Value ?? string.Empty),
-                Writable: true, Enumerable: true, Configurable: true));
         // Set fresh numeric indices from the live token list.
         var maxOld = 0;
         foreach (var kv in viewObj.EnumerateOwnProperties())

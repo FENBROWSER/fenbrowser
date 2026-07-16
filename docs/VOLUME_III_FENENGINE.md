@@ -10230,3 +10230,14 @@ Verification:
 - Red: `HostBrowserDriverNewWindowTests.NewWindow_HasLoadedAboutBlankDocumentBeforeReturn` failed `0/1` at the root click with `element not interactable`.
 - Green: the new-window root test and the existing hidden zero-area rejection pass together `2/2`.
 - The selected WPT matrix proceeds past test-window focus and completes all three files instead of classifying all three as WebDriver failures.
+
+## 2.381 Live DOMTokenList Value Binding (2026-07-16)
+
+- The cached FenJS `DOMTokenList` view previously exposed `value` as a writable data snapshot. Assignment changed only the JS property and left the associated DOM attribute unchanged.
+- The view now exposes a live getter/setter. The setter applies host string conversion, delegates to Core `DOMTokenList.Value`, refreshes derived length/index state, and retains the existing cached wrapper identity. No host object is converted to a plain object and no realm, generation, or lifetime rule changes.
+
+Verification:
+
+- Red: `DomTokenListValueBindingTests.ValueAssignment_UpdatesTheLiteralAssociatedAttribute` returned the new JS property value while `getAttribute('class')` and `className` retained the old value.
+- Green/discovery: both included value-binding tests are listed and pass `2/2`; adjacent DOM collection iteration passes `3/3` and fresh event-time class-list access passes `1/1`.
+- The selected three-file WPT matrix now classifies both `DOMTokenList-stringifier.html` and `DOMTokenList-value.html` as Pass. Only `checkbox-click-events.html` remains an Assertion failure, with four unexpected subtests and no infrastructure failure.

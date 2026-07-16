@@ -1690,3 +1690,13 @@ Verification:
 - The included tokenizer, token-pool, html5lib, tree-builder, raw-text, table, select, parser-entrypoint, and hardening slice passes `97/97` in Release.
 - Release builds of `FenBrowser.Core` and `FenBrowser.Tooling` succeed with zero warnings and zero errors, and every benchmark failure gate passes in all five retained candidate reports.
 - Test262 and WPT are not rerun because this changes private token-name construction without changing HTML parsing decisions; the focused local tokenizer and tree-builder suite exercises every changed state family.
+
+### 1.78 DOMTokenList Ordered-Set Parsing (2026-07-16)
+
+- `DOMTokenList` now parses its associated attribute as an ordered set: ASCII-whitespace-separated tokens retain first-occurrence order and duplicate tokens are omitted from `length`, indexed access, iteration, and token operations.
+- The literal associated attribute remains unchanged when read through `value`; parsing duplicate tokens does not normalize or rewrite the stored string.
+
+Verification:
+
+- Red: `DomTokenListValueBindingTests.ValueAssignment_ParsesAnOrderedSetWithoutDuplicateTokens` returned length `3` for `" foo bar foo "`.
+- Green: both included `DomTokenListValueBindingTests` pass `2/2`; selected WPT `DOMTokenList-value.html` passes.

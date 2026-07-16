@@ -278,10 +278,22 @@ namespace FenBrowser.Core.Dom.V2
             if (_tokens != null && _cachedValue == currentValue)
                 return;
 
-            // Parse tokens
-            _tokens = currentValue.Split(
+            // Parse the attribute's ordered set of unique ASCII-whitespace-
+            // separated tokens while preserving the literal attribute value.
+            var parsedTokens = currentValue.Split(
                 new[] { ' ', '\t', '\r', '\n', '\f' },
                 StringSplitOptions.RemoveEmptyEntries);
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var orderedTokens = new List<string>(parsedTokens.Length);
+            foreach (var token in parsedTokens)
+            {
+                if (seen.Add(token))
+                {
+                    orderedTokens.Add(token);
+                }
+            }
+
+            _tokens = orderedTokens.ToArray();
             _cachedValue = currentValue;
         }
 
