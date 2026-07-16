@@ -3930,7 +3930,7 @@ Verification:
 
 ## 6.163 Required Browser-Integration Discovery Guard (2026-07-16)
 
-- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 27 selected timer/event/Promise/microtask provenance, callback invalidation, post-load lifecycle attribution, logger-drain/export, terminal-lifecycle agreement, host-conversion/receiver, form, renderer/network IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
+- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 28 selected timer/event/Promise/microtask provenance, callback invalidation, post-load lifecycle attribution, logger-drain/export, terminal-lifecycle agreement, host-conversion/receiver, form, renderer/network IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
 - The first combined run exposed a real parallel-isolation defect: the FenJS timer/rAF trace failed during native browser-constructor bootstrap while other browser tests ran concurrently. The global `EngineLog` collection is now explicitly non-parallel, matching its process-wide logger configuration and FenJS diagnostic usage.
 - This guard does not treat the skipped real-process brokered acceptance as passing. The AppContainer development-runtime provisioning decision remains the separately documented `BLOCK-PROC-002` boundary.
 
@@ -4064,3 +4064,10 @@ Verification:
 - Discovery lists all five network-process methods and the required browser-integration guard.
 - `NetworkProcessCoordinatorTests|RequiredBrowserIntegrationDiscoveryTests|RendererIpcMetadataTests|RendererIsolationPoliciesTests|RendererChildLoopIoTests`: pass (`51/51`, zero failed/skipped).
 - The guarded browser/process/export/receiver/lifecycle/network slice passes `81/81` with zero failures or skips.
+
+## 6.174 Network-Process Aggregate Response-Limit Regression (2026-07-16)
+
+- `AggregateResponseBodyOverLimit_IsRejected` uses the authenticated named-pipe fixture with two individually valid body chunks and an eight-byte coordinator test limit. It asserts that ten aggregate decoded bytes fail with `HttpRequestException` rather than being assembled into a successful response.
+- The regression uses a small internal test limit; the public coordinator retains its existing 64 MiB production limit. The active discovery guard protects this sixth network-process contract as selected browser-integration test 28.
+- Red result: fail (`0/1`) because no exception was thrown. Fixed network-process class: pass (`6/6`, zero failed/skipped).
+- `NetworkProcessCoordinatorTests|RequiredBrowserIntegrationDiscoveryTests|RendererIpcMetadataTests|RendererIsolationPoliciesTests|RendererChildLoopIoTests`: pass (`52/52`, zero failed/skipped).

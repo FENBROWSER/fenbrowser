@@ -1429,3 +1429,13 @@ Verification:
 - `NetworkProcessCoordinatorTests` uses a deterministic named-pipe child and exercises the real hello/ready/fetch/head/body/failure paths. The success contract passes three additional clean repetitions; security companions cover cross-origin URLs, invalid tokens, and payload/envelope ID mismatches; a compatibility control covers valid child failure propagation.
 - Before the fix the success contract first timed out with `TaskCanceledException`; after request-ID unification it reached and exposed the second origin-validation failure. The invalid-token reduction then showed no exception, and the mismatched-payload reduction timed out rather than rejecting the response. The completed focused class passes `5/5`.
 - The adjacent active renderer/network process slice passes `51/51` with zero failures or skips; the guarded browser/process matrix passes `81/81`.
+
+### 6.68 Network-Process Aggregate Response Limit (2026-07-16)
+
+- The broker previously compared each decoded response chunk with the 64 MiB body limit independently. A child could therefore send many individually valid chunks whose retained aggregate grew without bound.
+- `PendingNetworkRequest` now accounts decoded bytes while holding its existing body accumulator lock and rejects the chunk that would make the aggregate exceed the configured limit. Below-limit response assembly is unchanged.
+- Production continues to use the existing 64 MiB limit. An internal constructor supplies a small deterministic limit to active named-pipe tests without changing the public coordinator API, IPC schema, default process mode, or unresolved fallback policy.
+
+Verification:
+
+- Before the fix, `AggregateResponseBodyOverLimit_IsRejected` accepted two five-byte chunks under an eight-byte test limit and threw no exception. The fixed network coordinator class passes `6/6`; the adjacent network/renderer process slice passes `52/52`, both with zero failures or skips.

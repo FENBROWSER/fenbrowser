@@ -165,13 +165,44 @@ public sealed class NetworkProcessCoordinatorTests
         await childTask;
     }
 
+    [Fact]
+    public async Task AggregateResponseBodyOverLimit_IsRejected()
+    {
+        var pipeName = $"fen_network_test_{Guid.NewGuid():N}";
+        var authToken = Guid.NewGuid().ToString("N");
+        using var session = new NetworkProcessSession(pipeName, authToken);
+        using var coordinator = new NetworkProcessCoordinator(maxBodyBytes: 8);
+
+        session.Start(childProcess: null);
+        var childTask = RunDeterministicChildAsync(
+            pipeName,
+            authToken,
+            responseBodyChunks: ["12345", "67890"]);
+        Assert.True(await session.WaitForReadyAsync(TimeSpan.FromSeconds(5)));
+        coordinator.AttachSession(session);
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            "https://fixture.test/network/parity");
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            coordinator.SendAsync(
+                request,
+                initiatorOrigin: "https://fixture.test",
+                cancellation.Token));
+
+        Assert.Contains("maximum allowed size", exception.Message, StringComparison.Ordinal);
+        await childTask;
+    }
+
     private static async Task<NetworkFetchRequestPayload> RunDeterministicChildAsync(
         string pipeName,
         string expectedAuthToken,
         string? responseUrl = null,
         string? responseCapabilityToken = null,
         string? payloadRequestId = null,
-        string? failureErrorCode = null)
+        string? failureErrorCode = null,
+        IReadOnlyList<string>? responseBodyChunks = null)
     {
         using var pipe = new NamedPipeClientStream(
             ".",
@@ -238,20 +269,25 @@ public sealed class NetworkProcessCoordinatorTests
                 }
             })
         });
-        await WriteEnvelopeAsync(writer, new NetworkIpcEnvelope
+        var bodyChunks = responseBodyChunks ?? ["response-body"];
+        for (var chunkIndex = 0; chunkIndex < bodyChunks.Count; chunkIndex++)
         {
-            Type = NetworkIpcMessageType.FetchResponseBody.ToString(),
-            RequestId = fetch.RequestId,
-            CapabilityToken = responseCapabilityToken ?? fetch.CapabilityToken,
-            Payload = NetworkIpc.SerializePayload(new NetworkFetchResponseBodyPayload
+            var bodyChunk = bodyChunks[chunkIndex];
+            await WriteEnvelopeAsync(writer, new NetworkIpcEnvelope
             {
-                RequestId = payloadRequestId ?? fetch.RequestId,
-                IsComplete = true,
-                ChunkIndex = 0,
-                BodyChunkBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("response-body")),
-                BytesTotal = "response-body".Length
-            })
-        });
+                Type = NetworkIpcMessageType.FetchResponseBody.ToString(),
+                RequestId = fetch.RequestId,
+                CapabilityToken = responseCapabilityToken ?? fetch.CapabilityToken,
+                Payload = NetworkIpc.SerializePayload(new NetworkFetchResponseBodyPayload
+                {
+                    RequestId = payloadRequestId ?? fetch.RequestId,
+                    IsComplete = chunkIndex == bodyChunks.Count - 1,
+                    ChunkIndex = chunkIndex,
+                    BodyChunkBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(bodyChunk)),
+                    BytesTotal = bodyChunks.Sum(static chunk => Encoding.UTF8.GetByteCount(chunk))
+                })
+            });
+        }
 
         return payload;
     }

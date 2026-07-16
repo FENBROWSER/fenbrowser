@@ -32,6 +32,7 @@ public sealed class RequiredBrowserIntegrationDiscoveryTests
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "InvalidResponseCapabilityToken_IsRejected"),
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "MismatchedPayloadRequestId_IsRejected"),
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "MatchingCapabilityFetchFailure_IsPropagated"),
+        ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "AggregateResponseBodyOverLimit_IsRejected"),
         ("FenBrowser.Tests.Core.RendererIsolationPoliciesTests", "RendererTabIsolationRegistry_UnexpectedExit_SchedulesRestartWithReplay"),
         ("FenBrowser.Tests.Architecture.RendererChildLoopIoTests", "ReadLineWithTimeoutAsync_ReusesPendingRead_AcrossTimeoutPolls")
     ];

@@ -47,6 +47,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         // Accumulates base64-decoded body chunks in order.
         private readonly List<byte[]> _bodyChunks = new();
         private readonly SemaphoreSlim _bodyLock = new(1, 1);
+        private long _bodyBytes;
         private readonly TaskCompletionSource<bool> _bodyCompleteTcs =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -77,10 +78,20 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             _bodyCompleteTcs.TrySetCanceled();
         }
 
-        public async Task AppendBodyChunkAsync(byte[] chunk)
+        public async Task<bool> TryAppendBodyChunkAsync(byte[] chunk, int maxBodyBytes)
         {
             await _bodyLock.WaitAsync().ConfigureAwait(false);
-            try { _bodyChunks.Add(chunk); }
+            try
+            {
+                if (chunk.LongLength > maxBodyBytes - _bodyBytes)
+                {
+                    return false;
+                }
+
+                _bodyChunks.Add(chunk);
+                _bodyBytes += chunk.LongLength;
+                return true;
+            }
             finally { _bodyLock.Release(); }
         }
 
@@ -125,9 +136,17 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         // Maximum body size accepted from the network process (64 MB).
         private const int MaxBodyBytes = 64 * 1024 * 1024;
+        private readonly int _maxBodyBytes;
 
-        public NetworkProcessCoordinator()
+        public NetworkProcessCoordinator() : this(MaxBodyBytes)
         {
+        }
+
+        internal NetworkProcessCoordinator(int maxBodyBytes)
+        {
+            if (maxBodyBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxBodyBytes));
+
+            _maxBodyBytes = maxBodyBytes;
             _fallbackClient = new HttpClient(new HttpClientHandler
             {
                 AllowAutoRedirect = true,
@@ -297,15 +316,14 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     try
                     {
                         var bytes = Convert.FromBase64String(body.BodyChunkBase64);
-                        if (bytes.Length > MaxBodyBytes)
+                        if (!pending.TryAppendBodyChunkAsync(bytes, _maxBodyBytes).GetAwaiter().GetResult())
                         {
                             EngineLogBridge.Warn(
-                                $"[NetworkCoordinator] Body chunk exceeds max size for request {body.RequestId}; dropping.",
+                                $"[NetworkCoordinator] Aggregate body exceeds max size for request {body.RequestId}; rejecting.",
                                 LogCategory.Network);
                             pending.SetBodyFailed("Response body exceeded maximum allowed size.");
                             return;
                         }
-                        pending.AppendBodyChunkAsync(bytes).GetAwaiter().GetResult();
                     }
                     catch (FormatException ex)
                     {
