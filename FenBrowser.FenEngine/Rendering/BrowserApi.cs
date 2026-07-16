@@ -8103,6 +8103,18 @@ pre {{
                     await NavigateAsync(resolvedHref?.AbsoluteUri ?? href);
                 }
             }
+            else if (tag == "input" &&
+                     suppressDomClickDispatch &&
+                     IsCheckboxInputElement(element))
+            {
+                // FenJS performs checkbox legacy pre-activation before click
+                // listeners and either commits input/change or rolls back when
+                // canceled. The physical/WebDriver path reaches this method
+                // afterward only for focus and paint; do not toggle twice.
+                SetFocusedElementState(element);
+                TryInvokeRepaintReady(_engine.GetActiveDom());
+                return;
+            }
             else if (tag == "input" && TryActivateCheckableInput(element))
             {
                 return;
@@ -9028,6 +9040,18 @@ pre {{
 
             var tag = element.NodeName?.ToLowerInvariant();
             return IsSubmitActivationControl(element, tag);
+        }
+
+        private static bool IsCheckboxInputElement(Element element)
+        {
+            if (element == null ||
+                !string.Equals(element.NodeName, "INPUT", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var type = (element.GetAttribute("type") ?? "text").Trim();
+            return string.Equals(type, "checkbox", StringComparison.OrdinalIgnoreCase);
         }
 
         private bool TryActivateCheckableInput(Element element)

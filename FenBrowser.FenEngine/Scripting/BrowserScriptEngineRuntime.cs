@@ -754,7 +754,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             () =>
                             {
                                 var eventValue = CreateBrowserDomEventValue(element, eventName, eventInit, out var dispatchState);
-                                var defaultAllowed = DispatchEventFull(element, eventName, eventValue, dispatchState);
+                                var defaultAllowed = DispatchElementEventWithActivation(
+                                    element,
+                                    eventName,
+                                    eventValue,
+                                    dispatchState);
                                 _interpreter.PumpMicrotasks();
                                 RecordMicrotaskCheckpoint("event:" + eventName);
                                 return defaultAllowed;
@@ -10162,6 +10166,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                string.Equals(type, "radio", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsCheckboxInputElement(Element element)
+    {
+        return string.Equals(element?.TagName, "input", StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(element.GetAttribute("type"), "checkbox", StringComparison.OrdinalIgnoreCase);
+    }
+
     private void QueueFrameElementLoad(Element element)
     {
         if (element == null ||
@@ -10312,6 +10322,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 break;
             case "checked" when IsCheckableInputElement(element):
                 ElementStateManager.Instance.SetChecked(element, CoerceToHostBoolean(value));
+                break;
+            case "type" when string.Equals(element.TagName, "input", StringComparison.OrdinalIgnoreCase):
+                element.SetAttribute("type", CoerceToHostString(value));
                 break;
             case "tabIndex":
                 element.SetAttribute(
@@ -11555,7 +11568,51 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         // Use full dispatch with capture/bubble phases. Pass null for dispatchState
         // because JS-dispatched events track propagation via _propagationStopped on
         // the event object itself (set by Event.prototype.stopPropagation).
-        return DispatchEventFull(element, type, eventValue, dispatchState: null);
+        return DispatchElementEventWithActivation(element, type, eventValue, dispatchState: null);
+    }
+
+    private bool DispatchElementEventWithActivation(
+        Element element,
+        string type,
+        JsValue eventValue,
+        BrowserDomEventDispatchState dispatchState)
+    {
+        if (!string.Equals(type, "click", StringComparison.OrdinalIgnoreCase) ||
+            !IsCheckboxInputElement(element) ||
+            element.HasAttribute("disabled"))
+        {
+            return DispatchEventFull(element, type, eventValue, dispatchState);
+        }
+
+        var previousChecked = ElementStateManager.Instance.IsChecked(element);
+        ElementStateManager.Instance.SetChecked(element, !previousChecked);
+
+        var defaultAllowed = DispatchEventFull(element, type, eventValue, dispatchState);
+        if (!defaultAllowed)
+        {
+            ElementStateManager.Instance.SetChecked(element, previousChecked);
+            return false;
+        }
+
+        DispatchCheckboxStateEvent(element, "input");
+        DispatchCheckboxStateEvent(element, "change");
+        return true;
+    }
+
+    private void DispatchCheckboxStateEvent(Element element, string type)
+    {
+        var eventValue = CreateBrowserDomEventValue(
+            element,
+            type,
+            new BrowserDomEventInit
+            {
+                Bubbles = true,
+                Cancelable = false,
+                Composed = true,
+                IsTrusted = true
+            },
+            out var dispatchState);
+        _ = DispatchEventFull(element, type, eventValue, dispatchState);
     }
 
     private string ReadEventType(JsValue eventValue)
@@ -13676,6 +13733,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     SetElementValue(element, CoerceToHostString(value));
                     return true;
                 case Element element when
+                    string.Equals(property, "type", StringComparison.Ordinal) &&
+                    string.Equals(element.TagName, "input", StringComparison.OrdinalIgnoreCase):
+                    element.SetAttribute("type", CoerceToHostString(value));
+                    return true;
+                case Element element when
                     string.Equals(property, "checked", StringComparison.Ordinal) &&
                     IsCheckableInputElement(element):
                     ElementStateManager.Instance.SetChecked(element, CoerceToHostBoolean(value));
@@ -14425,6 +14487,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "value":
                     value = JsValue.FromString(ReadElementValue(element));
                     return true;
+                case "type" when string.Equals(element.TagName, "input", StringComparison.OrdinalIgnoreCase):
+                    value = JsValue.FromString(ReadInputType(element));
+                    return true;
                 case "checked" when IsCheckableInputElement(element):
                     value = JsValue.FromBoolean(ElementStateManager.Instance.IsChecked(element));
                     return true;
@@ -14594,6 +14659,37 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             return JsValue.FromBoolean(_owner.DispatchElementHostEvent(element, eventValue));
                         },
                         length: 1);
+                    return true;
+                case "click":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "click",
+                        (_, _) =>
+                        {
+                            if (element.HasAttribute("disabled"))
+                            {
+                                return JsValue.Undefined;
+                            }
+
+                            var eventValue = _owner.CreateBrowserDomEventValue(
+                                element,
+                                "click",
+                                new BrowserDomEventInit
+                                {
+                                    Bubbles = true,
+                                    Cancelable = true,
+                                    Composed = true,
+                                    IsTrusted = false
+                                },
+                                out var dispatchState);
+                            _ = _owner.DispatchElementEventWithActivation(
+                                element,
+                                "click",
+                                eventValue,
+                                dispatchState);
+                            return JsValue.Undefined;
+                        },
+                        length: 0);
                     return true;
                 case "requestFullscreen":
                 case "webkitRequestFullscreen":
@@ -17165,6 +17261,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             }
 
             return string.Empty;
+        }
+
+        private static string ReadInputType(Element element)
+        {
+            var type = (element?.GetAttribute("type") ?? string.Empty).Trim().ToLowerInvariant();
+            return type switch
+            {
+                "hidden" or "text" or "search" or "tel" or "url" or "email" or "password" or
+                "date" or "month" or "week" or "time" or "datetime-local" or "number" or
+                "range" or "color" or "checkbox" or "radio" or "file" or "submit" or "image" or
+                "reset" or "button" => type,
+                _ => "text"
+            };
         }
 
         private static void SetElementValue(Element element, string value)
