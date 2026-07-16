@@ -52,7 +52,7 @@ Performance impact: Bound unique records per document and avoid allocating stack
 Compatibility impact: Improves attribution; does not add fake browser members.
 Known risks: Misclassifying a true standard member or suppressing a causal probe.
 Blockers: None
-Next action: Leave the two non-causal standard misses visible and move to the higher-priority terminal lifecycle-source disagreement with a deterministic contradiction fixture.
+Next action: Leave the two non-causal standard misses visible and continue with TRACE-003 missing-artifact and clock-mismatch classifier fixtures; the navigation detail already labels its timed-out sample as historical.
 
 ## Task TRACE-003
 
