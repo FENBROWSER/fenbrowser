@@ -3930,7 +3930,7 @@ Verification:
 
 ## 6.163 Required Browser-Integration Discovery Guard (2026-07-16)
 
-- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 18 selected timer/event/Promise/microtask provenance, callback invalidation, logger-drain, lifecycle, host-conversion, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
+- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 19 selected timer/event/Promise/microtask provenance, callback invalidation, logger-drain/export, lifecycle, host-conversion, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
 - The first combined run exposed a real parallel-isolation defect: the FenJS timer/rAF trace failed during native browser-constructor bootstrap while other browser tests ran concurrently. The global `EngineLog` collection is now explicitly non-parallel, matching its process-wide logger configuration and FenJS diagnostic usage.
 - This guard does not treat the skipped real-process brokered acceptance as passing. The AppContainer development-runtime provisioning decision remains the separately documented `BLOCK-PROC-002` boundary.
 
@@ -3988,3 +3988,16 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~RequiredBrowserIntegrationDiscoveryTests|FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~EventLoopTraceTests|FullyQualifiedName~FenJsHostLifetimeMeasurementTests" --logger "console;verbosity=minimal"`: pass (`18/18`, zero failed/skipped).
 - Discovery lists all 13 `CallbackFailureDiagnosticsTests` and the required-surface guard.
 - The guarded browser/process slice passes `71/71` with zero failures or skips.
+
+## 6.168 Diagnostic Artifact Export Failure Isolation (2026-07-16)
+
+- The debug-site bundle writer now isolates serialization and filesystem failures per directly written artifact. A failed sidecar no longer aborts later required exports or replaces the already collected page result.
+- Final manifest entries carry a bounded error type/message for the affected artifact. Existing missing-artifact classification then rewrites `first_blocker.json` as `insufficient-evidence` at `ArtifactCompleteness`; no missing diagnostic is presented as engine success.
+- `WriteBundle_ContinuesAfterExceptionsArtifactExportFailure` uses a temporary diagnostics root and creates `exceptions.json` as a directory, producing a real filesystem denial without a production test hook. It requires `event_loop.json`, `first_blocker.json`, and the manifest to survive, the manifest to mark `exceptions.json` absent with `UnauthorizedAccessException`, and the blocker warnings to name the missing artifact.
+
+Verification:
+
+- Pre-fix focused result: failed `1/1` at `Program.cs:782`; `UnauthorizedAccessException` aborted the bundle before later artifacts.
+- `DebugSiteArtifactContractTests|DebugSiteExceptionSummaryTests|FirstBlockerClassifierTests|RequiredBrowserIntegrationDiscoveryTests`: pass (`18/18`, zero failed/skipped).
+- Discovery lists both artifact-contract tests and the required-surface guard.
+- Guarded browser/process/export slice: pass (`73/73`, zero failed/skipped).

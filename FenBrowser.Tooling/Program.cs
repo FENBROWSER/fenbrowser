@@ -767,83 +767,81 @@ namespace FenBrowser.Tooling
             var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
             var exceptionSummary = BuildExceptionSummary(report);
             var firstBlocker = BuildFirstBlocker(report);
-            File.WriteAllText(
-                Path.Combine(bundleDir, "summary.json"),
-                JsonSerializer.Serialize(report, jsonOptions),
-                new UTF8Encoding(false));
-            File.WriteAllText(
-                Path.Combine(bundleDir, "summary.md"),
-                BuildDebugSiteSummary(report, runId, exceptionSummary),
-                new UTF8Encoding(false));
-            File.WriteAllLines(Path.Combine(bundleDir, "console.log"), report.ConsoleMessages, new UTF8Encoding(false));
-            File.WriteAllLines(Path.Combine(bundleDir, "navigation_failures.log"), report.NavigationFailures, new UTF8Encoding(false));
-            File.WriteAllText(Path.Combine(bundleDir, "rendered_text.txt"), report.RenderedTextSample ?? string.Empty, new UTF8Encoding(false));
-            File.WriteAllText(Path.Combine(bundleDir, "probes.json"), JsonSerializer.Serialize(report.Probes, jsonOptions), new UTF8Encoding(false));
-            File.WriteAllText(
-                Path.Combine(bundleDir, "exceptions.json"),
-                JsonSerializer.Serialize(exceptionSummary, jsonOptions),
-                new UTF8Encoding(false));
-            File.WriteAllText(
-                Path.Combine(bundleDir, "missing_apis.json"),
-                JsonSerializer.Serialize(
+            var artifactExportFailures = new List<DebugSiteArtifactExportFailure>();
+            var utf8 = new UTF8Encoding(false);
+            void WriteText(string name, Func<string> contentFactory) =>
+                TryWriteDebugSiteArtifact(
+                    bundleDir,
+                    name,
+                    path => File.WriteAllText(path, contentFactory(), utf8),
+                    artifactExportFailures);
+            void WriteLines(string name, Func<IEnumerable<string>> linesFactory) =>
+                TryWriteDebugSiteArtifact(
+                    bundleDir,
+                    name,
+                    path => File.WriteAllLines(path, linesFactory(), utf8),
+                    artifactExportFailures);
+
+            WriteText("summary.json", () => JsonSerializer.Serialize(report, jsonOptions));
+            WriteText("summary.md", () => BuildDebugSiteSummary(report, runId, exceptionSummary));
+            WriteLines("console.log", () => report.ConsoleMessages);
+            WriteLines("navigation_failures.log", () => report.NavigationFailures);
+            WriteText("rendered_text.txt", () => report.RenderedTextSample ?? string.Empty);
+            WriteText("probes.json", () => JsonSerializer.Serialize(report.Probes, jsonOptions));
+            WriteText("exceptions.json", () => JsonSerializer.Serialize(exceptionSummary, jsonOptions));
+            WriteText(
+                "missing_apis.json",
+                () => JsonSerializer.Serialize(
                     BuildMissingApiSnapshot(report),
                     new JsonSerializerOptions
                     {
                         WriteIndented = true,
                         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-                    }),
-                new UTF8Encoding(false));
-            File.WriteAllText(
-                Path.Combine(bundleDir, "network.json"),
-                JsonSerializer.Serialize(BuildNetworkSummary(report), jsonOptions),
-                new UTF8Encoding(false));
-            File.WriteAllText(
-                Path.Combine(bundleDir, "lifecycle.json"),
-                JsonSerializer.Serialize(report.Lifecycle ?? BuildLifecycleSummary(null, report.Probes, null, report.EventLoop), jsonOptions),
-                new UTF8Encoding(false));
-            File.WriteAllText(
-                Path.Combine(bundleDir, "lifecycle_timeline.json"),
-                JsonSerializer.Serialize(report.Lifecycle?.Transitions ?? new List<DebugSiteLifecycleTransition>(), jsonOptions),
-                new UTF8Encoding(false));
-            File.WriteAllText(
-                Path.Combine(bundleDir, "script_loading.json"),
-                JsonSerializer.Serialize(report.ScriptLoading ?? new BrowserScriptLoadingSnapshot(), jsonOptions),
-                new UTF8Encoding(false));
-            File.WriteAllText(
-                Path.Combine(bundleDir, "event_loop.json"),
-                JsonSerializer.Serialize(report.EventLoop ?? new BrowserEventLoopSnapshot(), jsonOptions),
-                new UTF8Encoding(false));
-            File.WriteAllText(
-                Path.Combine(bundleDir, "first_blocker.json"),
-                JsonSerializer.Serialize(firstBlocker, jsonOptions),
-                new UTF8Encoding(false));
-            File.WriteAllText(
-                Path.Combine(bundleDir, "ipc.json"),
-                JsonSerializer.Serialize(BuildInactiveIpcArtifact(), jsonOptions),
-                new UTF8Encoding(false));
-            File.WriteAllText(
-                Path.Combine(bundleDir, "sandbox_denials.json"),
-                JsonSerializer.Serialize(BuildInactiveSandboxDenialsArtifact(), jsonOptions),
-                new UTF8Encoding(false));
-            File.WriteAllText(
-                Path.Combine(bundleDir, "performance.json"),
-                JsonSerializer.Serialize(BuildPerformanceArtifact(report), jsonOptions),
-                new UTF8Encoding(false));
+                    }));
+            WriteText("network.json", () => JsonSerializer.Serialize(BuildNetworkSummary(report), jsonOptions));
+            WriteText(
+                "lifecycle.json",
+                () => JsonSerializer.Serialize(
+                    report.Lifecycle ?? BuildLifecycleSummary(null, report.Probes, null, report.EventLoop),
+                    jsonOptions));
+            WriteText(
+                "lifecycle_timeline.json",
+                () => JsonSerializer.Serialize(
+                    report.Lifecycle?.Transitions ?? new List<DebugSiteLifecycleTransition>(),
+                    jsonOptions));
+            WriteText(
+                "script_loading.json",
+                () => JsonSerializer.Serialize(
+                    report.ScriptLoading ?? new BrowserScriptLoadingSnapshot(),
+                    jsonOptions));
+            WriteText(
+                "event_loop.json",
+                () => JsonSerializer.Serialize(
+                    report.EventLoop ?? new BrowserEventLoopSnapshot(),
+                    jsonOptions));
+            WriteText("first_blocker.json", () => JsonSerializer.Serialize(firstBlocker, jsonOptions));
+            WriteText("ipc.json", () => JsonSerializer.Serialize(BuildInactiveIpcArtifact(), jsonOptions));
+            WriteText(
+                "sandbox_denials.json",
+                () => JsonSerializer.Serialize(BuildInactiveSandboxDenialsArtifact(), jsonOptions));
+            WriteText(
+                "performance.json",
+                () => JsonSerializer.Serialize(BuildPerformanceArtifact(report), jsonOptions));
             if (report.Interaction != null)
             {
-                File.WriteAllText(
-                    Path.Combine(bundleDir, "interaction.json"),
-                    JsonSerializer.Serialize(report.Interaction, jsonOptions),
-                    new UTF8Encoding(false));
+                WriteText(
+                    "interaction.json",
+                    () => JsonSerializer.Serialize(report.Interaction, jsonOptions));
             }
-            File.WriteAllText(
-                Path.Combine(bundleDir, "style_layout.json"),
-                JsonSerializer.Serialize(report.StyleLayout ?? new DebugSiteStyleLayoutSummary(), jsonOptions),
-                new UTF8Encoding(false));
-            File.WriteAllText(Path.Combine(bundleDir, "style_dump.txt"), report.StyleDump ?? string.Empty, new UTF8Encoding(false));
-            File.WriteAllText(Path.Combine(bundleDir, "layout_dump.txt"), report.LayoutDump ?? string.Empty, new UTF8Encoding(false));
-            File.WriteAllText(Path.Combine(bundleDir, "paint_dump.txt"), report.PaintDump ?? string.Empty, new UTF8Encoding(false));
-            File.WriteAllText(Path.Combine(bundleDir, "display_list.txt"), report.DisplayListDump ?? string.Empty, new UTF8Encoding(false));
+            WriteText(
+                "style_layout.json",
+                () => JsonSerializer.Serialize(
+                    report.StyleLayout ?? new DebugSiteStyleLayoutSummary(),
+                    jsonOptions));
+            WriteText("style_dump.txt", () => report.StyleDump ?? string.Empty);
+            WriteText("layout_dump.txt", () => report.LayoutDump ?? string.Empty);
+            WriteText("paint_dump.txt", () => report.PaintDump ?? string.Empty);
+            WriteText("display_list.txt", () => report.DisplayListDump ?? string.Empty);
 
             TryCopyLogArtifact("debug_site_screenshot.png", Path.Combine(bundleDir, "screenshot.png"));
             if (report.Interaction != null)
@@ -864,7 +862,10 @@ namespace FenBrowser.Tooling
             TryCopyLatestLogArtifact("fenbrowser_*_trace.jsonl", Path.Combine(bundleDir, "trace.jsonl"));
             TryCopyLatestStructuredLogArtifact(Path.Combine(bundleDir, "logs.ndjson"));
 
-            var artifactManifest = BuildArtifactManifest(bundleDir, report.Interaction != null);
+            var artifactManifest = BuildArtifactManifest(
+                bundleDir,
+                report.Interaction != null,
+                artifactExportFailures);
             var missingRequiredArtifacts = artifactManifest
                 .Where(static artifact => !artifact.exists)
                 .Select(static artifact => artifact.name)
@@ -872,17 +873,18 @@ namespace FenBrowser.Tooling
             if (missingRequiredArtifacts.Length > 0)
             {
                 firstBlocker = BuildFirstBlocker(report, missingRequiredArtifacts);
-                File.WriteAllText(
-                    Path.Combine(bundleDir, "first_blocker.json"),
-                    JsonSerializer.Serialize(firstBlocker, jsonOptions),
-                    new UTF8Encoding(false));
-                artifactManifest = BuildArtifactManifest(bundleDir, report.Interaction != null);
+                WriteText(
+                    "first_blocker.json",
+                    () => JsonSerializer.Serialize(firstBlocker, jsonOptions));
+                artifactManifest = BuildArtifactManifest(
+                    bundleDir,
+                    report.Interaction != null,
+                    artifactExportFailures);
             }
 
-            File.WriteAllText(
-                Path.Combine(bundleDir, "artifact_manifest.json"),
-                JsonSerializer.Serialize(artifactManifest, jsonOptions),
-                new UTF8Encoding(false));
+            WriteText(
+                "artifact_manifest.json",
+                () => JsonSerializer.Serialize(artifactManifest, jsonOptions));
 
             return bundleDir;
         }
@@ -1796,7 +1798,10 @@ namespace FenBrowser.Tooling
             };
         }
 
-        private static List<DebugSiteArtifactManifestEntry> BuildArtifactManifest(string bundleDir, bool includeInteraction)
+        private static List<DebugSiteArtifactManifestEntry> BuildArtifactManifest(
+            string bundleDir,
+            bool includeInteraction,
+            IReadOnlyList<DebugSiteArtifactExportFailure> exportFailures = null)
         {
             var expected = new List<string>
             {
@@ -1840,13 +1845,52 @@ namespace FenBrowser.Tooling
                 {
                     var path = Path.Combine(bundleDir, name);
                     var info = File.Exists(path) ? new FileInfo(path) : null;
+                    var exportFailure = exportFailures?.LastOrDefault(failure =>
+                        string.Equals(failure.ArtifactName, name, StringComparison.Ordinal));
                     return new DebugSiteArtifactManifestEntry(
                         name,
                         info != null,
                         info?.Length ?? 0,
-                        info?.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture));
+                        info?.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture),
+                        exportFailure == null
+                            ? null
+                            : exportFailure.ErrorType + ": " + exportFailure.Message);
                 })
                 .ToList();
+        }
+
+        private static void TryWriteDebugSiteArtifact(
+            string bundleDir,
+            string artifactName,
+            Action<string> write,
+            List<DebugSiteArtifactExportFailure> exportFailures)
+        {
+            try
+            {
+                write(Path.Combine(bundleDir, artifactName));
+                exportFailures.RemoveAll(failure =>
+                    string.Equals(failure.ArtifactName, artifactName, StringComparison.Ordinal));
+            }
+            catch (Exception ex)
+            {
+                exportFailures.RemoveAll(failure =>
+                    string.Equals(failure.ArtifactName, artifactName, StringComparison.Ordinal));
+                exportFailures.Add(new DebugSiteArtifactExportFailure(
+                    artifactName,
+                    ex.GetType().Name,
+                    (ex.Message ?? string.Empty).Length <= 512
+                        ? ex.Message ?? string.Empty
+                        : ex.Message.Substring(0, 512) + "..."));
+                try
+                {
+                    Console.Error.WriteLine(
+                        $"[debug-site] Failed to export {artifactName}: {ex.GetType().Name}: {ex.Message}");
+                }
+                catch
+                {
+                    // Export diagnostics must not replace the original page result.
+                }
+            }
         }
 
         private static List<DebugSiteExceptionRecord> ExtractExceptionRecords(IEnumerable<string> consoleMessages, string navigateException)
@@ -2329,7 +2373,13 @@ namespace FenBrowser.Tooling
             string name,
             bool exists,
             long sizeBytes,
-            string lastWriteUtc);
+            string lastWriteUtc,
+            string exportError);
+
+        private sealed record DebugSiteArtifactExportFailure(
+            string ArtifactName,
+            string ErrorType,
+            string Message);
 
         internal sealed record DebugSiteScreenshotResult(
             bool Captured,
