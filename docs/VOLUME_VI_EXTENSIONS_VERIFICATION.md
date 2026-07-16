@@ -3927,3 +3927,15 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~RendererChildLoopIoTests" --list-tests --logger "console;verbosity=minimal"`: lists all four methods.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~RendererChildLoopIoTests" --logger "console;verbosity=minimal"`: pass (`4/4`, zero failed/skipped).
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~RendererChildLoopIoTests|FullyQualifiedName~RendererIpcMetadataTests|FullyQualifiedName~RendererIsolationPoliciesTests" --logger "console;verbosity=minimal"`: pass (`45/45`, zero failed/skipped).
+
+## 6.163 Required Browser-Integration Discovery Guard (2026-07-16)
+
+- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 12 selected timer/event/Promise provenance, logger-drain, lifecycle, host-conversion, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
+- The first combined run exposed a real parallel-isolation defect: the FenJS timer/rAF trace failed during native browser-constructor bootstrap while other browser tests ran concurrently. The global `EngineLog` collection is now explicitly non-parallel, matching its process-wide logger configuration and FenJS diagnostic usage.
+- This guard does not treat the skipped real-process brokered acceptance as passing. The AppContainer development-runtime provisioning decision remains the separately documented `BLOCK-PROC-002` boundary.
+
+Verification:
+
+- Red: the first 65-test combined command failed `1`, passed `64`, with `EventLoopTraceTests.FenJsBrowserTimers_WriteTaskTimerRafAndMicrotaskTrace` throwing during concurrent FenJS bootstrap.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~RequiredBrowserIntegrationDiscoveryTests" --list-tests --logger "console;verbosity=minimal"`: lists the guard test.
+- The focused guard passes `1/1`. The 65-test guarded browser/process slice then passes twice with zero failures or skips after the collection fix.
