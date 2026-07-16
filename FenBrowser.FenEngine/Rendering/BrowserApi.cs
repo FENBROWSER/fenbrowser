@@ -1980,6 +1980,17 @@ pre {{
                     }
                 }
 
+                Element clickFallbackTarget = null;
+                if (!_pendingWebDriverClickPointValid &&
+                    ReferenceEquals(element.OwnerDocument?.DocumentElement, element))
+                {
+                    var viewport = GetWindowRect();
+                    _pendingWebDriverClickPointValid = true;
+                    _pendingWebDriverClickClientX = Math.Max(0, viewport.Width / 2);
+                    _pendingWebDriverClickClientY = Math.Max(0, viewport.Height / 2);
+                    clickFallbackTarget = element;
+                }
+
                 if (!_pendingWebDriverClickPointValid)
                 {
                     throw new InvalidOperationException("element not interactable");
@@ -1989,17 +2000,20 @@ pre {{
                     "mousedown",
                     _pendingWebDriverClickClientX,
                     _pendingWebDriverClickClientY,
-                    button: 0);
+                    button: 0,
+                    fallbackTarget: clickFallbackTarget);
                 DispatchInputEvent(
                     "mouseup",
                     _pendingWebDriverClickClientX,
                     _pendingWebDriverClickClientY,
-                    button: 0);
+                    button: 0,
+                    fallbackTarget: clickFallbackTarget);
                 DispatchInputEvent(
                     "click",
                     _pendingWebDriverClickClientX,
                     _pendingWebDriverClickClientY,
-                    button: 0);
+                    button: 0,
+                    fallbackTarget: clickFallbackTarget);
 
                 if (!_lastClickHadTarget)
                 {
@@ -3066,7 +3080,7 @@ pre {{
              return DispatchInputEvent(type, x, y, button);
         }
 
-        private bool DispatchInputEvent(string type, float x, float y, int button)
+        private bool DispatchInputEvent(string type, float x, float y, int button, Element fallbackTarget = null)
         {
             var eventType = MapToInputEventType(type);
             var buttonMask = BuildButtonMask(button, type);
@@ -3104,6 +3118,11 @@ pre {{
             {
                 TryLogError($"[BrowserHost] Unhandled exception dispatching '{type}' input event: {ex.Message}", LogCategory.Events);
                 TryInvokeConsoleMessage($"[FenBrowser] Unhandled page error during '{type}' input: {ex.Message}");
+            }
+
+            if (inputEvent.Target == null && fallbackTarget != null)
+            {
+                inputEvent.Target = fallbackTarget;
             }
 
             var eventInit = new FenBrowser.FenEngine.Scripting.BrowserDomEventInit

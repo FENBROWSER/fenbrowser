@@ -1391,3 +1391,12 @@ Verification:
 
 - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrokeredInputRoutingTests" -v minimal`: pass (`12/12`) on `2026-06-29`.
 - `dotnet build FenBrowser.Host\FenBrowser.Host.csproj -c Debug -v minimal`: pass on `2026-06-29`.
+
+### 6.65 WebDriver New-Window Initial Document (2026-07-16)
+
+- `HostBrowserDriver.NewWindowAsync` now initializes the created top-level browsing context with `about:blank` before returning its handle. This matches the WebDriver new-window contract and prevents the caller from observing a tab with no active document.
+- The change does not alter ordinary tab creation, user new-tab policy, process isolation, or navigation fallback behavior.
+
+Verification:
+
+- `HostBrowserDriverNewWindowTests.NewWindow_HasLoadedAboutBlankDocumentBeforeReturn` confirms the initial URL, root lookup, and document-root focus click on the compiled `Scripting/` test surface.

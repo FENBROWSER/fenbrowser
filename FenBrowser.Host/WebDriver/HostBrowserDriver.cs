@@ -694,11 +694,24 @@ namespace FenBrowser.Host.WebDriver
                 var activeTab = _tabs.ActiveTab;
                 if (activeTab != null)
                 {
+                    await InitializeNewTopLevelContextAsync(activeTab).ConfigureAwait(false);
                     return activeTab.Id.ToString();
                 }
 
                 return beforeActiveTabId?.ToString() ?? Guid.NewGuid().ToString("N");
             });
+        }
+
+        internal static Task InitializeNewTopLevelContextAsync(BrowserTab tab)
+        {
+            if (tab == null)
+            {
+                throw new ArgumentNullException(nameof(tab));
+            }
+
+            // WebDriver New Window creates a top-level browsing context whose
+            // initial active document is a fully loaded about:blank document.
+            return tab.NavigateProgrammaticAsync("about:blank");
         }
 
         public async Task SwitchToWindowAsync(string windowHandle)

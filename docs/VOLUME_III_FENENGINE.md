@@ -10219,3 +10219,14 @@ Verification:
 - Green: the same discovered test passes and asserts the newer DOM, style-owner document, and telemetry URL remain authoritative. The adjacent form/Tooling/render-generation slice passes `14/14`.
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --verbosity:minimal`: pass with 0 warnings and 0 errors.
 - Fresh Google bundle `logs/real-site/www.google.com/20260715T103925Z/`: focus/type/submit passes, a 200 GET `/search` request is followed by Google's genuine HTTP 429 `/sorry/` challenge, and terminal lifecycle, active DOM/rendered text, and the after screenshot all describe navigation 3. Callback failures and exceptions are zero; `first_blocker.json` is `none`.
+
+## 2.380 WebDriver Document-Root Focus Click (2026-07-16)
+
+- WebDriver testharness startup focuses a newly created top-level context by clicking its `documentElement`. An empty `about:blank` root can be fully loaded without a materialized layout box, so ordinary element-click geometry previously rejected it as non-interactable before any WPT assertion ran.
+- `BrowserHost.ClickElementAsync` now permits only the active document root to use the viewport center when all normal rect sources are empty. The root is used as the fallback DOM target only when paint hit testing has no target; ordinary zero-area elements still return `element not interactable`.
+
+Verification:
+
+- Red: `HostBrowserDriverNewWindowTests.NewWindow_HasLoadedAboutBlankDocumentBeforeReturn` failed `0/1` at the root click with `element not interactable`.
+- Green: the new-window root test and the existing hidden zero-area rejection pass together `2/2`.
+- The selected WPT matrix proceeds past test-window focus and completes all three files instead of classifying all three as WebDriver failures.
