@@ -3799,3 +3799,16 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsCheckboxActivationTests" --logger "console;verbosity=minimal"`: pass (`4/4`); `--list-tests` lists all four methods.
 - `BrowserFormInteractionAcceptanceTests`: pass (`8/8`); `FormControlActivationTests`: pass (`3/3`).
 - `Results/wpt/selected/20260716_checkbox_clean_run1/` and `Results/wpt/selected/20260716_checkbox_clean_run2/` use clean FenBrowser commit `76bfb83290b65dab532acc81560236523ab64995`, local WPT `88152b842c3f60c2a5f95e0106ded4a375f710b0`, Release, one process, and default in-process mode. They complete three starts/ends in 11.70 s and 11.59 s respectively, classify all three files as Pass, exit 0, and contain zero unexpected tests or subtests.
+
+## 6.152 Offline WebIDL Manual-Binding Inventory (2026-07-16)
+
+- `FenBrowser.Tooling webidl-inventory` parses the checked-in IDL with the active Core parser, evaluates current project compile-removal rules, and emits deterministic JSON and Markdown under `Results/webidl/manual-binding-inventory/`. It does not write generated bindings or modify runtime exposure.
+- Every definition/member record includes IDL kind and inheritance, bounded manual-source candidates with active compile status, actual generator output naming/presence/inclusion, conversion/brand/descriptor/exception evidence, test and selected-WPT correlations, explicit real-site-evidence status, lifetime complexity, and migration risk.
+- At clean commit `d95f74e0a5f725675a66f96652bb81a339d6ca15`, the report contains 55 definition records and 402 members. It finds bounded manual evidence for 255 members, name-correlated active tests for 300, selected-WPT correlations for 73, and zero generated outputs present or compiled. `EventInit` is identified as a future value-only candidate, subject to active-path review and the existing memory decision boundary.
+
+Verification:
+
+- `WebIdlInventoryRunnerTests|WebIdlBindingGeneratorTests`: pass (`2/2`); the inventory fixture is compiled and listed.
+- The fixture proves active/excluded compile classification, manual evidence, test/WPT correlation, low-lifetime candidate selection, and byte-identical serialization.
+- Two identical repo-scale runs at revision `d95f74e0a5f725675a66f96652bb81a339d6ca15` produced JSON SHA-256 `FEB06F6BFAAC52F548F54F7FCB76900968937376653D62797646C1607636ACE5` and Markdown SHA-256 `70BF0A279BF48BBA937162A9523ECAC12D2E1E5EB57187C0F73886492A5F58B8`.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v:minimal`: pass with 0 warnings and 0 errors.

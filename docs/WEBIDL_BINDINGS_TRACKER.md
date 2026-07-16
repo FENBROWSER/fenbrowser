@@ -1,10 +1,12 @@
 # FenBrowser WebIDL and Bindings Tracker
 
-Status: IMPLEMENTED generator, STUBBED runtime integration. Snapshot date: 2026-07-14.
+Status: IMPLEMENTED generator and TESTED inventory, STUBBED runtime integration. Snapshot date: 2026-07-16.
 
 ## Current truth
 
 `FenBrowser.WebIdlGen` contains a parser/generator and checked-in IDL inputs. `FenBrowser.FenEngine.csproj` explicitly removes `Bindings/Generated/**/*.cs` from compilation, so generated classes are not the active browser binding layer. The current runtime uses manual host dispatch in FenEngine.
+
+`FenBrowser.Tooling webidl-inventory` now produces the deterministic offline audit under `Results/webidl/manual-binding-inventory/`. At commit `d95f74e0a5f725675a66f96652bb81a339d6ca15`, it reports 55 definition records, 402 members, 255 members with bounded manual-source evidence, 300 with name-correlated active tests, 73 with name-correlated selected-WPT coverage, zero generated outputs present, and zero generated outputs compiled. Source, test, and WPT correlations are candidates for behavioral review, not proof of full conformance.
 
 ## Binding pipeline
 
@@ -12,7 +14,8 @@ Status: IMPLEMENTED generator, STUBBED runtime integration. Snapshot date: 2026-
 | --- | --- | --- | --- |
 | Parse WebIDL | IMPLEMENTED | Generator project and IDL inputs exist | Parser fixtures for required grammar |
 | Generate C# surfaces | IMPLEMENTED | Generator code exists | Deterministic output snapshot/build |
-| Compile generated bindings | NOT_STARTED | Generated path is excluded from FenEngine | One selected family compiles behind an explicit integration seam |
+| Inventory manual/generated overlap | TESTED | Deterministic JSON and Markdown audit; compiled fixture; two identical repo-scale hashes | Review one candidate against the active call path |
+| Compile generated bindings | NOT_STARTED | Generated path is excluded from FenEngine; inventory reports zero compiled generated outputs | One selected family compiles behind an explicit integration seam |
 | Interface/prototype objects | STUBBED | Manual runtime exposes browser objects | Descriptor/prototype/constructor tests |
 | Type conversion and overload resolution | STUBBED | Per-member manual conversion | WebIDL conversion matrix and exception tests |
 | Brand checks and `this` validation | STUBBED | Manual receiver handling | WPT/local wrong-receiver reductions |
@@ -35,7 +38,18 @@ For each family:
 
 ## First integration candidate
 
-Do not begin with all DOM interfaces. After `BLOCK-MEM-001` is resolved, choose one low-lifetime-risk value/interface family with current real-site relevance and existing implementation. The candidate must avoid callbacks, observers, cross-realm identity, and complex collections. Selection itself remains DESIGNED until source/WPT evidence names the family.
+Do not begin with all DOM interfaces. The deterministic inventory names `EventInit` as the first low-lifetime-risk candidate because it is a value-only dictionary, has no wrapper identity, and has active source/test/WPT name correlations. This is an inventory result, not approval to activate generated bindings. Before side-by-side work, confirm the manual dictionary-conversion call path and add default-value, conversion, and exception tests. Broad activation remains blocked by `BLOCK-MEM-001`.
+
+## Inventory command and artifacts
+
+```powershell
+dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- webidl-inventory --output-dir Results/webidl/manual-binding-inventory --wpt-root C:/Users/udayk/Videos/wpt --selected-wpt dom/lists/DOMTokenList-stringifier.html,dom/lists/DOMTokenList-value.html,html/semantics/forms/the-input-element/checkbox-click-events.html
+```
+
+- `Results/webidl/manual-binding-inventory/webidl_manual_binding_inventory.json`
+- `Results/webidl/manual-binding-inventory/webidl_manual_binding_inventory.md`
+- Current IDL input SHA-256: `51310A030262A071F7E5DEE8C0012529DFE1FFEC8D47054C569B68D6891D0745`
+- Real-site usage remains explicitly `not measured by offline source inventory`; the tool does not turn a source-name match into runtime evidence.
 
 ## Required binding record
 

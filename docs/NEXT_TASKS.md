@@ -216,25 +216,25 @@ Task ID: BIND-001
 Title: Inventory active manual bindings against available WebIDL
 Area: WebIDL / DOM architecture
 Owner Agent: Bindings Agent
-Status: RESEARCHED
+Status: TESTED
 Priority: 2
 Risk Level: Low
 Dependencies: Manual host runtime, WebIDL generator, and IDL inputs exist
 Files likely involved: `FenBrowser.WebIdlGen`, `FenBrowser.FenEngine/Bindings`, `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`, `docs/WEBIDL_BINDINGS_TRACKER.md`
 Specs/references: Web IDL and the specifications linked by each selected interface
-Current behavior: Generated sources are excluded and manual dispatch owns runtime exposure; exact overlap and drift are not machine-readable.
+Current behavior: `FenBrowser.Tooling webidl-inventory` deterministically maps all 55 checked-in definition records and 402 members to bounded manual source evidence, generated output policy, active tests, selected WPT correlations, lifetime complexity, and migration risk. It reports zero generated outputs present or compiled and names `EventInit` as a conversion-only future candidate.
 Expected behavior: A generated audit report maps each IDL member to manual implementation, missing implementation, excluded source, test coverage, and lifetime complexity without activating generated bindings.
-Reproduction: Run the inventory over current IDL inputs and active host member registration.
+Reproduction: Run `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- webidl-inventory --output-dir Results/webidl/manual-binding-inventory --wpt-root C:/Users/udayk/Videos/wpt --selected-wpt dom/lists/DOMTokenList-stringifier.html,dom/lists/DOMTokenList-value.html,html/semantics/forms/the-input-element/checkbox-click-events.html`.
 Root cause hypothesis: Generator and runtime integration evolved independently, hiding duplicate, missing, and incompatible surfaces.
-Implementation plan: Parse existing IDL metadata; extract active binding registrations; normalize interface/member names; emit report under `Results/`; update tracker with evidence only.
+Implementation plan: Keep the inventory read-only and generated bindings excluded. Review the `EventInit` evidence against the active dictionary-conversion call path only after the memory/lifetime decision boundary is addressed.
 Tests required: Inventory parser/extractor fixtures and deterministic output.
-Evidence required: Report with source paths and counts; one reviewed low-lifetime-risk candidate.
+Evidence required: `Results/webidl/manual-binding-inventory/`; one compiled deterministic fixture; matching JSON/Markdown hashes across identical runs; reviewed `EventInit` candidate limitations.
 Security impact: Research only; no new exposure.
 Performance impact: Offline tooling only.
 Compatibility impact: Enables evidence-based migration.
 Known risks: Reflection-based extraction could misrepresent dynamic registrations; prefer source/generator metadata.
 Blockers: None for inventory; activation remains `BLOCK-MEM-001`.
-Next action: Enumerate checked-in IDL interfaces and the active host registration tables into a deterministic report schema.
+Next action: Measure current wrapper identity, host-handle counts, and navigation teardown behavior to prepare evidence for `BLOCK-MEM-001`; do not activate `EventInit` or other generated bindings yet.
 
 ## Task PERF-001
 
