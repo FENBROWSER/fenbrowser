@@ -78,6 +78,12 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             _bodyCompleteTcs.TrySetCanceled();
         }
 
+        public void SetFailed(string error)
+        {
+            SetHeadFailed(error);
+            SetBodyFailed(error);
+        }
+
         public async Task<bool> TryAppendBodyChunkAsync(byte[] chunk, int maxBodyBytes)
         {
             await _bodyLock.WaitAsync().ConfigureAwait(false);
@@ -359,7 +365,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
             foreach (var kv in _pending)
             {
-                kv.Value.SetCancelled();
+                kv.Value.SetFailed("Network process disconnected during request.");
             }
             _pending.Clear();
             DetachSession();

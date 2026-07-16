@@ -1449,3 +1449,13 @@ Verification:
 Verification:
 
 - Red result: `MalformedResponseBodyBase64_IsRejected` failed because no exception was thrown. The fixed network coordinator class passes `7/7`; the adjacent network/renderer process slice passes `53/53`, both with zero failures or skips.
+
+### 6.70 In-Flight Network-Child Disconnect Attribution (2026-07-16)
+
+- Unexpected EOF on the authenticated network pipe previously ended the session read loop without raising the crash signal. An in-flight coordinator request remained pending until caller cancellation or timeout and surfaced as `TaskCanceledException`.
+- Pipe termination and `Process.Exited` now converge on a one-shot session crash notification. Normal session disposal suppresses the notification, and duplicate process/pipe observations cannot signal twice.
+- The coordinator completes every pending request with an attributable `HttpRequestException` stating that the network process disconnected, clears pending state, and detaches the failed session. It does not silently fall back or change fallback policy.
+
+Verification:
+
+- Red result: `ChildDisconnectDuringFetch_FailsAsNetworkError` waited for its two-second cancellation token and returned `TaskCanceledException`. The fixed network coordinator class passes `8/8`; the adjacent network/renderer process slice passes `54/54`, both with zero failures or skips.

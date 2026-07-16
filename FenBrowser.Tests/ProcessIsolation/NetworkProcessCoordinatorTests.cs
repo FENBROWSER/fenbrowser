@@ -225,6 +225,36 @@ public sealed class NetworkProcessCoordinatorTests
         await childTask;
     }
 
+    [Fact]
+    public async Task ChildDisconnectDuringFetch_FailsAsNetworkError()
+    {
+        var pipeName = $"fen_network_test_{Guid.NewGuid():N}";
+        var authToken = Guid.NewGuid().ToString("N");
+        using var session = new NetworkProcessSession(pipeName, authToken);
+        using var coordinator = new NetworkProcessCoordinator();
+
+        session.Start(childProcess: null);
+        var childTask = RunDeterministicChildAsync(
+            pipeName,
+            authToken,
+            disconnectAfterFetch: true);
+        Assert.True(await session.WaitForReadyAsync(TimeSpan.FromSeconds(5)));
+        coordinator.AttachSession(session);
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            "https://fixture.test/network/parity");
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            coordinator.SendAsync(
+                request,
+                initiatorOrigin: "https://fixture.test",
+                cancellation.Token));
+
+        Assert.Contains("disconnected", exception.Message, StringComparison.OrdinalIgnoreCase);
+        await childTask;
+    }
+
     private static async Task<NetworkFetchRequestPayload> RunDeterministicChildAsync(
         string pipeName,
         string expectedAuthToken,
@@ -233,7 +263,8 @@ public sealed class NetworkProcessCoordinatorTests
         string? payloadRequestId = null,
         string? failureErrorCode = null,
         IReadOnlyList<string>? responseBodyChunks = null,
-        string? malformedBodyBase64 = null)
+        string? malformedBodyBase64 = null,
+        bool disconnectAfterFetch = false)
     {
         using var pipe = new NamedPipeClientStream(
             ".",
@@ -262,6 +293,11 @@ public sealed class NetworkProcessCoordinatorTests
         Assert.False(string.IsNullOrWhiteSpace(fetch.CapabilityToken));
         var payload = Assert.IsType<NetworkFetchRequestPayload>(
             NetworkIpc.DeserializePayload<NetworkFetchRequestPayload>(fetch));
+
+        if (disconnectAfterFetch)
+        {
+            return payload;
+        }
 
         if (!string.IsNullOrWhiteSpace(failureErrorCode))
         {

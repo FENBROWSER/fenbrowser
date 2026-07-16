@@ -268,6 +268,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         private Task _readLoop;
         private bool _connected;
         private Process _childProcess;
+        private int _crashNotified;
 
         public string PipeName { get; }
         public string AuthToken { get; }
@@ -298,10 +299,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 _childProcess.EnableRaisingEvents = true;
                 _childProcess.Exited += (_, _) =>
                 {
-                    _connected = false;
-                    _readyTcs.TrySetResult(false);
-                    NetworkProcessCrashed?.Invoke();
-                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, "[NetworkProcess] Child process exited.");
+                    NotifyNetworkProcessCrashed("Child process exited.");
                 };
             }
 
@@ -395,6 +393,23 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 if (!_cts.IsCancellationRequested)
                     EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] Read loop error: {ex.Message}");
             }
+            finally
+            {
+                NotifyNetworkProcessCrashed("IPC connection closed unexpectedly.");
+            }
+        }
+
+        private void NotifyNetworkProcessCrashed(string reason)
+        {
+            if (_cts.IsCancellationRequested || Interlocked.Exchange(ref _crashNotified, 1) != 0)
+            {
+                return;
+            }
+
+            _connected = false;
+            _readyTcs.TrySetResult(false);
+            NetworkProcessCrashed?.Invoke();
+            EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] {reason}");
         }
 
         private static bool RequiresRequestCapability(NetworkIpcMessageType messageType) =>
