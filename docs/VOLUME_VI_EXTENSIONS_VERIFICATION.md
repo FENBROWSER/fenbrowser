@@ -3915,3 +3915,15 @@ Verification:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~EventLoopTraceTests" --list-tests --logger "console;verbosity=minimal"`: lists both methods.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~EventLoopTraceTests" --logger "console;verbosity=minimal"`: pass (`2/2`, zero failed/skipped).
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~EventLoopTraceTests|FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~BrowserLifecycleDetailTests" --logger "console;verbosity=minimal"`: pass (`10/10`, zero failed/skipped).
+
+## 6.162 Renderer Child-Loop I/O Test Activation (2026-07-16)
+
+- `FenBrowser.Tests.csproj` explicitly includes only `Architecture/RendererChildLoopIoTests.cs`; the broad `Architecture/**` tree remains excluded pending independent review.
+- The active Host helper is used by renderer, network, and utility/GPU child-loop stdin polling. The four deterministic tests protect successful line reads, timeout classification, reuse of one pending asynchronous read across polls, and end-of-stream classification.
+- No IPC envelope, process-isolation default, authentication, sandbox, or fallback policy changed.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~RendererChildLoopIoTests" --list-tests --logger "console;verbosity=minimal"`: lists all four methods.
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~RendererChildLoopIoTests" --logger "console;verbosity=minimal"`: pass (`4/4`, zero failed/skipped).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~RendererChildLoopIoTests|FullyQualifiedName~RendererIpcMetadataTests|FullyQualifiedName~RendererIsolationPoliciesTests" --logger "console;verbosity=minimal"`: pass (`45/45`, zero failed/skipped).

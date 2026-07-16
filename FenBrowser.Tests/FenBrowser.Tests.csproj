@@ -64,6 +64,9 @@
     <!-- Current FenJS/event-loop diagnostic regression; keep this explicit so the
          broader legacy Engine tree remains excluded. -->
     <Compile Include="Engine\EventLoopTraceTests.cs" />
+    <!-- Active renderer-child stdin polling contract; keep Architecture legacy
+         and policy tests excluded until they are reviewed independently. -->
+    <Compile Include="Architecture\RendererChildLoopIoTests.cs" />
   </ItemGroup>
 
 </Project>
