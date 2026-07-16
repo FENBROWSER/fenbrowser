@@ -376,7 +376,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private readonly List<BrowserEventListener> _windowEventListeners = new();
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostCallableCache = new();
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostPropertyStore = new();
+    private ConditionalWeakTable<object, HashSet<string>> _missingHostPropertyReads = new();
     private ConditionalWeakTable<object, List<BrowserEventListener>> _elementEventListeners = new();
+    private int _suppressMissingHostAssignmentTracking;
     private StorageService _storageService = new();
     private readonly Dictionary<int, FenWebSocketHost> _webSocketHosts = new();
     private int _webSocketIdCounter;
@@ -1113,6 +1115,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private T RunFenJsWithLargeStack<T>(Func<T> work)
     {
         return RunFenJsWithLargeStack(work, waitForWorkerMs: -1);
+    }
+
+    private JsValue EvaluateBootstrapWithFenJsRaw(string script)
+    {
+        Interlocked.Increment(ref _suppressMissingHostAssignmentTracking);
+        try
+        {
+            return EvaluateWithFenJsRaw(script);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _suppressMissingHostAssignmentTracking);
+        }
     }
 
     private T RunFenJsWithLargeStack<T>(Func<T> work, long waitForWorkerMs)
@@ -2368,8 +2383,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return true;
     }
 
-    private void RecordMissingHostProperty(string ownerName, string property, Uri baseUri)
+    private void RecordMissingHostProperty(object receiver, string ownerName, string property, Uri baseUri)
     {
+        if (receiver != null)
+        {
+            var reads = _missingHostPropertyReads.GetOrCreateValue(receiver);
+            lock (reads)
+            {
+                reads.Add(property);
+            }
+        }
+
         EngineCapabilities.LogUnsupportedJs(ownerName, property, "missing host property");
         RecordMissingBrowserApi(
             ownerName,
@@ -2380,13 +2404,49 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             baseUri ?? _currentBaseUri);
     }
 
+    private void RecordHostPropertyAssignment(object receiver, string ownerName, string property, Uri baseUri)
+    {
+        if (Volatile.Read(ref _suppressMissingHostAssignmentTracking) != 0 ||
+            receiver == null ||
+            string.IsNullOrWhiteSpace(property))
+        {
+            return;
+        }
+
+        var reads = _missingHostPropertyReads.GetOrCreateValue(receiver);
+        lock (reads)
+        {
+            if (reads.Contains(property))
+            {
+                return;
+            }
+        }
+
+        if (GetHostPropertyStore(receiver).ContainsKey(property))
+        {
+            return;
+        }
+
+        RecordMissingBrowserApi(
+            ownerName,
+            property,
+            "host property assigned before read",
+            string.Empty,
+            GetCurrentScriptRecord(),
+            baseUri ?? _currentBaseUri,
+            MissingApiOperationKind.Write,
+            assignmentBeforeRead: true);
+    }
+
     private void RecordMissingBrowserApi(
         string objectOrPrototype,
         string propertyName,
         string reason,
         string exceptionText,
         BrowserScriptLoadingRecord scriptRecord,
-        Uri baseUri)
+        Uri baseUri,
+        MissingApiOperationKind operationKind = MissingApiOperationKind.Read,
+        bool assignmentBeforeRead = false)
     {
         if (string.IsNullOrWhiteSpace(objectOrPrototype) || string.IsNullOrWhiteSpace(propertyName))
         {
@@ -2415,8 +2475,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             Column = column,
             Reason = reason ?? string.Empty,
             ExceptionText = exceptionText ?? string.Empty,
-            OperationKind = MissingApiOperationKind.Read,
-            ReceiverType = ownerName
+            OperationKind = operationKind,
+            ReceiverType = ownerName,
+            AssignmentBeforeRead = assignmentBeforeRead
         });
     }
 
@@ -2691,6 +2752,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             _windowEventListeners.Clear();
             _hostCallableCache = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             _hostPropertyStore = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
+            _missingHostPropertyReads = new ConditionalWeakTable<object, HashSet<string>>();
             _elementEventListeners = new ConditionalWeakTable<object, List<BrowserEventListener>>();
             _iframeWindowEventListeners = new ConditionalWeakTable<Element, List<BrowserEventListener>>();
             _hostPrototypeNames.Clear();
@@ -3336,7 +3398,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         // Stub navigator.sendBeacon so sites (Google, etc.) that call it
         // directly don't crash. Sites may also set it to their own function;
         // the TrySetHostProperty case for BrowserSurfaceProfile stores those.
-        EvaluateWithFenJsRaw(
+        EvaluateBootstrapWithFenJsRaw(
             // ── window.console ── Must come before alert/confirm/prompt stubs
             // since those call console.log.  Forwards to native __fenLog.
             "globalThis.console = {" +
@@ -13579,7 +13641,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
             if (!found)
             {
-                RecordMissingHostApi(ownerName, property);
+                RecordMissingHostApi(hostObject, ownerName, property);
             }
 
             return found;
@@ -13686,14 +13748,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             };
         }
 
-        private void RecordMissingHostApi(string ownerName, string property)
+        private void RecordMissingHostApi(object receiver, string ownerName, string property)
         {
             if (!ShouldRecordMissingHostApi(ownerName, property))
             {
                 return;
             }
 
-            _owner?.RecordMissingHostProperty(ownerName, property, _baseUri);
+            _owner?.RecordMissingHostProperty(receiver, ownerName, property, _baseUri);
+        }
+
+        private void RecordAssignedHostApi(object receiver, string ownerName, string property)
+        {
+            if (!ShouldRecordMissingHostApi(ownerName, property))
+            {
+                return;
+            }
+
+            _owner?.RecordHostPropertyAssignment(receiver, ownerName, property, _baseUri);
         }
 
         private static bool ShouldRecordMissingHostApi(string ownerName, string property)
@@ -13759,6 +13831,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case Document document:
                     // Catch-all for arbitrary document properties (e.g. Google
                     // sets __gwbp, __jsl, and other internal bookkeeping).
+                    RecordAssignedHostApi(document, "Document", property);
                     _owner.SetStoredHostProperty(document, property, value);
                     return true;
                 case Element element when string.Equals(property, "className", StringComparison.Ordinal):
@@ -13823,6 +13896,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     // Catch-all for arbitrary element properties (e.g. Google sets
                     // __gwbp, __jsl, and other internal bookkeeping properties on
                     // DOM elements). Store for later retrieval via TryGetElementProperty.
+                    RecordAssignedHostApi(element, "Element", property);
                     _owner.SetStoredHostProperty(element, property, value);
                     return true;
                 case Attr attr when string.Equals(property, "value", StringComparison.Ordinal):
@@ -13878,6 +13952,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     animation.PlaybackRate = CoerceToFiniteNumber(value, 1);
                     return true;
                 case FenJsAnimationHost animation:
+                    RecordAssignedHostApi(animation, "Animation", property);
                     _owner.SetStoredHostProperty(animation, property, value);
                     return true;
                 case FenJsLocationHost location when string.Equals(property, "href", StringComparison.Ordinal):
@@ -13893,6 +13968,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case BrowserSurfaceProfile navigator:
                     // Allow scripts to set arbitrary properties on navigator (e.g.
                     // Google stubs navigator.sendBeacon). Store for later retrieval.
+                    RecordAssignedHostApi(navigator, "Navigator", property);
                     _owner.SetStoredHostProperty(navigator, property, value);
                     return true;
                 default:

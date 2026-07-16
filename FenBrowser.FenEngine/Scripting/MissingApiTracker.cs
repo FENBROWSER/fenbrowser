@@ -148,8 +148,9 @@ internal static class MissingApiTracker
             StandardPriorityEligible = classification.StandardPriorityEligible,
             ReceiverType = observation.ReceiverType ?? string.Empty,
             AssignmentBeforeRead = observation.AssignmentBeforeRead,
-            KnownWebIdlMember = observation.KnownWebIdlMember,
-            DefinedInterface = observation.DefinedInterface ?? string.Empty
+            KnownWebIdlMember = classification.KnownWebIdlMember,
+            DefinedInterface = classification.DefinedInterface,
+            ReceiverMatchesDefinedInterface = classification.ReceiverMatchesDefinedInterface
         };
     }
 
@@ -224,6 +225,7 @@ internal static class MissingApiTracker
             ["assignmentBeforeRead"] = record.AssignmentBeforeRead,
             ["knownWebIdlMember"] = record.KnownWebIdlMember,
             ["definedInterface"] = record.DefinedInterface,
+            ["receiverMatchesDefinedInterface"] = record.ReceiverMatchesDefinedInterface,
             ["outputPath"] = outputPath ?? string.Empty
         };
 
@@ -347,6 +349,7 @@ internal static class MissingApiTracker
         public bool AssignmentBeforeRead { get; init; }
         public bool KnownWebIdlMember { get; init; }
         public string DefinedInterface { get; init; } = string.Empty;
+        public bool? ReceiverMatchesDefinedInterface { get; init; }
 
         public MissingApiRecord Clone()
             => new()
@@ -373,7 +376,8 @@ internal static class MissingApiTracker
                 ReceiverType = ReceiverType,
                 AssignmentBeforeRead = AssignmentBeforeRead,
                 KnownWebIdlMember = KnownWebIdlMember,
-                DefinedInterface = DefinedInterface
+                DefinedInterface = DefinedInterface,
+                ReceiverMatchesDefinedInterface = ReceiverMatchesDefinedInterface
             };
     }
 }

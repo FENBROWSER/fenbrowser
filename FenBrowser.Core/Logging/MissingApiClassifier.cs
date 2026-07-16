@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using FenBrowser.Core.WebIDL;
 
 namespace FenBrowser.Core.Logging;
 
@@ -37,7 +38,10 @@ public sealed record MissingApiClassificationResult(
     MissingApiClassification Classification,
     MissingApiOperationKind OperationKind,
     bool StandardPriorityEligible,
-    string Reason);
+    string Reason,
+    bool KnownWebIdlMember = false,
+    string DefinedInterface = "",
+    bool? ReceiverMatchesDefinedInterface = null);
 
 public static class MissingApiClassifier
 {
@@ -52,15 +56,6 @@ public static class MissingApiClassifier
 
         var owner = input.ObjectOrPrototype?.Trim() ?? string.Empty;
         var property = input.PropertyName?.Trim() ?? string.Empty;
-        if (input.AssignmentBeforeRead)
-        {
-            return new MissingApiClassificationResult(
-                MissingApiClassification.SiteExpando,
-                input.OperationKind,
-                false,
-                "assignment-before-read");
-        }
-
         if (LegacyProbeInventory.Contains(owner + "." + property))
         {
             return new MissingApiClassificationResult(
@@ -70,35 +65,64 @@ public static class MissingApiClassifier
                 "known-legacy-api-inventory");
         }
 
-        if (input.KnownWebIdlMember)
+        var knownWebIdlMember = input.KnownWebIdlMember;
+        var definedInterface = input.DefinedInterface?.Trim() ?? string.Empty;
+        var receiverMatchesDefinedInterface = input.ReceiverMatchesDefinedInterface;
+        if (!knownWebIdlMember)
         {
-            if (input.ReceiverMatchesDefinedInterface == false)
+            var catalogResolution = WebIdlMemberCatalog.Resolve(owner, property);
+            knownWebIdlMember = catalogResolution.KnownMember;
+            definedInterface = catalogResolution.DefinedInterface;
+            receiverMatchesDefinedInterface = catalogResolution.ReceiverMatchesDefinedInterface;
+        }
+
+        if (knownWebIdlMember)
+        {
+            if (receiverMatchesDefinedInterface == false)
             {
                 return new MissingApiClassificationResult(
                     MissingApiClassification.WrongReceiver,
                     input.OperationKind,
                     false,
-                    string.IsNullOrWhiteSpace(input.DefinedInterface)
+                    string.IsNullOrWhiteSpace(definedInterface)
                         ? "known-webidl-member-on-wrong-receiver"
-                        : "known-webidl-member-defined-on-" + input.DefinedInterface.Trim());
+                        : "known-webidl-member-defined-on-" + definedInterface,
+                    true,
+                    definedInterface,
+                    false);
             }
 
-            if (input.ReceiverMatchesDefinedInterface != true)
+            if (receiverMatchesDefinedInterface != true)
             {
                 return new MissingApiClassificationResult(
                     MissingApiClassification.Unclassified,
                     input.OperationKind,
                     false,
-                    "known-webidl-member-receiver-unresolved");
+                    "known-webidl-member-receiver-unresolved",
+                    true,
+                    definedInterface,
+                    null);
             }
 
             return new MissingApiClassificationResult(
                 MissingApiClassification.StandardApi,
                 input.OperationKind,
                 true,
-                string.IsNullOrWhiteSpace(input.DefinedInterface)
+                string.IsNullOrWhiteSpace(definedInterface)
                     ? "known-webidl-member"
-                    : "known-webidl-member-defined-on-" + input.DefinedInterface.Trim());
+                    : "known-webidl-member-defined-on-" + definedInterface,
+                true,
+                definedInterface,
+                true);
+        }
+
+        if (input.AssignmentBeforeRead)
+        {
+            return new MissingApiClassificationResult(
+                MissingApiClassification.SiteExpando,
+                input.OperationKind,
+                false,
+                "assignment-before-read");
         }
 
         return new MissingApiClassificationResult(

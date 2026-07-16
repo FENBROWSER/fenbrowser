@@ -1711,5 +1711,6 @@ Verification:
 ### 1.80 Evidence-Based Missing-API Classification (2026-07-16)
 
 - `MissingApiClassifier` defines the shared `STANDARD_API`, `SITE_EXPANDO`, `WRONG_RECEIVER`, `LEGACY_PROBE`, and `UNCLASSIFIED` dispositions plus read/write/delete/in/prototype/call/construct/descriptor operation kinds.
-- Unknown reads never become standards work by default. Only explicit checked-in-WebIDL membership with a matching receiver sets standards-priority eligibility; assignment-before-read identifies expandos, and a bounded explicit legacy inventory identifies legacy probes.
+- The checked-in IDL files are embedded into Core and parsed once into a fail-closed member catalog. Interface inheritance and includes determine receiver matches; a known member on an unrelated receiver becomes `WRONG_RECEIVER`.
+- Unknown reads never become standards work by default. Only checked-in-WebIDL membership with a matching receiver sets standards-priority eligibility; assignment-before-read identifies expandos, and a bounded explicit legacy inventory identifies legacy probes. Known IDL evidence takes precedence over assignment evidence.
 - The classifier does not change JavaScript return values, add browser members, or suppress observations.

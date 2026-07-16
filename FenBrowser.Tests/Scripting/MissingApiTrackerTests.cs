@@ -102,10 +102,7 @@ public sealed class MissingApiTrackerTests
             "msPointerEnabled"));
         var wrongReceiver = MissingApiClassifier.Classify(new MissingApiClassificationInput(
             "Document",
-            "className",
-            KnownWebIdlMember: true,
-            DefinedInterface: "Element",
-            ReceiverMatchesDefinedInterface: false));
+            "className"));
         var unresolvedReceiver = MissingApiClassifier.Classify(new MissingApiClassificationInput(
             "Document",
             "compareDocumentPosition",
@@ -113,10 +110,15 @@ public sealed class MissingApiTrackerTests
             DefinedInterface: "Node"));
         var standard = MissingApiClassifier.Classify(new MissingApiClassificationInput(
             "Document",
+            "compareDocumentPosition"));
+        var inheritedStandard = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "CharacterData",
+            "childNodes"));
+        var assignedStandard = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Document",
             "compareDocumentPosition",
-            KnownWebIdlMember: true,
-            DefinedInterface: "Node",
-            ReceiverMatchesDefinedInterface: true));
+            MissingApiOperationKind.Write,
+            AssignmentBeforeRead: true));
 
         Assert.Equal("UNCLASSIFIED", MissingApiClassifier.ToToken(unknown.Classification));
         Assert.Equal("SITE_EXPANDO", MissingApiClassifier.ToToken(expando.Classification));
@@ -124,12 +126,20 @@ public sealed class MissingApiTrackerTests
         Assert.Equal("WRONG_RECEIVER", MissingApiClassifier.ToToken(wrongReceiver.Classification));
         Assert.Equal("UNCLASSIFIED", MissingApiClassifier.ToToken(unresolvedReceiver.Classification));
         Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(standard.Classification));
+        Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(inheritedStandard.Classification));
+        Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(assignedStandard.Classification));
         Assert.False(unknown.StandardPriorityEligible);
         Assert.False(expando.StandardPriorityEligible);
         Assert.False(legacy.StandardPriorityEligible);
         Assert.False(wrongReceiver.StandardPriorityEligible);
         Assert.False(unresolvedReceiver.StandardPriorityEligible);
         Assert.True(standard.StandardPriorityEligible);
+        Assert.True(inheritedStandard.StandardPriorityEligible);
+        Assert.True(assignedStandard.StandardPriorityEligible);
+        Assert.Equal("Element", wrongReceiver.DefinedInterface);
+        Assert.False(wrongReceiver.ReceiverMatchesDefinedInterface);
+        Assert.Equal("Node", standard.DefinedInterface);
+        Assert.True(standard.ReceiverMatchesDefinedInterface);
     }
 
     [Fact]
@@ -167,6 +177,87 @@ public sealed class MissingApiTrackerTests
             Assert.Equal("READ", record.GetProperty("operationKind").GetString());
             Assert.False(record.GetProperty("standardPriorityEligible").GetBoolean());
             Assert.False(string.IsNullOrWhiteSpace(record.GetProperty("firstSeenTraceId").GetString()));
+        }
+        finally
+        {
+            MissingApiTracker.ResetForTests();
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            TryDeleteDirectory(outputRoot);
+        }
+    }
+
+    [Fact]
+    public async Task HostExpandoAssignment_RecordsWriteBeforeSuccessfulRead()
+    {
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
+        var baseUri = new Uri("https://example.test/expando.html");
+
+        try
+        {
+            MissingApiTracker.ConfigureForTests(outputRoot);
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            DisableTrace();
+
+            var document = new HtmlParser(
+                "<html><body><div id=\"app\">ok</div></body></html>",
+                baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.Sandbox = SandboxPolicy.AllowAll;
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("42", engine.Evaluate(
+                "document.applicationState = 42; String(document.applicationState)")?.ToString());
+
+            using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
+            var record = Assert.Single(outputJson.RootElement.GetProperty("records").EnumerateArray());
+            Assert.Equal("Document.applicationState", record.GetProperty("apiName").GetString());
+            Assert.Equal("SITE_EXPANDO", record.GetProperty("classification").GetString());
+            Assert.Equal("WRITE", record.GetProperty("operationKind").GetString());
+            Assert.True(record.GetProperty("assignmentBeforeRead").GetBoolean());
+            Assert.False(record.GetProperty("standardPriorityEligible").GetBoolean());
+        }
+        finally
+        {
+            MissingApiTracker.ResetForTests();
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            TryDeleteDirectory(outputRoot);
+        }
+    }
+
+    [Fact]
+    public async Task KnownWebIdlHostMiss_RecordsReceiverEvidenceAndStandardsPriority()
+    {
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
+        var baseUri = new Uri("https://example.test/known-idl.html");
+
+        try
+        {
+            MissingApiTracker.ConfigureForTests(outputRoot);
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            DisableTrace();
+
+            var document = new HtmlParser("<html><body>ok</body></html>", baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.Sandbox = SandboxPolicy.AllowAll;
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("undefined", engine.Evaluate("typeof document.charset")?.ToString());
+
+            using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
+            var record = Assert.Single(outputJson.RootElement.GetProperty("records").EnumerateArray());
+            Assert.Equal("Document.charset", record.GetProperty("apiName").GetString());
+            Assert.Equal("STANDARD_API", record.GetProperty("classification").GetString());
+            Assert.Equal("READ", record.GetProperty("operationKind").GetString());
+            Assert.True(record.GetProperty("knownWebIdlMember").GetBoolean());
+            Assert.Equal("Document", record.GetProperty("definedInterface").GetString());
+            Assert.True(record.GetProperty("receiverMatchesDefinedInterface").GetBoolean());
+            Assert.True(record.GetProperty("standardPriorityEligible").GetBoolean());
         }
         finally
         {

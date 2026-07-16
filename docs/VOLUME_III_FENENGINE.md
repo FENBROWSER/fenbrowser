@@ -10271,11 +10271,12 @@ Verification:
 ## 2.384 Missing-Property Classification Provenance (2026-07-16)
 
 - `MissingApiTracker` schema v2 adds classification, operation kind, classification reason, standards-priority eligibility, receiver type, and explicit assignment/WebIDL evidence fields without changing property-read semantics.
-- Current host misses identify their receiver and `READ` operation. Unknown reads remain visible as `UNCLASSIFIED`; they are not discarded or promoted to standards work.
+- Current host misses identify their receiver and `READ` operation. First page-owned catch-all writes record `WRITE`/`SITE_EXPANDO` without changing stored values; weak per-receiver read evidence prevents a later assignment from being mislabeled as assignment-before-read.
+- Engine-owned bootstrap assignments are explicitly outside page observation. Checked-in-IDL evidence promotes only receiver-matched members and records the defining interface and match result.
 - Trace events carry the same classification fields as the per-site sidecar. Tooling uses the shared Core classifier for its compact bundle projection, avoiding a divergent classification policy.
 
 Verification:
 
 - Red: both existing tracker tests failed because the v1 record lacked classification and operation fields.
-- Green: `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests` pass `4/4`.
-- Fresh local fixture `FenBrowser.Tests/Fixtures/Diagnostics/missing_api_classification.html` completes without script failures and produces the expected unknown-read and legacy-probe classifications.
+- Green/discovery: `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests` list and pass `6/6`.
+- Fresh local fixture `FenBrowser.Tests/Fixtures/Diagnostics/missing_api_classification.html` completes without script failures and produces unknown-read, expando-write, legacy-probe, and checked-in-IDL standard classifications.

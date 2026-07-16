@@ -4,7 +4,7 @@ Status: IMPLEMENTED generator and TESTED inventory, STUBBED runtime integration.
 
 ## Current truth
 
-`FenBrowser.WebIdlGen` contains a parser/generator and checked-in IDL inputs. `FenBrowser.FenEngine.csproj` explicitly removes `Bindings/Generated/**/*.cs` from compilation, so generated classes are not the active browser binding layer. The current runtime uses manual host dispatch in FenEngine.
+`FenBrowser.WebIdlGen` contains a parser/generator and checked-in IDL inputs. `FenBrowser.FenEngine.csproj` explicitly removes `Bindings/Generated/**/*.cs` from compilation, so generated classes are not the active browser binding layer. The current runtime uses manual host dispatch in FenEngine. Core now embeds those IDL inputs for missing-property classification only; this metadata lookup does not activate generated bindings, create wrappers, or change host dispatch.
 
 `FenBrowser.Tooling webidl-inventory` now produces the deterministic offline audit under `Results/webidl/manual-binding-inventory/`. At commit `d95f74e0a5f725675a66f96652bb81a339d6ca15`, it reports 55 definition records, 402 members, 255 members with bounded manual-source evidence, 300 with name-correlated active tests, 73 with name-correlated selected-WPT coverage, zero generated outputs present, and zero generated outputs compiled. Source, test, and WPT correlations are candidates for behavioral review, not proof of full conformance.
 

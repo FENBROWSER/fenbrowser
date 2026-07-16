@@ -1,6 +1,6 @@
 # FenBrowser Missing API Tracker
 
-Status: TESTED for schema-v2 runtime classification and the compact `debug-site` projection; STUBBED for assignment/prototype/IDL evidence collection and rich-record bundle merging. Snapshot date: 2026-07-16.
+Status: TESTED for schema-v2 runtime classification, assignment-before-read evidence, checked-in-WebIDL receiver evidence, and the compact `debug-site` projection; STUBBED for prototype/descriptor operation collection and rich-record bundle merging. Snapshot date: 2026-07-16.
 
 ## Evidence model
 
@@ -42,7 +42,8 @@ Only `STANDARD_API` records set `standardPriorityEligible: true`. Fatality still
   "standardPriorityEligible": true,
   "assignmentBeforeRead": false,
   "knownWebIdlMember": true,
-  "definedInterface": "Node"
+  "definedInterface": "Node",
+  "receiverMatchesDefinedInterface": true
 }
 ```
 
@@ -75,4 +76,4 @@ No Google observation is currently confirmed as the first fatal blocker.
 
 ## Verification
 
-`MissingApiTrackerTests` and `DebugSiteMissingApiClassificationTests` are compiled and discovered. The focused 2026-07-16 command passes `4/4`. Fresh local evidence is `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_classification.html/20260716T103201Z/`: `Document.applicationSpecificMarker` is `UNCLASSIFIED`, `Navigator.msPointerEnabled` is `LEGACY_PROBE`, both are `READ`, and neither is standards-priority eligible. Required next proof is assignment-before-read and checked-in-IDL receiver instrumentation followed by a fresh Google rerun.
+`MissingApiTrackerTests` and `DebugSiteMissingApiClassificationTests` are compiled and discovered. The focused 2026-07-16 command passes `6/6`. Fresh local evidence is `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_classification.html/20260716T104250Z/`: the compact bundle classifies the unknown, checked-in-IDL standard, and legacy reads; the rich sidecar additionally records `Document.applicationState` as a `WRITE`/`SITE_EXPANDO`, and preserves `Document.charset` as a receiver-matched `STANDARD_API`. Required next proof is rich sidecar merging followed by a fresh Google rerun.

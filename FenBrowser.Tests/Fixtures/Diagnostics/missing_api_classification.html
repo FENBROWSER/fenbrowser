@@ -5,6 +5,10 @@
 <script>
   const unknownRead = document.applicationSpecificMarker;
   const legacyProbe = navigator.msPointerEnabled;
+  document.applicationState = 42;
+  const assignedExpando = document.applicationState;
+  const standardMissingRead = document.charset;
   document.querySelector('#result').textContent =
-    typeof unknownRead + '|' + typeof legacyProbe;
+    typeof unknownRead + '|' + typeof legacyProbe + '|' +
+    assignedExpando + '|' + typeof standardMissingRead;
 </script>

@@ -25,6 +25,13 @@ public sealed class DebugSiteMissingApiClassificationTests
                 Status = FeatureStatus.Unsupported,
                 Reason = "missing host property",
                 EncounterCount = 1
+            },
+            new FeatureInfo
+            {
+                Name = "Document.charset",
+                Status = FeatureStatus.Unsupported,
+                Reason = "missing host property",
+                EncounterCount = 1
             }
         };
         var extract = typeof(Program).GetMethod(
@@ -44,10 +51,13 @@ public sealed class DebugSiteMissingApiClassificationTests
             StringComparer.Ordinal);
         Assert.Equal("LEGACY_PROBE", records["Navigator.msPointerEnabled"].GetProperty("classification").GetString());
         Assert.Equal("UNCLASSIFIED", records["Document.closure_uid"].GetProperty("classification").GetString());
+        Assert.Equal("STANDARD_API", records["Document.charset"].GetProperty("classification").GetString());
+        Assert.True(records["Document.charset"].GetProperty("standardPriorityEligible").GetBoolean());
         Assert.All(records.Values, record =>
         {
             Assert.Equal("READ", record.GetProperty("operationKind").GetString());
-            Assert.False(record.GetProperty("standardPriorityEligible").GetBoolean());
         });
+        Assert.False(records["Navigator.msPointerEnabled"].GetProperty("standardPriorityEligible").GetBoolean());
+        Assert.False(records["Document.closure_uid"].GetProperty("standardPriorityEligible").GetBoolean());
     }
 }
