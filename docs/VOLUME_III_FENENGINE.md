@@ -10366,3 +10366,16 @@ Verification:
 - Focused callback/event-loop/lifetime slice: pass (`18/18`, zero failed/skipped).
 - Discovery lists all 13 callback diagnostic tests plus the required-surface guard.
 - Guarded browser/process slice: pass (`71/71`, zero failed/skipped).
+
+## 2.392 Element Operation Receiver Validation (2026-07-16)
+
+- The active manual `Element.getAttribute` callable now resolves its invocation receiver and rejects non-Element, stale, cross-document, or otherwise unresolvable host values with `TypeError` instead of using the Element captured when the method was read.
+- A compatible different Element receiver remains valid, preserving ordinary `Function.prototype.call` behavior. No host object is converted to a plain JavaScript object and no realm, epoch, or generation check is bypassed.
+- The shared host exception path now constructs FenJS's actual `TypeError` object for TypeError cases rather than a generic Error whose `name` was overwritten. Other DOMException-style names keep the existing generic error-object path.
+
+Verification:
+
+- Pre-fix reduction: failed `1/1`; the different Element receiver worked, but `getAttribute.call(document, ...)` did not throw a TypeError.
+- Browser receiver/mutation/discovery slice: pass (`7/7`, zero failed/skipped).
+- Relevant FenJS stale-generation/document-epoch/navigation-epoch/realm slice: pass (`11/11`, zero failed/skipped), with both stale-generation contracts explicitly discovered.
+- Guarded browser/process/export/receiver slice: pass (`74/74`, zero failed/skipped).

@@ -12845,7 +12845,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var exceptionName = string.IsNullOrWhiteSpace(name) ? "Error" : name;
         var exceptionMessage = message ?? string.Empty;
         var context = (FenBrowser.Js.Builtins.IBuiltinContext)_interpreter;
-        var errorValue = context.CreateError(exceptionMessage);
+        var errorValue = string.Equals(exceptionName, "TypeError", StringComparison.Ordinal)
+            ? context.CreateTypeError(exceptionMessage)
+            : context.CreateError(exceptionMessage);
         var error = _interpreter.Heap.GetObject(errorValue.AsObjectHandle());
         error.DefineOwnProperty(
             "name",
@@ -15025,10 +15027,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     value = _owner.GetOrCreateHostCallable(
                         element,
                         "getAttribute",
-                        (_, args) =>
+                        (thisValue, args) =>
                         {
+                            var target = _owner.ResolveHostObjectOrNull<Element>(thisValue);
+                            if (target == null)
+                            {
+                                _owner.ThrowDomException(
+                                    "TypeError",
+                                    "Failed to execute 'getAttribute' on 'Element': Illegal invocation");
+                            }
+
                             var attributeName = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
-                            var attributeValue = element.GetAttribute(attributeName);
+                            var attributeValue = target.GetAttribute(attributeName);
                             return attributeValue == null ? JsValue.Null : JsValue.FromString(attributeValue);
                         },
                         length: 1);

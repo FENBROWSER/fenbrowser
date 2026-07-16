@@ -3930,7 +3930,7 @@ Verification:
 
 ## 6.163 Required Browser-Integration Discovery Guard (2026-07-16)
 
-- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 19 selected timer/event/Promise/microtask provenance, callback invalidation, logger-drain/export, lifecycle, host-conversion, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
+- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 20 selected timer/event/Promise/microtask provenance, callback invalidation, logger-drain/export, lifecycle, host-conversion/receiver, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
 - The first combined run exposed a real parallel-isolation defect: the FenJS timer/rAF trace failed during native browser-constructor bootstrap while other browser tests ran concurrently. The global `EngineLog` collection is now explicitly non-parallel, matching its process-wide logger configuration and FenJS diagnostic usage.
 - This guard does not treat the skipped real-process brokered acceptance as passing. The AppContainer development-runtime provisioning decision remains the separately documented `BLOCK-PROC-002` boundary.
 
@@ -4001,3 +4001,16 @@ Verification:
 - `DebugSiteArtifactContractTests|DebugSiteExceptionSummaryTests|FirstBlockerClassifierTests|RequiredBrowserIntegrationDiscoveryTests`: pass (`18/18`, zero failed/skipped).
 - Discovery lists both artifact-contract tests and the required-surface guard.
 - Guarded browser/process/export slice: pass (`73/73`, zero failed/skipped).
+
+## 6.169 Element Receiver And Stale-Handle Verification (2026-07-16)
+
+- `HostReceiverValidationTests.ElementGetAttribute_UsesCallReceiverAndRejectsNonElementReceiver` is compiled on the active `Scripting/` surface and protected by the required-integration discovery guard. It verifies both compatible receiver rebinding and WebIDL-style TypeError rejection for `Document`.
+- `FenBrowser.Js.Tests` already compiles and discovers `HostObjectIntegrationTests.StaleGenerationThrowsTypeError` and `HostObjectTableTests.FreeMarksSlotInvalidAndRecyclesWithNewGeneration`. The selected host-safety slice also retains document-epoch, navigation-epoch, and cross-realm rejection.
+- A broad `HostObjectIntegrationTests|HostObjectTableTests` run exposed one separate existing failure: `RefusedWriteThrowsTypeError` expects a sloppy-mode refused assignment to throw. That contract is unrelated to this receiver patch and is not reported as green; the relevant 11-test safety slice is separated explicitly.
+
+Verification:
+
+- Pre-fix browser result: failed `1/1`; expected `second|true`, actual `second|false`.
+- `HostReceiverValidationTests|FenJsDomMutationTests|RequiredBrowserIntegrationDiscoveryTests`: pass (`7/7`, zero failed/skipped).
+- Relevant host-table/integration safety slice: pass (`11/11`, zero failed/skipped); discovery lists both stale-generation methods.
+- Guarded browser/process/export/receiver slice: pass (`74/74`, zero failed/skipped).
