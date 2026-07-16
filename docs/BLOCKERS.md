@@ -24,6 +24,17 @@ Snapshot date: 2026-07-16. These blockers do not prevent local diagnostic work. 
 - Work allowed before decision: brokered smoke tests, crash recovery tests, and trace export.
 - Work blocked: changing the default or claiming renderer isolation is the production security boundary.
 
+## BLOCK-PROC-002
+
+- Area: renderer AppContainer runtime-file access
+- Status: BLOCKED_NEEDS_HUMAN_DECISION
+- Decision required: Choose how the installed/development `FenBrowser.Host` apphost and its runtime dependencies receive read/execute access for the `FenBrowser.RendererMinimal` AppContainer identity.
+- Current evidence: strict direct launch resolves the correct `FenBrowser.Host.exe` but `CreateProcessW` fails with native error 2 from the current checkout path. The output directory has no renderer-profile ACE. Temporarily granting the exact profile SID execute traversal on parents and read/execute on the runtime directory removes the immediate spawn error, but the full acceptance still did not complete within 30 seconds. All temporary ACEs were removed and verified absent.
+- Security consequence: granting too broad a directory exposes unrelated user/workspace files to a compromised renderer; runtime ACL mutation also creates ownership, upgrade, concurrency, and cleanup obligations.
+- Choices requiring approval: installer-owned ACLs on a dedicated runtime directory; a packaged/AppContainer deployment layout; a broker-prepared dedicated child-runtime directory with narrowly managed ACLs; or another reviewed mechanism.
+- Work allowed before decision: executable/environment component tests, fail-closed startup attribution, IPC validator tests, and read-only packaging/ACL design.
+- Work blocked: automatic ACL mutation, unsandboxed fallback, brokered Google execution, or claiming authenticated renderer startup/navigation/frame/crash acceptance.
+
 ## BLOCK-NET-001
 
 - Area: network privilege and fallback

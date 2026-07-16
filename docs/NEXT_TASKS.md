@@ -187,28 +187,28 @@ Next action: Select one deterministic HTML document-lifecycle file from the loca
 ## Task PROC-001
 
 Task ID: PROC-001
-Title: Audit one explicit brokered renderer real-site run
+Title: Prove one explicit brokered renderer local run
 Area: Process isolation / IPC / crash containment
 Owner Agent: Process Agent
-Status: RESEARCHED
+Status: BLOCKED_NEEDS_HUMAN_DECISION
 Priority: 2
 Risk Level: High
 Dependencies: Brokered coordinator and child-process implementations exist; explicit environment selection avoids changing the default
 Files likely involved: `FenBrowser.Host/ProcessIsolation`, `FenBrowser.Tooling/Program.cs`, process diagnostic tests
 Specs/references: `docs/PROCESS_MODEL.md`; `docs/IPC_MODEL.md`; `docs/SECURITY_MODEL.md`
-Current behavior: Default real-site bundle is in-process; no current brokered Google evidence was found.
+Current behavior: The compiled local real-process acceptance is discovered but skipped. Correct apphost resolution and Unicode child-environment propagation are tested, while strict AppContainer spawn fails with native error 2 because the development runtime path is not readable/executable by the renderer profile.
 Expected behavior: Explicit brokered mode navigates, renders, accepts input, logs authenticated IPC, and contains a forced renderer failure without killing the UI process.
 Reproduction: Use a local fixture first, then Google, with `FEN_PROCESS_ISOLATION=brokered`; record process IDs and mode in the bundle.
-Root cause hypothesis: Unknown; likely integration gaps are child startup, log forwarding, shared-memory frame lifecycle, or automation routing.
-Implementation plan: Capture clean process inventory; run local fixture; verify handshake/frame/input; induce a controlled test-only child exit; then run Google if local acceptance passes.
+Root cause: Runtime-file ACL provisioning for the renderer AppContainer is not defined. A temporary exact-SID ACL experiment removed the immediate spawn error but exposed a later unresolved timeout; automatic ACL mutation is not authorized.
+Implementation plan: After `BLOCK-PROC-002` is decided, provision only the reviewed runtime path; re-enable the compiled local fixture; verify handshake/frame/input; induce a controlled test-only child exit; then run Google only if local acceptance passes.
 Tests required: Auth failure, timeout, oversized payload, stale generation, crash/restart/quarantine, UI survival.
 Evidence required: Complete process/IPC/crash artifacts, screenshot, UI survival proof, and no orphan child.
 Security impact: Do not relax sandbox or authentication to make the run pass.
 Performance impact: Record startup, IPC counts/bytes, frame latency, and shared-memory use.
 Compatibility impact: Identifies process-only regressions before changing defaults.
 Known risks: Child launch/hang and native resource leakage.
-Blockers: None for explicit audit; changing the default remains `BLOCK-PROC-001`.
-Next action: Run the included coordinator policy tests and a local brokered fixture before any external site.
+Blockers: `BLOCK-PROC-002` for AppContainer runtime-path access; changing the default remains `BLOCK-PROC-001`.
+Next action: Obtain the runtime ACL/deployment decision for `BLOCK-PROC-002`; then re-enable the existing local acceptance before any external site.
 
 ## Task BIND-001
 

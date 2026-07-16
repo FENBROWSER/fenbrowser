@@ -1400,3 +1400,17 @@ Verification:
 Verification:
 
 - `HostBrowserDriverNewWindowTests.NewWindow_HasLoadedAboutBlankDocumentBeforeReturn` confirms the initial URL, root lookup, and document-root focus click on the compiled `Scripting/` test surface.
+
+### 6.66 Brokered Renderer Startup Attribution (2026-07-16)
+
+- Direct and pooled renderer launch now resolve the `FenBrowser.Host` apphost beside the loaded Host assembly before falling back to `Environment.ProcessPath`. This prevents embedded/test-runner hosts from launching `testhost` or `dotnet` with renderer-child arguments.
+- Renderer launch clears inherited environment values before adding the explicit renderer contract; only `SystemRoot`, `WINDIR`, optional .NET roots, and the required `FEN_RENDERER_*` values cross the boundary. Parent API tokens and unrelated `FEN_*` settings are not inherited.
+- The direct coordinator retains a bounded per-tab startup-failure detail and an internal race-safe snapshot containing PID, exit state/code, assignment, sandbox profile, and startup result. Authentication tokens are never included.
+- The compiled brokered acceptance test remains explicitly skipped under `BLOCK-PROC-002`: the `FenBrowser.RendererMinimal` AppContainer receives Win32 error 2 when resolving the development runtime path. A temporary exact-SID traversal/read-execute experiment removed that immediate spawn error but did not complete the full acceptance within 30 seconds; all temporary ACEs were removed and verified absent.
+- No unsandboxed fallback was enabled, no authentication or capability check was relaxed, and the default process mode remains unchanged.
+
+Verification:
+
+- `HostExecutablePathResolverTests`, `RendererChildEnvironmentTests`, and `WindowsAppContainerEnvironmentTests` pass `3/3`.
+- The focused process slice passes `43`, fails `0`, and skips the one blocked real-process acceptance test; all four new tests appear in `--list-tests`.
+- `FenBrowser.Host` Release builds with `496` warnings and `0` errors.

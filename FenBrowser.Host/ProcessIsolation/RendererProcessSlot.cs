@@ -323,11 +323,7 @@ namespace FenBrowser.Host.ProcessIsolation
             var allowUnsandboxedFallback = ProcessIsolationEnvPolicy.IsUnsandboxedFallbackEnabled("FEN_RENDERER_ALLOW_UNSANDBOXED");
             var parentPid = Environment.ProcessId;
 
-            var exePath = Environment.ProcessPath;
-            if (string.IsNullOrWhiteSpace(exePath))
-            {
-                exePath = Process.GetCurrentProcess().MainModule?.FileName;
-            }
+            var exePath = HostExecutablePathResolver.Resolve();
 
             if (string.IsNullOrWhiteSpace(exePath))
             {
@@ -344,6 +340,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden
             };
+            RendererChildEnvironment.ResetToSafeBase(startInfo);
             startInfo.Environment["FEN_RENDERER_CHILD"] = "1";
             startInfo.Environment["FEN_RENDERER_TAB_ID"] = tabId.ToString();
             startInfo.Environment["FEN_RENDERER_PARENT_PID"] = parentPid.ToString();

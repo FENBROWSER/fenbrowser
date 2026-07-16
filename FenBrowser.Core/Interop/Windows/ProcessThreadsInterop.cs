@@ -191,6 +191,9 @@ internal static class ProcessThreadsInterop
     /// </summary>
     internal const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
 
+    /// <summary>Process creation flag: <c>lpEnvironment</c> contains Unicode strings.</summary>
+    internal const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+
     /// <summary>Process creation flag: create the process suspended.</summary>
     internal const uint CREATE_SUSPENDED = 0x00000004;
 

@@ -1700,3 +1700,10 @@ Verification:
 
 - Red: `DomTokenListValueBindingTests.ValueAssignment_ParsesAnOrderedSetWithoutDuplicateTokens` returned length `3` for `" foo bar foo "`.
 - Green: both included `DomTokenListValueBindingTests` pass `2/2`; selected WPT `DOMTokenList-value.html` passes.
+
+### 1.79 AppContainer Child Environment Propagation (2026-07-16)
+
+- `WindowsAppContainerSandbox.SpawnProcess` now passes the `ProcessStartInfo.Environment` map to `CreateProcessW` as a sorted, double-null-terminated Unicode environment block and sets `CREATE_UNICODE_ENVIRONMENT`.
+- The custom AppContainer path previously supplied `lpEnvironment = null`, so renderer pipe, authentication-token, parent-PID, sandbox-profile, and capability variables were discarded even when the child executable could launch.
+- The managed and unmanaged environment copies are cleared before the native allocation is released because the block contains the renderer authentication token.
+- `WindowsAppContainerEnvironmentTests` locks ordering, termination, and preservation of the renderer startup variables. The test validates environment construction; real AppContainer startup remains blocked by runtime-path ACL policy recorded in `BLOCK-PROC-002`.

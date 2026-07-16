@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using FenBrowser.Core.Interop.Windows;
@@ -258,19 +260,42 @@ public sealed class WindowsAppContainerSandbox : ISandbox
                 // ---------------------------------------------------------------
                 uint creationFlags =
                     ProcessThreadsInterop.EXTENDED_STARTUPINFO_PRESENT |
+                    ProcessThreadsInterop.CREATE_UNICODE_ENVIRONMENT |
                     ProcessThreadsInterop.CREATE_NO_WINDOW;
 
-                bool created = ProcessThreadsInterop.CreateProcessW(
-                    lpApplicationName: psi.FileName,
-                    lpCommandLine: commandLine,
-                    lpProcessAttributes: IntPtr.Zero,
-                    lpThreadAttributes: IntPtr.Zero,
-                    bInheritHandles: false,
-                    dwCreationFlags: creationFlags,
-                    lpEnvironment: IntPtr.Zero,
-                    lpCurrentDirectory: null,
-                    lpStartupInfo: ref startupInfoEx,
-                    lpProcessInformation: out var procInfo);
+                var environmentChars = BuildEnvironmentBlock(psi.Environment);
+                var environmentBlock = Marshal.AllocHGlobal(environmentChars.Length * sizeof(char));
+                ProcessThreadsInterop.PROCESS_INFORMATION procInfo;
+                bool created;
+                try
+                {
+                    Marshal.Copy(environmentChars, 0, environmentBlock, environmentChars.Length);
+                    created = ProcessThreadsInterop.CreateProcessW(
+                        lpApplicationName: psi.FileName,
+                        lpCommandLine: commandLine,
+                        lpProcessAttributes: IntPtr.Zero,
+                        lpThreadAttributes: IntPtr.Zero,
+                        bInheritHandles: false,
+                        dwCreationFlags: creationFlags,
+                        lpEnvironment: environmentBlock,
+                        lpCurrentDirectory: null,
+                        lpStartupInfo: ref startupInfoEx,
+                        lpProcessInformation: out procInfo);
+                }
+                finally
+                {
+                    try
+                    {
+                        // The block contains the renderer authentication token. Clear both
+                        // managed and unmanaged copies before releasing the native buffer.
+                        Array.Clear(environmentChars, 0, environmentChars.Length);
+                        Marshal.Copy(environmentChars, 0, environmentBlock, environmentChars.Length);
+                    }
+                    finally
+                    {
+                        Marshal.FreeHGlobal(environmentBlock);
+                    }
+                }
 
                 if (!created)
                 {
@@ -438,6 +463,40 @@ public sealed class WindowsAppContainerSandbox : ISandbox
         if (string.IsNullOrEmpty(arguments))
             return quoted;
         return $"{quoted} {arguments}";
+    }
+
+    internal static char[] BuildEnvironmentBlock(IEnumerable<KeyValuePair<string, string>> environment)
+    {
+        if (environment == null)
+            throw new ArgumentNullException(nameof(environment));
+
+        var entries = environment
+            .Where(pair => pair.Value != null)
+            .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (entries.Length == 0)
+        {
+            return new[] { '\0', '\0' };
+        }
+
+        var length = entries.Sum(pair => pair.Key.Length + 1 + pair.Value.Length + 1) + 1;
+        var block = new char[length];
+        var offset = 0;
+        foreach (var pair in entries)
+        {
+            pair.Key.AsSpan().CopyTo(block.AsSpan(offset));
+            offset += pair.Key.Length;
+            block[offset++] = '=';
+            pair.Value.AsSpan().CopyTo(block.AsSpan(offset));
+            offset += pair.Value.Length;
+            block[offset++] = '\0';
+        }
+
+        // CreateProcessW requires null-terminated entries plus a second null
+        // character terminating the complete environment block.
+        block[offset] = '\0';
+        return block;
     }
 
     private void ThrowIfDisposed()

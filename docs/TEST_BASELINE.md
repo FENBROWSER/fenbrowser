@@ -18,6 +18,8 @@ Snapshot date: 2026-07-14; focused build/test and selected WPT evidence revalida
 | FenJS checkbox click activation | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsCheckboxActivationTests" --logger "console;verbosity=minimal"` | 4 passed, 0 failed, 0 skipped; all 4 listed by `--list-tests` | REGRESSION_PROTECTED |
 | WebIDL manual-binding inventory | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~WebIdlInventoryRunnerTests|FullyQualifiedName~WebIdlBindingGeneratorTests" --logger "console;verbosity=minimal"` | 2 passed, 0 failed, 0 skipped; inventory fixture listed by `--list-tests` | TESTED |
 | FenJS host lifetime measurement | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsHostLifetimeMeasurementTests" --logger "console;verbosity=detailed"` | 2 passed, 0 failed, 0 skipped; both listed; six resets remain 6 live handles at baseline and 38 with 32 retained nodes | TESTED |
+| Brokered renderer startup components and policy | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~RendererIsolationPoliciesTests|FullyQualifiedName~BrokeredRendererProcessAcceptanceTests|FullyQualifiedName~HostExecutablePathResolverTests|FullyQualifiedName~RendererChildEnvironmentTests|FullyQualifiedName~WindowsAppContainerEnvironmentTests" --logger "console;verbosity=minimal"` | 43 passed, 0 failed, 1 skipped; the skip is `BLOCK-PROC-002`, not accepted brokered startup | TESTED |
+| Host process-isolation surface, Release | `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Release --no-restore --verbosity quiet` | 496 warnings, 0 errors | TESTED |
 | FenEngine, Release | `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v:minimal` | 0 warnings, 0 errors | TESTED |
 | Tooling, Release | `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v:minimal` | 0 warnings, 0 errors | TESTED |
 | Adjacent form/input event slice | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FormControlActivationTests|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_DeliversDoubleClickContextMenuAndPointerPayload|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_EventListenerCanAccessFreshClassList" --logger "console;verbosity=minimal"` | 5 passed, 0 failed, 0 skipped | TESTED |
@@ -48,11 +50,17 @@ The Release discovery check found:
 | `FenJsCheckboxActivationTests` | yes; 4 tests |
 | `WebIdlInventoryRunnerTests` | yes; 1 test |
 | `FenJsHostLifetimeMeasurementTests` | yes; 2 tests |
+| `BrokeredRendererProcessAcceptanceTests` | yes; 1 explicitly blocked/skipped test |
+| `HostExecutablePathResolverTests` | yes; 1 test |
+| `RendererChildEnvironmentTests` | yes; 1 test |
+| `WindowsAppContainerEnvironmentTests` | yes; 1 test |
 | `EventLoopTraceTests` | no |
 | `RealSiteRenderDiagnostics` | no |
 | `RendererChildLoopIoTests` | no |
 
 The included `Scripting/CallbackFailureDiagnosticsTests.cs` and `Tooling/DebugSiteExceptionSummaryTests.cs` files activate only the first callback/export slice; no excluded tree was broadly re-enabled. The compile-removal patterns currently cover 246 C# files under excluded directory trees plus the four explicit Core files. Passing the normal test project therefore does not yet protect every diagnostic, render, host, or IPC path.
+
+The brokered acceptance was red before its explicit blocker annotation: the initial test-runner launch reported `renderer-startup-failed`; after resolving the FenBrowser apphost and preserving the Unicode child environment, strict AppContainer launch reports native error 2 for the development runtime path. A temporary exact-SID ACL experiment removed the immediate spawn error but timed out before full acceptance. No unsandboxed fallback was used, and all temporary ACEs were removed and verified absent.
 
 A combined parallel filter containing two independent FenJS runtime classes reproduced the existing shared-bootstrap isolation defect (`TypeError: Cannot read properties of undefined (reading 'prototype')`). Each timer class passes when run alone. FenJS test serialization remains verification-infrastructure work; the focused callback command above contains one FenJS runtime test and is deterministic.
 

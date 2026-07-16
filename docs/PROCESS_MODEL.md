@@ -1,6 +1,6 @@
 # FenBrowser Process Model
 
-Status: RESEARCHED. Snapshot date: 2026-07-14.
+Status: RESEARCHED. Snapshot date: 2026-07-16.
 
 ## Current process audit
 
@@ -16,6 +16,14 @@ Status: RESEARCHED. Snapshot date: 2026-07-14.
 | Trace collector | No separate service | No | Logs are collected/copied by current process and Tooling | STUBBED |
 
 The factory implementation, not its summary comment, is authoritative: an unset `FEN_PROCESS_ISOLATION` returns `InProcessIsolationCoordinator`. This discrepancy is a risk and must be fixed only after the default-mode decision is accepted.
+
+## Current brokered startup evidence
+
+- The compiled real-process acceptance is discovered but explicitly skipped under `BLOCK-PROC-002`.
+- FenBrowser now resolves its own apphost when embedded by a test runner and preserves the child environment through Windows `CreateProcessW`; focused component tests pass.
+- Strict AppContainer launch from the development checkout fails closed with Win32 error 2 because the renderer profile cannot traverse/read the runtime path.
+- A temporary exact-profile-SID ACL experiment removed the immediate spawn error, but authenticated Ready/navigation/frame acceptance did not complete within 30 seconds. The ACLs were removed and their absence verified.
+- Input, shared-memory frame delivery, controlled crash, UI survival, session-generation rejection, and orphan cleanup are therefore not accepted for the real brokered process path.
 
 ## Target responsibility contract
 
@@ -74,4 +82,4 @@ Consumes validated display/raster commands or shared surfaces, schedules frames,
 - utility: capability allow/deny, timeout, crash;
 - storage and decoder: design and threat-model acceptance before implementation.
 
-Default-mode, fallback, and public process-contract decisions are `BLOCKED_NEEDS_HUMAN_DECISION` in `BLOCKERS.md`.
+Default-mode, runtime ACL provisioning, fallback, and public process-contract decisions are `BLOCKED_NEEDS_HUMAN_DECISION` in `BLOCKERS.md`.

@@ -1,6 +1,6 @@
 # FenBrowser Security Model
 
-Status: RESEARCHED. Snapshot date: 2026-07-14.
+Status: RESEARCHED. Snapshot date: 2026-07-16.
 
 ## Threat model
 
@@ -11,7 +11,7 @@ Treat page HTML, script, CSS, images, fonts, media, network responses, extension
 | Boundary | Current control | Status | Open risk |
 | --- | --- | --- | --- |
 | Page -> DOM/JS host bridge | Manual host-object dispatch and conversions | INTEGRATED | Broad binding surface lacks generated validation consistency |
-| Renderer -> Host | Tokened, bounded renderer IPC in brokered mode | IMPLEMENTED | In-process mode is the default |
+| Renderer -> Host | Tokened, bounded renderer IPC in brokered mode | IMPLEMENTED | In-process mode is default; AppContainer runtime-path ACL provisioning is undecided |
 | Renderer -> Network | Network child/coordinator and capability token exist | STUBBED | Active resource path bypasses the coordinator |
 | Host -> GPU/utility | Tokened target IPC and sandbox profiles | INTEGRATED | Current denial/recovery bundle evidence is absent |
 | Native graphics/font/image | Managed wrappers over native libraries | INTEGRATED | Decode/raster remains inside trusted processes |
@@ -27,6 +27,7 @@ Treat page HTML, script, CSS, images, fonts, media, network responses, extension
 - process crashes invalidate tokens and native/shared-memory handles;
 - hostile parsers and decoders have input, time, memory, and recursion ceilings;
 - compatibility code cannot silently weaken a policy decision;
+- renderer children inherit only bounded OS/.NET bootstrap roots plus their explicit `FEN_RENDERER_*` startup contract, never the broker's general environment;
 - raw trace bundles remain local unless redacted.
 
 ## Security task template
@@ -52,7 +53,7 @@ Residual risk:
 | Establish selected same-origin/CORS/CSP/cookie/mixed-content baselines | NOT_STARTED | Local WPT categories and negative tests |
 | Export sandbox denials and IPC rejections in every debug bundle | NOT_STARTED | Empty-or-populated typed artifacts plus rejection fixture |
 | Remove or explicitly policy-gate network fallback | BLOCKED_NEEDS_HUMAN_DECISION | Accepted failure-mode ADR and integration tests |
-| Verify brokered renderer has no ambient privileged API path | RESEARCHED | Capability inventory and brokered real-site run |
+| Verify brokered renderer has no ambient privileged API path | BLOCKED_NEEDS_HUMAN_DECISION | Resolve `BLOCK-PROC-002`, then complete local authenticated startup/crash evidence before any real-site run |
 | Fuzz all IPC envelopes and payload validators | IMPLEMENTED | Existing baseline exists; sustained corpus result remains open |
 | Isolate hostile image decoding | NOT_STARTED | Boundary design, memory ceiling, crash containment test |
 | Define DOM/JS/native lifetime behavior | BLOCKED_NEEDS_HUMAN_DECISION | Memory ADR and teardown/stress tests |
