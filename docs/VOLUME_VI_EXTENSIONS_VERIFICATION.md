@@ -3787,4 +3787,4 @@ Verification:
 
 - `WptToolRunnerRawLogTests`: pass (`6/6`) with explicit status-class, incomplete-test, and empty-startup coverage.
 - `HostBrowserDriverNewWindowTests|WebDriverClickWithoutInteractablePoint_Throws`: pass (`2/2`).
-- Clean committed-tree evidence: `Results/wpt/selected/20260716_clean_run1/` and `Results/wpt/selected/20260716_clean_run2/`. Both use FenBrowser `c62243cbbed1492fd89d16ed1d13dc823239cbe5`, local WPT `88152b842c3f60c2a5f95e0106ded4a375f710b0`, Release, one process, and default in-process mode. Each reports a clean FenBrowser tree, three starts/ends, one pass, two assertion-failure files, and the same five failing subtests.
+- Latest clean committed-tree evidence: `Results/wpt/selected/20260716_domtoken_clean_run1/` and `Results/wpt/selected/20260716_domtoken_clean_run2/`. Both use FenBrowser `b57987662fb66fb957ed8cb0cea336e0a9363512`, local WPT `88152b842c3f60c2a5f95e0106ded4a375f710b0`, Release, one process, and default in-process mode. Each reports a clean FenBrowser tree, three starts/ends, two passes, one checkbox assertion-failure file, and the same four failing subtests.
