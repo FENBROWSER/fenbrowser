@@ -20,7 +20,7 @@ Snapshot date: 2026-07-14; focused build/test and selected WPT evidence revalida
 | FenJS host lifetime measurement | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsHostLifetimeMeasurementTests" --logger "console;verbosity=detailed"` | 2 passed, 0 failed, 0 skipped; both listed; six resets remain 6 live handles at baseline and 38 with 32 retained nodes | TESTED |
 | Brokered renderer startup components and policy | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~RendererIsolationPoliciesTests|FullyQualifiedName~BrokeredRendererProcessAcceptanceTests|FullyQualifiedName~HostExecutablePathResolverTests|FullyQualifiedName~RendererChildEnvironmentTests|FullyQualifiedName~WindowsAppContainerEnvironmentTests" --logger "console;verbosity=minimal"` | 43 passed, 0 failed, 1 skipped; the skip is `BLOCK-PROC-002`, not accepted brokered startup | TESTED |
 | Debug-site supplemental artifact contract | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~DebugSiteArtifactContractTests|FullyQualifiedName~DebugSiteExceptionSummaryTests" --logger "console;verbosity=minimal"` | 2 passed, 0 failed, 0 skipped; artifact-contract test listed by `--list-tests` | REGRESSION_PROTECTED |
-| Missing-API schema-v2 classification and rich bundle export | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~MissingApiTrackerTests|FullyQualifiedName~DebugSiteMissingApiClassificationTests" --logger "console;verbosity=minimal"` | 9 passed, 0 failed, 0 skipped; all 9 listed by `--list-tests` | REGRESSION_PROTECTED |
+| Missing-API schema-v2 classification and rich bundle export | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~MissingApiTrackerTests|FullyQualifiedName~DebugSiteMissingApiClassificationTests" --logger "console;verbosity=minimal"` | 10 passed, 0 failed, 0 skipped; all 10 listed by `--list-tests` | REGRESSION_PROTECTED |
 | Host process-isolation surface, Release | `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Release --no-restore --verbosity quiet` | 496 warnings, 0 errors | TESTED |
 | FenEngine, Release | `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v:minimal` | 0 warnings, 0 errors | TESTED |
 | Tooling, Release | `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --verbosity quiet` | 2 warnings, 0 errors | TESTED |
@@ -39,7 +39,7 @@ The Release discovery check found:
 
 | Test class | Discovered |
 | --- | --- |
-| `MissingApiTrackerTests` | yes; 5 tests |
+| `MissingApiTrackerTests` | yes; 6 tests |
 | `RendererIpcMetadataTests` | yes |
 | `CallbackFailureDiagnosticsTests` | yes |
 | `DebugSiteExceptionSummaryTests` | yes |

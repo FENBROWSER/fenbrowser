@@ -44,7 +44,7 @@ Current behavior: Runtime sidecars and the bounded `debug-site` bundle use schem
 Expected behavior: The bundle preserves provenance and classifies `STANDARD_API`, `SITE_EXPANDO`, `WRONG_RECEIVER`, `LEGACY_PROBE`, or `UNCLASSIFIED`; only confirmed standard APIs feed priority counts.
 Reproduction: Run a local page that reads one missing standard member, assigns/reads an expando, probes a wrong receiver, and performs legacy feature detection; then inspect `missing_apis.json`.
 Root cause: The remaining gap is operation instrumentation: current host-property hooks provide read and first-write evidence but do not identify prototype, delete, call, construct, or descriptor operations.
-Implementation plan: Schema/classifier, assignment evidence, checked-in-IDL receiver resolution, stable per-navigation identity, and bounded rich bundle export are implemented. Next reclassify a fresh Google run, then add only the prototype/descriptor operation capture required by current evidence.
+Implementation plan: Schema/classifier, assignment evidence, concrete HTML receiver resolution, checked-in-IDL matching, stable per-navigation identity, bounded rich export, and fresh Google classification are implemented. Next add only the descriptor/prototype operation capture required to distinguish the 13 retained unclassified observations.
 Tests required: All five dispositions, dedup/count/first-seen, source identity, cross-navigation isolation, redaction, and Google-name regression cases.
 Evidence required: Before false-positive list and after classified local/Google bundles with no loss of provenance.
 Security impact: Script URLs and messages require redaction/length limits.
@@ -52,7 +52,7 @@ Performance impact: Bound unique records per document and avoid allocating stack
 Compatibility impact: Improves attribution; does not add fake browser members.
 Known risks: Misclassifying a true standard member or suppressing a causal probe.
 Blockers: None
-Next action: Rerun Google and classify every retained missing-property observation from the bounded rich bundle before selecting any API implementation work.
+Next action: Add a deterministic descriptor/prototype assignment reduction, then instrument that operation path so fresh Closure-style observations can be classified from evidence rather than name patterns.
 
 ## Task TRACE-003
 
@@ -222,7 +222,7 @@ Risk Level: Low
 Dependencies: Manual host runtime, WebIDL generator, and IDL inputs exist
 Files likely involved: `FenBrowser.WebIdlGen`, `FenBrowser.FenEngine/Bindings`, `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`, `docs/WEBIDL_BINDINGS_TRACKER.md`
 Specs/references: Web IDL and the specifications linked by each selected interface
-Current behavior: `FenBrowser.Tooling webidl-inventory` deterministically maps all 55 checked-in definition records and 402 members to bounded manual source evidence, generated output policy, active tests, selected WPT correlations, lifetime complexity, and migration risk. It reports zero generated outputs present or compiled and names `EventInit` as a conversion-only future candidate.
+Current behavior: `FenBrowser.Tooling webidl-inventory` deterministically maps all 58 checked-in definition records and 407 members to bounded manual source evidence, generated output policy, active tests, selected WPT correlations, lifetime complexity, and migration risk. It reports zero generated outputs present or compiled and names `EventInit` as a conversion-only future candidate.
 Expected behavior: A generated audit report maps each IDL member to manual implementation, missing implementation, excluded source, test coverage, and lifetime complexity without activating generated bindings.
 Reproduction: Run `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- webidl-inventory --output-dir Results/webidl/manual-binding-inventory --wpt-root C:/Users/udayk/Videos/wpt --selected-wpt dom/lists/DOMTokenList-stringifier.html,dom/lists/DOMTokenList-value.html,html/semantics/forms/the-input-element/checkbox-click-events.html`.
 Root cause hypothesis: Generator and runtime integration evolved independently, hiding duplicate, missing, and incompatible surfaces.

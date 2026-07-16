@@ -1,0 +1,8 @@
+// Selected declarations from local WPT interfaces/html.idl at
+// 88152b842c3f60c2a5f95e0106ded4a375f710b0.
+// Metadata only: generated FenEngine bindings remain excluded from compilation.
+[Exposed=Window]
+interface HTMLScriptElement : HTMLElement {
+  [CEReactions] attribute boolean async;
+  [CEReactions] attribute DOMString fetchPriority;
+};

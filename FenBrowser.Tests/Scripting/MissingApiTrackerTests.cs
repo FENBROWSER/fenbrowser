@@ -329,6 +329,68 @@ public sealed class MissingApiTrackerTests
         }
     }
 
+    [Fact]
+    public async Task StandardElementAssignments_UseConcreteWebIdlReceiver()
+    {
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
+        var baseUri = new Uri("https://example.test/concrete-element.html");
+
+        try
+        {
+            MissingApiTracker.ConfigureForTests(outputRoot);
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            DisableTrace();
+
+            var document = new HtmlParser("<html><body>ok</body></html>", baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.Sandbox = SandboxPolicy.AllowAll;
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("assigned", engine.Evaluate(@"
+                var scriptProbe = document.createElement('script');
+                scriptProbe.async = true;
+                scriptProbe.fetchPriority = 'high';
+                var linkProbe = document.createElement('link');
+                linkProbe.as = 'script';
+                var imageProbe = document.createElement('img');
+                imageProbe.fetchPriority = 'low';
+                'assigned';")?.ToString());
+
+            using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
+            var records = outputJson.RootElement.GetProperty("records")
+                .EnumerateArray()
+                .ToDictionary(record => record.GetProperty("apiName").GetString()!, record => record);
+
+            AssertStandardWrite(records, "HTMLScriptElement.async", "HTMLScriptElement");
+            AssertStandardWrite(records, "HTMLScriptElement.fetchPriority", "HTMLScriptElement");
+            AssertStandardWrite(records, "HTMLLinkElement.as", "HTMLLinkElement");
+            AssertStandardWrite(records, "HTMLImageElement.fetchPriority", "HTMLImageElement");
+        }
+        finally
+        {
+            MissingApiTracker.ResetForTests();
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            TryDeleteDirectory(outputRoot);
+        }
+    }
+
+    private static void AssertStandardWrite(
+        IReadOnlyDictionary<string, JsonElement> records,
+        string apiName,
+        string receiverType)
+    {
+        var record = records[apiName];
+        Assert.Equal("STANDARD_API", record.GetProperty("classification").GetString());
+        Assert.Equal("WRITE", record.GetProperty("operationKind").GetString());
+        Assert.Equal(receiverType, record.GetProperty("receiverType").GetString());
+        Assert.Equal(receiverType, record.GetProperty("definedInterface").GetString());
+        Assert.True(record.GetProperty("receiverMatchesDefinedInterface").GetBoolean());
+        Assert.True(record.GetProperty("standardPriorityEligible").GetBoolean());
+    }
+
     private static MissingApiObservation CreateObservation(string siteUrl, string navigationId, string apiName)
     {
         var separator = apiName.IndexOf('.');

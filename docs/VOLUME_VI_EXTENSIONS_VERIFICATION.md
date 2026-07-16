@@ -3839,3 +3839,11 @@ Verification:
 - Discovery lists all nine `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests`; the focused run passes `9/9` with no failures or skips.
 - Fresh local bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_classification.html/20260716T105848Z/`; navigation completed, scripts passed `1/1`, rendered text is `undefined|undefined|42|undefined`, logger drain succeeded, first blocker is `none`, screenshot is present, and all 26 manifest entries exist.
 - The bundle contains all four rich observations, including `Document.applicationState` as `WRITE`/`SITE_EXPANDO` and receiver-matched `Document.charset` IDL evidence, with script, navigation, source location, receiver, and trace identity.
+
+## 6.155 Concrete HTML Receiver Classification And Google Revalidation (2026-07-16)
+
+- The compiled `StandardElementAssignments_UseConcreteWebIdlReceiver` reduction creates script, link, and image elements through the real FenJS DOM bridge and assigns `async`, `as`, and `fetchPriority`. It verifies concrete receiver identity, receiver-matched checked-in IDL evidence, `STANDARD_API`/`WRITE`, and standards-priority eligibility.
+- Red: the reduction could not find `HTMLScriptElement.async` because the runtime emitted generic `Element.async`.
+- Green/discovery: all 10 `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests` methods are listed and pass (`10/10`, zero failed/skipped). Release builds of Core, FenEngine, and Tooling pass with zero warnings and zero errors.
+- The canonical offline inventory command now reports 58 definitions, 407 members, 256 members with manual evidence, 305 with active-test correlations, 73 with selected-WPT correlations, and zero generated outputs active. `EventInit` remains the candidate; no generated binding was activated.
+- Fresh Google bundle `logs/real-site/www.google.com/20260716T110854Z/` preserves 25/25 rich records and classifies them as 9 standard, 2 wrong-receiver, 1 legacy probe, and 13 unclassified. Lifecycle is complete, callback failures and exceptions are zero, `first_blocker.json` is `none`, the main UI screenshot is present, logger drain succeeds, and the 26-entry artifact manifest has no missing file.

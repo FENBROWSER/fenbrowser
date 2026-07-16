@@ -13727,7 +13727,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             return hostObject switch
             {
                 Document => "Document",
-                Element => "Element",
+                Element element => HtmlElementInterfaceCatalog.ResolveInterfaceName(
+                    element.LocalName,
+                    element.NamespaceUri) ?? "Element",
                 FenJsDomImplementationHost => "DOMImplementation",
                 Attr => "Attr",
                 NamedNodeMap => "NamedNodeMap",
@@ -13896,7 +13898,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     // Catch-all for arbitrary element properties (e.g. Google sets
                     // __gwbp, __jsl, and other internal bookkeeping properties on
                     // DOM elements). Store for later retrieval via TryGetElementProperty.
-                    RecordAssignedHostApi(element, "Element", property);
+                    RecordAssignedHostApi(element, GetHostApiOwnerName(element), property);
                     _owner.SetStoredHostProperty(element, property, value);
                     return true;
                 case Attr attr when string.Equals(property, "value", StringComparison.Ordinal):

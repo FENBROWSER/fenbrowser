@@ -6,7 +6,7 @@ Status: IMPLEMENTED generator and TESTED inventory, STUBBED runtime integration.
 
 `FenBrowser.WebIdlGen` contains a parser/generator and checked-in IDL inputs. `FenBrowser.FenEngine.csproj` explicitly removes `Bindings/Generated/**/*.cs` from compilation, so generated classes are not the active browser binding layer. The current runtime uses manual host dispatch in FenEngine. Core now embeds those IDL inputs for missing-property classification only; this metadata lookup does not activate generated bindings, create wrappers, or change host dispatch.
 
-`FenBrowser.Tooling webidl-inventory` now produces the deterministic offline audit under `Results/webidl/manual-binding-inventory/`. At commit `d95f74e0a5f725675a66f96652bb81a339d6ca15`, it reports 55 definition records, 402 members, 255 members with bounded manual-source evidence, 300 with name-correlated active tests, 73 with name-correlated selected-WPT coverage, zero generated outputs present, and zero generated outputs compiled. Source, test, and WPT correlations are candidates for behavioral review, not proof of full conformance.
+`FenBrowser.Tooling webidl-inventory` now produces the deterministic offline audit under `Results/webidl/manual-binding-inventory/`. With the selected `HTMLImageElement`, `HTMLLinkElement`, and `HTMLScriptElement` classification metadata, it reports 58 definition records, 407 members, 256 members with bounded manual-source evidence, 305 with name-correlated active tests, 73 with name-correlated selected-WPT coverage, zero generated outputs present, and zero generated outputs compiled. Source, test, and WPT correlations are candidates for behavioral review, not proof of full conformance.
 
 ## Binding pipeline
 
@@ -48,7 +48,8 @@ dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --n
 
 - `Results/webidl/manual-binding-inventory/webidl_manual_binding_inventory.json`
 - `Results/webidl/manual-binding-inventory/webidl_manual_binding_inventory.md`
-- Current IDL input SHA-256: `51310A030262A071F7E5DEE8C0012529DFE1FFEC8D47054C569B68D6891D0745`
+- Current IDL input SHA-256: `3DDB3A31C43D04B3495D1ECCF78CC6FB01E11500BB49498F3303BF66C3FFB4E7`
+- The three specialized HTML files are selected metadata for receiver classification, sourced from local WPT `interfaces/html.idl` at revision `88152b842c3f60c2a5f95e0106ded4a375f710b0`; they are not claims of complete interface coverage.
 - Real-site usage remains explicitly `not measured by offline source inventory`; the tool does not turn a source-name match into runtime evidence.
 
 ## Required binding record

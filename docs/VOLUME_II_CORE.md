@@ -1714,3 +1714,9 @@ Verification:
 - The checked-in IDL files are embedded into Core and parsed once into a fail-closed member catalog. Interface inheritance and includes determine receiver matches; a known member on an unrelated receiver becomes `WRONG_RECEIVER`.
 - Unknown reads never become standards work by default. Only checked-in-WebIDL membership with a matching receiver sets standards-priority eligibility; assignment-before-read identifies expandos, and a bounded explicit legacy inventory identifies legacy probes. Known IDL evidence takes precedence over assignment evidence.
 - The classifier does not change JavaScript return values, add browser members, or suppress observations.
+
+### 1.81 Selected HTML Interface Classification Metadata (2026-07-16)
+
+- Core's existing `HtmlElementInterfaceCatalog` is now the authoritative tag/namespace-to-interface mapping used by missing-property diagnostics. Non-HTML elements still fall back to the generic `Element` receiver.
+- Selected metadata-only `HTMLImageElement`, `HTMLLinkElement`, and `HTMLScriptElement` IDL files describe `fetchPriority`, `as`, and `async` for receiver classification. Their declarations are sourced from the local WPT checkout's `interfaces/html.idl` at revision `88152b842c3f60c2a5f95e0106ded4a375f710b0`.
+- These selected declarations do not activate generated bindings or claim complete interface conformance. The regenerated offline inventory reports 58 definitions, 407 members, 256 with bounded manual evidence, 305 with active-test correlations, 73 with selected-WPT correlations, and zero generated outputs present or compiled.

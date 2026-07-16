@@ -1,6 +1,6 @@
 # FenBrowser Missing API Tracker
 
-Status: TESTED for schema-v2 runtime classification, assignment-before-read evidence, checked-in-WebIDL receiver evidence, and bounded rich-record `debug-site` export; STUBBED for prototype/descriptor operation collection and a fresh Google reclassification. Snapshot date: 2026-07-16.
+Status: TESTED for schema-v2 runtime classification, assignment-before-read evidence, concrete HTML receiver identity, checked-in-WebIDL receiver evidence, bounded rich-record `debug-site` export, and fresh Google reclassification; STUBBED for prototype/descriptor operation collection. Snapshot date: 2026-07-16.
 
 ## Evidence model
 
@@ -61,14 +61,15 @@ The bundle snapshots the runtime tracker after the logger drain, retains the fir
 
 | Observed property | Proposed disposition | Fatal | Priority | Status | Reason |
 | --- | --- | --- | --- | --- | --- |
-| `Document.compareDocumentPosition` | standards-member candidate | no evidence | 2 | RESEARCHED | `Document` inherits `Node`; reduce prototype exposure |
-| `Location.toString` | standards-member candidate | no evidence | 2 | RESEARCHED | Confirm WebIDL/stringifier behavior |
-| `CharacterData.childNodes` | standards-member candidate | no evidence | 2 | RESEARCHED | `CharacterData` inherits `Node`; reduce inherited binding |
-| `Navigator.geolocation` | standards-member candidate | no evidence | 3 | RESEARCHED | Optional capability probe; no visible blocker |
-| `Navigator.msPointerEnabled` | feature-detection | no | 4 | DEFERRED_SPEC_COMPLIANCE | Legacy Microsoft probe |
-| `Element.closure_*`, `Document.closure_*` | site-expando candidate | no evidence | 5 | RESEARCHED | Page bookkeeping names, not WebIDL names |
-| `Element.$goog_Thenable` | site-expando candidate | no evidence | 5 | RESEARCHED | Framework marker |
-| `Document.className`, `Document.getAttribute` | wrong-receiver candidate | no evidence | 3 | RESEARCHED | Element members probed on Document |
+| `Document.compareDocumentPosition` | `STANDARD_API` | no evidence | 2 | TESTED | Receiver-matched inherited `Node` member |
+| `CharacterData.childNodes` | `STANDARD_API` | no evidence | 2 | TESTED | Receiver-matched inherited `Node` member |
+| `HTMLScriptElement.async`, `HTMLScriptElement.fetchPriority` | `STANDARD_API` | no evidence | 2 | TESTED | Concrete receiver and selected checked-in HTML IDL agree |
+| `HTMLLinkElement.as`, `HTMLLinkElement.fetchPriority` | `STANDARD_API` | no evidence | 2 | TESTED | Concrete receiver and selected checked-in HTML IDL agree |
+| `Location.toString` | `UNCLASSIFIED` | no evidence | 3 | RESEARCHED | Checked-in metadata does not yet describe stringifier behavior |
+| `Navigator.geolocation` | `UNCLASSIFIED` | no evidence | 3 | RESEARCHED | Optional capability probe; no checked-in receiver evidence |
+| `Navigator.msPointerEnabled` | `LEGACY_PROBE` | no | 4 | DEFERRED_SPEC_COMPLIANCE | Explicit legacy Microsoft inventory entry |
+| `HTML*Element.closure_*`, `Document.closure_*`, `HTMLDivElement.$goog_Thenable` | `UNCLASSIFIED` | no evidence | 5 | RESEARCHED | Names suggest page bookkeeping, but no assignment-before-read or descriptor evidence was captured |
+| `Document.className`, `Document.getAttribute` | `WRONG_RECEIVER` | no evidence | 3 | TESTED | Checked-in IDL defines these members on `Element`, not `Document` |
 
 No Google observation is currently confirmed as the first fatal blocker.
 
@@ -84,4 +85,6 @@ No Google observation is currently confirmed as the first fatal blocker.
 
 ## Verification
 
-`MissingApiTrackerTests` and `DebugSiteMissingApiClassificationTests` are compiled and discovered. The focused 2026-07-16 command passes `9/9`, including the 512-record bound, cross-navigation identity, and bundle projection. Fresh local evidence is `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_classification.html/20260716T105848Z/`: the bundle retains four rich records, including `Document.applicationState` as `WRITE`/`SITE_EXPANDO` and `Document.charset` as a receiver-matched `STANDARD_API`; logger drain succeeds, first blocker is `none`, screenshot capture succeeds, and all 26 manifest entries exist. Required next proof is a fresh Google rerun.
+`MissingApiTrackerTests` and `DebugSiteMissingApiClassificationTests` are compiled and discovered. The focused 2026-07-16 command passes `10/10`, including concrete `HTMLScriptElement`, `HTMLLinkElement`, and `HTMLImageElement` assignment receivers, the 512-record bound, cross-navigation identity, and bundle projection. Local evidence remains `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_classification.html/20260716T105848Z/`.
+
+Fresh Google evidence is `logs/real-site/www.google.com/20260716T110854Z/`. It retains 25/25 records: 9 `STANDARD_API`, 2 `WRONG_RECEIVER`, 1 `LEGACY_PROBE`, and 13 `UNCLASSIFIED`. The previously generic `Element.async`, `Element.fetchPriority`, and `Element.as` writes are now receiver-matched `HTMLScriptElement`/`HTMLLinkElement` standards records. Callback failures and exceptions remain zero, `first_blocker.json` reports `none`, logger drain succeeds, the main UI is visible, and all 26 manifest entries exist. The unclassified Closure-style names require descriptor/prototype assignment evidence; they are not promoted by name pattern.

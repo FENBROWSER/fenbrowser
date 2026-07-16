@@ -10282,3 +10282,15 @@ Verification:
 - Red: both existing tracker tests failed because the v1 record lacked classification and operation fields.
 - Green/discovery: `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests` list and pass `9/9`, including cross-navigation identity, the 512-record bound, and rich bundle export.
 - Fresh local fixture `FenBrowser.Tests/Fixtures/Diagnostics/missing_api_classification.html` completes without script failures. Bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_classification.html/20260716T105848Z/` retains all four unknown-read, expando-write, legacy-probe, and checked-in-IDL standard records; first blocker is `none` and all 26 manifest entries exist.
+
+## 2.385 Concrete HTML Receiver Identity In Missing-Property Diagnostics (2026-07-16)
+
+- Active FenJS host dispatch previously labeled every DOM element observation as `Element`, so standard specialized writes such as script `async`/`fetchPriority` and link `as`/`fetchPriority` were classified as page expandos.
+- Missing-property reads and catch-all writes now resolve the concrete HTML interface through Core's namespace-aware `HtmlElementInterfaceCatalog`. The runtime still stores and returns properties exactly as before; this changes diagnostic receiver evidence only.
+- Selected checked-in HTML IDL metadata lets the existing classifier match those specialized members. SVG/non-HTML elements continue to fall back to `Element`, and generated bindings remain excluded.
+
+Verification:
+
+- Red: `StandardElementAssignments_UseConcreteWebIdlReceiver` failed because `HTMLScriptElement.async` was recorded only as `Element.async`.
+- Green/discovery: `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests` list and pass `10/10`. Release builds of Core, FenEngine, and Tooling succeed with zero warnings and zero errors.
+- Fresh Google bundle `logs/real-site/www.google.com/20260716T110854Z/` completes navigation, DOMContentLoaded, load, 18 script executions, layout, paint, and screenshot capture. It retains 25/25 missing-property records: 9 standard, 2 wrong-receiver, 1 legacy probe, and 13 unclassified. Callback failures and exceptions remain zero, `first_blocker` is `none`, logger drain succeeds, and all 26 artifacts are present.
