@@ -1459,3 +1459,13 @@ Verification:
 Verification:
 
 - Red result: `ChildDisconnectDuringFetch_FailsAsNetworkError` waited for its two-second cancellation token and returned `TaskCanceledException`. The fixed network coordinator class passes `8/8`; the adjacent network/renderer process slice passes `54/54`, both with zero failures or skips.
+
+### 6.71 Brokered Request Cancellation Delivery (2026-07-16)
+
+- Caller cancellation previously relied on a token registration created before `Task.WaitAsync` registered its own cancellation callback. Cancellation callbacks run in reverse registration order; the wait continuation could execute request cleanup and dispose the older registration before it fired, so the network child never received `CancelRequest`.
+- `SendViaNetworkProcessAsync` now handles caller cancellation in its own `OperationCanceledException` path. It cancels local pending state, sends `CancelRequest` with the original wire request ID, and only then enters common cleanup.
+- The caller still receives normal cancellation semantics. IPC fields, default process mode, and network fallback policy are unchanged.
+
+Verification:
+
+- Red result: `CallerCancellation_SendsCancelForWireRequestId` timed out waiting for the child envelope. The fixed test passes in 84 ms; the network coordinator class passes `9/9`, and the adjacent network/renderer process slice passes `55/55`, all with zero failures or skips.

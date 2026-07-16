@@ -255,6 +255,39 @@ public sealed class NetworkProcessCoordinatorTests
         await childTask;
     }
 
+    [Fact]
+    public async Task CallerCancellation_SendsCancelForWireRequestId()
+    {
+        var pipeName = $"fen_network_test_{Guid.NewGuid():N}";
+        var authToken = Guid.NewGuid().ToString("N");
+        using var session = new NetworkProcessSession(pipeName, authToken);
+        using var coordinator = new NetworkProcessCoordinator();
+        var fetchReceived = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        session.Start(childProcess: null);
+        var childTask = RunDeterministicChildAsync(
+            pipeName,
+            authToken,
+            fetchReceived: fetchReceived,
+            waitForCancellation: true);
+        Assert.True(await session.WaitForReadyAsync(TimeSpan.FromSeconds(5)));
+        coordinator.AttachSession(session);
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            "https://fixture.test/network/parity");
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var sendTask = coordinator.SendAsync(
+            request,
+            initiatorOrigin: "https://fixture.test",
+            cancellation.Token);
+
+        Assert.True(await fetchReceived.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sendTask);
+        await childTask;
+    }
+
     private static async Task<NetworkFetchRequestPayload> RunDeterministicChildAsync(
         string pipeName,
         string expectedAuthToken,
@@ -264,7 +297,9 @@ public sealed class NetworkProcessCoordinatorTests
         string? failureErrorCode = null,
         IReadOnlyList<string>? responseBodyChunks = null,
         string? malformedBodyBase64 = null,
-        bool disconnectAfterFetch = false)
+        bool disconnectAfterFetch = false,
+        TaskCompletionSource<bool>? fetchReceived = null,
+        bool waitForCancellation = false)
     {
         using var pipe = new NamedPipeClientStream(
             ".",
@@ -293,6 +328,16 @@ public sealed class NetworkProcessCoordinatorTests
         Assert.False(string.IsNullOrWhiteSpace(fetch.CapabilityToken));
         var payload = Assert.IsType<NetworkFetchRequestPayload>(
             NetworkIpc.DeserializePayload<NetworkFetchRequestPayload>(fetch));
+        fetchReceived?.TrySetResult(true);
+
+        if (waitForCancellation)
+        {
+            var cancelLine = await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            var cancel = ReadEnvelope(cancelLine);
+            Assert.Equal(NetworkIpcMessageType.CancelRequest.ToString(), cancel.Type);
+            Assert.Equal(fetch.RequestId, cancel.RequestId);
+            return payload;
+        }
 
         if (disconnectAfterFetch)
         {

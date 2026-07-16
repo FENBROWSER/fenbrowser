@@ -232,16 +232,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             using var pending = new PendingNetworkRequest(requestId, string.Empty, initiatorOrigin, cancellationToken);
             _pending[requestId] = pending;
 
-            // Register cancellation
-            using var ctreg = cancellationToken.Register(() =>
-            {
-                if (_pending.TryRemove(requestId, out var pr))
-                {
-                    pr.SetCancelled();
-                    session.SendCancel(requestId);
-                }
-            });
-
             // Mint capability token and send
             var capToken = session.SendFetch(fetchPayload, initiatorOrigin ?? "", requestId);
 
@@ -272,6 +262,15 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
                 var bodyBytes = await pending.GetBodyAsync().ConfigureAwait(false);
                 return BuildHttpResponse(head, bodyBytes);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                if (_pending.TryRemove(requestId, out var cancelledPending))
+                {
+                    cancelledPending.SetCancelled();
+                }
+                session.SendCancel(requestId);
+                throw;
             }
             catch (TimeoutException)
             {
