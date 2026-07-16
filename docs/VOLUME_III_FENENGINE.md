@@ -10340,3 +10340,16 @@ Verification:
 - Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_stringifier_partial_interface.html/20260716T115734Z/` renders `undefined|undefined` while retaining both reads as receiver-matched `STANDARD_API` records.
 - Fresh Google bundle `logs/real-site/www.google.com/20260716T115831Z/` classifies all 25 records as 11 standard, 11 site expandos, 2 wrong receivers, and 1 legacy probe. Callback failures/exceptions are zero, blocker is `none`, lifecycle completes, the main UI remains visible, and all 26 artifacts exist.
 - Neither confirmed missing member is selected for implementation because neither is currently causal to the accepted Google milestones.
+
+## 2.390 Queue-Microtask Failure Attribution (2026-07-16)
+
+- FenJS exposes an explicit host-only `PumpMicrotasks` observer that receives the exact dequeued `queueMicrotask` callback and original exception at the catch point. Observer failures are isolated, and the original exception is rethrown unchanged.
+- FenEngine uses that observer at its event-loop boundary to record the microtask's own function/source provenance, an undefined receiver, and a `microtask-*` task identity. The same exception is then suppressed only from duplicate attribution to the enclosing timer or other parent callback.
+- Promise jobs and JavaScript execution semantics are unchanged. A throwing queued microtask still terminates the current checkpoint according to the existing runtime behavior, and diagnostics retain no callback object graph.
+
+Verification:
+
+- Pre-fix browser reduction: failed `1/1`; the throwing microtask was incorrectly recorded as its parent `setTimeout` callback.
+- `QueueMicrotaskTests`: pass (`5/5`), including exact callback/exception observation and unchanged rethrow identity.
+- Callback/export/event-loop/discovery slice: pass (`16/16`, zero failed/skipped).
+- Guarded browser/process slice: pass (`70/70`, zero failed/skipped).

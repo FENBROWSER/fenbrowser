@@ -443,6 +443,48 @@ public sealed class CallbackFailureDiagnosticsTests
         }
     }
 
+    [Fact]
+    public async Task ThrowingMicrotask_PreservesItsOwnCallbackProvenance()
+    {
+        var baseUri = new Uri("https://fixture.test/throwing-microtask.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><script>" +
+                "setTimeout(function parentTimerFixture(){" +
+                "queueMicrotask(function microtaskFixtureReceiver(){" +
+                "throw new Error('microtask-fixture-boom');" +
+                "});" +
+                "},1);" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            Assert.True(SpinWait.SpinUntil(
+                () => engine.GetEventLoopSnapshot().CallbackFailures > 0,
+                millisecondsTimeout: 1000));
+
+            var failure = Assert.Single(engine.GetEventLoopSnapshot().CallbackFailureRecords);
+            Assert.Equal("microtask", failure.CallbackCategory);
+            Assert.StartsWith("microtask-", failure.TaskId, StringComparison.Ordinal);
+            Assert.Equal("microtaskFixtureReceiver", failure.CallbackFunctionName);
+            Assert.Equal("script-1", failure.ScriptId);
+            Assert.Equal("inline#1", failure.ScriptSourceLabel);
+            Assert.Equal("Undefined", failure.ReceiverJsType);
+            Assert.Contains("microtask-fixture-boom", failure.ExceptionMessage);
+            Assert.Contains("microtaskFixtureReceiver", failure.JsStack);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
     private static JsHostAdapter CreateHost()
     {
         return new JsHostAdapter(

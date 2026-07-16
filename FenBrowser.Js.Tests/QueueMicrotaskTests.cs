@@ -1,4 +1,5 @@
 using FenBrowser.Js.Bytecode;
+using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
@@ -42,5 +43,29 @@ public sealed class QueueMicrotaskTests
         Assert.Throws<JsThrownException>(() => Run("queueMicrotask(5);"));
         Assert.Throws<JsThrownException>(() => Run("queueMicrotask();"));
         Assert.Throws<JsThrownException>(() => Run("queueMicrotask({});"));
+    }
+
+    [Fact]
+    public void PumpObserverReceivesCallbackAndRethrowsOriginalException()
+    {
+        var interpreter = new BytecodeInterpreter();
+        var expectedException = new InvalidOperationException("microtask-observer-fixture");
+        var callback = interpreter.AllocateNativeFunction(
+            "observedMicrotask",
+            (_, _) => throw expectedException);
+        ((IBuiltinContext)interpreter).EnqueueMicrotask(callback);
+
+        var observedCallback = JsValue.Undefined;
+        Exception? observedException = null;
+        var actualException = Assert.Throws<InvalidOperationException>(() =>
+            interpreter.PumpMicrotasks((currentCallback, exception) =>
+            {
+                observedCallback = currentCallback;
+                observedException = exception;
+            }));
+
+        Assert.Equal(callback, observedCallback);
+        Assert.Same(expectedException, observedException);
+        Assert.Same(expectedException, actualException);
     }
 }

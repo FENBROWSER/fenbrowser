@@ -4958,6 +4958,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             "requestAnimationFrame" => "raf",
             "event-listener" => "event",
             "promise-rejection" => "promise",
+            "microtask" => "microtask",
             _ => "callback"
         };
         var isTimer = callbackCategory is "setTimeout" or "setInterval";
@@ -5288,6 +5289,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             {
                 lock (_fenJsLock)
                 {
+                    Exception attributedMicrotaskFailure = null;
                     try
                     {
                         using var callbackWindowScope = windowContext != null
@@ -5374,11 +5376,26 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                 });
                         }
 
-                        _interpreter.PumpMicrotasks();
+                        _interpreter.PumpMicrotasks((microtaskCallback, exception) =>
+                        {
+                            RecordDiagnosticCallbackFailure(
+                                microtaskCallback,
+                                JsValue.Undefined,
+                                Array.Empty<JsValue>(),
+                                "microtask",
+                                string.Empty,
+                                exception);
+                            attributedMicrotaskFailure = exception;
+                        });
                         RecordMicrotaskCheckpoint(origin);
                     }
                     catch (Exception ex)
                     {
+                        if (ReferenceEquals(ex, attributedMicrotaskFailure))
+                        {
+                            return null;
+                        }
+
                         var failure = RecordCallbackFailure(
                             callback,
                             callbackThis,

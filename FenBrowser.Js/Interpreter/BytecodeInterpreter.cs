@@ -778,7 +778,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // the same checkpoint semantics as top-level script execution.
     public void PumpMicrotasks() => DrainPendingMicrotasks();
 
-    private void DrainPendingMicrotasks()
+    public void PumpMicrotasks(Action<JsValue, Exception> onQueueMicrotaskFailure)
+    {
+        ArgumentNullException.ThrowIfNull(onQueueMicrotaskFailure);
+        DrainPendingMicrotasks(onQueueMicrotaskFailure);
+    }
+
+    private void DrainPendingMicrotasks(Action<JsValue, Exception>? onQueueMicrotaskFailure = null)
     {
         while (_pendingMicrotasks.Count > 0 || _jobQueue.Count > 0)
         {
@@ -788,7 +794,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             while (_pendingMicrotasks.Count > 0)
             {
                 var callback = _pendingMicrotasks.Dequeue();
-                _ = CallFunction(callback, Array.Empty<JsValue>(), JsValue.Undefined);
+                try
+                {
+                    _ = CallFunction(callback, Array.Empty<JsValue>(), JsValue.Undefined);
+                }
+                catch (Exception exception)
+                {
+                    try
+                    {
+                        onQueueMicrotaskFailure?.Invoke(callback, exception);
+                    }
+                    catch
+                    {
+                        // A diagnostic observer must never replace the JS exception.
+                    }
+
+                    throw;
+                }
             }
 
             _ = _jobQueue.RunMicrotaskCheckpoint(RunPromiseJob);

@@ -3930,7 +3930,7 @@ Verification:
 
 ## 6.163 Required Browser-Integration Discovery Guard (2026-07-16)
 
-- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 16 selected timer/event/Promise provenance, logger-drain, lifecycle, host-conversion, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
+- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 17 selected timer/event/Promise/microtask provenance, logger-drain, lifecycle, host-conversion, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
 - The first combined run exposed a real parallel-isolation defect: the FenJS timer/rAF trace failed during native browser-constructor bootstrap while other browser tests ran concurrently. The global `EngineLog` collection is now explicitly non-parallel, matching its process-wide logger configuration and FenJS diagnostic usage.
 - This guard does not treat the skipped real-process brokered acceptance as passing. The AppContainer development-runtime provisioning decision remains the separately documented `BLOCK-PROC-002` boundary.
 
@@ -3964,3 +3964,15 @@ Verification:
 - Discovery lists all 11 `CallbackFailureDiagnosticsTests` plus the required-surface guard.
 - The two new tests pass `2/2`; `RequiredBrowserIntegrationDiscoveryTests|CallbackFailureDiagnosticsTests|DebugSiteExceptionSummaryTests` passes `13/13` with zero failures or skips.
 - The guarded browser/process slice passes `69/69` with zero failures or skips.
+
+## 6.166 Queue-Microtask Failure Attribution Regression (2026-07-16)
+
+- `ThrowingMicrotask_PreservesItsOwnCallbackProvenance` queues a named throwing microtask from a timer and requires the retained record to identify the microtask category, `microtask-*` task identity, callback function, script/source label, undefined receiver, exception, and JS stack.
+- Before the fix, the focused reduction failed `1/1`: the runtime attributed the exception to the enclosing `setTimeout` callback. The FenJS observer regression separately proves that the dequeued callback and original exception are observed and that the same exception object is rethrown.
+- Discovery lists all 12 `CallbackFailureDiagnosticsTests`, including the new microtask reduction, and the required-surface guard protects it as the seventeenth selected contract.
+
+Verification:
+
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~QueueMicrotaskTests" --logger "console;verbosity=minimal"`: pass (`5/5`, zero failed/skipped).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~RequiredBrowserIntegrationDiscoveryTests|FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~DebugSiteExceptionSummaryTests|FullyQualifiedName~EventLoopTraceTests" --logger "console;verbosity=minimal"`: pass (`16/16`, zero failed/skipped).
+- The guarded browser/process slice passes `70/70` with zero failures or skips.
