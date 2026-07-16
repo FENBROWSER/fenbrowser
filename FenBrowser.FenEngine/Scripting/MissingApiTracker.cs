@@ -30,11 +30,53 @@ internal sealed class MissingApiObservation
     public bool? ReceiverMatchesDefinedInterface { get; init; }
 }
 
+internal sealed class BrowserMissingApiSnapshot
+{
+    public int SchemaVersion { get; init; } = 2;
+    public string Schema { get; init; } = "fenbrowser.missing-apis.v2";
+    public string GeneratedAtUtc { get; init; } = string.Empty;
+    public string SiteKey { get; init; } = string.Empty;
+    public string SiteUrl { get; init; } = string.Empty;
+    public int TotalRecordCount { get; init; }
+    public int RetainedRecordCount { get; init; }
+    public bool Truncated { get; init; }
+    public List<BrowserMissingApiRecordSnapshot> Records { get; init; } = new();
+}
+
+internal sealed class BrowserMissingApiRecordSnapshot
+{
+    public string ApiName { get; init; } = string.Empty;
+    public string ObjectOrPrototype { get; init; } = string.Empty;
+    public string PropertyName { get; init; } = string.Empty;
+    public string SiteUrl { get; init; } = string.Empty;
+    public string ScriptUrl { get; init; } = string.Empty;
+    public string ScriptId { get; init; } = string.Empty;
+    public string NavigationId { get; init; } = string.Empty;
+    public int? Line { get; init; }
+    public int? Column { get; init; }
+    public string FirstSeenTraceId { get; init; } = string.Empty;
+    public string FirstSeenUtc { get; init; } = string.Empty;
+    public string LastSeenUtc { get; init; } = string.Empty;
+    public int EncounterCount { get; init; }
+    public string Reason { get; init; } = string.Empty;
+    public string ExceptionText { get; init; } = string.Empty;
+    public string Classification { get; init; } = "UNCLASSIFIED";
+    public string OperationKind { get; init; } = "READ";
+    public string ClassificationReason { get; init; } = string.Empty;
+    public bool StandardPriorityEligible { get; init; }
+    public string ReceiverType { get; init; } = string.Empty;
+    public bool AssignmentBeforeRead { get; init; }
+    public bool KnownWebIdlMember { get; init; }
+    public string DefinedInterface { get; init; } = string.Empty;
+    public bool? ReceiverMatchesDefinedInterface { get; init; }
+}
+
 internal static class MissingApiTracker
 {
     private const string Schema = "fenbrowser.missing-apis.v2";
     private const string TraceCategory = "MissingAPI";
     private const string EventName = "MissingApiObserved";
+    internal const int SnapshotRecordLimit = 512;
 
     private static readonly object Sync = new();
     private static readonly Dictionary<string, SiteMissingApis> Sites = new(StringComparer.Ordinal);
@@ -62,10 +104,11 @@ internal static class MissingApiTracker
             {
                 var siteKey = BuildSiteKey(observation.SiteUrl);
                 var site = GetOrCreateSiteLocked(siteKey, observation.SiteUrl);
-                if (!site.Records.TryGetValue(observation.ApiName, out var record))
+                var recordKey = BuildRecordKey(observation);
+                if (!site.Records.TryGetValue(recordKey, out var record))
                 {
                     record = CreateRecord(observation);
-                    site.Records[observation.ApiName] = record;
+                    site.Records[recordKey] = record;
                 }
                 else
                 {
@@ -84,9 +127,67 @@ internal static class MissingApiTracker
 
             WriteTrace(recordSnapshot, outputPath);
         }
-        catch
+        catch (Exception ex)
         {
-            // Diagnostics must never perturb page execution.
+            EngineLog.Write(
+                LogSubsystem.Js,
+                LogSeverity.Warn,
+                $"[MissingAPI] Failed to record diagnostic observation: {ex.GetType().Name}: {ex.Message}",
+                LogMarker.Unexpected,
+                fields: new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["event"] = "MissingApiRecordFailed",
+                    ["exceptionType"] = ex.GetType().FullName ?? ex.GetType().Name
+                });
+        }
+    }
+
+    internal static BrowserMissingApiSnapshot GetSnapshot(string siteUrl)
+    {
+        lock (Sync)
+        {
+            IEnumerable<SiteMissingApis> selectedSites = Sites.Values;
+            if (!string.IsNullOrWhiteSpace(siteUrl))
+            {
+                var siteKey = BuildSiteKey(siteUrl);
+                selectedSites = Sites.TryGetValue(siteKey, out var site)
+                    ? new[] { site }
+                    : Array.Empty<SiteMissingApis>();
+            }
+
+            var ordered = selectedSites
+                .SelectMany(site => site.Records.Values)
+                .OrderBy(record => record.FirstSeenUtc, StringComparer.Ordinal)
+                .ThenBy(record => record.ApiName, StringComparer.Ordinal)
+                .ThenBy(record => record.NavigationId, StringComparer.Ordinal)
+                .ThenBy(record => record.ScriptId, StringComparer.Ordinal)
+                .ThenBy(record => record.ReceiverType, StringComparer.Ordinal)
+                .ToList();
+            var retained = ordered.Take(SnapshotRecordLimit).Select(ToSnapshot).ToList();
+            var selectedSiteList = selectedSites.ToList();
+            return new BrowserMissingApiSnapshot
+            {
+                GeneratedAtUtc = Now(),
+                SiteKey = selectedSiteList.Count switch
+                {
+                    0 => "none",
+                    1 => selectedSiteList[0].SiteKey,
+                    _ => "multiple"
+                },
+                SiteUrl = selectedSiteList.Count == 1 ? selectedSiteList[0].SiteUrl : string.Empty,
+                TotalRecordCount = ordered.Count,
+                RetainedRecordCount = retained.Count,
+                Truncated = ordered.Count > retained.Count,
+                Records = retained
+            };
+        }
+    }
+
+    internal static void ResetForRun()
+    {
+        lock (Sync)
+        {
+            Sites.Clear();
         }
     }
 
@@ -153,6 +254,45 @@ internal static class MissingApiTracker
             ReceiverMatchesDefinedInterface = classification.ReceiverMatchesDefinedInterface
         };
     }
+
+    private static string BuildRecordKey(MissingApiObservation observation)
+        => string.Join(
+            "\u001f",
+            observation.NavigationId ?? string.Empty,
+            observation.ScriptId ?? string.Empty,
+            string.IsNullOrWhiteSpace(observation.ReceiverType)
+                ? observation.ObjectOrPrototype ?? string.Empty
+                : observation.ReceiverType,
+            observation.ApiName ?? string.Empty);
+
+    private static BrowserMissingApiRecordSnapshot ToSnapshot(MissingApiRecord record)
+        => new()
+        {
+            ApiName = record.ApiName,
+            ObjectOrPrototype = record.ObjectOrPrototype,
+            PropertyName = record.PropertyName,
+            SiteUrl = record.SiteUrl,
+            ScriptUrl = record.ScriptUrl,
+            ScriptId = record.ScriptId,
+            NavigationId = record.NavigationId,
+            Line = record.Line,
+            Column = record.Column,
+            FirstSeenTraceId = record.FirstSeenTraceId,
+            FirstSeenUtc = record.FirstSeenUtc,
+            LastSeenUtc = record.LastSeenUtc,
+            EncounterCount = record.EncounterCount,
+            Reason = record.Reason,
+            ExceptionText = record.ExceptionText,
+            Classification = record.Classification,
+            OperationKind = record.OperationKind,
+            ClassificationReason = record.ClassificationReason,
+            StandardPriorityEligible = record.StandardPriorityEligible,
+            ReceiverType = record.ReceiverType,
+            AssignmentBeforeRead = record.AssignmentBeforeRead,
+            KnownWebIdlMember = record.KnownWebIdlMember,
+            DefinedInterface = record.DefinedInterface,
+            ReceiverMatchesDefinedInterface = record.ReceiverMatchesDefinedInterface
+        };
 
     private static SiteMissingApis GetOrCreateSiteLocked(string siteKey, string siteUrl)
     {

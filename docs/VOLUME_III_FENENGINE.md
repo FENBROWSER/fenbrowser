@@ -10273,10 +10273,12 @@ Verification:
 - `MissingApiTracker` schema v2 adds classification, operation kind, classification reason, standards-priority eligibility, receiver type, and explicit assignment/WebIDL evidence fields without changing property-read semantics.
 - Current host misses identify their receiver and `READ` operation. First page-owned catch-all writes record `WRITE`/`SITE_EXPANDO` without changing stored values; weak per-receiver read evidence prevents a later assignment from being mislabeled as assignment-before-read.
 - Engine-owned bootstrap assignments are explicitly outside page observation. Checked-in-IDL evidence promotes only receiver-matched members and records the defining interface and match result.
-- Trace events carry the same classification fields as the per-site sidecar. Tooling uses the shared Core classifier for its compact bundle projection, avoiding a divergent classification policy.
+- Trace events carry the same classification fields as the per-site sidecar. After the logger drain, Tooling snapshots the runtime tracker into a bounded schema-v2 bundle object, avoiding a divergent compact projection and retaining no receiver object graphs.
+- Record identity includes receiver/member/script/navigation within the per-site store, and the bundle retains the first 512 ordered records while reporting total, retained, and truncated counts.
+- Tracker export failures emit a structured warning and remain isolated from page execution.
 
 Verification:
 
 - Red: both existing tracker tests failed because the v1 record lacked classification and operation fields.
-- Green/discovery: `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests` list and pass `6/6`.
-- Fresh local fixture `FenBrowser.Tests/Fixtures/Diagnostics/missing_api_classification.html` completes without script failures and produces unknown-read, expando-write, legacy-probe, and checked-in-IDL standard classifications.
+- Green/discovery: `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests` list and pass `9/9`, including cross-navigation identity, the 512-record bound, and rich bundle export.
+- Fresh local fixture `FenBrowser.Tests/Fixtures/Diagnostics/missing_api_classification.html` completes without script failures. Bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_classification.html/20260716T105848Z/` retains all four unknown-read, expando-write, legacy-probe, and checked-in-IDL standard records; first blocker is `none` and all 26 manifest entries exist.

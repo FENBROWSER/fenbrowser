@@ -1,6 +1,6 @@
 # FenBrowser Diagnostic Spine
 
-Status: INTEGRATED with documented Gate 1 gaps. Snapshot date: 2026-07-14; bundle contract revalidated 2026-07-15.
+Status: INTEGRATED with documented Gate 1 gaps. Snapshot date: 2026-07-14; bundle contract revalidated 2026-07-16.
 
 Runtime artifacts follow the repository path policy and live under `logs/`, not at repository root or in `docs/`. The per-site bundle path is:
 
@@ -25,7 +25,7 @@ dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --n
 | Script loading snapshot | TESTED | Per-script identity, source coordinates, fetch, batch, and execution state | Normalize dynamic-script discovery/execution populations |
 | Event-loop snapshot | TESTED | DCL/load, timers, rAF counters, and bounded typed timer/event/unhandled-Promise failures with task/source/receiver/stack provenance | Add microtask, rAF, repeating-timer, and invalidation reductions |
 | Network capture | INTEGRATED | Request/response records and counts | Correct non-HTTP schemes and add policy/cookie/CORS disposition |
-| Missing API runtime tracker | TESTED | Schema-v2 per-site records include assignment-before-read, checked-in-IDL inheritance/receiver evidence, classification, operation, reason, priority eligibility, and source/navigation provenance | Add prototype/descriptor operation evidence and merge rich records into the bundle |
+| Missing API runtime tracker | TESTED | Schema-v2 per-site records and the post-drain bounded bundle include assignment-before-read, checked-in-IDL inheritance/receiver evidence, classification, operation, reason, priority eligibility, and source/navigation provenance | Add prototype/descriptor operation evidence and freshly reclassify Google |
 | First blocker summary | TESTED | Typed `first_blocker.json` models 19 milestones, separates non-fatal/unverified work, and treats labeled transition-time lifecycle samples as historical | Add missing-artifact and clock-mismatch fixtures |
 | Exceptions artifact | TESTED | Timer, event-listener, and unhandled-Promise totals and retained typed records share the drained event-loop snapshot | Add microtask, parser, IPC, crash, redaction, and export-failure sources |
 | Interaction acceptance | TESTED | Generic selector-driven local form run records target, focus, typing, submit, terminal navigation, bounded capture/bubble events, and before/after screenshots | Run the same command on Google and reduce its earliest failed milestone if any |
@@ -113,7 +113,7 @@ A missing property is not fatal merely because it was read. It becomes a fatal c
 | `trace.jsonl`, `logs.ndjson` | INTEGRATED | Structured event streams, flushed through the run boundary |
 | `console.log`, `exceptions.json` | INTEGRATED | Console plus typed callback exception records with agreeing totals |
 | `network.json` | INTEGRATED | Requests, responses, failures, policy disposition |
-| `missing_apis.json` | STUBBED | Compact bundle records are classified and exclude legacy/unclassified reads from standards priority; rich runtime provenance is not yet merged |
+| `missing_apis.json` | TESTED | Schema-v2 object retains up to 512 ordered rich tracker records, reports total/retained/truncated counts, preserves navigation-scoped identity, and excludes legacy/unclassified reads from standards priority |
 | `script_loading.json` | INTEGRATED | Per-script lifecycle |
 | `event_loop.json` | INTEGRATED | Tasks, microtasks, timers, rAF, lifecycle |
 | `style_layout.json` | INTEGRATED | Style/layout/paint/raster summary |

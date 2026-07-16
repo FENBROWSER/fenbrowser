@@ -324,6 +324,7 @@ namespace FenBrowser.Tooling
             var report = await CollectDebugSiteDiagnosticsAsync(url, settleMs).ConfigureAwait(false);
             report.LoggerDrainTimeoutMs = 2000;
             report.LoggerDrainSucceeded = EngineLog.Flush(TimeSpan.FromMilliseconds(report.LoggerDrainTimeoutMs));
+            report.MissingApiSnapshot = MissingApiTracker.GetSnapshot(siteUrl: null);
             var bundleDir = WriteDebugSiteBundle(report);
 
             PrintDebugSiteReport(report);
@@ -355,6 +356,7 @@ namespace FenBrowser.Tooling
             var report = await CollectDebugSiteDiagnosticsAsync(url, settleMs, request).ConfigureAwait(false);
             report.LoggerDrainTimeoutMs = 2000;
             report.LoggerDrainSucceeded = EngineLog.Flush(TimeSpan.FromMilliseconds(report.LoggerDrainTimeoutMs));
+            report.MissingApiSnapshot = MissingApiTracker.GetSnapshot(siteUrl: null);
             var bundleDir = WriteDebugSiteBundle(report);
 
             PrintDebugSiteReport(report);
@@ -369,6 +371,7 @@ namespace FenBrowser.Tooling
         {
             CssEngineConfig.CurrentEngine = CssEngineType.Custom;
             EngineCapabilities.Reset();
+            MissingApiTracker.ResetForRun();
             ConfigureDebugSiteFileLogging();
 
             var consoleMessages = new List<string>();
@@ -782,7 +785,13 @@ namespace FenBrowser.Tooling
                 new UTF8Encoding(false));
             File.WriteAllText(
                 Path.Combine(bundleDir, "missing_apis.json"),
-                JsonSerializer.Serialize(report.MissingApis ?? ExtractMissingApiRecords(report.ConsoleMessages), jsonOptions),
+                JsonSerializer.Serialize(
+                    BuildMissingApiSnapshot(report),
+                    new JsonSerializerOptions
+                    {
+                        WriteIndented = true,
+                        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                    }),
                 new UTF8Encoding(false));
             File.WriteAllText(
                 Path.Combine(bundleDir, "network.json"),
@@ -870,7 +879,9 @@ namespace FenBrowser.Tooling
         {
             var firstConsoleError = report.ConsoleMessages.FirstOrDefault(IsLikelyErrorMessage) ?? "(none captured)";
             var firstNavFailure = report.NavigationFailures.FirstOrDefault() ?? "(none captured)";
-            var firstMissingApi = report.MissingApis?.FirstOrDefault()?.Api ?? "(none captured)";
+            var firstMissingApi = report.MissingApiSnapshot?.Records.FirstOrDefault()?.ApiName
+                ?? report.MissingApis?.FirstOrDefault()?.Api
+                ?? "(none captured)";
             var firstLayoutBlocker = report.StyleLayout?.FirstLayoutBlocker ?? "(not captured)";
             var firstPaintBlocker = report.StyleLayout?.FirstPaintBlocker ?? "(not captured)";
             var failedNetworkRequests = report.NetworkRequests.Count(request => request.Failed || (request.StatusCode.HasValue && request.StatusCode.Value >= 400));
@@ -2008,6 +2019,42 @@ namespace FenBrowser.Tooling
             return records;
         }
 
+        private static BrowserMissingApiSnapshot BuildMissingApiSnapshot(DebugSiteReport report)
+        {
+            if (report?.MissingApiSnapshot != null)
+            {
+                return report.MissingApiSnapshot;
+            }
+
+            var compact = report?.MissingApis ?? ExtractMissingApiRecords(report?.ConsoleMessages);
+            var retained = compact
+                .Take(MissingApiTracker.SnapshotRecordLimit)
+                .Select(record => new BrowserMissingApiRecordSnapshot
+                {
+                    ApiName = record.Api,
+                    ObjectOrPrototype = record.ObjectName,
+                    PropertyName = record.PropertyName,
+                    Reason = record.Evidence,
+                    Classification = record.Classification,
+                    OperationKind = record.OperationKind,
+                    ClassificationReason = record.ClassificationReason,
+                    StandardPriorityEligible = record.StandardPriorityEligible,
+                    ReceiverType = record.ObjectName,
+                    EncounterCount = record.EncounterCount
+                })
+                .ToList();
+            return new BrowserMissingApiSnapshot
+            {
+                GeneratedAtUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                SiteKey = MakeSafeSiteId(report?.FinalUrl, report?.Url),
+                SiteUrl = report?.FinalUrl ?? report?.Url ?? string.Empty,
+                TotalRecordCount = compact.Count,
+                RetainedRecordCount = retained.Count,
+                Truncated = compact.Count > retained.Count,
+                Records = retained
+            };
+        }
+
         private static void AddMissingApiRecord(
             List<MissingApiRecord> records,
             string api,
@@ -2228,6 +2275,7 @@ namespace FenBrowser.Tooling
             public BrowserEventLoopSnapshot EventLoop { get; init; } = new();
             public DebugSiteStyleLayoutSummary StyleLayout { get; init; } = new();
             public List<MissingApiRecord> MissingApis { get; init; } = new();
+            public BrowserMissingApiSnapshot MissingApiSnapshot { get; set; }
             public List<DebugSiteNetworkRecord> NetworkRequests { get; init; } = new();
             public Dictionary<string, string> Probes { get; init; } = new(StringComparer.Ordinal);
             public string RenderedTextSample { get; init; }

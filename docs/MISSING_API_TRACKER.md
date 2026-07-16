@@ -1,6 +1,6 @@
 # FenBrowser Missing API Tracker
 
-Status: TESTED for schema-v2 runtime classification, assignment-before-read evidence, checked-in-WebIDL receiver evidence, and the compact `debug-site` projection; STUBBED for prototype/descriptor operation collection and rich-record bundle merging. Snapshot date: 2026-07-16.
+Status: TESTED for schema-v2 runtime classification, assignment-before-read evidence, checked-in-WebIDL receiver evidence, and bounded rich-record `debug-site` export; STUBBED for prototype/descriptor operation collection and a fresh Google reclassification. Snapshot date: 2026-07-16.
 
 ## Evidence model
 
@@ -20,34 +20,42 @@ Only `STANDARD_API` records set `standardPriorityEligible: true`. Fatality still
 
 ```json
 {
+  "schemaVersion": 2,
   "schema": "fenbrowser.missing-apis.v2",
-  "apiName": "Document.compareDocumentPosition",
-  "objectOrPrototype": "Document",
-  "receiverType": "Document",
-  "propertyName": "compareDocumentPosition",
-  "siteUrl": "https://example.test/",
-  "scriptUrl": "https://example.test/app.js",
-  "scriptId": "script-10",
-  "line": 33,
-  "column": 21079,
-  "navigationId": "1",
-  "firstSeenTraceId": "missing-api-...",
-  "firstSeenUtc": "...",
-  "lastSeenUtc": "...",
-  "encounterCount": 6,
-  "exceptionText": "",
-  "classification": "STANDARD_API",
-  "operationKind": "READ",
-  "classificationReason": "known-webidl-member-defined-on-Node",
-  "standardPriorityEligible": true,
-  "assignmentBeforeRead": false,
-  "knownWebIdlMember": true,
-  "definedInterface": "Node",
-  "receiverMatchesDefinedInterface": true
+  "totalRecordCount": 1,
+  "retainedRecordCount": 1,
+  "truncated": false,
+  "records": [
+    {
+      "apiName": "Document.compareDocumentPosition",
+      "objectOrPrototype": "Document",
+      "receiverType": "Document",
+      "propertyName": "compareDocumentPosition",
+      "siteUrl": "https://example.test/",
+      "scriptUrl": "https://example.test/app.js",
+      "scriptId": "script-10",
+      "line": 33,
+      "column": 21079,
+      "navigationId": "1",
+      "firstSeenTraceId": "missing-api-...",
+      "firstSeenUtc": "...",
+      "lastSeenUtc": "...",
+      "encounterCount": 6,
+      "exceptionText": "",
+      "classification": "STANDARD_API",
+      "operationKind": "READ",
+      "classificationReason": "known-webidl-member-defined-on-Node",
+      "standardPriorityEligible": true,
+      "assignmentBeforeRead": false,
+      "knownWebIdlMember": true,
+      "definedInterface": "Node",
+      "receiverMatchesDefinedInterface": true
+    }
+  ]
 }
 ```
 
-The compact bundle now preserves classification, operation kind, reason, and standards-priority eligibility. Merging the runtime tracker's script, navigation, source, receiver, first-seen, last-seen, reason, and exception fields into that bundle remains open.
+The bundle snapshots the runtime tracker after the logger drain, retains the first 512 ordered records, reports total/retained/truncated counts, and does not retain receiver object graphs. Stable identity includes site, receiver brand, member, script, and navigation, so the same observation in a replacement navigation remains distinct. Tracker export failures are logged and isolated from page execution.
 
 ## Current Google observations
 
@@ -76,4 +84,4 @@ No Google observation is currently confirmed as the first fatal blocker.
 
 ## Verification
 
-`MissingApiTrackerTests` and `DebugSiteMissingApiClassificationTests` are compiled and discovered. The focused 2026-07-16 command passes `6/6`. Fresh local evidence is `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_classification.html/20260716T104250Z/`: the compact bundle classifies the unknown, checked-in-IDL standard, and legacy reads; the rich sidecar additionally records `Document.applicationState` as a `WRITE`/`SITE_EXPANDO`, and preserves `Document.charset` as a receiver-matched `STANDARD_API`. Required next proof is rich sidecar merging followed by a fresh Google rerun.
+`MissingApiTrackerTests` and `DebugSiteMissingApiClassificationTests` are compiled and discovered. The focused 2026-07-16 command passes `9/9`, including the 512-record bound, cross-navigation identity, and bundle projection. Fresh local evidence is `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_classification.html/20260716T105848Z/`: the bundle retains four rich records, including `Document.applicationState` as `WRITE`/`SITE_EXPANDO` and `Document.charset` as a receiver-matched `STANDARD_API`; logger drain succeeds, first blocker is `none`, screenshot capture succeeds, and all 26 manifest entries exist. Required next proof is a fresh Google rerun.

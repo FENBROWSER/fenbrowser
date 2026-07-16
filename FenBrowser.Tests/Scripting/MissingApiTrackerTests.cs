@@ -268,6 +268,84 @@ public sealed class MissingApiTrackerTests
         }
     }
 
+    [Fact]
+    public void Snapshot_PreservesIdenticalApiAcrossNavigations()
+    {
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
+        var siteUrl = "https://example.test/navigation.html";
+
+        try
+        {
+            MissingApiTracker.ConfigureForTests(outputRoot);
+            DisableTrace();
+
+            MissingApiTracker.Record(CreateObservation(siteUrl, "nav-1", "Document.navigationProbe"));
+            MissingApiTracker.Record(CreateObservation(siteUrl, "nav-2", "Document.navigationProbe"));
+
+            var snapshot = MissingApiTracker.GetSnapshot(siteUrl);
+
+            Assert.Equal(2, snapshot.TotalRecordCount);
+            Assert.Equal(2, snapshot.RetainedRecordCount);
+            Assert.False(snapshot.Truncated);
+            Assert.Equal(new[] { "nav-1", "nav-2" }, snapshot.Records.Select(record => record.NavigationId));
+        }
+        finally
+        {
+            MissingApiTracker.ResetForTests();
+            TryDeleteDirectory(outputRoot);
+        }
+    }
+
+    [Fact]
+    public void Snapshot_IsBoundedAndReportsTruncation()
+    {
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
+        var siteUrl = "https://example.test/bounded.html";
+
+        try
+        {
+            MissingApiTracker.ConfigureForTests(outputRoot);
+            DisableTrace();
+
+            for (var index = 0; index <= MissingApiTracker.SnapshotRecordLimit; index++)
+            {
+                MissingApiTracker.Record(CreateObservation(
+                    siteUrl,
+                    "nav-bounded",
+                    $"Document.probe{index:D4}"));
+            }
+
+            var snapshot = MissingApiTracker.GetSnapshot(siteUrl);
+
+            Assert.Equal(MissingApiTracker.SnapshotRecordLimit + 1, snapshot.TotalRecordCount);
+            Assert.Equal(MissingApiTracker.SnapshotRecordLimit, snapshot.RetainedRecordCount);
+            Assert.True(snapshot.Truncated);
+            Assert.Equal(MissingApiTracker.SnapshotRecordLimit, snapshot.Records.Count);
+        }
+        finally
+        {
+            MissingApiTracker.ResetForTests();
+            TryDeleteDirectory(outputRoot);
+        }
+    }
+
+    private static MissingApiObservation CreateObservation(string siteUrl, string navigationId, string apiName)
+    {
+        var separator = apiName.IndexOf('.');
+        return new MissingApiObservation
+        {
+            ApiName = apiName,
+            ObjectOrPrototype = apiName.Substring(0, separator),
+            PropertyName = apiName.Substring(separator + 1),
+            ReceiverType = "Document",
+            SiteUrl = siteUrl,
+            ScriptUrl = siteUrl,
+            ScriptId = "script-snapshot",
+            NavigationId = navigationId,
+            OperationKind = MissingApiOperationKind.Read
+        };
+    }
+
     private static void ConfigureTrace(string tracePath)
     {
         EngineLog.Configure(new EngineLoggingOptions

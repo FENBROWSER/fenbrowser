@@ -3831,11 +3831,11 @@ Verification:
 ## 6.154 Evidence-Based Missing-API Classification (2026-07-16)
 
 - FenEngine runtime sidecars now use `fenbrowser.missing-apis.v2` and preserve classification, operation kind, classification reason, standards-priority eligibility, receiver type, assignment/IDL evidence flags, and the existing script/navigation/source provenance.
-- Tooling's compact `missing_apis.json` projection uses the same Core classifier. Unknown reads remain `UNCLASSIFIED`; the explicit legacy inventory classifies `Navigator.msPointerEnabled` as `LEGACY_PROBE`; neither is standards-priority eligible.
-- First arbitrary host writes now produce assignment-before-read sidecar evidence, while engine-owned bootstrap assignments are excluded. Embedded checked-in IDL resolves direct, inherited, included, and wrong-receiver member evidence. Prototype/descriptor operations and rich sidecar merging remain open.
+- Tooling snapshots the runtime tracker after logger drain into a bounded schema-v2 `missing_apis.json` object. It retains up to 512 ordered rich records across navigation/site transitions, reports total/retained/truncated counts, and retains no receiver object graphs.
+- Unknown reads remain `UNCLASSIFIED`; the explicit legacy inventory classifies `Navigator.msPointerEnabled` as `LEGACY_PROBE`; neither is standards-priority eligible. First arbitrary host writes produce assignment-before-read evidence, while engine-owned bootstrap assignments are excluded. Embedded checked-in IDL resolves direct, inherited, included, and wrong-receiver member evidence. Prototype/descriptor operations remain open.
 
 Verification:
 
-- Discovery lists all six `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests`; the focused run passes `6/6` with no failures or skips.
-- Fresh local bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_classification.html/20260716T104250Z/`; navigation completed, scripts passed `1/1`, rendered text is `undefined|undefined|42|undefined`, first blocker is `none`, screenshot is present, and all 26 manifest entries exist.
-- The compact artifact contains three classified reads; `logs/missing_apis/unknown-site/missing_apis.json` additionally preserves the `Document.applicationState` expando write and receiver-matched `Document.charset` IDL evidence.
+- Discovery lists all nine `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests`; the focused run passes `9/9` with no failures or skips.
+- Fresh local bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_classification.html/20260716T105848Z/`; navigation completed, scripts passed `1/1`, rendered text is `undefined|undefined|42|undefined`, logger drain succeeded, first blocker is `none`, screenshot is present, and all 26 manifest entries exist.
+- The bundle contains all four rich observations, including `Document.applicationState` as `WRITE`/`SITE_EXPANDO` and receiver-matched `Document.charset` IDL evidence, with script, navigation, source location, receiver, and trace identity.
