@@ -2718,6 +2718,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         {
         lock (_fenJsLock)
         {
+            foreach (var timerEntry in _fenJsTimers.ToArray())
+            {
+                if (_fenJsTimers.TryRemove(timerEntry.Key, out var timer))
+                {
+                    timer.Dispose();
+                }
+            }
+
             _compiler = new BytecodeCompiler
             {
                 ParserMaxRecursionDepth = FenJsBrowserParserMaxRecursionDepth
@@ -4675,6 +4683,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var extraArgs = args.Count > 2 ? args.Skip(2).ToArray() : Array.Empty<JsValue>();
         var callbackContext = CaptureActiveWindowCallbackContext();
         var callbackProvenance = CaptureCallbackProvenance(callback);
+        var callbackSessionGeneration = _fenJsSessionGeneration;
+        var callbackDocumentId = _currentDocumentId;
 
         var id = Interlocked.Increment(ref _fenJsTimerIdCounter);
         FenBrowser.Core.EngineLogCompat.Debug(
@@ -4716,26 +4726,31 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     }
                 }
 
-                AddEventLoopRecord("TimerFired", callback.Tag.ToString(), id, delayMs, repeat);
-                LogEventLoop(
-                    "TimerFired",
-                    LogSeverity.Debug,
-                    "[FenJsBridge] Host timer fired",
-                    new Dictionary<string, object>
-                    {
-                        ["id"] = id,
-                        ["delayMs"] = delayMs,
-                        ["repeating"] = repeat,
-                        ["timerType"] = repeat ? "interval" : "timeout",
-                        ["callbackTag"] = callback.Tag.ToString()
-                    });
                 InvokeFenJsCallbackSafely(
                     callback,
                     extraArgs,
                     repeat ? "setInterval" : "setTimeout",
                     id,
                     callbackContext,
-                    callbackProvenance);
+                    callbackProvenance,
+                    callbackSessionGeneration,
+                    callbackDocumentId,
+                    () =>
+                    {
+                        AddEventLoopRecord("TimerFired", callback.Tag.ToString(), id, delayMs, repeat);
+                        LogEventLoop(
+                            "TimerFired",
+                            LogSeverity.Debug,
+                            "[FenJsBridge] Host timer fired",
+                            new Dictionary<string, object>
+                            {
+                                ["id"] = id,
+                                ["delayMs"] = delayMs,
+                                ["repeating"] = repeat,
+                                ["timerType"] = repeat ? "interval" : "timeout",
+                                ["callbackTag"] = callback.Tag.ToString()
+                            });
+                    });
             },
             null,
             Math.Max(0, delayMs),
@@ -4755,6 +4770,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var callback = args[0];
         var callbackContext = CaptureActiveWindowCallbackContext();
         var callbackProvenance = CaptureCallbackProvenance(callback);
+        var callbackSessionGeneration = _fenJsSessionGeneration;
+        var callbackDocumentId = _currentDocumentId;
         var id = Interlocked.Increment(ref _fenJsTimerIdCounter);
         UpdateEventLoopSnapshot(snapshot => snapshot.AnimationFramesScheduled++);
         AddEventLoopRecord("RequestAnimationFrameScheduled", callback.Tag.ToString(), id, 16);
@@ -4777,24 +4794,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 }
 
                 var timestamp = JsValue.FromNumber(_fenJsClock.Elapsed.TotalMilliseconds);
-                AddEventLoopRecord("RequestAnimationFrameFired", callback.Tag.ToString(), id, 16);
-                LogEventLoop(
-                    "RequestAnimationFrameFired",
-                    LogSeverity.Debug,
-                    "[FenJsBridge] requestAnimationFrame fired",
-                    new Dictionary<string, object>
-                    {
-                        ["id"] = id,
-                        ["delayMs"] = 16,
-                        ["callbackTag"] = callback.Tag.ToString()
-                    });
                 InvokeFenJsCallbackSafely(
                     callback,
                     new[] { timestamp },
                     "requestAnimationFrame",
                     id,
                     callbackContext,
-                    callbackProvenance);
+                    callbackProvenance,
+                    callbackSessionGeneration,
+                    callbackDocumentId,
+                    () =>
+                    {
+                        AddEventLoopRecord("RequestAnimationFrameFired", callback.Tag.ToString(), id, 16);
+                        LogEventLoop(
+                            "RequestAnimationFrameFired",
+                            LogSeverity.Debug,
+                            "[FenJsBridge] requestAnimationFrame fired",
+                            new Dictionary<string, object>
+                            {
+                                ["id"] = id,
+                                ["delayMs"] = 16,
+                                ["callbackTag"] = callback.Tag.ToString()
+                            });
+                    });
             },
             null,
             16,
@@ -5279,7 +5301,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         string origin,
         long callbackId = 0,
         FenJsWindowCallbackContext windowContext = null,
-        CallbackSourceProvenance callbackProvenance = null)
+        CallbackSourceProvenance callbackProvenance = null,
+        int expectedSessionGeneration = -1,
+        string expectedDocumentId = null,
+        Action onValidated = null)
     {
         var callbackThis = windowContext?.WindowTarget ?? _fenJsGlobalThis;
         callbackProvenance ??= CaptureCallbackProvenance(callback);
@@ -5289,6 +5314,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             {
                 lock (_fenJsLock)
                 {
+                    if ((expectedSessionGeneration >= 0 &&
+                         expectedSessionGeneration != _fenJsSessionGeneration) ||
+                        (expectedDocumentId != null &&
+                         !string.Equals(expectedDocumentId, _currentDocumentId, StringComparison.Ordinal)))
+                    {
+                        return null;
+                    }
+
+                    onValidated?.Invoke();
                     Exception attributedMicrotaskFailure = null;
                     try
                     {

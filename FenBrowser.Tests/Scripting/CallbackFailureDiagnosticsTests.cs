@@ -485,6 +485,51 @@ public sealed class CallbackFailureDiagnosticsTests
         }
     }
 
+    [Fact]
+    public async Task ReplacedDocumentTimer_DoesNotFireAfterNavigationInvalidation()
+    {
+        var originalUri = new Uri("https://fixture.test/stale-timer/original.html");
+        var replacementUri = new Uri("https://fixture.test/stale-timer/replacement.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var originalDocument = new HtmlParser(
+                "<html><body><script>" +
+                "setTimeout(function staleDocumentTimer(){" +
+                "throw new Error('stale-document-timer-ran');" +
+                "},1000);" +
+                "</script></body></html>",
+                originalUri).Parse();
+            var replacementDocument = new HtmlParser(
+                "<html><body><div id='replacement'>replacement</div></body></html>",
+                replacementUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(originalDocument.DocumentElement, originalUri);
+            var scheduledTimer = Assert.Single(
+                engine.GetEventLoopSnapshot().Events,
+                entry => entry.EventName == "TimerScheduled");
+
+            await engine.SetDomAsync(replacementDocument.DocumentElement, replacementUri);
+            await Task.Delay(1250);
+
+            var replacementSnapshot = engine.GetEventLoopSnapshot();
+            Assert.Equal(replacementUri.AbsoluteUri, replacementSnapshot.BaseUrl);
+            Assert.DoesNotContain(
+                replacementSnapshot.Events,
+                entry => entry.EventName == "TimerFired" && entry.Id == scheduledTimer.Id);
+            Assert.Equal(0, replacementSnapshot.CallbackFailures);
+            Assert.Equal(0, replacementSnapshot.PendingHostTimers);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
     private static JsHostAdapter CreateHost()
     {
         return new JsHostAdapter(

@@ -3930,7 +3930,7 @@ Verification:
 
 ## 6.163 Required Browser-Integration Discovery Guard (2026-07-16)
 
-- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 17 selected timer/event/Promise/microtask provenance, logger-drain, lifecycle, host-conversion, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
+- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 18 selected timer/event/Promise/microtask provenance, callback invalidation, logger-drain, lifecycle, host-conversion, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
 - The first combined run exposed a real parallel-isolation defect: the FenJS timer/rAF trace failed during native browser-constructor bootstrap while other browser tests ran concurrently. The global `EngineLog` collection is now explicitly non-parallel, matching its process-wide logger configuration and FenJS diagnostic usage.
 - This guard does not treat the skipped real-process brokered acceptance as passing. The AppContainer development-runtime provisioning decision remains the separately documented `BLOCK-PROC-002` boundary.
 
@@ -3976,3 +3976,15 @@ Verification:
 - `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~QueueMicrotaskTests" --logger "console;verbosity=minimal"`: pass (`5/5`, zero failed/skipped).
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~RequiredBrowserIntegrationDiscoveryTests|FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~DebugSiteExceptionSummaryTests|FullyQualifiedName~EventLoopTraceTests" --logger "console;verbosity=minimal"`: pass (`16/16`, zero failed/skipped).
 - The guarded browser/process slice passes `70/70` with zero failures or skips.
+
+## 6.167 Replaced-Document Timer Invalidation Regression (2026-07-16)
+
+- `ReplacedDocumentTimer_DoesNotFireAfterNavigationInvalidation` schedules a named throwing timer in one document, replaces that document before the deadline, and waits beyond the deadline. It requires the replacement snapshot to retain its own URL, no matching `TimerFired` event, zero callback failures, and zero pending host timers.
+- Before the fix, the focused test failed `1/1`: the discarded document's timer fired against the replacement interpreter and produced both `TimerFired` and `CallbackFailed` records in the replacement snapshot.
+- The valid-path coverage includes ordinary timeout/interval provenance, timer/rAF event-loop tracing, and six repeated document-session replacements. The required-surface guard protects the invalidation regression as the eighteenth selected contract.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~RequiredBrowserIntegrationDiscoveryTests|FullyQualifiedName~CallbackFailureDiagnosticsTests|FullyQualifiedName~EventLoopTraceTests|FullyQualifiedName~FenJsHostLifetimeMeasurementTests" --logger "console;verbosity=minimal"`: pass (`18/18`, zero failed/skipped).
+- Discovery lists all 13 `CallbackFailureDiagnosticsTests` and the required-surface guard.
+- The guarded browser/process slice passes `71/71` with zero failures or skips.

@@ -10353,3 +10353,16 @@ Verification:
 - `QueueMicrotaskTests`: pass (`5/5`), including exact callback/exception observation and unchanged rethrow identity.
 - Callback/export/event-loop/discovery slice: pass (`16/16`, zero failed/skipped).
 - Guarded browser/process slice: pass (`70/70`, zero failed/skipped).
+
+## 2.391 Replaced-Document Timer Invalidation (2026-07-16)
+
+- A full document bind previously replaced the FenJS interpreter without cancelling host timers owned by the discarded document. When such a timer fired, its old heap handle was resolved against the replacement interpreter and its `TimerFired`/failure records were written into the replacement document's event-loop snapshot.
+- Session reset now removes and disposes every active timer. Timer and animation-frame delegates capture both the FenJS session generation and document identity, then validate them under the interpreter lock before emitting fired records or invoking JavaScript; this also closes the race where a callback was already queued when disposal occurred.
+- Valid timers and animation frames retain their existing task ordering and diagnostics. Invalidated callbacks do not execute, do not weaken stale-handle protection, and do not contaminate the replacement document's failure accounting.
+
+Verification:
+
+- Pre-fix replacement-document reduction: failed `1/1`; the new document recorded the old timer's `TimerFired` and `CallbackFailed` events.
+- Focused callback/event-loop/lifetime slice: pass (`18/18`, zero failed/skipped).
+- Discovery lists all 13 callback diagnostic tests plus the required-surface guard.
+- Guarded browser/process slice: pass (`71/71`, zero failed/skipped).
