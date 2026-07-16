@@ -3930,7 +3930,7 @@ Verification:
 
 ## 6.163 Required Browser-Integration Discovery Guard (2026-07-16)
 
-- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 14 selected timer/event/Promise provenance, logger-drain, lifecycle, host-conversion, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
+- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 16 selected timer/event/Promise provenance, logger-drain, lifecycle, host-conversion, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
 - The first combined run exposed a real parallel-isolation defect: the FenJS timer/rAF trace failed during native browser-constructor bootstrap while other browser tests ran concurrently. The global `EngineLog` collection is now explicitly non-parallel, matching its process-wide logger configuration and FenJS diagnostic usage.
 - This guard does not treat the skipped real-process brokered acceptance as passing. The AppContainer development-runtime provisioning decision remains the separately documented `BLOCK-PROC-002` boundary.
 
@@ -3952,3 +3952,15 @@ Verification:
 - Discovery lists all nine `CallbackFailureDiagnosticsTests` plus the required-surface guard.
 - The two new tests pass `2/2`; `RequiredBrowserIntegrationDiscoveryTests|CallbackFailureDiagnosticsTests|DebugSiteExceptionSummaryTests` passes `11/11` with zero failures or skips.
 - The guarded browser/process slice passes `67/67` with zero failures or skips.
+
+## 6.165 Callback Diagnostic Redaction And Text Bounds (2026-07-16)
+
+- `SecretLikeCallbackFailureText_IsRedacted` throws authorization-shaped text from a named timer callback and verifies that the exception message and JS stack omit the value while retaining the callback function attribution and explicit redaction status.
+- `CallbackFailureMessageAndStacks_AreBounded` throws a 10,000-character message and protects the current serialized limits: 2,048 characters plus the truncation suffix for messages, and 8,192 plus suffix for JS/host stacks.
+- These tests exercise the ordinary FenJS timer catch point and retain no callback object graph. No production behavior or limit changed.
+
+Verification:
+
+- Discovery lists all 11 `CallbackFailureDiagnosticsTests` plus the required-surface guard.
+- The two new tests pass `2/2`; `RequiredBrowserIntegrationDiscoveryTests|CallbackFailureDiagnosticsTests|DebugSiteExceptionSummaryTests` passes `13/13` with zero failures or skips.
+- The guarded browser/process slice passes `69/69` with zero failures or skips.

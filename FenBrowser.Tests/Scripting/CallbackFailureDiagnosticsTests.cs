@@ -367,6 +367,82 @@ public sealed class CallbackFailureDiagnosticsTests
         }
     }
 
+    [Fact]
+    public async Task SecretLikeCallbackFailureText_IsRedacted()
+    {
+        var baseUri = new Uri("https://fixture.test/redacted-callback.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><script>" +
+                "setTimeout(function redactedTimerFixture(){" +
+                "throw new Error('authorization: Basic secret-fixture-value');" +
+                "},1);" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            Assert.True(SpinWait.SpinUntil(
+                () => engine.GetEventLoopSnapshot().CallbackFailures > 0,
+                millisecondsTimeout: 1000));
+
+            var failure = Assert.Single(engine.GetEventLoopSnapshot().CallbackFailureRecords);
+            Assert.Equal("[redacted secret-like diagnostic line]", failure.ExceptionMessage);
+            Assert.DoesNotContain("secret-fixture-value", failure.JsStack, StringComparison.Ordinal);
+            Assert.Contains("redactedTimerFixture", failure.JsStack, StringComparison.Ordinal);
+            Assert.Equal(
+                "metadata-only; secret-like stack lines redacted",
+                failure.RedactionStatus);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
+    [Fact]
+    public async Task CallbackFailureMessageAndStacks_AreBounded()
+    {
+        var baseUri = new Uri("https://fixture.test/bounded-callback-text.html");
+        var longMessage = new string('x', 10_000);
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><script>" +
+                "setTimeout(function boundedTextTimerFixture(){" +
+                "throw new Error('" + longMessage + "');" +
+                "},1);" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            Assert.True(SpinWait.SpinUntil(
+                () => engine.GetEventLoopSnapshot().CallbackFailures > 0,
+                millisecondsTimeout: 1000));
+
+            var failure = Assert.Single(engine.GetEventLoopSnapshot().CallbackFailureRecords);
+            Assert.Equal(2_051, failure.ExceptionMessage.Length);
+            Assert.Equal(8_195, failure.JsStack.Length);
+            Assert.True(failure.HostStack.Length <= 8_195);
+            Assert.EndsWith("...", failure.ExceptionMessage, StringComparison.Ordinal);
+            Assert.EndsWith("...", failure.JsStack, StringComparison.Ordinal);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
     private static JsHostAdapter CreateHost()
     {
         return new JsHostAdapter(
