@@ -18,6 +18,19 @@ namespace FenBrowser.Tooling
         private const int DefaultTimeoutSeconds = 600;
         private const int DefaultProcesses = 10;
 
+        internal static class ResultClasses
+        {
+            public const string Pass = "Pass";
+            public const string AssertionFailure = "Assertion failure";
+            public const string BrowserCrash = "Browser crash";
+            public const string WebDriverFailure = "WebDriver failure";
+            public const string Timeout = "Timeout";
+            public const string HarnessStartupFailure = "Harness startup failure";
+            public const string ProductAdapterFailure = "Product-adapter failure";
+            public const string Unsupported = "Unsupported";
+            public const string NotRun = "Not run";
+        }
+
         public static async Task RunAsync(string[] args)
         {
             var options = ParseOptions(args);
@@ -43,14 +56,23 @@ namespace FenBrowser.Tooling
 
             var result = await RunProcessAsync(options.WptRoot, command, stdoutPath, stderrPath, options.TimeoutSeconds).ConfigureAwait(false);
             var endedAt = DateTime.UtcNow;
-            var rawAnalysis = AnalyzeRawLog(rawLogPath);
+            var rawAnalysis = AnalyzeRawLog(rawLogPath, result.TimedOut);
+            var infrastructureResultClass = DetermineInfrastructureResultClass(result.TimedOut, result.ExitCode, rawAnalysis.TestStart);
             WriteFailureManifest(failuresPath, rawAnalysis);
 
             var summary = new WptSummary
             {
                 WptRoot = options.WptRoot,
+                WptRevision = ReadGitRevision(options.WptRoot),
+                FenBrowserRevision = ReadGitRevision(Directory.GetCurrentDirectory()),
+                FenBrowserWorkingTreeDirty = IsGitWorkingTreeDirty(Directory.GetCurrentDirectory()),
                 BrowserBinary = options.BrowserBinary,
                 WebDriverBinary = options.WebDriverBinary,
+                BrowserExitStatus = "not reported by wptrunner",
+                WebDriverExitStatus = "not reported by wptrunner",
+                BuildConfiguration = InferBuildConfiguration(options.BrowserBinary),
+                ProcessMode = ResolveProcessMode(),
+                ManifestPath = options.ManifestPath,
                 Tests = options.Tests,
                 Processes = options.Processes,
                 TimeoutSeconds = options.TimeoutSeconds,
@@ -59,7 +81,8 @@ namespace FenBrowser.Tooling
                 SkipVenvSetup = options.SkipVenvSetup,
                 TimedOut = result.TimedOut,
                 ExitCode = result.ExitCode,
-                FailurePhase = result.TimedOut && rawAnalysis.TestStart == 0 ? "wpt_startup" : string.Empty,
+                FailurePhase = DetermineFailurePhase(result.TimedOut, result.ExitCode, rawAnalysis.TestStart),
+                InfrastructureResultClass = infrastructureResultClass,
                 StartedAtUtc = startedAt.ToString("o"),
                 FinishedAtUtc = endedAt.ToString("o"),
                 DurationSeconds = (endedAt - startedAt).TotalSeconds,
@@ -72,6 +95,8 @@ namespace FenBrowser.Tooling
                 TestStart = rawAnalysis.TestStart,
                 TestEnd = rawAnalysis.TestEnd,
                 StatusCounts = rawAnalysis.StatusCounts,
+                ResultClassCounts = rawAnalysis.ResultClassCounts,
+                TestResults = rawAnalysis.TestResults,
                 UnexpectedTestFailures = rawAnalysis.UnexpectedTestFailures,
                 UnexpectedSubtestFailures = rawAnalysis.UnexpectedSubtestFailures,
                 Command = command.FileName + " " + string.Join(" ", command.Arguments)
@@ -84,7 +109,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine($"[wpt] raw={rawLogPath}");
             Console.WriteLine($"[wpt] report={reportPath}");
             Console.WriteLine($"[wpt] failures={failuresPath}");
-            Console.WriteLine($"[wpt] exit={summary.ExitCode} timedOut={summary.TimedOut} phase={summary.FailurePhase} testStart={summary.TestStart} testEnd={summary.TestEnd} statuses={FormatStatusCounts(summary.StatusCounts)} unexpectedTests={summary.UnexpectedTestFailures} unexpectedSubtests={summary.UnexpectedSubtestFailures}");
+            Console.WriteLine($"[wpt] exit={summary.ExitCode} timedOut={summary.TimedOut} phase={summary.FailurePhase} infrastructure={summary.InfrastructureResultClass} testStart={summary.TestStart} testEnd={summary.TestEnd} statuses={FormatStatusCounts(summary.StatusCounts)} classes={FormatStatusCounts(summary.ResultClassCounts)} unexpectedTests={summary.UnexpectedTestFailures} unexpectedSubtests={summary.UnexpectedSubtestFailures}");
 
             if (summary.ExitCode != 0)
             {
@@ -133,6 +158,12 @@ namespace FenBrowser.Tooling
             {
                 var noPauseIndex = arguments.FindIndex(arg => string.Equals(arg, "--no-pause-after-test", StringComparison.Ordinal));
                 arguments.Insert(noPauseIndex >= 0 ? noPauseIndex : arguments.Count, "--no-manifest-update");
+            }
+
+            if (!string.IsNullOrWhiteSpace(options.ManifestPath))
+            {
+                arguments.Add("--manifest");
+                arguments.Add(options.ManifestPath);
             }
 
             arguments.AddRange(options.Tests);
@@ -226,7 +257,7 @@ namespace FenBrowser.Tooling
             }
         }
 
-        internal static WptRawAnalysis AnalyzeRawLog(string rawLogPath)
+        internal static WptRawAnalysis AnalyzeRawLog(string rawLogPath, bool runTimedOut = false)
         {
             var analysis = new WptRawAnalysis();
             if (!File.Exists(rawLogPath))
@@ -254,6 +285,7 @@ namespace FenBrowser.Tooling
                     if (string.Equals(action, "test_start", StringComparison.Ordinal))
                     {
                         analysis.TestStart++;
+                        IncrementCount(analysis.StartedTests, ReadString(root, "test", string.Empty));
                     }
                     else if (string.Equals(action, "test_status", StringComparison.Ordinal))
                     {
@@ -262,6 +294,7 @@ namespace FenBrowser.Tooling
                         {
                             analysis.UnexpectedSubtestFailures++;
                             analysis.Failures.Add(ReadFailure(root, "subtest", status, "PASS"));
+                            analysis.TestsWithUnexpectedSubtests.Add(ReadString(root, "test", string.Empty));
                         }
                     }
                     else if (string.Equals(action, "test_end", StringComparison.Ordinal))
@@ -270,6 +303,24 @@ namespace FenBrowser.Tooling
                         var status = ReadString(root, "status", "UNKNOWN");
                         analysis.StatusCounts.TryGetValue(status, out var current);
                         analysis.StatusCounts[status] = current + 1;
+
+                        var test = ReadString(root, "test", string.Empty);
+                        IncrementCount(analysis.CompletedTests, test);
+                        var resultClass = ClassifyTestResult(
+                            status,
+                            ReadString(root, "message", string.Empty),
+                            analysis.TestsWithUnexpectedSubtests.Contains(test));
+                        analysis.ResultClassCounts.TryGetValue(resultClass, out var classCount);
+                        analysis.ResultClassCounts[resultClass] = classCount + 1;
+                        analysis.TestResults.Add(new WptTestResult
+                        {
+                            Test = test,
+                            Status = status,
+                            Expected = ReadExpectedStatus(root, "OK"),
+                            ResultClass = resultClass,
+                            Message = ReadString(root, "message", string.Empty),
+                            BrowserPid = ReadBrowserPid(root)
+                        });
 
                         if (IsUnexpectedStatus(root, status, "OK"))
                         {
@@ -283,7 +334,43 @@ namespace FenBrowser.Tooling
                 }
             }
 
+            ClassifyIncompleteTests(analysis, runTimedOut);
             return analysis;
+        }
+
+        private static void ClassifyIncompleteTests(WptRawAnalysis analysis, bool runTimedOut)
+        {
+            foreach (var started in analysis.StartedTests)
+            {
+                analysis.CompletedTests.TryGetValue(started.Key, out var completedCount);
+                var incompleteCount = Math.Max(0, started.Value - completedCount);
+                for (var i = 0; i < incompleteCount; i++)
+                {
+                    var resultClass = runTimedOut ? ResultClasses.Timeout : ResultClasses.NotRun;
+                    IncrementCount(analysis.ResultClassCounts, resultClass);
+                    analysis.TestResults.Add(new WptTestResult
+                    {
+                        Test = started.Key,
+                        Status = "INCOMPLETE",
+                        Expected = "OK",
+                        ResultClass = resultClass,
+                        Message = runTimedOut
+                            ? "The WPT run watchdog expired before test_end."
+                            : "The WPT run ended before test_end."
+                    });
+                }
+            }
+        }
+
+        private static void IncrementCount(Dictionary<string, int> counts, string key)
+        {
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                return;
+            }
+
+            counts.TryGetValue(key, out var current);
+            counts[key] = current + 1;
         }
 
         private static void WriteFailureManifest(string failuresPath, WptRawAnalysis analysis)
@@ -294,9 +381,11 @@ namespace FenBrowser.Tooling
                 TestStart = analysis.TestStart,
                 TestEnd = analysis.TestEnd,
                 StatusCounts = analysis.StatusCounts,
+                ResultClassCounts = analysis.ResultClassCounts,
                 UnexpectedTestFailures = analysis.UnexpectedTestFailures,
                 UnexpectedSubtestFailures = analysis.UnexpectedSubtestFailures,
-                Failures = analysis.Failures
+                Failures = analysis.Failures,
+                TestResults = analysis.TestResults
             };
 
             var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true });
@@ -382,6 +471,150 @@ namespace FenBrowser.Tooling
             return string.Join(",", counts.OrderBy(kvp => kvp.Key, StringComparer.Ordinal).Select(kvp => $"{kvp.Key}:{kvp.Value}"));
         }
 
+        internal static string DetermineFailurePhase(bool timedOut, int exitCode, int testStart)
+        {
+            if (testStart == 0 && (timedOut || exitCode != 0))
+            {
+                return "wpt_startup";
+            }
+
+            return string.Empty;
+        }
+
+        internal static string DetermineInfrastructureResultClass(bool timedOut, int exitCode, int testStart)
+        {
+            if (testStart != 0)
+            {
+                return string.Empty;
+            }
+
+            if (timedOut || exitCode != 0)
+            {
+                return ResultClasses.HarnessStartupFailure;
+            }
+
+            return ResultClasses.NotRun;
+        }
+
+        internal static string ClassifyTestResult(string status, string message, bool hasUnexpectedSubtest)
+        {
+            if (string.Equals(status, "OK", StringComparison.Ordinal))
+            {
+                return hasUnexpectedSubtest ? ResultClasses.AssertionFailure : ResultClasses.Pass;
+            }
+
+            if (string.Equals(status, "FAIL", StringComparison.Ordinal))
+            {
+                return ResultClasses.AssertionFailure;
+            }
+
+            if (string.Equals(status, "CRASH", StringComparison.Ordinal))
+            {
+                return ResultClasses.BrowserCrash;
+            }
+
+            if (string.Equals(status, "TIMEOUT", StringComparison.Ordinal) ||
+                string.Equals(status, "EXTERNAL-TIMEOUT", StringComparison.Ordinal))
+            {
+                return ResultClasses.Timeout;
+            }
+
+            if (string.Equals(status, "SKIP", StringComparison.Ordinal))
+            {
+                return ResultClasses.NotRun;
+            }
+
+            if (string.Equals(status, "PRECONDITION_FAILED", StringComparison.Ordinal) ||
+                string.Equals(status, "NOTIMPLEMENTED", StringComparison.Ordinal))
+            {
+                return ResultClasses.Unsupported;
+            }
+
+            if (!string.IsNullOrWhiteSpace(message) &&
+                (message.Contains("webdriver", StringComparison.OrdinalIgnoreCase) ||
+                 message.Contains("invalid session", StringComparison.OrdinalIgnoreCase)))
+            {
+                return ResultClasses.WebDriverFailure;
+            }
+
+            return ResultClasses.ProductAdapterFailure;
+        }
+
+        private static string ReadGitRevision(string workingDirectory)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "git",
+                    WorkingDirectory = workingDirectory,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+                psi.ArgumentList.Add("rev-parse");
+                psi.ArgumentList.Add("HEAD");
+                using var process = Process.Start(psi);
+                if (process == null)
+                {
+                    return "unavailable";
+                }
+
+                var revision = process.StandardOutput.ReadToEnd().Trim();
+                process.WaitForExit(5000);
+                return process.ExitCode == 0 && revision.Length > 0 ? revision : "unavailable";
+            }
+            catch
+            {
+                return "unavailable";
+            }
+        }
+
+        private static string InferBuildConfiguration(string browserBinary)
+        {
+            return browserBinary?.IndexOf($"{Path.DirectorySeparatorChar}Debug{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) >= 0
+                ? "Debug"
+                : "Release";
+        }
+
+        private static bool IsGitWorkingTreeDirty(string workingDirectory)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "git",
+                    WorkingDirectory = workingDirectory,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+                psi.ArgumentList.Add("status");
+                psi.ArgumentList.Add("--porcelain");
+                using var process = Process.Start(psi);
+                if (process == null)
+                {
+                    return true;
+                }
+
+                var status = process.StandardOutput.ReadToEnd();
+                process.WaitForExit(5000);
+                return process.ExitCode != 0 || !string.IsNullOrWhiteSpace(status);
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        private static string ResolveProcessMode()
+        {
+            var configured = Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION");
+            return string.IsNullOrWhiteSpace(configured) ? "in-process (default)" : configured.Trim();
+        }
+
         private static WptOptions ParseOptions(string[] args)
         {
             var repoRoot = Directory.GetCurrentDirectory();
@@ -425,6 +658,12 @@ namespace FenBrowser.Tooling
                 if (TryReadOption(arg, "--output-dir", args, ref i, out var outputDir))
                 {
                     options.OutputDir = Path.GetFullPath(outputDir);
+                    continue;
+                }
+
+                if (TryReadOption(arg, "--manifest", args, ref i, out var manifestPath))
+                {
+                    options.ManifestPath = Path.GetFullPath(manifestPath);
                     continue;
                 }
 
@@ -530,6 +769,7 @@ namespace FenBrowser.Tooling
             public string BrowserBinary { get; set; }
             public string WebDriverBinary { get; set; }
             public string OutputDir { get; set; }
+            public string ManifestPath { get; set; }
             public int Processes { get; set; }
             public int TimeoutSeconds { get; set; }
             public bool UpdateManifest { get; set; }
@@ -564,6 +804,21 @@ namespace FenBrowser.Tooling
             public int UnexpectedTestFailures { get; set; }
             public int UnexpectedSubtestFailures { get; set; }
             public List<WptFailureEntry> Failures { get; } = new List<WptFailureEntry>();
+            public HashSet<string> TestsWithUnexpectedSubtests { get; } = new HashSet<string>(StringComparer.Ordinal);
+            public Dictionary<string, int> StartedTests { get; } = new Dictionary<string, int>(StringComparer.Ordinal);
+            public Dictionary<string, int> CompletedTests { get; } = new Dictionary<string, int>(StringComparer.Ordinal);
+            public Dictionary<string, int> ResultClassCounts { get; } = new Dictionary<string, int>(StringComparer.Ordinal);
+            public List<WptTestResult> TestResults { get; } = new List<WptTestResult>();
+        }
+
+        internal sealed class WptTestResult
+        {
+            public string Test { get; set; }
+            public string Status { get; set; }
+            public string Expected { get; set; }
+            public string ResultClass { get; set; }
+            public string Message { get; set; }
+            public int? BrowserPid { get; set; }
         }
 
         internal sealed class WptFailureEntry
@@ -584,16 +839,26 @@ namespace FenBrowser.Tooling
             public int TestStart { get; set; }
             public int TestEnd { get; set; }
             public Dictionary<string, int> StatusCounts { get; set; }
+            public Dictionary<string, int> ResultClassCounts { get; set; }
             public int UnexpectedTestFailures { get; set; }
             public int UnexpectedSubtestFailures { get; set; }
             public List<WptFailureEntry> Failures { get; set; }
+            public List<WptTestResult> TestResults { get; set; }
         }
 
         private sealed class WptSummary
         {
             public string WptRoot { get; set; }
+            public string WptRevision { get; set; }
+            public string FenBrowserRevision { get; set; }
+            public bool FenBrowserWorkingTreeDirty { get; set; }
             public string BrowserBinary { get; set; }
             public string WebDriverBinary { get; set; }
+            public string BrowserExitStatus { get; set; }
+            public string WebDriverExitStatus { get; set; }
+            public string BuildConfiguration { get; set; }
+            public string ProcessMode { get; set; }
+            public string ManifestPath { get; set; }
             public List<string> Tests { get; set; }
             public int Processes { get; set; }
             public int TimeoutSeconds { get; set; }
@@ -603,6 +868,7 @@ namespace FenBrowser.Tooling
             public bool TimedOut { get; set; }
             public int ExitCode { get; set; }
             public string FailurePhase { get; set; }
+            public string InfrastructureResultClass { get; set; }
             public string StartedAtUtc { get; set; }
             public string FinishedAtUtc { get; set; }
             public double DurationSeconds { get; set; }
@@ -615,6 +881,8 @@ namespace FenBrowser.Tooling
             public int TestStart { get; set; }
             public int TestEnd { get; set; }
             public Dictionary<string, int> StatusCounts { get; set; }
+            public Dictionary<string, int> ResultClassCounts { get; set; }
+            public List<WptTestResult> TestResults { get; set; }
             public int UnexpectedTestFailures { get; set; }
             public int UnexpectedSubtestFailures { get; set; }
             public string Command { get; set; }

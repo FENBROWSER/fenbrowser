@@ -78,4 +78,76 @@ public sealed class WptToolRunnerRawLogTests
             File.Delete(rawLogPath);
         }
     }
+
+    [Fact]
+    public void AnalyzeRawLog_AssignsEveryCompletedTestAnExplicitResultClass()
+    {
+        var rawLogPath = Path.Combine(Path.GetTempPath(), $"fen-wpt-raw-{Guid.NewGuid():N}.json");
+        try
+        {
+            File.WriteAllLines(rawLogPath, new[]
+            {
+                @"{""action"":""test_status"",""test"":""/assertion.html"",""subtest"":""fails"",""status"":""FAIL"",""expected"":""PASS""}",
+                @"{""action"":""test_end"",""test"":""/assertion.html"",""status"":""OK""}",
+                @"{""action"":""test_end"",""test"":""/pass.html"",""status"":""OK""}",
+                @"{""action"":""test_end"",""test"":""/crash.html"",""status"":""CRASH""}",
+                @"{""action"":""test_end"",""test"":""/timeout.html"",""status"":""TIMEOUT""}",
+                @"{""action"":""test_end"",""test"":""/webdriver.html"",""status"":""ERROR"",""message"":""WebDriver invalid session""}",
+                @"{""action"":""test_end"",""test"":""/adapter.html"",""status"":""ERROR"",""message"":""duplicate harness results""}",
+                @"{""action"":""test_end"",""test"":""/unsupported.html"",""status"":""PRECONDITION_FAILED""}",
+                @"{""action"":""test_end"",""test"":""/skipped.html"",""status"":""SKIP""}"
+            });
+
+            var analysis = WptToolRunner.AnalyzeRawLog(rawLogPath);
+
+            Assert.Equal(8, analysis.TestResults.Count);
+            Assert.Equal(1, analysis.ResultClassCounts[WptToolRunner.ResultClasses.Pass]);
+            Assert.Equal(1, analysis.ResultClassCounts[WptToolRunner.ResultClasses.AssertionFailure]);
+            Assert.Equal(1, analysis.ResultClassCounts[WptToolRunner.ResultClasses.BrowserCrash]);
+            Assert.Equal(1, analysis.ResultClassCounts[WptToolRunner.ResultClasses.Timeout]);
+            Assert.Equal(1, analysis.ResultClassCounts[WptToolRunner.ResultClasses.WebDriverFailure]);
+            Assert.Equal(1, analysis.ResultClassCounts[WptToolRunner.ResultClasses.ProductAdapterFailure]);
+            Assert.Equal(1, analysis.ResultClassCounts[WptToolRunner.ResultClasses.Unsupported]);
+            Assert.Equal(1, analysis.ResultClassCounts[WptToolRunner.ResultClasses.NotRun]);
+        }
+        finally
+        {
+            File.Delete(rawLogPath);
+        }
+    }
+
+    [Fact]
+    public void EmptyNonzeroRun_IsClassifiedAsHarnessStartupFailure()
+    {
+        Assert.Equal("wpt_startup", WptToolRunner.DetermineFailurePhase(timedOut: false, exitCode: 64, testStart: 0));
+        Assert.Equal(
+            WptToolRunner.ResultClasses.HarnessStartupFailure,
+            WptToolRunner.DetermineInfrastructureResultClass(timedOut: false, exitCode: 64, testStart: 0));
+    }
+
+    [Theory]
+    [InlineData(false, "Not run")]
+    [InlineData(true, "Timeout")]
+    public void AnalyzeRawLog_ClassifiesStartedTestWithoutTerminalRecord(bool runTimedOut, string expectedClass)
+    {
+        var rawLogPath = Path.Combine(Path.GetTempPath(), $"fen-wpt-raw-{Guid.NewGuid():N}.json");
+        try
+        {
+            File.WriteAllText(
+                rawLogPath,
+                @"{""action"":""test_start"",""test"":""/incomplete.html""}");
+
+            var analysis = WptToolRunner.AnalyzeRawLog(rawLogPath, runTimedOut);
+
+            var result = Assert.Single(analysis.TestResults);
+            Assert.Equal("/incomplete.html", result.Test);
+            Assert.Equal("INCOMPLETE", result.Status);
+            Assert.Equal(expectedClass, result.ResultClass);
+            Assert.Equal(1, analysis.ResultClassCounts[expectedClass]);
+        }
+        finally
+        {
+            File.Delete(rawLogPath);
+        }
+    }
 }

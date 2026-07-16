@@ -3775,3 +3775,16 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CustomHtmlEngineNavigationGenerationTests|FullyQualifiedName~BrowserFormInteractionAcceptanceTests|FullyQualifiedName~DebugSiteInteractionRunnerTests" --logger "console;verbosity=minimal"`: pass (`14/14`).
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --verbosity:minimal`: pass with 0 warnings and 0 errors.
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --verbosity:minimal`: pass with 0 warnings and 0 errors.
+
+## 6.150 Selected WPT Result Classification and Isolated Manifest (2026-07-16)
+
+- Tooling accepts `--manifest <path>`, allowing a current WPT manifest to be generated and reused under ignored `Results/` without modifying the local WPT checkout.
+- `wpt.summary.json` now records the WPT and FenBrowser revisions, working-tree state, build configuration, process mode, manifest path, explicit unavailable browser/WebDriver exit-status markers, and one terminal result class per completed or incompletely started test.
+- Result classes are exactly `Pass`, `Assertion failure`, `Browser crash`, `WebDriver failure`, `Timeout`, `Harness startup failure`, `Product-adapter failure`, `Unsupported`, or `Not run`. A nonzero run with zero test starts is explicitly classified as WPT startup failure rather than leaving the phase blank.
+- The initial three-file run first reproduced three WebDriver focus failures. After the general new-window/root-click fix, two consecutive runs each completed three starts and three ends with identical output: one pass, two assertion-failure files, five unexpected subtests, and no crash, timeout, WebDriver failure, or category ambiguity.
+
+Verification:
+
+- `WptToolRunnerRawLogTests`: pass (`6/6`) with explicit status-class, incomplete-test, and empty-startup coverage.
+- `HostBrowserDriverNewWindowTests|WebDriverClickWithoutInteractablePoint_Throws`: pass (`2/2`).
+- Working-tree evidence: `Results/wpt/selected/20260716_run2_afterfix/` and `Results/wpt/selected/20260716_run3_afterfix/`. Both use local WPT revision `88152b842c3f60c2a5f95e0106ded4a375f710b0` and agree on every classified test and failing subtest.
