@@ -1,6 +1,6 @@
 # FenBrowser Known Gaps
 
-Snapshot date: 2026-07-15. These are evidence-backed gaps from the current checkout and current local artifacts.
+Snapshot date: 2026-07-16. These are evidence-backed gaps from the current checkout and current local artifacts.
 
 | Priority | Gap | Failure bucket | Status | Evidence |
 | --- | --- | --- | --- | --- |
@@ -9,9 +9,8 @@ Snapshot date: 2026-07-15. These are evidence-backed gaps from the current check
 | 0 | IPC envelopes have validation and size caps but no common schema version, sender, receiver, permission ID, or per-message timeout/crash policy | L / K | BLOCKED_NEEDS_HUMAN_DECISION | Renderer, network, and target IPC contracts |
 | 0 | Host-object ownership and cycle collection are not closed; the table uses strong references while comments describe future weak tracking | E / K | BLOCKED_NEEDS_HUMAN_DECISION | `HostObjectTable`, `BrowserScriptEngineRuntime`, `MEMORY_MODEL.md` |
 | 1 | Terminal lifecycle sources disagree: navigation detail retains `loading`/DCL 0/load 0 while the probe and event-loop snapshot are complete | A / G / L | STUBBED | Google `summary.md`, `lifecycle.json`, and `event_loop.json` |
-| 1 | Missing API classification lacks prototype/descriptor evidence for 8 fresh Google read-only observations | E / F | STUBBED | `20260716T112412Z` classifies 9 standard, 5 site expandos, 2 wrong-receiver, 1 legacy, and 8 unclassified records with concrete receivers and full provenance |
+| 1 | Missing API classification lacks descriptor/stringifier evidence for 2 fresh Google read-only observations | E / F | STUBBED | `20260716T113726Z` classifies 9 standard, 11 site expandos, 2 wrong-receiver, 1 legacy, and only `Location.toString`/`Navigator.geolocation` as unclassified |
 | 1 | Diagnostic, Host, Rendering, and Architecture test directories are excluded from `FenBrowser.Tests` | L | RESEARCHED | Test discovery found no `EventLoopTraceTests`, `RealSiteRenderDiagnostics`, or `RendererChildLoopIoTests` |
-| 1 | Google interaction acceptance is unproven even though the page renders | L / G / F | RESEARCHED | No automated click/type/submit trace in the current bundle |
 | 1 | Generated WebIDL bindings are not compiled into FenEngine | E | STUBBED | Generator and IDLs exist; `FenBrowser.FenEngine.csproj` removes generated binding sources |
 | 1 | Browser-page nursery collection is disabled because transient roots are incomplete | D / E | RESEARCHED | `YoungAllocationsPerMinorGc = 0` with an explicit stale-handle correctness comment |
 | 2 | Brokered IPC events, sandbox denials, and repeatable performance distributions are not yet populated in their now-mandatory bundle files | L / K | STUBBED | 2026-07-16 local bundle emits typed inactive IPC/sandbox records and a partial single performance sample |

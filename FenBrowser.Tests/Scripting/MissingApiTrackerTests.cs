@@ -129,6 +129,18 @@ public sealed class MissingApiTrackerTests
             "className",
             MissingApiOperationKind.Write,
             AssignmentObserved: true));
+        var prototypeMarker = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "HTMLDivElement",
+            "protocolMarker",
+            FunctionPrototypeMarkerObserved: true));
+        var prototypeMarkerStandard = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Document",
+            "compareDocumentPosition",
+            FunctionPrototypeMarkerObserved: true));
+        var prototypeMarkerWrongReceiver = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Document",
+            "className",
+            FunctionPrototypeMarkerObserved: true));
 
         Assert.Equal("UNCLASSIFIED", MissingApiClassifier.ToToken(unknown.Classification));
         Assert.Equal("SITE_EXPANDO", MissingApiClassifier.ToToken(expando.Classification));
@@ -140,6 +152,9 @@ public sealed class MissingApiTrackerTests
         Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(assignedStandard.Classification));
         Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(assignedStandardAfterRead.Classification));
         Assert.Equal("WRONG_RECEIVER", MissingApiClassifier.ToToken(assignedWrongReceiver.Classification));
+        Assert.Equal("SITE_EXPANDO", MissingApiClassifier.ToToken(prototypeMarker.Classification));
+        Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(prototypeMarkerStandard.Classification));
+        Assert.Equal("WRONG_RECEIVER", MissingApiClassifier.ToToken(prototypeMarkerWrongReceiver.Classification));
         Assert.False(unknown.StandardPriorityEligible);
         Assert.False(expando.StandardPriorityEligible);
         Assert.False(legacy.StandardPriorityEligible);
@@ -150,6 +165,9 @@ public sealed class MissingApiTrackerTests
         Assert.True(assignedStandard.StandardPriorityEligible);
         Assert.True(assignedStandardAfterRead.StandardPriorityEligible);
         Assert.False(assignedWrongReceiver.StandardPriorityEligible);
+        Assert.False(prototypeMarker.StandardPriorityEligible);
+        Assert.True(prototypeMarkerStandard.StandardPriorityEligible);
+        Assert.False(prototypeMarkerWrongReceiver.StandardPriorityEligible);
         Assert.Equal("Element", wrongReceiver.DefinedInterface);
         Assert.False(wrongReceiver.ReceiverMatchesDefinedInterface);
         Assert.Equal("Node", standard.DefinedInterface);
@@ -281,6 +299,141 @@ public sealed class MissingApiTrackerTests
             Assert.True(record.GetProperty("assignmentObserved").GetBoolean());
             Assert.False(record.GetProperty("assignmentBeforeRead").GetBoolean());
             Assert.False(record.GetProperty("standardPriorityEligible").GetBoolean());
+        }
+        finally
+        {
+            MissingApiTracker.ResetForTests();
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            TryDeleteDirectory(outputRoot);
+        }
+    }
+
+    [Fact]
+    public async Task PageFunctionPrototypeMarkerRead_IsClassifiedAsSiteExpando()
+    {
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
+        var baseUri = new Uri("https://example.test/prototype-marker.html");
+
+        try
+        {
+            MissingApiTracker.ConfigureForTests(outputRoot);
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            DisableTrace();
+
+            var document = new HtmlParser(
+                "<html><body><div id=\"target\">ok</div></body></html>",
+                baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.Sandbox = SandboxPolicy.AllowAll;
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("undefined", engine.Evaluate(@"
+                var marker = 'protocol_' + 'marker_fixture';
+                function ProtocolType() {}
+                ProtocolType.prototype[marker] = true;
+                var target = document.getElementById('target');
+                typeof target[marker];")?.ToString());
+
+            using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
+            var record = Assert.Single(outputJson.RootElement.GetProperty("records").EnumerateArray());
+            Assert.Equal("HTMLDivElement.protocol_marker_fixture", record.GetProperty("apiName").GetString());
+            Assert.Equal("SITE_EXPANDO", record.GetProperty("classification").GetString());
+            Assert.Equal("page-function-prototype-marker", record.GetProperty("classificationReason").GetString());
+            Assert.Equal("READ", record.GetProperty("operationKind").GetString());
+            Assert.True(record.GetProperty("functionPrototypeMarkerObserved").GetBoolean());
+            Assert.False(record.GetProperty("assignmentObserved").GetBoolean());
+            Assert.False(record.GetProperty("standardPriorityEligible").GetBoolean());
+        }
+        finally
+        {
+            MissingApiTracker.ResetForTests();
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            TryDeleteDirectory(outputRoot);
+        }
+    }
+
+    [Fact]
+    public async Task OrdinaryObjectPropertyWithSameName_DoesNotBecomePrototypeMarkerEvidence()
+    {
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
+        var baseUri = new Uri("https://example.test/ordinary-object-marker.html");
+
+        try
+        {
+            MissingApiTracker.ConfigureForTests(outputRoot);
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            DisableTrace();
+
+            var document = new HtmlParser(
+                "<html><body><div id=\"target\">ok</div></body></html>",
+                baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.Sandbox = SandboxPolicy.AllowAll;
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("undefined", engine.Evaluate(@"
+                var marker = 'ordinary_' + 'object_fixture';
+                var unrelated = {};
+                unrelated[marker] = true;
+                var target = document.getElementById('target');
+                typeof target[marker];")?.ToString());
+
+            using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
+            var record = Assert.Single(outputJson.RootElement.GetProperty("records").EnumerateArray());
+            Assert.Equal("HTMLDivElement.ordinary_object_fixture", record.GetProperty("apiName").GetString());
+            Assert.Equal("UNCLASSIFIED", record.GetProperty("classification").GetString());
+            Assert.Equal("insufficient-classification-evidence", record.GetProperty("classificationReason").GetString());
+            Assert.False(record.GetProperty("functionPrototypeMarkerObserved").GetBoolean());
+        }
+        finally
+        {
+            MissingApiTracker.ResetForTests();
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            TryDeleteDirectory(outputRoot);
+        }
+    }
+
+    [Fact]
+    public async Task FunctionPrototypeMethodName_DoesNotBecomeBooleanMarkerEvidence()
+    {
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
+        var baseUri = new Uri("https://example.test/prototype-method.html");
+
+        try
+        {
+            MissingApiTracker.ConfigureForTests(outputRoot);
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            DisableTrace();
+
+            var document = new HtmlParser(
+                "<html><body><div id=\"target\">ok</div></body></html>",
+                baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.Sandbox = SandboxPolicy.AllowAll;
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("undefined", engine.Evaluate(@"
+                var methodName = 'protocol_' + 'method_fixture';
+                function ProtocolType() {}
+                ProtocolType.prototype[methodName] = function () {};
+                var target = document.getElementById('target');
+                typeof target[methodName];")?.ToString());
+
+            using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
+            var record = Assert.Single(outputJson.RootElement.GetProperty("records").EnumerateArray());
+            Assert.Equal("HTMLDivElement.protocol_method_fixture", record.GetProperty("apiName").GetString());
+            Assert.Equal("UNCLASSIFIED", record.GetProperty("classification").GetString());
+            Assert.Equal("insufficient-classification-evidence", record.GetProperty("classificationReason").GetString());
+            Assert.False(record.GetProperty("functionPrototypeMarkerObserved").GetBoolean());
         }
         finally
         {

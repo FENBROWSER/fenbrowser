@@ -67,6 +67,7 @@ public sealed partial class BytecodeInterpreter
         var updated = desc with { Value = value };
         obj.PropertyArray[slot] = updated;
         WriteDescriptorBarrier(ownerHandle, updated);
+        MarkFunctionInstancePrototypeAssignment(obj, key, value);
         return true;
     }
 

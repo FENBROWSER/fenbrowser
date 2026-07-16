@@ -26,6 +26,7 @@ internal sealed class MissingApiObservation
     public string ReceiverType { get; init; } = string.Empty;
     public bool AssignmentObserved { get; init; }
     public bool AssignmentBeforeRead { get; init; }
+    public bool FunctionPrototypeMarkerObserved { get; init; }
     public bool KnownWebIdlMember { get; init; }
     public string DefinedInterface { get; init; } = string.Empty;
     public bool? ReceiverMatchesDefinedInterface { get; init; }
@@ -69,6 +70,7 @@ internal sealed class BrowserMissingApiRecordSnapshot
     public string ReceiverType { get; init; } = string.Empty;
     public bool AssignmentObserved { get; init; }
     public bool AssignmentBeforeRead { get; init; }
+    public bool FunctionPrototypeMarkerObserved { get; init; }
     public bool KnownWebIdlMember { get; init; }
     public string DefinedInterface { get; init; } = string.Empty;
     public bool? ReceiverMatchesDefinedInterface { get; init; }
@@ -128,6 +130,11 @@ internal static class MissingApiTracker
                     if (observation.AssignmentBeforeRead && !record.AssignmentBeforeRead)
                     {
                         record.AssignmentBeforeRead = true;
+                        evidenceChanged = true;
+                    }
+                    if (observation.FunctionPrototypeMarkerObserved && !record.FunctionPrototypeMarkerObserved)
+                    {
+                        record.FunctionPrototypeMarkerObserved = true;
                         evidenceChanged = true;
                     }
                     if (evidenceChanged)
@@ -248,7 +255,8 @@ internal static class MissingApiTracker
             observation.KnownWebIdlMember,
             observation.DefinedInterface,
             observation.ReceiverMatchesDefinedInterface,
-            assignmentObserved));
+            assignmentObserved,
+            observation.FunctionPrototypeMarkerObserved));
         return new MissingApiRecord
         {
             ApiName = observation.ApiName.Trim(),
@@ -277,6 +285,7 @@ internal static class MissingApiTracker
             ReceiverType = observation.ReceiverType ?? string.Empty,
             AssignmentObserved = assignmentObserved,
             AssignmentBeforeRead = observation.AssignmentBeforeRead,
+            FunctionPrototypeMarkerObserved = observation.FunctionPrototypeMarkerObserved,
             KnownWebIdlMember = classification.KnownWebIdlMember,
             DefinedInterface = classification.DefinedInterface,
             ReceiverMatchesDefinedInterface = classification.ReceiverMatchesDefinedInterface
@@ -319,6 +328,7 @@ internal static class MissingApiTracker
             ReceiverType = record.ReceiverType,
             AssignmentObserved = record.AssignmentObserved,
             AssignmentBeforeRead = record.AssignmentBeforeRead,
+            FunctionPrototypeMarkerObserved = record.FunctionPrototypeMarkerObserved,
             KnownWebIdlMember = record.KnownWebIdlMember,
             DefinedInterface = record.DefinedInterface,
             ReceiverMatchesDefinedInterface = record.ReceiverMatchesDefinedInterface
@@ -521,6 +531,7 @@ internal static class MissingApiTracker
         public string ReceiverType { get; init; } = string.Empty;
         public bool AssignmentObserved { get; set; }
         public bool AssignmentBeforeRead { get; set; }
+        public bool FunctionPrototypeMarkerObserved { get; set; }
         public bool KnownWebIdlMember { get; set; }
         public string DefinedInterface { get; set; } = string.Empty;
         public bool? ReceiverMatchesDefinedInterface { get; set; }
@@ -547,7 +558,8 @@ internal static class MissingApiTracker
                 KnownWebIdlMember,
                 DefinedInterface,
                 ReceiverMatchesDefinedInterface,
-                AssignmentObserved));
+                AssignmentObserved,
+                FunctionPrototypeMarkerObserved));
             Classification = MissingApiClassifier.ToToken(classification.Classification);
             ClassificationReason = classification.Reason;
             StandardPriorityEligible = classification.StandardPriorityEligible;
@@ -595,6 +607,7 @@ internal static class MissingApiTracker
                 ReceiverType = ReceiverType,
                 AssignmentObserved = AssignmentObserved,
                 AssignmentBeforeRead = AssignmentBeforeRead,
+                FunctionPrototypeMarkerObserved = FunctionPrototypeMarkerObserved,
                 KnownWebIdlMember = KnownWebIdlMember,
                 DefinedInterface = DefinedInterface,
                 ReceiverMatchesDefinedInterface = ReceiverMatchesDefinedInterface

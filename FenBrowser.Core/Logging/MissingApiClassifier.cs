@@ -33,7 +33,8 @@ public sealed record MissingApiClassificationInput(
     bool KnownWebIdlMember = false,
     string DefinedInterface = "",
     bool? ReceiverMatchesDefinedInterface = null,
-    bool AssignmentObserved = false);
+    bool AssignmentObserved = false,
+    bool FunctionPrototypeMarkerObserved = false);
 
 public sealed record MissingApiClassificationResult(
     MissingApiClassification Classification,
@@ -126,6 +127,15 @@ public static class MissingApiClassifier
                 input.AssignmentBeforeRead
                     ? "assignment-before-read"
                     : "page-assignment-observed");
+        }
+
+        if (input.FunctionPrototypeMarkerObserved)
+        {
+            return new MissingApiClassificationResult(
+                MissingApiClassification.SiteExpando,
+                input.OperationKind,
+                false,
+                "page-function-prototype-marker");
         }
 
         return new MissingApiClassificationResult(

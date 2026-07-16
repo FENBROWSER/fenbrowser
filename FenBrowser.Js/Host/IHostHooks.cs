@@ -33,6 +33,16 @@ public interface IHostHooks
     // Companion to TryGetHostProperty. False return = host rejected the write.
     bool TrySetHostProperty(HostObjectHandle handle, string property, JsValue value);
 
+    // Diagnostic-only observation emitted after a script successfully creates an
+    // own string property on an ordinary function's instance prototype. Hosts may
+    // use the key to distinguish framework protocol markers from missing Web APIs.
+    // Implementations must keep this bounded and must not retain the prototype.
+    void ObserveFunctionPrototypePropertyDefinition(string property, JsValue value)
+    {
+        _ = property;
+        _ = value;
+    }
+
     // Invoke a host-registered native function by integer id. Hosts that don't have
     // native functions can throw NotSupportedException; the interpreter only calls
     // this when the bytecode references a HostFunctionId, which only the host can
@@ -73,6 +83,12 @@ public sealed class StandaloneHostHooks : IHostHooks
         _ = property;
         _ = value;
         return false;
+    }
+
+    public void ObserveFunctionPrototypePropertyDefinition(string property, JsValue value)
+    {
+        _ = property;
+        _ = value;
     }
 
     public JsValue CallHostFunction(int functionId, JsValue thisValue, ReadOnlySpan<JsValue> args)

@@ -65,6 +65,11 @@ public class JsObject : ITraceable
     // [[SetPrototypeOf]] succeeds only when the new value equals the current one.
     internal bool ImmutablePrototype { get; set; }
 
+    // True only for an object currently used as an ordinary script function's
+    // instance prototype. This is diagnostic metadata, not an ECMAScript-visible
+    // internal slot, and dies with the object rather than retaining a heap handle.
+    internal bool IsFunctionInstancePrototype { get; set; }
+
     public ObjectHandle? PrototypeHandle { get; private set; }
 
     public bool Extensible { get; private set; } = true;

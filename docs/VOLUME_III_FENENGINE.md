@@ -10307,3 +10307,16 @@ Verification:
 - Green/discovery: all 11 `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests` methods are listed and pass (`11/11`, zero failed/skipped).
 - Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_read_then_write.html/20260716T111926Z/` renders `42` and retains one `SITE_EXPANDO` record with first operation `READ`, observed operations `[READ, WRITE]`, assignment observed after read, zero callback failures/exceptions, blocker `none`, and 26/26 artifacts.
 - Fresh Google bundle `logs/real-site/www.google.com/20260716T112412Z/` retains 25/25 records: 9 standard, 5 site expandos, 2 wrong-receiver, 1 legacy probe, and 8 unclassified. Callback failures and exceptions remain zero, `first_blocker` is `none`, lifecycle completes, logger drain succeeds, and all 26 artifacts are present.
+
+## 2.387 Boolean Function-Prototype Marker Provenance (2026-07-16)
+
+- Exact Google source showed that the remaining Closure listener and Thenable reads use boolean protocol keys defined on script function instance prototypes. FenJS now marks those prototype objects as non-visible diagnostic metadata and reports only the first successful own-property definition; it does not retain a heap handle or alter property semantics.
+- The browser host accepts only boolean `true` marker values, keeps at most 2,048 keys of at most 256 characters, and clears them at each document bind/reset. Matching missing host reads carry `functionPrototypeMarkerObserved`; checked-in WebIDL, wrong-receiver, legacy, and assignment evidence retain their existing precedence.
+- Ordinary-object properties and non-boolean function-prototype methods do not create marker evidence. This prevents common names such as `toString` from becoming false site-expando classifications. No Google/property-name rule was added.
+
+Verification:
+
+- Red: `PageFunctionPrototypeMarkerRead_IsClassifiedAsSiteExpando` retained the correct missing read but classified it `UNCLASSIFIED`.
+- Green: all 12 discovered `MissingApiTrackerTests` pass, including the boolean marker reduction and negative ordinary-object/non-boolean controls.
+- Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_function_prototype_marker.html/20260716T113659Z/` retains one `SITE_EXPANDO`/`page-function-prototype-marker` read with no host assignment, zero callback failures/exceptions, blocker `none`, and 26/26 artifacts.
+- Fresh Google bundle `logs/real-site/www.google.com/20260716T113726Z/` retains 25/25 records: 9 standard, 11 site expandos, 2 wrong receivers, 1 legacy probe, and 2 unclassified. Six Closure/Thenable records carry marker evidence; `Location.toString` remains unclassified. Lifecycle completes, the main UI is visible, callback failures/exceptions are zero, `first_blocker` is `none`, and all 26 artifacts are present.

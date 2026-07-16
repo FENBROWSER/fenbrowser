@@ -2383,7 +2383,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return true;
     }
 
-    private void RecordMissingHostProperty(object receiver, string ownerName, string property, Uri baseUri)
+    private void RecordMissingHostProperty(
+        object receiver,
+        string ownerName,
+        string property,
+        Uri baseUri,
+        bool functionPrototypeMarkerObserved = false)
     {
         if (receiver != null)
         {
@@ -2401,7 +2406,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             "missing host property",
             string.Empty,
             GetCurrentScriptRecord(),
-            baseUri ?? _currentBaseUri);
+            baseUri ?? _currentBaseUri,
+            functionPrototypeMarkerObserved: functionPrototypeMarkerObserved);
     }
 
     private void RecordHostPropertyAssignment(object receiver, string ownerName, string property, Uri baseUri)
@@ -2448,7 +2454,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         Uri baseUri,
         MissingApiOperationKind operationKind = MissingApiOperationKind.Read,
         bool assignmentBeforeRead = false,
-        bool assignmentObserved = false)
+        bool assignmentObserved = false,
+        bool functionPrototypeMarkerObserved = false)
     {
         if (string.IsNullOrWhiteSpace(objectOrPrototype) || string.IsNullOrWhiteSpace(propertyName))
         {
@@ -2480,7 +2487,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             OperationKind = operationKind,
             ReceiverType = ownerName,
             AssignmentBeforeRead = assignmentBeforeRead,
-            AssignmentObserved = assignmentObserved
+            AssignmentObserved = assignmentObserved,
+            FunctionPrototypeMarkerObserved = functionPrototypeMarkerObserved
         });
     }
 
@@ -13564,6 +13572,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private sealed class BrowserFenJsHostHooks : IHostHooks
     {
+        private const int FunctionPrototypePropertyLimit = 2048;
+        private const int FunctionPrototypePropertyLengthLimit = 256;
+        private readonly HashSet<string> _functionPrototypeProperties = new(StringComparer.Ordinal);
         private FenJsBrowserScriptEngine _owner;
         private Document _document;
         private BrowserSurfaceProfile _navigator;
@@ -13572,6 +13583,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         public void Reset()
         {
+            _functionPrototypeProperties.Clear();
             _owner = null;
             _document = null;
             _navigator = null;
@@ -13586,6 +13598,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             FenJsLocationHost location,
             Uri baseUri)
         {
+            _functionPrototypeProperties.Clear();
             _owner = owner;
             _document = document;
             _navigator = navigator;
@@ -13622,6 +13635,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             FenBrowser.Core.EngineLogCompat.Warn(
                 $"[FenJsBridge] Unhandled promise rejection: {reason}",
                 FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+
+        public void ObserveFunctionPrototypePropertyDefinition(string property, JsValue value)
+        {
+            if (value.Tag != JsValueTag.Boolean ||
+                !value.AsBoolean() ||
+                string.IsNullOrEmpty(property) ||
+                property.Length > FunctionPrototypePropertyLengthLimit ||
+                _functionPrototypeProperties.Count >= FunctionPrototypePropertyLimit)
+            {
+                return;
+            }
+
+            _functionPrototypeProperties.Add(property);
         }
 
         public bool TryGetHostProperty(HostObjectHandle handle, string property, out JsValue value)
@@ -13760,7 +13787,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 return;
             }
 
-            _owner?.RecordMissingHostProperty(receiver, ownerName, property, _baseUri);
+            _owner?.RecordMissingHostProperty(
+                receiver,
+                ownerName,
+                property,
+                _baseUri,
+                _functionPrototypeProperties.Contains(property));
         }
 
         private void RecordAssignedHostApi(object receiver, string ownerName, string property)

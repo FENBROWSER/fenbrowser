@@ -12861,6 +12861,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var functionInstancePrototype = CreateOrdinaryObject();
+        functionInstancePrototype.IsFunctionInstancePrototype = true;
         if (function.Kind == FunctionKind.Generator)
         {
             functionInstancePrototype.SetPrototype(EnsureGeneratorPrototype());
@@ -14136,7 +14137,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         if (obj.TryGetOwnProperty(key, out var ownDescriptor))
         {
-            return SetPropertyFromDescriptor(ownerHandle, obj, key, ownDescriptor, value, receiver);
+            return CompleteOrdinaryPropertySet(
+                obj,
+                key,
+                value,
+                propertyAlreadyExisted: true,
+                SetPropertyFromDescriptor(ownerHandle, obj, key, ownDescriptor, value, receiver));
         }
 
         if (TryGetPrototypePropertyDescriptor(obj, key, out var inheritedDescriptor))
@@ -14157,7 +14163,51 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // is a default data descriptor; the actual create-on-receiver logic is in
         // SetPropertyFromDescriptor.
         var defaultDesc = new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true);
-        return SetPropertyFromDescriptor(ownerHandle, obj, key, defaultDesc, value, receiver);
+        return CompleteOrdinaryPropertySet(
+            obj,
+            key,
+            value,
+            propertyAlreadyExisted: false,
+            SetPropertyFromDescriptor(ownerHandle, obj, key, defaultDesc, value, receiver));
+    }
+
+    private bool CompleteOrdinaryPropertySet(
+        JsObject owner,
+        string key,
+        JsValue value,
+        bool propertyAlreadyExisted,
+        bool succeeded)
+    {
+        if (!succeeded)
+        {
+            return false;
+        }
+
+        MarkFunctionInstancePrototypeAssignment(owner, key, value);
+
+        if (owner.IsFunctionInstancePrototype && !propertyAlreadyExisted)
+        {
+            try
+            {
+                _hostHooks.ObserveFunctionPrototypePropertyDefinition(key, value);
+            }
+            catch
+            {
+                // A diagnostics observer failure must not alter [[Set]].
+            }
+        }
+
+        return true;
+    }
+
+    private void MarkFunctionInstancePrototypeAssignment(JsObject owner, string key, JsValue value)
+    {
+        if (owner is JsFunctionObject &&
+            string.Equals(key, "prototype", StringComparison.Ordinal) &&
+            value.Tag == JsValueTag.Object)
+        {
+            _heap.GetObject(value.AsObjectHandle()).IsFunctionInstancePrototype = true;
+        }
     }
 
     // Builtin-facing Proxy-aware property set. Implements the same logic as

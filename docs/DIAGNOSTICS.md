@@ -113,7 +113,7 @@ A missing property is not fatal merely because it was read. It becomes a fatal c
 | `trace.jsonl`, `logs.ndjson` | INTEGRATED | Structured event streams, flushed through the run boundary |
 | `console.log`, `exceptions.json` | INTEGRATED | Console plus typed callback exception records with agreeing totals |
 | `network.json` | INTEGRATED | Requests, responses, failures, policy disposition |
-| `missing_apis.json` | TESTED | Schema-v2 object retains up to 512 ordered rich tracker records, reports total/retained/truncated counts, preserves navigation-scoped identity, and excludes legacy/unclassified reads from standards priority |
+| `missing_apis.json` | TESTED | Schema-v2 object retains up to 512 ordered rich tracker records, reports total/retained/truncated counts, preserves navigation-scoped identity plus assignment and bounded boolean function-prototype-marker evidence, and excludes legacy/unclassified reads from standards priority |
 | `script_loading.json` | INTEGRATED | Per-script lifecycle |
 | `event_loop.json` | INTEGRATED | Tasks, microtasks, timers, rAF, lifecycle |
 | `style_layout.json` | INTEGRATED | Style/layout/paint/raster summary |

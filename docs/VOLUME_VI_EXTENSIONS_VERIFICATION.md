@@ -3855,3 +3855,16 @@ Verification:
 - Green: the record keeps first operation `READ`, ordered observed operations `[READ, WRITE]`, `assignmentObserved: true`, `assignmentBeforeRead: false`, and `SITE_EXPANDO`/`page-assignment-observed`. Classifier assertions prove checked-in WebIDL and wrong-receiver evidence still take precedence.
 - Discovery lists all 11 `MissingApiTrackerTests|DebugSiteMissingApiClassificationTests`; the focused command passes `11/11` with no failures or skips.
 - Local exporter evidence is `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_read_then_write.html/20260716T111926Z/`. Fresh Google evidence is `logs/real-site/www.google.com/20260716T112412Z/`, where 5 previously unclassified Closure bookkeeping records become evidence-backed site expandos and 8 read-only observations remain unclassified. Both bundles have zero callback failures/exceptions, blocker `none`, successful logger drain, screenshots, and complete 26-entry manifests.
+
+## 6.157 Function-Prototype Marker Diagnostic Regression (2026-07-16)
+
+- The compiled `PageFunctionPrototypeMarkerRead_IsClassifiedAsSiteExpando` reduction defines a dynamically composed key with boolean `true` on an ordinary script function's instance prototype, then reads the same missing key from an `HTMLDivElement` host object.
+- The exported record preserves `READ`, `functionPrototypeMarkerObserved: true`, `assignmentObserved: false`, and `SITE_EXPANDO`/`page-function-prototype-marker`. Negative controls prove that the same key on an ordinary JS object or a non-boolean function-prototype method stays unclassified.
+- The observer is a bounded diagnostic side channel and does not retain JS objects, alter ECMAScript `[[Set]]`, add a browser API, or use a site/name pattern. Observer failure is isolated from page execution.
+
+Verification:
+
+- Pre-fix focused result: `1` failed, `0` passed; expected `SITE_EXPANDO`, actual `UNCLASSIFIED`.
+- Discovery lists 12 `MissingApiTrackerTests`; the class passes `12/12`. The combined tracker/export filter lists and passes `14/14`, with zero failures or skips.
+- Local final-code bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_function_prototype_marker.html/20260716T113659Z/`; zero callback failures/exceptions, blocker `none`, complete lifecycle, screenshot, and 26/26 manifest entries.
+- Google final-code bundle: `logs/real-site/www.google.com/20260716T113726Z/`; six prototype-marker records become evidence-backed site expandos, only `Location.toString` and `Navigator.geolocation` remain unclassified, callback failures/exceptions are zero, blocker is `none`, and the main UI screenshot plus all 26 artifacts are present.

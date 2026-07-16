@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Function prototype marker diagnostic fixture</title>
+<div id="target">pending</div>
+<script>
+  const marker = "protocol_" + "marker_fixture";
+  function ProtocolType() {}
+  ProtocolType.prototype[marker] = true;
+
+  const target = document.getElementById("target");
+  target.textContent = typeof target[marker];
+</script>
