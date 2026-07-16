@@ -486,6 +486,54 @@ public sealed class CallbackFailureDiagnosticsTests
     }
 
     [Fact]
+    public async Task ThrowingPostLoadTimer_PreservesCompletedLifecycleState()
+    {
+        var baseUri = new Uri("https://fixture.test/post-load-timer.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><script>" +
+                "setTimeout(function postLoadTimerFixture(){" +
+                "throw new Error('post-load-timer-boom');" +
+                "},25);" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var completedSnapshot = engine.GetEventLoopSnapshot();
+            Assert.Equal("completed", completedSnapshot.Status);
+            Assert.Equal("complete", completedSnapshot.DocumentReadyState);
+            Assert.True(completedSnapshot.DomContentLoadedFired);
+            Assert.True(completedSnapshot.LoadFired);
+
+            Assert.True(SpinWait.SpinUntil(
+                () => engine.GetEventLoopSnapshot().CallbackFailures > 0,
+                millisecondsTimeout: 1000));
+
+            var snapshot = engine.GetEventLoopSnapshot();
+            var failure = Assert.Single(snapshot.CallbackFailureRecords);
+            Assert.Equal("postLoadTimerFixture", failure.CallbackFunctionName);
+            Assert.Equal("complete", failure.DocumentReadyState);
+            Assert.Equal("load-fired", failure.LifecycleMilestone);
+            Assert.False(failure.BlockedProgress);
+            Assert.Equal("completed", snapshot.Status);
+            Assert.Equal("complete", snapshot.DocumentReadyState);
+            Assert.True(snapshot.DomContentLoadedFired);
+            Assert.True(snapshot.LoadFired);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
+    [Fact]
     public async Task ReplacedDocumentTimer_DoesNotFireAfterNavigationInvalidation()
     {
         var originalUri = new Uri("https://fixture.test/stale-timer/original.html");

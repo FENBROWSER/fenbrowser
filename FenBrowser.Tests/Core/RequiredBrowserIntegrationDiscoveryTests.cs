@@ -17,6 +17,7 @@ public sealed class RequiredBrowserIntegrationDiscoveryTests
         ("FenBrowser.Tests.Scripting.CallbackFailureDiagnosticsTests", "SecretLikeCallbackFailureText_IsRedacted"),
         ("FenBrowser.Tests.Scripting.CallbackFailureDiagnosticsTests", "CallbackFailureMessageAndStacks_AreBounded"),
         ("FenBrowser.Tests.Scripting.CallbackFailureDiagnosticsTests", "ThrowingMicrotask_PreservesItsOwnCallbackProvenance"),
+        ("FenBrowser.Tests.Scripting.CallbackFailureDiagnosticsTests", "ThrowingPostLoadTimer_PreservesCompletedLifecycleState"),
         ("FenBrowser.Tests.Scripting.CallbackFailureDiagnosticsTests", "ReplacedDocumentTimer_DoesNotFireAfterNavigationInvalidation"),
         ("FenBrowser.Tests.Logging.EngineLogSettingsTests", "Flush_DrainsAcceptedEventsBeforeArtifactCopy"),
         ("FenBrowser.Tests.Tooling.DebugSiteArtifactContractTests", "WriteBundle_ContinuesAfterExceptionsArtifactExportFailure"),

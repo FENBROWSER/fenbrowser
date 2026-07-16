@@ -3930,7 +3930,7 @@ Verification:
 
 ## 6.163 Required Browser-Integration Discovery Guard (2026-07-16)
 
-- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 21 selected timer/event/Promise/microtask provenance, callback invalidation, logger-drain/export, terminal-lifecycle agreement, host-conversion/receiver, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
+- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 22 selected timer/event/Promise/microtask provenance, callback invalidation, post-load lifecycle attribution, logger-drain/export, terminal-lifecycle agreement, host-conversion/receiver, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
 - The first combined run exposed a real parallel-isolation defect: the FenJS timer/rAF trace failed during native browser-constructor bootstrap while other browser tests ran concurrently. The global `EngineLog` collection is now explicitly non-parallel, matching its process-wide logger configuration and FenJS diagnostic usage.
 - This guard does not treat the skipped real-process brokered acceptance as passing. The AppContainer development-runtime provisioning decision remains the separately documented `BLOCK-PROC-002` boundary.
 
@@ -4037,3 +4037,16 @@ Verification:
 - `BrowserLifecycleDetailTests|RequiredBrowserIntegrationDiscoveryTests`: pass (`3/3`, zero failed/skipped).
 - Discovery lists both lifecycle-detail tests and the required browser-integration guard.
 - The guarded browser/process/export/receiver/lifecycle slice passes `75/75` with zero failures or skips.
+
+## 6.172 Post-Load Callback Lifecycle Attribution Coverage (2026-07-16)
+
+- `ThrowingPostLoadTimer_PreservesCompletedLifecycleState` schedules a delayed throwing timer during parsing, first requires the document snapshot to have reached DOMContentLoaded, load, and `complete`, and then verifies the retained callback failure is attributed to `complete` / `load-fired`.
+- The failure remains explicitly non-blocking, and recording it must not regress the event-loop status, ready state, or terminal lifecycle flags. This is deterministic coverage for existing behavior; no production callback or lifecycle behavior changed.
+- The active discovery guard protects this contract as the twenty-second selected browser-integration test.
+
+Verification:
+
+- Focused post-load callback plus guard: pass (`2/2`, zero failed/skipped).
+- Discovery lists all 14 callback diagnostic tests, both lifecycle-detail tests, and the required browser-integration guard.
+- `CallbackFailureDiagnosticsTests|BrowserLifecycleDetailTests|RequiredBrowserIntegrationDiscoveryTests`: pass (`17/17`, zero failed/skipped).
+- The guarded browser/process/export/receiver/lifecycle slice passes `76/76` with zero failures or skips.
