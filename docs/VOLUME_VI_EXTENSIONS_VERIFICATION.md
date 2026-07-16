@@ -3930,7 +3930,7 @@ Verification:
 
 ## 6.163 Required Browser-Integration Discovery Guard (2026-07-16)
 
-- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 12 selected timer/event/Promise provenance, logger-drain, lifecycle, host-conversion, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
+- `RequiredBrowserIntegrationDiscoveryTests` is compiled from the included `Core/` surface and reflects the built test assembly. It fails with fully qualified names if any of 14 selected timer/event/Promise provenance, logger-drain, lifecycle, host-conversion, form, IPC, renderer-exit-policy, event-loop trace, or child-I/O contracts is absent or no longer carries an xUnit fact attribute.
 - The first combined run exposed a real parallel-isolation defect: the FenJS timer/rAF trace failed during native browser-constructor bootstrap while other browser tests ran concurrently. The global `EngineLog` collection is now explicitly non-parallel, matching its process-wide logger configuration and FenJS diagnostic usage.
 - This guard does not treat the skipped real-process brokered acceptance as passing. The AppContainer development-runtime provisioning decision remains the separately documented `BLOCK-PROC-002` boundary.
 
@@ -3939,3 +3939,16 @@ Verification:
 - Red: the first 65-test combined command failed `1`, passed `64`, with `EventLoopTraceTests.FenJsBrowserTimers_WriteTaskTimerRafAndMicrotaskTrace` throwing during concurrent FenJS bootstrap.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~RequiredBrowserIntegrationDiscoveryTests" --list-tests --logger "console;verbosity=minimal"`: lists the guard test.
 - The focused guard passes `1/1`. The 65-test guarded browser/process slice then passes twice with zero failures or skips after the collection fix.
+
+## 6.164 Repeating And Bounded Callback Failure Coverage (2026-07-16)
+
+- `RepeatingTimerFailures_PreserveTimerIdentityAndOrder` uses a self-cancelling interval that throws twice. Both retained failures are ordered, attributed to `setInterval` and the creating function, and carry the same timer identity.
+- `CallbackFailureRecords_AreBoundedWithoutLosingTotalCount` schedules 140 independent throwing timers. The snapshot reports all 140 observed failures while retaining only the newest 128 immutable records, with retained sequences 13 through 140.
+- The bounded fixture deliberately uses timers rather than exceeding the separate 128-entry pending-Promise identity cap. That cap prevents diagnostics from retaining an unbounded pre-checkpoint JS object graph and was not changed without a memory-ownership decision.
+- No production runtime behavior changed; this unit activates regression coverage for existing bounded accounting and repeating-timer provenance.
+
+Verification:
+
+- Discovery lists all nine `CallbackFailureDiagnosticsTests` plus the required-surface guard.
+- The two new tests pass `2/2`; `RequiredBrowserIntegrationDiscoveryTests|CallbackFailureDiagnosticsTests|DebugSiteExceptionSummaryTests` passes `11/11` with zero failures or skips.
+- The guarded browser/process slice passes `67/67` with zero failures or skips.

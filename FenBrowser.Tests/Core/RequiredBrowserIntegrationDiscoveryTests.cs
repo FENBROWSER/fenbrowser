@@ -12,6 +12,8 @@ public sealed class RequiredBrowserIntegrationDiscoveryTests
         ("FenBrowser.Tests.Scripting.CallbackFailureDiagnosticsTests", "ThrowingEventListener_PreservesTypedFailureProvenance"),
         ("FenBrowser.Tests.Scripting.CallbackFailureDiagnosticsTests", "RejectedPromise_PreservesTypedFailureProvenance"),
         ("FenBrowser.Tests.Scripting.CallbackFailureDiagnosticsTests", "HotTimerHelper_InOperatorAcceptsHostObjectAfterJitTierUp"),
+        ("FenBrowser.Tests.Scripting.CallbackFailureDiagnosticsTests", "RepeatingTimerFailures_PreserveTimerIdentityAndOrder"),
+        ("FenBrowser.Tests.Scripting.CallbackFailureDiagnosticsTests", "CallbackFailureRecords_AreBoundedWithoutLosingTotalCount"),
         ("FenBrowser.Tests.Logging.EngineLogSettingsTests", "Flush_DrainsAcceptedEventsBeforeArtifactCopy"),
         ("FenBrowser.Tests.Scripting.BrowserLifecycleDetailTests", "TimedOutEventLoopSample_IsExplicitlyHistorical"),
         ("FenBrowser.Tests.Scripting.BrowserFormInteractionAcceptanceTests", "WebDriverClickTypeAndPreventedSubmit_UsesOrdinaryInputPipeline"),

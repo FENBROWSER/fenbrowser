@@ -276,6 +276,97 @@ public sealed class CallbackFailureDiagnosticsTests
         }
     }
 
+    [Fact]
+    public async Task RepeatingTimerFailures_PreserveTimerIdentityAndOrder()
+    {
+        var baseUri = new Uri("https://fixture.test/repeating-timer.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><script>" +
+                "globalThis.__repeatCount=0;" +
+                "globalThis.__intervalId=setInterval(function repeatingTimerFixture(){" +
+                "globalThis.__repeatCount++;" +
+                "if(globalThis.__repeatCount>=2){clearInterval(globalThis.__intervalId);}" +
+                "throw new Error('repeating-timer-'+globalThis.__repeatCount);" +
+                "},1);" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            Assert.True(SpinWait.SpinUntil(
+                () => engine.GetEventLoopSnapshot().CallbackFailures >= 2,
+                millisecondsTimeout: 1000));
+
+            var snapshot = engine.GetEventLoopSnapshot();
+            Assert.Equal(2, snapshot.CallbackFailures);
+            Assert.Collection(
+                snapshot.CallbackFailureRecords,
+                failure => Assert.Contains("repeating-timer-1", failure.ExceptionMessage),
+                failure => Assert.Contains("repeating-timer-2", failure.ExceptionMessage));
+            Assert.All(snapshot.CallbackFailureRecords, failure =>
+            {
+                Assert.Equal("setInterval", failure.CallbackCategory);
+                Assert.Equal("repeatingTimerFixture", failure.CallbackFunctionName);
+                Assert.NotNull(failure.TimerId);
+            });
+            Assert.Equal(
+                snapshot.CallbackFailureRecords[0].TimerId,
+                snapshot.CallbackFailureRecords[1].TimerId);
+            Assert.True(
+                snapshot.CallbackFailureRecords[0].Sequence <
+                snapshot.CallbackFailureRecords[1].Sequence);
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
+    [Fact]
+    public async Task CallbackFailureRecords_AreBoundedWithoutLosingTotalCount()
+    {
+        var baseUri = new Uri("https://fixture.test/bounded-callback-failures.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><script>" +
+                "for(var i=0;i<140;i++){" +
+                "setTimeout(function(index){throw new Error('bounded-timer-'+index);},1,i);" +
+                "}" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            Assert.True(SpinWait.SpinUntil(
+                () => engine.GetEventLoopSnapshot().CallbackFailures >= 140,
+                millisecondsTimeout: 2000));
+
+            var snapshot = engine.GetEventLoopSnapshot();
+            Assert.Equal(140, snapshot.CallbackFailures);
+            Assert.Equal(128, snapshot.CallbackFailureRecords.Count);
+            Assert.Equal(13, snapshot.CallbackFailureRecords[0].Sequence);
+            Assert.Equal(140, snapshot.CallbackFailureRecords[^1].Sequence);
+            Assert.All(
+                snapshot.CallbackFailureRecords,
+                failure => Assert.Equal("setTimeout", failure.CallbackCategory));
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
     private static JsHostAdapter CreateHost()
     {
         return new JsHostAdapter(
