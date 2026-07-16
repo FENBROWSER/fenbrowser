@@ -156,7 +156,7 @@ Performance impact: Record input-to-visible-update and input-to-request latency.
 Compatibility impact: Directly validates real-site usability.
 Known risks: Site variation, consent UI, or network challenge; retain exact URL/run evidence.
 Blockers: Google's current HTTP 429 challenge prevents normal search-result rendering; this is external security behavior and is not an engine blocker or bypass target.
-Next action: Establish the selected repeatable WPT browser-integration matrix without further Google challenge retries.
+Next action: Reduce the selected `DOMTokenList.value` assertion failure locally and fix the active binding behavior before expanding the matrix.
 
 ## Task WPT-001
 
@@ -164,25 +164,25 @@ Task ID: WPT-001
 Title: Establish a selected browser-integration WPT baseline
 Area: Conformance / regression
 Owner Agent: Conformance Agent
-Status: RESEARCHED
+Status: TESTED
 Priority: 2
 Risk Level: Low
 Dependencies: Local WPT checkout and category runner/results exist
-Files likely involved: `scripts/` WPT runners, `Results/wpt_categories/`, `docs/TEST_BASELINE.md`
+Files likely involved: `FenBrowser.Tooling/WptToolRunner.cs`, active DOM token-list bindings, `Results/wpt/selected/`, `docs/TEST_BASELINE.md`
 Specs/references: Local `C:\Users\udayk\Videos\wpt`; DOM, HTML, Fetch, Web IDL, CSSOM, UI Events
-Current behavior: Retained aggregate reports 2,752 pass, 502 fail, 369 crash, and 822 timeout of 4,445, with 17 category errors; it is not a selected Gate 0 integration matrix.
+Current behavior: Two clean runs at FenBrowser `c62243cb` and local WPT `88152b84` each complete the same three selected DOM/forms files with one pass, two assertion-failure files, and five identical failing subtests. There are no crashes, timeouts, WebDriver failures, harness failures, or unclassified category errors. `DOMTokenList.value` does not update the literal token string; checkbox coverage exposes missing `.click()` and `checked` host behavior.
 Expected behavior: A small repeatable category set covers lifecycle, event loop, DOM/events, fetch/CORS, CSSOM/geometry, and forms with per-test terminal results.
 Reproduction: Run the existing local category runner for the selected categories only.
-Root cause hypothesis: Existing aggregate mixes capability gaps, runner crashes/timeouts, and category errors without a boot-pipeline priority view.
-Implementation plan: Select categories by real-site dependency; purge result history older than 24 hours; run locally; separate runner errors from engine failures; record exact commands and artifact paths.
+Root cause hypothesis: The baseline ambiguity is resolved for the selected matrix. Its remaining failures are active DOM binding/activation behavior, while the retained broad aggregate still mixes capability and infrastructure classes.
+Implementation plan: Preserve this exact three-file gate, reduce and fix one shared assertion cluster at a time, then add lifecycle, fetch/CORS, cookies, CSSOM/geometry, and layout files without mixing infrastructure failures with engine assertions.
 Tests required: The selected WPT categories themselves plus runner self-check.
-Evidence required: Machine-readable results, pass/fail/crash/timeout counts, first shared failures, and updated baseline.
+Evidence required: `Results/wpt/selected/20260716_clean_run1/`, `Results/wpt/selected/20260716_clean_run2/`, focused local reductions, and updated exact classifications.
 Security impact: Include at least one same-origin/CORS negative slice.
 Performance impact: Record hangs/timeouts as diagnostic signals, not benchmarks.
 Compatibility impact: Prioritizes browser integration over obscure conformance.
 Known risks: Runner infrastructure may dominate failure counts.
 Blockers: None
-Next action: List available local category tags and choose the smallest six-category integration set without running a full suite.
+Next action: Add a deterministic local regression for `DOMTokenList.value` assignment, fix the active binding setter, and rerun the same three-file matrix twice.
 
 ## Task PROC-001
 

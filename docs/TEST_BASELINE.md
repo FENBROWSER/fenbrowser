@@ -1,6 +1,6 @@
 # FenBrowser Test Baseline
 
-Snapshot date: 2026-07-14; focused build/test revalidated 2026-07-15. All paths and results are local. No conformance data in this file was fetched from the internet.
+Snapshot date: 2026-07-14; focused build/test and selected WPT evidence revalidated 2026-07-16. All paths and results are local. No conformance data in this file was fetched from the internet.
 
 ## Verification run in this audit
 
@@ -13,6 +13,7 @@ Snapshot date: 2026-07-14; focused build/test revalidated 2026-07-15. All paths 
 | Lifecycle transition-detail and classifier slice | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~BrowserLifecycleDetailTests|FullyQualifiedName~NavigationLifecycleTrackerTests|FullyQualifiedName~FirstBlockerClassifierTests" --logger "console;verbosity=minimal"` | 18 passed, 0 failed, 0 skipped | TESTED |
 | DOM host-collection iteration | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsDomCollectionIterationTests" --logger "console;verbosity=minimal"` | 3 passed, 0 failed, 0 skipped; all 3 listed by `--list-tests` | REGRESSION_PROTECTED |
 | Form, Tooling, and render-generation interaction acceptance | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CustomHtmlEngineNavigationGenerationTests|FullyQualifiedName~BrowserFormInteractionAcceptanceTests|FullyQualifiedName~DebugSiteInteractionRunnerTests" --logger "console;verbosity=minimal"` | 14 passed, 0 failed, 0 skipped | REGRESSION_PROTECTED |
+| WPT result classification and new-window focus | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~WptToolRunnerRawLogTests|FullyQualifiedName~HostBrowserDriverNewWindowTests|FullyQualifiedName~WebDriverClickWithoutInteractablePoint_Throws" --logger "console;verbosity=minimal"` | 8 passed, 0 failed, 0 skipped; all 8 listed by `--list-tests` | REGRESSION_PROTECTED |
 | FenEngine, Release | `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v:minimal` | 0 warnings, 0 errors | TESTED |
 | Tooling, Release | `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v:minimal` | 0 warnings, 0 errors | TESTED |
 | Adjacent form/input event slice | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FormControlActivationTests|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_DeliversDoubleClickContextMenuAndPointerPayload|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_EventListenerCanAccessFreshClassList" --logger "console;verbosity=minimal"` | 5 passed, 0 failed, 0 skipped | TESTED |
@@ -38,6 +39,8 @@ The Release discovery check found:
 | `BrowserFormInteractionAcceptanceTests` | yes; 8 tests |
 | `DebugSiteInteractionRunnerTests` | yes; 5 tests |
 | `CustomHtmlEngineNavigationGenerationTests` | yes; 1 test |
+| `WptToolRunnerRawLogTests` | yes; 6 cases |
+| `HostBrowserDriverNewWindowTests` | yes; 1 test |
 | `EventLoopTraceTests` | no |
 | `RealSiteRenderDiagnostics` | no |
 | `RendererChildLoopIoTests` | no |
@@ -75,7 +78,7 @@ Any future Test262 invocation must use the local `C:/Users/udayk/Videos/test262`
 | Aggregate pass rate | 61.91% |
 | Category errors | 17 |
 
-The latest retained focused `dom/lists` summary at `Results/wpt_20260704_175911/wpt.summary.json` ended with exit code 1 and four OK statuses plus one ERROR. Selected WPT baselines must be rerun category-by-category from the local `C:/Users/udayk/Videos/wpt` checkout before using them as acceptance evidence.
+The current selected browser-integration matrix uses local WPT revision `88152b842c3f60c2a5f95e0106ded4a375f710b0` and FenBrowser `c62243cbbed1492fd89d16ed1d13dc823239cbe5`, Release, one process, and the default in-process mode. `Results/wpt/selected/20260716_clean_run1/` and `Results/wpt/selected/20260716_clean_run2/` each completed three starts and three ends in 14.77 s and 14.22 s respectively. Both classify `DOMTokenList-stringifier.html` as Pass and `DOMTokenList-value.html` plus `checkbox-click-events.html` as Assertion failure, with the same five unexpected subtests and no crash, timeout, WebDriver failure, harness failure, or category ambiguity. Exit code 1 is therefore a truthful engine-assertion result, not a runner failure.
 
 ## Real-site and diagnostic evidence
 
@@ -98,5 +101,5 @@ The latest retained focused `dom/lists` summary at `Results/wpt_20260704_175911/
 | `FenBrowser.Js.Tests` | RESEARCHED | Fresh complete result |
 | Core-focused tests inside `FenBrowser.Tests` | RESEARCHED | Fresh discovered and executed result for active Core paths |
 | html5lib | NOT_STARTED | Runner command, totals, failures, and local result bundle |
-| Selected boot-critical WPT | RESEARCHED | `html`, `dom`, `fetch`, `cors`, `cookies`, `custom-elements`, `cssom`, and focused layout categories |
+| Selected boot-critical WPT | TESTED | Initial DOM/forms/WebDriver matrix is repeatable and exactly classified; expand with focused lifecycle, fetch/CORS, cookies, custom-elements, CSSOM/geometry, and layout files |
 | WebDriver interaction smoke | REGRESSION_PROTECTED | Local click/type/canceled-and-successful-submit, current-layout hit testing, compound selector lookup, chained-navigation settlement, Tooling viewport/artifact ownership, and stale-render generation rejection are covered; Google focus/type/submit/request/terminal-frame agreement is captured |
