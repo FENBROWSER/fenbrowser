@@ -126,6 +126,11 @@ internal static class WebIdlMemberCatalog
                                 {
                                     entry.Members.Add(member.Name.Trim());
                                 }
+
+                                if (member.Stringifier)
+                                {
+                                    entry.Members.Add("toString");
+                                }
                             }
 
                             break;

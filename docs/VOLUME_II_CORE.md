@@ -1726,3 +1726,14 @@ Verification:
 - `MissingApiClassificationInput` now distinguishes any observed page assignment from the narrower assignment-before-read case. A non-WebIDL property with a real page assignment is `SITE_EXPANDO`; its reason remains `assignment-before-read` when that ordering is known and becomes `page-assignment-observed` after an earlier read.
 - Checked-in WebIDL membership and wrong-receiver evidence are evaluated before assignment evidence. A page write therefore cannot demote a known standards member or hide an illegal receiver.
 - Unknown read-only observations remain `UNCLASSIFIED`; property-name patterns do not affect classification.
+
+### 1.83 WebIDL Stringifier And Partial-Interface Classification (2026-07-16)
+
+- The embedded member catalog now maps a parsed WebIDL stringifier to its JavaScript `toString` member and merges members from partial interface definitions into the same receiver entry.
+- Selected `Location` and `Navigator` geolocation declarations are copied from the local WPT checkout at revision `88152b842c3f60c2a5f95e0106ded4a375f710b0`. They are classification metadata only: generated bindings remain excluded and the active FenJS host still returns `undefined` for both missing members.
+- The offline inventory now reports 60 definitions, 421 members, 268 with bounded manual evidence, 319 with active-test correlations, 74 with selected-WPT correlations, and zero generated outputs present or compiled.
+
+Verification:
+
+- Red: `Classifier_RecognizesCheckedInStringifierAndPartialInterfaceMembers` classified `Location.toString` as `UNCLASSIFIED`.
+- Green: the classifier and active host-path reductions pass; Core Release builds with zero warnings and zero errors.

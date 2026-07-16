@@ -40,11 +40,11 @@ Risk Level: Medium
 Dependencies: Runtime `MissingApiTracker` and Tooling bundle export are INTEGRATED
 Files likely involved: `FenBrowser.FenEngine` missing-API tracker and host dispatch, `FenBrowser.Tooling/Program.cs`, included tracker tests
 Specs/references: Web IDL; DOM; `docs/MISSING_API_TRACKER.md`
-Current behavior: Runtime sidecars and the bounded `debug-site` bundle use schema v2. The post-drain bundle retains up to 512 rich records across navigation/site transitions, preserves first and ordered read/write/descriptor/property-check kinds, descriptor target identity, assignment timing, and boolean function-prototype marker evidence, and reports truncation. Fresh Google evidence classifies 11 page-owned records while leaving only the plain reads `Location.toString` and `Navigator.geolocation` unclassified; explicit prototype operations and stringifier metadata are not wired.
+Current behavior: Runtime sidecars and the bounded `debug-site` bundle use schema v2. The post-drain bundle retains up to 512 rich records across navigation/site transitions, preserves first and ordered read/write/descriptor/property-check kinds, descriptor target identity, assignment timing, and boolean function-prototype marker evidence, and reports truncation. Checked-in stringifier and partial-interface metadata now classify all 25 fresh Google observations: 11 standard, 11 page-owned, 2 wrong-receiver, and 1 legacy probe.
 Expected behavior: The bundle preserves provenance and classifies `STANDARD_API`, `SITE_EXPANDO`, `WRONG_RECEIVER`, `LEGACY_PROBE`, or `UNCLASSIFIED`; only confirmed standard APIs feed priority counts.
 Reproduction: Run a local page that reads one missing standard member, assigns/reads an expando, probes a wrong receiver, and performs legacy feature detection; then inspect `missing_apis.json`.
-Root cause: Direct host reads/writes, descriptor and property-existence checks, and boolean script-function prototype markers are now attributable. The two remaining observations are ordinary reads that require checked-in standards/stringifier metadata or explicit prototype evidence; neither is page-owned by current evidence.
-Implementation plan: Schema/classifier, multi-operation assignment evidence, descriptor/property-check evidence, descriptor target identity, boolean function-prototype marker evidence, concrete HTML receiver resolution, checked-in-IDL matching, stable per-navigation identity, bounded rich export, and fresh Google classification are implemented. Inspect the checked-in IDL/parser representation for stringifiers and `Navigator.geolocation`, then add the smallest deterministic metadata/classifier test before changing either disposition.
+Root cause: Direct host reads/writes, descriptor and property-existence checks, boolean script-function prototype markers, IDL stringifiers, and partial interfaces are now attributable. `Location.toString` and `Navigator.geolocation` are genuine missing standard members, but current evidence does not make either causal to Google's accepted load/render/interaction milestones.
+Implementation plan: Classification and export are implemented and regression-protected. Do not add runtime stubs. Select either missing member only when a deterministic local reduction or selected local WPT demonstrates required behavior and supplies descriptor, conversion, permission, and lifetime acceptance criteria.
 Tests required: All five dispositions, dedup/count/first-seen, source identity, cross-navigation isolation, redaction, and Google-name regression cases.
 Evidence required: Before false-positive list and after classified local/Google bundles with no loss of provenance.
 Security impact: Script URLs and messages require redaction/length limits.
@@ -52,7 +52,7 @@ Performance impact: Bound unique records per document and avoid allocating stack
 Compatibility impact: Improves attribution; does not add fake browser members.
 Known risks: Misclassifying a true standard member or suppressing a causal probe.
 Blockers: None
-Next action: Re-evaluate `Location.toString` and `Navigator.geolocation` against the checked-in IDL parser output and add deterministic receiver/stringifier metadata evidence without activating generated bindings.
+Next action: Leave the two non-causal standard misses visible and move to the higher-priority terminal lifecycle-source disagreement with a deterministic contradiction fixture.
 
 ## Task TRACE-003
 
@@ -222,7 +222,7 @@ Risk Level: Low
 Dependencies: Manual host runtime, WebIDL generator, and IDL inputs exist
 Files likely involved: `FenBrowser.WebIdlGen`, `FenBrowser.FenEngine/Bindings`, `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`, `docs/WEBIDL_BINDINGS_TRACKER.md`
 Specs/references: Web IDL and the specifications linked by each selected interface
-Current behavior: `FenBrowser.Tooling webidl-inventory` deterministically maps all 58 checked-in definition records and 407 members to bounded manual source evidence, generated output policy, active tests, selected WPT correlations, lifetime complexity, and migration risk. It reports zero generated outputs present or compiled and names `EventInit` as a conversion-only future candidate.
+Current behavior: `FenBrowser.Tooling webidl-inventory` deterministically maps all 60 checked-in definition records and 421 members to bounded manual source evidence, generated output policy, active tests, selected WPT correlations, lifetime complexity, and migration risk. It reports 268 members with manual evidence, 319 with active-test correlations, 74 with selected-WPT correlations, zero generated outputs present or compiled, and names `EventInit` as a conversion-only future candidate.
 Expected behavior: A generated audit report maps each IDL member to manual implementation, missing implementation, excluded source, test coverage, and lifetime complexity without activating generated bindings.
 Reproduction: Run `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- webidl-inventory --output-dir Results/webidl/manual-binding-inventory --wpt-root C:/Users/udayk/Videos/wpt --selected-wpt dom/lists/DOMTokenList-stringifier.html,dom/lists/DOMTokenList-value.html,html/semantics/forms/the-input-element/checkbox-click-events.html`.
 Root cause hypothesis: Generator and runtime integration evolved independently, hiding duplicate, missing, and incompatible surfaces.

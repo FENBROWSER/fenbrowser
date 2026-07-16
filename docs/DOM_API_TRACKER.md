@@ -30,7 +30,7 @@ The current Google bundle is not proof that all emitted names are browser APIs:
 | Site-library expando | `closure_uid`, `closure_listenable_*`, `$goog_Thenable` | Exclude from missing-standard-API counts | RESEARCHED |
 | Wrong receiver/probe | `Document.className`, `Document.getAttribute` | Record receiver/source, not an API implementation task | RESEARCHED |
 | Legacy feature detection | `Navigator.msPointerEnabled` | Record as optional/legacy probe | DEFERRED_SPEC_COMPLIANCE |
-| Standards candidate | `Document.compareDocumentPosition`, `Location.toString`, `CharacterData.childNodes`, `Navigator.geolocation` | Confirm descriptor/receiver and causal use before tasking | RESEARCHED |
+| Confirmed standard member | `Document.compareDocumentPosition`, `Location.toString`, `CharacterData.childNodes`, `Navigator.geolocation` | Receiver-matched checked-in IDL; require causal reduction or selected WPT before implementation work | TESTED |
 
 ## Priority rule
 

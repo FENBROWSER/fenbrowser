@@ -10333,3 +10333,10 @@ Verification:
 - Green/discovery: all 15 `MissingApiTrackerTests` pass; the combined tracker/export filter lists and passes `17/17`, with zero failures or skips. FenEngine Release builds with zero warnings and zero errors.
 - Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_operation_kinds.html/20260716T114816Z/` renders `true|false|false`, retains all three operation records, has zero callback failures/exceptions, blocker `none`, and 26/26 artifacts.
 - Fresh Google bundle `logs/real-site/www.google.com/20260716T114852Z/` retains the same 25 classifications while `closure_uid_*` changes from generic read evidence to `[DESCRIPTOR_OPERATION, WRITE]`. Lifecycle completes, the main UI remains visible, callback failures/exceptions are zero, blocker is `none`, and all 26 artifacts are present.
+
+## 2.389 Receiver-Matched Stringifier And Partial-Interface Evidence (2026-07-16)
+
+- The active missing-property tracker consumes Core's checked-in `Location` stringifier and partial `Navigator.geolocation` metadata. This changes diagnostic classification only; manual host dispatch, return values, permissions, and wrapper lifetime are unchanged.
+- Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_stringifier_partial_interface.html/20260716T115734Z/` renders `undefined|undefined` while retaining both reads as receiver-matched `STANDARD_API` records.
+- Fresh Google bundle `logs/real-site/www.google.com/20260716T115831Z/` classifies all 25 records as 11 standard, 11 site expandos, 2 wrong receivers, and 1 legacy probe. Callback failures/exceptions are zero, blocker is `none`, lifecycle completes, the main UI remains visible, and all 26 artifacts exist.
+- Neither confirmed missing member is selected for implementation because neither is currently causal to the accepted Google milestones.

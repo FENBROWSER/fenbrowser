@@ -3882,3 +3882,11 @@ Verification:
 - `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo`: pass with zero warnings and zero errors.
 - Local final-code bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_operation_kinds.html/20260716T114816Z/`; expected rendered booleans, three retained operation records, zero callback failures/exceptions, blocker `none`, and 26/26 artifacts.
 - Google final-code bundle: `logs/real-site/www.google.com/20260716T114852Z/`; classifications remain 9 standard, 11 site expandos, 2 wrong receivers, 1 legacy probe, and 2 unclassified, while Closure UID probes now retain descriptor provenance.
+
+## 6.159 WebIDL Stringifier And Partial-Interface Classification Regression (2026-07-16)
+
+- `Classifier_RecognizesCheckedInStringifierAndPartialInterfaceMembers` proves stringifier-to-`toString` mapping, partial-interface merge, receiver match, and wrong-receiver behavior. `KnownWebIdlStringifierAndPartialInterfaceMisses_AreStandardsPriority` exercises the active FenJS host path and asserts that the two absent values remain `undefined` while diagnostics classify them as standard.
+- Pre-fix result: the focused classifier test failed `1/1`, expected `STANDARD_API`, actual `UNCLASSIFIED`.
+- Discovery lists 17 `MissingApiTrackerTests`; the combined tracker/export filter lists and passes `19/19`, with zero failures or skips. Core Release builds with zero warnings and zero errors.
+- Local bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_stringifier_partial_interface.html/20260716T115734Z/`; two standard records, unchanged values, zero callback failures/exceptions, blocker `none`, and 26/26 artifacts.
+- Google bundle: `logs/real-site/www.google.com/20260716T115831Z/`; all 25 records classified, zero callback failures/exceptions, blocker `none`, visible main UI, and complete artifact manifest.

@@ -188,6 +188,38 @@ public sealed class MissingApiTrackerTests
     }
 
     [Fact]
+    public void Classifier_RecognizesCheckedInStringifierAndPartialInterfaceMembers()
+    {
+        var locationStringifier = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Location",
+            "toString",
+            MissingApiOperationKind.Read));
+        var navigatorGeolocation = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Navigator",
+            "geolocation",
+            MissingApiOperationKind.Read));
+        var wrongReceiver = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Document",
+            "geolocation",
+            MissingApiOperationKind.Read));
+
+        Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(locationStringifier.Classification));
+        Assert.Equal("Location", locationStringifier.DefinedInterface);
+        Assert.True(locationStringifier.ReceiverMatchesDefinedInterface);
+        Assert.True(locationStringifier.StandardPriorityEligible);
+
+        Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(navigatorGeolocation.Classification));
+        Assert.Equal("Navigator", navigatorGeolocation.DefinedInterface);
+        Assert.True(navigatorGeolocation.ReceiverMatchesDefinedInterface);
+        Assert.True(navigatorGeolocation.StandardPriorityEligible);
+
+        Assert.Equal("WRONG_RECEIVER", MissingApiClassifier.ToToken(wrongReceiver.Classification));
+        Assert.Equal("Navigator", wrongReceiver.DefinedInterface);
+        Assert.False(wrongReceiver.ReceiverMatchesDefinedInterface);
+        Assert.False(wrongReceiver.StandardPriorityEligible);
+    }
+
+    [Fact]
     public async Task MissingHostProperty_DeduplicatesByApiNameInPerSiteJson()
     {
         var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
@@ -589,6 +621,55 @@ public sealed class MissingApiTrackerTests
             EngineCapabilities.Reset();
             BrowserScriptEngineRuntime.Reset();
             TryDeleteDirectory(outputRoot);
+        }
+    }
+
+    [Fact]
+    public async Task KnownWebIdlStringifierAndPartialInterfaceMisses_AreStandardsPriority()
+    {
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
+        var baseUri = new Uri("https://example.test/stringifier-partial-interface.html");
+
+        try
+        {
+            MissingApiTracker.ConfigureForTests(outputRoot);
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            DisableTrace();
+
+            var document = new HtmlParser("<html><body>ok</body></html>", baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.Sandbox = SandboxPolicy.AllowAll;
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("undefined|undefined", engine.Evaluate(@"
+                typeof location.toString + '|' + typeof navigator.geolocation;")?.ToString());
+
+            using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
+            var records = outputJson.RootElement.GetProperty("records")
+                .EnumerateArray()
+                .ToDictionary(record => record.GetProperty("apiName").GetString()!, record => record);
+
+            AssertStandard(records["Location.toString"], "Location");
+            AssertStandard(records["Navigator.geolocation"], "Navigator");
+        }
+        finally
+        {
+            MissingApiTracker.ResetForTests();
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            TryDeleteDirectory(outputRoot);
+        }
+
+        static void AssertStandard(JsonElement record, string definedInterface)
+        {
+            Assert.Equal("READ", record.GetProperty("operationKind").GetString());
+            Assert.Equal("STANDARD_API", record.GetProperty("classification").GetString());
+            Assert.Equal(definedInterface, record.GetProperty("definedInterface").GetString());
+            Assert.True(record.GetProperty("knownWebIdlMember").GetBoolean());
+            Assert.True(record.GetProperty("receiverMatchesDefinedInterface").GetBoolean());
+            Assert.True(record.GetProperty("standardPriorityEligible").GetBoolean());
         }
     }
 

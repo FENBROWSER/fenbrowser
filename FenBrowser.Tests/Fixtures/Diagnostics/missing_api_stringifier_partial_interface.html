@@ -1,0 +1,10 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Missing API stringifier and partial-interface fixture</title>
+<div id="result">pending</div>
+<script>
+  const locationStringifierType = typeof location.toString;
+  const geolocationType = typeof navigator.geolocation;
+  document.getElementById("result").textContent =
+    `${locationStringifierType}|${geolocationType}`;
+</script>
