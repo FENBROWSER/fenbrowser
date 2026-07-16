@@ -3788,3 +3788,14 @@ Verification:
 - `WptToolRunnerRawLogTests`: pass (`6/6`) with explicit status-class, incomplete-test, and empty-startup coverage.
 - `HostBrowserDriverNewWindowTests|WebDriverClickWithoutInteractablePoint_Throws`: pass (`2/2`).
 - Latest clean committed-tree evidence: `Results/wpt/selected/20260716_domtoken_clean_run1/` and `Results/wpt/selected/20260716_domtoken_clean_run2/`. Both use FenBrowser `b57987662fb66fb957ed8cb0cea336e0a9363512`, local WPT `88152b842c3f60c2a5f95e0106ded4a375f710b0`, Release, one process, and default in-process mode. Each reports a clean FenBrowser tree, three starts/ends, two passes, one checkbox assertion-failure file, and the same four failing subtests.
+
+## 6.151 Selected Forms WPT Closure (2026-07-16)
+
+- `FenBrowser.Tests/Scripting/FenJsCheckboxActivationTests.cs` is compiled on the active test surface and supplies four deterministic reductions for input-type reflection, live checked state, click pre-activation, cancellation rollback, and click/input/change ordering.
+- The formerly failing `html/semantics/forms/the-input-element/checkbox-click-events.html` file now passes alongside both selected DOMTokenList files. The fix is on the ordinary host activation path and contains no site-specific behavior.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsCheckboxActivationTests" --logger "console;verbosity=minimal"`: pass (`4/4`); `--list-tests` lists all four methods.
+- `BrowserFormInteractionAcceptanceTests`: pass (`8/8`); `FormControlActivationTests`: pass (`3/3`).
+- `Results/wpt/selected/20260716_checkbox_clean_run1/` and `Results/wpt/selected/20260716_checkbox_clean_run2/` use clean FenBrowser commit `76bfb83290b65dab532acc81560236523ab64995`, local WPT `88152b842c3f60c2a5f95e0106ded4a375f710b0`, Release, one process, and default in-process mode. They complete three starts/ends in 11.70 s and 11.59 s respectively, classify all three files as Pass, exit 0, and contain zero unexpected tests or subtests.

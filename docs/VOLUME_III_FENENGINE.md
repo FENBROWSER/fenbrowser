@@ -10241,3 +10241,16 @@ Verification:
 - Red: `DomTokenListValueBindingTests.ValueAssignment_UpdatesTheLiteralAssociatedAttribute` returned the new JS property value while `getAttribute('class')` and `className` retained the old value.
 - Green/discovery: both included value-binding tests are listed and pass `2/2`; adjacent DOM collection iteration passes `3/3` and fresh event-time class-list access passes `1/1`.
 - The selected three-file WPT matrix now classifies both `DOMTokenList-stringifier.html` and `DOMTokenList-value.html` as Pass. Only `checkbox-click-events.html` remains an Assertion failure, with four unexpected subtests and no infrastructure failure.
+
+## 2.382 Checkbox Legacy Click Activation (2026-07-16)
+
+- FenJS input hosts now reflect the `type` property through the associated content attribute and expose the normalized input type instead of storing assignment only as a page expando. Checkable `checked` state remains live engine state rather than content-attribute mutation.
+- Checkbox click dispatch now performs legacy pre-activation before click listeners, rolls the checked state back when the cancelable click is prevented, and emits bubbling non-cancelable `input` then `change` only after activation commits. Both `HTMLElement.click()` and a dispatched click event use the same activation boundary.
+- Physical and WebDriver clicks reuse the FenJS checkbox activation result and do not toggle a second time. Radio activation remains on its existing BrowserApi path; the suppression rule is deliberately checkbox-only.
+
+Verification:
+
+- Red: the four active reductions failed because `input.type` was only an expando, `checked` was undefined, `.click()` was absent, and dispatched clicks had no activation behavior.
+- Green/discovery: all four `FenJsCheckboxActivationTests` are listed and pass `4/4`; `BrowserFormInteractionAcceptanceTests` pass `8/8`; `FormControlActivationTests` pass `3/3`.
+- Release builds of `FenBrowser.FenEngine` and `FenBrowser.Tooling` succeed with zero warnings and zero errors.
+- The selected three-file WPT matrix now passes all three files with zero unexpected tests or subtests in two clean-tree repetitions at commit `76bfb83290b65dab532acc81560236523ab64995`.

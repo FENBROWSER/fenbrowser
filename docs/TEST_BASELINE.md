@@ -15,6 +15,7 @@ Snapshot date: 2026-07-14; focused build/test and selected WPT evidence revalida
 | Form, Tooling, and render-generation interaction acceptance | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CustomHtmlEngineNavigationGenerationTests|FullyQualifiedName~BrowserFormInteractionAcceptanceTests|FullyQualifiedName~DebugSiteInteractionRunnerTests" --logger "console;verbosity=minimal"` | 14 passed, 0 failed, 0 skipped | REGRESSION_PROTECTED |
 | WPT result classification and new-window focus | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~WptToolRunnerRawLogTests|FullyQualifiedName~HostBrowserDriverNewWindowTests|FullyQualifiedName~WebDriverClickWithoutInteractablePoint_Throws" --logger "console;verbosity=minimal"` | 8 passed, 0 failed, 0 skipped; all 8 listed by `--list-tests` | REGRESSION_PROTECTED |
 | DOMTokenList value binding and ordered-set parsing | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~DomTokenListValueBindingTests" --logger "console;verbosity=minimal"` | 2 passed, 0 failed, 0 skipped; both listed by `--list-tests` | REGRESSION_PROTECTED |
+| FenJS checkbox click activation | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~FenJsCheckboxActivationTests" --logger "console;verbosity=minimal"` | 4 passed, 0 failed, 0 skipped; all 4 listed by `--list-tests` | REGRESSION_PROTECTED |
 | FenEngine, Release | `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore -v:minimal` | 0 warnings, 0 errors | TESTED |
 | Tooling, Release | `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore -v:minimal` | 0 warnings, 0 errors | TESTED |
 | Adjacent form/input event slice | `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~FormControlActivationTests|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_DeliversDoubleClickContextMenuAndPointerPayload|FullyQualifiedName=FenBrowser.Tests.Scripting.FenJsInputEventDispatchTests.DispatchEventForElement_EventListenerCanAccessFreshClassList" --logger "console;verbosity=minimal"` | 5 passed, 0 failed, 0 skipped | TESTED |
@@ -42,6 +43,7 @@ The Release discovery check found:
 | `CustomHtmlEngineNavigationGenerationTests` | yes; 1 test |
 | `WptToolRunnerRawLogTests` | yes; 6 cases |
 | `HostBrowserDriverNewWindowTests` | yes; 1 test |
+| `FenJsCheckboxActivationTests` | yes; 4 tests |
 | `EventLoopTraceTests` | no |
 | `RealSiteRenderDiagnostics` | no |
 | `RendererChildLoopIoTests` | no |
@@ -79,7 +81,7 @@ Any future Test262 invocation must use the local `C:/Users/udayk/Videos/test262`
 | Aggregate pass rate | 61.91% |
 | Category errors | 17 |
 
-The current selected browser-integration matrix uses local WPT revision `88152b842c3f60c2a5f95e0106ded4a375f710b0` and FenBrowser `b57987662fb66fb957ed8cb0cea336e0a9363512`, Release, one process, and the default in-process mode. `Results/wpt/selected/20260716_domtoken_clean_run1/` and `Results/wpt/selected/20260716_domtoken_clean_run2/` each completed three starts and three ends in 12.18 s and 11.59 s respectively. Both classify `DOMTokenList-stringifier.html` and `DOMTokenList-value.html` as Pass and `checkbox-click-events.html` as Assertion failure, with the same four unexpected checkbox subtests and no crash, timeout, WebDriver failure, harness failure, or category ambiguity. Exit code 1 is therefore a truthful engine-assertion result, not a runner failure.
+The current selected browser-integration matrix uses local WPT revision `88152b842c3f60c2a5f95e0106ded4a375f710b0` and FenBrowser `76bfb83290b65dab532acc81560236523ab64995`, Release, one process, and the default in-process mode. `Results/wpt/selected/20260716_checkbox_clean_run1/` and `Results/wpt/selected/20260716_checkbox_clean_run2/` each completed three starts and three ends in 11.70 s and 11.59 s respectively. Both classify `DOMTokenList-stringifier.html`, `DOMTokenList-value.html`, and `checkbox-click-events.html` as Pass, exit 0, and contain zero unexpected tests, unexpected subtests, crashes, timeouts, WebDriver failures, harness failures, or category ambiguity.
 
 ## Real-site and diagnostic evidence
 
