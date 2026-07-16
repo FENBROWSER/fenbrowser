@@ -4014,3 +4014,14 @@ Verification:
 - `HostReceiverValidationTests|FenJsDomMutationTests|RequiredBrowserIntegrationDiscoveryTests`: pass (`7/7`, zero failed/skipped).
 - Relevant host-table/integration safety slice: pass (`11/11`, zero failed/skipped); discovery lists both stale-generation methods.
 - Guarded browser/process/export/receiver slice: pass (`74/74`, zero failed/skipped).
+
+## 6.170 FenJS Stale-Handle Discovery Guard (2026-07-16)
+
+- `RequiredHostBridgeDiscoveryTests` is compiled in `FenBrowser.Js.Tests` and reflects that built assembly. It fails with fully qualified names if either the interpreter stale-generation TypeError contract or the host-table freed-slot generation-reuse contract disappears or loses its xUnit fact attribute.
+- This is discovery protection only. Host-handle ownership, generation encoding, realm/document/navigation validation, and wrapper lifetime behavior are unchanged.
+
+Verification:
+
+- Focused stale-handle methods plus the guard: pass (`3/3`, zero failed/skipped).
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~RequiredHostBridgeDiscoveryTests|FullyQualifiedName~HostObjectIntegrationTests.StaleGenerationThrowsTypeError|FullyQualifiedName~HostObjectTableTests.FreeMarksSlotInvalidAndRecyclesWithNewGeneration" --list-tests --logger "console;verbosity=minimal"`: lists all three methods.
+- Guard plus the relevant host-table, stale-generation, document-epoch, navigation-epoch, and cross-realm safety slice: pass (`12/12`, zero failed/skipped).
