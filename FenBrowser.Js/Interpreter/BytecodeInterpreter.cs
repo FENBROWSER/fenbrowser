@@ -3,6 +3,7 @@ using FenBrowser.Js.Ast;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
+using FenBrowser.Js.Host;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Parser;
 using FenBrowser.Js.Promises;
@@ -13975,6 +13976,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var hostDescriptorHandle = _heap.AllocateObject(hostDescriptorObject, AllocationSite.Current());
                 WriteDescriptorBarrier(hostDescriptorHandle, hostDescriptor);
                 return JsValue.FromObject(hostDescriptorHandle);
+            }
+
+            if (!isSymbolKey)
+            {
+                try
+                {
+                    _hostHooks.ObserveMissingHostPropertyOperation(
+                        targetValue.AsHostObjectHandle(),
+                        key,
+                        HostPropertyAccessKind.DescriptorOperation);
+                }
+                catch
+                {
+                    // Diagnostic observation must not change descriptor semantics.
+                }
             }
 
             return JsValue.Undefined;

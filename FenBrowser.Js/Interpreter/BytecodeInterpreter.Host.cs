@@ -300,12 +300,12 @@ public sealed partial class BytecodeInterpreter
             return true;
         }
 
-        return _hostHooks.TryGetHostProperty(handle, key, out _);
+        return _hostHooks.TryGetHostProperty(handle, key, HostPropertyAccessKind.InCheck, out _);
     }
 
     private bool HasHostObjectDefinedOrEmbedderProperty(HostObjectHandle handle, string key)
         => TryGetHostObjectDefinedProperty(handle, key, out _) ||
-           _hostHooks.TryGetHostProperty(handle, key, out _);
+           _hostHooks.TryGetHostProperty(handle, key, HostPropertyAccessKind.DescriptorOperation, out _);
 
     private void ApplyDefaultHostObjectPrototypeIfUnset(JsValue constructed, JsValue newTarget)
     {

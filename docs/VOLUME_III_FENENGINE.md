@@ -10320,3 +10320,16 @@ Verification:
 - Green: all 12 discovered `MissingApiTrackerTests` pass, including the boolean marker reduction and negative ordinary-object/non-boolean controls.
 - Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_function_prototype_marker.html/20260716T113659Z/` retains one `SITE_EXPANDO`/`page-function-prototype-marker` read with no host assignment, zero callback failures/exceptions, blocker `none`, and 26/26 artifacts.
 - Fresh Google bundle `logs/real-site/www.google.com/20260716T113726Z/` retains 25/25 records: 9 standard, 11 site expandos, 2 wrong receivers, 1 legacy probe, and 2 unclassified. Six Closure/Thenable records carry marker evidence; `Location.toString` remains unclassified. Lifecycle completes, the main UI is visible, callback failures/exceptions are zero, `first_blocker` is `none`, and all 26 artifacts are present.
+
+## 2.388 Host Missing-Property Operation Provenance (2026-07-16)
+
+- FenJS host dispatch now labels missing `in` checks as `IN_CHECK` and own-descriptor/`hasOwnProperty` probes as `DESCRIPTOR_OPERATION`. `Object.getOwnPropertyDescriptor` reports the miss through an isolated diagnostic observer without invoking a host getter or changing the required `undefined` result.
+- Missing-API records preserve whether a descriptor target is the instance or a proven prototype. A checked-in WebIDL member queried as an own descriptor on an instance remains `UNCLASSIFIED`; it becomes a standards candidate only with defining-prototype evidence. Existing wrong-receiver, legacy, assignment, and function-prototype-marker precedence is unchanged.
+- No host object is converted to a plain JavaScript object, no getter result is fabricated, and no site/property-name rule is used.
+
+Verification:
+
+- Red: `MissingHostDescriptorQuery_RecordsDescriptorOperation` produced no `missing_apis.json` because the descriptor miss was invisible.
+- Green/discovery: all 15 `MissingApiTrackerTests` pass; the combined tracker/export filter lists and passes `17/17`, with zero failures or skips. FenEngine Release builds with zero warnings and zero errors.
+- Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_operation_kinds.html/20260716T114816Z/` renders `true|false|false`, retains all three operation records, has zero callback failures/exceptions, blocker `none`, and 26/26 artifacts.
+- Fresh Google bundle `logs/real-site/www.google.com/20260716T114852Z/` retains the same 25 classifications while `closure_uid_*` changes from generic read evidence to `[DESCRIPTOR_OPERATION, WRITE]`. Lifecycle completes, the main UI remains visible, callback failures/exceptions are zero, blocker is `none`, and all 26 artifacts are present.

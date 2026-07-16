@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Missing API operation-kind fixture</title>
+<div id="target">pending</div>
+<script>
+  const target = document.getElementById("target");
+  const descriptor = Object.getOwnPropertyDescriptor(target, "descriptor_probe_fixture");
+  const inResult = "in_check_fixture" in target;
+  const ownResult = Object.prototype.hasOwnProperty.call(target, "own_check_fixture");
+  target.textContent = `${descriptor === undefined}|${inResult}|${ownResult}`;
+</script>

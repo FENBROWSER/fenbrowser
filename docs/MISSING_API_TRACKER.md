@@ -1,6 +1,6 @@
 # FenBrowser Missing API Tracker
 
-Status: TESTED for schema-v2 runtime classification, ordered read/write and assignment evidence, boolean function-prototype marker evidence, concrete HTML receiver identity, checked-in-WebIDL receiver evidence, bounded rich-record `debug-site` export, and fresh Google reclassification; STUBBED for descriptor and explicit prototype-operation collection. Snapshot date: 2026-07-16.
+Status: TESTED for schema-v2 runtime classification, ordered read/write/descriptor/property-check evidence, descriptor target identity, boolean function-prototype marker evidence, concrete HTML receiver identity, checked-in-WebIDL receiver evidence, bounded rich-record `debug-site` export, and fresh Google reclassification; STUBBED for explicit prototype-operation collection and stringifier metadata. Snapshot date: 2026-07-16.
 
 ## Evidence model
 
@@ -47,6 +47,7 @@ Only `STANDARD_API` records set `standardPriorityEligible: true`. Fatality still
       "classificationReason": "known-webidl-member-defined-on-Node",
       "standardPriorityEligible": true,
       "assignmentBeforeRead": false,
+      "descriptorTargetIsPrototype": false,
       "functionPrototypeMarkerObserved": false,
       "knownWebIdlMember": true,
       "definedInterface": "Node",
@@ -56,7 +57,7 @@ Only `STANDARD_API` records set `standardPriorityEligible: true`. Fatality still
 }
 ```
 
-The bundle snapshots the runtime tracker after the logger drain, retains the first 512 ordered records, reports total/retained/truncated counts, and does not retain receiver object graphs. Each record preserves the first operation plus the bounded ordered set of observed operation kinds, assignment timing, and boolean function-prototype-marker evidence. The FenJS side marks prototype objects without rooting them; the browser host retains at most 2,048 keys of at most 256 characters per document and accepts only `true` marker values. Stable identity includes site, receiver brand, member, script, and navigation, so the same observation in a replacement navigation remains distinct. Tracker export failures are logged and isolated from page execution.
+The bundle snapshots the runtime tracker after the logger drain, retains the first 512 ordered records, reports total/retained/truncated counts, and does not retain receiver object graphs. Each record preserves the first operation plus the bounded ordered set of observed operation kinds, assignment timing, descriptor target identity, and boolean function-prototype-marker evidence. Missing host checks distinguish `READ`, `IN_CHECK`, and `DESCRIPTOR_OPERATION`; `Object.getOwnPropertyDescriptor` observes the miss without invoking a getter or changing its `undefined` result. A known WebIDL member queried as an own descriptor on an instance remains `UNCLASSIFIED` unless the target is proven to be the defining prototype. The FenJS side marks prototype objects without rooting them; the browser host retains at most 2,048 keys of at most 256 characters per document and accepts only `true` marker values. Stable identity includes site, receiver brand, member, script, and navigation, so the same observation in a replacement navigation remains distinct. Tracker export failures are logged and isolated from page execution.
 
 ## Current Google observations
 
@@ -87,6 +88,6 @@ No Google observation is currently confirmed as the first fatal blocker.
 
 ## Verification
 
-`MissingApiTrackerTests` and `DebugSiteMissingApiClassificationTests` are compiled and discovered. The focused 2026-07-16 tracker command passes `12/12`, including boolean function-prototype marker attribution, negative controls for ordinary-object writes and non-boolean prototype methods, read-then-write preservation, WebIDL/wrong-receiver precedence, concrete specialized HTML receivers, the 512-record bound, and cross-navigation identity. Local marker evidence `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_function_prototype_marker.html/20260716T113659Z/` retains one `HTMLDivElement.protocol_marker_fixture` read as `SITE_EXPANDO`/`page-function-prototype-marker`, with `functionPrototypeMarkerObserved: true`, no host assignment, zero callback failures/exceptions, blocker `none`, and 26/26 artifacts.
+`MissingApiTrackerTests` and `DebugSiteMissingApiClassificationTests` are compiled and discovered. The focused 2026-07-16 tracker command passes `15/15`; the combined tracker/export command lists and passes `17/17`. Coverage includes descriptor and `in`/own-property-check operation attribution, instance-versus-prototype descriptor classification, boolean function-prototype marker attribution, negative controls for ordinary-object writes and non-boolean prototype methods, read-then-write preservation, WebIDL/wrong-receiver precedence, concrete specialized HTML receivers, the 512-record bound, and cross-navigation identity. Local operation evidence `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_operation_kinds.html/20260716T114816Z/` renders `true|false|false` and retains distinct `DESCRIPTOR_OPERATION`, `IN_CHECK`, and `DESCRIPTOR_OPERATION` misses, with zero callback failures/exceptions, blocker `none`, and 26/26 artifacts.
 
-Fresh Google evidence is `logs/real-site/www.google.com/20260716T113726Z/`. It retains 25/25 records: 9 `STANDARD_API`, 11 `SITE_EXPANDO`, 2 `WRONG_RECEIVER`, 1 `LEGACY_PROBE`, and 2 `UNCLASSIFIED`. Six `closure_listenable_*`/`$goog_Thenable` records carry boolean prototype-marker evidence and five `closure_lm_*`/`closure_uid_*` records carry `[READ, WRITE]` assignment evidence; neither path uses a property-name pattern. `Location.toString` and `Navigator.geolocation` remain unclassified. Callback failures and exceptions are zero, `first_blocker.json` reports `none`, lifecycle is complete, the main UI is visible, and all 26 manifest entries exist.
+Fresh Google evidence is `logs/real-site/www.google.com/20260716T114852Z/`. It retains 25/25 records: 9 `STANDARD_API`, 11 `SITE_EXPANDO`, 2 `WRONG_RECEIVER`, 1 `LEGACY_PROBE`, and 2 `UNCLASSIFIED`. Six `closure_listenable_*`/`$goog_Thenable` records carry boolean prototype-marker evidence; `closure_uid_*` now preserve `[DESCRIPTOR_OPERATION, WRITE]`, while `closure_lm_*` preserve `[READ, WRITE]`. Neither path uses a property-name pattern. `Location.toString` and `Navigator.geolocation` remain unclassified plain reads. Callback failures and exceptions are zero, `first_blocker.json` reports `none`, lifecycle is complete, the main UI is visible, and all 26 manifest entries exist.

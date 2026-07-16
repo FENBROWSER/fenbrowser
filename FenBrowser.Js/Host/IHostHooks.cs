@@ -3,6 +3,14 @@ using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Host;
 
+public enum HostPropertyAccessKind
+{
+    Read,
+    InCheck,
+    DescriptorOperation,
+    PrototypeAccess
+}
+
 // Plan §23.1. The single seam between FenJS and its embedder.
 //
 // At this milestone the surface is intentionally lean - it covers the operations the
@@ -29,6 +37,25 @@ public interface IHostHooks
     // refuses the access (cross-origin policy). The interpreter translates a false
     // result with `wasMissing=true` into undefined, otherwise into a TypeError.
     bool TryGetHostProperty(HostObjectHandle handle, string property, out JsValue value);
+
+    bool TryGetHostProperty(
+        HostObjectHandle handle,
+        string property,
+        HostPropertyAccessKind accessKind,
+        out JsValue value)
+        => TryGetHostProperty(handle, property, out value);
+
+    // Records a missing operation when FenJS can determine absence without asking
+    // the embedder to execute a getter (for example, an own-descriptor query).
+    void ObserveMissingHostPropertyOperation(
+        HostObjectHandle handle,
+        string property,
+        HostPropertyAccessKind accessKind)
+    {
+        _ = handle;
+        _ = property;
+        _ = accessKind;
+    }
 
     // Companion to TryGetHostProperty. False return = host rejected the write.
     bool TrySetHostProperty(HostObjectHandle handle, string property, JsValue value);

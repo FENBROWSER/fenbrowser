@@ -40,11 +40,11 @@ Risk Level: Medium
 Dependencies: Runtime `MissingApiTracker` and Tooling bundle export are INTEGRATED
 Files likely involved: `FenBrowser.FenEngine` missing-API tracker and host dispatch, `FenBrowser.Tooling/Program.cs`, included tracker tests
 Specs/references: Web IDL; DOM; `docs/MISSING_API_TRACKER.md`
-Current behavior: Runtime sidecars and the bounded `debug-site` bundle use schema v2. The post-drain bundle retains up to 512 rich records across navigation/site transitions, preserves the first and ordered observed operation kinds plus assignment timing and boolean function-prototype marker evidence, and reports truncation. Fresh Google evidence classifies 11 page-owned records while leaving only `Location.toString` and `Navigator.geolocation` unclassified; descriptor and explicit prototype operations are not wired.
+Current behavior: Runtime sidecars and the bounded `debug-site` bundle use schema v2. The post-drain bundle retains up to 512 rich records across navigation/site transitions, preserves first and ordered read/write/descriptor/property-check kinds, descriptor target identity, assignment timing, and boolean function-prototype marker evidence, and reports truncation. Fresh Google evidence classifies 11 page-owned records while leaving only the plain reads `Location.toString` and `Navigator.geolocation` unclassified; explicit prototype operations and stringifier metadata are not wired.
 Expected behavior: The bundle preserves provenance and classifies `STANDARD_API`, `SITE_EXPANDO`, `WRONG_RECEIVER`, `LEGACY_PROBE`, or `UNCLASSIFIED`; only confirmed standard APIs feed priority counts.
 Reproduction: Run a local page that reads one missing standard member, assigns/reads an expando, probes a wrong receiver, and performs legacy feature detection; then inspect `missing_apis.json`.
-Root cause: Direct host reads/writes and boolean script-function prototype markers are now attributable. The two remaining observations require standards/stringifier metadata or richer descriptor/prototype operation evidence; neither is page-owned by current evidence.
-Implementation plan: Schema/classifier, multi-operation assignment evidence, boolean function-prototype marker evidence, concrete HTML receiver resolution, checked-in-IDL matching, stable per-navigation identity, bounded rich export, and fresh Google classification are implemented. Add a deterministic descriptor/prototype-operation fixture and capture that operation kind before deciding whether either remaining observation is a standards implementation task.
+Root cause: Direct host reads/writes, descriptor and property-existence checks, and boolean script-function prototype markers are now attributable. The two remaining observations are ordinary reads that require checked-in standards/stringifier metadata or explicit prototype evidence; neither is page-owned by current evidence.
+Implementation plan: Schema/classifier, multi-operation assignment evidence, descriptor/property-check evidence, descriptor target identity, boolean function-prototype marker evidence, concrete HTML receiver resolution, checked-in-IDL matching, stable per-navigation identity, bounded rich export, and fresh Google classification are implemented. Inspect the checked-in IDL/parser representation for stringifiers and `Navigator.geolocation`, then add the smallest deterministic metadata/classifier test before changing either disposition.
 Tests required: All five dispositions, dedup/count/first-seen, source identity, cross-navigation isolation, redaction, and Google-name regression cases.
 Evidence required: Before false-positive list and after classified local/Google bundles with no loss of provenance.
 Security impact: Script URLs and messages require redaction/length limits.
@@ -52,7 +52,7 @@ Performance impact: Bound unique records per document and avoid allocating stack
 Compatibility impact: Improves attribution; does not add fake browser members.
 Known risks: Misclassifying a true standard member or suppressing a causal probe.
 Blockers: None
-Next action: Capture descriptor and explicit prototype missing-property operations with deterministic evidence, then re-evaluate `Location.toString` and `Navigator.geolocation` against checked-in IDL/stringifier metadata.
+Next action: Re-evaluate `Location.toString` and `Navigator.geolocation` against the checked-in IDL parser output and add deterministic receiver/stringifier metadata evidence without activating generated bindings.
 
 ## Task TRACE-003
 

@@ -27,6 +27,7 @@ internal sealed class MissingApiObservation
     public bool AssignmentObserved { get; init; }
     public bool AssignmentBeforeRead { get; init; }
     public bool FunctionPrototypeMarkerObserved { get; init; }
+    public bool DescriptorTargetIsPrototype { get; init; }
     public bool KnownWebIdlMember { get; init; }
     public string DefinedInterface { get; init; } = string.Empty;
     public bool? ReceiverMatchesDefinedInterface { get; init; }
@@ -71,6 +72,7 @@ internal sealed class BrowserMissingApiRecordSnapshot
     public bool AssignmentObserved { get; init; }
     public bool AssignmentBeforeRead { get; init; }
     public bool FunctionPrototypeMarkerObserved { get; init; }
+    public bool DescriptorTargetIsPrototype { get; init; }
     public bool KnownWebIdlMember { get; init; }
     public string DefinedInterface { get; init; } = string.Empty;
     public bool? ReceiverMatchesDefinedInterface { get; init; }
@@ -256,7 +258,8 @@ internal static class MissingApiTracker
             observation.DefinedInterface,
             observation.ReceiverMatchesDefinedInterface,
             assignmentObserved,
-            observation.FunctionPrototypeMarkerObserved));
+            observation.FunctionPrototypeMarkerObserved,
+            observation.DescriptorTargetIsPrototype));
         return new MissingApiRecord
         {
             ApiName = observation.ApiName.Trim(),
@@ -286,6 +289,7 @@ internal static class MissingApiTracker
             AssignmentObserved = assignmentObserved,
             AssignmentBeforeRead = observation.AssignmentBeforeRead,
             FunctionPrototypeMarkerObserved = observation.FunctionPrototypeMarkerObserved,
+            DescriptorTargetIsPrototype = observation.DescriptorTargetIsPrototype,
             KnownWebIdlMember = classification.KnownWebIdlMember,
             DefinedInterface = classification.DefinedInterface,
             ReceiverMatchesDefinedInterface = classification.ReceiverMatchesDefinedInterface
@@ -329,6 +333,7 @@ internal static class MissingApiTracker
             AssignmentObserved = record.AssignmentObserved,
             AssignmentBeforeRead = record.AssignmentBeforeRead,
             FunctionPrototypeMarkerObserved = record.FunctionPrototypeMarkerObserved,
+            DescriptorTargetIsPrototype = record.DescriptorTargetIsPrototype,
             KnownWebIdlMember = record.KnownWebIdlMember,
             DefinedInterface = record.DefinedInterface,
             ReceiverMatchesDefinedInterface = record.ReceiverMatchesDefinedInterface
@@ -532,6 +537,7 @@ internal static class MissingApiTracker
         public bool AssignmentObserved { get; set; }
         public bool AssignmentBeforeRead { get; set; }
         public bool FunctionPrototypeMarkerObserved { get; set; }
+        public bool DescriptorTargetIsPrototype { get; set; }
         public bool KnownWebIdlMember { get; set; }
         public string DefinedInterface { get; set; } = string.Empty;
         public bool? ReceiverMatchesDefinedInterface { get; set; }
@@ -559,7 +565,8 @@ internal static class MissingApiTracker
                 DefinedInterface,
                 ReceiverMatchesDefinedInterface,
                 AssignmentObserved,
-                FunctionPrototypeMarkerObserved));
+                FunctionPrototypeMarkerObserved,
+                DescriptorTargetIsPrototype));
             Classification = MissingApiClassifier.ToToken(classification.Classification);
             ClassificationReason = classification.Reason;
             StandardPriorityEligible = classification.StandardPriorityEligible;
@@ -608,6 +615,7 @@ internal static class MissingApiTracker
                 AssignmentObserved = AssignmentObserved,
                 AssignmentBeforeRead = AssignmentBeforeRead,
                 FunctionPrototypeMarkerObserved = FunctionPrototypeMarkerObserved,
+                DescriptorTargetIsPrototype = DescriptorTargetIsPrototype,
                 KnownWebIdlMember = KnownWebIdlMember,
                 DefinedInterface = DefinedInterface,
                 ReceiverMatchesDefinedInterface = ReceiverMatchesDefinedInterface

@@ -2388,7 +2388,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         string ownerName,
         string property,
         Uri baseUri,
-        bool functionPrototypeMarkerObserved = false)
+        bool functionPrototypeMarkerObserved = false,
+        MissingApiOperationKind operationKind = MissingApiOperationKind.Read)
     {
         if (receiver != null)
         {
@@ -2407,6 +2408,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             string.Empty,
             GetCurrentScriptRecord(),
             baseUri ?? _currentBaseUri,
+            operationKind,
             functionPrototypeMarkerObserved: functionPrototypeMarkerObserved);
     }
 
@@ -2455,7 +2457,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         MissingApiOperationKind operationKind = MissingApiOperationKind.Read,
         bool assignmentBeforeRead = false,
         bool assignmentObserved = false,
-        bool functionPrototypeMarkerObserved = false)
+        bool functionPrototypeMarkerObserved = false,
+        bool descriptorTargetIsPrototype = false)
     {
         if (string.IsNullOrWhiteSpace(objectOrPrototype) || string.IsNullOrWhiteSpace(propertyName))
         {
@@ -2488,7 +2491,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             ReceiverType = ownerName,
             AssignmentBeforeRead = assignmentBeforeRead,
             AssignmentObserved = assignmentObserved,
-            FunctionPrototypeMarkerObserved = functionPrototypeMarkerObserved
+            FunctionPrototypeMarkerObserved = functionPrototypeMarkerObserved,
+            DescriptorTargetIsPrototype = descriptorTargetIsPrototype
         });
     }
 
@@ -13652,6 +13656,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
 
         public bool TryGetHostProperty(HostObjectHandle handle, string property, out JsValue value)
+            => TryGetHostProperty(handle, property, HostPropertyAccessKind.Read, out value);
+
+        public bool TryGetHostProperty(
+            HostObjectHandle handle,
+            string property,
+            HostPropertyAccessKind accessKind,
+            out JsValue value)
         {
             if (_owner == null || _owner._interpreter == null)
             {
@@ -13671,10 +13682,36 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
             if (!found)
             {
-                RecordMissingHostApi(hostObject, ownerName, property);
+                RecordMissingHostApi(hostObject, ownerName, property, ToMissingApiOperationKind(accessKind));
             }
 
             return found;
+        }
+
+        public void ObserveMissingHostPropertyOperation(
+            HostObjectHandle handle,
+            string property,
+            HostPropertyAccessKind accessKind)
+        {
+            if (_owner == null || _owner._interpreter == null)
+            {
+                return;
+            }
+
+            var resolution = _owner._interpreter.HostObjectTable.Resolve(
+                handle,
+                _owner._interpreter.HostResolveContext);
+            if (!resolution.IsOk || resolution.HostObject == null)
+            {
+                return;
+            }
+
+            var hostObject = resolution.HostObject;
+            RecordMissingHostApi(
+                hostObject,
+                GetHostApiOwnerName(hostObject),
+                property,
+                ToMissingApiOperationKind(accessKind));
         }
 
         private bool TryGetHostObjectDefinedProperty(object hostObject, string property, out JsValue value)
@@ -13780,7 +13817,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             };
         }
 
-        private void RecordMissingHostApi(object receiver, string ownerName, string property)
+        private void RecordMissingHostApi(
+            object receiver,
+            string ownerName,
+            string property,
+            MissingApiOperationKind operationKind = MissingApiOperationKind.Read)
         {
             if (!ShouldRecordMissingHostApi(ownerName, property))
             {
@@ -13792,8 +13833,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 ownerName,
                 property,
                 _baseUri,
-                _functionPrototypeProperties.Contains(property));
+                _functionPrototypeProperties.Contains(property),
+                operationKind);
         }
+
+        private static MissingApiOperationKind ToMissingApiOperationKind(HostPropertyAccessKind accessKind)
+            => accessKind switch
+            {
+                HostPropertyAccessKind.InCheck => MissingApiOperationKind.InCheck,
+                HostPropertyAccessKind.DescriptorOperation => MissingApiOperationKind.DescriptorOperation,
+                HostPropertyAccessKind.PrototypeAccess => MissingApiOperationKind.PrototypeAccess,
+                _ => MissingApiOperationKind.Read
+            };
 
         private void RecordAssignedHostApi(object receiver, string ownerName, string property)
         {

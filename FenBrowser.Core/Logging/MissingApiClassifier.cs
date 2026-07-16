@@ -34,7 +34,8 @@ public sealed record MissingApiClassificationInput(
     string DefinedInterface = "",
     bool? ReceiverMatchesDefinedInterface = null,
     bool AssignmentObserved = false,
-    bool FunctionPrototypeMarkerObserved = false);
+    bool FunctionPrototypeMarkerObserved = false,
+    bool DescriptorTargetIsPrototype = false);
 
 public sealed record MissingApiClassificationResult(
     MissingApiClassification Classification,
@@ -104,6 +105,19 @@ public static class MissingApiClassifier
                     true,
                     definedInterface,
                     null);
+            }
+
+            if (input.OperationKind == MissingApiOperationKind.DescriptorOperation &&
+                !input.DescriptorTargetIsPrototype)
+            {
+                return new MissingApiClassificationResult(
+                    MissingApiClassification.Unclassified,
+                    input.OperationKind,
+                    false,
+                    "known-webidl-member-descriptor-target-is-instance",
+                    true,
+                    definedInterface,
+                    true);
             }
 
             return new MissingApiClassificationResult(

@@ -141,6 +141,15 @@ public sealed class MissingApiTrackerTests
             "Document",
             "className",
             FunctionPrototypeMarkerObserved: true));
+        var descriptorOnInstance = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Document",
+            "compareDocumentPosition",
+            MissingApiOperationKind.DescriptorOperation));
+        var descriptorOnPrototype = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+            "Document",
+            "compareDocumentPosition",
+            MissingApiOperationKind.DescriptorOperation,
+            DescriptorTargetIsPrototype: true));
 
         Assert.Equal("UNCLASSIFIED", MissingApiClassifier.ToToken(unknown.Classification));
         Assert.Equal("SITE_EXPANDO", MissingApiClassifier.ToToken(expando.Classification));
@@ -155,6 +164,8 @@ public sealed class MissingApiTrackerTests
         Assert.Equal("SITE_EXPANDO", MissingApiClassifier.ToToken(prototypeMarker.Classification));
         Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(prototypeMarkerStandard.Classification));
         Assert.Equal("WRONG_RECEIVER", MissingApiClassifier.ToToken(prototypeMarkerWrongReceiver.Classification));
+        Assert.Equal("UNCLASSIFIED", MissingApiClassifier.ToToken(descriptorOnInstance.Classification));
+        Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(descriptorOnPrototype.Classification));
         Assert.False(unknown.StandardPriorityEligible);
         Assert.False(expando.StandardPriorityEligible);
         Assert.False(legacy.StandardPriorityEligible);
@@ -168,6 +179,8 @@ public sealed class MissingApiTrackerTests
         Assert.False(prototypeMarker.StandardPriorityEligible);
         Assert.True(prototypeMarkerStandard.StandardPriorityEligible);
         Assert.False(prototypeMarkerWrongReceiver.StandardPriorityEligible);
+        Assert.False(descriptorOnInstance.StandardPriorityEligible);
+        Assert.True(descriptorOnPrototype.StandardPriorityEligible);
         Assert.Equal("Element", wrongReceiver.DefinedInterface);
         Assert.False(wrongReceiver.ReceiverMatchesDefinedInterface);
         Assert.Equal("Node", standard.DefinedInterface);
@@ -434,6 +447,141 @@ public sealed class MissingApiTrackerTests
             Assert.Equal("UNCLASSIFIED", record.GetProperty("classification").GetString());
             Assert.Equal("insufficient-classification-evidence", record.GetProperty("classificationReason").GetString());
             Assert.False(record.GetProperty("functionPrototypeMarkerObserved").GetBoolean());
+        }
+        finally
+        {
+            MissingApiTracker.ResetForTests();
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            TryDeleteDirectory(outputRoot);
+        }
+    }
+
+    [Fact]
+    public async Task MissingHostDescriptorQuery_RecordsDescriptorOperation()
+    {
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
+        var baseUri = new Uri("https://example.test/descriptor-operation.html");
+
+        try
+        {
+            MissingApiTracker.ConfigureForTests(outputRoot);
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            DisableTrace();
+
+            var document = new HtmlParser(
+                "<html><body><div id=\"target\">ok</div></body></html>",
+                baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.Sandbox = SandboxPolicy.AllowAll;
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("True", engine.Evaluate(@"
+                var target = document.getElementById('target');
+                Object.getOwnPropertyDescriptor(target, 'descriptor_probe_fixture') === undefined;")?.ToString());
+
+            using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
+            var record = Assert.Single(outputJson.RootElement.GetProperty("records").EnumerateArray());
+            Assert.Equal("HTMLDivElement.descriptor_probe_fixture", record.GetProperty("apiName").GetString());
+            Assert.Equal("UNCLASSIFIED", record.GetProperty("classification").GetString());
+            Assert.Equal("DESCRIPTOR_OPERATION", record.GetProperty("operationKind").GetString());
+            Assert.Equal(
+                new[] { "DESCRIPTOR_OPERATION" },
+                record.GetProperty("operationKindsObserved").EnumerateArray().Select(value => value.GetString()));
+            Assert.False(record.GetProperty("descriptorTargetIsPrototype").GetBoolean());
+            Assert.False(record.GetProperty("standardPriorityEligible").GetBoolean());
+        }
+        finally
+        {
+            MissingApiTracker.ResetForTests();
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            TryDeleteDirectory(outputRoot);
+        }
+    }
+
+    [Fact]
+    public async Task HostPropertyChecks_RecordDistinctOperationKinds()
+    {
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
+        var baseUri = new Uri("https://example.test/property-check-operations.html");
+
+        try
+        {
+            MissingApiTracker.ConfigureForTests(outputRoot);
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            DisableTrace();
+
+            var document = new HtmlParser(
+                "<html><body><div id=\"target\">ok</div></body></html>",
+                baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.Sandbox = SandboxPolicy.AllowAll;
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("false|false", engine.Evaluate(@"
+                var target = document.getElementById('target');
+                String('in_check_fixture' in target) + '|' +
+                  String(Object.prototype.hasOwnProperty.call(target, 'own_check_fixture'));")?.ToString());
+
+            using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
+            var records = outputJson.RootElement.GetProperty("records")
+                .EnumerateArray()
+                .ToDictionary(record => record.GetProperty("apiName").GetString()!, record => record);
+
+            Assert.Equal(
+                "IN_CHECK",
+                records["HTMLDivElement.in_check_fixture"].GetProperty("operationKind").GetString());
+            Assert.Equal(
+                "DESCRIPTOR_OPERATION",
+                records["HTMLDivElement.own_check_fixture"].GetProperty("operationKind").GetString());
+        }
+        finally
+        {
+            MissingApiTracker.ResetForTests();
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            TryDeleteDirectory(outputRoot);
+        }
+    }
+
+    [Fact]
+    public async Task KnownWebIdlDescriptorQueryOnInstance_DoesNotClaimMissingStandardApi()
+    {
+        var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
+        var baseUri = new Uri("https://example.test/descriptor-standard-instance.html");
+
+        try
+        {
+            MissingApiTracker.ConfigureForTests(outputRoot);
+            EngineCapabilities.Reset();
+            BrowserScriptEngineRuntime.Reset();
+            DisableTrace();
+
+            var document = new HtmlParser("<html><body>ok</body></html>", baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.Sandbox = SandboxPolicy.AllowAll;
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("True", engine.Evaluate(@"
+                Object.getOwnPropertyDescriptor(document, 'compareDocumentPosition') === undefined;")?.ToString());
+
+            using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
+            var record = Assert.Single(outputJson.RootElement.GetProperty("records").EnumerateArray());
+            Assert.Equal("Document.compareDocumentPosition", record.GetProperty("apiName").GetString());
+            Assert.Equal("DESCRIPTOR_OPERATION", record.GetProperty("operationKind").GetString());
+            Assert.True(record.GetProperty("knownWebIdlMember").GetBoolean());
+            Assert.False(record.GetProperty("descriptorTargetIsPrototype").GetBoolean());
+            Assert.Equal("UNCLASSIFIED", record.GetProperty("classification").GetString());
+            Assert.Equal(
+                "known-webidl-member-descriptor-target-is-instance",
+                record.GetProperty("classificationReason").GetString());
+            Assert.False(record.GetProperty("standardPriorityEligible").GetBoolean());
         }
         finally
         {

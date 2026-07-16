@@ -3868,3 +3868,17 @@ Verification:
 - Discovery lists 12 `MissingApiTrackerTests`; the class passes `12/12`. The combined tracker/export filter lists and passes `14/14`, with zero failures or skips.
 - Local final-code bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_function_prototype_marker.html/20260716T113659Z/`; zero callback failures/exceptions, blocker `none`, complete lifecycle, screenshot, and 26/26 manifest entries.
 - Google final-code bundle: `logs/real-site/www.google.com/20260716T113726Z/`; six prototype-marker records become evidence-backed site expandos, only `Location.toString` and `Navigator.geolocation` remain unclassified, callback failures/exceptions are zero, blocker is `none`, and the main UI screenshot plus all 26 artifacts are present.
+
+## 6.158 Host Property Operation-Kind Regression (2026-07-16)
+
+- Three compiled reductions exercise `Object.getOwnPropertyDescriptor`, the `in` operator, and `Object.prototype.hasOwnProperty.call` against missing host properties. They assert unchanged JavaScript results and distinct `DESCRIPTOR_OPERATION`/`IN_CHECK` records.
+- A known checked-in WebIDL member queried as an own descriptor on an instance is explicitly non-priority `UNCLASSIFIED`; a classifier control proves the same member can become `STANDARD_API` when the descriptor target is the defining prototype.
+- The descriptor observer is isolated from page execution and does not call the host getter. The additive host-hook overload preserves existing embedders through a default implementation.
+
+Verification:
+
+- Pre-fix descriptor reduction: `1` failed because no missing-API bundle was emitted.
+- Discovery lists all 15 `MissingApiTrackerTests`; the class passes `15/15`. The combined tracker/export filter lists and passes `17/17`, with zero failures or skips.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --nologo`: pass with zero warnings and zero errors.
+- Local final-code bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_operation_kinds.html/20260716T114816Z/`; expected rendered booleans, three retained operation records, zero callback failures/exceptions, blocker `none`, and 26/26 artifacts.
+- Google final-code bundle: `logs/real-site/www.google.com/20260716T114852Z/`; classifications remain 9 standard, 11 site expandos, 2 wrong receivers, 1 legacy probe, and 2 unclassified, while Closure UID probes now retain descriptor provenance.
