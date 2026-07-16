@@ -864,9 +864,24 @@ namespace FenBrowser.Tooling
             TryCopyLatestLogArtifact("fenbrowser_*_trace.jsonl", Path.Combine(bundleDir, "trace.jsonl"));
             TryCopyLatestStructuredLogArtifact(Path.Combine(bundleDir, "logs.ndjson"));
 
+            var artifactManifest = BuildArtifactManifest(bundleDir, report.Interaction != null);
+            var missingRequiredArtifacts = artifactManifest
+                .Where(static artifact => !artifact.exists)
+                .Select(static artifact => artifact.name)
+                .ToArray();
+            if (missingRequiredArtifacts.Length > 0)
+            {
+                firstBlocker = BuildFirstBlocker(report, missingRequiredArtifacts);
+                File.WriteAllText(
+                    Path.Combine(bundleDir, "first_blocker.json"),
+                    JsonSerializer.Serialize(firstBlocker, jsonOptions),
+                    new UTF8Encoding(false));
+                artifactManifest = BuildArtifactManifest(bundleDir, report.Interaction != null);
+            }
+
             File.WriteAllText(
                 Path.Combine(bundleDir, "artifact_manifest.json"),
-                JsonSerializer.Serialize(BuildArtifactManifest(bundleDir, report.Interaction != null), jsonOptions),
+                JsonSerializer.Serialize(artifactManifest, jsonOptions),
                 new UTF8Encoding(false));
 
             return bundleDir;
@@ -1781,7 +1796,7 @@ namespace FenBrowser.Tooling
             };
         }
 
-        private static List<object> BuildArtifactManifest(string bundleDir, bool includeInteraction)
+        private static List<DebugSiteArtifactManifestEntry> BuildArtifactManifest(string bundleDir, bool includeInteraction)
         {
             var expected = new List<string>
             {
@@ -1825,13 +1840,11 @@ namespace FenBrowser.Tooling
                 {
                     var path = Path.Combine(bundleDir, name);
                     var info = File.Exists(path) ? new FileInfo(path) : null;
-                    return (object)new
-                    {
+                    return new DebugSiteArtifactManifestEntry(
                         name,
-                        exists = info != null,
-                        sizeBytes = info?.Length ?? 0,
-                        lastWriteUtc = info?.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture)
-                    };
+                        info != null,
+                        info?.Length ?? 0,
+                        info?.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture));
                 })
                 .ToList();
         }
@@ -1861,7 +1874,9 @@ namespace FenBrowser.Tooling
             return DebugSiteExceptionSummaryBuilder.Build(report?.EventLoop, otherExceptions);
         }
 
-        private static FirstBlockerResult BuildFirstBlocker(DebugSiteReport report)
+        private static FirstBlockerResult BuildFirstBlocker(
+            DebugSiteReport report,
+            IReadOnlyList<string> missingRequiredArtifacts = null)
         {
             var lifecycle = report?.Lifecycle ?? new DebugSiteLifecycleSummary();
             var eventLoop = report?.EventLoop ?? new BrowserEventLoopSnapshot();
@@ -1977,7 +1992,8 @@ namespace FenBrowser.Tooling
                     : null,
                 Evidence = evidence,
                 NonFatalFailures = nonFatal,
-                ContradictoryArtifactWarnings = contradictions
+                ContradictoryArtifactWarnings = contradictions,
+                MissingRequiredArtifacts = missingRequiredArtifacts ?? Array.Empty<string>()
             };
 
             return FirstBlockerClassifier.Classify(input);
@@ -2308,6 +2324,12 @@ namespace FenBrowser.Tooling
             string OperationKind,
             string ClassificationReason,
             bool StandardPriorityEligible);
+
+        private sealed record DebugSiteArtifactManifestEntry(
+            string name,
+            bool exists,
+            long sizeBytes,
+            string lastWriteUtc);
 
         internal sealed record DebugSiteScreenshotResult(
             bool Captured,

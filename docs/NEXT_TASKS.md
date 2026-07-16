@@ -52,7 +52,7 @@ Performance impact: Bound unique records per document and avoid allocating stack
 Compatibility impact: Improves attribution; does not add fake browser members.
 Known risks: Misclassifying a true standard member or suppressing a causal probe.
 Blockers: None
-Next action: Leave the two non-causal standard misses visible and continue with TRACE-003 missing-artifact and clock-mismatch classifier fixtures; the navigation detail already labels its timed-out sample as historical.
+Next action: Leave the two non-causal standard misses visible; TRACE-003 now covers missing artifacts and clock inversion, so continue with its schema-version/malformed-artifact boundary or another higher-value dependency.
 
 ## Task TRACE-003
 
@@ -66,19 +66,19 @@ Risk Level: Medium
 Dependencies: Lifecycle, network, script, event-loop, style/layout, and raw trace artifacts are INTEGRATED
 Files likely involved: New classifier under `FenBrowser.Tooling`, `FenBrowser.Tooling/Program.cs`, included Tooling/diagnostic tests
 Specs/references: `docs/DIAGNOSTICS.md`; `docs/REAL_SITE_DEBUGGING.md`
-Current behavior: `first_blocker.json` deterministically evaluates 19 navigation-through-interaction milestones, keeps post-load callback defects non-fatal, emits contradiction warnings, and marks unattempted interaction explicitly. Google reports `none`. The navigation transition's bounded event-loop sample is explicitly labeled `transition-time` and timed out, while current lifecycle/event-loop fields agree on complete/DCL/load.
+Current behavior: `first_blocker.json` deterministically evaluates 19 navigation-through-interaction milestones, keeps post-load callback defects non-fatal, emits contradiction and bounded evidence-quality warnings, and marks unattempted interaction explicitly. Missing required artifacts and causal-sequence timestamp inversions produce `insufficient-evidence` owned by Tooling/Diagnostics. Fresh Google reports `none`, 0 evidence-quality warnings, and 26/26 artifacts.
 Expected behavior: `first_blocker.json` names one earliest causal blocker, affected milestone, A-L bucket, subsystem owner, evidence records, and confidence; `none` is explicit when boot succeeds.
 Reproduction: Use fixtures for navigation failure, script throw, missing API causing throw, late optional resource failure, zero-size root, and successful page.
 Root cause: The prior summary had no normalized candidate model, milestone dependency graph, or fatality filter.
 Implementation plan: Parse typed artifacts; normalize sequence/time; derive required milestones; filter non-fatal probes/late optional errors; rank by blocked milestone then causal sequence; emit typed result and summary rendering.
-Tests required: One fixture per A-L-relevant implemented bucket, tie ordering, contradictory lifecycle sources, missing artifact, clock mismatch, successful page, and schema-version tests.
+Tests required: One fixture per A-L-relevant implemented bucket, tie ordering, contradictory lifecycle sources, missing artifact, clock mismatch, successful page, malformed artifact, and schema-version tests.
 Evidence required: Deterministic repeated output and correct blocker for every fixture plus current Google result of `none` with remaining gaps listed separately.
 Security impact: Do not embed secrets or unbounded payloads in evidence excerpts.
 Performance impact: Offline/bundle-finalization work with bounded artifact sizes.
 Compatibility impact: Changes diagnostics only; no page behavior.
 Known risks: Causal inference presented as certainty; guard with evidence IDs and confidence.
 Blockers: None
-Next action: Add missing-artifact and clock-mismatch classifier fixtures; expand lifecycle coverage for async/defer/module/destruction separately from the now-labeled transition observation.
+Next action: Add schema-version and malformed-artifact classifier fixtures; expand lifecycle coverage for async/defer/module/destruction separately from the now-labeled transition observation.
 
 ## Task TEST-001
 

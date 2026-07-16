@@ -53,6 +53,60 @@ public sealed class FirstBlockerClassifierTests
             result.UnverifiedMilestones);
     }
 
+    [Fact]
+    public void Classify_ClockInversionIsVerificationInsufficiency()
+    {
+        var input = BootInput() with
+        {
+            Evidence =
+            [
+                new FirstBlockerEvidence(
+                    "navigation-response",
+                    "Navigation",
+                    "Core/Network",
+                    "ResponseReceived",
+                    2,
+                    "2026-07-16T12:00:05.0000000Z",
+                    false,
+                    "response observed"),
+                new FirstBlockerEvidence(
+                    "document-created",
+                    "Lifecycle",
+                    "FenEngine/Lifecycle",
+                    "DocumentCreated",
+                    3,
+                    "2026-07-16T11:59:55.0000000Z",
+                    false,
+                    "document observed")
+            ]
+        };
+
+        var result = FirstBlockerClassifier.Classify(input);
+
+        Assert.Equal("insufficient-evidence", result.Result);
+        Assert.Equal("VerificationInfrastructure", result.FailureBucket);
+        Assert.Equal("EvidenceTimeline", result.MilestoneBlocked);
+        Assert.Single(result.EvidenceQualityWarnings);
+        Assert.Contains("Evidence clock inversion", result.EvidenceQualityWarnings[0]);
+    }
+
+    [Fact]
+    public void Classify_MissingRequiredArtifactIsVerificationInsufficiency()
+    {
+        var result = FirstBlockerClassifier.Classify(BootInput() with
+        {
+            MissingRequiredArtifacts = ["trace.jsonl"],
+            ContradictoryArtifactWarnings = ["lifecycle sample disagrees"]
+        });
+
+        Assert.Equal("insufficient-evidence", result.Result);
+        Assert.Equal("VerificationInfrastructure", result.FailureBucket);
+        Assert.Equal("Tooling/Diagnostics", result.SubsystemOwner);
+        Assert.Equal("ArtifactCompleteness", result.MilestoneBlocked);
+        Assert.Equal(["Required artifact missing: trace.jsonl."], result.EvidenceQualityWarnings);
+        Assert.Equal(["lifecycle sample disagrees"], result.ContradictoryArtifactWarnings);
+    }
+
     private static FirstBlockerInput BootInput() => new(
         NavigationRequested: true,
         ResponseReceived: true,

@@ -24,6 +24,7 @@ public sealed record FirstBlockerInput(
     public IReadOnlyList<FirstBlockerEvidence> Evidence { get; init; } = Array.Empty<FirstBlockerEvidence>();
     public IReadOnlyList<string> NonFatalFailures { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> ContradictoryArtifactWarnings { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> MissingRequiredArtifacts { get; init; } = Array.Empty<string>();
 }
 
 public sealed record FirstBlockerEvidence(
@@ -51,6 +52,7 @@ public sealed record FirstBlockerResult(
     string Explanation,
     IReadOnlyList<string> AlternativeCandidates,
     IReadOnlyList<string> NonFatalRemainingFailures,
+    IReadOnlyList<string> EvidenceQualityWarnings,
     IReadOnlyList<string> ContradictoryArtifactWarnings,
     IReadOnlyList<string> UnverifiedMilestones,
     IReadOnlyList<FirstBlockerMilestone> Milestones);
@@ -75,10 +77,40 @@ public static class FirstBlockerClassifier
             .ThenBy(static item => item.TimestampUtc, StringComparer.Ordinal)
             .ThenBy(static item => item.EvidenceId, StringComparer.Ordinal)
             .ToList();
+        var missingArtifacts = (input.MissingRequiredArtifacts ?? Array.Empty<string>())
+            .Where(static name => !string.IsNullOrWhiteSpace(name))
+            .Select(static name => name.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(static name => name, StringComparer.Ordinal)
+            .Take(64)
+            .ToList();
+        var evidenceQualityWarnings = BuildEvidenceQualityWarnings(evidence, missingArtifacts);
 
         nonFatal.AddRange(evidence
             .Where(static item => !item.Required)
             .Select(static item => item.EvidenceId + ": " + item.Explanation));
+
+        if (evidenceQualityWarnings.Count > 0)
+        {
+            var missingArtifactEvidence = missingArtifacts.Count > 0;
+            return Create(
+                "insufficient-evidence",
+                "VerificationInfrastructure",
+                "Tooling/Diagnostics",
+                missingArtifactEvidence ? "ArtifactCompleteness" : "EvidenceTimeline",
+                null,
+                Array.Empty<string>(),
+                0,
+                missingArtifactEvidence
+                    ? "One or more required diagnostic artifacts are missing."
+                    : "Evidence timestamps contradict their causal sequence.",
+                evidenceQualityWarnings,
+                nonFatal,
+                evidenceQualityWarnings,
+                contradictions,
+                unverified,
+                milestones);
+        }
 
         if (contradictions.Count > 0)
         {
@@ -93,6 +125,7 @@ public static class FirstBlockerClassifier
                 "Artifacts disagree about terminal lifecycle state.",
                 contradictions,
                 nonFatal,
+                evidenceQualityWarnings,
                 contradictions,
                 unverified,
                 milestones);
@@ -116,6 +149,7 @@ public static class FirstBlockerClassifier
                 causal.Explanation,
                 alternatives,
                 nonFatal,
+                evidenceQualityWarnings,
                 contradictions,
                 unverified,
                 milestones);
@@ -138,6 +172,7 @@ public static class FirstBlockerClassifier
                     : "A required milestone is absent, but no causal evidence record identifies why.",
                 Array.Empty<string>(),
                 nonFatal,
+                evidenceQualityWarnings,
                 contradictions,
                 unverified,
                 milestones);
@@ -156,6 +191,7 @@ public static class FirstBlockerClassifier
                 : "Boot and rendering completed; interaction milestones remain unverified.",
             Array.Empty<string>(),
             nonFatal,
+            evidenceQualityWarnings,
             contradictions,
             unverified,
             milestones);
@@ -172,6 +208,7 @@ public static class FirstBlockerClassifier
         string explanation,
         IReadOnlyList<string> alternatives,
         IReadOnlyList<string> nonFatal,
+        IReadOnlyList<string> evidenceQualityWarnings,
         IReadOnlyList<string> contradictions,
         IReadOnlyList<string> unverified,
         IReadOnlyList<FirstBlockerMilestone> milestones) => new(
@@ -187,9 +224,52 @@ public static class FirstBlockerClassifier
             Explanation: explanation,
             AlternativeCandidates: alternatives,
             NonFatalRemainingFailures: nonFatal,
+            EvidenceQualityWarnings: evidenceQualityWarnings,
             ContradictoryArtifactWarnings: contradictions,
             UnverifiedMilestones: unverified,
             Milestones: milestones);
+
+    private static List<string> BuildEvidenceQualityWarnings(
+        IReadOnlyList<FirstBlockerEvidence> evidence,
+        IReadOnlyList<string> missingArtifacts)
+    {
+        var warnings = missingArtifacts
+            .Select(static name => $"Required artifact missing: {name}.")
+            .ToList();
+        var timeline = evidence
+            .Where(static item => item.Sequence > 0 &&
+                                  TryParseTimestamp(item.TimestampUtc, out _))
+            .OrderBy(static item => item.Sequence)
+            .ThenBy(static item => item.EvidenceId, StringComparer.Ordinal)
+            .ToList();
+
+        for (var index = 1; index < timeline.Count && warnings.Count < 64; index++)
+        {
+            var previous = timeline[index - 1];
+            var current = timeline[index];
+            if (current.Sequence <= previous.Sequence ||
+                !TryParseTimestamp(previous.TimestampUtc, out var previousTimestamp) ||
+                !TryParseTimestamp(current.TimestampUtc, out var currentTimestamp) ||
+                currentTimestamp >= previousTimestamp)
+            {
+                continue;
+            }
+
+            warnings.Add(
+                $"Evidence clock inversion: sequence {current.Sequence} ({current.EvidenceId}) at " +
+                $"{currentTimestamp:O} precedes sequence {previous.Sequence} ({previous.EvidenceId}) at {previousTimestamp:O}.");
+        }
+
+        return warnings;
+    }
+
+    private static bool TryParseTimestamp(string value, out DateTimeOffset timestamp) =>
+        DateTimeOffset.TryParse(
+            value,
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal |
+            System.Globalization.DateTimeStyles.AdjustToUniversal,
+            out timestamp);
 
     private static List<FirstBlockerMilestone> BuildMilestones(FirstBlockerInput input) =>
     [

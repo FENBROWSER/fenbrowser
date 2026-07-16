@@ -26,7 +26,7 @@ dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --n
 | Event-loop snapshot | TESTED | DCL/load, timers, rAF counters, and bounded typed timer/event/unhandled-Promise failures with task/source/receiver/stack provenance | Add microtask, rAF, repeating-timer, and invalidation reductions |
 | Network capture | INTEGRATED | Request/response records and counts | Correct non-HTTP schemes and add policy/cookie/CORS disposition |
 | Missing API runtime tracker | TESTED | Schema-v2 per-site records and the post-drain bounded bundle include concrete receiver identity, first/ordered `READ`/`WRITE`/`IN_CHECK`/`DESCRIPTOR_OPERATION` evidence, descriptor target identity, assignment timing, checked-in-IDL/stringifier/partial-interface evidence, classification, reason, priority eligibility, and source/navigation provenance; fresh Google classifies all 25 records | Require causal or selected-WPT evidence before implementing confirmed missing standard members |
-| First blocker summary | TESTED | Typed `first_blocker.json` models 19 milestones, separates non-fatal/unverified work, and treats labeled transition-time lifecycle samples as historical | Add missing-artifact and clock-mismatch fixtures |
+| First blocker summary | TESTED | Typed `first_blocker.json` models 19 milestones, separates non-fatal/unverified work, treats labeled transition-time lifecycle samples as historical, and returns verification insufficiency for missing required artifacts or sequence/timestamp inversion | Add schema-version and malformed-artifact fixtures |
 | Exceptions artifact | TESTED | Timer, event-listener, and unhandled-Promise totals and retained typed records share the drained event-loop snapshot | Add microtask, parser, IPC, crash, redaction, and export-failure sources |
 | Interaction acceptance | TESTED | Generic selector-driven local form run records target, focus, typing, submit, terminal navigation, bounded capture/bubble events, and before/after screenshots | Run the same command on Google and reduce its earliest failed milestone if any |
 | DOM/style/layout/paint dumps | INTEGRATED | Current bundle has text dumps and screenshot | Add HTML DOM serialization contract and selector inspection |
@@ -120,7 +120,7 @@ A missing property is not fatal merely because it was read. It becomes a fatal c
 | `ipc.json` | INTEGRATED | Schema v1 typed inactive/not-configured/no-events record in in-process mode; active brokered event capture remains open |
 | `sandbox_denials.json` | INTEGRATED | Schema v1 typed inactive/not-configured/no-denials record when no sandbox is active; active denial capture remains open |
 | `performance.json` | INTEGRATED | Schema v1 partial single-sample navigation/render/event-loop metrics with unavailable metrics named explicitly; not a benchmark |
-| `first_blocker.json` | TESTED | Deterministic typed result, evidence candidates, contradictions, non-fatal defects, and 19 milestone states |
+| `first_blocker.json` | TESTED | Deterministic typed result, evidence candidates, bounded evidence-quality warnings, contradictions, non-fatal defects, and 19 milestone states; artifact completeness is evaluated after bundle copies |
 | `dom_dump.html` | NOT_STARTED | Current bundle emits `dom_dump.txt`; canonical HTML serialization remains to be added |
 | `style_dump.txt` | INTEGRATED | DOM-preorder computed-style snapshot |
 | `layout_dump.txt` | INTEGRATED | Box/LayoutBox geometry snapshot |

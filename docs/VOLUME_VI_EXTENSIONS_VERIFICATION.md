@@ -3890,3 +3890,16 @@ Verification:
 - Discovery lists 17 `MissingApiTrackerTests`; the combined tracker/export filter lists and passes `19/19`, with zero failures or skips. Core Release builds with zero warnings and zero errors.
 - Local bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_stringifier_partial_interface.html/20260716T115734Z/`; two standard records, unchanged values, zero callback failures/exceptions, blocker `none`, and 26/26 artifacts.
 - Google bundle: `logs/real-site/www.google.com/20260716T115831Z/`; all 25 records classified, zero callback failures/exceptions, blocker `none`, visible main UI, and complete artifact manifest.
+
+## 6.160 First-Blocker Evidence-Quality Classification (2026-07-16)
+
+- `FirstBlockerClassifier` now emits bounded `EvidenceQualityWarnings`. A required artifact missing after bundle copies produces `insufficient-evidence`/`VerificationInfrastructure` at `ArtifactCompleteness`; a later causal sequence with an earlier parseable UTC timestamp produces the same result at `EvidenceTimeline`.
+- The bundle writer builds its manifest after all artifact copies, reclassifies only when required files are absent, rewrites `first_blocker.json`, and then serializes the final manifest. Missing diagnostics can no longer masquerade as engine success.
+- The checks are bounded to 64 distinct artifact/warning entries and retain only fixed artifact names plus evidence IDs/timestamps already present in the causal model.
+
+Verification:
+
+- Red: `Classify_ClockInversionIsVerificationInsufficiency` returned `none` before the evidence-quality check.
+- Green/discovery: the lifecycle/classifier slice lists the two new methods and passes `20/20`; the artifact/exception contract passes `2/2`. Tooling Release builds with zero warnings and zero errors.
+- Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_stringifier_partial_interface.html/20260716T120850Z/` reports blocker `none`, zero evidence-quality warnings/contradictions, and 26/26 artifacts.
+- Fresh Google bundle `logs/real-site/www.google.com/20260716T120932Z/` reports the same evidence-quality result, zero callback failures/exceptions, complete lifecycle, visible main UI, and all 26 artifacts.
