@@ -86,6 +86,7 @@ namespace FenBrowser.FenEngine.Rendering
 
     internal sealed class ParseCheckpointState
     {
+        public long RenderGeneration { get; init; }
         public int ParsingDocumentCheckpointCount { get; set; }
         public int ParsingCheckpointOrdinal { get; set; }
         public int IncrementalRepaintCount { get; set; }
@@ -108,6 +109,7 @@ namespace FenBrowser.FenEngine.Rendering
         private const int ImagePrewarmQueueBudget = 32;
         private const int ImagePrewarmMaxConcurrency = 6;
         private readonly object _renderStateLock = new();
+        private long _renderGeneration;
 
         public Func<Uri, Task<string>> ScriptFetcher { get; set; }
 
@@ -157,38 +159,65 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private void SetComputedStyles(Dictionary<Node, CssComputed> styles)
+        private bool TrySetActiveDom(Node dom, bool markSnapshotUnstable, long renderGeneration)
         {
             lock (_renderStateLock)
             {
-                LastComputedStyles = styles;
-                _hasStableStyles = styles != null;
+                if (_renderGeneration != renderGeneration)
+                {
+                    return false;
+                }
+
+                _activeDom = dom;
+                if (markSnapshotUnstable)
+                {
+                    _hasStableStyles = false;
+                }
+
                 _renderSnapshotVersion++;
+                return true;
             }
         }
 
-        private void MarkStyleSnapshotUnstable()
+        private long BeginRenderGeneration()
         {
             lock (_renderStateLock)
             {
-                _hasStableStyles = false;
-                _renderSnapshotVersion++;
+                return ++_renderGeneration;
             }
         }
 
-        private void BeginAwaitingPostScriptSnapshot()
+        private bool IsCurrentRenderGeneration(long renderGeneration)
         {
             lock (_renderStateLock)
             {
+                return _renderGeneration == renderGeneration;
+            }
+        }
+
+        private void BeginAwaitingPostScriptSnapshot(long renderGeneration = 0)
+        {
+            lock (_renderStateLock)
+            {
+                if (renderGeneration != 0 && _renderGeneration != renderGeneration)
+                {
+                    return;
+                }
+
                 _awaitingPostScriptSnapshot = true;
                 _renderSnapshotVersion++;
             }
         }
 
-        private void EndAwaitingPostScriptSnapshot()
+        private void EndAwaitingPostScriptSnapshot(long renderGeneration = 0)
         {
             lock (_renderStateLock)
             {
+                if (renderGeneration != 0 && _renderGeneration != renderGeneration)
+                {
+                    return;
+                }
+
                 _awaitingPostScriptSnapshot = false;
                 _renderSnapshotVersion++;
             }
@@ -207,10 +236,18 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private void UpdateRenderState(Node dom, Dictionary<Node, CssComputed> styles)
+        private bool UpdateRenderState(
+            Node dom,
+            Dictionary<Node, CssComputed> styles,
+            long renderGeneration = 0)
         {
             lock (_renderStateLock)
             {
+                if (renderGeneration != 0 && _renderGeneration != renderGeneration)
+                {
+                    return false;
+                }
+
                 if (dom != null)
                 {
                     _activeDom = dom;
@@ -219,6 +256,7 @@ namespace FenBrowser.FenEngine.Rendering
                 LastComputedStyles = styles;
                 _hasStableStyles = styles != null;
                 _renderSnapshotVersion++;
+                return true;
             }
         }
 
@@ -1420,7 +1458,7 @@ public void Dispose()
             return changes;
         }
 
-        private async Task CaptureActiveContextAsync(
+        private bool TryCaptureActiveContext(
             Element dom,
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
@@ -1429,27 +1467,36 @@ public void Dispose()
             double? viewportWidth,
             double? viewportHeight,
             Action<object> onFixedBackground,
-            IBrowserScriptEngine js)
+            IBrowserScriptEngine js,
+            long renderGeneration)
         {
-            SetActiveDom(dom);
-            _activeBaseUri = baseUri;
-            _activeFetchCss = fetchExternalCssAsync;
-            _activeImageLoader = imageLoader;
-            _activeOnNavigate = onNavigate;
-            _activeViewportWidth = viewportWidth;
-            _activeViewportHeight = viewportHeight;
-            _activeFixedBackground = onFixedBackground;
-            // Only update _activeJs if a new engine is provided; preserve existing during repaints
-            if (js != null) _activeJs = js;
+            lock (_renderStateLock)
+            {
+                if (_renderGeneration != renderGeneration)
+                {
+                    return false;
+                }
+
+                _activeDom = dom;
+                _activeBaseUri = baseUri;
+                _activeFetchCss = fetchExternalCssAsync;
+                _activeImageLoader = imageLoader;
+                _activeOnNavigate = onNavigate;
+                _activeViewportWidth = viewportWidth;
+                _activeViewportHeight = viewportHeight;
+                _activeFixedBackground = onFixedBackground;
+                _activeJs = js;
+                _renderSnapshotVersion++;
+            }
             
             // Keep the JS bridge synchronized with the live DOM without executing page scripts.
             // Full script execution still happens later in RunScriptsAsync with a timeout budget.
-            if (_activeJs != null && dom != null)
+            if (js != null && dom != null)
             {
                 try 
                 { 
                     EngineLogCompat.Debug("[CaptureActiveContext] Calling SyncDomContext...", LogCategory.Rendering);
-                    _activeJs.SyncDomContext(dom, baseUri);
+                    js.SyncDomContext(dom, baseUri);
                     EngineLogCompat.Debug("[CaptureActiveContext] SyncDomContext returned.", LogCategory.Rendering);
                     EngineLogCompat.Debug($"[CaptureActiveContext] Synced JS DOM to _activeDom hash={dom.GetHashCode()}", LogCategory.Rendering);
                 }
@@ -1459,10 +1506,15 @@ public void Dispose()
                 }
             }
             
-            if (_activeJs != null)
+            if (js != null)
             {
-                try { _activeJs.FetchOverride = ScriptFetcher; }
+                try { js.FetchOverride = ScriptFetcher; }
                 catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] Failed to set FetchOverride: {ex.Message}", LogCategory.Rendering); }
+            }
+
+            if (!IsCurrentRenderGeneration(renderGeneration))
+            {
+                return false;
             }
 
             // Extract and fire title
@@ -1485,6 +1537,8 @@ public void Dispose()
             {
                 EngineLogCompat.Warn($"[CustomHtmlEngine] Title extraction failed: {ex.Message}", LogCategory.Rendering);
             }
+
+            return IsCurrentRenderGeneration(renderGeneration);
         }
 
         private void ConfigureMedia(double? viewportWidth, double? viewportHeight)
@@ -1535,9 +1589,14 @@ public void Dispose()
             double? viewportWidth,
             double? viewportHeight,
             Action<object> onFixedBackground,
-            bool includeDiagnosticsBanner)
+            bool includeDiagnosticsBanner,
+            long renderGeneration = 0)
         {
-            if (dom == null) return null;
+            if (dom == null || (renderGeneration != 0 && !IsCurrentRenderGeneration(renderGeneration)))
+            {
+                return null;
+            }
+
             var _buildTreeStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
             ConfigureMedia(viewportWidth, viewportHeight);
@@ -1548,7 +1607,15 @@ public void Dispose()
             // The EngineLoop polls for styles during CSS computation (which can take 20+ seconds).
             // Setting to null causes the renderer to skip styling until computation completes.
             // Instead, keep the previous styles visible until new ones are ready.
-            LastCssSources = null;
+            lock (_renderStateLock)
+            {
+                if (renderGeneration != 0 && _renderGeneration != renderGeneration)
+                {
+                    return null;
+                }
+
+                LastCssSources = null;
+            }
             try
             {
                 // PERF: LoadCssAsync() in RenderAsync already ran CascadeIntoComputedStyles()
@@ -1566,7 +1633,11 @@ public void Dispose()
                     var cssEngine = CssEngineFactory.GetEngine();
                     EngineLogCompat.Debug($"[CustomHtmlEngine] BuildVisualTree: Engine={cssEngine.EngineName}", LogCategory.Rendering);
 
-                    SetComputedStyles(await cssEngine.ComputeStylesAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight));
+                    var computedStyles = await cssEngine.ComputeStylesAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight);
+                    if (!UpdateRenderState(dom, computedStyles, renderGeneration))
+                    {
+                        return null;
+                    }
                     EngineLogCompat.Debug($"[PERF] CSS ComputeStyles: {_buildTreeStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
                     // Assign computed styles to nodes so Layout Engine can see them
@@ -1587,7 +1658,15 @@ public void Dispose()
             catch (Exception ex)
             {
                 EngineLogCompat.Error($"[CustomHtmlEngine] CssLoader CRASH: {ex}", LogCategory.Rendering);
-                SetComputedStyles(new Dictionary<Node, CssComputed>());
+                if (!UpdateRenderState(dom, new Dictionary<Node, CssComputed>(), renderGeneration))
+                {
+                    return null;
+                }
+            }
+
+            if (renderGeneration != 0 && !IsCurrentRenderGeneration(renderGeneration))
+            {
+                return null;
             }
 
             // var computed = result.Computed; // Use LastComputedStyles instead
@@ -1688,6 +1767,11 @@ public void Dispose()
 
         // [MIGRATION] View logic removed. Host is responsible for rendering.
 
+        if (renderGeneration != 0 && !IsCurrentRenderGeneration(renderGeneration))
+        {
+            return null;
+        }
+
         EngineLogCompat.Debug("[RenderAsync] Visual tree built properly (Headless)", LogCategory.Rendering);
         return activeRenderer;
         }
@@ -1714,25 +1798,52 @@ public void Dispose()
                 return await tcs.Task;
             }
 
-            if (_activeDom == null)
-                return null;
-            
-            // Debug: Log _activeDom hash
-            // Debug: Log _activeDom hash
-            EngineLogCompat.Debug($"[RefreshAsyncInternal] using _activeDom hash={_activeDom.GetHashCode()}", LogCategory.Rendering);
+            long renderGeneration;
+            Node activeDom;
+            Uri activeBaseUri;
+            Func<Uri, Task<string>> activeFetchCss;
+            Func<Uri, Task<Stream>> activeImageLoader;
+            Action<Uri> activeOnNavigate;
+            IBrowserScriptEngine activeJs;
+            double? activeViewportWidth;
+            double? activeViewportHeight;
+            Action<object> activeFixedBackground;
+            lock (_renderStateLock)
+            {
+                renderGeneration = _renderGeneration;
+                activeDom = _activeDom;
+                activeBaseUri = _activeBaseUri;
+                activeFetchCss = _activeFetchCss;
+                activeImageLoader = _activeImageLoader;
+                activeOnNavigate = _activeOnNavigate;
+                activeJs = _activeJs;
+                activeViewportWidth = _activeViewportWidth;
+                activeViewportHeight = _activeViewportHeight;
+                activeFixedBackground = _activeFixedBackground;
+            }
 
-            var fetchCss = _activeFetchCss ?? (async _ => { await Task.CompletedTask; return string.Empty; });
+            if (activeDom == null)
+            {
+                return null;
+            }
+
+            // Debug: Log _activeDom hash
+            // Debug: Log _activeDom hash
+            EngineLogCompat.Debug($"[RefreshAsyncInternal] using _activeDom hash={activeDom.GetHashCode()}", LogCategory.Rendering);
+
+            var fetchCss = activeFetchCss ?? (async _ => { await Task.CompletedTask; return string.Empty; });
             return await BuildVisualTreeAsync(
-                (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement,
-                _activeBaseUri,
+                (activeDom as Element) ?? (activeDom as Document)?.DocumentElement,
+                activeBaseUri,
                 fetchCss,
-                _activeImageLoader,
-                _activeOnNavigate,
-                _activeJs,
-                _activeViewportWidth,
-                _activeViewportHeight ?? GetPrimaryWindowHeight(),
-                _activeFixedBackground,
-                includeDiagnosticsBanner).ConfigureAwait(false);
+                activeImageLoader,
+                activeOnNavigate,
+                activeJs,
+                activeViewportWidth,
+                activeViewportHeight ?? GetPrimaryWindowHeight(),
+                activeFixedBackground,
+                includeDiagnosticsBanner,
+                renderGeneration).ConfigureAwait(false);
         }
 
         private async Task DispatchRepaintAsync(object element)
@@ -1781,11 +1892,11 @@ public void Dispose()
             _eventLoopCoordinator.NotifyLayoutDirty();
         }
 
-        private async Task<DomParseResult> RunDomParseAsync(string html, Uri baseUri)
+        private async Task<DomParseResult> RunDomParseAsync(string html, Uri baseUri, long renderGeneration)
         {
             var parseInput = html ?? string.Empty;
             var interleavedBatchSize = ResolveInterleavedTokenBatchSize(EnableInterleavedPrimaryParse, parseInput.Length);
-            var parseCheckpointState = new ParseCheckpointState();
+            var parseCheckpointState = new ParseCheckpointState { RenderGeneration = renderGeneration };
             var streamingPreparseMs = 0L;
             var streamingPreparseCheckpointCount = 0;
             var streamingPreparseRepaintCount = 0;
@@ -1795,6 +1906,7 @@ public void Dispose()
                 {
                     streamingPreparseMs = await RunStreamingPreparseAsync(
                         parseInput,
+                        renderGeneration,
                         checkpointCount => streamingPreparseCheckpointCount = checkpointCount,
                         repaintCount => streamingPreparseRepaintCount = repaintCount).ConfigureAwait(false);
                 }
@@ -1891,16 +2003,18 @@ public void Dispose()
                     parsedDocument.BaseURI = absoluteBase;
                 }
 
-                EmitDocumentCreatedTrace(parsedDocument, baseUri, parseResult?.Outcome, parseResult?.Metrics);
-
                 Node parsedRoot = (Node)parsedDocument.DocumentElement ?? parsedDocument;
-                
-                // DEBUG: Dump DOM
-                try {
-                     var sb = new StringBuilder();
-                     DumpTree(parsedRoot, sb, 0);
-                     System.IO.File.WriteAllText(DiagnosticPaths.GetRootArtifactPath("dom_dump.txt"), sb.ToString());
-                } catch (Exception ex) { EngineLogCompat.Warn($"[RenderAsync] Failed writing dom_dump.txt: {ex.Message}", LogCategory.Rendering); }
+                if (IsCurrentRenderGeneration(renderGeneration))
+                {
+                    EmitDocumentCreatedTrace(parsedDocument, baseUri, parseResult?.Outcome, parseResult?.Metrics);
+
+                    // Dump only the document that still owns the active render generation.
+                    try {
+                         var sb = new StringBuilder();
+                         DumpTree(parsedRoot, sb, 0);
+                         System.IO.File.WriteAllText(DiagnosticPaths.GetRootArtifactPath("dom_dump.txt"), sb.ToString());
+                    } catch (Exception ex) { EngineLogCompat.Warn($"[RenderAsync] Failed writing dom_dump.txt: {ex.Message}", LogCategory.Rendering); }
+                }
 
                 var metrics = parseResult?.Metrics ?? new HtmlParseBuildMetrics();
                 return new DomParseResult
@@ -1977,7 +2091,8 @@ public void Dispose()
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
             double? viewportWidth = null,
-            double? viewportHeight = null)
+            double? viewportHeight = null,
+            long renderGeneration = 0)
         {
              try
              {
@@ -2003,7 +2118,11 @@ public void Dispose()
                  {
                      // CRITICAL FIX: Actually store the computed styles!
                      var computedStyles = await cssTask;
-                     UpdateRenderState(dom, computedStyles);
+                     if (!UpdateRenderState(dom, computedStyles, renderGeneration))
+                     {
+                         EngineLogCompat.Debug("[RenderAsync] Ignoring stale CSS result from an older render generation", LogCategory.Rendering);
+                         return;
+                     }
                      EngineLogCompat.Info($"[RenderAsync] CSS loading complete. Styles Count={LastComputedStyles?.Count ?? 0}", LogCategory.Rendering);
                      FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles?.Count ?? 0);
 
@@ -2036,7 +2155,7 @@ public void Dispose()
                  // doesn't treat the page as completely unstyled (which collapses iframes etc.)
                  if (LastComputedStyles == null && dom != null)
                  {
-                     UpdateRenderState(dom, new Dictionary<Node, CssComputed>());
+                     UpdateRenderState(dom, new Dictionary<Node, CssComputed>(), renderGeneration);
                  }
              }
         }
@@ -2129,14 +2248,26 @@ public void Dispose()
         /// </summary>
         public async Task RecascadeAsync()
         {
-            if (_activeDom == null || _activeBaseUri == null || _activeFetchCss == null)
+            long renderGeneration;
+            Node activeDom;
+            Uri activeBaseUri;
+            Func<Uri, Task<string>> activeFetchCss;
+            lock (_renderStateLock)
+            {
+                renderGeneration = _renderGeneration;
+                activeDom = _activeDom;
+                activeBaseUri = _activeBaseUri;
+                activeFetchCss = _activeFetchCss;
+            }
+
+            var domEl = (activeDom as FenBrowser.Core.Dom.V2.Element)
+                     ?? (activeDom as FenBrowser.Core.Dom.V2.Document)?.DocumentElement;
+            if (domEl == null || activeBaseUri == null || activeFetchCss == null)
+            {
                 return;
+            }
 
-            var domEl = (_activeDom as FenBrowser.Core.Dom.V2.Element)
-                     ?? (_activeDom as FenBrowser.Core.Dom.V2.Document)?.DocumentElement;
-            if (domEl == null) return;
-
-            await LoadCssAsync(domEl, _activeBaseUri, _activeFetchCss).ConfigureAwait(false);
+            await LoadCssAsync(domEl, activeBaseUri, activeFetchCss, renderGeneration: renderGeneration).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -2146,11 +2277,23 @@ public void Dispose()
         /// </summary>
         private async Task IncrementalRecascadeAsync()
         {
-            if (_activeDom == null) return;
+            long renderGeneration;
+            Node activeDom;
+            Func<Uri, Task<string>> activeFetchCss;
+            double? activeViewportWidth;
+            double? activeViewportHeight;
+            lock (_renderStateLock)
+            {
+                renderGeneration = _renderGeneration;
+                activeDom = _activeDom;
+                activeFetchCss = _activeFetchCss;
+                activeViewportWidth = _activeViewportWidth;
+                activeViewportHeight = _activeViewportHeight;
+            }
 
-            var domEl = (_activeDom as FenBrowser.Core.Dom.V2.Element)
-                     ?? (_activeDom as FenBrowser.Core.Dom.V2.Document)?.DocumentElement;
-            if (domEl == null) return;
+            var domEl = (activeDom as FenBrowser.Core.Dom.V2.Element)
+                     ?? (activeDom as FenBrowser.Core.Dom.V2.Document)?.DocumentElement;
+            if (domEl == null || activeFetchCss == null) return;
 
             // Collect dirty subtree roots by walking ChildStyleDirty flags
             var dirtyRoots = new List<Element>();
@@ -2194,14 +2337,19 @@ public void Dispose()
                         stylesheetRoot,
                         root,
                         subtreeBaseUri,
-                        _activeFetchCss,
-                        _activeViewportWidth,
-                        _activeViewportHeight).ConfigureAwait(false);
+                        activeFetchCss,
+                        activeViewportWidth,
+                        activeViewportHeight).ConfigureAwait(false);
                     
                     if (subtreeStyles != null)
                     {
                         lock (_renderStateLock)
                         {
+                            if (_renderGeneration != renderGeneration)
+                            {
+                                return;
+                            }
+
                             // Merge into main styles dictionary
                             foreach (var kvp in subtreeStyles)
                             {
@@ -2220,7 +2368,10 @@ public void Dispose()
             }
 
             // Trigger repaint with updated styles
-            OnRepaintReady(domEl);
+            if (IsCurrentRenderGeneration(renderGeneration))
+            {
+                OnRepaintReady(domEl);
+            }
         }
 
         /// <summary>
@@ -2672,6 +2823,8 @@ public void Dispose()
                 return await tcs.Task;
             }
 
+            var renderGeneration = BeginRenderGeneration();
+
             await RaiseLoadingChangedAsync(true);
             var navigationStartedAtUtc = DateTimeOffset.UtcNow;
             long allocatedBytesBefore = GC.GetTotalAllocatedBytes(precise: false);
@@ -2702,13 +2855,20 @@ public void Dispose()
             long postScriptVisualTreeMs = 0;
             bool javascriptExecuted = false;
             
-            // Store raw HTML for DOM comparison feature
-            _lastRawHtml = html;
-
             try
             {
                 EngineLogCompat.Info($"[CustomHtmlEngine] RenderAsync Start. HTML Length: {html?.Length ?? 0}", LogCategory.Rendering);
-                MarkStyleSnapshotUnstable();
+                lock (_renderStateLock)
+                {
+                    if (_renderGeneration != renderGeneration)
+                    {
+                        return null;
+                    }
+
+                    _hasStableStyles = false;
+                    _lastRawHtml = html;
+                    _renderSnapshotVersion++;
+                }
 
                 const int MaxHtmlSize = 50 * 1024 * 1024;
                 if (!string.IsNullOrEmpty(html) && html.Length > MaxHtmlSize)
@@ -2724,15 +2884,23 @@ public void Dispose()
                 // on heavy pages (github.com, etc.).
                 lock (_renderStateLock)
                 {
+                    if (_renderGeneration != renderGeneration)
+                    {
+                        return null;
+                    }
+
                     LastComputedStyles ??= new Dictionary<Node, CssComputed>();
                     _hasStableStyles = true;
                 }
 
                 // 1. Helper: Parse DOM
-                var parseResult = await RunDomParseAsync(html, baseUri);
+                var parseResult = await RunDomParseAsync(html, baseUri, renderGeneration);
                 var dom = parseResult?.Dom;
                 if (dom == null) return null;
-                SetActiveDom(dom, markSnapshotUnstable: true);
+                if (!TrySetActiveDom(dom, markSnapshotUnstable: true, renderGeneration))
+                {
+                    return null;
+                }
                 tokenizingMs = Math.Max(0, parseResult?.TokenizingMs ?? 0);
                 parsingMs = Math.Max(0, parseResult?.ParsingMs ?? 0);
                 parseTokenCount = Math.Max(0, parseResult?.TokenCount ?? 0);
@@ -2766,6 +2934,11 @@ public void Dispose()
         // CSS arrives asynchronously and progressively improves the rendering.
         lock (_renderStateLock)
         {
+            if (_renderGeneration != renderGeneration)
+            {
+                return null;
+            }
+
             LastComputedStyles = new Dictionary<Node, CssComputed>();
             _hasStableStyles = true; // Mark as stable so BrowserIntegration uses these styles
             _renderSnapshotVersion++;
@@ -2803,11 +2976,15 @@ public void Dispose()
                 bool deferStableSnapshotUntilPostScript = allowJs;
                 if (deferStableSnapshotUntilPostScript)
                 {
-                    BeginAwaitingPostScriptSnapshot();
+                    BeginAwaitingPostScriptSnapshot(renderGeneration);
                 }
 
                 // 2. Helper: Load CSS
-                await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight);
+                await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, renderGeneration);
+                if (!IsCurrentRenderGeneration(renderGeneration))
+                {
+                    return null;
+                }
                 if (shouldNormalizeNoJsFallback)
                 {
                     var normalizeRootAfterCss = (dom as Element) ?? (dom as Document)?.DocumentElement;
@@ -2817,7 +2994,11 @@ public void Dispose()
                         EngineLogCompat.Debug(
                             $"[RenderAsync] Recomputing CSS after late no-js normalization on {normalizedAfterCss} node(s)",
                             LogCategory.Rendering);
-                        await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight);
+                        await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, renderGeneration);
+                        if (!IsCurrentRenderGeneration(renderGeneration))
+                        {
+                            return null;
+                        }
                     }
                 }
                 elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
@@ -2959,7 +3140,11 @@ public void Dispose()
 
                         if (fallbackDomMutated)
                         {
-                            await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight);
+                            await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, renderGeneration);
+                            if (!IsCurrentRenderGeneration(renderGeneration))
+                            {
+                                return null;
+                            }
                             EngineLogCompat.Debug("[CustomHtmlEngine] Recomputed CSS after fallback DOM sanitization", LogCategory.Rendering);
                         }
                     }
@@ -2969,22 +3154,29 @@ public void Dispose()
                     }
                 }
 
-                _activeJs = SetupJavaScriptEngine(baseUri, onNavigate, allowJs, fetchExternalCssAsync, viewportWidth, viewportHeight);
-                EngineLogCompat.Info($"[RenderAsync] JS Engine setup complete. ActiveJs={(_activeJs != null ? "yes" : "no")} allowJs={allowJs}", LogCategory.Rendering);
-                if (_activeJs != null && _historyBridge != null) _activeJs.SetHistoryBridge(_historyBridge);
-                if (_activeJs == null && deferStableSnapshotUntilPostScript)
+                var renderJs = SetupJavaScriptEngine(baseUri, onNavigate, allowJs, fetchExternalCssAsync, viewportWidth, viewportHeight);
+                EngineLogCompat.Info($"[RenderAsync] JS Engine setup complete. ActiveJs={(renderJs != null ? "yes" : "no")} allowJs={allowJs}", LogCategory.Rendering);
+                if (renderJs != null && _historyBridge != null) renderJs.SetHistoryBridge(_historyBridge);
+                if (renderJs == null && deferStableSnapshotUntilPostScript)
                 {
-                    EndAwaitingPostScriptSnapshot();
+                    EndAwaitingPostScriptSnapshot(renderGeneration);
                     deferStableSnapshotUntilPostScript = false;
                 }
                 EngineLogCompat.Debug($"[PERF] JS Setup: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
 
                 var cssFetcher = fetchExternalCssAsync ?? (async _ => { await Task.CompletedTask; return string.Empty; });
-                await CaptureActiveContextAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, viewportWidth, viewportHeight, onFixedBackground, _activeJs).ConfigureAwait(false);
+                if (!TryCaptureActiveContext(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, viewportWidth, viewportHeight, onFixedBackground, renderJs, renderGeneration))
+                {
+                    return null;
+                }
 
                 EngineLogCompat.Debug("[CustomHtmlEngine] Calling BuildVisualTreeAsync...", LogCategory.Rendering);
                 var vh = viewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
-                var control = await BuildVisualTreeAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, _activeJs, viewportWidth, vh, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
+                var control = await BuildVisualTreeAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, renderJs, viewportWidth, vh, onFixedBackground, includeDiagnosticsBanner: false, renderGeneration).ConfigureAwait(false);
+                if (!IsCurrentRenderGeneration(renderGeneration))
+                {
+                    return null;
+                }
                 elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
                 initialVisualTreeMs = Math.Max(0, elapsed - lastStageMarkMs);
                 lastStageMarkMs = elapsed;
@@ -2998,9 +3190,9 @@ public void Dispose()
                 // post-script style refresh, and the second visual tree rebuild
                 // happen off the critical path.
                 object element = control;
-                if (_activeJs != null)
+                if (renderJs != null)
                 {
-                    var js = _activeJs;
+                    var js = renderJs;
                     var capturedDom = dom;
                     var capturedBaseUri = baseUri;
                     var capturedCssFetcher = fetchExternalCssAsync;
@@ -3039,6 +3231,11 @@ public void Dispose()
                             await RunScriptsAsync(js, capturedDom as Element, capturedBaseUri).ConfigureAwait(false);
                             javascriptExecuted = true;
 
+                            if (!IsCurrentRenderGeneration(renderGeneration))
+                            {
+                                return;
+                            }
+
                             if (capturedShouldNormalize)
                             {
                                 var normalizeRoot = (capturedDom as Element) ?? (capturedDom as Document)?.DocumentElement;
@@ -3049,11 +3246,20 @@ public void Dispose()
                             if (NeedsPostScriptStyleRefresh(capturedDom, LastComputedStyles))
                             {
                                 EngineLogCompat.Debug("[RenderAsync] Recomputing CSS after script-driven DOM/style mutations", LogCategory.Rendering);
-                                await LoadCssAsync((capturedDom as Element) ?? (capturedDom as Document)?.DocumentElement, capturedBaseUri, capturedCssFetcher, capturedViewportWidth, capturedViewportHeight).ConfigureAwait(false);
+                                await LoadCssAsync((capturedDom as Element) ?? (capturedDom as Document)?.DocumentElement, capturedBaseUri, capturedCssFetcher, capturedViewportWidth, capturedViewportHeight, renderGeneration).ConfigureAwait(false);
+                                if (!IsCurrentRenderGeneration(renderGeneration))
+                                {
+                                    return;
+                                }
+                            }
+
+                            if (!IsCurrentRenderGeneration(renderGeneration))
+                            {
+                                return;
                             }
 
                             var vh2 = capturedViewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
-                            await BuildVisualTreeAsync(capturedDom as Element, capturedBaseUri, capturedCssFetcher, capturedImageLoader, capturedOnNavigate, js, capturedViewportWidth, vh2, capturedOnFixedBg, includeDiagnosticsBanner: false).ConfigureAwait(false);
+                            await BuildVisualTreeAsync(capturedDom as Element, capturedBaseUri, capturedCssFetcher, capturedImageLoader, capturedOnNavigate, js, capturedViewportWidth, vh2, capturedOnFixedBg, includeDiagnosticsBanner: false, renderGeneration).ConfigureAwait(false);
                         }
                         catch (Exception bgEx)
                         {
@@ -3063,9 +3269,12 @@ public void Dispose()
                         {
                             if (capturedDeferSnapshot)
                             {
-                                EndAwaitingPostScriptSnapshot();
+                                EndAwaitingPostScriptSnapshot(renderGeneration);
                             }
-                            OnRepaintReady(_activeDom);
+                            if (IsCurrentRenderGeneration(renderGeneration))
+                            {
+                                OnRepaintReady(_activeDom);
+                            }
                         }
                     });
                 }
@@ -3073,7 +3282,7 @@ public void Dispose()
                 {
                      if (deferStableSnapshotUntilPostScript)
                      {
-                         EndAwaitingPostScriptSnapshot();
+                         EndAwaitingPostScriptSnapshot(renderGeneration);
                      }
                      EngineLogCompat.Debug($"[RenderAsync] Scripts SKIPPED (allowJs={allowJs}) element={control!=null}", LogCategory.Rendering);
                 }
@@ -3088,7 +3297,7 @@ public void Dispose()
                     workingSetBytes = process.WorkingSet64;
                 }
 
-                LastRenderTelemetry = new RenderTelemetrySnapshot
+                var telemetry = new RenderTelemetrySnapshot
                 {
                     TokenizingMs = tokenizingMs,
                     ParsingMs = parsingMs,
@@ -3121,13 +3330,31 @@ public void Dispose()
                     Gen1Collections = Math.Max(0, GC.CollectionCount(1) - gen1Before),
                     Gen2Collections = Math.Max(0, GC.CollectionCount(2) - gen2Before)
                 };
-                PerformanceDiagnosticsStore.RecordNavigation(LastRenderTelemetry);
-                EngineLogCompat.Debug($"[PERF] FULL PAGE LOAD TIME: {totalRenderMs}ms", LogCategory.Rendering);
-                await RaiseLoadingChangedAsync(false);
+
+                var publishTelemetry = false;
+                lock (_renderStateLock)
+                {
+                    if (_renderGeneration == renderGeneration)
+                    {
+                        LastRenderTelemetry = telemetry;
+                        publishTelemetry = true;
+                    }
+                }
+
+                if (publishTelemetry)
+                {
+                    PerformanceDiagnosticsStore.RecordNavigation(telemetry);
+                    EngineLogCompat.Debug($"[PERF] FULL PAGE LOAD TIME: {totalRenderMs}ms", LogCategory.Rendering);
+                    await RaiseLoadingChangedAsync(false);
+                }
             }
         }
 
-        private async Task<long> RunStreamingPreparseAsync(string html, Action<int> checkpointCountUpdated, Action<int> repaintCountUpdated)
+        private async Task<long> RunStreamingPreparseAsync(
+            string html,
+            long renderGeneration,
+            Action<int> checkpointCountUpdated,
+            Action<int> repaintCountUpdated)
         {
             if (string.IsNullOrEmpty(html))
             {
@@ -3145,7 +3372,7 @@ public void Dispose()
                 await parser.ParseIncrementallyAsync(document =>
                 {
                     checkpointCount++;
-                    if (TryEmitStreamingParseRepaint(document, checkpointCount, ref repaintCount))
+                    if (TryEmitStreamingParseRepaint(document, checkpointCount, renderGeneration, ref repaintCount))
                     {
                         repaintCountUpdated?.Invoke(repaintCount);
                     }
@@ -3163,7 +3390,11 @@ public void Dispose()
             return parseStopwatch.ElapsedMilliseconds;
         }
 
-        private bool TryEmitStreamingParseRepaint(Document document, int checkpointOrdinal, ref int repaintCount)
+        private bool TryEmitStreamingParseRepaint(
+            Document document,
+            int checkpointOrdinal,
+            long renderGeneration,
+            ref int repaintCount)
         {
             if (document?.DocumentElement == null)
             {
@@ -3198,7 +3429,10 @@ public void Dispose()
 
             repaintCount++;
             // Keep styles stable so subsequent streaming repaints are not gated out.
-            SetActiveDom(snapshotRoot, markSnapshotUnstable: false);
+            if (!TrySetActiveDom(snapshotRoot, markSnapshotUnstable: false, renderGeneration))
+            {
+                return false;
+            }
             // Do NOT null out LastComputedStyles here. The engine loop polls for styles
             // and nulling them causes hundreds of wasted render frames with Styles=NULL
             // before the CSS cascade completes. Keep previous styles visible so layout
@@ -3207,7 +3441,12 @@ public void Dispose()
             return true;
         }
 
-        private void TryEmitIncrementalParseRepaint(Document document, HtmlParseCheckpoint checkpoint, int parsingCheckpointOrdinal, ref int incrementalRepaintCount)
+        private void TryEmitIncrementalParseRepaint(
+            Document document,
+            HtmlParseCheckpoint checkpoint,
+            int parsingCheckpointOrdinal,
+            long renderGeneration,
+            ref int incrementalRepaintCount)
         {
             if (!EnableIncrementalParseRepaint ||
                 document?.DocumentElement == null ||
@@ -3246,7 +3485,10 @@ public void Dispose()
             incrementalRepaintCount++;
             // Keep styles stable so subsequent incremental repaints are not gated out.
             // The empty-but-stable snapshot is seeded before RunDomParseAsync.
-            SetActiveDom(snapshotRoot, markSnapshotUnstable: false);
+            if (!TrySetActiveDom(snapshotRoot, markSnapshotUnstable: false, renderGeneration))
+            {
+                return;
+            }
             // Do NOT null out LastComputedStyles — see TryEmitStreamingParseRepaint comment.
             OnRepaintReady(snapshotRoot);
         }
@@ -3317,7 +3559,12 @@ public void Dispose()
                     parseCheckpointState.ParsingDocumentCheckpointCount++;
                     parseCheckpointState.ParsingCheckpointOrdinal++;
                     var repaintCount = parseCheckpointState.IncrementalRepaintCount;
-                    TryEmitIncrementalParseRepaint(document, checkpoint, parseCheckpointState.ParsingCheckpointOrdinal, ref repaintCount);
+                    TryEmitIncrementalParseRepaint(
+                        document,
+                        checkpoint,
+                        parseCheckpointState.ParsingCheckpointOrdinal,
+                        parseCheckpointState.RenderGeneration,
+                        ref repaintCount);
                     parseCheckpointState.IncrementalRepaintCount = repaintCount;
                 }
             };

@@ -3761,3 +3761,17 @@ Verification commands:
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~BrowserFormInteractionAcceptanceTests|FullyQualifiedName~DebugSiteInteractionRunnerTests" --logger "console;verbosity=minimal"`: pass (`13/13`).
 - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --verbosity:minimal`: pass with 0 warnings and 0 errors.
 - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-build -- debug-site-interact "https://www.google.com/" "#APjFqb" "fen715i" ".FPdoLc input[name=btnK]" 20000 10000`: interaction pass with the bundle above and a terminal Google challenge response.
+
+## 6.149 Cross-Navigation Render Publication Regression (2026-07-15)
+
+- `FenBrowser.Tests/Scripting/CustomHtmlEngineNavigationGenerationTests.cs` is compiled on the active `Scripting/` surface. It deterministically blocks the first document's external stylesheet, completes a second render, releases the older stylesheet, and asserts that DOM, style ownership, and telemetry remain on the second document.
+- The test failed before the fix because the older CSS continuation republished its DOM/style snapshot. It passes after render-generation validation was added at the FenEngine publication boundary.
+- The combined active interaction slice passes `14/14`; FenEngine and Tooling Release builds pass with zero warnings and zero errors.
+- Fresh Google bundle `logs/real-site/www.google.com/20260715T103925Z/` closes the live mismatch: interaction passes, navigation 3 completes on Google's genuine 429 challenge, active rendered text and DOM describe the challenge, and `interaction_after.png` visibly differs from the homepage `interaction_before.png`. Callback failures and exceptions are zero, and `first_blocker.json` reports `none`.
+
+Verification commands:
+
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~CustomHtmlEngineNavigationGenerationTests.OlderRender_CannotPublishAfterNewerRenderCompletes" --logger "console;verbosity=minimal"`: pass (`1/1`).
+- `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --no-build --no-restore --filter "FullyQualifiedName~CustomHtmlEngineNavigationGenerationTests|FullyQualifiedName~BrowserFormInteractionAcceptanceTests|FullyQualifiedName~DebugSiteInteractionRunnerTests" --logger "console;verbosity=minimal"`: pass (`14/14`).
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --verbosity:minimal`: pass with 0 warnings and 0 errors.
+- `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Release --no-restore --verbosity:minimal`: pass with 0 warnings and 0 errors.

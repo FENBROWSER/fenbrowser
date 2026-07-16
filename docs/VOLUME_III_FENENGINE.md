@@ -10206,3 +10206,16 @@ Verification:
 - Release builds of `FenBrowser.Js`, `FenBrowser.FenEngine`, and `FenBrowser.Tooling` succeed with zero warnings and zero errors.
 - Local bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_host_collection_iterator.html/20260715T085843Z/` renders `passed:first,second`, completes lifecycle, and reports zero callback failures, zero exceptions, and `first_blocker: none`.
 - Fresh Google bundle `logs/real-site/www.google.com/20260715T085915Z/` renders the main UI with 18 completed script executions, zero direct script failures, zero callback failures, zero exceptions, complete current lifecycle, and `first_blocker: none`. Interaction remains unverified.
+
+## 2.379 Render-Generation Publication Safety (2026-07-15)
+
+- Each `CustomHtmlEngine.RenderAsync` invocation now owns a monotonically increasing render generation. DOM/style publication checks that generation under the render-state lock, so an older CSS computation cannot replace a newer document after navigation replacement.
+- Detached script/post-script work stops before recascade or visual-tree publication when its generation is stale. Stale work cannot clear the newer post-script wait, emit a repaint for the newer document, publish loading completion, or overwrite the newer navigation telemetry.
+- The rule does not cancel requests, alter redirect/error-document policy, bypass page security behavior, or change JS/DOM wrapper lifetime. It only rejects obsolete render results at the shared publication boundary.
+
+Verification:
+
+- Red: `CustomHtmlEngineNavigationGenerationTests.OlderRender_CannotPublishAfterNewerRenderCompletes` failed because releasing the first document's blocked stylesheet after the second render completed replaced the active second-document snapshot.
+- Green: the same discovered test passes and asserts the newer DOM, style-owner document, and telemetry URL remain authoritative. The adjacent form/Tooling/render-generation slice passes `14/14`.
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release --no-restore --verbosity:minimal`: pass with 0 warnings and 0 errors.
+- Fresh Google bundle `logs/real-site/www.google.com/20260715T103925Z/`: focus/type/submit passes, a 200 GET `/search` request is followed by Google's genuine HTTP 429 `/sorry/` challenge, and terminal lifecycle, active DOM/rendered text, and the after screenshot all describe navigation 3. Callback failures and exceptions are zero; `first_blocker.json` is `none`.

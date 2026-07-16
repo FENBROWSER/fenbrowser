@@ -8,7 +8,7 @@ Task ID: TRACE-001
 Title: Preserve callback failures and drain logs before bundle export
 Area: Diagnostic spine / event loop / Tooling
 Owner Agent: Diagnostic Agent
-Status: TESTED
+Status: REGRESSION_PROTECTED
 Priority: 1
 Risk Level: Medium
 Dependencies: Current event-loop snapshot, structured logger, and `debug-site` bundle writer are INTEGRATED
@@ -144,19 +144,19 @@ Risk Level: Medium
 Dependencies: Google document, scripts, DOM, layout, paint, and screenshot are TESTED in the current bundle
 Files likely involved: `FenBrowser.Tooling`, WebDriver/automation hooks, Host input routing, BrowserApi activation/focus paths, local regression fixture
 Specs/references: UI Events; HTML forms; WebDriver; `docs/REAL_SITE_TRACKER.md`
-Current behavior: The current Google interaction bundle proves hit-tested textarea focus, seven accepted nonce characters, keyboard/input/change/blur ordering, visible submit-control click, form submit, a successful 200 GET `/search` navigation, and Google's delayed redirect to a genuine HTTP 429 `/sorry/` challenge. Eight compiled form tests and five Tooling tests protect current-layout/pointer-events hit testing, full CSS lookup, fixed diagnostic viewport, ordinary and chained local form navigation, bounded event export, and screenshot artifact ownership. Terminal lifecycle and the DOM artifact reach navigation 3, but the active root, rendered text, and after screenshot retain the prior homepage.
+Current behavior: The current Google interaction bundle proves hit-tested textarea focus, seven accepted nonce characters, keyboard/input/change/blur ordering, visible submit-control click, form submit, a successful 200 GET `/search` navigation, and Google's delayed redirect to a genuine HTTP 429 `/sorry/` challenge. Eight compiled form tests, five Tooling tests, and one render-generation test protect current-layout/pointer-events hit testing, full CSS lookup, fixed diagnostic viewport, ordinary and chained local form navigation, bounded event export, screenshot artifact ownership, and stale CSS/render publication. Terminal lifecycle, active DOM/rendered text, and the visibly different after screenshot all describe navigation 3's challenge document; callbacks and exceptions remain zero.
 Expected behavior: Automation clicks the search control, enters a nonce, submits, observes value/input events and a terminal network/navigation outcome, and captures before/after screenshots.
 Reproduction: Current Google URL at 1280x800 plus the same interaction on a local form fixture.
-Root cause hypothesis: The resolved Google blockers were stale layout/style/paint snapshots, a Tooling viewport mismatch, and a concrete-host lookup overload that bypassed full WebDriver selector semantics. Terminal-generation waiting and Tooling artifact isolation are now proven. The residual mismatch is an older document/render continuation republishing active DOM/style/frame state after the replacement navigation committed.
-Implementation plan: Create a deterministic overlapping-navigation fixture whose first document has delayed render/script work and whose replacement document commits before that work completes; make active render publication generation-aware without changing navigation or challenge policy, then add classifier contradiction coverage.
+Root cause hypothesis: Resolved. The blockers were stale layout/style/paint snapshots, a Tooling viewport mismatch, a concrete-host lookup overload that bypassed full WebDriver selector semantics, early terminal-generation selection, and older detached CSS/script work republishing render state after replacement navigation.
+Implementation plan: Keep the local form, chained-navigation, and overlapping-render reductions on the active test surface. Do not bypass Google's challenge; rerun only when a relevant engine change needs real-site confirmation.
 Tests required: Hit test, focus, keyboard/text input, input/change/submit ordering, preventDefault, successful submit/navigation.
 Evidence required: Before/after screenshots, input trace, DOM value, event/default-action records, request/navigation result, no crash/hang.
 Security impact: Automation must not bypass page security or challenge behavior; do not persist user data.
 Performance impact: Record input-to-visible-update and input-to-request latency.
 Compatibility impact: Directly validates real-site usability.
 Known risks: Site variation, consent UI, or network challenge; retain exact URL/run evidence.
-Blockers: None
-Next action: Add one deterministic overlapping-navigation regression that fails when an older document republishes active DOM/style/frame state after the replacement navigation commits.
+Blockers: Google's current HTTP 429 challenge prevents normal search-result rendering; this is external security behavior and is not an engine blocker or bypass target.
+Next action: Establish the selected repeatable WPT browser-integration matrix without further Google challenge retries.
 
 ## Task WPT-001
 
