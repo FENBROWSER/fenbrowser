@@ -18,6 +18,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net.Http;
 using FenBrowser.Core.Network;
+using FenBrowser.FenEngine.Rendering;
 
 namespace FenBrowser.Host
 {
@@ -746,43 +747,7 @@ namespace FenBrowser.Host
                         var input = RendererIpc.DeserializePayload<RendererInputEvent>(envelope);
                         if (input != null && input.IsMeaningful)
                         {
-                            switch (input.Type)
-                            {
-                                case RendererInputEventType.MouseDown:
-                                    browser.OnMouseDown(input.X, input.Y, input.Button);
-                                    break;
-                                case RendererInputEventType.MouseUp:
-                                    browser.OnMouseUp(input.X, input.Y, input.Button);
-                                    if (input.ShouldEmitClick)
-                                    {
-                                        browser.OnClick(input.X, input.Y, input.Button);
-                                    }
-                                    break;
-                                case RendererInputEventType.MouseMove:
-                                    browser.OnMouseMove(input.X, input.Y);
-                                    break;
-                                case RendererInputEventType.DblClick:
-                                    browser.OnDoubleClick(input.X, input.Y, input.Button);
-                                    break;
-                                case RendererInputEventType.ContextMenu:
-                                    browser.OnContextMenu(input.X, input.Y, input.Button);
-                                    break;
-                                case RendererInputEventType.KeyDown:
-                                    if (!string.IsNullOrWhiteSpace(input.Key))
-                                    {
-                                        await browser.HandleKeyPress(MapRendererKey(input.Key)).ConfigureAwait(false);
-                                    }
-                                    break;
-                                case RendererInputEventType.TextInput:
-                                    if (!string.IsNullOrWhiteSpace(input.Text))
-                                    {
-                                        await browser.HandleKeyPress(input.Text).ConfigureAwait(false);
-                                    }
-                                    break;
-                                case RendererInputEventType.MouseWheel:
-                                    // BrowserHost currently has no direct wheel-input API; host applies scroll locally.
-                                    break;
-                            }
+                            await DispatchRendererInputAsync(browser, input).ConfigureAwait(false);
                         }
 
                         SendRendererEnvelope(writer, new RendererIpcEnvelope
@@ -1667,6 +1632,55 @@ namespace FenBrowser.Host
             }
 
             return clone;
+        }
+
+        internal static async Task DispatchRendererInputAsync(BrowserHost browser, RendererInputEvent input)
+        {
+            ArgumentNullException.ThrowIfNull(browser);
+            ArgumentNullException.ThrowIfNull(input);
+
+            switch (input.Type)
+            {
+                case RendererInputEventType.MouseDown:
+                    browser.OnMouseDown(input.X, input.Y, input.Button);
+                    break;
+                case RendererInputEventType.MouseUp:
+                    browser.OnMouseUp(input.X, input.Y, input.Button);
+                    if (input.ShouldEmitClick)
+                    {
+                        browser.OnClick(input.X, input.Y, input.Button);
+                        var activationTarget = browser.HitTestElementAtViewportPoint(input.X, input.Y);
+                        if (activationTarget != null)
+                        {
+                            await browser.HandleElementClick(activationTarget).ConfigureAwait(false);
+                        }
+                    }
+                    break;
+                case RendererInputEventType.MouseMove:
+                    browser.OnMouseMove(input.X, input.Y);
+                    break;
+                case RendererInputEventType.DblClick:
+                    browser.OnDoubleClick(input.X, input.Y, input.Button);
+                    break;
+                case RendererInputEventType.ContextMenu:
+                    browser.OnContextMenu(input.X, input.Y, input.Button);
+                    break;
+                case RendererInputEventType.KeyDown:
+                    if (!string.IsNullOrWhiteSpace(input.Key))
+                    {
+                        await browser.HandleKeyPress(MapRendererKey(input.Key)).ConfigureAwait(false);
+                    }
+                    break;
+                case RendererInputEventType.TextInput:
+                    if (!string.IsNullOrWhiteSpace(input.Text))
+                    {
+                        await browser.HandleKeyPress(input.Text).ConfigureAwait(false);
+                    }
+                    break;
+                case RendererInputEventType.MouseWheel:
+                    // BrowserHost currently has no direct wheel-input API; host applies scroll locally.
+                    break;
+            }
         }
 
         private static string MapRendererKey(string key)

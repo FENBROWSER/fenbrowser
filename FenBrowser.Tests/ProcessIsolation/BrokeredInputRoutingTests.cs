@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Reflection;
 using System;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using FenBrowser.Core.Dom.V2;
@@ -54,7 +55,7 @@ public sealed class BrokeredInputRoutingTests
     }
 
     [Fact]
-    public async Task BrowserIntegration_HandleMouseUp_RunsActivationFallbackInBrokeredMode()
+    public async Task BrowserIntegration_HandleMouseUp_DoesNotMirrorActivationInUiProcess()
     {
         var previousAutoStart = System.Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
         System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", "0");
@@ -97,15 +98,72 @@ public sealed class BrokeredInputRoutingTests
                 inputEvent.Button == 0 &&
                 inputEvent.EmitClick);
 
-            await WaitForAsync(
-                () => browserHost.CurrentUri?.AbsoluteUri == "about:blank#submitted",
-                "brokered submit-button activation did not update host navigation state");
+            await Task.Delay(50);
+            Assert.Equal("about:blank", browserHost.CurrentUri?.AbsoluteUri);
         }
         finally
         {
             ProcessIsolationRuntime.SetCoordinator(null);
             System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", previousAutoStart);
         }
+    }
+
+    [Fact]
+    public async Task Program_DispatchRendererInputAsync_MouseUpRunsDefaultActivationInRenderer()
+    {
+        const int viewportWidth = 320;
+        const int viewportHeight = 200;
+        const string html = """
+            <!doctype html>
+            <html><body style="margin:0">
+              <input id="target" type="checkbox" style="width:24px;height:24px;margin:20px">
+            </body></html>
+            """;
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        host.SetActiveRenderer(renderer);
+        host.Engine.SetExternalRenderer(renderer);
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/renderer-input"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth,
+            viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var target = Assert.IsType<Element>(root.OwnerDocument?.GetElementById("target"));
+        using var bitmap = new SKBitmap(viewportWidth, viewportHeight);
+        using var canvas = new SKCanvas(bitmap);
+        renderer.RenderFrame(new RenderFrameRequest
+        {
+            Root = root,
+            Canvas = canvas,
+            Styles = host.ComputedStyles,
+            Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+            BaseUrl = "https://fen.test/renderer-input",
+            InvalidationReason = RenderFrameInvalidationReason.Input,
+            RequestedBy = nameof(Program_DispatchRendererInputAsync_MouseUpRunsDefaultActivationInRenderer),
+            EmitVerificationReport = false
+        });
+        Assert.True(renderer.LastLayout.TryGetElementRect(target, out var rect));
+
+        await FenBrowser.Host.Program.DispatchRendererInputAsync(
+            host,
+            new RendererInputEvent
+            {
+                Type = RendererInputEventType.MouseUp,
+                X = rect.Left + (rect.Width / 2f),
+                Y = rect.Top + (rect.Height / 2f),
+                Button = 0,
+                EmitClick = true
+            });
+
+        Assert.True(ElementStateManager.Instance.IsChecked(target));
     }
 
     [Fact]

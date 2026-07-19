@@ -2871,18 +2871,6 @@ public class BrowserIntegration
         return (uiX, uiY);
     }
 
-    private Element ResolveActivationTarget(HitTestResult result, float windowX, float windowY, float viewportOffsetX, float viewportOffsetY)
-    {
-        var target = result.NativeElement as Element ?? _lastHitTest.NativeElement as Element;
-        if (target != null)
-        {
-            return target;
-        }
-
-        var (viewportX, viewportY) = TranslateWindowToViewport(windowX, windowY, viewportOffsetX, viewportOffsetY);
-        return _browser.HitTestElementAtViewportPoint(viewportX, viewportY);
-    }
-
     /// <summary>
     /// Handle mouse move for cursor updates and status bar.
     /// </summary>
@@ -3088,19 +3076,9 @@ public class BrowserIntegration
             
             if (emitClick && button == 0)
             {
-                var activationTarget = ResolveActivationTarget(result, windowX, windowY, viewportOffsetX, viewportOffsetY);
                 if (result.IsLink && !string.IsNullOrEmpty(result.Href))
                 {
                     LinkClicked?.Invoke(ResolveHrefForUi(result.Href));
-                }
-
-                // The renderer receives the DOM mouse/click sequence above, but
-                // browser-default activation is still mirrored locally so host
-                // navigation state updates for submit buttons and promoted
-                // activation ancestors such as Google's nested search controls.
-                if (activationTarget != null)
-                {
-                    _ = _browser.HandleElementClick(activationTarget);
                 }
             }
             return result;
