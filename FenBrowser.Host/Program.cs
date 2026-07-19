@@ -1648,12 +1648,7 @@ namespace FenBrowser.Host
                     browser.OnMouseUp(input.X, input.Y, input.Button);
                     if (input.ShouldEmitClick)
                     {
-                        browser.OnClick(input.X, input.Y, input.Button);
-                        var activationTarget = browser.HitTestElementAtViewportPoint(input.X, input.Y);
-                        if (activationTarget != null)
-                        {
-                            await browser.HandleElementClick(activationTarget).ConfigureAwait(false);
-                        }
+                        await browser.DispatchClickAndActivate(input.X, input.Y, input.Button).ConfigureAwait(false);
                     }
                     break;
                 case RendererInputEventType.MouseMove:

@@ -3077,6 +3077,21 @@ pre {{
              QueueInputTask("click", x, y, button);
         }
 
+        /// <summary>
+        /// Dispatches one trusted pointer click and then runs the default activation
+        /// selected by that same hit test. Physical input callers should use this
+        /// method instead of separately dispatching a click and activating an element.
+        /// </summary>
+        public async Task DispatchClickAndActivate(float x, float y, int button)
+        {
+            DispatchInputEvent("click", x, y, button);
+            var activationTarget = _lastClickTarget;
+            if (activationTarget != null)
+            {
+                await HandleElementClick(activationTarget).ConfigureAwait(false);
+            }
+        }
+
         private bool QueueInputTask(string type, float x, float y, int button)
         {
              // Input must feel immediate; dispatch directly to avoid coordinator latency

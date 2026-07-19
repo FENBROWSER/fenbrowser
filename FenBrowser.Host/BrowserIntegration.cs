@@ -2316,16 +2316,11 @@ public class BrowserIntegration
                 _browser.OnMouseUp(input.X, input.Y, input.Button);
                 break;
             case BrowserInputType.Click:
-                _browser.OnClick(input.X, input.Y, input.Button);
-                var activationTarget = _browser.HitTestElementAtViewportPoint(input.X, input.Y);
-                if (activationTarget != null)
-                {
-                    var activationStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-                    _browser.HandleElementClick(activationTarget).GetAwaiter().GetResult();
-                    activationDurationMs = System.Diagnostics.Stopwatch
-                        .GetElapsedTime(activationStarted)
-                        .TotalMilliseconds;
-                }
+                var activationStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+                _browser.DispatchClickAndActivate(input.X, input.Y, input.Button).GetAwaiter().GetResult();
+                activationDurationMs = System.Diagnostics.Stopwatch
+                    .GetElapsedTime(activationStarted)
+                    .TotalMilliseconds;
                 break;
             case BrowserInputType.DoubleClick:
                 _browser.OnDoubleClick(input.X, input.Y, input.Button);
