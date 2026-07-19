@@ -333,10 +333,13 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             var origin = GetFrameContentOrigin(frameBox);
             frameClientX = x - origin.X;
             frameClientY = y - origin.Y;
+            var frameScroll = ctx.GetScrollOffset(frame);
+            var frameHitX = frameClientX + frameScroll.X;
+            var frameHitY = frameClientY + frameScroll.Y;
 
             var frameContext = CreateFrameRenderContext(ctx, frameDocument);
-            if (TryHitFrameContext(frameContext, frameClientX, frameClientY, out result) ||
-                TryHitFrameContext(frameContext, x, y, out result))
+            if (TryHitFrameContext(frameContext, frameHitX, frameHitY, out result) ||
+                TryHitFrameContext(frameContext, x + frameScroll.X, y + frameScroll.Y, out result))
             {
                 return true;
             }
@@ -679,5 +682,4 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         }
     }
 }
-
 

@@ -215,6 +215,71 @@ public sealed class IframeInputRetargetingTests
         host.OnClick(visualX, visualY, button: 0);
 
         Assert.Equal("yes", frameDocument.Body?.GetAttribute("data-clicked"));
+        Assert.Same(button, frameDocument.ActiveElement);
+        Assert.Same(iframe, root.OwnerDocument?.ActiveElement);
+    }
+
+    [Fact]
+    public async Task ScrolledIframe_HitTestMatchesPaintedChildPosition()
+    {
+        const int viewportWidth = 320;
+        const int viewportHeight = 220;
+        const string html = """
+<!doctype html>
+<html>
+<head><style>html,body{margin:0}iframe{display:block;width:180px;height:60px;margin:20px;border:0}</style></head>
+<body>
+  <iframe id="frame"></iframe>
+  <script>
+    var frame = document.getElementById('frame');
+    var doc = frame.contentDocument;
+    doc.open();
+    doc.write('<!doctype html><html><body style="margin:0;height:260px"><div style="height:140px"></div><button id="target" style="display:block;width:100px;height:30px">target</button></body></html>');
+    doc.close();
+  </script>
+</body>
+</html>
+""";
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        host.SetActiveRenderer(renderer);
+        host.Engine.SetExternalRenderer(renderer);
+
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/iframe-scroll"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth,
+            viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var iframe = FindById(root, "frame");
+        await WaitForAsync(
+            () => iframe.FirstChild is Document document && document.GetElementById("target") != null,
+            "iframe scroll target to be written");
+        await host.FlushPendingLayoutAsync();
+        var frameDocument = Assert.IsType<Document>(iframe.FirstChild);
+        var target = Assert.IsType<Element>(frameDocument.GetElementById("target"));
+
+        RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+        Assert.True(renderer.LastLayout.TryGetElementRect(iframe, out var iframeRect));
+        Assert.True(renderer.LastLayout.TryGetElementRect(target, out var targetRect));
+
+        renderer.ScrollManager.SetScrollBounds(iframe, iframeRect.Width, 260f, iframeRect.Width, iframeRect.Height);
+        renderer.ScrollManager.SetScrollPosition(iframe, 0, 120f);
+        RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+
+        var visualX = targetRect.Left + (targetRect.Width / 2f);
+        var visualY = targetRect.Top + (targetRect.Height / 2f) - 120f;
+        Assert.InRange(visualY, iframeRect.Top, iframeRect.Bottom);
+        Assert.True(HitTester.HitTestInput(renderer.CreateRenderContext(), visualX, visualY, out var input));
+        Assert.Same(target, input.Target);
+        Assert.True(input.RetargetedIntoFrame);
     }
 
     [Fact]

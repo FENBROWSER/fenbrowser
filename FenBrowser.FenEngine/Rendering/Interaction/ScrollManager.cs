@@ -191,6 +191,20 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             return (state.ScrollX, state.ScrollY);
         }
 
+        public IReadOnlyDictionary<Element, SKPoint> SnapshotElementScrollOffsets()
+        {
+            lock (_lock)
+            {
+                var snapshot = new Dictionary<Element, SKPoint>(_scrollStates.Count);
+                foreach (var pair in _scrollStates)
+                {
+                    snapshot[pair.Key] = new SKPoint(pair.Value.ScrollX, pair.Value.ScrollY);
+                }
+
+                return snapshot;
+            }
+        }
+
         #endregion
 
         #region Smooth Scrolling

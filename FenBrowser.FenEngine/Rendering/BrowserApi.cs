@@ -7426,6 +7426,8 @@ pre {{
                 {
                     previousDocument.ActiveElement = null;
                 }
+
+                ClearContainingFrameFocus(previousDocument);
             }
 
             _focusedElement = element;
@@ -7440,9 +7442,44 @@ pre {{
             if (ownerDocument != null)
             {
                 ownerDocument.ActiveElement = element;
+                PromoteContainingFrameFocus(ownerDocument);
             }
 
             ElementStateManager.Instance.SetFocusedElement(element, fromKeyboard);
+        }
+
+        private static void PromoteContainingFrameFocus(Document document)
+        {
+            for (var current = document; current?.ParentNode is Element frame && IsFrameElement(frame);)
+            {
+                var parentDocument = frame.OwnerDocument;
+                if (parentDocument == null)
+                {
+                    return;
+                }
+
+                parentDocument.ActiveElement = frame;
+                current = parentDocument;
+            }
+        }
+
+        private static void ClearContainingFrameFocus(Document document)
+        {
+            for (var current = document; current?.ParentNode is Element frame && IsFrameElement(frame);)
+            {
+                var parentDocument = frame.OwnerDocument;
+                if (parentDocument == null)
+                {
+                    return;
+                }
+
+                if (ReferenceEquals(parentDocument.ActiveElement, frame))
+                {
+                    parentDocument.ActiveElement = null;
+                }
+
+                current = parentDocument;
+            }
         }
 
         private void SetFocusedElementWithEvents(Element element, bool fromKeyboard = false)

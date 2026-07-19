@@ -17,6 +17,7 @@ namespace FenBrowser.FenEngine.Rendering.Core
         private Dictionary<Node, CssComputed> _styles = new Dictionary<Node, CssComputed>();
         private Dictionary<Node, BoxModel> _boxes = new Dictionary<Node, BoxModel>();
         private IReadOnlyList<Rendering.PaintNodeBase> _paintTreeRoots = Array.Empty<Rendering.PaintNodeBase>();
+        private IReadOnlyDictionary<Element, SKPoint> _scrollOffsets = new Dictionary<Element, SKPoint>();
         private float _viewportHeight;
         private float _viewportWidth;
         private SKRect _viewport;
@@ -38,6 +39,19 @@ namespace FenBrowser.FenEngine.Rendering.Core
         {
             get => _paintTreeRoots;
             set => _paintTreeRoots = value ?? Array.Empty<Rendering.PaintNodeBase>();
+        }
+
+        public IReadOnlyDictionary<Element, SKPoint> ScrollOffsets
+        {
+            get => _scrollOffsets;
+            set => _scrollOffsets = value ?? new Dictionary<Element, SKPoint>();
+        }
+
+        public SKPoint GetScrollOffset(Element element)
+        {
+            return element != null && ScrollOffsets.TryGetValue(element, out var offset)
+                ? offset
+                : SKPoint.Empty;
         }
 
         public float ViewportHeight

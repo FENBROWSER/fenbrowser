@@ -2102,6 +2102,7 @@ namespace FenBrowser.FenEngine.Rendering
                     Boxes = boxesSnapshot,
                     Styles = styles,
                     PaintTreeRoots = _lastPaintTree?.Roots,
+                    ScrollOffsets = _scrollManager.SnapshotElementScrollOffsets(),
                     ViewportWidth = _viewportWidth,
                     ViewportHeight = _viewportHeight,
                     Viewport = new SKRect(0, 0, _viewportWidth, _viewportHeight)
