@@ -1313,7 +1313,7 @@ namespace FenBrowser.Core
                         context,
                         ActiveReferrerPolicy,
                         string.IsNullOrWhiteSpace(accept)
-                            ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+                            ? BrowserNetworkCapabilities.DocumentAcceptHeader
                             : accept,
                         effectiveReferer);
                     AttachCookies(req, refererOriginal ?? current, secFetchDest);
@@ -1883,7 +1883,7 @@ namespace FenBrowser.Core
                         req,
                         context,
                         ActiveReferrerPolicy,
-                        "image/apng,image/png,image/jpeg,image/*,*/*;q=0.8",
+                        BrowserNetworkCapabilities.ImageAcceptHeader,
                         effectiveReferer,
                         acceptEncoding: "gzip, deflate");
                     AttachCookies(req, topLevelDocumentUri ?? current, "image");

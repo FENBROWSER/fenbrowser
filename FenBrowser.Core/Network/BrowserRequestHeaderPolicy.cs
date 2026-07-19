@@ -7,7 +7,6 @@ namespace FenBrowser.Core.Network;
 internal static class BrowserRequestHeaderPolicy
 {
     internal const string DefaultAcceptLanguage = "en-US,en;q=0.9";
-    internal const string DefaultAcceptEncoding = "gzip, deflate, br";
 
     internal static void Apply(
         HttpRequestMessage request,
@@ -15,7 +14,7 @@ internal static class BrowserRequestHeaderPolicy
         ReferrerPolicyDirective referrerPolicy,
         string accept,
         Uri referrerCandidate = null,
-        string acceptEncoding = DefaultAcceptEncoding)
+        string acceptEncoding = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(context);
@@ -23,7 +22,7 @@ internal static class BrowserRequestHeaderPolicy
         Add(request, "Accept", accept);
         BrowserSettings.ApplyBrowserRequestHeaders(request, useMobile: false);
         Add(request, "Accept-Language", DefaultAcceptLanguage);
-        Add(request, "Accept-Encoding", acceptEncoding);
+        Add(request, "Accept-Encoding", acceptEncoding ?? BrowserNetworkCapabilities.AcceptEncodingHeader);
 
         var destination = string.IsNullOrWhiteSpace(context.Destination) ? "empty" : context.Destination;
         var mode = string.IsNullOrWhiteSpace(context.Mode) ? DetermineMode(destination) : context.Mode;

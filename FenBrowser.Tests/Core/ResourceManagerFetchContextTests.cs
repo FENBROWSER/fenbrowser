@@ -27,6 +27,37 @@ public sealed class ResourceManagerFetchContextTests
     }
 
     [Fact]
+    public void NetworkCapabilities_AdvertiseOnlyAvailableImageDecoders()
+    {
+        var accept = BrowserNetworkCapabilities.ImageAcceptHeader;
+
+        Assert.Contains("image/png", accept);
+        Assert.Contains("image/jpeg", accept);
+        Assert.Contains("image/svg+xml", accept);
+        Assert.Equal(BrowserNetworkCapabilities.SupportsWebP, accept.Contains("image/webp", StringComparison.Ordinal));
+        Assert.DoesNotContain("image/avif", accept);
+    }
+
+    [Fact]
+    public void NetworkCapabilities_AdvertiseBrotliOnlyWhenConfiguredForDecompression()
+    {
+        var config = NetworkConfiguration.Instance;
+        var previous = config.EnableBrotli;
+        try
+        {
+            config.EnableBrotli = false;
+            Assert.DoesNotContain("br", BrowserNetworkCapabilities.AcceptEncodingHeader.Split(", "));
+
+            config.EnableBrotli = true;
+            Assert.Contains("br", BrowserNetworkCapabilities.AcceptEncodingHeader.Split(", "));
+        }
+        finally
+        {
+            config.EnableBrotli = previous;
+        }
+    }
+
+    [Fact]
     public async Task FetchTextDetailedAsync_UsesExplicitInitiatorAndDestination()
     {
         HttpRequestMessage observed = null;

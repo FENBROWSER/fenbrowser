@@ -1027,7 +1027,7 @@ namespace FenBrowser.FenEngine.Rendering
                     return await _resources.FetchBytesAsync(
                             fetchUri,
                             referer: _current,
-                            accept: "image/webp,image/apng,image/png,image/jpeg,image/*,*/*;q=0.8",
+                            accept: BrowserNetworkCapabilities.ImageAcceptHeader,
                             secFetchDest: "image")
                         .ConfigureAwait(false);
                 },
