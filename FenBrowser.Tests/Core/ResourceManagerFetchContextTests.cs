@@ -129,6 +129,50 @@ public sealed class ResourceManagerFetchContextTests
         }
     }
 
+    [Fact]
+    public async Task FetchBytesDetailedAsync_HttpFailureReturnsStructuredReason()
+    {
+        using var client = new HttpClient(new StubHandler(request => new HttpResponseMessage(HttpStatusCode.NotFound)
+        {
+            RequestMessage = request,
+            Content = new StringContent("missing")
+        }));
+        var manager = new ResourceManager(client, isPrivate: true);
+
+        var result = await manager.FetchBytesDetailedAsync(ImageContext("https://cdn.example.test/missing.png"));
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(BinaryFetchFailureReason.HttpError, result.FailureReason);
+        Assert.Equal(404, result.StatusCode);
+        Assert.Equal(new Uri("https://cdn.example.test/missing.png"), result.FinalUri);
+        Assert.Null(result.Body);
+    }
+
+    [Fact]
+    public async Task FetchBytesDetailedAsync_TransportFailureReturnsStructuredReason()
+    {
+        using var client = new HttpClient(new StubHandler(_ => throw new HttpRequestException("offline")));
+        var manager = new ResourceManager(client, isPrivate: true);
+
+        var result = await manager.FetchBytesDetailedAsync(ImageContext("https://cdn.example.test/image.png"));
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(BinaryFetchFailureReason.TransportFailure, result.FailureReason);
+        Assert.Contains("offline", result.FailureDetail);
+        Assert.Null(result.Body);
+    }
+
+    private static FetchContext ImageContext(string requestUri) => new FetchContext
+    {
+        RequestUri = new Uri(requestUri),
+        InitiatorUri = new Uri("https://page.example.test/"),
+        FrameDocumentUri = new Uri("https://page.example.test/"),
+        TopLevelDocumentUri = new Uri("https://page.example.test/"),
+        Destination = "image",
+        Mode = "no-cors",
+        CredentialsMode = "include"
+    };
+
     private sealed class StubHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;

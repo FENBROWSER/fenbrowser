@@ -1984,16 +1984,28 @@ namespace FenBrowser.Core
 
         public async Task<byte[]> FetchBytesAsync(FetchContext context, string accept = null)
         {
-            if (context == null) return null;
+            var result = await FetchBytesDetailedAsync(context, accept).ConfigureAwait(false);
+            return result.Body;
+        }
+
+        public async Task<BinaryFetchResult> FetchBytesDetailedAsync(FetchContext context, string accept = null)
+        {
+            if (context == null)
+            {
+                return BinaryFailure(BinaryFetchFailureReason.InvalidRequest, null, "Fetch context is null");
+            }
             var url = context.RequestUri;
             var referer = context.InitiatorUri ?? context.FrameDocumentUri;
             var topLevelDocumentUri = context.TopLevelDocumentUri ?? referer;
             var secFetchDest = context.Destination;
-            if (url == null) return null;
+            if (url == null)
+            {
+                return BinaryFailure(BinaryFetchFailureReason.InvalidRequest, null, "Request URI is null");
+            }
             if (!IsSupportedFetchScheme(url))
             {
                 EngineLogCompat.Warn($"[FetchBytes] Blocked unsupported scheme '{url.Scheme}' for {url}", LogCategory.Security);
-                return null;
+                return BinaryFailure(BinaryFetchFailureReason.UnsupportedScheme, url, $"Unsupported scheme: {url.Scheme}");
             }
             if (string.Equals(secFetchDest, "image", StringComparison.OrdinalIgnoreCase) &&
                 referer != null &&
@@ -2005,7 +2017,7 @@ namespace FenBrowser.Core
                 BlockedRequestCount++;
                 BlockedCountChanged?.Invoke(this, BlockedRequestCount);
                 EngineLogCompat.Warn($"[MixedContent] Blocked insecure image bytes fetch '{url}' from secure document '{referer}'", LogCategory.Network);
-                return null;
+                return BinaryFailure(BinaryFetchFailureReason.MixedContentBlocked, url, "Blocked mixed-content image request");
             }
             
             // CSP Check (fonts, media, etc)
@@ -2016,13 +2028,17 @@ namespace FenBrowser.Core
                 else if (secFetchDest == "audio" || secFetchDest == "video") directive = "media-src";
                 else if (secFetchDest == "object") directive = "object-src";
                 
-                if (!ActivePolicy.IsAllowed(directive, url, ExtractOrigin(referer))) return null;
+                if (!ActivePolicy.IsAllowed(directive, url, ExtractOrigin(referer)))
+                {
+                    return BinaryFailure(BinaryFetchFailureReason.CspBlocked, url, $"Blocked by {directive}", cspAllowed: false);
+                }
             }
 
             // url = UpgradeIfHsts(url); // Handled by HstsHandler
             try
             {
                 Uri current = url; HttpResponseMessage resp = null; int hops = 0; HttpRequestMessage req = null;
+                var redirectChain = new List<Uri> { url };
                 var maxRedirectHops = Math.Max(1, GetResilienceSettings().MaxRedirectHops);
                 while (hops < maxRedirectHops)
                 {
@@ -2055,6 +2071,7 @@ namespace FenBrowser.Core
                             var prev = current;
                             // current = UpgradeIfHsts(loc); // Handled by HstsHandler
                             current = loc;
+                            redirectChain.Add(current);
                             referer = prev;
                             hops++;
                             continue;
@@ -2062,7 +2079,14 @@ namespace FenBrowser.Core
                     }
                     break;
                 }
-                if (resp == null) return null;
+                if (resp == null)
+                {
+                    return BinaryFailure(BinaryFetchFailureReason.TransportFailure, current, "No response received", redirectChain);
+                }
+                if (hops >= maxRedirectHops && (int)resp.StatusCode is >= 300 and < 400)
+                {
+                    return BinaryFailure(BinaryFetchFailureReason.RedirectLimitExceeded, current, "Redirect limit exceeded", redirectChain, (int)resp.StatusCode);
+                }
                 // NoteHsts(resp, url); // Handled by HstsHandler
 
                 bool allowBodyOnError = !resp.IsSuccessStatusCode && ShouldAllowBinaryBodyOnHttpError(secFetchDest, resp);
@@ -2071,19 +2095,40 @@ namespace FenBrowser.Core
                     EngineLogCompat.Warn(
                         $"[FetchBytes] HTTP {(int)resp.StatusCode} for image '{url}' (Content-Type: {resp.Content?.Headers?.ContentType?.MediaType ?? "none"}) — body not allowed on error",
                         LogCategory.Network);
-                    return null;
+                    return BinaryFailure(BinaryFetchFailureReason.HttpError, current, $"HTTP {(int)resp.StatusCode}", redirectChain, (int)resp.StatusCode, resp.Content?.Headers?.ContentType?.MediaType);
                 }
 
-                var buf = resp.IsSuccessStatusCode
-                    ? await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false)
-                    : await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                byte[] buf;
+                try
+                {
+                    buf = resp.IsSuccessStatusCode
+                        ? await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false)
+                        : await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    return BinaryFailure(
+                        BinaryFetchFailureReason.BodyReadFailed,
+                        current,
+                        ex.Message,
+                        redirectChain,
+                        (int)resp.StatusCode,
+                        resp.Content?.Headers?.ContentType?.MediaType);
+                }
                 var maxBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxImageBodyBytes);
                 if (buf.Length > maxBodyBytes)
                 {
                     EngineLogCompat.Warn(
                         $"[Network.Resilience] Dropping binary response '{url}' because body size {buf.Length} exceeded limit {maxBodyBytes}.",
                         LogCategory.Network);
-                    return null;
+                    return BinaryFailure(
+                        BinaryFetchFailureReason.BodySizeLimitExceeded,
+                        current,
+                        $"Body size {buf.Length} exceeded limit {maxBodyBytes}",
+                        redirectChain,
+                        (int)resp.StatusCode,
+                        resp.Content?.Headers?.ContentType?.MediaType,
+                        bodySizeAllowed: false);
                 }
                 var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
                 if (ShouldBlockCorb(
@@ -2095,15 +2140,70 @@ namespace FenBrowser.Core
                     buf.AsSpan(0, Math.Min(buf.Length, 512)),
                     out _))
                 {
-                    return null;
+                    return BinaryFailure(
+                        BinaryFetchFailureReason.CorbBlocked,
+                        finalUri,
+                        "Response blocked by CORB",
+                        redirectChain,
+                        (int)resp.StatusCode,
+                        resp.Content?.Headers?.ContentType?.MediaType,
+                        corbAllowed: false);
                 }
-                return buf;
+                return new BinaryFetchResult
+                {
+                    Body = buf,
+                    StatusCode = (int)resp.StatusCode,
+                    FinalUri = finalUri,
+                    RedirectChain = redirectChain,
+                    ContentType = resp.Content?.Headers?.ContentType?.MediaType,
+                    ResponseHeaders = SafeBinaryResponseHeaders(resp)
+                };
+            }
+            catch (TaskCanceledException ex)
+            {
+                return BinaryFailure(BinaryFetchFailureReason.Timeout, url, ex.Message);
             }
             catch (Exception ex)
             {
                 EngineLogCompat.Debug($"[FetchBytes] Failed for {url}: {ex.Message}", LogCategory.Network);
-                return null;
+                return BinaryFailure(BinaryFetchFailureReason.TransportFailure, url, ex.Message);
             }
+        }
+
+        private static BinaryFetchResult BinaryFailure(
+            BinaryFetchFailureReason reason,
+            Uri finalUri,
+            string detail,
+            IReadOnlyList<Uri> redirectChain = null,
+            int statusCode = 0,
+            string contentType = null,
+            bool cspAllowed = true,
+            bool corbAllowed = true,
+            bool bodySizeAllowed = true) => new BinaryFetchResult
+            {
+                FailureReason = reason,
+                FailureDetail = detail,
+                FinalUri = finalUri,
+                RedirectChain = redirectChain ?? Array.Empty<Uri>(),
+                StatusCode = statusCode,
+                ContentType = contentType,
+                CspAllowed = cspAllowed,
+                CorbAllowed = corbAllowed,
+                BodySizeAllowed = bodySizeAllowed
+            };
+
+        private static IReadOnlyDictionary<string, string> SafeBinaryResponseHeaders(HttpResponseMessage response)
+        {
+            var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (response?.Content?.Headers?.ContentEncoding?.Count > 0)
+            {
+                headers["Content-Encoding"] = string.Join(",", response.Content.Headers.ContentEncoding);
+            }
+            if (response?.Content?.Headers?.ContentLength is long contentLength)
+            {
+                headers["Content-Length"] = contentLength.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            return headers;
         }
 
         private static bool ShouldAllowBinaryBodyOnHttpError(string secFetchDest, HttpResponseMessage response)
