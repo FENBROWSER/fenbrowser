@@ -54,6 +54,7 @@ public sealed class BrowserInputQueue
     private long _coalescedMouseMoveCount;
     private long _coalescedMouseWheelCount;
     private long _droppedMouseMoveCount;
+    private long _droppedOverflowCount;
 
     public BrowserInputQueue(int maxPendingEvents = 256)
     {
@@ -109,6 +110,17 @@ public sealed class BrowserInputQueue
         }
     }
 
+    public long DroppedOverflowCount
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _droppedOverflowCount;
+            }
+        }
+    }
+
     public void Enqueue(BrowserInputEvent input)
     {
         lock (_sync)
@@ -135,17 +147,40 @@ public sealed class BrowserInputQueue
                 return;
             }
 
+            if (input.Type == BrowserInputType.ScrollTo &&
+                _pending.Last is { Value.Type: BrowserInputType.ScrollTo })
+            {
+                _pending.Last.Value = input;
+                return;
+            }
+
+            if (input.Type == BrowserInputType.ScrollAnimationTick &&
+                _pending.Last is { Value: var lastTick } &&
+                lastTick.Type == BrowserInputType.ScrollAnimationTick)
+            {
+                _pending.Last.Value = input with { DeltaY = lastTick.DeltaY + input.DeltaY };
+                return;
+            }
+
             if (_pending.Count >= _maxPendingEvents)
             {
-                var staleMove = FindOldestCoalescibleMouseMove();
-                if (staleMove != null)
+                var staleInput = FindOldestCoalescibleInput();
+                if (staleInput != null)
                 {
-                    _pending.Remove(staleMove);
-                    _droppedMouseMoveCount++;
+                    if (CanCoalesceMouseMove(staleInput.Value))
+                    {
+                        _droppedMouseMoveCount++;
+                    }
+                    _pending.Remove(staleInput);
                 }
                 else if (CanCoalesceMouseMove(input))
                 {
                     _droppedMouseMoveCount++;
+                    return;
+                }
+                else
+                {
+                    _droppedOverflowCount++;
                     return;
                 }
             }
@@ -205,11 +240,14 @@ public sealed class BrowserInputQueue
             remaining > 0 && elapsed >= timeBudget);
     }
 
-    private LinkedListNode<BrowserInputEvent> FindOldestCoalescibleMouseMove()
+    private LinkedListNode<BrowserInputEvent> FindOldestCoalescibleInput()
     {
         for (var node = _pending.First; node != null; node = node.Next)
         {
-            if (CanCoalesceMouseMove(node.Value))
+            if (CanCoalesceMouseMove(node.Value) ||
+                node.Value.Type == BrowserInputType.MouseWheel ||
+                node.Value.Type == BrowserInputType.ScrollTo ||
+                node.Value.Type == BrowserInputType.ScrollAnimationTick)
             {
                 return node;
             }

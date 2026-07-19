@@ -113,6 +113,35 @@ public sealed class BrowserInputQueueTests
         Assert.Equal(-6, wheel.DeltaY);
     }
 
+    [Fact]
+    public void Enqueue_DiscreteFlood_NeverExceedsConfiguredCapacity()
+    {
+        var queue = new BrowserInputQueue(maxPendingEvents: 4);
+
+        for (var sequence = 1; sequence <= 20; sequence++)
+        {
+            queue.Enqueue(Input(BrowserInputType.Click, sequence));
+        }
+
+        Assert.Equal(4, queue.Count);
+        Assert.Equal(16, queue.DroppedOverflowCount);
+        var dispatched = new List<long>();
+        queue.Drain(input => dispatched.Add(input.Sequence), TimeSpan.FromSeconds(1), maxEvents: 8);
+        Assert.Equal(new long[] { 1, 2, 3, 4 }, dispatched);
+    }
+
+    [Fact]
+    public void Enqueue_AdjacentScrollTicks_CoalescesElapsedTime()
+    {
+        var queue = new BrowserInputQueue(maxPendingEvents: 8);
+        queue.Enqueue(Input(BrowserInputType.ScrollAnimationTick, 1) with { DeltaY = 0.01f });
+        queue.Enqueue(Input(BrowserInputType.ScrollAnimationTick, 2) with { DeltaY = 0.02f });
+
+        Assert.Equal(1, queue.Count);
+        Assert.True(queue.TryDequeue(out var tick));
+        Assert.Equal(0.03f, tick.DeltaY, precision: 4);
+    }
+
     private static BrowserInputEvent Input(
         BrowserInputType type,
         long sequence,
