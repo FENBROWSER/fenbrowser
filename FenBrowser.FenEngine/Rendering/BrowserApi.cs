@@ -15,6 +15,7 @@ using FenBrowser.Core.Engine;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Parsing;
 using FenBrowser.Core.Security;
+using FenBrowser.Core.Storage;
 using FenBrowser.FenEngine.Security; // Added
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.DevTools;
@@ -237,6 +238,7 @@ namespace FenBrowser.FenEngine.Rendering
         private FenBrowser.Core.Network.ResourcePrefetcher _prefetcher;
         private readonly NavigationManager _navManager;
         private readonly BrowserHostOptions _options;
+        private static readonly BrowserCookieJar SharedProfileCookieJar = new BrowserCookieJar();
         private readonly NavigationLifecycleTracker _navigationLifecycle = new NavigationLifecycleTracker();
         private readonly NavigationSubresourceTracker _navigationSubresources = new NavigationSubresourceTracker();
         private readonly FenBrowser.FenEngine.Core.EngineLoop _engineLoop; // Phase 5: Engine Loop
@@ -729,7 +731,9 @@ namespace FenBrowser.FenEngine.Rendering
             EngineLogCompat.Info($"[BrowserHost] HTTP/2: {config.EnableHttp2}, Brotli: {config.EnableBrotli}, " +
                           $"Version: {httpClient.DefaultRequestVersion}", LogCategory.Network);
             
-            _resources = new ResourceManager(httpClient, isPrivate);
+            var sessionCookieJar = _options.CookieJar ??
+                (isPrivate ? new BrowserCookieJar() : SharedProfileCookieJar);
+            _resources = new ResourceManager(httpClient, isPrivate, sessionCookieJar);
             _engine.CookieJar = _resources.CookieJar;
             _prefetcher = new FenBrowser.Core.Network.ResourcePrefetcher(_resources);
             _engine.Prefetcher = _prefetcher;

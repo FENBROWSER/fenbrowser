@@ -141,10 +141,13 @@ namespace FenBrowser.Core
         public CspPolicy ActivePolicy { get; set; }
         public BrowserCookieJar CookieJar { get; }
 
-        public ResourceManager(HttpClient http, bool isPrivate = false)
+        public ResourceManager(
+            HttpClient http,
+            bool isPrivate = false,
+            BrowserCookieJar cookieJar = null)
         {
             _isPrivate = isPrivate;
-            CookieJar = new BrowserCookieJar();
+            CookieJar = cookieJar ?? new BrowserCookieJar();
             if (!_isPrivate)
             {
                 _cacheRoot = Path.Combine(AppContext.BaseDirectory, "Cache");

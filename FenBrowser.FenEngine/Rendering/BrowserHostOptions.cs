@@ -1,4 +1,5 @@
 using System;
+using FenBrowser.Core.Storage;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -24,6 +25,12 @@ namespace FenBrowser.FenEngine.Rendering
         /// Product runtime paths should leave this null.
         /// </summary>
         public Func<Uri, string> ScriptOverrideProvider { get; init; }
+
+        /// <summary>
+        /// Optional browsing-session cookie store. Product hosts normally use the
+        /// shared profile store; tests and private-session owners can inject isolation.
+        /// </summary>
+        public BrowserCookieJar CookieJar { get; init; }
 
         public Uri MapRequestUri(Uri requestUri)
         {

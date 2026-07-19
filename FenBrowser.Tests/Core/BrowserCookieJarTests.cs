@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Http;
+using FenBrowser.Core;
 using FenBrowser.Core.Storage;
 using Xunit;
 
@@ -55,6 +56,39 @@ namespace FenBrowser.Tests.Core
 
             Assert.Contains("session=abc", jar.GetDocumentCookieString(FirstParty, FirstParty));
             Assert.Contains("session=abc", jar.GetRequestCookieHeader(FirstParty, FirstParty));
+        }
+
+        [Fact]
+        public void ResourceManagers_UseInjectedBrowsingSessionJar()
+        {
+            var sharedJar = new BrowserCookieJar();
+            using var firstClient = new HttpClient();
+            using var secondClient = new HttpClient();
+            var first = new ResourceManager(firstClient, isPrivate: false, sharedJar);
+            var second = new ResourceManager(secondClient, isPrivate: false, sharedJar);
+
+            first.CookieJar.SetDocumentCookie(FirstParty, "shared_session=present; Path=/", FirstParty);
+
+            Assert.Same(first.CookieJar, second.CookieJar);
+            Assert.Contains(
+                "shared_session=present",
+                second.CookieJar.GetRequestCookieHeader(FirstParty, FirstParty));
+        }
+
+        [Fact]
+        public void ResourceManagers_DefaultToIsolatedCookieJars()
+        {
+            using var firstClient = new HttpClient();
+            using var secondClient = new HttpClient();
+            var first = new ResourceManager(firstClient, isPrivate: true);
+            var second = new ResourceManager(secondClient, isPrivate: true);
+
+            first.CookieJar.SetDocumentCookie(FirstParty, "private_session=present; Path=/", FirstParty);
+
+            Assert.NotSame(first.CookieJar, second.CookieJar);
+            Assert.DoesNotContain(
+                "private_session=present",
+                second.CookieJar.GetRequestCookieHeader(FirstParty, FirstParty));
         }
     }
 }
