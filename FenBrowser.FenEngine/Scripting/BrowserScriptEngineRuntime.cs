@@ -357,10 +357,14 @@ internal sealed record BrowserHostLifetimeSnapshot(
 public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 {
     private readonly object _fenJsLock = new();
+    private readonly object _windowMessageQueueLock = new();
+    private Task _windowMessageDeliveryTail = Task.CompletedTask;
     private readonly ConcurrentDictionary<long, Timer> _fenJsTimers = new();
     private long _fenJsTimerIdCounter;
     private long _diagnosticCookieCaptureCounter;
     private JsValue _fenJsGlobalThis = JsValue.Undefined;
+    private JsValue _fenJsTopWindowFacade = JsValue.Undefined;
+    private JsValue _fenJsSameOriginTopWindowFacade = JsValue.Undefined;
     private readonly System.Diagnostics.Stopwatch _fenJsClock = System.Diagnostics.Stopwatch.StartNew();
     private readonly BrowserFenJsHostHooks _hostHooks = new();
     private readonly NavigationEpoch _navigationEpoch = NavigationEpoch.Initial;
@@ -2778,6 +2782,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             _missingHostPropertyReads = new ConditionalWeakTable<object, HashSet<string>>();
             _elementEventListeners = new ConditionalWeakTable<object, List<BrowserEventListener>>();
             _iframeWindowEventListeners = new ConditionalWeakTable<Element, List<BrowserEventListener>>();
+            _fenJsTopWindowFacade = JsValue.Undefined;
+            _fenJsSameOriginTopWindowFacade = JsValue.Undefined;
             _hostPrototypeNames.Clear();
             _activeWindowEventListeners = null;
             _activeWindowEventTarget = JsValue.Undefined;
@@ -2930,9 +2936,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var previousLocation = ReadGlobalValueOrUndefined("location");
         var previousBaseUri = _currentBaseUri;
         var previousParentBaseUri = _activeParentBaseUri;
-        var parentWindow = _fenJsGlobalThis.Tag == JsValueTag.Undefined
-            ? previousWindow
-            : _fenJsGlobalThis;
+        var parentWindow = ReadJsProperty(frameWindow, "parent");
+        if (parentWindow.Tag == JsValueTag.Undefined)
+        {
+            parentWindow = _fenJsGlobalThis.Tag == JsValueTag.Undefined
+                ? previousWindow
+                : GetOrCreateTopWindowFacade();
+        }
         var frameBaseUri = baseUri ??
             TryCreateUri(document?.BaseURI) ??
             TryCreateUri(document?.DocumentURI) ??
@@ -2942,7 +2952,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         {
             _currentBaseUri = frameBaseUri;
         }
-        _activeParentBaseUri = previousBaseUri;
+        _activeParentBaseUri = GetParentDocumentUri(frameElement) ?? previousBaseUri;
         _activeWindowEventListeners = frameWindowListeners;
         _activeWindowEventTarget = frameWindow;
         _interpreter.RegisterGlobalValue("window", frameWindow);
@@ -3008,7 +3018,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         {
             _currentBaseUri = frameBaseUri;
         }
-        _activeParentBaseUri = previousBaseUri;
+        var callbackFrameElement = ResolveHostObjectOrNull<Element>(ReadJsProperty(windowTarget, "__fenFrameElement"));
+        _activeParentBaseUri = GetParentDocumentUri(callbackFrameElement) ?? previousBaseUri;
         _activeWindowEventListeners = listeners;
         _activeWindowEventTarget = windowTarget;
         _interpreter.RegisterGlobalValue("window", windowTarget);
@@ -3117,12 +3128,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             {
                 var data = args.Count > 0 ? args[0] : JsValue.Undefined;
                 var targetOrigin = args.Count > 1 ? CoerceToHostString(args[1]) : "*";
+                var ports = args.Count > 2 ? args[2] : JsValue.Undefined;
                 var sourceWindow = GetActiveWindowEventTarget();
                 QueueWindowMessage(
                     _fenJsGlobalThis,
                     _windowEventListeners,
                     data,
                     sourceWindow,
+                    ports,
                     targetOrigin,
                     GetTopWindowDeliveryOrigin());
                 return JsValue.Undefined;
@@ -3261,6 +3274,33 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         _interpreter.RegisterGlobalHostObject("document", RegisterHostObject(document, HostObjectKind.DomDocument));
         _interpreter.RegisterGlobalHostObject("navigator", RegisterHostObject(navigator, HostObjectKind.Other));
         InstallFenJsNativeRangeConstructor(document);
+        _interpreter.RegisterGlobalValue(
+            "__fenDispatchMessagePort",
+            _interpreter.AllocateNativeFunction(
+                "__fenDispatchMessagePort",
+                (_, args) =>
+                {
+                    var windowTarget = args.Count > 0 ? args[0] : JsValue.Undefined;
+                    var callback = args.Count > 1 ? args[1] : JsValue.Undefined;
+                    var callbackThis = args.Count > 2 ? args[2] : JsValue.Undefined;
+                    var eventValue = args.Count > 3 ? args[3] : JsValue.Undefined;
+                    if (!_interpreter.CanCallValue(callback))
+                    {
+                        return JsValue.Undefined;
+                    }
+
+                    var frameElement = ResolveHostObjectOrNull<Element>(ReadJsProperty(windowTarget, "__fenFrameElement"));
+                    var listeners = frameElement == null
+                        ? _windowEventListeners
+                        : GetIFrameWindowListeners(frameElement);
+                    using (ActivateWindowCallbackContext(windowTarget, listeners))
+                    {
+                        _interpreter.InvokeFunction(callback, new[] { eventValue }, callbackThis);
+                    }
+
+                    return JsValue.Undefined;
+                },
+                length: 4));
         // Register a native logging hook that console.log/warn/error forward to.
         // Uses FenLogger so output appears in engine logs and any attached debug console.
         _interpreter.RegisterGlobalValue(
@@ -6973,22 +7013,28 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         this._fenListeners = [];
                         this._fenPeer = null;
                         this._fenClosed = false;
+                        this._fenWindow = window;
                     }
 
-                    MessagePort.prototype.postMessage = function (data) {
+                    MessagePort.prototype.postMessage = function (data, transfer) {
                         var target = this._fenPeer;
                         if (!target || target._fenClosed) return;
-                        var event = new MessageEvent('message', { data: data, source: this, ports: [] });
+                        if (transfer && transfer.length) {
+                            for (var transferredIndex = 0; transferredIndex < transfer.length; transferredIndex++) {
+                                if (transfer[transferredIndex]) transfer[transferredIndex]._fenWindow = target._fenWindow;
+                            }
+                        }
+                        var event = new MessageEvent('message', { data: data, source: null, ports: transfer || [] });
                         event.target = target;
                         event.currentTarget = target;
                         var deliver = function () {
                             if (target._fenClosed) return;
                             if (typeof target.onmessage === 'function') {
-                                target.onmessage.call(target, event);
+                                __fenDispatchMessagePort(target._fenWindow, target.onmessage, target, event);
                             }
                             var listeners = target._fenListeners.slice();
                             for (var i = 0; i < listeners.length; i++) {
-                                listeners[i].call(target, event);
+                                __fenDispatchMessagePort(target._fenWindow, listeners[i], target, event);
                             }
                         };
                         if (typeof setTimeout === 'function') {
@@ -10882,6 +10928,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return GetOrCreateIFrameContentWindow(iframe, null, null);
     }
 
+    private JsValue GetIFrameContentWindowForCurrentContext(Element iframe)
+    {
+        var window = GetOrCreateIFrameContentWindow(iframe);
+        if (CanCurrentContextAccessIFrameDocument(iframe))
+        {
+            return window;
+        }
+
+        return GetOrCreateCrossOriginChildWindowFacade(iframe, window);
+    }
+
     private JsValue GetOrCreateIFrameContentWindow(Element iframe, Document frameDocument, Uri frameUri)
     {
         var cached = GetStoredHostPropertyOrUndefined(iframe, "__fenIframeContentWindow");
@@ -10902,16 +10959,30 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         _interpreter.SetObjectProperty(window, "document", document);
         _interpreter.SetObjectProperty(window, "location", location);
-        _interpreter.SetObjectProperty(window, "frameElement", ToHostOrNull(iframe, HostObjectKind.DomElement));
+        var parentCanAccessFrame = IsSameOriginFrameAccess(iframe, href, GetParentDocumentUri(iframe));
+        var frameElementValue = ToHostOrNull(iframe, HostObjectKind.DomElement);
+        _interpreter.SetObjectProperty(window, "__fenFrameElement", frameElementValue);
+        _interpreter.SetObjectProperty(window, "frameElement", parentCanAccessFrame ? frameElementValue : JsValue.Null);
         _interpreter.SetObjectProperty(window, "window", window);
         _interpreter.SetObjectProperty(window, "self", window);
         _interpreter.SetObjectProperty(window, "frames", window);
         _interpreter.SetObjectProperty(window, "length", JsValue.FromInt32(0));
         _interpreter.SetObjectProperty(window, "closed", JsValue.FromBoolean(false));
+        SetIFrameViewportProperties(window, iframe);
+        var frameName = iframe.GetAttribute("name") ?? string.Empty;
+        _interpreter.SetObjectProperty(window, "name", JsValue.FromString(frameName));
 
-        var parent = _fenJsGlobalThis.Tag == JsValueTag.Undefined ? window : _fenJsGlobalThis;
+        var parent = _fenJsGlobalThis.Tag == JsValueTag.Undefined
+            ? window
+            : parentCanAccessFrame
+                ? GetOrCreateSameOriginTopWindowFacade()
+                : GetOrCreateTopWindowFacade();
         _interpreter.SetObjectProperty(window, "parent", parent);
         _interpreter.SetObjectProperty(window, "top", parent);
+        var exposedWindow = parentCanAccessFrame
+            ? window
+            : GetOrCreateCrossOriginChildWindowFacade(iframe, window);
+        RegisterChildFrameOnParent(parent, exposedWindow, frameName);
         _interpreter.SetObjectProperty(
             window,
             "postMessage",
@@ -10921,7 +10992,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 {
                     var data = args.Count > 0 ? args[0] : JsValue.Undefined;
                     var targetOrigin = args.Count > 1 ? CoerceToHostString(args[1]) : "*";
-                    QueueWindowMessage(window, frameWindowListeners, data, _fenJsGlobalThis, targetOrigin);
+                    var ports = args.Count > 2 ? args[2] : JsValue.Undefined;
+                    QueueWindowMessage(window, frameWindowListeners, data, _fenJsGlobalThis, ports, targetOrigin);
                     return JsValue.Undefined;
                 },
                 length: 1));
@@ -11035,6 +11107,100 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return window;
     }
 
+    private JsValue GetOrCreateTopWindowFacade()
+    {
+        if (_fenJsTopWindowFacade.Tag == JsValueTag.Object)
+        {
+            return _fenJsTopWindowFacade;
+        }
+
+        var facade = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+        _fenJsTopWindowFacade = facade;
+        _interpreter.SetObjectProperty(facade, "window", facade);
+        _interpreter.SetObjectProperty(facade, "self", facade);
+        _interpreter.SetObjectProperty(facade, "parent", facade);
+        _interpreter.SetObjectProperty(facade, "top", facade);
+        _interpreter.SetObjectProperty(facade, "frames", facade);
+        _interpreter.SetObjectProperty(facade, "length", JsValue.FromInt32(0));
+        _interpreter.SetObjectProperty(facade, "postMessage", CreateTopWindowPostMessageFunction());
+        return facade;
+    }
+
+    private JsValue GetOrCreateSameOriginTopWindowFacade()
+    {
+        if (_fenJsSameOriginTopWindowFacade.Tag == JsValueTag.Object)
+        {
+            return _fenJsSameOriginTopWindowFacade;
+        }
+
+        var facade = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+        _fenJsSameOriginTopWindowFacade = facade;
+        foreach (var property in new[]
+        {
+            "document", "location", "navigator", "history",
+            "innerWidth", "innerHeight", "outerWidth", "outerHeight",
+            "devicePixelRatio", "dispatchEvent", "addEventListener", "removeEventListener"
+        })
+        {
+            var value = ReadJsProperty(_fenJsGlobalThis, property);
+            if (value.Tag != JsValueTag.Undefined)
+            {
+                _interpreter.SetObjectProperty(facade, property, value);
+            }
+        }
+
+        _interpreter.SetObjectProperty(facade, "window", facade);
+        _interpreter.SetObjectProperty(facade, "self", facade);
+        _interpreter.SetObjectProperty(facade, "parent", facade);
+        _interpreter.SetObjectProperty(facade, "top", facade);
+        _interpreter.SetObjectProperty(facade, "frames", facade);
+        _interpreter.SetObjectProperty(facade, "length", JsValue.FromInt32(0));
+        _interpreter.SetObjectProperty(facade, "postMessage", CreateTopWindowPostMessageFunction());
+        return facade;
+    }
+
+    private JsValue GetOrCreateCrossOriginChildWindowFacade(Element iframe, JsValue targetWindow)
+    {
+        var cached = GetStoredHostPropertyOrUndefined(iframe, "__fenCrossOriginContentWindow");
+        if (cached.Tag == JsValueTag.Object)
+        {
+            return cached;
+        }
+
+        var facade = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+        var parentFacade = GetOrCreateTopWindowFacade();
+        _interpreter.SetObjectProperty(facade, "window", facade);
+        _interpreter.SetObjectProperty(facade, "self", facade);
+        _interpreter.SetObjectProperty(facade, "frames", facade);
+        _interpreter.SetObjectProperty(facade, "parent", parentFacade);
+        _interpreter.SetObjectProperty(facade, "top", parentFacade);
+        _interpreter.SetObjectProperty(facade, "closed", JsValue.FromBoolean(false));
+        _interpreter.SetObjectProperty(facade, "length", ReadJsProperty(targetWindow, "length"));
+        _interpreter.SetObjectProperty(
+            facade,
+            "postMessage",
+            _interpreter.AllocateNativeFunction(
+                "postMessage",
+                (_, args) =>
+                {
+                    var data = args.Count > 0 ? args[0] : JsValue.Undefined;
+                    var targetOrigin = args.Count > 1 ? CoerceToHostString(args[1]) : "*";
+                    var ports = args.Count > 2 ? args[2] : JsValue.Undefined;
+                    QueueWindowMessage(
+                        targetWindow,
+                        GetIFrameWindowListeners(iframe),
+                        data,
+                        GetActiveWindowEventTarget(),
+                        ports,
+                        targetOrigin);
+                    return JsValue.Undefined;
+                },
+                length: 1));
+
+        SetStoredHostProperty(iframe, "__fenCrossOriginContentWindow", facade);
+        return facade;
+    }
+
     private void UpdateIFrameContentWindow(
         JsValue window,
         Element iframe,
@@ -11052,7 +11218,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var href = ResolveIFrameWindowHref(iframe, frameDocument, frameUri);
         _interpreter.SetObjectProperty(window, "document", document);
         _interpreter.SetObjectProperty(window, "location", CreatePlainLocationObject(href));
-        _interpreter.SetObjectProperty(window, "frameElement", ToHostOrNull(iframe, HostObjectKind.DomElement));
+        var parentCanAccessFrame = IsSameOriginFrameAccess(iframe, href, GetParentDocumentUri(iframe));
+        var frameElementValue = ToHostOrNull(iframe, HostObjectKind.DomElement);
+        _interpreter.SetObjectProperty(window, "__fenFrameElement", frameElementValue);
+        _interpreter.SetObjectProperty(window, "frameElement", parentCanAccessFrame ? frameElementValue : JsValue.Null);
+        SetIFrameViewportProperties(window, iframe);
+        var frameName = iframe.GetAttribute("name") ?? string.Empty;
+        _interpreter.SetObjectProperty(window, "name", JsValue.FromString(frameName));
+        var parent = ReadJsProperty(window, "parent");
+        var exposedWindow = parentCanAccessFrame
+            ? window
+            : GetOrCreateCrossOriginChildWindowFacade(iframe, window);
+        RegisterChildFrameOnParent(parent, exposedWindow, frameName);
 
         if (frameDocument != null)
         {
@@ -11070,6 +11247,138 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             ResolveElementUrlProperty(iframe, "src");
 
         return string.IsNullOrWhiteSpace(href) ? "about:blank" : href;
+    }
+
+    private static Uri GetParentDocumentUri(Element iframe)
+    {
+        var document = iframe?.OwnerDocument;
+        return TryCreateUri(document?.URL) ??
+               TryCreateUri(document?.DocumentURI) ??
+               TryCreateUri(document?.BaseURI);
+    }
+
+    private static bool IsSameOriginFrameAccess(Element iframe, string frameHref, Uri accessorUri)
+    {
+        if (iframe == null || accessorUri == null)
+        {
+            return false;
+        }
+
+        if (iframe.HasAttribute("sandbox"))
+        {
+            var flags = FenBrowser.Core.SandboxPolicy.ParseIframeSandboxFlags(iframe.GetAttribute("sandbox"));
+            if ((flags & IframeSandboxFlags.SameOrigin) == 0)
+            {
+                return false;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(frameHref) ||
+            string.Equals(frameHref, "about:blank", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(frameHref, "about:srcdoc", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return Uri.TryCreate(frameHref, UriKind.Absolute, out var frameUri) &&
+               CorsHandler.IsSameOrigin(accessorUri, frameUri);
+    }
+
+    private bool CanCurrentContextAccessIFrameDocument(Element iframe)
+    {
+        var href = ResolveIFrameWindowHref(iframe, null, null);
+        return IsSameOriginFrameAccess(iframe, href, _currentBaseUri);
+    }
+
+    private JsValue GetMessageSourceForTarget(JsValue sourceWindow, JsValue targetWindow)
+    {
+        if (sourceWindow.Tag != JsValueTag.Object || targetWindow.Tag != JsValueTag.Object)
+        {
+            return sourceWindow;
+        }
+
+        var sourceFrame = ResolveHostObjectOrNull<Element>(ReadJsProperty(sourceWindow, "__fenFrameElement"));
+        if (sourceFrame != null && targetWindow.Equals(_fenJsGlobalThis))
+        {
+            var sourceHref = ResolveIFrameWindowHref(sourceFrame, null, null);
+            return IsSameOriginFrameAccess(sourceFrame, sourceHref, GetParentDocumentUri(sourceFrame))
+                ? sourceWindow
+                : GetOrCreateCrossOriginChildWindowFacade(sourceFrame, sourceWindow);
+        }
+
+        var targetFrame = ResolveHostObjectOrNull<Element>(ReadJsProperty(targetWindow, "__fenFrameElement"));
+        if (targetFrame != null && sourceWindow.Equals(_fenJsGlobalThis))
+        {
+            var targetHref = ResolveIFrameWindowHref(targetFrame, null, null);
+            return IsSameOriginFrameAccess(targetFrame, targetHref, GetParentDocumentUri(targetFrame))
+                ? GetOrCreateSameOriginTopWindowFacade()
+                : GetOrCreateTopWindowFacade();
+        }
+
+        return sourceWindow;
+    }
+
+    private void SetIFrameViewportProperties(JsValue window, Element iframe)
+    {
+        var width = TryReadDeclaredPixelDimension(iframe, "width", out var declaredWidth)
+            ? declaredWidth
+            : WindowWidth;
+        var height = TryReadDeclaredPixelDimension(iframe, "height", out var declaredHeight)
+            ? declaredHeight
+            : WindowHeight;
+        _interpreter.SetObjectProperty(window, "innerWidth", JsValue.FromNumber(width));
+        _interpreter.SetObjectProperty(window, "innerHeight", JsValue.FromNumber(height));
+        _interpreter.SetObjectProperty(window, "outerWidth", JsValue.FromNumber(width));
+        _interpreter.SetObjectProperty(window, "outerHeight", JsValue.FromNumber(height));
+        _interpreter.SetObjectProperty(window, "devicePixelRatio", JsValue.FromNumber(1));
+        _interpreter.SetObjectProperty(window, "pageXOffset", JsValue.FromInt32(0));
+        _interpreter.SetObjectProperty(window, "pageYOffset", JsValue.FromInt32(0));
+        _interpreter.SetObjectProperty(window, "scrollX", JsValue.FromInt32(0));
+        _interpreter.SetObjectProperty(window, "scrollY", JsValue.FromInt32(0));
+    }
+
+    private void RegisterChildFrameOnParent(JsValue parent, JsValue window, string frameName)
+    {
+        if (parent.Tag != JsValueTag.Object || window.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var frames = ReadJsProperty(parent, "frames");
+        if (frames.Tag != JsValueTag.Object)
+        {
+            frames = parent;
+            _interpreter.SetObjectProperty(parent, "frames", frames);
+        }
+
+        if (!string.IsNullOrWhiteSpace(frameName))
+        {
+            _interpreter.SetObjectProperty(frames, frameName, window);
+            _interpreter.SetObjectProperty(parent, frameName, window);
+            if (_fenJsGlobalThis.Tag == JsValueTag.Object && !parent.Equals(_fenJsGlobalThis))
+            {
+                _interpreter.SetObjectProperty(_fenJsGlobalThis, frameName, window);
+            }
+        }
+
+        var frameIndex = ReadJsProperty(window, "__fenFrameIndex");
+        if (frameIndex.Tag != JsValueTag.Undefined)
+        {
+            return;
+        }
+
+        var parentLength = ReadJsProperty(frames, "length");
+        var index = parentLength.Tag == JsValueTag.Number
+            ? Math.Max(0, (int)parentLength.AsNumber())
+            : 0;
+        _interpreter.SetObjectProperty(window, "__fenFrameIndex", JsValue.FromInt32(index));
+        _interpreter.SetObjectProperty(frames, index.ToString(CultureInfo.InvariantCulture), window);
+        _interpreter.SetObjectProperty(frames, "length", JsValue.FromInt32(index + 1));
+        if (_fenJsGlobalThis.Tag == JsValueTag.Object && !parent.Equals(_fenJsGlobalThis))
+        {
+            _interpreter.SetObjectProperty(_fenJsGlobalThis, index.ToString(CultureInfo.InvariantCulture), window);
+            _interpreter.SetObjectProperty(_fenJsGlobalThis, "length", JsValue.FromInt32(index + 1));
+        }
     }
 
     private JsValue CreatePlainLocationObject(string href)
@@ -11099,6 +11408,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         List<BrowserEventListener> listeners,
         JsValue data,
         JsValue sourceWindow,
+        JsValue ports,
         string targetOrigin,
         string targetWindowOriginOverride = null)
     {
@@ -11108,42 +11418,56 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
 
         var origin = GetMessageSourceOrigin(sourceWindow);
-        _ = Task.Run(() =>
+        var exposedSourceWindow = GetMessageSourceForTarget(sourceWindow, targetWindow);
+        var sessionGeneration = _fenJsSessionGeneration;
+        lock (_windowMessageQueueLock)
         {
-            try
-            {
-                RunFenJsWithLargeStack<object>(() =>
+            _windowMessageDeliveryTail = _windowMessageDeliveryTail.ContinueWith(
+                _ =>
                 {
-                    lock (_fenJsLock)
+                    if (sessionGeneration != _fenJsSessionGeneration)
                     {
-                        using (ActivateWindowCallbackContext(targetWindow, listeners))
-                        {
-                            var eventValue = CreateMessageEventValue(data, origin, sourceWindow, targetWindow);
-                            var handler = ReadJsProperty(targetWindow, "onmessage");
-                            if (_interpreter.CanCallValue(handler))
-                            {
-                                TryInvokeFenJsEventCallback(handler, targetWindow, eventValue, "message");
-                            }
-
-                            DispatchBrowserEvent(listeners, "message", targetWindow, eventValue);
-                            _interpreter.PumpMicrotasks();
-                            RecordMicrotaskCheckpoint("postMessage");
-                        }
+                        return;
                     }
 
-                    return null;
-                });
-            }
-            catch (Exception ex)
-            {
-                FenBrowser.Core.EngineLogCompat.Warn(
-                    $"[FenJsBridge] postMessage delivery failed: {ex.Message}",
-                    FenBrowser.Core.Logging.LogCategory.JavaScript);
-            }
+                    try
+                    {
+                        RunFenJsWithLargeStack<object>(() =>
+                        {
+                            lock (_fenJsLock)
+                            {
+                                using (ActivateWindowCallbackContext(targetWindow, listeners))
+                                {
+                                    var eventValue = CreateMessageEventValue(data, origin, exposedSourceWindow, targetWindow, ports);
+                                    var handler = ReadJsProperty(targetWindow, "onmessage");
+                                    if (_interpreter.CanCallValue(handler))
+                                    {
+                                        TryInvokeFenJsEventCallback(handler, targetWindow, eventValue, "message");
+                                    }
 
-            try { RequestRender?.Invoke(); }
-            catch { /* render request is best-effort */ }
-        });
+                                    DispatchBrowserEvent(listeners, "message", targetWindow, eventValue);
+                                    _interpreter.PumpMicrotasks();
+                                    RecordMicrotaskCheckpoint("postMessage");
+                                }
+                            }
+
+                            return null;
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        FenBrowser.Core.EngineLogCompat.Warn(
+                            $"[FenJsBridge] postMessage delivery failed: {ex.Message}",
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    }
+
+                    try { RequestRender?.Invoke(); }
+                    catch { /* render request is best-effort */ }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.None,
+                TaskScheduler.Default);
+        }
     }
 
     private bool DispatchFrameWindowHostEvent(
@@ -11168,8 +11492,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         JsValue data,
         string origin,
         JsValue sourceWindow,
-        JsValue targetWindow)
+        JsValue targetWindow,
+        JsValue ports)
     {
+        AdoptTransferredMessagePorts(ports, targetWindow);
         return _interpreter.AllocateObject(new Dictionary<string, JsValue>
         {
             ["type"] = JsValue.FromString("message"),
@@ -11177,7 +11503,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             ["origin"] = JsValue.FromString(origin ?? string.Empty),
             ["lastEventId"] = JsValue.FromString(string.Empty),
             ["source"] = sourceWindow.Tag == JsValueTag.Undefined ? JsValue.Null : sourceWindow,
-            ["ports"] = _interpreter.AllocateArray(Array.Empty<JsValue>()),
+            ["ports"] = ports.Tag == JsValueTag.Object
+                ? ports
+                : _interpreter.AllocateArray(Array.Empty<JsValue>()),
             ["target"] = targetWindow,
             ["currentTarget"] = targetWindow,
             ["srcElement"] = targetWindow,
@@ -12776,6 +13104,57 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return CreateDomRect(r.Left, r.Top, r.Width, r.Height);
     }
 
+    private static bool TryReadDeclaredPixelDimension(Element element, string property, out double value)
+    {
+        value = 0;
+        string raw = null;
+        foreach (var declaration in (element?.GetAttribute("style") ?? string.Empty)
+            .Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var colonIndex = declaration.IndexOf(':');
+            if (colonIndex <= 0 ||
+                !string.Equals(declaration[..colonIndex].Trim(), property, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            raw = declaration[(colonIndex + 1)..].Trim();
+        }
+
+        raw ??= element?.GetAttribute(property);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        if (raw.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+        {
+            raw = raw[..^2].TrimEnd();
+        }
+
+        return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out value) &&
+            double.IsFinite(value);
+    }
+
+    private static bool TryReadExplicitIframeChildDimension(Element element, string property, out double value)
+    {
+        value = 0;
+        if (element?.ChildNodes == null)
+        {
+            return false;
+        }
+
+        foreach (var child in element.ChildNodes.OfType<Element>())
+        {
+            if (IsIFrameElement(child) && TryReadDeclaredPixelDimension(child, property, out value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private JsValue CreateDomRect(double left, double top, double width, double height)
     {
         return _interpreter.AllocateObject(new Dictionary<string, JsValue>
@@ -13148,6 +13527,27 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             ["SHOW_DOCUMENT_FRAGMENT"] = JsValue.FromInt32((int)NodeFilterShow.DocumentFragment),
             ["SHOW_NOTATION"] = JsValue.FromInt32((int)NodeFilterShow.Notation)
         });
+    }
+
+    private void AdoptTransferredMessagePorts(JsValue ports, JsValue targetWindow)
+    {
+        if (ports.Tag != JsValueTag.Object || targetWindow.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var lengthValue = ReadJsProperty(ports, "length");
+        var length = lengthValue.Tag == JsValueTag.Number
+            ? Math.Max(0, (int)lengthValue.AsNumber())
+            : 0;
+        for (var index = 0; index < length; index++)
+        {
+            var port = ReadJsProperty(ports, index.ToString(CultureInfo.InvariantCulture));
+            if (port.Tag == JsValueTag.Object)
+            {
+                _interpreter.SetObjectProperty(port, "_fenWindow", targetWindow);
+            }
+        }
     }
 
     private JsValue CreateCssGlobalObject()
@@ -14752,10 +15152,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     value = JsValue.FromInt32(ReadElementTabIndex(element));
                     return true;
                 case "contentWindow" when IsIFrameElement(element):
-                    value = _owner.GetOrCreateIFrameContentWindow(element);
+                    value = _owner.GetIFrameContentWindowForCurrentContext(element);
                     return true;
                 case "contentDocument" when IsIFrameElement(element):
-                    value = _owner.GetOrCreateIFrameContentDocument(element);
+                    value = _owner.CanCurrentContextAccessIFrameDocument(element)
+                        ? _owner.GetOrCreateIFrameContentDocument(element)
+                        : JsValue.Null;
                     return true;
                 case "sandbox" when IsIFrameElement(element):
                     value = element.NamespaceUri == "http://www.w3.org/1999/xhtml"

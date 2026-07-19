@@ -278,7 +278,7 @@ namespace FenBrowser.Tests.Scripting
                 """
                 <html>
                   <body>
-                    <iframe id="challenge" src="https://child.test/frame"></iframe>
+                    <iframe id="challenge" src="https://parent.test/frame"></iframe>
                   </body>
                 </html>
                 """,
@@ -302,7 +302,7 @@ namespace FenBrowser.Tests.Scripting
                 "  globalThis.__frameMessage=String(event.data)+'|'+event.origin+'|'+String(event.source===window)+'|'+String(event.target===frame.contentWindow)+'|'+String(event.currentTarget===frame.contentWindow);" +
                 "});" +
                 "frame.contentWindow.postMessage('blocked','https://other.test');" +
-                "frame.contentWindow.postMessage('captcha-command','https://child.test');");
+                "frame.contentWindow.postMessage('captcha-command','https://parent.test');");
 
             for (var i = 0; i < 20; i++)
             {
@@ -330,7 +330,7 @@ namespace FenBrowser.Tests.Scripting
                 <html>
                   <body>
                     <div id="top-marker"></div>
-                    <iframe id="child" src="https://child.test/frame"></iframe>
+                    <iframe id="child" src="https://parent.test/frame"></iframe>
                     <script>
                       window.__parentMessages = 0;
                       window.addEventListener('message', function(event) {
@@ -350,7 +350,7 @@ namespace FenBrowser.Tests.Scripting
 
             await engine.SetDomAsync(document.DocumentElement, baseUri);
 
-            var frameUri = new Uri("https://child.test/frame");
+            var frameUri = new Uri("https://parent.test/frame");
             var frameDocument = new HtmlParser(
                 """
                 <html>
@@ -388,7 +388,7 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal("top-marker", engine.Evaluate("document.getElementById('top-marker').id")?.ToString());
 
             engine.Evaluate(
-                "document.getElementById('child').contentWindow.postMessage('frame-command','https://child.test');");
+                "document.getElementById('child').contentWindow.postMessage('frame-command','https://parent.test');");
             for (var i = 0; i < 20; i++)
             {
                 if (engine.Evaluate("String(document.getElementById('child').contentWindow.__frameMessages || 0)")?.ToString() == "1")
@@ -428,7 +428,7 @@ namespace FenBrowser.Tests.Scripting
                 """
                 <html>
                   <body>
-                    <iframe id="child" src="https://child.test/frame"></iframe>
+                    <iframe id="child" src="https://parent.test/frame"></iframe>
                   </body>
                 </html>
                 """,
@@ -441,7 +441,7 @@ namespace FenBrowser.Tests.Scripting
 
             await engine.SetDomAsync(document.DocumentElement, baseUri);
 
-            var frameUri = new Uri("https://child.test/frame");
+            var frameUri = new Uri("https://parent.test/frame");
             var frameDocument = new HtmlParser(
                 """
                 <html>
@@ -483,7 +483,7 @@ namespace FenBrowser.Tests.Scripting
                 <html>
                   <body>
                     <div id="top-marker"></div>
-                    <iframe id="child" src="https://child.test/frame"></iframe>
+                    <iframe id="child" src="https://parent.test/frame"></iframe>
                     <script>
                       window.__parentMessages = 0;
                       window.addEventListener('message', function(event) {
@@ -509,7 +509,7 @@ namespace FenBrowser.Tests.Scripting
 
             await engine.SetDomAsync(document.DocumentElement, baseUri);
 
-            var frameUri = new Uri("https://child.test/frame");
+            var frameUri = new Uri("https://parent.test/frame");
             var frameDocument = new HtmlParser(
                 """
                 <html>
@@ -567,7 +567,7 @@ namespace FenBrowser.Tests.Scripting
             }
 
             Assert.Equal(
-                "from-frame|https://child.test|true|true|top-marker",
+                "from-frame|https://parent.test|true|true|top-marker",
                 engine.Evaluate("String(globalThis.__lastParentMessage)")?.ToString());
             Assert.Equal(
                 "true",
@@ -589,7 +589,7 @@ namespace FenBrowser.Tests.Scripting
                 <html>
                   <body>
                     <div id="top-marker"></div>
-                    <iframe id="child" src="https://child.test/frame"></iframe>
+                    <iframe id="child" src="https://parent.test/frame"></iframe>
                     <script>
                       window.__parentMessages = 0;
                       window.addEventListener('message', function(event) {
@@ -614,7 +614,7 @@ namespace FenBrowser.Tests.Scripting
 
             await engine.SetDomAsync(document.DocumentElement, baseUri);
 
-            var frameUri = new Uri("https://child.test/frame");
+            var frameUri = new Uri("https://parent.test/frame");
             var frameDocument = new HtmlParser(
                 """
                 <html>
@@ -653,13 +653,13 @@ namespace FenBrowser.Tests.Scripting
             }
 
             Assert.Equal(
-                "timer:frame-body:https://child.test/frame|https://child.test|true|top-marker",
+                "timer:frame-body:https://parent.test/frame|https://parent.test|true|top-marker",
                 engine.Evaluate("String(globalThis.__lastParentMessage)")?.ToString());
             Assert.Equal(
                 "frame-body",
                 engine.Evaluate("String(document.getElementById('child').contentWindow.__timerDocumentBody)")?.ToString());
             Assert.Equal(
-                "https://child.test/frame",
+                "https://parent.test/frame",
                 engine.Evaluate("String(document.getElementById('child').contentWindow.__timerLocation)")?.ToString());
             Assert.Equal(
                 "true",
@@ -675,7 +675,7 @@ namespace FenBrowser.Tests.Scripting
                 <html>
                   <body>
                     <div id="top-marker"></div>
-                    <iframe id="child" src="https://child.test/frame"></iframe>
+                    <iframe id="child" src="https://parent.test/frame"></iframe>
                     <script>
                       window.__parentMessages = 0;
                       window.addEventListener('message', function(event) {
@@ -700,7 +700,7 @@ namespace FenBrowser.Tests.Scripting
 
             await engine.SetDomAsync(document.DocumentElement, baseUri);
 
-            var frameUri = new Uri("https://child.test/frame");
+            var frameUri = new Uri("https://parent.test/frame");
             var frameDocument = new HtmlParser(
                 """
                 <html>
@@ -738,13 +738,13 @@ namespace FenBrowser.Tests.Scripting
             }
 
             Assert.Equal(
-                "microtask:frame-body:https://child.test/frame|https://child.test|true|top-marker",
+                "microtask:frame-body:https://parent.test/frame|https://parent.test|true|top-marker",
                 engine.Evaluate("String(globalThis.__lastParentMessage)")?.ToString());
             Assert.Equal(
                 "frame-body",
                 engine.Evaluate("String(document.getElementById('child').contentWindow.__microtaskDocumentBody)")?.ToString());
             Assert.Equal(
-                "https://child.test/frame",
+                "https://parent.test/frame",
                 engine.Evaluate("String(document.getElementById('child').contentWindow.__microtaskLocation)")?.ToString());
         }
 
@@ -756,7 +756,7 @@ namespace FenBrowser.Tests.Scripting
                 """
                 <html>
                   <body>
-                    <iframe id="child" src="https://child.test/frame"></iframe>
+                    <iframe id="child" src="https://parent.test/frame"></iframe>
                   </body>
                 </html>
                 """,
@@ -769,7 +769,7 @@ namespace FenBrowser.Tests.Scripting
 
             await engine.SetDomAsync(document.DocumentElement, baseUri);
 
-            var frameUri = new Uri("https://child.test/frame");
+            var frameUri = new Uri("https://parent.test/frame");
             var frameDocument = new HtmlParser(
                 """
                 <html>
