@@ -34,6 +34,10 @@ public sealed class BrokeredInputRoutingTests
             await tab.Browser.HandleKeyPress("t");
             await tab.Browser.HandleKeyPress("Enter");
 
+            await WaitForAsync(
+                () => coordinator.Inputs.Count >= 2,
+                "queued keyboard input to reach the renderer coordinator");
+
             Assert.Collection(
                 coordinator.Inputs,
                 input =>

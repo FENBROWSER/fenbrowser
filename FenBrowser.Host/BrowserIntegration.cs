@@ -2369,7 +2369,19 @@ public class BrowserIntegration
             case BrowserInputType.TextInput:
                 if (!string.IsNullOrEmpty(input.Text))
                 {
-                    _browser.HandleKeyPress(input.Text).GetAwaiter().GetResult();
+                    if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+                    {
+                        if (OwnerTab != null)
+                        {
+                            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(
+                                OwnerTab,
+                                CreateRendererKeyboardInput(input.Text));
+                        }
+                    }
+                    else
+                    {
+                        _browser.HandleKeyPress(input.Text).GetAwaiter().GetResult();
+                    }
                 }
                 break;
         }
@@ -3178,18 +3190,6 @@ public class BrowserIntegration
 
     public async Task HandleKeyPress(string key)
     {
-        if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
-        {
-            if (OwnerTab == null || string.IsNullOrWhiteSpace(key))
-            {
-                return;
-            }
-
-            var evt = CreateRendererKeyboardInput(key);
-            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, evt);
-            return;
-        }
-
         if (!string.IsNullOrWhiteSpace(key))
         {
             EnqueueInput(
