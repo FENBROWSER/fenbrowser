@@ -2164,6 +2164,9 @@ public void Dispose()
 
         // Holds the in-flight re-cascade task so we don't stack them up.
         private volatile Task _pendingRecascade = null;
+        private readonly object _recascadeScheduleLock = new object();
+        private bool _recascadeWorkerRunning;
+        private bool _recascadeRequested;
 
         /// <summary>
         /// Schedule a CSS re-cascade on the current DOM using cached render parameters.
@@ -2182,21 +2185,46 @@ public void Dispose()
             if (_activeDom == null || _activeBaseUri == null || _activeFetchCss == null)
                 return;
 
-            if (fullRecascade)
-                _fullRecascadeRequired = true;
-
-            // Only one re-cascade in flight at a time.
-            var pending = _pendingRecascade;
-            if (pending != null && !pending.IsCompleted)
-                return;
-
-            _pendingRecascade = RunDetachedAsync(async () =>
+            lock (_recascadeScheduleLock)
             {
+                _recascadeRequested = true;
+                if (fullRecascade)
+                {
+                    _fullRecascadeRequired = true;
+                }
+
+                if (_recascadeWorkerRunning)
+                {
+                    return;
+                }
+
+                _recascadeWorkerRunning = true;
+                _pendingRecascade = RunDetachedAsync(DrainScheduledRecascadesAsync);
+            }
+        }
+
+        private async Task DrainScheduledRecascadesAsync()
+        {
+            while (true)
+            {
+                bool fullRecascade;
+                lock (_recascadeScheduleLock)
+                {
+                    if (!_recascadeRequested)
+                    {
+                        _recascadeWorkerRunning = false;
+                        return;
+                    }
+
+                    _recascadeRequested = false;
+                    fullRecascade = _fullRecascadeRequired;
+                    _fullRecascadeRequired = false;
+                }
+
                 try
                 {
-                    if (_fullRecascadeRequired)
+                    if (fullRecascade)
                     {
-                        _fullRecascadeRequired = false;
                         EngineLogCompat.Info("[CustomHtmlEngine] Full recascade (stylesheet change)", LogCategory.CSS);
                         await RecascadeAsync().ConfigureAwait(false);
                     }
@@ -2211,7 +2239,7 @@ public void Dispose()
                         $"[CustomHtmlEngine] RecascadeAsync failed: {ex.Message}",
                         LogCategory.Rendering);
                 }
-            });
+            }
         }
 
         /// <summary>
@@ -2230,6 +2258,31 @@ public void Dispose()
             var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
             var renderer = _externalRenderer ?? _cachedRenderer;
             if (root == null || renderer == null)
+            {
+                return;
+            }
+
+            renderer.EnsureLayout(
+                root,
+                LastComputedStyles,
+                (float)(_activeViewportWidth ?? 1920),
+                (float)(_activeViewportHeight ?? GetPrimaryWindowHeight()),
+                _activeBaseUri?.AbsoluteUri);
+        }
+
+        private void FlushPendingLayoutForScript()
+        {
+            var pendingRecascade = _pendingRecascade;
+            if (pendingRecascade != null && !pendingRecascade.IsCompleted)
+            {
+                pendingRecascade.GetAwaiter().GetResult();
+            }
+
+            var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
+            var renderer = _externalRenderer ?? _cachedRenderer;
+            if (root == null || renderer == null ||
+                (!root.StyleDirty && !root.ChildStyleDirty &&
+                 !root.LayoutDirty && !root.ChildLayoutDirty))
             {
                 return;
             }
@@ -2357,6 +2410,12 @@ public void Dispose()
                                 kvp.Key.ComputedStyle = kvp.Value;
                             }
                         }
+
+                        // The cascade has replaced style objects for this subtree.
+                        // Preserve a layout/paint invalidation after clearing the style
+                        // flags below so the renderer cannot reuse geometry produced
+                        // from the previous computed styles (notably resized iframes).
+                        root.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                     }
                     
                     ClearStyleDirtyFlags(root);
@@ -2654,6 +2713,7 @@ public void Dispose()
              js.CookieWriteBridge = (scope, cookieString) =>
                  CookieJar.SetDocumentCookie(scope, cookieString, _activeBaseUri ?? scope, BrowserSettings.Instance.BlockThirdPartyCookies);
              js.RequestRender = ScheduleRepaintFromJs;
+             js.FlushPendingLayout = FlushPendingLayoutForScript;
              js.FrameElementLoader = FrameElementLoader;
 
              if (ScriptFetcher != null)

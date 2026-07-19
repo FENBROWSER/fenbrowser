@@ -287,6 +287,7 @@ public interface IBrowserScriptEngine
     Func<Uri, string> CookieReadBridge { get; set; }
     Action<Uri, string> CookieWriteBridge { get; set; }
     Action RequestRender { get; set; }
+    Action FlushPendingLayout { get; set; }
     Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
     Func<Element, Uri, Task> FrameElementLoader { get; set; }
     Func<Element, object> LayoutBoxResolver { get; set; }
@@ -493,6 +494,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     public Func<Uri, string> CookieReadBridge { get; set; }
     public Action<Uri, string> CookieWriteBridge { get; set; }
     public Action RequestRender { get; set; }
+    public Action FlushPendingLayout { get; set; }
     public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
     public Func<Element, Uri, Task> FrameElementLoader { get; set; }
     public Func<Element, object> LayoutBoxResolver { get; set; }
@@ -3548,6 +3550,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         _interpreter.RegisterGlobalValue("innerHeight", JsValue.FromNumber(WindowHeight));
         _interpreter.RegisterGlobalValue("outerWidth", JsValue.FromNumber(WindowWidth));
         _interpreter.RegisterGlobalValue("outerHeight", JsValue.FromNumber(WindowHeight));
+        var screenOrientation = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["type"] = JsValue.FromString(WindowWidth >= WindowHeight ? "landscape-primary" : "portrait-primary"),
+            ["angle"] = JsValue.FromInt32(0)
+        });
+        var screen = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["width"] = JsValue.FromNumber(WindowWidth),
+            ["height"] = JsValue.FromNumber(WindowHeight),
+            ["availWidth"] = JsValue.FromNumber(WindowWidth),
+            ["availHeight"] = JsValue.FromNumber(WindowHeight),
+            ["availLeft"] = JsValue.FromInt32(0),
+            ["availTop"] = JsValue.FromInt32(0),
+            ["colorDepth"] = JsValue.FromInt32(24),
+            ["pixelDepth"] = JsValue.FromInt32(24),
+            ["orientation"] = screenOrientation
+        });
+        _interpreter.RegisterGlobalValue("screen", screen);
 
         var globalThisValue = EvaluateWithFenJsRaw("globalThis");
         _fenJsGlobalThis = globalThisValue;
@@ -6745,16 +6765,45 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 };
 
                 // ── ResizeObserver ── https://drafts.csswg.org/resize-observer/
-                // Facebook uses this to track element size changes.
-                // Stub: accepts observe/unobserve/disconnect but never fires callbacks.
+                // Delivery is coalesced onto the timer queue so callbacks run after
+                // the style mutation that changed the observed box.
+                globalThis.__fenResizeObservers = [];
+                globalThis.__fenNotifyResizeObservers = function (target) {
+                    for (var i = 0; i < globalThis.__fenResizeObservers.length; i++) {
+                        var observer = globalThis.__fenResizeObservers[i];
+                        if (observer._targets.indexOf(target) < 0 || observer._scheduled) continue;
+                        observer._scheduled = true;
+                        (function (current) {
+                            setTimeout(function () {
+                                current._scheduled = false;
+                                var entries = [];
+                                for (var j = 0; j < current._targets.length; j++) {
+                                    var observed = current._targets[j];
+                                    var rect = observed.getBoundingClientRect();
+                                    entries.push({
+                                        target: observed,
+                                        contentRect: rect,
+                                        borderBoxSize: [{ inlineSize: rect.width, blockSize: rect.height }],
+                                        contentBoxSize: [{ inlineSize: rect.width, blockSize: rect.height }],
+                                        devicePixelContentBoxSize: [{ inlineSize: rect.width, blockSize: rect.height }]
+                                    });
+                                }
+                                if (entries.length) current._callback(entries, current);
+                            }, 0);
+                        })(observer);
+                    }
+                };
                 globalThis.ResizeObserver = function ResizeObserver(callback) {
                     this._callback = callback;
                     this._targets = [];
+                    this._scheduled = false;
+                    globalThis.__fenResizeObservers.push(this);
                 };
                 ResizeObserver.prototype.observe = function (target, options) {
                     if (this._targets.indexOf(target) < 0) {
                         this._targets.push(target);
                     }
+                    globalThis.__fenNotifyResizeObservers(target);
                 };
                 ResizeObserver.prototype.unobserve = function (target) {
                     var idx = this._targets.indexOf(target);
@@ -8141,11 +8190,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             return CreateComputedStyleObject(new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase));
         }
 
-        var cs = element.GetComputedStyle();
-        if (cs == null)
-        {
-            return CreateComputedStyleObject(new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase));
-        }
+        var cs = element.GetComputedStyle() ?? new CssComputed();
 
         var props = new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase);
         // Populate from the raw Map first (all CSS properties)
@@ -8222,6 +8267,36 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 if (!props.ContainsKey(propName))
                     props[propName] = JsValue.FromString(kv.Value ?? string.Empty);
             }
+        }
+
+        // CSSOM reads are synchronous. Inline mutations must be observable through
+        // getComputedStyle immediately, even while the asynchronous recascade/layout
+        // requested by the mutation is still pending.
+        foreach (var declaration in (element.GetAttribute("style") ?? string.Empty)
+            .Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var colonIndex = declaration.IndexOf(':');
+            if (colonIndex <= 0)
+            {
+                continue;
+            }
+
+            var name = declaration[..colonIndex].Trim();
+            var inlineValue = declaration[(colonIndex + 1)..].Trim();
+            if (name.Length == 0)
+            {
+                continue;
+            }
+
+            var importantIndex = inlineValue.LastIndexOf("!important", StringComparison.OrdinalIgnoreCase);
+            if (importantIndex >= 0)
+            {
+                inlineValue = inlineValue[..importantIndex].TrimEnd();
+            }
+
+            var jsValue = JsValue.FromString(inlineValue);
+            props[name] = jsValue;
+            props[CssPropToCamel(name)] = jsValue;
         }
 
         return CreateComputedStyleObject(props);
@@ -11657,7 +11732,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 {
                     var existing = element.GetAttribute("style") ?? string.Empty;
                     if (existing != val)
+                    {
                         element.SetAttribute("style", val);
+                        NotifyResizeObservers(element);
+                    }
                     return JsValue.Undefined;
                 }
                 // Replace or append the property in the existing style string.
@@ -11695,7 +11773,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 }
                 var newStyle = sb.ToString();
                 if (changed)
+                {
                     element.SetAttribute("style", newStyle);
+                    NotifyResizeObservers(element);
+                }
                 return JsValue.Undefined;
             },
             length: 2), enumerable: true);
@@ -11748,6 +11829,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     }
                 }
                 element.SetAttribute("style", remaining.ToString());
+                NotifyResizeObservers(element);
                 return JsValue.FromString(oldValue);
             },
             length: 1), enumerable: true);
@@ -11808,6 +11890,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         store["__fenJsStyle"] = styleObj;
         return styleObj;
+    }
+
+    private void NotifyResizeObservers(Element element)
+    {
+        var notify = ReadGlobalValueOrUndefined("__fenNotifyResizeObservers");
+        if (_interpreter.CanCallValue(notify))
+        {
+            _interpreter.InvokeFunction(
+                notify,
+                new[] { ToHostOrNull(element, HostObjectKind.DomElement) },
+                _fenJsGlobalThis);
+        }
     }
 
     private void AttachFenJsPrototype(JsValue target, string constructorName)
@@ -13067,9 +13161,51 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     /// </summary>
     private JsValue ReadElementLayoutDimension(Element element, string property)
     {
+        FlushPendingLayout?.Invoke();
+        var isWidth = property is "offsetWidth" or "clientWidth" or "scrollWidth";
+        var isHeight = property is "offsetHeight" or "clientHeight" or "scrollHeight";
+        if (property is "clientWidth" or "clientHeight" &&
+            element?.OwnerDocument?.DocumentElement == element)
+        {
+            var frameElement = TryGetFrameElementForDocument(element.OwnerDocument);
+            if (frameElement != null &&
+                TryReadDeclaredPixelDimension(
+                    frameElement,
+                    property == "clientWidth" ? "width" : "height",
+                    out var frameViewportDimension))
+            {
+                return JsValue.FromNumber(frameViewportDimension);
+            }
+
+            return JsValue.FromNumber(property == "clientWidth" ? WindowWidth : WindowHeight);
+        }
+
+        // A browsing context can be resized and queried again in the same script
+        // task. Until the renderer's asynchronous layout catches up, the old iframe
+        // BoxModel belongs to the previous viewport and must not win over a current
+        // explicit pixel size.
+        if (IsIFrameElement(element) &&
+            (isWidth || isHeight) &&
+            TryReadDeclaredPixelDimension(element, isWidth ? "width" : "height", out var iframeDeclared))
+        {
+            return JsValue.FromNumber(iframeDeclared);
+        }
+        if ((isWidth || isHeight) &&
+            TryReadExplicitIframeChildDimension(element, isWidth ? "width" : "height", out var childDeclared))
+        {
+            return JsValue.FromNumber(childDeclared);
+        }
+
         var box = LayoutBoxResolver?.Invoke(element) as BoxModel;
         if (box == null)
+        {
+            if ((isWidth || isHeight) && TryReadDeclaredPixelDimension(element, isWidth ? "width" : "height", out var declared))
+            {
+                return JsValue.FromNumber(declared);
+            }
+
             return JsValue.FromInt32(0);
+        }
 
         return property switch
         {
@@ -13094,10 +13230,28 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     /// </summary>
     private JsValue ReadElementBoundingClientRect(Element element)
     {
+        FlushPendingLayout?.Invoke();
         var box = LayoutBoxResolver?.Invoke(element) as BoxModel;
+        if (IsIFrameElement(element))
+        {
+            var hasDeclaredWidth = TryReadDeclaredPixelDimension(element, "width", out var declaredWidth);
+            var hasDeclaredHeight = TryReadDeclaredPixelDimension(element, "height", out var declaredHeight);
+            if (hasDeclaredWidth || hasDeclaredHeight)
+            {
+                var current = box?.BorderBox ?? default;
+                return CreateDomRect(
+                    current.Left,
+                    current.Top,
+                    hasDeclaredWidth ? declaredWidth : current.Width,
+                    hasDeclaredHeight ? declaredHeight : current.Height);
+            }
+        }
+
         if (box == null)
         {
-            return CreateDomRect(0, 0, 0, 0);
+            TryReadDeclaredPixelDimension(element, "width", out var width);
+            TryReadDeclaredPixelDimension(element, "height", out var height);
+            return CreateDomRect(0, 0, width, height);
         }
 
         var r = box.BorderBox;

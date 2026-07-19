@@ -4921,6 +4921,11 @@ pre {{
             await _engine.FlushPendingLayoutAsync().ConfigureAwait(false);
         }
 
+        /// <summary>
+        /// Flushes scheduled style and layout work for headless diagnostics and automation.
+        /// </summary>
+        public Task FlushPendingLayoutAsync() => _engine.FlushPendingLayoutAsync();
+
         public Task<bool> IsElementEnabledAsync(string elementId)
         {
             var el = ResolveElementInActiveContextOrThrow(elementId);
