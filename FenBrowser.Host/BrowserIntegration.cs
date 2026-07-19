@@ -16,6 +16,7 @@ using FenBrowser.FenEngine.DevTools; // Added this using statement
 using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.FenEngine.Typography;
 using FenBrowser.FenEngine.Adapters;
+using FenBrowser.Host.Input;
 
 namespace FenBrowser.Host;
 
@@ -43,9 +44,13 @@ public class BrowserIntegration
     
     // Threading & Event Queue
     private readonly ConcurrentQueue<Action> _eventQueue = new ConcurrentQueue<Action>();
+    private readonly BrowserInputQueue _inputQueue;
     private readonly Thread _engineThread;
     private readonly AutoResetEvent _wakeEvent = new AutoResetEvent(false);
     private bool _running = true;
+    private long _inputSequence;
+    private readonly int _maxInputEventsPerFrame;
+    private readonly TimeSpan _inputDrainBudget;
     // ── Content Snapshot (lock-free read path for compositor/UI thread) ──
     // The engine thread publishes an immutable snapshot after each RecordFrame.
     // The compositor and UI thread read _latestSnapshot directly — no lock needed.
@@ -164,6 +169,10 @@ public class BrowserIntegration
     
     public BrowserIntegration(FenBrowser.Host.Tabs.BrowserTab ownerTab = null)
     {
+        _inputQueue = new BrowserInputQueue(Math.Max(4, ReadPositiveIntEnvironment("FEN_INPUT_QUEUE_CAPACITY", 256)));
+        _maxInputEventsPerFrame = ReadPositiveIntEnvironment("FEN_INPUT_MAX_EVENTS_PER_FRAME", 32);
+        _inputDrainBudget = TimeSpan.FromMilliseconds(
+            ReadPositiveIntEnvironment("FEN_INPUT_DRAIN_BUDGET_MS", 2));
         OwnerTab = ownerTab;
         _browser = new BrowserHost(options: BrowserIntegrationRuntime.CreateBrowserHostOptions());
         _renderer = new SkiaDomRenderer();
@@ -891,6 +900,7 @@ public class BrowserIntegration
             var deadline = new FenBrowser.Core.Deadlines.FrameDeadline(16.6, "Frame");
 
             // Stage 1: Drain host → engine input events
+            DrainInputQueue();
             DrainEventQueue();
 
             if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
@@ -907,13 +917,16 @@ public class BrowserIntegration
             bool rendered = SyncAndRender(deadline, coordinator);
 
             // Stage 4: Adaptive wait
+            bool inputPending = _inputQueue.Count > 0;
             bool hasWork = _needsRepaint ||
+                           inputPending ||
                            coordinator.HasPendingTasks ||
                            coordinator.HasPendingMicrotasks ||
                            coordinator.HasPendingDelayedTasks ||
                            sliceTelemetry.ProcessedTaskCount > 0;
             int waitMs;
-            if (_needsRepaint) waitMs = 16;
+            if (inputPending) waitMs = 0;
+            else if (_needsRepaint) waitMs = 16;
             else if (sliceTelemetry.ProcessedTaskCount > 0) waitMs = 1;
             else if (hasWork) waitMs = coordinator.GetSuggestedWaitMilliseconds();
             else waitMs = -1; // Block until woken
@@ -2231,6 +2244,75 @@ public class BrowserIntegration
         }
     }
 
+    private void DrainInputQueue()
+    {
+        _inputQueue.Drain(DispatchInputOnEngineThread, _inputDrainBudget, _maxInputEventsPerFrame);
+    }
+
+    private void DispatchInputOnEngineThread(BrowserInputEvent input)
+    {
+        switch (input.Type)
+        {
+            case BrowserInputType.MouseMove:
+                _browser.OnMouseMove(input.X, input.Y);
+                break;
+            case BrowserInputType.MouseDown:
+                _browser.OnMouseDown(input.X, input.Y, input.Button);
+                break;
+            case BrowserInputType.MouseUp:
+                _browser.OnMouseUp(input.X, input.Y, input.Button);
+                break;
+            case BrowserInputType.Click:
+                _browser.OnClick(input.X, input.Y, input.Button);
+                var activationTarget = _browser.HitTestElementAtViewportPoint(input.X, input.Y);
+                if (activationTarget != null)
+                {
+                    _browser.HandleElementClick(activationTarget).GetAwaiter().GetResult();
+                }
+                break;
+            case BrowserInputType.DoubleClick:
+                _browser.OnDoubleClick(input.X, input.Y, input.Button);
+                break;
+            case BrowserInputType.ContextMenu:
+                _browser.OnContextMenu(input.X, input.Y, input.Button);
+                break;
+            case BrowserInputType.KeyDown:
+            case BrowserInputType.TextInput:
+                if (!string.IsNullOrEmpty(input.Text))
+                {
+                    _browser.HandleKeyPress(input.Text).GetAwaiter().GetResult();
+                }
+                break;
+        }
+    }
+
+    private void EnqueueInput(
+        BrowserInputType type,
+        float x = 0,
+        float y = 0,
+        int button = 0,
+        int buttons = 0,
+        string text = null)
+    {
+        _inputQueue.Enqueue(new BrowserInputEvent(
+            type,
+            x,
+            y,
+            button,
+            buttons,
+            Modifiers: 0,
+            System.Diagnostics.Stopwatch.GetTimestamp(),
+            Interlocked.Increment(ref _inputSequence),
+            text));
+        _wakeEvent.Set();
+    }
+
+    private static int ReadPositiveIntEnvironment(string variableName, int fallback)
+    {
+        var raw = Environment.GetEnvironmentVariable(variableName);
+        return int.TryParse(raw, out var value) && value > 0 ? value : fallback;
+    }
+
     internal static bool IsNewTabSurfaceUrl(string url)
     {
         if (string.IsNullOrWhiteSpace(url))
@@ -2748,7 +2830,7 @@ public class BrowserIntegration
             return result;
         }
 
-        _browser.OnMouseMove(docX, docY);
+        EnqueueInput(BrowserInputType.MouseMove, docX, docY);
         return result;
     }
     
@@ -2865,7 +2947,12 @@ public class BrowserIntegration
             return result;
         }
 
-        _browser.OnMouseDown(docX, docY, button);
+        EnqueueInput(
+            BrowserInputType.MouseDown,
+            docX,
+            docY,
+            button,
+            1 << Math.Min(Math.Max(button, 0), 3));
         return result;
     }
 
@@ -2920,10 +3007,9 @@ public class BrowserIntegration
             return result;
         }
 
-        _browser.OnMouseUp(docX, docY, button);
+        EnqueueInput(BrowserInputType.MouseUp, docX, docY, button);
         if (emitClick && button == 0)
         {
-            var activationTarget = ResolveActivationTarget(result, windowX, windowY, viewportOffsetX, viewportOffsetY);
             var effectiveHref = result.Href;
             if (string.IsNullOrEmpty(effectiveHref) && _lastHitTest.IsLink)
             {
@@ -2935,18 +3021,12 @@ public class BrowserIntegration
                 LinkClicked?.Invoke(ResolveHrefForUi(effectiveHref));
             }
 
-            _browser.OnClick(docX, docY, button);
+            EnqueueInput(BrowserInputType.Click, docX, docY, button);
             if (ShouldEmitDoubleClick(windowX, windowY, button))
             {
-                _browser.OnDoubleClick(docX, docY, button);
+                EnqueueInput(BrowserInputType.DoubleClick, docX, docY, button);
             }
 
-            // Fallback: when low-level event processing lags, execute direct activation/focus
-            // using already resolved hit-test element from this same pointer release.
-            if (activationTarget != null)
-            {
-                _ = _browser.HandleElementClick(activationTarget);
-            }
         }
         return result;
     }
@@ -3010,7 +3090,15 @@ public class BrowserIntegration
             return;
         }
 
-        await _browser.HandleKeyPress(key);
+        if (!string.IsNullOrWhiteSpace(key))
+        {
+            EnqueueInput(
+                key.Length == 1 && !char.IsControl(key[0])
+                    ? BrowserInputType.TextInput
+                    : BrowserInputType.KeyDown,
+                text: key);
+        }
+        await Task.CompletedTask;
     }
 
     private static FenBrowser.Host.ProcessIsolation.RendererInputEvent CreateRendererKeyboardInput(string key)
