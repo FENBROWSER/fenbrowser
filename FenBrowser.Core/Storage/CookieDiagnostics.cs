@@ -4,8 +4,6 @@
 // FallbackPolicy: silent (diagnostics must never throw into the network path)
 using System;
 using System.Collections.Generic;
-using System.Security.Cryptography;
-using System.Text;
 using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Storage
@@ -14,11 +12,7 @@ namespace FenBrowser.Core.Storage
     /// Structured, PII-safe diagnostics for cookie ingress (Set-Cookie) and
     /// egress (outbound Cookie header).
     ///
-    /// Cookie values are NEVER logged in plaintext. Only:
-    ///   - cookie name
-    ///   - value length (bytes, UTF-8)
-    ///   - 8-hex-char prefix of SHA-256(value) for correlation across requests
-    ///   - attributes: Domain, Path, Secure, HttpOnly, SameSite, Expires
+    /// Cookie values and value-derived fingerprints are never logged.
     ///
     /// Gating: opt-in via env var <c>FEN_LOG_COOKIES=1</c> or the
     /// <see cref="BrowserSettings.LogSettings.LogCookies"/> setting.
@@ -72,14 +66,13 @@ namespace FenBrowser.Core.Storage
                 {
                     Category = LogCategory.Storage,
                     Level = LogLevel.Info,
-                    Message = $"[COOKIE-IN] {cookie.Name}@{cookie.Domain} len={ValueLength(cookie.Value)} tag={ValueTag(cookie.Value)} src={(fromScript ? "script" : "header")}"
+                    Message = $"[COOKIE-IN] {cookie.Name}@{cookie.Domain} accepted=true src={(fromScript ? "script" : "header")}"
                 };
 
                 entry.WithData("event", "set-cookie");
                 entry.WithData("source", fromScript ? "document.cookie" : "http-response");
                 entry.WithData("name", cookie.Name);
-                entry.WithData("valueLength", ValueLength(cookie.Value));
-                entry.WithData("valueTag", ValueTag(cookie.Value));
+                entry.WithData("accepted", true);
                 entry.WithData("domain", cookie.Domain ?? string.Empty);
                 entry.WithData("path", cookie.Path ?? "/");
                 entry.WithData("secure", cookie.Secure);
@@ -117,7 +110,8 @@ namespace FenBrowser.Core.Storage
             Uri responseUri,
             string rawHeader,
             string reason,
-            bool fromScript)
+            bool fromScript,
+            Uri topLevelDocumentUri = null)
         {
             if (!Enabled)
             {
@@ -137,12 +131,16 @@ namespace FenBrowser.Core.Storage
                 entry.WithData("event", "set-cookie-rejected");
                 entry.WithData("source", fromScript ? "document.cookie" : "http-response");
                 entry.WithData("name", name);
+                entry.WithData("accepted", false);
                 entry.WithData("reason", reason ?? "unknown");
-                entry.WithData("rawLength", rawHeader?.Length ?? 0);
                 if (responseUri != null)
                 {
                     entry.WithData("responseHost", responseUri.Host);
                     entry.WithData("responsePath", responseUri.AbsolutePath);
+                }
+                if (topLevelDocumentUri != null)
+                {
+                    entry.WithData("topLevelHost", topLevelDocumentUri.Host);
                 }
 
                 LogManager.Log(entry);
@@ -169,21 +167,17 @@ namespace FenBrowser.Core.Storage
             try
             {
                 var names = new List<string>(cookies.Count);
-                var tags = new List<string>(cookies.Count);
-                long totalBytes = 0;
                 foreach (var c in cookies)
                 {
                     if (c == null) continue;
                     names.Add(c.Name);
-                    tags.Add($"{c.Name}:{ValueLength(c.Value)}:{ValueTag(c.Value)}");
-                    totalBytes += (c.Name?.Length ?? 0) + ValueLength(c.Value) + 1;
                 }
 
                 var entry = new LogEntry
                 {
                     Category = LogCategory.Storage,
                     Level = LogLevel.Info,
-                    Message = $"[COOKIE-OUT] {requestUri?.Host}{requestUri?.AbsolutePath} count={cookies.Count} bytes~{totalBytes} method={requestMethod}"
+                    Message = $"[COOKIE-OUT] {requestUri?.Host}{requestUri?.AbsolutePath} count={cookies.Count} method={requestMethod}"
                 };
 
                 entry.WithData("event", "outbound-cookie-header");
@@ -191,9 +185,7 @@ namespace FenBrowser.Core.Storage
                 entry.WithData("requestPath", requestUri?.AbsolutePath ?? string.Empty);
                 entry.WithData("requestMethod", requestMethod ?? string.Empty);
                 entry.WithData("cookieCount", cookies.Count);
-                entry.WithData("approxHeaderBytes", totalBytes);
                 entry.WithData("cookieNames", names);
-                entry.WithData("cookieTags", tags);
                 entry.WithData("topLevelNavigation", isTopLevelNavigation);
                 if (topLevelDocumentUri != null)
                 {
@@ -205,31 +197,6 @@ namespace FenBrowser.Core.Storage
             catch
             {
                 // swallow
-            }
-        }
-
-        private static int ValueLength(string value)
-        {
-            if (string.IsNullOrEmpty(value)) return 0;
-            return Encoding.UTF8.GetByteCount(value);
-        }
-
-        private static string ValueTag(string value)
-        {
-            if (string.IsNullOrEmpty(value)) return "0";
-            try
-            {
-                var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
-                var sb = new StringBuilder(8);
-                for (int i = 0; i < 4; i++)
-                {
-                    sb.Append(bytes[i].ToString("x2"));
-                }
-                return sb.ToString();
-            }
-            catch
-            {
-                return "?";
             }
         }
 

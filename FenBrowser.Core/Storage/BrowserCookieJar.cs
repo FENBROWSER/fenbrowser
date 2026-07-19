@@ -105,7 +105,8 @@ namespace FenBrowser.Core.Storage
                     documentUri,
                     cookieString,
                     "parse-failed-or-policy-blocked",
-                    fromScript: true);
+                    fromScript: true,
+                    topLevelDocumentUri);
                 return;
             }
 
@@ -138,7 +139,8 @@ namespace FenBrowser.Core.Storage
                         responseUri,
                         blockedHeader,
                         "third-party-blocked",
-                        fromScript: false);
+                        fromScript: false,
+                        topLevelDocumentUri);
                 }
                 return;
             }
@@ -157,7 +159,8 @@ namespace FenBrowser.Core.Storage
                         responseUri,
                         headerValue,
                         "parse-failed-or-policy-blocked",
-                        fromScript: false);
+                        fromScript: false,
+                        topLevelDocumentUri);
                     continue;
                 }
 

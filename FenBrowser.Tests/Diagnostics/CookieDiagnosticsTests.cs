@@ -67,8 +67,9 @@ namespace FenBrowser.Tests.Diagnostics
             Assert.NotEmpty(ingress);
             var entry = ingress.Single();
             Assert.Equal("SG_SS", GetData(entry, "name"));
-            Assert.Equal(secretValue.Length, Convert.ToInt32(GetData(entry, "valueLength")));
-            Assert.False(string.IsNullOrEmpty(GetData(entry, "valueTag") as string), "valueTag must be set");
+            Assert.Equal(true, GetData(entry, "accepted"));
+            Assert.False(entry.Data.ContainsKey("valueLength"));
+            Assert.False(entry.Data.ContainsKey("valueTag"));
             Assert.DoesNotContain(secretValue, entry.Message ?? string.Empty);
             AssertNoPlaintextValue(entry, secretValue);
         }
@@ -169,6 +170,7 @@ namespace FenBrowser.Tests.Diagnostics
 
             Assert.NotEmpty(rejections);
             var entry = rejections[0];
+            Assert.Equal(false, GetData(entry, "accepted"));
             Assert.False(string.IsNullOrEmpty(GetData(entry, "reason") as string));
         }
 
