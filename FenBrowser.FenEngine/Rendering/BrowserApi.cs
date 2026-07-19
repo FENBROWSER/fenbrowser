@@ -7888,27 +7888,6 @@ pre {{
             var suppressDomClickDispatch = _suppressNextDomClickDispatchInHandleElementClick;
             _suppressNextDomClickDispatchInHandleElementClick = false;
 
-            // Info-level audit trail for click activation. Cheap (one line per
-            // click) and indispensable when chasing "click did nothing" bugs:
-            // without it we can't tell whether the click reached
-            // HandleElementClick at all, what element it landed on, what type
-            // attribute it carries, and whether default activation is allowed
-            // before any branch decides what to do.
-            try
-            {
-                var initialTag = element?.NodeName ?? "<null>";
-                var initialType = element?.GetAttribute("type");
-                var initialId = element?.GetAttribute("id");
-                var initialName = element?.GetAttribute("name");
-                TryLogInfo(
-                    $"[CLICK-AUDIT] target={initialTag} type={initialType ?? "-"} id={initialId ?? "-"} name={initialName ?? "-"} allowDefault={allowDefaultActivation} suppressDispatch={suppressDomClickDispatch}",
-                    LogCategory.Events);
-            }
-            catch
-            {
-                // Audit must never throw.
-            }
-
             if (element == null)
             {
                 SetFocusedElementState(null);
@@ -7926,7 +7905,6 @@ pre {{
             // WebDriver element click must dispatch a real DOM click event.
             // Without this, tests that observe click handlers (window.clicks, bubbling)
             // report false negatives even if fallback activation runs.
-            var clickContext = _engine.Context ?? new FenBrowser.FenEngine.Core.ExecutionContext();
             var clickClientX = 0;
             var clickClientY = 0;
             if (_pendingWebDriverClickPointValid)
@@ -7942,29 +7920,29 @@ pre {{
             var clickNotPrevented = true;
             if (!suppressDomClickDispatch)
             {
-                var clickEvent = new FenBrowser.FenEngine.DOM.DomEvent(
+                clickNotPrevented = _engine.DispatchPointerEvent(
+                    element,
                     "click",
-                    bubbles: true,
-                    cancelable: true,
-                    composed: true,
-                    context: clickContext);
-                clickEvent.Set("clientX", FenBrowser.FenEngine.Core.FenValue.FromNumber(clickClientX));
-                clickEvent.Set("clientY", FenBrowser.FenEngine.Core.FenValue.FromNumber(clickClientY));
-                clickEvent.Set("screenX", FenBrowser.FenEngine.Core.FenValue.FromNumber(clickClientX));
-                clickEvent.Set("screenY", FenBrowser.FenEngine.Core.FenValue.FromNumber(clickClientY));
-                clickEvent.Set("x", FenBrowser.FenEngine.Core.FenValue.FromNumber(clickClientX));
-                clickEvent.Set("y", FenBrowser.FenEngine.Core.FenValue.FromNumber(clickClientY));
-                var clickBubbleListeners = FenBrowser.FenEngine.DOM.EventTarget.Registry.Get(element, "click", false).Count;
-                var clickCaptureListeners = FenBrowser.FenEngine.DOM.EventTarget.Registry.Get(element, "click", true).Count;
-                clickNotPrevented = FenBrowser.FenEngine.DOM.EventTarget.DispatchEvent(element, clickEvent, clickContext);
+                    new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
+                    {
+                        ClientX = clickClientX,
+                        ClientY = clickClientY,
+                        PageX = clickClientX,
+                        PageY = clickClientY,
+                        ScreenX = clickClientX,
+                        ScreenY = clickClientY,
+                        Button = 0,
+                        Buttons = 0,
+                        Bubbles = true,
+                        Cancelable = true,
+                        Composed = true,
+                        IsTrusted = true
+                    });
 
                 // JS click handlers may modify DOM/styles (class toggles, popover,
                 // attribute changes). Request a repaint so those mutations are rendered
                 // immediately instead of waiting for the next input-driven invalidation.
                 TryInvokeRepaintReady(_engine.GetActiveDom());
-            }
-            else
-            {
             }
             if (!clickNotPrevented)
             {
@@ -7992,17 +7970,6 @@ pre {{
             }
 
             var activationAncestor = FindActivationAncestor(element);
-            try
-            {
-                var ancTag = activationAncestor?.NodeName ?? "<none>";
-                var ancType = activationAncestor?.GetAttribute("type");
-                var same = activationAncestor != null && ReferenceEquals(activationAncestor, element);
-                TryLogInfo(
-                    $"[CLICK-AUDIT] activationAncestor={ancTag} type={ancType ?? "-"} sameAsTarget={same}",
-                    LogCategory.Events);
-            }
-            catch { /* audit must never throw */ }
-
             if (activationAncestor != null && !ReferenceEquals(activationAncestor, element))
             {
                 element = activationAncestor;
@@ -8040,16 +8007,6 @@ pre {{
                 }
             }
             
-            // Keep native control activation resilient even when page scripts call
-            // preventDefault() on wrapper click handlers.
-            if (tag == "input" ||
-                tag == "textarea" ||
-                tag == "button" ||
-                tag == "select" ||
-                string.Equals(element.GetAttribute("contenteditable"), "true", StringComparison.OrdinalIgnoreCase))
-            {
-                allowDefaultActivation = true;
-            }
             // Handle summary clicks â€” toggle parent details[open]
             if (tag == "summary")
             {
@@ -8115,7 +8072,7 @@ pre {{
                 TryInvokeRepaintReady(_engine.GetActiveDom());
                 return;
             }
-            else if (tag == "input" && TryActivateCheckableInput(element))
+            else if (tag == "input" && allowDefaultActivation && TryActivateCheckableInput(element))
             {
                 return;
             }
@@ -8126,14 +8083,6 @@ pre {{
             {
                  // Verify if this is a search button (simplified check)
                  TryLogDebug($"[BrowserApi] Button clicked: {element.NodeName}", LogCategory.General);
-                 try
-                 {
-                     TryLogInfo(
-                         $"[CLICK-AUDIT] branch=BUTTON tag={element.NodeName} type={element.GetAttribute("type") ?? "-"} willSubmit={(allowDefaultActivation && IsSubmitActivationControl(element, tag))}",
-                         LogCategory.Events);
-                 }
-                 catch { }
-
                  // Popover target activation: if the button has popovertarget,
                  // toggle/show/hide the referenced popover element.
                  var popoverTargetId = element.GetAttribute("popovertarget");
@@ -8202,13 +8151,6 @@ pre {{
             // Handle input focus
             else if (tag == "input" || tag == "textarea")
             {
-                try
-                {
-                    TryLogInfo(
-                        $"[CLICK-AUDIT] branch=INPUT-FOCUS tag={element.NodeName} type={element.GetAttribute("type") ?? "-"} (note: button/submit branch did NOT match)",
-                        LogCategory.Events);
-                }
-                catch { }
                 SetFocusedElementState(element);
                 
                 // Set cursor to end on focus

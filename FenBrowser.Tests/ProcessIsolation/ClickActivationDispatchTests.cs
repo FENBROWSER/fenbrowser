@@ -1,0 +1,101 @@
+using System;
+using System.IO;
+using System.Threading.Tasks;
+using FenBrowser.Core.Dom.V2;
+using FenBrowser.FenEngine.Rendering;
+using Xunit;
+
+namespace FenBrowser.Tests.ProcessIsolation;
+
+public sealed class ClickActivationDispatchTests
+{
+    [Fact]
+    public async Task HandleElementClick_DispatchesJavaScriptClickExactlyOnce()
+    {
+        using var host = await RenderAsync(
+            """
+            <!doctype html>
+            <html><body>
+              <button id="target" type="button">Target</button>
+              <script>
+                globalThis.__clickCount = 0;
+                document.getElementById('target').addEventListener('click', function () {
+                  globalThis.__clickCount++;
+                });
+              </script>
+            </body></html>
+            """);
+        await WaitForScriptAsync(host);
+        var target = FindById(host, "target");
+
+        await host.HandleElementClick(target);
+
+        Assert.Equal("1", host.Engine.Evaluate("String(globalThis.__clickCount)")?.ToString());
+    }
+
+    [Fact]
+    public async Task HandleElementClick_PreventDefaultBlocksCheckboxActivation()
+    {
+        using var host = await RenderAsync(
+            """
+            <!doctype html>
+            <html><body>
+              <input id="target" type="checkbox">
+              <script>
+                globalThis.__clickCount = 0;
+                document.getElementById('target').addEventListener('click', function (event) {
+                  globalThis.__clickCount++;
+                  event.preventDefault();
+                });
+              </script>
+            </body></html>
+            """);
+        await WaitForScriptAsync(host);
+        var target = FindById(host, "target");
+
+        await host.HandleElementClick(target);
+
+        Assert.Equal("1", host.Engine.Evaluate("String(globalThis.__clickCount)")?.ToString());
+        Assert.False(ElementStateManager.Instance.IsChecked(target));
+    }
+
+    private static async Task<BrowserHost> RenderAsync(string html)
+    {
+        var host = new BrowserHost();
+        host.EnableJavaScript = true;
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/click-activation"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth: 640,
+            viewportHeight: 360,
+            forceJavascript: true);
+        return host;
+    }
+
+    private static Element FindById(BrowserHost host, string id)
+    {
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        return Assert.IsType<Element>(root.OwnerDocument?.GetElementById(id));
+    }
+
+    private static async Task WaitForScriptAsync(BrowserHost host)
+    {
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            if (string.Equals(
+                    host.Engine.Evaluate("typeof globalThis.__clickCount")?.ToString(),
+                    "number",
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            await Task.Delay(25);
+        }
+
+        Assert.Fail("Click fixture script did not execute.");
+    }
+}
