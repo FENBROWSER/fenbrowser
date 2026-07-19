@@ -133,6 +133,7 @@ public class BrowserIntegration
     public event Action<string> ConsoleMessage;
     public event Action<HitTestResult> HitTestChanged;
     public event Action<float, float> ScrollChanged;
+    public event Action<string> ClipboardWriteRequested;
     
     // --- NEW: Structured Navigation Events (10/10) ---
     // Reserved for external subscribers; raising sites are pending in the navigation refactor.
@@ -2365,6 +2366,9 @@ public class BrowserIntegration
             case BrowserInputType.ScrollAnimationTick:
                 ApplyScrollPhysics(input.DeltaY);
                 break;
+            case BrowserInputType.ClipboardCommand:
+                DispatchClipboardCommandOnEngineThread(input.Command, input.Text);
+                break;
             case BrowserInputType.KeyDown:
             case BrowserInputType.TextInput:
                 if (!string.IsNullOrEmpty(input.Text))
@@ -2416,7 +2420,8 @@ public class BrowserIntegration
         string text = null,
         long sequence = 0,
         float deltaX = 0,
-        float deltaY = 0)
+        float deltaY = 0,
+        string command = null)
     {
         if (sequence <= 0)
         {
@@ -2434,7 +2439,8 @@ public class BrowserIntegration
             text,
             Environment.CurrentManagedThreadId,
             deltaX,
-            deltaY));
+            deltaY,
+            command));
         _wakeEvent.Set();
         return sequence;
     }
@@ -3221,17 +3227,33 @@ public class BrowserIntegration
     
     public async Task HandleClipboardCommand(string command, string data = null)
     {
-        await _browser.HandleClipboardCommand(command, data);
+        if (!string.IsNullOrWhiteSpace(command))
+        {
+            EnqueueInput(BrowserInputType.ClipboardCommand, text: data, command: command);
+        }
+        await Task.CompletedTask;
     }
-    
-    public string GetSelectedText()
+
+    private void DispatchClipboardCommandOnEngineThread(string command, string data)
     {
-        return _browser.GetSelectedText();
-    }
-    
-    public void DeleteSelection()
-    {
-        _browser.DeleteSelection();
+        if (string.Equals(command, "copy", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(command, "cut", StringComparison.OrdinalIgnoreCase))
+        {
+            var selectedText = _browser.GetSelectedText();
+            if (!string.IsNullOrEmpty(selectedText) && ClipboardWriteRequested != null)
+            {
+                _ = WindowManager.Instance.RunOnMainThread(
+                    () => ClipboardWriteRequested?.Invoke(selectedText));
+            }
+
+            if (string.Equals(command, "cut", StringComparison.OrdinalIgnoreCase))
+            {
+                _browser.DeleteSelection();
+            }
+            return;
+        }
+
+        _browser.HandleClipboardCommand(command, data).GetAwaiter().GetResult();
     }
 
     private Element FindElementById(Element root, string id)

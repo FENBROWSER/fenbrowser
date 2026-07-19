@@ -15,6 +15,7 @@ public enum BrowserInputType
     MouseWheel,
     ScrollTo,
     ScrollAnimationTick,
+    ClipboardCommand,
     KeyDown,
     KeyUp,
     TextInput
@@ -32,7 +33,8 @@ public readonly record struct BrowserInputEvent(
     string Text = null,
     int ReceiptThreadId = 0,
     float DeltaX = 0,
-    float DeltaY = 0);
+    float DeltaY = 0,
+    string Command = null);
 
 public readonly record struct BrowserInputDrainResult(
     int ProcessedCount,

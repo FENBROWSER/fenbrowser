@@ -46,6 +46,7 @@ public class WebContentWidget : Widget
         if (_subscribedTab != null)
         {
             _subscribedTab.Browser.NeedsRepaint -= OnBrowserNeedsRepaint;
+            _subscribedTab.Browser.ClipboardWriteRequested -= OnClipboardWriteRequested;
         }
 
         _subscribedTab = tab;
@@ -53,6 +54,7 @@ public class WebContentWidget : Widget
         if (_subscribedTab != null)
         {
             _subscribedTab.Browser.NeedsRepaint += OnBrowserNeedsRepaint;
+            _subscribedTab.Browser.ClipboardWriteRequested += OnClipboardWriteRequested;
             
             // Cold launch can activate a tab before this widget has been arranged.
             // Treat OnArrange as the authoritative source for the first usable viewport.
@@ -274,6 +276,14 @@ public class WebContentWidget : Widget
         }
     }
 
+    private static void OnClipboardWriteRequested(string text)
+    {
+        if (!string.IsNullOrEmpty(text))
+        {
+            ClipboardHelper.SetText(text);
+        }
+    }
+
     public override void OnKeyDown(Silk.NET.Input.Key key, bool ctrl, bool shift, bool alt)
     {
         var activeTab = TabManager.Instance.ActiveTab;
@@ -289,26 +299,12 @@ public class WebContentWidget : Widget
                 }
                 else if (key == Silk.NET.Input.Key.C)
                 {
-                     // Get selected text from Browser logic
-                     // Note: HandleClipboardCommand("Copy") is async/void, we need synchronous text or a callback.
-                     // But wait, the BrowserApi modification I prepared assumes the Host fetches text.
-                     // The BrowserApi.GetSelectedText() method I added is synchronous.
-                     string text = activeTab.Browser.GetSelectedText();
-                     if (!string.IsNullOrEmpty(text))
-                     {
-                         ClipboardHelper.SetText(text);
-                     }
+                     _ = activeTab.Browser.HandleClipboardCommand("Copy");
                      return;
                 }
                 else if (key == Silk.NET.Input.Key.X)
                 {
-                     // Cut = Copy + Delete
-                     string text = activeTab.Browser.GetSelectedText();
-                      if (!string.IsNullOrEmpty(text))
-                     {
-                         ClipboardHelper.SetText(text);
-                         activeTab.Browser.DeleteSelection();
-                     }
+                     _ = activeTab.Browser.HandleClipboardCommand("Cut");
                      return;
                 }
                 else if (key == Silk.NET.Input.Key.V)
