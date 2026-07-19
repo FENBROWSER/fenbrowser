@@ -11,6 +11,20 @@ namespace FenBrowser.Tests.Core;
 
 public sealed class ResourceManagerFetchContextTests
 {
+    [Theory]
+    [InlineData("https://assets.example.test/page", "https://assets.example.test/image.png", "same-origin")]
+    [InlineData("https://www.example.test/page", "https://static.example.test/image.png", "same-site")]
+    [InlineData("https://parent.example.test/page", "https://challenge.other.test/image.png", "cross-site")]
+    public void HeaderPolicy_ComputesFetchSiteFromInitiator(
+        string initiator,
+        string requestUri,
+        string expected)
+    {
+        Assert.Equal(
+            expected,
+            BrowserRequestHeaderPolicy.DetermineSite(new Uri(initiator), new Uri(requestUri)));
+    }
+
     [Fact]
     public async Task FetchTextDetailedAsync_UsesExplicitInitiatorAndDestination()
     {

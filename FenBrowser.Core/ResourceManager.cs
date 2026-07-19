@@ -1304,19 +1304,15 @@ namespace FenBrowser.Core
                 {
                     /* [PERF-REMOVED] */
                     req = new HttpRequestMessage(HttpMethod.Get, current);
-                    AddHeaderSafe(req, "Accept", string.IsNullOrWhiteSpace(accept) ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" : accept);
-                    BrowserSettings.ApplyBrowserRequestHeaders(req, useMobile: false);
-
-                    AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
-                    AddHeaderSafe(req, "Accept-Encoding", "gzip, deflate, br");
-
                     var effectiveReferer = refererOriginal ?? previousRequest;
-                    AddHeaderSafe(req, "Sec-Fetch-Dest", string.IsNullOrWhiteSpace(secFetchDest) ? "empty" : secFetchDest);
-                    AddHeaderSafe(req, "Sec-Fetch-Mode", fetchMode);
-                    ApplyRefererHeader(req, effectiveReferer, current, ActiveReferrerPolicy);
-                    var computedReferer = ComputeReferrerHeader(effectiveReferer, current, ActiveReferrerPolicy);
-                    AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(computedReferer, current));
-                    ApplyNavigationRequestHeaders(req, secFetchDest, isUserInitiatedNavigation);
+                    BrowserRequestHeaderPolicy.Apply(
+                        req,
+                        context,
+                        ActiveReferrerPolicy,
+                        string.IsNullOrWhiteSpace(accept)
+                            ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+                            : accept,
+                        effectiveReferer);
                     AttachCookies(req, refererOriginal ?? current, secFetchDest);
                     
                     var cts = new System.Threading.CancellationTokenSource();
