@@ -338,6 +338,28 @@ namespace FenBrowser.FenEngine.Rendering
                 log,
                 deadline,
                 cascadeRoot).ConfigureAwait(false);
+
+            // A dirty parent subtree can gain a fully loaded iframe Document after the
+            // document's initial cascade. Cascade those nested browsing contexts against
+            // their own stylesheets before merging the incremental result; otherwise the
+            // frame DOM is laid out and painted with no computed styles.
+            try
+            {
+                await StyleIframeSubdocumentsAsync(
+                    cascadeRoot,
+                    baseUri,
+                    fetchExternalCssAsync,
+                    viewportWidth,
+                    viewportHeight,
+                    log,
+                    deadline,
+                    result.Computed).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Log(log, "[CssLoader] incremental iframe subdocument styling failed: " + ex.Message);
+            }
+
             return result.Computed;
         }
 
@@ -417,7 +439,8 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // The frame's viewport drives its media queries and viewport units.
-                // Priority: CSS computed width/height > HTML width/height attributes
+                // Priority: CSS computed width/height > percentage resolved against
+                // a definite containing block > HTML width/height attributes
                 // (presentational hints) > parent viewport fallback.
                 // Without checking HTML attributes, iframes sized via width="304" height="78"
                 // (like reCAPTCHA) get the parent page's viewport, breaking vh/vw units,
@@ -463,7 +486,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// Per HTML spec §14.3.1, width/height attributes on iframe are presentational hints
         /// that map to CSS properties with zero specificity.
         /// </summary>
-        private static double? ResolveFrameViewportDimension(
+        internal static double? ResolveFrameViewportDimension(
             Element frame,
             string attributeName,
             double? parentViewportDimension)
@@ -486,6 +509,19 @@ namespace FenBrowser.FenEngine.Rendering
             if (cssValue.HasValue)
                 return cssValue;
 
+            // A percentage-sized iframe establishes a viewport from its own box,
+            // not from the top-level document viewport. During cascade the layout
+            // box may not exist yet, but an explicit pixel size on the containing
+            // block is already a definite percentage basis.
+            var percent = attributeName == "width"
+                ? frame.ComputedStyle?.WidthPercent
+                : frame.ComputedStyle?.HeightPercent;
+            if (percent.HasValue &&
+                TryReadInlinePixelDimension(frame.ParentElement, attributeName, out var containingDimension))
+            {
+                return containingDimension * percent.Value / 100d;
+            }
+
             // 2. HTML presentational hint
             if (FenBrowser.FenEngine.Layout.ReplacedElementSizing.TryGetLengthAttribute(
                     frame, attributeName, out float attrValue) && attrValue > 0f)
@@ -495,6 +531,38 @@ namespace FenBrowser.FenEngine.Rendering
 
             // 3. Fall back to parent viewport
             return parentViewportDimension;
+        }
+
+        private static bool TryReadInlinePixelDimension(Element element, string property, out double value)
+        {
+            value = 0;
+            string raw = null;
+            foreach (var declaration in (element?.GetAttribute("style") ?? string.Empty)
+                .Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var colonIndex = declaration.IndexOf(':');
+                if (colonIndex <= 0 ||
+                    !string.Equals(declaration[..colonIndex].Trim(), property, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                raw = declaration[(colonIndex + 1)..].Trim();
+            }
+
+            if (string.IsNullOrWhiteSpace(raw) ||
+                !raw.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return double.TryParse(
+                       raw[..^2].TrimEnd(),
+                       NumberStyles.Float,
+                       CultureInfo.InvariantCulture,
+                       out value) &&
+                   double.IsFinite(value) &&
+                   value > 0;
         }
 
         private static async Task<CssLoadResult> ComputeWithResultCoreAsync(

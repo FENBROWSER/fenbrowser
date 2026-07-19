@@ -4368,6 +4368,8 @@ pre {{
 
                 frameElement.AppendChild(parsedDocument);
                 await TryInitializeFrameScriptsAsync(frameElement, parsedRoot, finalUri).ConfigureAwait(false);
+                frameElement.MarkDirty(InvalidationKind.Style | InvalidationKind.Layout | InvalidationKind.Paint);
+                _engine.ScheduleRecascade(fullRecascade: true);
                 SyncScriptContextToSelectedBrowsingContext();
                 TryLogInfo(
                     $"[BrowserHost] iframe document attached final='{finalUri}' root='{parsedRoot.TagName}'",

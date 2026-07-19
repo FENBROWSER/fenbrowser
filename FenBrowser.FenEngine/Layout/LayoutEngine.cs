@@ -99,6 +99,8 @@ namespace FenBrowser.FenEngine.Layout
             if (!viewportChanged &&
                 ReferenceEquals(layoutRoot, _cachedLayoutRoot) &&
                 _cachedResult != null &&
+                !layoutRoot.LayoutDirty &&
+                !layoutRoot.ChildLayoutDirty &&
                 !hasUnmaterializedNestedBrowsingContext)
             {
                 if (LayoutDebugLogEnabled)
