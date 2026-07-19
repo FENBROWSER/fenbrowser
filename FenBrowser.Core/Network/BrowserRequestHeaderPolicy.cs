@@ -14,7 +14,8 @@ internal static class BrowserRequestHeaderPolicy
         FetchContext context,
         ReferrerPolicyDirective referrerPolicy,
         string accept,
-        Uri referrerCandidate = null)
+        Uri referrerCandidate = null,
+        string acceptEncoding = DefaultAcceptEncoding)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(context);
@@ -22,7 +23,7 @@ internal static class BrowserRequestHeaderPolicy
         Add(request, "Accept", accept);
         BrowserSettings.ApplyBrowserRequestHeaders(request, useMobile: false);
         Add(request, "Accept-Language", DefaultAcceptLanguage);
-        Add(request, "Accept-Encoding", DefaultAcceptEncoding);
+        Add(request, "Accept-Encoding", acceptEncoding);
 
         var destination = string.IsNullOrWhiteSpace(context.Destination) ? "empty" : context.Destination;
         var mode = string.IsNullOrWhiteSpace(context.Mode) ? DetermineMode(destination) : context.Mode;

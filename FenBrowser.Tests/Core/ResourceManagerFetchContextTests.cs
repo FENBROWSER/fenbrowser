@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
@@ -62,6 +63,70 @@ public sealed class ResourceManagerFetchContextTests
         Assert.Equal("iframe", Assert.Single(observed.Headers.GetValues("Sec-Fetch-Dest")));
         Assert.Equal("navigate", Assert.Single(observed.Headers.GetValues("Sec-Fetch-Mode")));
         Assert.Equal(new Uri("https://top.example.test/"), context.TopLevelDocumentUri);
+    }
+
+    [Fact]
+    public async Task FetchBytesAsync_RedirectKeepsTopLevelCookiePartitionAndImageMetadata()
+    {
+        var previousThirdPartySetting = BrowserSettings.Instance.BlockThirdPartyCookies;
+        BrowserSettings.Instance.BlockThirdPartyCookies = false;
+        try
+        {
+            var requestCount = 0;
+            string redirectedCookie = null;
+            string redirectedSite = null;
+            using var client = new HttpClient(new StubHandler(request =>
+            {
+                requestCount++;
+                if (requestCount == 1)
+                {
+                    var redirect = new HttpResponseMessage(HttpStatusCode.Redirect)
+                    {
+                        RequestMessage = request
+                    };
+                    redirect.Headers.Location = new Uri("https://cdn.other.test/image.png");
+                    redirect.Headers.TryAddWithoutValidation(
+                        "Set-Cookie",
+                        "challenge_session=opaque; Domain=other.test; Path=/; Secure; SameSite=None");
+                    return redirect;
+                }
+
+                redirectedCookie = request.Headers.TryGetValues("Cookie", out var cookies)
+                    ? string.Join(";", cookies)
+                    : null;
+                redirectedSite = Assert.Single(request.Headers.GetValues("Sec-Fetch-Site"));
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    RequestMessage = request,
+                    Content = new ByteArrayContent(new byte[] { 1, 2, 3 })
+                };
+                response.Content.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+                return response;
+            }));
+            var manager = new ResourceManager(client, isPrivate: true);
+            var context = new FetchContext
+            {
+                RequestUri = new Uri("https://challenge.other.test/start"),
+                InitiatorUri = new Uri("https://frame.google.test/challenge"),
+                FrameDocumentUri = new Uri("https://frame.google.test/challenge"),
+                TopLevelDocumentUri = new Uri("https://search.example.test/"),
+                Destination = "image",
+                Mode = "no-cors",
+                CredentialsMode = "include"
+            };
+
+            var bytes = await manager.FetchBytesAsync(context, "image/png,*/*;q=0.8");
+
+            Assert.Equal(new byte[] { 1, 2, 3 }, bytes);
+            Assert.Equal(2, requestCount);
+            Assert.Contains("challenge_session=opaque", redirectedCookie);
+            Assert.Equal("cross-site", redirectedSite);
+            Assert.Equal(new Uri("https://search.example.test/"), context.TopLevelDocumentUri);
+        }
+        finally
+        {
+            BrowserSettings.Instance.BlockThirdPartyCookies = previousThirdPartySetting;
+        }
     }
 
     private sealed class StubHandler : HttpMessageHandler

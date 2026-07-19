@@ -1731,8 +1731,27 @@ namespace FenBrowser.Core
         }
 
         // Image with redirect and memory cache; disk caching optional later
-        public async Task<Stream> FetchImageAsync(Uri url, Uri referer = null)
+        public Task<Stream> FetchImageAsync(Uri url, Uri referer = null)
         {
+            return FetchImageAsync(new FetchContext
+            {
+                RequestUri = url,
+                InitiatorUri = referer,
+                FrameDocumentUri = referer,
+                TopLevelDocumentUri = referer,
+                Destination = "image",
+                Mode = "no-cors",
+                CredentialsMode = "include",
+                Method = "GET"
+            });
+        }
+
+        public async Task<Stream> FetchImageAsync(FetchContext context)
+        {
+            if (context == null) return null;
+            var url = context.RequestUri;
+            var referer = context.InitiatorUri ?? context.FrameDocumentUri;
+            var topLevelDocumentUri = context.TopLevelDocumentUri ?? referer;
             if (url == null) return null;
             if (!IsSupportedFetchScheme(url))
             {
@@ -1836,7 +1855,7 @@ namespace FenBrowser.Core
             var key = url.AbsoluteUri;
 
             // Sharded Lookup
-            string partition = SafePartition(referer?.Host);
+            string partition = SafePartition(topLevelDocumentUri?.Host);
             if (_imgCache.TryGet(partition, key, out var imgEntry))
             {
                 if (imgEntry.Buffer != null)
@@ -1856,15 +1875,15 @@ namespace FenBrowser.Core
                 while (hops < maxRedirectHops)
                 {
                     req = new HttpRequestMessage(HttpMethod.Get, current);
-                    AddHeaderSafe(req, "Accept", "image/apng,image/png,image/jpeg,image/*,*/*;q=0.8");
-                    AddHeaderSafe(req, "User-Agent", BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent));
-                    AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
-                    AddHeaderSafe(req, "Accept-Encoding", "gzip, deflate");
-                    AddHeaderSafe(req, "Sec-Fetch-Dest", "image");
-                    AddHeaderSafe(req, "Sec-Fetch-Mode", "no-cors");
                     var effectiveReferer = refererOriginal ?? previousRequest;
-                    ApplyRefererHeader(req, effectiveReferer, current, ActiveReferrerPolicy);
-                    AttachCookies(req, refererOriginal ?? current, "image");
+                    BrowserRequestHeaderPolicy.Apply(
+                        req,
+                        context,
+                        ActiveReferrerPolicy,
+                        "image/apng,image/png,image/jpeg,image/*,*/*;q=0.8",
+                        effectiveReferer,
+                        acceptEncoding: "gzip, deflate");
+                    AttachCookies(req, topLevelDocumentUri ?? current, "image");
                     var cts = new System.Threading.CancellationTokenSource();
                     try { cts.CancelAfter(System.TimeSpan.FromSeconds(30)); }
                     catch (Exception ex)
@@ -1872,7 +1891,7 @@ namespace FenBrowser.Core
                         EngineLogCompat.Debug($"[FetchImage] Failed to apply timeout: {ex.Message}", LogCategory.Network);
                     }
                     resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false);
-                    StoreResponseCookies(resp, refererOriginal ?? current);
+                    StoreResponseCookies(resp, topLevelDocumentUri ?? current);
                     
                     if (resp != null)
                     {
@@ -1921,7 +1940,7 @@ namespace FenBrowser.Core
                 var entry = new ImgEntry { Buffer = buf, ContentType = resp.Content != null && resp.Content.Headers != null && resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : null };
                 
                 // Phase 2.3: Sharded Image Cache
-                string partitionKey = SafePartition(refererOriginal?.Host);
+                string partitionKey = SafePartition(topLevelDocumentUri?.Host);
                 _imgCache.Put(partitionKey, key, entry);
 
                 return new MemoryStream(buf);
@@ -1942,8 +1961,31 @@ namespace FenBrowser.Core
         }
 
         // Generic binary fetcher for fonts and other non-text assets
-        public async Task<byte[]> FetchBytesAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
+        public Task<byte[]> FetchBytesAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
         {
+            var destination = string.IsNullOrWhiteSpace(secFetchDest) ? "empty" : secFetchDest;
+            return FetchBytesAsync(
+                new FetchContext
+                {
+                    RequestUri = url,
+                    InitiatorUri = referer,
+                    FrameDocumentUri = referer,
+                    TopLevelDocumentUri = referer,
+                    Destination = destination,
+                    Mode = BrowserRequestHeaderPolicy.DetermineMode(destination),
+                    CredentialsMode = "include",
+                    Method = "GET"
+                },
+                accept);
+        }
+
+        public async Task<byte[]> FetchBytesAsync(FetchContext context, string accept = null)
+        {
+            if (context == null) return null;
+            var url = context.RequestUri;
+            var referer = context.InitiatorUri ?? context.FrameDocumentUri;
+            var topLevelDocumentUri = context.TopLevelDocumentUri ?? referer;
+            var secFetchDest = context.Destination;
             if (url == null) return null;
             if (!IsSupportedFetchScheme(url))
             {
@@ -1982,11 +2024,13 @@ namespace FenBrowser.Core
                 while (hops < maxRedirectHops)
                 {
                     req = new HttpRequestMessage(HttpMethod.Get, current);
-                    AddHeaderSafe(req, "Accept", string.IsNullOrWhiteSpace(accept) ? "*/*" : accept);
-                    if (!string.IsNullOrWhiteSpace(secFetchDest)) AddHeaderSafe(req, "Sec-Fetch-Dest", secFetchDest);
-                    AddHeaderSafe(req, "Sec-Fetch-Mode", "no-cors");
-                    ApplyRefererHeader(req, referer, current, ActiveReferrerPolicy);
-                    AttachCookies(req, referer ?? current, secFetchDest);
+                    BrowserRequestHeaderPolicy.Apply(
+                        req,
+                        context,
+                        ActiveReferrerPolicy,
+                        string.IsNullOrWhiteSpace(accept) ? "*/*" : accept,
+                        referer);
+                    AttachCookies(req, topLevelDocumentUri ?? current, secFetchDest);
                     var cts = new System.Threading.CancellationTokenSource();
                     try
                     {
@@ -1998,7 +2042,7 @@ namespace FenBrowser.Core
                         EngineLogCompat.Debug($"[FetchBytes] Failed to apply timeout: {ex.Message}", LogCategory.Network);
                     }
                     resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false);
-                    StoreResponseCookies(resp, referer ?? current);
+                    StoreResponseCookies(resp, topLevelDocumentUri ?? current);
                     if (resp != null)
                     {
                         var code = (int)resp.StatusCode;
@@ -2042,7 +2086,7 @@ namespace FenBrowser.Core
                 if (ShouldBlockCorb(
                     "no-cors",
                     secFetchDest,
-                    referer,
+                    context.InitiatorUri ?? context.FrameDocumentUri,
                     finalUri,
                     resp,
                     buf.AsSpan(0, Math.Min(buf.Length, 512)),
