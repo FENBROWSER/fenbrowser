@@ -322,6 +322,8 @@ public sealed class BrowserDomEventInit
     public double ScreenY { get; init; }
     public int Button { get; init; }
     public int Buttons { get; init; }
+    public double DeltaX { get; init; }
+    public double DeltaY { get; init; }
     public int PointerId { get; init; } = 1;
     public string PointerType { get; init; } = "mouse";
     public double Pressure { get; init; }
@@ -12269,6 +12271,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             ["y"] = JsValue.FromNumber(eventInit.ClientY),
             ["button"] = JsValue.FromInt32(eventInit.Button),
             ["buttons"] = JsValue.FromInt32(eventInit.Buttons),
+            ["deltaX"] = JsValue.FromNumber(eventInit.DeltaX),
+            ["deltaY"] = JsValue.FromNumber(eventInit.DeltaY),
+            ["deltaZ"] = JsValue.FromNumber(0),
+            ["deltaMode"] = JsValue.FromInt32(0),
             ["pointerId"] = JsValue.FromInt32(eventInit.PointerId),
             ["pointerType"] = JsValue.FromString(string.IsNullOrWhiteSpace(eventInit.PointerType) ? "mouse" : eventInit.PointerType),
             ["pressure"] = JsValue.FromNumber(eventInit.Pressure),

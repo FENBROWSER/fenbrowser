@@ -98,6 +98,21 @@ public sealed class BrowserInputQueueTests
             dispatched);
     }
 
+    [Fact]
+    public void Enqueue_AdjacentMouseWheels_CoalescesAccumulatedDelta()
+    {
+        var queue = new BrowserInputQueue(maxPendingEvents: 8);
+        queue.Enqueue(Input(BrowserInputType.MouseWheel, 1) with { DeltaX = 1, DeltaY = -2 });
+        queue.Enqueue(Input(BrowserInputType.MouseWheel, 2) with { DeltaX = 3, DeltaY = -4 });
+
+        Assert.Equal(1, queue.Count);
+        Assert.Equal(1, queue.CoalescedMouseWheelCount);
+        Assert.True(queue.TryDequeue(out var wheel));
+        Assert.Equal(2, wheel.Sequence);
+        Assert.Equal(4, wheel.DeltaX);
+        Assert.Equal(-6, wheel.DeltaY);
+    }
+
     private static BrowserInputEvent Input(
         BrowserInputType type,
         long sequence,

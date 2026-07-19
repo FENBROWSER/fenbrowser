@@ -258,7 +258,7 @@ public sealed class BrokeredInputRoutingTests
     }
 
     [Fact]
-    public void BrowserIntegration_HandleMouseWheel_RoutesThroughIntegrationAndStartsSmoothScrollInBrokeredMode()
+    public async Task BrowserIntegration_HandleMouseWheel_RoutesThroughIntegrationAndStartsSmoothScrollInBrokeredMode()
     {
         var previousAutoStart = System.Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
         System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", "0");
@@ -275,6 +275,9 @@ public sealed class BrokeredInputRoutingTests
 
             tab.Browser.HandleMouseWheel(20, 30, deltaX: 1, deltaY: -2, viewportOffsetX: 5, viewportOffsetY: 7);
 
+            await WaitForAsync(
+                () => coordinator.Inputs.Any(inputEvent => inputEvent.Type == RendererInputEventType.MouseWheel),
+                "queued wheel input to reach the renderer coordinator");
             Assert.Contains(coordinator.Inputs, inputEvent =>
                 inputEvent.Type == RendererInputEventType.MouseWheel &&
                 inputEvent.X == 15 &&
@@ -289,12 +292,18 @@ public sealed class BrokeredInputRoutingTests
                 $"Expected smooth wheel scroll to start with a small first step, got {firstStep - before:F1}px of an {expectedTarget - before:F1}px target.");
 
             tab.Browser.UpdateScrollPhysics(1d / 60d);
+            await WaitForAsync(
+                () => tab.Browser.EffectiveScrollY > firstStep + 0.1f,
+                "queued scroll animation tick to advance the smooth scroll");
             Assert.InRange(tab.Browser.EffectiveScrollY, firstStep + 0.1f, expectedTarget);
 
             for (int i = 0; i < 90; i++)
             {
                 tab.Browser.UpdateScrollPhysics(1d / 60d);
             }
+            await WaitForAsync(
+                () => tab.Browser.EffectiveScrollY >= expectedTarget - 0.5f,
+                "queued scroll animation ticks to reach their target");
 
             Assert.Equal(expectedTarget, tab.Browser.EffectiveScrollY, precision: 0);
 

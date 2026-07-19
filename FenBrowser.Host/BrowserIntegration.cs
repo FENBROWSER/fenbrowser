@@ -2333,6 +2333,38 @@ public class BrowserIntegration
                     _ = WindowManager.Instance.RunOnMainThread(() => ContextMenuRequested?.Invoke(request));
                 }
                 break;
+            case BrowserInputType.MouseWheel:
+                var allowWheelDefault = true;
+                if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+                {
+                    if (OwnerTab != null)
+                    {
+                        FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, new FenBrowser.Host.ProcessIsolation.RendererInputEvent
+                        {
+                            Type = FenBrowser.Host.ProcessIsolation.RendererInputEventType.MouseWheel,
+                            X = input.X,
+                            Y = input.Y,
+                            DeltaX = input.DeltaX,
+                            DeltaY = input.DeltaY
+                        });
+                    }
+                }
+                else
+                {
+                    allowWheelDefault = _browser.OnMouseWheel(input.X, input.Y, input.DeltaX, input.DeltaY);
+                }
+
+                if (allowWheelDefault)
+                {
+                    ApplyWheelScroll(input.DeltaY);
+                }
+                break;
+            case BrowserInputType.ScrollTo:
+                ApplyScrollToY(input.Y);
+                break;
+            case BrowserInputType.ScrollAnimationTick:
+                ApplyScrollPhysics(input.DeltaY);
+                break;
             case BrowserInputType.KeyDown:
             case BrowserInputType.TextInput:
                 if (!string.IsNullOrEmpty(input.Text))
@@ -2370,7 +2402,9 @@ public class BrowserIntegration
         int button = 0,
         int buttons = 0,
         string text = null,
-        long sequence = 0)
+        long sequence = 0,
+        float deltaX = 0,
+        float deltaY = 0)
     {
         if (sequence <= 0)
         {
@@ -2386,7 +2420,9 @@ public class BrowserIntegration
             System.Diagnostics.Stopwatch.GetTimestamp(),
             sequence,
             text,
-            Environment.CurrentManagedThreadId));
+            Environment.CurrentManagedThreadId,
+            deltaX,
+            deltaY));
         _wakeEvent.Set();
         return sequence;
     }
@@ -2416,6 +2452,11 @@ public class BrowserIntegration
     /// </summary>
     public void ScrollToY(float targetScrollY)
     {
+        EnqueueInput(BrowserInputType.ScrollTo, y: targetScrollY);
+    }
+
+    private void ApplyScrollToY(float targetScrollY)
+    {
         float clamped = ClampScrollPosition(targetScrollY);
         CancelSmoothWheelScroll();
         float previousScrollY = _scrollY;
@@ -2441,7 +2482,7 @@ public class BrowserIntegration
     /// <summary>
     /// Scroll the content by the given delta.
     /// </summary>
-    public void Scroll(float deltaY)
+    private void ApplyWheelScroll(float deltaY)
     {
         float deltaPixels = -(deltaY * WheelScrollStepPixels);
         if (Math.Abs(deltaPixels) <= 0.01f)
@@ -2462,20 +2503,7 @@ public class BrowserIntegration
     public void HandleMouseWheel(float windowX, float windowY, float deltaX, float deltaY, float viewportOffsetX = 0, float viewportOffsetY = 0)
     {
         var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
-
-        if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true && OwnerTab != null)
-        {
-            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, new FenBrowser.Host.ProcessIsolation.RendererInputEvent
-            {
-                Type = FenBrowser.Host.ProcessIsolation.RendererInputEventType.MouseWheel,
-                X = docX,
-                Y = docY,
-                DeltaX = deltaX,
-                DeltaY = deltaY
-            });
-        }
-
-        Scroll(deltaY);
+        EnqueueInput(BrowserInputType.MouseWheel, docX, docY, deltaX: deltaX, deltaY: deltaY);
     }
 
     private bool AdvanceSmoothWheelScroll(double deltaTime)
@@ -3225,6 +3253,11 @@ public class BrowserIntegration
     /// Call this each frame to animate scroll deceleration.
     /// </summary>
     public void UpdateScrollPhysics(double deltaTime)
+    {
+        EnqueueInput(BrowserInputType.ScrollAnimationTick, deltaY: (float)deltaTime);
+    }
+
+    private void ApplyScrollPhysics(double deltaTime)
     {
         bool changed = AdvanceSmoothWheelScroll(deltaTime);
 

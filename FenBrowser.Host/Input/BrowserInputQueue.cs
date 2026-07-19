@@ -12,6 +12,9 @@ public enum BrowserInputType
     Click,
     DoubleClick,
     ContextMenu,
+    MouseWheel,
+    ScrollTo,
+    ScrollAnimationTick,
     KeyDown,
     KeyUp,
     TextInput
@@ -27,7 +30,9 @@ public readonly record struct BrowserInputEvent(
     long Timestamp,
     long Sequence,
     string Text = null,
-    int ReceiptThreadId = 0);
+    int ReceiptThreadId = 0,
+    float DeltaX = 0,
+    float DeltaY = 0);
 
 public readonly record struct BrowserInputDrainResult(
     int ProcessedCount,
@@ -47,6 +52,7 @@ public sealed class BrowserInputQueue
     private readonly LinkedList<BrowserInputEvent> _pending = new();
     private readonly int _maxPendingEvents;
     private long _coalescedMouseMoveCount;
+    private long _coalescedMouseWheelCount;
     private long _droppedMouseMoveCount;
 
     public BrowserInputQueue(int maxPendingEvents = 256)
@@ -92,6 +98,17 @@ public sealed class BrowserInputQueue
         }
     }
 
+    public long CoalescedMouseWheelCount
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _coalescedMouseWheelCount;
+            }
+        }
+    }
+
     public void Enqueue(BrowserInputEvent input)
     {
         lock (_sync)
@@ -102,6 +119,19 @@ public sealed class BrowserInputQueue
             {
                 _pending.Last.Value = input;
                 _coalescedMouseMoveCount++;
+                return;
+            }
+
+            if (input.Type == BrowserInputType.MouseWheel &&
+                _pending.Last is { Value: var lastWheel } &&
+                lastWheel.Type == BrowserInputType.MouseWheel)
+            {
+                _pending.Last.Value = input with
+                {
+                    DeltaX = lastWheel.DeltaX + input.DeltaX,
+                    DeltaY = lastWheel.DeltaY + input.DeltaY
+                };
+                _coalescedMouseWheelCount++;
                 return;
             }
 

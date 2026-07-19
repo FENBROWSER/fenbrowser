@@ -1673,7 +1673,7 @@ namespace FenBrowser.Host
                     }
                     break;
                 case RendererInputEventType.MouseWheel:
-                    // BrowserHost currently has no direct wheel-input API; host applies scroll locally.
+                    browser.OnMouseWheel(input.X, input.Y, input.DeltaX, input.DeltaY);
                     break;
             }
         }

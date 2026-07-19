@@ -3049,6 +3049,11 @@ pre {{
             return QueueInputTask("contextmenu", x, y, button);
         }
 
+        public bool OnMouseWheel(float x, float y, float deltaX, float deltaY)
+        {
+            return DispatchInputEvent("wheel", x, y, 0, deltaX: deltaX, deltaY: deltaY);
+        }
+
         private static bool ShouldRetryTopLevelNavigation(FetchResult result, string url, int attempt, int maxAttempts)
         {
             if (attempt >= maxAttempts) return false;
@@ -3099,7 +3104,14 @@ pre {{
              return DispatchInputEvent(type, x, y, button);
         }
 
-        private bool DispatchInputEvent(string type, float x, float y, int button, Element fallbackTarget = null)
+        private bool DispatchInputEvent(
+            string type,
+            float x,
+            float y,
+            int button,
+            Element fallbackTarget = null,
+            float deltaX = 0,
+            float deltaY = 0)
         {
             var eventType = MapToInputEventType(type);
             var buttonMask = BuildButtonMask(button, type);
@@ -3113,6 +3125,8 @@ pre {{
                 X = x,
                 Y = y,
                 Button = button,
+                DeltaX = deltaX,
+                DeltaY = deltaY,
                 Buttons = buttonMask,
                 PointerId = 1,
                 PointerType = "mouse",
@@ -3154,6 +3168,8 @@ pre {{
                 ScreenY = inputEvent.ScreenY,
                 Button = button,
                 Buttons = buttonMask,
+                DeltaX = deltaX,
+                DeltaY = deltaY,
                 PointerId = 1,
                 PointerType = "mouse",
                 Pressure = buttonMask != 0 ? 0.5f : 0f,
@@ -3227,7 +3243,8 @@ pre {{
                    string.Equals(type, "contextmenu", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(type, "mousedown", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(type, "mouseup", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase);
+                   string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(type, "wheel", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string MapMouseInputToPointerAlias(string type)
@@ -3258,6 +3275,7 @@ pre {{
                 case "click": return InputEventType.Click;
                 case "dblclick": return InputEventType.DblClick;
                 case "contextmenu": return InputEventType.ContextMenu;
+                case "wheel": return InputEventType.Wheel;
                 case "keydown": return InputEventType.KeyDown;
                 case "keyup": return InputEventType.KeyUp;
                 case "touchstart": return InputEventType.TouchStart;
