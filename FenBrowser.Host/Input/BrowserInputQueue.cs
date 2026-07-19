@@ -26,7 +26,8 @@ public readonly record struct BrowserInputEvent(
     int Modifiers,
     long Timestamp,
     long Sequence,
-    string Text = null);
+    string Text = null,
+    int ReceiptThreadId = 0);
 
 public readonly record struct BrowserInputDrainResult(
     int ProcessedCount,

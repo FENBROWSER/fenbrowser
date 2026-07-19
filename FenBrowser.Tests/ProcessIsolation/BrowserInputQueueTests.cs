@@ -82,6 +82,22 @@ public sealed class BrowserInputQueueTests
         Assert.True(result.TimeBudgetExhausted);
     }
 
+    [Fact]
+    public void Enqueue_ContextMenuSequence_PreservesDiscreteEventOrder()
+    {
+        var queue = new BrowserInputQueue(maxPendingEvents: 8);
+        queue.Enqueue(Input(BrowserInputType.MouseDown, 1, buttons: 4));
+        queue.Enqueue(Input(BrowserInputType.MouseUp, 2));
+        queue.Enqueue(Input(BrowserInputType.ContextMenu, 3));
+
+        var dispatched = new List<BrowserInputType>();
+        queue.Drain(input => dispatched.Add(input.Type), TimeSpan.FromSeconds(1), maxEvents: 8);
+
+        Assert.Equal(
+            new[] { BrowserInputType.MouseDown, BrowserInputType.MouseUp, BrowserInputType.ContextMenu },
+            dispatched);
+    }
+
     private static BrowserInputEvent Input(
         BrowserInputType type,
         long sequence,

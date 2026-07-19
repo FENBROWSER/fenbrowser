@@ -45,12 +45,19 @@ public class BrowserIntegration
     // Threading & Event Queue
     private readonly ConcurrentQueue<Action> _eventQueue = new ConcurrentQueue<Action>();
     private readonly BrowserInputQueue _inputQueue;
+    private readonly ConcurrentDictionary<long, ContextMenuRequest> _pendingContextMenus = new();
     private readonly Thread _engineThread;
     private readonly AutoResetEvent _wakeEvent = new AutoResetEvent(false);
     private bool _running = true;
     private long _inputSequence;
     private readonly int _maxInputEventsPerFrame;
     private readonly TimeSpan _inputDrainBudget;
+    private readonly double _slowInputThresholdMs;
+    private long _inputAwaitingFrameSequence;
+    private long _inputAwaitingFrameReceiptTimestamp;
+    private BrowserInputType _inputAwaitingFrameType;
+    private int _inputAwaitingFrameReceiptThreadId;
+    private long _lastInputSequencePublishedInFrame;
     // ── Content Snapshot (lock-free read path for compositor/UI thread) ──
     // The engine thread publishes an immutable snapshot after each RecordFrame.
     // The compositor and UI thread read _latestSnapshot directly — no lock needed.
@@ -173,6 +180,7 @@ public class BrowserIntegration
         _maxInputEventsPerFrame = ReadPositiveIntEnvironment("FEN_INPUT_MAX_EVENTS_PER_FRAME", 32);
         _inputDrainBudget = TimeSpan.FromMilliseconds(
             ReadPositiveIntEnvironment("FEN_INPUT_DRAIN_BUDGET_MS", 2));
+        _slowInputThresholdMs = ReadPositiveIntEnvironment("FEN_INPUT_SLOW_THRESHOLD_MS", 50);
         OwnerTab = ownerTab;
         _browser = new BrowserHost(options: BrowserIntegrationRuntime.CreateBrowserHostOptions());
         _renderer = new SkiaDomRenderer();
@@ -1667,6 +1675,7 @@ public class BrowserIntegration
                 viewportSize,
                 _scrollY,
                 _contentHeight);
+            RecordFirstFrameAfterInput();
 
             // Retire the previous frame for deferred disposal.  The compositor
             // may still hold a reference to retiringSnapshot, but by the time
@@ -2246,11 +2255,55 @@ public class BrowserIntegration
 
     private void DrainInputQueue()
     {
-        _inputQueue.Drain(DispatchInputOnEngineThread, _inputDrainBudget, _maxInputEventsPerFrame);
+        _inputQueue.Drain(
+            input =>
+            {
+                try
+                {
+                    DispatchInputOnEngineThread(input);
+                }
+                catch (Exception ex)
+                {
+                    EngineLogBridge.Error(
+                        $"[InputLatency] sequence={input.Sequence} type={input.Type} dispatch_failed={ex.Message}",
+                        LogCategory.Events);
+                }
+            },
+            _inputDrainBudget,
+            _maxInputEventsPerFrame);
+    }
+
+    private void RecordFirstFrameAfterInput()
+    {
+        if (_inputAwaitingFrameSequence <= _lastInputSequencePublishedInFrame ||
+            _inputAwaitingFrameReceiptTimestamp <= 0)
+        {
+            return;
+        }
+
+        var inputToFrameMs = System.Diagnostics.Stopwatch
+            .GetElapsedTime(_inputAwaitingFrameReceiptTimestamp)
+            .TotalMilliseconds;
+        _lastInputSequencePublishedInFrame = _inputAwaitingFrameSequence;
+        if (inputToFrameMs < _slowInputThresholdMs)
+        {
+            return;
+        }
+
+        EngineLogBridge.Warn(
+            $"[InputLatency] sequence={_inputAwaitingFrameSequence} type={_inputAwaitingFrameType} " +
+            $"receiptThread={_inputAwaitingFrameReceiptThreadId} engineThread={Environment.CurrentManagedThreadId} " +
+            $"firstFrameMs={inputToFrameMs:0.0}",
+            LogCategory.Events);
     }
 
     private void DispatchInputOnEngineThread(BrowserInputEvent input)
     {
+        var dispatchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        var queueDelayMs = System.Diagnostics.Stopwatch
+            .GetElapsedTime(input.Timestamp, dispatchStarted)
+            .TotalMilliseconds;
+        var activationDurationMs = 0d;
         switch (input.Type)
         {
             case BrowserInputType.MouseMove:
@@ -2267,14 +2320,23 @@ public class BrowserIntegration
                 var activationTarget = _browser.HitTestElementAtViewportPoint(input.X, input.Y);
                 if (activationTarget != null)
                 {
+                    var activationStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                     _browser.HandleElementClick(activationTarget).GetAwaiter().GetResult();
+                    activationDurationMs = System.Diagnostics.Stopwatch
+                        .GetElapsedTime(activationStarted)
+                        .TotalMilliseconds;
                 }
                 break;
             case BrowserInputType.DoubleClick:
                 _browser.OnDoubleClick(input.X, input.Y, input.Button);
                 break;
             case BrowserInputType.ContextMenu:
-                _browser.OnContextMenu(input.X, input.Y, input.Button);
+                _pendingContextMenus.TryRemove(input.Sequence, out var request);
+                var contextMenuAllowed = _browser.OnContextMenu(input.X, input.Y, input.Button);
+                if (request != null && contextMenuAllowed)
+                {
+                    _ = WindowManager.Instance.RunOnMainThread(() => ContextMenuRequested?.Invoke(request));
+                }
                 break;
             case BrowserInputType.KeyDown:
             case BrowserInputType.TextInput:
@@ -2284,16 +2346,41 @@ public class BrowserIntegration
                 }
                 break;
         }
+
+        var dispatchDurationMs = System.Diagnostics.Stopwatch
+            .GetElapsedTime(dispatchStarted)
+            .TotalMilliseconds;
+        _inputAwaitingFrameSequence = input.Sequence;
+        _inputAwaitingFrameReceiptTimestamp = input.Timestamp;
+        _inputAwaitingFrameType = input.Type;
+        _inputAwaitingFrameReceiptThreadId = input.ReceiptThreadId;
+
+        if (queueDelayMs >= _slowInputThresholdMs ||
+            dispatchDurationMs >= _slowInputThresholdMs ||
+            activationDurationMs >= _slowInputThresholdMs)
+        {
+            EngineLogBridge.Warn(
+                $"[InputLatency] sequence={input.Sequence} type={input.Type} " +
+                $"receiptThread={input.ReceiptThreadId} engineThread={Environment.CurrentManagedThreadId} " +
+                $"queueMs={queueDelayMs:0.0} dispatchMs={dispatchDurationMs:0.0} " +
+                $"activationMs={activationDurationMs:0.0} pending={_inputQueue.Count}",
+                LogCategory.Events);
+        }
     }
 
-    private void EnqueueInput(
+    private long EnqueueInput(
         BrowserInputType type,
         float x = 0,
         float y = 0,
         int button = 0,
         int buttons = 0,
-        string text = null)
+        string text = null,
+        long sequence = 0)
     {
+        if (sequence <= 0)
+        {
+            sequence = Interlocked.Increment(ref _inputSequence);
+        }
         _inputQueue.Enqueue(new BrowserInputEvent(
             type,
             x,
@@ -2302,9 +2389,11 @@ public class BrowserIntegration
             buttons,
             Modifiers: 0,
             System.Diagnostics.Stopwatch.GetTimestamp(),
-            Interlocked.Increment(ref _inputSequence),
-            text));
+            sequence,
+            text,
+            Environment.CurrentManagedThreadId));
         _wakeEvent.Set();
+        return sequence;
     }
 
     private static int ReadPositiveIntEnvironment(string variableName, int fallback)
@@ -2890,14 +2979,24 @@ public class BrowserIntegration
         }
         else
         {
-            _browser.OnMouseDown(docX, docY, 2);
-            _browser.OnMouseUp(docX, docY, 2);
-            defaultAllowed = _browser.OnContextMenu(docX, docY, 2);
+            var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
+            var immutableHit = result with { NativeElement = null };
+            EnqueueInput(BrowserInputType.MouseDown, docX, docY, button: 2, buttons: 4);
+            EnqueueInput(BrowserInputType.MouseUp, docX, docY, button: 2);
+            var sequence = Interlocked.Increment(ref _inputSequence);
+            _pendingContextMenus[sequence] = new ContextMenuRequest(
+                windowX,
+                windowY,
+                viewportOffsetX,
+                viewportOffsetY,
+                immutableHit);
+            EnqueueInput(BrowserInputType.ContextMenu, docX, docY, button: 2, sequence: sequence);
+            defaultAllowed = false;
         }
 
-        var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
         if (defaultAllowed)
         {
+            var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
             ContextMenuRequested?.Invoke(new ContextMenuRequest(windowX, windowY, viewportOffsetX, viewportOffsetY, result));
         }
     }
