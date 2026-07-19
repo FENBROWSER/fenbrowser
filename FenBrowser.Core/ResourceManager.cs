@@ -1136,13 +1136,47 @@ namespace FenBrowser.Core
             }
         }
 
-        public async Task<FetchResult> FetchTextDetailedAsync(
+        public Task<FetchResult> FetchTextDetailedAsync(
             Uri url,
             Uri referer = null,
             string accept = null,
             string secFetchDest = null,
             bool isUserInitiatedNavigation = true)
         {
+            var destination = string.IsNullOrWhiteSpace(secFetchDest) ? "empty" : secFetchDest;
+            return FetchTextDetailedAsync(
+                new FetchContext
+                {
+                    RequestUri = url,
+                    InitiatorUri = referer,
+                    FrameDocumentUri = referer,
+                    TopLevelDocumentUri = referer,
+                    Destination = destination,
+                    Mode = DetermineFetchMode(destination),
+                    CredentialsMode = "include",
+                    IsTopLevelNavigation = IsTopLevelDocumentRequest(destination),
+                    IsUserInitiated = isUserInitiatedNavigation,
+                    Method = "GET"
+                },
+                accept);
+        }
+
+        public async Task<FetchResult> FetchTextDetailedAsync(
+            FetchContext context,
+            string accept = null)
+        {
+            if (context == null)
+            {
+                return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Fetch context is null" };
+            }
+
+            var url = context.RequestUri;
+            var referer = context.InitiatorUri;
+            var secFetchDest = context.Destination;
+            var isUserInitiatedNavigation = context.IsUserInitiated;
+            var fetchMode = string.IsNullOrWhiteSpace(context.Mode)
+                ? DetermineFetchMode(secFetchDest)
+                : context.Mode;
             if (url == null) return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "URL is null" };
             if (!IsSupportedFetchScheme(url))
             {
@@ -1278,7 +1312,6 @@ namespace FenBrowser.Core
 
                     var effectiveReferer = refererOriginal ?? previousRequest;
                     AddHeaderSafe(req, "Sec-Fetch-Dest", string.IsNullOrWhiteSpace(secFetchDest) ? "empty" : secFetchDest);
-                    var fetchMode = DetermineFetchMode(secFetchDest);
                     AddHeaderSafe(req, "Sec-Fetch-Mode", fetchMode);
                     ApplyRefererHeader(req, effectiveReferer, current, ActiveReferrerPolicy);
                     var computedReferer = ComputeReferrerHeader(effectiveReferer, current, ActiveReferrerPolicy);
@@ -1449,7 +1482,7 @@ namespace FenBrowser.Core
                 }
 
                 byte[] bodyBytes = null;
-                var corbFetchMode = DetermineFetchMode(secFetchDest);
+                var corbFetchMode = fetchMode;
                 try
                 {
                     bodyBytes = await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);

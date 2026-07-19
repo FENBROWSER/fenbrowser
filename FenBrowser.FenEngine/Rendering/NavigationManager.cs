@@ -2,6 +2,7 @@ using System;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Network;
 using FenBrowser.Core.Security;
 using FenBrowser.FenEngine.Rendering.Performance;
 
@@ -140,12 +141,21 @@ namespace FenBrowser.FenEngine.Rendering
 
             // 2. Fetch content as a top-level document navigation so servers
             // see navigation semantics instead of subresource-style headers.
+            var initiator = requestKind == NavigationRequestKind.UserInput ? null : referer;
             return await _resourceManager.FetchTextDetailedAsync(
-                uri,
-                referer: requestKind == NavigationRequestKind.UserInput ? null : referer,
-                accept: null,
-                secFetchDest: "document",
-                isUserInitiatedNavigation: requestKind == NavigationRequestKind.UserInput);
+                new FetchContext
+                {
+                    RequestUri = uri,
+                    InitiatorUri = initiator,
+                    FrameDocumentUri = initiator,
+                    TopLevelDocumentUri = referer,
+                    Destination = "document",
+                    Mode = "navigate",
+                    CredentialsMode = "include",
+                    IsTopLevelNavigation = true,
+                    IsUserInitiated = requestKind == NavigationRequestKind.UserInput,
+                    Method = "GET"
+                });
         }
 
         private static string NormalizeInternalFenUrl(string url)
