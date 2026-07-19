@@ -7332,7 +7332,27 @@ pre {{
 
         private Element FindElementAtPoint(double x, double y)
         {
-            if (_engine == null || _engine.LastLayout == null || _engine.ActiveDom == null)
+            if (_engine == null || _engine.ActiveDom == null)
+            {
+                return null;
+            }
+
+            // Use the renderer's stacking-aware input hit tester first. Besides paint
+            // order, it owns iframe retargeting and coordinate translation into a loaded
+            // child Document. The legacy flat layout scan below cannot reach sandboxed
+            // frame content and would leave real pointer clicks on the iframe host.
+            var renderContext = _activeRenderer?.CreateRenderContext() ?? _engine.BuildRenderContext();
+            if (renderContext != null &&
+                FenBrowser.FenEngine.Rendering.Interaction.HitTester.HitTestInput(
+                    renderContext,
+                    (float)x,
+                    (float)y,
+                    out var inputHit))
+            {
+                return inputHit.Target;
+            }
+
+            if (_engine.LastLayout == null)
             {
                 return null;
             }

@@ -291,6 +291,7 @@ public sealed class IframeInputRetargetingTests
 
         Assert.True(HitTester.HitTestInput(renderer.CreateRenderContext(), visualX, visualY, out var input));
         Assert.Same(anchor, input.Target);
+        Assert.Same(anchor, host.HitTestElementAtViewportPoint(visualX, visualY));
 
         host.OnClick(visualX, visualY, button: 0);
         await host.HandleElementClick(anchor);
