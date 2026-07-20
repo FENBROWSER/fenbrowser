@@ -47,6 +47,17 @@ namespace FenBrowser.FenEngine.Layout.Tree
     }
 
     /// <summary>
+    /// A block-level list principal box that preserves list-item identity for
+    /// marker generation and placement.
+    /// </summary>
+    public sealed class ListItemBox : BlockBox
+    {
+        public ListItemBox(LayoutBoxStore store, int storeId) : base(store, storeId)
+        {
+        }
+    }
+
+    /// <summary>
     /// Represents a leaf node containing text.
     /// Always strictly inside an InlineContext.
     /// </summary>

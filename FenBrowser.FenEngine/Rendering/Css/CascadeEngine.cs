@@ -1274,15 +1274,37 @@ return computed;
 
         private static void ApplyListStyleShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)
         {
+            string raw = value?.Trim() ?? string.Empty;
+            if (CssWideKeywords.Contains(raw))
+            {
+                SetExpanded(computed, "list-style-type", raw, source);
+                SetExpanded(computed, "list-style-position", raw, source);
+                SetExpanded(computed, "list-style-image", raw, source);
+                return;
+            }
+
+            string type = null;
+            string position = null;
+            string image = null;
             foreach (var part in SplitCssValue(value))
             {
-                if (part == "inside" || part == "outside")
-                    SetExpanded(computed, "list-style-position", part, source);
-                else if (part.StartsWith("url("))
-                    SetExpanded(computed, "list-style-image", part, source);
+                string keyword = part.ToLowerInvariant();
+                if (keyword == "inside" || keyword == "outside")
+                    position = keyword;
+                else if (keyword.StartsWith("url(", StringComparison.Ordinal))
+                    image = part;
+                else if (keyword == "none")
+                {
+                    if (type == null) type = "none";
+                    else image = "none";
+                }
                 else
-                    SetExpanded(computed, "list-style-type", part, source);
+                    type = keyword;
             }
+
+            SetExpanded(computed, "list-style-type", type ?? "disc", source);
+            SetExpanded(computed, "list-style-position", position ?? "outside", source);
+            SetExpanded(computed, "list-style-image", image ?? "none", source);
         }
 
         private static void ApplyGapShorthand(Dictionary<string, CssDeclaration> computed, CssDeclaration source, string value)

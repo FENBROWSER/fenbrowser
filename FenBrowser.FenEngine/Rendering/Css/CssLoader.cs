@@ -4848,15 +4848,15 @@ private static double? ExtractPx(string text, string prop)
             // INHERITANCE: List properties are inherited by default
             if (string.IsNullOrEmpty(css.ListStyleType))
             {
-                css.ListStyleType = parentCss?.ListStyleType;
+                css.ListStyleType = parentCss?.ListStyleType ?? CssComputed.GetInitialValue("list-style-type");
             }
             if (string.IsNullOrEmpty(css.ListStylePosition))
             {
-                css.ListStylePosition = parentCss?.ListStylePosition;
+                css.ListStylePosition = parentCss?.ListStylePosition ?? CssComputed.GetInitialValue("list-style-position");
             }
             if (string.IsNullOrEmpty(css.ListStyleImage))
             {
-                css.ListStyleImage = parentCss?.ListStyleImage;
+                css.ListStyleImage = parentCss?.ListStyleImage ?? CssComputed.GetInitialValue("list-style-image");
             }
             
             // Default list-style-type for LI if not set but parent is UL/OL
@@ -5127,8 +5127,6 @@ private static double? ExtractPx(string text, string prop)
                 css.AlignContent = Safe(DictGet(css.Map, "align-content"));
                 css.AlignSelf = Safe(DictGet(css.Map, "align-self"));
                 ApplyPlaceShorthands(css);
-                css.ListStyleType = Safe(DictGet(css.Map, "list-style-type"));
-
             // Generated Content & Counters
             css.Content = Safe(DictGet(css.Map, "content"));
             css.CounterReset = Safe(DictGet(css.Map, "counter-reset"));

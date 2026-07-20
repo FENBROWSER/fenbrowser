@@ -570,6 +570,11 @@ namespace FenBrowser.Core.Css
             ["white-space"] = "normal",
             ["word-spacing"] = "normal",
             ["letter-spacing"] = "normal",
+
+            // Lists (inherited)
+            ["list-style-type"] = "disc",
+            ["list-style-position"] = "outside",
+            ["list-style-image"] = "none",
             
             // Background
             ["background-color"] = "transparent",

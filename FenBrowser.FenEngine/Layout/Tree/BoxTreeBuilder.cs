@@ -159,6 +159,11 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     int id = _store.CreateBox(node, style, LayoutBoxStore.BoxType.Inline);
                     box = _store.GetWrapper(id);
                 }
+                else if (display == "list-item")
+                {
+                    int id = _store.CreateBox(node, style, LayoutBoxStore.BoxType.ListItem);
+                    box = _store.GetWrapper(id);
+                }
                 else
                 {
                     int id = _store.CreateBox(node, style, LayoutBoxStore.BoxType.Block);

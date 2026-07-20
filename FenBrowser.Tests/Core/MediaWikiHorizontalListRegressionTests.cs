@@ -6,6 +6,7 @@ using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.FenEngine.Layout.Tree;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.Tests.Layout;
 using SkiaSharp;
@@ -15,6 +16,58 @@ namespace FenBrowser.Tests.Core;
 
 public sealed class MediaWikiHorizontalListRegressionTests
 {
+    [Fact]
+    public async Task ListStyleShorthand_ResetsLonghandsAndBuildsAListItemBox()
+    {
+        const string html = """
+<!doctype html>
+<html>
+<head>
+  <style>
+    ul { list-style-position: inside; list-style-image: url(parent.png); }
+    #square { list-style: square; }
+    #none { list-style: none inside; }
+    #image { list-style: circle outside url("marker wide.png"); }
+  </style>
+</head>
+<body>
+  <div id="initial">Initial values</div>
+  <ul>
+    <li id="square">Square</li>
+    <li id="none">None</li>
+    <li id="image">Image</li>
+  </ul>
+</body>
+</html>
+""";
+
+        var document = new HtmlParser(html, new Uri("https://example.test/")).Parse();
+        var root = Assert.IsType<Element>(document.DocumentElement);
+        var computed = await CssLoader.ComputeAsync(root, new Uri("https://example.test/"), null);
+        var initial = Assert.IsType<Element>(document.GetElementById("initial"));
+        var square = Assert.IsType<Element>(document.GetElementById("square"));
+        var none = Assert.IsType<Element>(document.GetElementById("none"));
+        var image = Assert.IsType<Element>(document.GetElementById("image"));
+
+        Assert.Equal("disc", computed[initial].ListStyleType);
+        Assert.Equal("outside", computed[initial].ListStylePosition);
+        Assert.Equal("none", computed[initial].ListStyleImage);
+        Assert.Equal("square", computed[square].ListStyleType);
+        Assert.Equal("outside", computed[square].ListStylePosition);
+        Assert.Equal("none", computed[square].ListStyleImage);
+        Assert.Equal("none", computed[none].ListStyleType);
+        Assert.Equal("inside", computed[none].ListStylePosition);
+        Assert.Equal("none", computed[none].ListStyleImage);
+        Assert.Equal("circle", computed[image].ListStyleType);
+        Assert.Equal("outside", computed[image].ListStylePosition);
+        Assert.Contains("marker wide.png", computed[image].ListStyleImage, StringComparison.Ordinal);
+
+        var boxRoot = new BoxTreeBuilder(computed).Build(root);
+        var squareBox = FindBox(boxRoot, square);
+        Assert.NotNull(squareBox);
+        Assert.Equal("ListItemBox", squareBox.GetType().Name);
+    }
+
     [Fact]
     public async Task TemplateStyleDedupeKey_IsIngestedOnlyOnceInDomOrder()
     {
@@ -190,6 +243,25 @@ public sealed class MediaWikiHorizontalListRegressionTests
                 yield return child;
             }
         }
+    }
+
+    private static LayoutBox FindBox(LayoutBox root, Node source)
+    {
+        if (root == null || ReferenceEquals(root.SourceNode, source))
+        {
+            return root;
+        }
+
+        foreach (var child in root.Children)
+        {
+            var match = FindBox(child, source);
+            if (match != null)
+            {
+                return match;
+            }
+        }
+
+        return null;
     }
 
 }
