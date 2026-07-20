@@ -47,6 +47,8 @@ public class BrowserIntegration
     private readonly BrowserInputQueue _inputQueue;
     private readonly ConcurrentDictionary<long, ContextMenuRequest> _pendingContextMenus = new();
     private readonly Thread _engineThread;
+    private int _engineThreadId;
+    private int _lastInputDispatchThreadId;
     private readonly AutoResetEvent _wakeEvent = new AutoResetEvent(false);
     private bool _running = true;
     private long _inputSequence;
@@ -900,6 +902,7 @@ public class BrowserIntegration
 
     private void EngineLoop()
     {
+        Volatile.Write(ref _engineThreadId, Environment.CurrentManagedThreadId);
         var coordinator = _browser.Engine.EventLoopCoordinator;
         coordinator.OnWorkEnqueued += () => _wakeEvent.Set();
 
@@ -2300,6 +2303,7 @@ public class BrowserIntegration
 
     private void DispatchInputOnEngineThread(BrowserInputEvent input)
     {
+        Volatile.Write(ref _lastInputDispatchThreadId, Environment.CurrentManagedThreadId);
         var dispatchStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         var queueDelayMs = System.Diagnostics.Stopwatch
             .GetElapsedTime(input.Timestamp, dispatchStarted)
@@ -3154,9 +3158,11 @@ public class BrowserIntegration
         HandleMouseDown(windowX, windowY, 0, viewportOffsetX, viewportOffsetY);
         var result = HandleMouseUp(windowX, windowY, 0, true, viewportOffsetX, viewportOffsetY);
 
-        EngineLogBridge.Info($"[Debug] Click at {windowX},{windowY} hit: {result.TagName ?? "None"} (ID: {result.ElementId ?? "None"}) Link: {result.IsLink}", LogCategory.General);
         return Task.FromResult(result.IsLink && !string.IsNullOrEmpty(result.Href));
     }
+
+    internal int EngineThreadId => Volatile.Read(ref _engineThreadId);
+    internal int LastInputDispatchThreadId => Volatile.Read(ref _lastInputDispatchThreadId);
 
     private bool ShouldEmitDoubleClick(float windowX, float windowY, int button)
     {

@@ -77,7 +77,6 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
 
             state.LastScrollUpdateUtc = now;
 
-            EngineLogCompat.Debug($"[ScrollManager] {(element?.TagName ?? "#viewport")} scroll: ({state.ScrollX}, {state.ScrollY})", LogCategory.Rendering);
         }
 
         /// <summary>

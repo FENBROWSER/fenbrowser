@@ -142,6 +142,33 @@ public sealed class BrowserInputQueueTests
         Assert.Equal(0.03f, tick.DeltaY, precision: 4);
     }
 
+    [Fact]
+    public void Drain_ContinuousInput_LeavesOneRenderOpportunityPerIteration()
+    {
+        var queue = new BrowserInputQueue(maxPendingEvents: 64);
+        var renderOpportunities = 0;
+
+        for (var frame = 0; frame < 12; frame++)
+        {
+            for (var sequence = 1; sequence <= 20; sequence++)
+            {
+                queue.Enqueue(Input(
+                    BrowserInputType.MouseMove,
+                    (frame * 20) + sequence,
+                    x: sequence,
+                    y: frame));
+            }
+            queue.Enqueue(Input(BrowserInputType.MouseDown, 1_000 + frame, buttons: 1));
+
+            var result = queue.Drain(_ => { }, TimeSpan.FromMilliseconds(2), maxEvents: 1);
+            Assert.Equal(1, result.ProcessedCount);
+            renderOpportunities++;
+        }
+
+        Assert.Equal(12, renderOpportunities);
+        Assert.True(queue.CoalescedMouseMoveCount >= 200);
+    }
+
     private static BrowserInputEvent Input(
         BrowserInputType type,
         long sequence,

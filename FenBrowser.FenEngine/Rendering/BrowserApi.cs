@@ -7429,8 +7429,6 @@ pre {{
                 }
             }
             
-            if (hit != null) TryLogDebug($"[BrowserApi] Hit test at ({docX},{docY}) found: {hit.NodeName} (ID: {hit.Id})", LogCategory.General);
-            
             return hit;
         }
 
@@ -8183,7 +8181,6 @@ pre {{
                  element.GetAttribute("type")?.ToLowerInvariant() == "button")))
             {
                  // Verify if this is a search button (simplified check)
-                 TryLogDebug($"[BrowserApi] Button clicked: {element.NodeName}", LogCategory.General);
                  // Popover target activation: if the button has popovertarget,
                  // toggle/show/hide the referenced popover element.
                  var popoverTargetId = element.GetAttribute("popovertarget");
@@ -8259,8 +8256,6 @@ pre {{
                 _cursorIndex = val.Length;
                 _selectionAnchor = -1;
                 
-                TryLogDebug($"[BrowserApi] Input focused: {element.NodeName} (ID: {element.GetAttribute("id")})", LogCategory.General);
-                
                 // Trigger a repaint to show caret (if we had one)
                 TryInvokeRepaintReady(_engine.GetActiveDom());
             }
@@ -8276,7 +8271,6 @@ pre {{
                 if (isFocusable)
                 {
                     SetFocusedElementState(element);
-                    TryLogDebug($"[BrowserApi] Element focused: {element.NodeName} (ID: {element.GetAttribute("id")})", LogCategory.General);
                 }
                 else
                 {
