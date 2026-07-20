@@ -17,6 +17,7 @@ namespace FenBrowser.FenEngine.Scripting
         private ClientWebSocket _socket;
         private CancellationTokenSource _cancelSource;
         private Task _receiveLoop;
+        private readonly SemaphoreSlim _sendGate = new(1, 1);
         private readonly object _lock = new();
 
         // Queued messages from the receive loop, consumed by the JS event polling.
@@ -44,6 +45,12 @@ namespace FenBrowser.FenEngine.Scripting
         /// </summary>
         public string Connect(string url, string[] protocols)
         {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != "ws" && uri.Scheme != "wss"))
+            {
+                return "Invalid WebSocket URL";
+            }
+
             lock (_lock)
             {
                 if (_socket != null && _socket.State != WebSocketState.Closed && _socket.State != WebSocketState.Aborted)
@@ -66,16 +73,7 @@ namespace FenBrowser.FenEngine.Scripting
                     Url = url;
                     Protocol = string.Empty;
 
-                    // Connect synchronously (the JS side is synchronous for the constructor).
-                    var connectTask = _socket.ConnectAsync(new Uri(url), _cancelSource.Token);
-                    connectTask.GetAwaiter().GetResult();
-
-                    Protocol = _socket.SubProtocol ?? string.Empty;
-
-                    // Start the receive loop.
-                    _receiveLoop = Task.Run(() => ReceiveLoopAsync(_cancelSource.Token));
-
-                    _incomingEvents.Enqueue(WsEvent.Open());
+                    _ = ConnectAsync(_socket, uri, _cancelSource.Token);
                     return null;
                 }
                 catch (Exception ex)
@@ -84,6 +82,32 @@ namespace FenBrowser.FenEngine.Scripting
                     _socket = null;
                     _incomingEvents.Enqueue(WsEvent.Error(ex.Message));
                     return ex.Message;
+                }
+            }
+        }
+
+        private async Task ConnectAsync(ClientWebSocket socket, Uri uri, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await socket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
+                Protocol = socket.SubProtocol ?? string.Empty;
+                _receiveLoop = ReceiveLoopAsync(cancellationToken);
+                _incomingEvents.Enqueue(WsEvent.Open());
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                _incomingEvents.Enqueue(WsEvent.Error(ex.Message));
+                try { socket.Dispose(); } catch { }
+                lock (_lock)
+                {
+                    if (ReferenceEquals(_socket, socket))
+                    {
+                        _socket = null;
+                    }
                 }
             }
         }
@@ -100,12 +124,7 @@ namespace FenBrowser.FenEngine.Scripting
             try
             {
                 var bytes = Encoding.UTF8.GetBytes(data ?? string.Empty);
-                var sendTask = s.SendAsync(
-                    new ArraySegment<byte>(bytes),
-                    WebSocketMessageType.Text,
-                    endOfMessage: true,
-                    _cancelSource.Token);
-                sendTask.GetAwaiter().GetResult();
+                _ = SendAsync(s, bytes, WebSocketMessageType.Text, _cancelSource.Token);
                 return null;
             }
             catch (Exception ex)
@@ -125,17 +144,44 @@ namespace FenBrowser.FenEngine.Scripting
 
             try
             {
-                var sendTask = s.SendAsync(
-                    new ArraySegment<byte>(data ?? Array.Empty<byte>()),
-                    WebSocketMessageType.Binary,
-                    endOfMessage: true,
-                    _cancelSource.Token);
-                sendTask.GetAwaiter().GetResult();
+                var bytes = data == null ? Array.Empty<byte>() : (byte[])data.Clone();
+                _ = SendAsync(s, bytes, WebSocketMessageType.Binary, _cancelSource.Token);
                 return null;
             }
             catch (Exception ex)
             {
                 return ex.Message;
+            }
+        }
+
+        private async Task SendAsync(
+            ClientWebSocket socket,
+            byte[] data,
+            WebSocketMessageType messageType,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await socket.SendAsync(
+                        new ArraySegment<byte>(data),
+                        messageType,
+                        endOfMessage: true,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _sendGate.Release();
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                _incomingEvents.Enqueue(WsEvent.Error(ex.Message));
             }
         }
 
@@ -152,16 +198,8 @@ namespace FenBrowser.FenEngine.Scripting
 
                 try
                 {
-                    if (s.State == WebSocketState.Open)
-                    {
-                        var closeTask = s.CloseAsync(
-                            (WebSocketCloseStatus)(code > 0 ? code : 1000),
-                            reason ?? string.Empty,
-                            CancellationToken.None);
-                        closeTask.GetAwaiter().GetResult();
-                    }
-
                     _cancelSource?.Cancel();
+                    s.Abort();
                 }
                 catch
                 {
