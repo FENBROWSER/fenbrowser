@@ -70,6 +70,8 @@
     <!-- Phase 1 animation-scoping regression (BrowserIntegration is in Host,
          which is otherwise excluded). -->
     <Compile Include="Host\Phase1AnimationScopingTests.cs" />
+    <!-- Phase 11 interaction re-cascade CancellationTokenSource ownership. -->
+    <Compile Include="Host\Phase11InteractionRecascadeCtsTests.cs" />
   </ItemGroup>
 
 </Project>

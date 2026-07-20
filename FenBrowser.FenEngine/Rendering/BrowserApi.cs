@@ -10628,8 +10628,10 @@ pre {{
             ElementStateManager.Instance.OnStateChanged -= _elementStateChangedHandler;
             FenBrowser.Core.Dom.V2.Element.StyleAttributeChanged -= _styleAttributeChangedHandler;
             var debounce = Interlocked.Exchange(ref _interactionRecascadeDebounce, null);
+            // Only cancel here; the pending debounce task owns disposal of its
+            // CancellationTokenSource (see RunInteractionRecascadeAsync). Disposing
+            // from two callers races and throws ObjectDisposedException under load.
             debounce?.Cancel();
-            debounce?.Dispose();
 
             if (_fontLoadedHandler != null)
                 FontRegistry.FontLoaded -= _fontLoadedHandler;
@@ -10671,30 +10673,44 @@ pre {{
 
         private void ScheduleInteractionRecascade()
         {
-            var next = new CancellationTokenSource();
-            var previous = Interlocked.Exchange(ref _interactionRecascadeDebounce, next);
-            previous?.Cancel();
-            previous?.Dispose();
+            // Each call owns a dedicated CancellationTokenSource. Ownership is
+            // transferred to the spawned task, which is the *only* code that
+            // disposes it. The caller here must never dispose a token source
+            // that another task may still be using: doing so races with the
+            // task's own Dispose and throws ObjectDisposedException under load.
+            var owner = new CancellationTokenSource();
+            var token = owner.Token;
 
-            _ = Task.Run(async () =>
+            var previous = Interlocked.Exchange(ref _interactionRecascadeDebounce, owner);
+            previous?.Cancel();
+
+            _ = RunInteractionRecascadeAsync(owner, token);
+        }
+
+        private async Task RunInteractionRecascadeAsync(
+            CancellationTokenSource owner,
+            CancellationToken token)
+        {
+            try
             {
-                try
+                await Task.Delay(75, token).ConfigureAwait(false);
+
+                if (!_disposed)
                 {
-                    await Task.Delay(75, next.Token).ConfigureAwait(false);
-                    if (!_disposed)
-                    {
-                        _engine.ScheduleRecascade();
-                    }
+                    _engine.ScheduleRecascade();
                 }
-                catch (OperationCanceledException)
-                {
-                }
-                finally
-                {
-                    Interlocked.CompareExchange(ref _interactionRecascadeDebounce, null, next);
-                    next.Dispose();
-                }
-            });
+            }
+            catch (OperationCanceledException)
+            {
+                // Superseded by a newer interaction recascade request.
+            }
+            finally
+            {
+                // Only the owning task disposes the source, avoiding any
+                // double-dispose race with the caller or with Dispose().
+                Interlocked.CompareExchange(ref _interactionRecascadeDebounce, null, owner);
+                owner.Dispose();
+            }
         }
 
         // IHistoryBridge Implementation
