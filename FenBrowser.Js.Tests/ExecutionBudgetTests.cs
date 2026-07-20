@@ -130,6 +130,23 @@ public class ExecutionBudgetTests
             $"JIT execution ignored the wall-clock deadline -- elapsed={sw.ElapsedMilliseconds}ms");
     }
 
+    [Fact]
+    public void WallClockTimeout_StopsSelfReplenishingMicrotaskCheckpoint()
+    {
+        var interp = new BytecodeInterpreter { WallClockTimeoutMs = 100 };
+        var fn = Compile(@"
+            function again() { queueMicrotask(again); }
+            queueMicrotask(again);
+        ");
+
+        var sw = Stopwatch.StartNew();
+        Assert.Throws<JsThrownException>(() => interp.Execute(fn));
+        sw.Stop();
+
+        Assert.True(sw.ElapsedMilliseconds < 5000,
+            $"microtask checkpoint ignored the wall-clock deadline -- elapsed={sw.ElapsedMilliseconds}ms");
+    }
+
     // ---- InterruptCallback ----
 
     [Fact]

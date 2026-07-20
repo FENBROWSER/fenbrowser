@@ -395,6 +395,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded."));
     }
 
+    private void CheckExecutionBudgetAtTaskBoundary()
+    {
+        if (InstructionBudget > 0 && ++_instructionCount > InstructionBudget)
+            throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
+        if (InterruptCallback is { } callback && !callback())
+            throw new JsThrownException(CreateRangeError("Execution interrupted."));
+        if (_wallClockDeadlineTicks != 0 && Environment.TickCount64 >= _wallClockDeadlineTicks)
+            throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded."));
+    }
+
     // Tier 5 #25: per-realm CSP eval policy. When false, eval() and the
     // Function/AsyncFunction/GeneratorFunction constructors throw EvalError,
     // mirroring the effect of a `script-src` directive without `'unsafe-eval'`.
@@ -810,6 +820,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // start running jobs - keeping HTML's tail-call ordering intact.
             while (_pendingMicrotasks.Count > 0)
             {
+                CheckExecutionBudgetAtTaskBoundary();
                 var callback = _pendingMicrotasks.Dequeue();
                 try
                 {
@@ -830,7 +841,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
             }
 
-            _ = _jobQueue.RunMicrotaskCheckpoint(RunPromiseJob);
+            _ = _jobQueue.RunMicrotaskCheckpoint(job =>
+            {
+                CheckExecutionBudgetAtTaskBoundary();
+                return RunPromiseJob(job);
+            });
         }
     }
 
