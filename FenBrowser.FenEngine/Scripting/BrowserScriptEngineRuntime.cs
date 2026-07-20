@@ -385,6 +385,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private long _fenJsTimerIdCounter;
     private long _diagnosticCookieCaptureCounter;
     private JsValue _fenJsGlobalThis = JsValue.Undefined;
+    private JsValue _visualViewport = JsValue.Undefined;
     private JsValue _fenJsTopWindowFacade = JsValue.Undefined;
     private JsValue _fenJsSameOriginTopWindowFacade = JsValue.Undefined;
     private readonly System.Diagnostics.Stopwatch _fenJsClock = System.Diagnostics.Stopwatch.StartNew();
@@ -400,6 +401,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         new(ReferenceEqualityComparer.Instance);
     private readonly List<BrowserEventListener> _documentEventListeners = new();
     private readonly List<BrowserEventListener> _windowEventListeners = new();
+    private readonly List<BrowserEventListener> _visualViewportEventListeners = new();
     private readonly List<BrowserEventListener> _embeddedParentWindowListeners = new();
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostCallableCache = new();
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostPropertyStore = new();
@@ -448,6 +450,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private JavaScriptRuntimeProfile _runtimeProfile;
     private IHistoryBridge _historyBridge;
     private readonly IJsHost _host;
+    private double _windowWidth;
+    private double _windowHeight;
 
     public FenJsBrowserScriptEngine(IJsHost host)
     {
@@ -530,8 +534,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     public SandboxPolicy Sandbox { get; set; }
     public bool AllowExternalScripts { get; set; }
     public bool ExecuteInlineScriptsOnInnerHTML { get; set; }
-    public double WindowWidth { get; set; }
-    public double WindowHeight { get; set; }
+    public double WindowWidth
+    {
+        get => _windowWidth;
+        set => UpdateViewportDimensions(value, _windowHeight);
+    }
+
+    public double WindowHeight
+    {
+        get => _windowHeight;
+        set => UpdateViewportDimensions(_windowWidth, value);
+    }
     public int PageScriptByteBudget { get; set; }
 
     /// <summary>
@@ -3005,6 +3018,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             _hostHandleCache.Clear();
             _documentEventListeners.Clear();
             _windowEventListeners.Clear();
+            _visualViewportEventListeners.Clear();
             _embeddedParentWindowListeners.Clear();
             _hostCallableCache = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             _hostPropertyStore = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
@@ -3013,6 +3027,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             _iframeWindowEventListeners = new ConditionalWeakTable<Element, List<BrowserEventListener>>();
             _fenJsTopWindowFacade = JsValue.Undefined;
             _fenJsSameOriginTopWindowFacade = JsValue.Undefined;
+            _visualViewport = JsValue.Undefined;
             _hostPrototypeNames.Clear();
             _activeWindowEventListeners = null;
             _activeWindowEventTarget = JsValue.Undefined;
@@ -3795,6 +3810,50 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         _interpreter.RegisterGlobalValue("innerHeight", JsValue.FromNumber(WindowHeight));
         _interpreter.RegisterGlobalValue("outerWidth", JsValue.FromNumber(WindowWidth));
         _interpreter.RegisterGlobalValue("outerHeight", JsValue.FromNumber(WindowHeight));
+        _interpreter.RegisterGlobalValue("devicePixelRatio", JsValue.FromNumber(1));
+        _visualViewport = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["width"] = JsValue.FromNumber(WindowWidth),
+            ["height"] = JsValue.FromNumber(WindowHeight),
+            ["offsetLeft"] = JsValue.FromInt32(0),
+            ["offsetTop"] = JsValue.FromInt32(0),
+            ["pageLeft"] = JsValue.FromInt32(0),
+            ["pageTop"] = JsValue.FromInt32(0),
+            ["scale"] = JsValue.FromNumber(1),
+            ["onresize"] = JsValue.Null,
+            ["onscroll"] = JsValue.Null
+        });
+        _interpreter.SetObjectProperty(
+            _visualViewport,
+            "addEventListener",
+            _interpreter.AllocateNativeFunction(
+                "addEventListener",
+                (_, args) =>
+                {
+                    AddBrowserEventListener(_visualViewportEventListeners, args);
+                    return JsValue.Undefined;
+                },
+                length: 2));
+        _interpreter.SetObjectProperty(
+            _visualViewport,
+            "removeEventListener",
+            _interpreter.AllocateNativeFunction(
+                "removeEventListener",
+                (_, args) =>
+                {
+                    RemoveBrowserEventListener(_visualViewportEventListeners, args);
+                    return JsValue.Undefined;
+                },
+                length: 2));
+        _interpreter.SetObjectProperty(
+            _visualViewport,
+            "dispatchEvent",
+            _interpreter.AllocateNativeFunction(
+                "dispatchEvent",
+                (_, args) => JsValue.FromBoolean(
+                    DispatchVisualViewportEvent(args.Count > 0 ? args[0] : JsValue.Undefined)),
+                length: 1));
+        _interpreter.RegisterGlobalValue("visualViewport", _visualViewport);
         var screenOrientation = _interpreter.AllocateObject(new Dictionary<string, JsValue>
         {
             ["type"] = JsValue.FromString(WindowWidth >= WindowHeight ? "landscape-primary" : "portrait-primary"),
@@ -12756,16 +12815,35 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private void UpdateOwnedViewport(double width, double height)
     {
+        UpdateViewportDimensions(width, height);
+    }
+
+    private void UpdateViewportDimensions(double width, double height)
+    {
         var changed = false;
+        var dispatchResize = false;
         lock (_fenJsLock)
         {
-            changed = Math.Abs(WindowWidth - width) > 0.001 || Math.Abs(WindowHeight - height) > 0.001;
-            WindowWidth = width;
-            WindowHeight = height;
+            changed = Math.Abs(_windowWidth - width) > 0.001 || Math.Abs(_windowHeight - height) > 0.001;
+            _windowWidth = width;
+            _windowHeight = height;
+
+            if (_interpreter == null || _fenJsGlobalThis.Tag != JsValueTag.Object)
+            {
+                return;
+            }
+
             _interpreter.RegisterGlobalValue("innerWidth", JsValue.FromNumber(width));
             _interpreter.RegisterGlobalValue("innerHeight", JsValue.FromNumber(height));
             _interpreter.RegisterGlobalValue("outerWidth", JsValue.FromNumber(width));
             _interpreter.RegisterGlobalValue("outerHeight", JsValue.FromNumber(height));
+            _interpreter.RegisterGlobalValue("devicePixelRatio", JsValue.FromNumber(1));
+            if (_visualViewport.Tag == JsValueTag.Object)
+            {
+                _interpreter.SetObjectProperty(_visualViewport, "width", JsValue.FromNumber(width));
+                _interpreter.SetObjectProperty(_visualViewport, "height", JsValue.FromNumber(height));
+            }
+
             var screen = ReadGlobalValueOrUndefined("screen");
             if (screen.Tag == JsValueTag.Object)
             {
@@ -12773,10 +12851,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 _interpreter.SetObjectProperty(screen, "height", JsValue.FromNumber(height));
                 _interpreter.SetObjectProperty(screen, "availWidth", JsValue.FromNumber(width));
                 _interpreter.SetObjectProperty(screen, "availHeight", JsValue.FromNumber(height));
+                var orientation = ReadJsProperty(screen, "orientation");
+                if (orientation.Tag == JsValueTag.Object)
+                {
+                    _interpreter.SetObjectProperty(
+                        orientation,
+                        "type",
+                        JsValue.FromString(width >= height ? "landscape-primary" : "portrait-primary"));
+                }
             }
+
+            dispatchResize = changed && _currentDomRoot != null;
         }
 
-        if (changed)
+        if (dispatchResize)
         {
             QueueOwnedWindowEvent("resize");
         }
@@ -12872,6 +12960,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                 ["type"] = JsValue.FromString(type)
                             });
                             DispatchWindowHostEvent(eventValue);
+                            if (string.Equals(type, "resize", StringComparison.Ordinal))
+                            {
+                                var visualEventValue = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                                {
+                                    ["type"] = JsValue.FromString(type)
+                                });
+                                DispatchVisualViewportEvent(visualEventValue);
+                            }
                             _interpreter.PumpMicrotasks();
                         }
                         return null;
@@ -12882,6 +12978,26 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 TaskContinuationOptions.None,
                 TaskScheduler.Default);
         }
+    }
+
+    private bool DispatchVisualViewportEvent(JsValue eventValue)
+    {
+        if (_visualViewport.Tag != JsValueTag.Object || eventValue.Tag != JsValueTag.Object)
+        {
+            return true;
+        }
+
+        var type = ReadEventType(eventValue);
+        PrepareDispatchedEvent(eventValue, _visualViewport);
+        DispatchBrowserEvent(_visualViewportEventListeners, type, _visualViewport, eventValue);
+
+        var handler = ReadJsProperty(_visualViewport, "on" + type);
+        if (_interpreter.CanCallValue(handler))
+        {
+            TryInvokeFenJsEventCallback(handler, _visualViewport, eventValue, type);
+        }
+
+        return !ReadJsBoolProperty(eventValue, "defaultPrevented");
     }
 
     private void AttachFenJsPrototype(JsValue target, string constructorName)
