@@ -205,7 +205,7 @@ namespace FenBrowser.FenEngine.Rendering
                 var result = await detailedFetcher(uri).ConfigureAwait(false);
                 if (result != null)
                 {
-                    _lastLoadResults[uri.AbsoluteUri] = result;
+                    RecordLoadResult(uri.AbsoluteUri, CreateCacheKey(uri.AbsoluteUri, context), result);
                 }
                 return result?.Body;
             }
@@ -234,7 +234,16 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            return _lastLoadResults.TryGetValue(url, out result);
+            var context = _ambientContext.Value;
+            var resultKey = CreateCacheKey(url, context);
+            if (_lastLoadResults.TryGetValue(resultKey, out result))
+            {
+                return true;
+            }
+
+            // Unscoped callers retain the legacy URL-only lookup. Scoped callers must
+            // not observe another browsing context's in-flight or failed result.
+            return context == null && _lastLoadResults.TryGetValue(url, out result);
         }
 
         // Emits authoritative pending network-image load count changes.
@@ -1294,7 +1303,7 @@ namespace FenBrowser.FenEngine.Rendering
                         FailureDetail = "Image fetch returned no result"
                     };
                 }
-                _lastLoadResults[url] = fetchResult;
+                RecordLoadResult(url, cacheKey, fetchResult);
 
                 if (!fetchResult.Succeeded)
                 {
@@ -1316,11 +1325,11 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 catch (Exception ex)
                 {
-                    _lastLoadResults[url] = fetchResult with
+                    RecordLoadResult(url, cacheKey, fetchResult with
                     {
                         DecodeFormat = decodeFormat,
                         DecodeFailureReason = ex.Message
-                    };
+                    });
                     EngineLogCompat.Warn($"[ImageLoader] Decode failed: url={url} format={decodeFormat ?? "unknown"}", LogCategory.Rendering);
                     return;
                 }
@@ -1329,7 +1338,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     if (TryStoreDecodedBitmap(cacheKey, url, bitmap, isLazy))
                     {
-                        _lastLoadResults[url] = fetchResult with { DecodeFormat = decodeFormat };
+                        RecordLoadResult(url, cacheKey, fetchResult with { DecodeFormat = decodeFormat });
                         RequestDebouncedRepaint(cacheKey, context);
                         RequestDebouncedRelayout(cacheKey, context);
                     }
@@ -1349,11 +1358,11 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 else
                 {
-                    _lastLoadResults[url] = fetchResult with
+                    RecordLoadResult(url, cacheKey, fetchResult with
                     {
                         DecodeFormat = decodeFormat,
                         DecodeFailureReason = "Decoder returned no bitmap"
-                    };
+                    });
                     EngineLogCompat.Warn($"[ImageLoader] Decode Failed: {url}", LogCategory.Rendering);
                 }
             }
@@ -1627,6 +1636,18 @@ namespace FenBrowser.FenEngine.Rendering
                 RequestRepaint = context.RequestRepaint,
                 RequestRelayout = context.RequestRelayout
             };
+        }
+
+        private static void RecordLoadResult(
+            string url,
+            string cacheKey,
+            BinaryFetchResult result)
+        {
+            _lastLoadResults[cacheKey] = result;
+            if (!string.Equals(cacheKey, url, StringComparison.Ordinal))
+            {
+                _lastLoadResults[url] = result;
+            }
         }
 
         private static string CreateCacheKey(string url, ImageLoaderRequestContext context)

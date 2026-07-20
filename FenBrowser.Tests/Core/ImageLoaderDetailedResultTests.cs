@@ -138,6 +138,64 @@ public sealed class ImageLoaderDetailedResultTests
         }
     }
 
+    [Fact]
+    public async Task ScopedFetchers_PreserveIndependentResultsForSameUrl()
+    {
+        const string imageUrl = "https://assets.example.test/challenge.png";
+        ImageLoader.ClearCache();
+        try
+        {
+            var blockedContext = new ImageLoader.ImageLoaderRequestContext
+            {
+                OwnerId = "blocked-frame",
+                FetchDetailedAsync = uri => Task.FromResult(new BinaryFetchResult
+                {
+                    FinalUri = uri,
+                    FailureReason = BinaryFetchFailureReason.CspBlocked,
+                    FailureDetail = "Blocked by img-src"
+                })
+            };
+            var missingContext = new ImageLoader.ImageLoaderRequestContext
+            {
+                OwnerId = "missing-frame",
+                FetchDetailedAsync = uri => Task.FromResult(new BinaryFetchResult
+                {
+                    FinalUri = uri,
+                    StatusCode = (int)HttpStatusCode.NotFound,
+                    FailureReason = BinaryFetchFailureReason.HttpError,
+                    FailureDetail = "HTTP 404"
+                })
+            };
+
+            using (ImageLoader.EnterRequestContext(blockedContext))
+            {
+                Assert.Null(ImageLoader.GetImage(imageUrl));
+            }
+            using (ImageLoader.EnterRequestContext(missingContext))
+            {
+                Assert.Null(ImageLoader.GetImage(imageUrl));
+            }
+
+            await WaitForLoadAsync(imageUrl);
+
+            using (ImageLoader.EnterRequestContext(blockedContext))
+            {
+                Assert.True(ImageLoader.TryGetLastLoadResult(imageUrl, out var blocked));
+                Assert.Equal(BinaryFetchFailureReason.CspBlocked, blocked.FailureReason);
+            }
+            using (ImageLoader.EnterRequestContext(missingContext))
+            {
+                Assert.True(ImageLoader.TryGetLastLoadResult(imageUrl, out var missing));
+                Assert.Equal(BinaryFetchFailureReason.HttpError, missing.FailureReason);
+                Assert.Equal(404, missing.StatusCode);
+            }
+        }
+        finally
+        {
+            ImageLoader.ClearCache();
+        }
+    }
+
     private static async Task WaitForLoadAsync(string imageUrl)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);
