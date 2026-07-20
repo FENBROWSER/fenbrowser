@@ -72,7 +72,70 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         int PaintNodeCount,
         RenderFrameRasterMode DominantRasterMode,
         bool WarningGatePassed,
-        bool FailureGatePassed);
+        bool FailureGatePassed,
+        // --- Phase 0 global performance counters (aggregated across a run) ---
+        int FrameRequests,
+        int CommittedFrames,
+        int FullLayouts,
+        int PaintTreeRebuilds,
+        int FullRasters,
+        int DamageRasters,
+        int CompositorOnlyUpdates,
+        int HiddenTabFrames,
+        int NoOpRepaintReadySignals,
+        int NoOpFramesAvoided);
+
+    /// <summary>
+    /// Accumulates the Phase 0 global performance counters from each rendered
+    /// frame. Driven by RenderFrameResult so it stays decoupled from the host
+    /// integration; later phases populate HiddenTabFrames / NoOp* via hooks.
+    /// </summary>
+    internal sealed class FrameCounters
+    {
+        public int FrameRequests;
+        public int CommittedFrames;
+        public int FullLayouts;
+        public int PaintTreeRebuilds;
+        public int FullRasters;
+        public int DamageRasters;
+        public int CompositorOnlyUpdates;
+        public int HiddenTabFrames;
+        public int NoOpRepaintReadySignals;
+        public int NoOpFramesAvoided;
+
+        public void Add(RenderFrameResult result)
+        {
+            CommittedFrames++;
+            FrameRequests++;
+
+            var telemetry = result?.Telemetry;
+            if (telemetry != null)
+            {
+                if (telemetry.PaintTreeRebuilt)
+                {
+                    PaintTreeRebuilds++;
+                }
+
+                if (telemetry.LayoutUpdated)
+                {
+                    FullLayouts++;
+                }
+            }
+
+            switch (result?.RasterMode)
+            {
+                case RenderFrameRasterMode.Full:
+                    FullRasters++;
+                    break;
+                case RenderFrameRasterMode.Damage:
+                    DamageRasters++;
+                    break;
+                case RenderFrameRasterMode.PreservedBaseFrame:
+                    CompositorOnlyUpdates++;
+                    break;
+            }
+        }
+    }
 
     public sealed record RenderPerformanceEnvironment(
         string OperatingSystem,
@@ -147,6 +210,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             var paintAllocationTotals = new List<long>(scenario.Iterations);
             var rasterAllocationTotals = new List<long>(scenario.Iterations);
             var rasterModes = new Dictionary<RenderFrameRasterMode, int>();
+            var counters = new FrameCounters();
             RenderFrameResult lastResult = null;
             long renderAllocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
 
@@ -178,6 +242,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                     paintAllocationTotals,
                     rasterAllocationTotals);
                 CountRasterMode(rasterModes, lastResult.RasterMode);
+                counters.Add(lastResult);
             }
 
             for (int i = 1; i < scenario.Iterations; i++)
@@ -223,6 +288,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                     paintAllocationTotals,
                     rasterAllocationTotals);
                 CountRasterMode(rasterModes, lastResult.RasterMode);
+                counters.Add(lastResult);
             }
 
             pipelineStopwatch.Stop();
@@ -275,7 +341,17 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 lastResult?.Telemetry?.PaintNodeCount ?? 0,
                 dominantRasterMode,
                 average <= scenario.Threshold.WarningMs,
-                average <= scenario.Threshold.FailureMs);
+                average <= scenario.Threshold.FailureMs,
+                counters.FrameRequests,
+                counters.CommittedFrames,
+                counters.FullLayouts,
+                counters.PaintTreeRebuilds,
+                counters.FullRasters,
+                counters.DamageRasters,
+                counters.CompositorOnlyUpdates,
+                counters.HiddenTabFrames,
+                counters.NoOpRepaintReadySignals,
+                counters.NoOpFramesAvoided);
         }
 
         public async Task<string> WriteReportAsync(RenderPerformanceBenchmarkReport report, string outputPath = null, CancellationToken cancellationToken = default)
@@ -549,6 +625,98 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             }
             builder.Append("</main></body></html>");
             return builder.ToString();
+        }
+
+        // ------------------------------------------------------------------
+        // Phase 0 — repeatable performance baseline scenarios.
+        // These pages mirror the plan's required workload: static, the four
+        // animation property classes, an animated image, a no-op RepaintReady
+        // (steady-state paint-dirty) case, a slow-JS pointer page, and three
+        // representative tab pages (complex / inactive-static / inactive-gif).
+        // ------------------------------------------------------------------
+
+        public static List<RenderPerformanceBenchmarkScenario> BuildPerformanceBaselineSuite()
+        {
+            return new List<RenderPerformanceBenchmarkScenario>
+            {
+                new("baseline.static", BuildStaticPage(), 800, 600, 10, new RenderPerformanceThreshold(50, 200), false),
+                new("baseline.opacity-animation", BuildOpacityAnimationPage(), 800, 600, 10, new RenderPerformanceThreshold(50, 200), false),
+                new("baseline.transform-animation", BuildTransformAnimationPage(), 800, 600, 10, new RenderPerformanceThreshold(50, 200), false),
+                new("baseline.background-color-animation", BuildBackgroundColorAnimationPage(), 800, 600, 10, new RenderPerformanceThreshold(50, 200), false),
+                new("baseline.width-animation", BuildWidthAnimationPage(), 800, 600, 10, new RenderPerformanceThreshold(50, 200), false),
+                new("baseline.animated-gif", BuildAnimatedGifPage(), 800, 600, 10, new RenderPerformanceThreshold(50, 200), false),
+                new("baseline.no-op-repaint-ready", BuildStaticPage(), 800, 600, 10, new RenderPerformanceThreshold(50, 200), true),
+                new("baseline.slow-js-pointer", BuildSlowJsPointerPage(), 800, 600, 10, new RenderPerformanceThreshold(50, 200), false),
+                new("baseline.three-tab-complex", BuildGridPage(60, true), 800, 600, 10, new RenderPerformanceThreshold(80, 300), false),
+                new("baseline.three-tab-inactive-static", BuildTextPage(80), 800, 600, 10, new RenderPerformanceThreshold(50, 200), false),
+                new("baseline.three-tab-inactive-gif", BuildAnimatedGifPage(), 800, 600, 10, new RenderPerformanceThreshold(50, 200), false)
+            };
+        }
+
+        private static string BuildStaticPage()
+        {
+            var b = new StringBuilder();
+            b.Append("<!doctype html><html><head><style>body{margin:0;font-family:'Segoe UI';background:#f8f7f2}</style></head><body>");
+            b.Append("<header style='padding:16px;background:#202124;color:#fff'><h1 style='margin:0;font-size:20px'>FenBrowser Baseline</h1></header>");
+            b.Append("<main style='padding:18px'>");
+            for (int i = 0; i < 40; i++)
+            {
+                b.Append($"<p style='margin:0 0 10px 0;color:#222'>Static paragraph {i} with stable layout and paint surfaces.</p>");
+            }
+
+            b.Append("</main></body></html>");
+            return b.ToString();
+        }
+
+        private static string BuildOpacityAnimationPage()
+        {
+            return "<!doctype html><html><head><style>" +
+                "body{margin:0;background:#fff}" +
+                "@keyframes fade{from{opacity:1}to{opacity:0.2}}" +
+                ".box{width:200px;height:200px;background:#4a90d9;animation:fade 1s linear infinite}" +
+                "</style></head><body><div class='box'></div></body></html>";
+        }
+
+        private static string BuildTransformAnimationPage()
+        {
+            return "<!doctype html><html><head><style>" +
+                "body{margin:0;background:#fff}" +
+                "@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}" +
+                ".box{width:200px;height:200px;background:#e74c3c;animation:spin 1s linear infinite}" +
+                "</style></head><body><div class='box'></div></body></html>";
+        }
+
+        private static string BuildBackgroundColorAnimationPage()
+        {
+            return "<!doctype html><html><head><style>" +
+                "body{margin:0;background:#fff}" +
+                "@keyframes col{from{background:#ffffff}to{background:#333333}}" +
+                ".box{width:200px;height:200px;animation:col 1s linear infinite}" +
+                "</style></head><body><div class='box'></div></body></html>";
+        }
+
+        private static string BuildWidthAnimationPage()
+        {
+            return "<!doctype html><html><head><style>" +
+                "body{margin:0;background:#fff}" +
+                "@keyframes grow{from{width:100px}to{width:400px}}" +
+                ".box{height:100px;background:#27ae60;animation:grow 1s linear infinite}" +
+                "</style></head><body><div class='box'></div></body></html>";
+        }
+
+        private static string BuildAnimatedGifPage()
+        {
+            return "<!doctype html><html><body style='margin:0'>" +
+                "<img src='data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==' width='120' height='120' alt='anim'/>" +
+                "<p>Animated image placeholder.</p></body></html>";
+        }
+
+        private static string BuildSlowJsPointerPage()
+        {
+            return "<!doctype html><html><body style='margin:0'>" +
+                "<button id='b'>Click</button>" +
+                "<script>document.getElementById('b').addEventListener('click',function(){var s=Date.now();while(Date.now()-s<2000){}});</script>" +
+                "</body></html>";
         }
     }
 }
