@@ -22,8 +22,35 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return;
             }
             _layoutDepth++;
-            try { LayoutCore(box, state); }
+            try
+            {
+                LayoutCore(box, state);
+                ArrangeOutsideListMarker(box, state);
+            }
             finally { _layoutDepth--; }
+        }
+
+        private static void ArrangeOutsideListMarker(LayoutBox box, LayoutState state)
+        {
+            if (box is not ListItemBox listItem ||
+                listItem.Marker == null ||
+                string.Equals(listItem.ComputedStyle?.ListStylePosition, "inside", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var marker = listItem.Marker;
+            float markerWidth = Math.Max(0f, marker.Geometry.ContentBox.Width);
+            float markerBaseline = marker.Geometry.Baseline > 0f
+                ? marker.Geometry.Baseline
+                : Math.Max(0f, marker.Geometry.ContentBox.Height * 0.8f);
+            float itemBaseline = listItem.Geometry.Baseline > 0f
+                ? listItem.Geometry.Baseline
+                : markerBaseline;
+            float markerX = listItem.Geometry.ContentBox.Left - markerWidth - 6f;
+            float markerY = listItem.Geometry.ContentBox.Top + itemBaseline - markerBaseline;
+
+            LayoutBoxOps.PositionSubtree(marker, markerX, markerY, state);
         }
 
         protected abstract void LayoutCore(LayoutBox box, LayoutState state);

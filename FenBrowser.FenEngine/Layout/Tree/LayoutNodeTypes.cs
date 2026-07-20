@@ -52,7 +52,19 @@ namespace FenBrowser.FenEngine.Layout.Tree
     /// </summary>
     public sealed class ListItemBox : BlockBox
     {
+        public ListMarkerBox Marker { get; internal set; }
+
         public ListItemBox(LayoutBoxStore store, int storeId) : base(store, storeId)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Generated marker text owned by a list item's layout flow.
+    /// </summary>
+    public sealed class ListMarkerBox : TextLayoutBox
+    {
+        public ListMarkerBox(LayoutBoxStore store, int storeId) : base(store, storeId)
         {
         }
     }

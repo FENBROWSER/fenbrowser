@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Logging;
@@ -16,6 +17,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
     {
         private readonly IReadOnlyDictionary<Node, CssComputed> _styles;
         private readonly LayoutBoxStore _store;
+        private readonly Dictionary<Element, Dictionary<Element, int>> _listOrdinals = new();
         
         public BoxTreeBuilder(IReadOnlyDictionary<Node, CssComputed> styles)
             : this(styles, new LayoutBoxStore())
@@ -171,6 +173,16 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 }
 
                 List<LayoutBox>? childBoxes = null;
+
+                if (box is ListItemBox listItemBox)
+                {
+                    var markerBox = CreateListMarkerBox(element, style);
+                    if (markerBox != null)
+                    {
+                        childBoxes = new List<LayoutBox> { markerBox };
+                        listItemBox.Marker = markerBox;
+                    }
+                }
 
                 // Prepend ::before pseudo-element
                 if (style.Before != null && IsVisiblePseudo(style.Before))
@@ -589,6 +601,105 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 }
             }
             pseudoElement.AppendChild(new Text(text));
+        }
+
+        private ListMarkerBox CreateListMarkerBox(Element element, CssComputed listStyle)
+        {
+            string listStyleType = listStyle?.ListStyleType ?? "disc";
+            string listStyleImage = listStyle?.ListStyleImage ?? "none";
+            var markerStyle = listStyle?.Marker;
+            string markerText = NormalizePseudoText(markerStyle?.Content);
+
+            if (string.IsNullOrEmpty(markerText))
+            {
+                markerText = ListMarkerFormatter.Format(ResolveListOrdinal(element), listStyleType);
+            }
+
+            bool hasImage = !string.IsNullOrWhiteSpace(listStyleImage) &&
+                            !string.Equals(listStyleImage, "none", StringComparison.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(markerText) && !hasImage)
+            {
+                return null;
+            }
+
+            if (string.IsNullOrEmpty(markerText))
+            {
+                markerText = "■ ";
+            }
+
+            if (markerStyle == null)
+            {
+                markerStyle = listStyle?.Clone() ?? new CssComputed();
+                markerStyle.Before = null;
+                markerStyle.After = null;
+                markerStyle.Marker = null;
+                markerStyle.Content = null;
+                markerStyle.PseudoElementInstance = null;
+                listStyle.Marker = markerStyle;
+            }
+
+            markerStyle.Display = "inline";
+            var pseudoElement = markerStyle.PseudoElementInstance ?? new PseudoElement(element, "marker", markerStyle);
+            markerStyle.PseudoElementInstance = pseudoElement;
+            EnsurePseudoTextContent(pseudoElement, markerText);
+            var textNode = pseudoElement.ChildNodes.OfType<Text>().FirstOrDefault();
+            if (textNode == null)
+            {
+                return null;
+            }
+
+            var layoutStyle = markerStyle.Clone();
+            layoutStyle.Display = "inline";
+            layoutStyle.Position = string.Equals(listStyle?.ListStylePosition, "inside", StringComparison.OrdinalIgnoreCase)
+                ? "static"
+                : "absolute";
+            layoutStyle.Margin = new Thickness();
+            layoutStyle.Padding = new Thickness();
+            layoutStyle.BorderThickness = new Thickness();
+
+            int markerId = _store.CreateBox(textNode, layoutStyle, LayoutBoxStore.BoxType.ListMarker);
+            return (ListMarkerBox)_store.GetWrapper(markerId);
+        }
+
+        private int ResolveListOrdinal(Element item)
+        {
+            var parent = item?.ParentElement;
+            if (parent == null)
+            {
+                return 1;
+            }
+
+            if (!_listOrdinals.TryGetValue(parent, out var ordinals))
+            {
+                var items = parent.ChildNodes
+                    .OfType<Element>()
+                    .Where(static child => string.Equals(child.TagName, "LI", StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                bool reversed = string.Equals(parent.TagName, "OL", StringComparison.OrdinalIgnoreCase) &&
+                                parent.HasAttribute("reversed");
+                int next = reversed ? items.Length : 1;
+                if (int.TryParse(parent.GetAttribute("start"), out int explicitStart))
+                {
+                    next = explicitStart;
+                }
+
+                int step = reversed ? -1 : 1;
+                ordinals = new Dictionary<Element, int>(items.Length);
+                foreach (var listItem in items)
+                {
+                    if (int.TryParse(listItem.GetAttribute("value"), out int explicitValue))
+                    {
+                        next = explicitValue;
+                    }
+
+                    ordinals[listItem] = next;
+                    next += step;
+                }
+
+                _listOrdinals[parent] = ordinals;
+            }
+
+            return ordinals.TryGetValue(item, out int ordinal) ? ordinal : 1;
         }
 
         private static string NormalizePseudoText(string rawContent)

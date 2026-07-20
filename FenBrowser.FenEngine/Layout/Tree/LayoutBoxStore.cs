@@ -22,7 +22,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
         private BoxModel[] _geometries;
         private int[] _parentIds;
         private int[][] _childIds;
-        private byte[] _boxTypes; // 0=Block, 1=Inline, 2=Text, 3=AnonymousBlock, 4=ListItem
+        private byte[] _boxTypes; // 0=Block, 1=Inline, 2=Text, 3=AnonymousBlock, 4=ListItem, 5=ListMarker
         private bool[] _isAnonymous;
 
         private int _count;
@@ -34,7 +34,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
             Inline = 1,
             Text = 2,
             AnonymousBlock = 3,
-            ListItem = 4
+            ListItem = 4,
+            ListMarker = 5
         }
 
         private LayoutBox[] _wrappers;
@@ -220,6 +221,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 BoxType.Text => new TextLayoutBox(this, id),
                 BoxType.AnonymousBlock => new AnonymousBlockBox(this, id),
                 BoxType.ListItem => new ListItemBox(this, id),
+                BoxType.ListMarker => new ListMarkerBox(this, id),
                 _ => throw new InvalidOperationException("Unknown BoxType")
             };
             _wrappers[id] = box;

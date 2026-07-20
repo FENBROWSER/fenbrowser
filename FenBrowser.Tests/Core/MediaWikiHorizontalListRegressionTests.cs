@@ -17,6 +17,60 @@ namespace FenBrowser.Tests.Core;
 public sealed class MediaWikiHorizontalListRegressionTests
 {
     [Fact]
+    public async Task ListMarkers_AreLayoutOwnedAndNoneSuppressesGeneration()
+    {
+        const string html = """
+<!doctype html>
+<html>
+<body>
+  <ul><li id="outside">Outside marker</li><li id="hidden" style="list-style: none">Hidden marker</li></ul>
+  <ol><li id="decimal" style="list-style-type: decimal">Decimal marker</li></ol>
+  <ul><li id="inside" style="list-style-position: inside">Inside marker</li></ul>
+</body>
+</html>
+""";
+
+        var document = new HtmlParser(html, new Uri("https://example.test/")).Parse();
+        var root = Assert.IsType<Element>(document.DocumentElement);
+        var computed = await CssLoader.ComputeAsync(root, new Uri("https://example.test/"), null);
+        var outside = Assert.IsType<Element>(document.GetElementById("outside"));
+        var hidden = Assert.IsType<Element>(document.GetElementById("hidden"));
+        var decimalItem = Assert.IsType<Element>(document.GetElementById("decimal"));
+        var inside = Assert.IsType<Element>(document.GetElementById("inside"));
+
+        var layout = new LayoutEngineComputer(computed, 500, 400);
+        layout.Measure(root, new SKSize(500, 400));
+        layout.Arrange(root, new SKRect(0, 0, 500, 400));
+
+        var outsideMarker = Assert.IsType<PseudoElement>(computed[outside].Marker?.PseudoElementInstance);
+        var outsideMarkerText = Assert.IsType<Text>(Assert.Single(outsideMarker.ChildNodes));
+        var outsideMarkerBox = Assert.IsType<BoxModel>(layout.GetBox(outsideMarkerText));
+        var outsideBox = Assert.IsType<BoxModel>(layout.GetBox(outside));
+        Assert.True(outsideMarkerBox.ContentBox.Right <= outsideBox.ContentBox.Left);
+        Assert.InRange(outsideMarkerBox.ContentBox.Top, outsideBox.ContentBox.Top - 1f, outsideBox.ContentBox.Bottom);
+
+        Assert.True(computed[hidden].Marker == null || computed[hidden].Marker.PseudoElementInstance == null);
+
+        var decimalMarker = Assert.IsType<PseudoElement>(computed[decimalItem].Marker?.PseudoElementInstance);
+        var decimalMarkerText = Assert.IsType<Text>(Assert.Single(decimalMarker.ChildNodes));
+        Assert.StartsWith("1.", decimalMarkerText.Data, StringComparison.Ordinal);
+
+        var insideMarker = Assert.IsType<PseudoElement>(computed[inside].Marker?.PseudoElementInstance);
+        var insideMarkerText = Assert.IsType<Text>(Assert.Single(insideMarker.ChildNodes));
+        var insideMarkerBox = Assert.IsType<BoxModel>(layout.GetBox(insideMarkerText));
+        var insideBox = Assert.IsType<BoxModel>(layout.GetBox(inside));
+        Assert.True(
+            insideMarkerBox.ContentBox.Left >= insideBox.ContentBox.Left - 4.5f,
+            $"inside marker {insideMarkerBox.ContentBox} must start within item {insideBox.ContentBox}");
+
+        var boxes = layout.GetAllBoxes().ToDictionary(pair => pair.Key, pair => pair.Value);
+        var paintTree = NewPaintTreeBuilder.Build(root, boxes, computed, 500, 400, null);
+        Assert.Contains(
+            Flatten(paintTree.Roots).OfType<TextPaintNode>(),
+            node => ReferenceEquals(node.SourceNode, outsideMarkerText) && node.FallbackText == "•");
+    }
+
+    [Fact]
     public async Task ListStyleShorthand_ResetsLonghandsAndBuildsAListItemBox()
     {
         const string html = """

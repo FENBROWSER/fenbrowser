@@ -1527,7 +1527,7 @@ namespace FenBrowser.FenEngine.Rendering
             // 4. List Marker (if display: list-item)
             if (string.Equals(style?.Display, "list-item", StringComparison.OrdinalIgnoreCase))
             {
-                var markerNode = BuildListMarkerNode(node, box, style, isFocused, isHovered);
+                var markerNode = BuildListMarkerNode(node, style, isFocused, isHovered);
                 if (markerNode != null) nodes.Add(markerNode);
             }
             
@@ -5402,19 +5402,19 @@ namespace FenBrowser.FenEngine.Rendering
             return url;
         }
         
-        private PaintNodeBase BuildListMarkerNode(Node node, Layout.BoxModel box, CssComputed style, bool isFocused, bool isHovered)
+        private PaintNodeBase BuildListMarkerNode(Node node, CssComputed style, bool isFocused, bool isHovered)
         {
-            // Only for Elements
-            if (!(node is Element elem)) return null;
+            if (node is not Element) return null;
 
-            string listStyleType = ResolveEffectiveListStyleType(elem, style) ?? "disc"; // Default to disc
-            string listStylePosition = style?.ListStylePosition ?? "outside";
-
-            if (string.Equals(listStyleType, "none", StringComparison.OrdinalIgnoreCase))
+            var markerPseudo = style?.Marker?.PseudoElementInstance;
+            var markerTextNode = markerPseudo?.ChildNodes?.OfType<Text>().FirstOrDefault();
+            if (markerTextNode == null ||
+                _boxes == null ||
+                !_boxes.TryGetValue(markerTextNode, out var markerLayoutBox))
             {
                 return null;
             }
-            
+
             // Check for explicit list-style-image (URL)
             string listStyleImage = style?.ListStyleImage;
             if (!string.IsNullOrEmpty(listStyleImage) && listStyleImage != "none")
@@ -5436,25 +5436,14 @@ namespace FenBrowser.FenEngine.Rendering
 
                 var bitmap = ImageLoader.GetImage(url, ownerDocument: node?.OwnerDocument);
                 float markerSize = (float)(style?.FontSize ?? 16.0);
-                float markerX, markerY;
-
-                float markerBaselineOffset = markerSize * 0.85f;
-                if (box.Lines != null && box.Lines.Count > 0)
-                    markerBaselineOffset = box.Lines[0].Baseline;
-
-                markerY = box.ContentBox.Top + markerBaselineOffset;
-
-                if (listStylePosition == "inside")
-                    markerX = box.ContentBox.Left + 4;
-                else
-                    markerX = Math.Max(4, box.ContentBox.Left - markerSize - 14);
+                var markerBounds = markerLayoutBox.ContentBox;
 
                 if (bitmap != null)
                 {
                     return new ImagePaintNode
                     {
-                        SourceNode = node,
-                        Bounds = new SKRect(markerX, markerY - markerSize, markerX + markerSize, markerY),
+                        SourceNode = markerTextNode,
+                        Bounds = markerBounds,
                         Bitmap = bitmap,
                         ObjectFit = "contain",
                         ObjectPosition = "50% 50%",
@@ -5465,103 +5454,21 @@ namespace FenBrowser.FenEngine.Rendering
 
                 return new CustomPaintNode
                 {
-                    SourceNode = node,
-                    Bounds = new SKRect(markerX, markerY - markerSize, markerX + markerSize, markerY),
+                    SourceNode = markerTextNode,
+                    Bounds = markerBounds,
                     IsFocused = isFocused,
                     IsHovered = isHovered,
                     PaintAction = (canvas, bounds) =>
                     {
                         using var font = new SKFont(SKTypeface.Default, markerSize * 0.6f);
                         using var paint = new SKPaint { Color = style?.ForegroundColor ?? SKColors.Black, IsAntialias = true };
-                        canvas.DrawText("•", bounds.Left + 2, bounds.Bottom - 2, font, paint);
+                        canvas.DrawText("\u2022", bounds.Left + 2, bounds.Bottom - 2, font, paint);
                     }
                 };
             }
-            
-            // Determine marker text/shape
-            string markerText = "•"; // Default disc
-            
-            // Basic types
-            if (listStyleType == "disc") markerText = "•";       // U+2022
-            else if (listStyleType == "circle") markerText = "◦"; // U+25E6
-            else if (listStyleType == "square") markerText = "■"; // U+25A0
-            else if (listStyleType == "decimal")
-            {
-                // Find index in parent
-                int index = 1;
-                /* [PERF-WARNING] This is O(N) per item, can be slow for large lists.
-                   Ideally layout engine should calculate this. */
-                if (elem.Parent != null)
-                {
-                    int count = 0;
-                    foreach (var child in elem.Parent.Children)
-                    {
-                        if (child is Element childEl && childEl.TagName == "LI") 
-                        {
-                            count++;
-                            if (child == elem) 
-                            { 
-                                index = count; 
-                                break; 
-                            }
-                        }
-                    }
-                }
-                
-                // Handle 'start' attribute on OL
-                if (elem.Parent is Element parentEl && parentEl.TagName == "OL")
-                {
-                    int startVal = 1;
-                    if (int.TryParse(parentEl.GetAttribute("start"), out int sv))
-                    {
-                        startVal = sv;
-                    }
-                    
-                    // Handle 'reversed' attribute on OL
-                    if (parentEl.HasAttribute("reversed"))
-                    {
-                        // Count total LI items for reversed calculation
-                        int totalItems = 0;
-                        foreach (var c in parentEl.Children)
-                        {
-                            if (c is Element ce && ce.TagName == "LI") totalItems++;
-                        }
-                        // Reversed: first item = start, last item = start - (count-1)
-                        index = startVal - (index - 1);
-                    }
-                    else
-                    {
-                        index = startVal + (index - 1);
-                    }
-                }
-                
-                // Handle 'value' attribute on LI (overrides everything)
-                if (int.TryParse(elem.GetAttribute("value"), out int valueVal))
-                {
-                    index = valueVal;
-                }
-                
-                markerText = $"{index}.";
-            }
-            else if (listStyleType == "lower-alpha" || listStyleType == "upper-alpha")
-            {
-                int index = CalculateListIndex(elem);
-                markerText = ToAlpha(index, listStyleType == "upper-alpha") + ".";
-            }
-            else if (listStyleType == "lower-roman" || listStyleType == "upper-roman")
-            {
-                int index = CalculateListIndex(elem);
-                markerText = ToRoman(index, listStyleType == "upper-roman") + ".";
-            }
-            else if (listStyleType == "disclosure-closed")
-            {
-                markerText = "▶"; // Right-pointing triangle (closed)
-            }
-            else if (listStyleType == "disclosure-open")
-            {
-                markerText = "▼"; // Down-pointing triangle (open)
-            }
-            
+
+            string markerText = markerTextNode.Data.TrimEnd();
+
             // Calculate Position
             float fontSize = (float)(style?.FontSize ?? 16.0);
             
@@ -5571,61 +5478,14 @@ namespace FenBrowser.FenEngine.Rendering
             SKFontStyleSlant slant = (style?.FontStyle == SKFontStyleSlant.Italic) ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright;
             var typeface = TextLayoutHelper.ResolveTypeface(fontFamily, markerText, weight, slant);
             
-            using var font = new SKFont(typeface, fontSize);
-            float markerWidth = font.MeasureText(markerText);
-            
-            float x, y;
-            
-            // Vertical alignment: align baseline with first line of text
-            // Roughly: Top + (FontSize * 0.9) ? Or use Box Baseline if available?
-            // Box.Lines[0].Baseline is best if available.
-            float baselineOffset = fontSize;
-            if (box.Lines != null && box.Lines.Count > 0)
-            {
-                baselineOffset = box.Lines[0].Baseline;
-            }
-            else
-            {
-                 // Fallback
-                 baselineOffset = fontSize * 0.85f;
-            }
-            
-            y = box.ContentBox.Top + baselineOffset;
-            
-            if (listStylePosition == "inside")
-            {
-                // Inside: Render as inline text at start of content
-                x = box.ContentBox.Left + 4; // Shift inside slightly
-            }
-            else
-            {
-                // Outside: Render to the left of the border box
-                float anchorRight = box.ContentBox.Left - 6;
-                var childNodes = elem.ChildNodes;
-                if ((childNodes == null || childNodes.Length == 0) && elem.Children != null)
-                {
-                    childNodes = elem.Children;
-                }
+            float x = markerLayoutBox.ContentBox.Left;
+            float y = markerLayoutBox.ContentBox.Top +
+                      (markerLayoutBox.Baseline > 0f ? markerLayoutBox.Baseline : fontSize * 0.85f);
 
-                if (childNodes != null)
-                {
-                    for (int i = 0; i < childNodes.Length; i++)
-                    {
-                        if (_boxes != null && _boxes.TryGetValue(childNodes[i], out var childBox))
-                        {
-                            anchorRight = Math.Min(anchorRight, childBox.ContentBox.Left - 6);
-                        }
-                    }
-                }
-
-                float desiredX = anchorRight - markerWidth;
-                x = Math.Max(4, desiredX); // Safety: at least 4px from left edge
-            }
-            
             return new TextPaintNode
             {
-                Bounds = new SKRect(x, y - fontSize, x + markerWidth, y), // Approximate
-                SourceNode = node,
+                Bounds = markerLayoutBox.ContentBox,
+                SourceNode = markerTextNode,
                 Color = style?.ForegroundColor ?? SKColors.Black,
                 FontSize = fontSize,
                 Typeface = typeface,
@@ -5634,76 +5494,6 @@ namespace FenBrowser.FenEngine.Rendering
                 IsFocused = isFocused,
                 IsHovered = isHovered
             };
-        }
-
-        private string ResolveEffectiveListStyleType(Element element, CssComputed style)
-        {
-            if (style != null)
-            {
-                if (!string.IsNullOrWhiteSpace(style.ListStyleType))
-                {
-                    return style.ListStyleType.Trim().ToLowerInvariant();
-                }
-
-                string localType = ExtractListStyleTypeFromMap(style);
-                if (!string.IsNullOrWhiteSpace(localType))
-                {
-                    return localType;
-                }
-            }
-
-            if (element?.Parent is not Element parentElement)
-            {
-                return null;
-            }
-
-            if (_styles != null && _styles.TryGetValue(parentElement, out var parentStyle))
-            {
-                if (!string.IsNullOrWhiteSpace(parentStyle?.ListStyleType))
-                {
-                    return parentStyle.ListStyleType.Trim().ToLowerInvariant();
-                }
-
-                string parentType = ExtractListStyleTypeFromMap(parentStyle);
-                if (!string.IsNullOrWhiteSpace(parentType))
-                {
-                    return parentType;
-                }
-            }
-
-            return null;
-        }
-
-        private static string ExtractListStyleTypeFromMap(CssComputed style)
-        {
-            if (style?.Map == null)
-            {
-                return null;
-            }
-
-            if (style.Map.TryGetValue("list-style-type", out var explicitType) &&
-                !string.IsNullOrWhiteSpace(explicitType))
-            {
-                return explicitType.Trim().ToLowerInvariant();
-            }
-
-            if (style.Map.TryGetValue("list-style", out var shorthand) &&
-                !string.IsNullOrWhiteSpace(shorthand))
-            {
-                string[] parts = shorthand.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (string rawPart in parts)
-                {
-                    string part = rawPart.Trim().ToLowerInvariant();
-                    if (part == "inside" || part == "outside" || part.StartsWith("url(", StringComparison.Ordinal))
-                    {
-                        continue;
-                    }
-
-                    return part;
-                }
-            }
-
-            return null;
         }
 
         private static bool ShouldHide(Node node, CssComputed style)
@@ -6160,68 +5950,6 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private int CalculateListIndex(Element elem)
-        {
-            int index = 1;
-            if (elem.Parent != null)
-            {
-                int count = 0;
-                foreach (var child in elem.Parent.Children)
-                {
-                    if (child is Element childEl && childEl.TagName == "LI") 
-                    {
-                        count++;
-                        if (child == elem) 
-                        { 
-                            index = count; 
-                            break; 
-                        }
-                    }
-                }
-            }
-            
-            // Handle 'start' attribute on OL
-            if (elem.Parent is Element parentEl && parentEl.TagName == "OL")
-            {
-                if (int.TryParse(parentEl.GetAttribute("start"), out int startVal))
-                {
-                    index = startVal + (index - 1);
-                }
-            }
-            
-            // Handle 'value' attribute on LI
-            if (int.TryParse(elem.GetAttribute("value"), out int valueVal))
-            {
-                index = valueVal;
-            }
-            return index;
-        }
-
-        private static string ToAlpha(int index, bool upper)
-        {
-            if (index < 1) return index.ToString();
-            string s = "";
-            index--; // 0-based
-            while (index >= 0)
-            {
-                s = (char)('a' + (index % 26)) + s;
-                index /= 26;
-                index--;
-            }
-            return upper ? s.ToUpperInvariant() : s;
-        }
-
-        private static string ToRoman(int number, bool upper)
-        {
-            if (number < 1 || number > 3999) return number.ToString();
-            string[] thousands = { "", "m", "mm", "mmm" };
-            string[] hundreds = { "", "c", "cc", "ccc", "cd", "d", "dc", "dcc", "dccc", "cm" };
-            string[] tens = { "", "x", "xx", "xxx", "xl", "l", "lx", "lxx", "lxxx", "xc" };
-            string[] ones = { "", "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix" };
-            
-            string s = thousands[number / 1000] + hundreds[(number % 1000) / 100] + tens[(number % 100) / 10] + ones[number % 10];
-            return upper ? s.ToUpperInvariant() : s;
-        }
     }
 }
 
