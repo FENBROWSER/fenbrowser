@@ -754,6 +754,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             var extTasks = new List<Task>();
             var gate = new System.Threading.SemaphoreSlim(8); // Shared gate for all CSS fetches (links + imports)
+            var emittedMediaWikiDedupeKeys = new HashSet<string>(StringComparer.Ordinal);
             foreach (var node in stylesheetNodes)
             {
                 if (string.Equals(node.TagName, "style", StringComparison.OrdinalIgnoreCase))
@@ -761,6 +762,13 @@ namespace FenBrowser.FenEngine.Rendering
                     var inlineCssText = SafeGatherText(node);
                     if (!string.IsNullOrWhiteSpace(inlineCssText) && inlineCssText.Length <= MAX_INLINE_CSS_SIZE)
                     {
+                        string dedupeKey = NormalizeMediaWikiDedupeKey(node.GetAttribute("data-mw-deduplicate"));
+                        if (!string.IsNullOrWhiteSpace(dedupeKey) &&
+                            !emittedMediaWikiDedupeKeys.Add(dedupeKey))
+                        {
+                            continue;
+                        }
+
                         cssBlobs.Add(new CssSource
                         {
                             CssText = inlineCssText,
@@ -794,15 +802,18 @@ namespace FenBrowser.FenEngine.Rendering
                         deduplicatedInlineStyles.TryGetValue(dedupeHref, out var dedupedCss) &&
                         !string.IsNullOrWhiteSpace(dedupedCss))
                     {
-                        cssBlobs.Add(new CssSource
+                        if (emittedMediaWikiDedupeKeys.Add(dedupeHref))
                         {
-                            CssText = dedupedCss,
-                            Origin = CssOrigin.Inline,
-                            SourceOrder = sourceIndex,
-                            SequenceOrder = sourceIndex,
-                            BaseUri = baseUri
-                        });
-                        sourceIndex++;
+                            cssBlobs.Add(new CssSource
+                            {
+                                CssText = dedupedCss,
+                                Origin = CssOrigin.Inline,
+                                SourceOrder = sourceIndex,
+                                SequenceOrder = sourceIndex,
+                                BaseUri = baseUri
+                            });
+                            sourceIndex++;
+                        }
                     }
                     else
                     {

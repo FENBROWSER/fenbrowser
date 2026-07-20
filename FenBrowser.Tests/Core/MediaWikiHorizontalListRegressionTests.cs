@@ -16,6 +16,36 @@ namespace FenBrowser.Tests.Core;
 public sealed class MediaWikiHorizontalListRegressionTests
 {
     [Fact]
+    public async Task TemplateStyleDedupeKey_IsIngestedOnlyOnceInDomOrder()
+    {
+        const string html = """
+<!doctype html>
+<html>
+<head>
+  <style data-mw-deduplicate="mw-data:TemplateStyles:r1">
+    .dedupe-target { color: red; }
+  </style>
+</head>
+<body>
+  <link rel="mw-deduplicated-inline-style" href="mw-data:TemplateStyles:r1">
+  <style data-mw-deduplicate="TemplateStyles:r1">
+    .dedupe-target { color: blue; }
+  </style>
+  <div id="target" class="dedupe-target">Target</div>
+</body>
+</html>
+""";
+
+        var document = new HtmlParser(html, new Uri("https://example.test/")).Parse();
+        var root = Assert.IsType<Element>(document.DocumentElement);
+        var result = await CssLoader.ComputeWithResultAsync(root, new Uri("https://example.test/"), null);
+        var target = Assert.IsType<Element>(document.GetElementById("target"));
+
+        Assert.Single(result.Sources, source => source.CssText.Contains(".dedupe-target", StringComparison.Ordinal));
+        Assert.Equal<SKColor?>(SKColors.Red, result.Computed[target].ForegroundColor);
+    }
+
+    [Fact]
     public async Task GroupedSelector_ChoosesTheBranchForTheRequestedPseudoContext()
     {
         const string html = """
