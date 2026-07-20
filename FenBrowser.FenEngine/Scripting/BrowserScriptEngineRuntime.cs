@@ -10025,56 +10025,44 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         if (element == null || !string.Equals(element.TagName, "FORM", StringComparison.OrdinalIgnoreCase))
             return;
 
-        // Queue the form submission asynchronously so it doesn't deadlock.
-        _ = Task.Run(async () =>
+        try
         {
-            try
+            var action = element.GetAttribute("action") ?? string.Empty;
+            var method = element.GetAttribute("method") ?? "GET";
+            var doc = element.OwnerDocument;
+            var baseUrlStr = _currentBaseUri?.AbsoluteUri ?? doc?.BaseURI ?? doc?.URL ?? "about:blank";
+            var baseUri = new Uri(baseUrlStr);
+
+            Uri requestUri;
+            if (!string.IsNullOrEmpty(action) && Uri.TryCreate(action, UriKind.Absolute, out var absoluteUri))
             {
-                var action = element.GetAttribute("action") ?? string.Empty;
-                var method = element.GetAttribute("method") ?? "GET";
-                var doc = element.OwnerDocument;
-                var baseUrlStr = _currentBaseUri?.AbsoluteUri ?? doc?.BaseURI ?? doc?.URL ?? "about:blank";
-                var baseUri = new Uri(baseUrlStr);
-
-                Uri requestUri;
-                if (!string.IsNullOrEmpty(action) && Uri.TryCreate(action, UriKind.Absolute, out var absoluteUri))
-                {
-                    requestUri = absoluteUri;
-                }
-                else
-                {
-                    requestUri = new Uri(baseUri, action ?? string.Empty);
-                }
-
-                var formData = new Dictionary<string, string>();
-                foreach (var child in element.QuerySelectorAll("input, select, textarea, button"))
-                {
-                    if (child is not Element input) continue;
-                    var name = input.GetAttribute("name");
-                    if (string.IsNullOrEmpty(name)) continue;
-                    var value = input.GetAttribute("value") ?? string.Empty;
-                    formData[name] = value;
-                }
-
-                if (NavigateProgrammaticAsync != null)
-                {
-                    var queryString = string.Join("&",
-                        formData.Select(kvp =>
-                            $"{Uri.EscapeDataString(kvp.Key)}={Uri.EscapeDataString(kvp.Value)}"));
-                    var fullUri = method.Equals("POST", StringComparison.OrdinalIgnoreCase)
-                        ? requestUri.AbsoluteUri
-                        : new Uri(requestUri, $"?{queryString}").AbsoluteUri;
-                    await NavigateProgrammaticAsync(fullUri).ConfigureAwait(false);
-                }
+                requestUri = absoluteUri;
             }
-            catch (Exception ex)
+            else
             {
-                EngineLogCompat.Error($"[SubmitForm] Failed: {ex.Message}", LogCategory.JavaScript);
+                requestUri = new Uri(baseUri, action ?? string.Empty);
             }
-        });
+
+            if (!method.Equals("POST", StringComparison.OrdinalIgnoreCase))
+            {
+                var queryString = string.Join("&",
+                    element.QuerySelectorAll("input, select, textarea, button")
+                        .OfType<Element>()
+                        .Select(input => (Name: input.GetAttribute("name"), Value: input.GetAttribute("value") ?? string.Empty))
+                        .Where(entry => !string.IsNullOrEmpty(entry.Name))
+                        .Select(entry =>
+                            $"{Uri.EscapeDataString(entry.Name)}={Uri.EscapeDataString(entry.Value)}"));
+                var builder = new UriBuilder(requestUri) { Query = queryString };
+                requestUri = builder.Uri;
+            }
+
+            NavigateOwningBrowsingContext(requestUri);
+        }
+        catch (Exception ex)
+        {
+            EngineLogCompat.Error($"[SubmitForm] Failed: {ex.Message}", LogCategory.JavaScript);
+        }
     }
-
-    internal Func<string, Task> NavigateProgrammaticAsync { get; set; }
 
     private void SetDocumentReadyState(string documentReadyState)
     {
