@@ -409,6 +409,9 @@ namespace FenBrowser.FenEngine.Rendering
         private IBrowserScriptEngine _activeJs;
         public BrowserCookieJar CookieJar { get; set; } = new BrowserCookieJar();
         private readonly System.Threading.SemaphoreSlim _repaintGate = new System.Threading.SemaphoreSlim(1, 1);
+        private readonly object _queuedRenderUpdateLock = new object();
+        private bool _queuedRenderUpdateRunning;
+        private bool _queuedRenderUpdateRequested;
         private readonly object _uiDispatcher;
         private readonly EventLoopCoordinator _eventLoopCoordinator;
 
@@ -860,16 +863,52 @@ public void Dispose()
 
         private void ProcessQueuedRenderUpdate()
         {
-            try
+            lock (_queuedRenderUpdateLock)
             {
-                RefreshAsync(includeDiagnosticsBanner: false).GetAwaiter().GetResult();
+                _queuedRenderUpdateRequested = true;
+                if (_queuedRenderUpdateRunning)
+                {
+                    return;
+                }
+
+                _queuedRenderUpdateRunning = true;
             }
-            catch (ObjectDisposedException)
+
+            _ = RunDetachedAsync(DrainQueuedRenderUpdatesAsync);
+        }
+
+        private async Task DrainQueuedRenderUpdatesAsync()
+        {
+            while (true)
             {
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Warn($"[CustomHtmlEngine] Queued render update failed: {ex.Message}", LogCategory.Rendering);
+                lock (_queuedRenderUpdateLock)
+                {
+                    if (!_queuedRenderUpdateRequested)
+                    {
+                        _queuedRenderUpdateRunning = false;
+                        return;
+                    }
+
+                    _queuedRenderUpdateRequested = false;
+                }
+
+                try
+                {
+                    await RefreshAsync(includeDiagnosticsBanner: false).ConfigureAwait(false);
+                }
+                catch (ObjectDisposedException)
+                {
+                    lock (_queuedRenderUpdateLock)
+                    {
+                        _queuedRenderUpdateRequested = false;
+                        _queuedRenderUpdateRunning = false;
+                    }
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Warn($"[CustomHtmlEngine] Queued render update failed: {ex.Message}", LogCategory.Rendering);
+                }
             }
         }
 
