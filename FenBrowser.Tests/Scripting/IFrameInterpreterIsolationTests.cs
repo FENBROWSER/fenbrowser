@@ -102,6 +102,65 @@ public sealed class IFrameInterpreterIsolationTests
     }
 
     [Fact]
+    public async Task SameOriginFrame_ObservesParentWindowEventsInFrameRealm()
+    {
+        var parentUri = new Uri("https://same.test/page");
+        var parentDocument = new HtmlParser(
+            "<html><body><iframe id='child' src='/frame'></iframe></body></html>",
+            parentUri).Parse();
+        var engine = CreateEngine();
+        await engine.SetDomAsync(parentDocument.DocumentElement, parentUri);
+
+        var childUri = new Uri("https://same.test/frame");
+        var childDocument = new HtmlParser(
+            "<html><body><script>" +
+            "parent.addEventListener('probe',function(event){" +
+            "window.__parentProbe=event.type+'|'+String(event.target===parent);});" +
+            "</script></body></html>",
+            childUri).Parse();
+        var frame = Assert.IsType<Element>(parentDocument.GetElementById("child"));
+        frame.AppendChild(childDocument);
+        await engine.SetSubdocumentDomAsync(childDocument.DocumentElement, childUri);
+
+        engine.Evaluate("dispatchEvent(new Event('probe'));");
+        await WaitForValueAsync(
+            engine,
+            "String(document.getElementById('child').contentWindow.__parentProbe || '')",
+            "probe|true");
+
+        Assert.Equal(
+            "probe|true",
+            engine.EvaluateInSubdocumentForTest(
+                childDocument,
+                "String(window.__parentProbe)")?.ToString());
+    }
+
+    [Fact]
+    public async Task CrossOriginFrame_DoesNotExposeParentWindowEventRegistration()
+    {
+        var parentUri = new Uri("https://parent.test/page");
+        var parentDocument = new HtmlParser(
+            "<html><body><iframe id='child' src='https://child.test/frame'></iframe></body></html>",
+            parentUri).Parse();
+        var engine = CreateEngine();
+        await engine.SetDomAsync(parentDocument.DocumentElement, parentUri);
+
+        var childUri = new Uri("https://child.test/frame");
+        var childDocument = new HtmlParser(
+            "<html><body><script>window.__parentListenerType=typeof parent.addEventListener;</script></body></html>",
+            childUri).Parse();
+        var frame = Assert.IsType<Element>(parentDocument.GetElementById("child"));
+        frame.AppendChild(childDocument);
+        await engine.SetSubdocumentDomAsync(childDocument.DocumentElement, childUri);
+
+        Assert.Equal(
+            "undefined",
+            engine.EvaluateInSubdocumentForTest(
+                childDocument,
+                "String(window.__parentListenerType)")?.ToString());
+    }
+
+    [Fact]
     public async Task ParentNavigation_ReleasesDetachedFrameTimers()
     {
         var renderRequests = 0;

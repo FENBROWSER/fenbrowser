@@ -400,6 +400,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         new(ReferenceEqualityComparer.Instance);
     private readonly List<BrowserEventListener> _documentEventListeners = new();
     private readonly List<BrowserEventListener> _windowEventListeners = new();
+    private readonly List<BrowserEventListener> _embeddedParentWindowListeners = new();
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostCallableCache = new();
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostPropertyStore = new();
     private ConditionalWeakTable<object, HashSet<string>> _missingHostPropertyReads = new();
@@ -3004,6 +3005,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             _hostHandleCache.Clear();
             _documentEventListeners.Clear();
             _windowEventListeners.Clear();
+            _embeddedParentWindowListeners.Clear();
             _hostCallableCache = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             _hostPropertyStore = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             _missingHostPropertyReads = new ConditionalWeakTable<object, HashSet<string>>();
@@ -11675,6 +11677,28 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 parentProxy,
                 "location",
                 CreatePlainLocationObject(parentDocumentUri?.AbsoluteUri ?? "about:blank"));
+            _interpreter.SetObjectProperty(
+                parentProxy,
+                "addEventListener",
+                _interpreter.AllocateNativeFunction(
+                    "addEventListener",
+                    (_, args) =>
+                    {
+                        AddBrowserEventListener(_embeddedParentWindowListeners, args);
+                        return JsValue.Undefined;
+                    },
+                    length: 2));
+            _interpreter.SetObjectProperty(
+                parentProxy,
+                "removeEventListener",
+                _interpreter.AllocateNativeFunction(
+                    "removeEventListener",
+                    (_, args) =>
+                    {
+                        RemoveBrowserEventListener(_embeddedParentWindowListeners, args);
+                        return JsValue.Undefined;
+                    },
+                    length: 2));
         }
         _interpreter.SetObjectProperty(
             parentProxy,
@@ -11705,6 +11729,73 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 ? ToHostOrNull(embeddingFrame, HostObjectKind.DomElement)
                 : JsValue.Null);
         InstallOwnedFrameScrollGlobals();
+    }
+
+    private void NotifyEmbeddedFramesOfParentWindowEvent(string type, JsValue sourceEvent)
+    {
+        if (string.IsNullOrWhiteSpace(type))
+        {
+            return;
+        }
+
+        object data = null;
+        string origin = string.Empty;
+        if (sourceEvent.Tag == JsValueTag.Object)
+        {
+            var dataValue = ReadJsProperty(sourceEvent, "data");
+            if (dataValue.Tag != JsValueTag.Undefined)
+            {
+                data = ConvertJsValueToObject(dataValue);
+            }
+            var originValue = ReadJsProperty(sourceEvent, "origin");
+            if (originValue.Tag == JsValueTag.String)
+            {
+                origin = originValue.AsString();
+            }
+        }
+
+        foreach (var frameRealm in _iframeRealms.Select(entry => entry.Value).Distinct().ToArray())
+        {
+            frameRealm.QueueEmbeddedParentWindowEvent(type, data, origin);
+        }
+    }
+
+    private void QueueEmbeddedParentWindowEvent(string type, object data, string origin)
+    {
+        if (_embeddedParentWindowListeners.Count == 0 || _embeddedParentWindowProxy.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        _ = Task.Factory.StartNew(
+            () => RunFenJsWithLargeStack<object>(() =>
+            {
+                lock (_fenJsLock)
+                {
+                    if (_embeddedParentWindowListeners.Count == 0 ||
+                        _embeddedParentWindowProxy.Tag != JsValueTag.Object)
+                    {
+                        return null;
+                    }
+
+                    var eventValue = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                    {
+                        ["type"] = JsValue.FromString(type),
+                        ["data"] = ConvertObjectToJsValue(data),
+                        ["origin"] = JsValue.FromString(origin ?? string.Empty)
+                    });
+                    PrepareDispatchedEvent(eventValue, _embeddedParentWindowProxy);
+                    DispatchBrowserEvent(
+                        _embeddedParentWindowListeners,
+                        type,
+                        _embeddedParentWindowProxy,
+                        eventValue);
+                    return null;
+                }
+            }),
+            CancellationToken.None,
+            TaskCreationOptions.DenyChildAttach,
+            TaskScheduler.Default);
     }
 
     private void InstallOwnedFrameScrollGlobals()
@@ -12839,6 +12930,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             });
             TryInvokeFenJsEventCallback(onload, windowValue, eventValue, "load");
         }
+        NotifyEmbeddedFramesOfParentWindowEvent("load", JsValue.Undefined);
     }
 
     private void InvokeBodyOnloadAttribute(Document document)
@@ -13006,6 +13098,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var target = GetActiveWindowEventTarget();
         PrepareDispatchedEvent(eventValue, target);
         DispatchBrowserEvent(GetActiveWindowEventListeners(), type, target, eventValue);
+        NotifyEmbeddedFramesOfParentWindowEvent(type, eventValue);
 
         if (TryReadWindowEventHandler(target, type, out var handler) &&
             _interpreter.CanCallValue(handler))
