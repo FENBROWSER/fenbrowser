@@ -17,6 +17,67 @@ namespace FenBrowser.Tests.Core;
 public sealed class MediaWikiHorizontalListRegressionTests
 {
     [Fact]
+    public async Task MediaWikiCardGrid_OwnsColumnsAndUsesOneSharedRowHeight()
+    {
+        const string html = """
+<!doctype html>
+<html>
+<head>
+  <style>
+    #mp-upper {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      column-gap: 16px;
+      align-items: stretch;
+    }
+    .mp-box {
+      min-width: 0;
+      padding: 8px;
+      border: 1px solid #a2a9b1;
+    }
+    .mp-box h2 { margin: 0 0 8px; }
+  </style>
+</head>
+<body>
+  <main id="mp-upper">
+    <section id="mp-left" class="mp-box">
+      <h2>From today's featured article</h2>
+      <p>The curlew sandpiper is a small long-distance migrant with several lines of featured prose.</p>
+      <p>Additional copy makes this card taller than its neighbor.</p>
+    </section>
+    <section id="mp-right" class="mp-box">
+      <h2>In the news</h2>
+      <p>A concise news summary remains in the second track.</p>
+    </section>
+  </main>
+</body>
+</html>
+""";
+
+        var document = new HtmlParser(html, new Uri("https://en.wikipedia.org/wiki/Main_Page")).Parse();
+        var root = Assert.IsType<Element>(document.DocumentElement);
+        var computed = await CssLoader.ComputeAsync(root, new Uri("https://en.wikipedia.org/wiki/Main_Page"), null);
+        var grid = Assert.IsType<Element>(document.GetElementById("mp-upper"));
+        var left = Assert.IsType<Element>(document.GetElementById("mp-left"));
+        var right = Assert.IsType<Element>(document.GetElementById("mp-right"));
+
+        var layout = new LayoutEngineComputer(computed, 720, 600);
+        layout.Measure(root, new SKSize(720, 600));
+        layout.Arrange(root, new SKRect(0, 0, 720, 600));
+
+        var gridBox = Assert.IsType<BoxModel>(layout.GetBox(grid));
+        var leftBox = Assert.IsType<BoxModel>(layout.GetBox(left));
+        var rightBox = Assert.IsType<BoxModel>(layout.GetBox(right));
+
+        Assert.Equal("grid", computed[grid].Display);
+        Assert.True(leftBox.MarginBox.Right <= rightBox.MarginBox.Left - 15f);
+        Assert.True(leftBox.MarginBox.Left >= gridBox.ContentBox.Left - 0.5f);
+        Assert.True(rightBox.MarginBox.Right <= gridBox.ContentBox.Right + 0.5f);
+        Assert.InRange(Math.Abs(leftBox.MarginBox.Height - rightBox.MarginBox.Height), 0f, 0.5f);
+        Assert.InRange(gridBox.ContentBox.Height, leftBox.MarginBox.Height - 0.5f, leftBox.MarginBox.Height + 0.5f);
+    }
+
+    [Fact]
     public async Task ListMarkers_AreLayoutOwnedAndNoneSuppressesGeneration()
     {
         const string html = """
