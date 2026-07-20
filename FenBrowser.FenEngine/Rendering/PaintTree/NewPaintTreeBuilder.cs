@@ -106,9 +106,17 @@ namespace FenBrowser.FenEngine.Rendering
             string baseUri = null,
             int frameId = 0)
         {
-            DiagnosticPaths.AppendRootText("debug_paint_start.txt", $"Build Start: Root={root?.GetType().Name} BoxCount={boxes?.Count}\n");
+            if (DiagnosticPaths.AppendEnabled)
+            {
+                DiagnosticPaths.AppendRootText(
+                    "debug_paint_start.txt",
+                    $"Build Start: Root={root?.GetType().Name} BoxCount={boxes?.Count}\n");
+            }
             
-            FenBrowser.Core.EngineLogCompat.Debug($"[PAINT-TREE] Build called. Root={(root != null ? root.GetType().Name : "NULL")} Boxes={boxes?.Count} Styles={styles?.Count}");
+            FenBrowser.Core.EngineLogCompat.Log(
+                LogCategory.Paint,
+                LogLevel.Debug,
+                $"[PAINT-TREE] Build called. Root={(root != null ? root.GetType().Name : "NULL")} Boxes={boxes?.Count} Styles={styles?.Count}");
             if (root == null || boxes == null || boxes.Count == 0)
             {
                 return ImmutablePaintTree.Empty;
@@ -265,13 +273,6 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (node == null) return;
 
-            if (node is Text traceTextNode && ShouldTraceWhatIsMyBrowserText(traceTextNode.Data))
-            {
-                global::FenBrowser.Core.EngineLogCompat.Info(
-                    $"[WIMB-TEXT-VISIT] Text='{traceTextNode.Data}' Parent=<{traceTextNode.ParentElement?.TagName ?? "null"}>",
-                    LogCategory.Rendering);
-            }
-            
             // Process children for Document/Fragment even if they don't have boxes themselves
             if (node is Document || node is DocumentFragment)
             {
@@ -298,13 +299,6 @@ namespace FenBrowser.FenEngine.Rendering
             // the parent wrapper is sized; synthesize a paint box from parent geometry in that case.
             if (!TryResolvePaintBox(node, style, out var box) || box == null)
             {
-                if (node is Text missingTextNode && ShouldTraceWhatIsMyBrowserText(missingTextNode.Data))
-                {
-                    global::FenBrowser.Core.EngineLogCompat.Info(
-                        $"[WIMB-TEXT-MISS] Text='{missingTextNode.Data}' Parent=<{missingTextNode.ParentElement?.TagName ?? "null"}> HasStyle={(style != null)}",
-                        LogCategory.Rendering);
-                }
-
                 // If the element itself doesn't have a paint box, still allow its children to render.
                 // This prevents small inline wrappers (e.g., SPAN around SVG icons) from swallowing content.
                 if (node is Element && !ShouldHide(node, style))
@@ -591,11 +585,14 @@ namespace FenBrowser.FenEngine.Rendering
                         {
                             childContext.ScrollOffset = new SKPoint(scrollState.ScrollX, scrollState.ScrollY);
                         }
-                        if (isIframeScrollHost)
+                        if (isIframeScrollHost &&
+                            DebugConfig.EnableDeepDebug &&
+                            DebugConfig.LogPaintCommands)
                         {
-                            global::FenBrowser.Core.EngineLogCompat.Info(
-                                $"[ScrollIframePaint] host=<{scrollElement.TagName}> hash={scrollElement.GetHashCode()} contentH={contentH:F0} viewportH={viewportH:F0} scrollY={scrollState?.ScrollY:F0} maxY={scrollState?.MaxScrollY:F0}",
-                                LogCategory.Rendering);
+                            global::FenBrowser.Core.EngineLogCompat.Log(
+                                LogCategory.Paint,
+                                LogLevel.Debug,
+                                $"[ScrollIframePaint] host=<{scrollElement.TagName}> hash={scrollElement.GetHashCode()} contentH={contentH:F0} viewportH={viewportH:F0} scrollY={scrollState?.ScrollY:F0} maxY={scrollState?.MaxScrollY:F0}");
                         }
                     }
                 }
@@ -1102,29 +1099,6 @@ namespace FenBrowser.FenEngine.Rendering
                    Math.Abs(left.Bottom - right.Bottom) <= epsilon;
         }
 
-        private static bool ShouldTraceWhatIsMyBrowserText(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                return false;
-            }
-
-            return text.Contains("My browser", StringComparison.Ordinal) ||
-                   text.Contains("Guides", StringComparison.Ordinal) ||
-                   text.Contains("Detect my settings", StringComparison.Ordinal) ||
-                   text.Contains("Tools", StringComparison.Ordinal) ||
-                   text.Contains("Chrome 146 on Windows 10", StringComparison.Ordinal) ||
-                   text.Contains("Your web browser is up to date", StringComparison.Ordinal) ||
-                   text.Contains("Your Web Browser's Settings", StringComparison.Ordinal) ||
-                   text.Contains("Now that you know what browser you're using", StringComparison.Ordinal) ||
-                   text.Contains("How to enable JavaScript", StringComparison.Ordinal) ||
-                   text.Contains("No - JavaScript is not enabled", StringComparison.Ordinal) ||
-                   text.Contains("Could not be detected because Javascript is disabled", StringComparison.Ordinal) ||
-                   text.Contains("Yes - JavaScript is enabled", StringComparison.Ordinal) ||
-                   text.Contains("Yes - Cookies are enabled", StringComparison.Ordinal) ||
-                   text.Contains("Please wait...", StringComparison.Ordinal);
-        }
-
         private static string NormalizeRenderableText(string text)
         {
             if (string.IsNullOrEmpty(text))
@@ -1487,11 +1461,17 @@ namespace FenBrowser.FenEngine.Rendering
                 string tagUpper = elem.TagName?.ToUpperInvariant();
                 if (tagUpper == "IMG")
                 {
-                    global::FenBrowser.Core.EngineLogCompat.Debug($"[PAINT-BUILD] Found IMG element id={elem.GetAttribute("id")} src={(elem.GetAttribute("src")?.Length > 60 ? elem.GetAttribute("src")?.Substring(0,60) + "..." : elem.GetAttribute("src"))}");
+                    global::FenBrowser.Core.EngineLogCompat.Log(
+                        LogCategory.Paint,
+                        LogLevel.Debug,
+                        $"[PAINT-BUILD] Found IMG element id={elem.GetAttribute("id")} src={(elem.GetAttribute("src")?.Length > 60 ? elem.GetAttribute("src")?.Substring(0,60) + "..." : elem.GetAttribute("src"))}");
                 }
                 if (tagUpper.Contains("SVG"))
                 {
-                     global::FenBrowser.Core.EngineLogCompat.Debug($"[SVG-CANDIDATE] <{elem.TagName}> id={elem.GetAttribute("id")} class={elem.GetAttribute("class")} src={elem.GetAttribute("src")}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                     global::FenBrowser.Core.EngineLogCompat.Log(
+                         LogCategory.Paint,
+                         LogLevel.Debug,
+                         $"[SVG-CANDIDATE] <{elem.TagName}> id={elem.GetAttribute("id")} class={elem.GetAttribute("class")} src={elem.GetAttribute("src")}");
                 }
                 if (IsImageElement(elem) || tagUpper == "SVG" || tagUpper.EndsWith(":SVG")) // Handle namespace?
                 {
@@ -2739,47 +2719,9 @@ namespace FenBrowser.FenEngine.Rendering
 
         private ImagePaintNode BuildBackgroundImageNode(Node node, Layout.BoxModel box, CssComputed style)
         {
-            if (node is Element preDebugElem)
-            {
-                var classAttr = preDebugElem.GetAttribute("class") ?? string.Empty;
-                if (classAttr.Contains("logo", StringComparison.OrdinalIgnoreCase) ||
-                    classAttr.Contains("powered-by", StringComparison.OrdinalIgnoreCase))
-                {
-                    string mapBackground = null;
-                    string mapBackgroundImage = null;
-                    string mapBackgroundSize = null;
-                    string mapDisplay = null;
-                    style?.Map?.TryGetValue("background", out mapBackground);
-                    style?.Map?.TryGetValue("background-image", out mapBackgroundImage);
-                    style?.Map?.TryGetValue("background-size", out mapBackgroundSize);
-                    style?.Map?.TryGetValue("display", out mapDisplay);
-                    global::FenBrowser.Core.EngineLogCompat.Info(
-                        $"[BG-TRACE] precheck class='{classAttr}' display='{style?.Display ?? "<null>"}' mapDisplay='{mapDisplay ?? "<null>"}' backgroundImage='{style?.BackgroundImage ?? "<null>"}' mapBackgroundImage='{mapBackgroundImage ?? "<null>"}' mapBackground='{mapBackground ?? "<null>"}' mapBackgroundSize='{mapBackgroundSize ?? "<null>"}'",
-                        FenBrowser.Core.Logging.LogCategory.Rendering);
-                }
-            }
-
             if (string.IsNullOrEmpty(style?.BackgroundImage) || style.BackgroundImage == "none") return null;
 
-            if (node is Element debugElem)
-            {
-                var classAttr = debugElem.GetAttribute("class") ?? string.Empty;
-                if (classAttr.Contains("logo", StringComparison.OrdinalIgnoreCase) ||
-                    classAttr.Contains("powered-by", StringComparison.OrdinalIgnoreCase))
-                {
-                    global::FenBrowser.Core.EngineLogCompat.Info(
-                        $"[BG-TRACE] class='{classAttr}' backgroundImage='{style.BackgroundImage}'",
-                        FenBrowser.Core.Logging.LogCategory.Rendering);
-                }
-            }
-
             string url = ExtractFirstBackgroundImageUrl(style.BackgroundImage);
-            if (url != null && url.StartsWith("data:image/png;base64,", StringComparison.OrdinalIgnoreCase))
-            {
-                global::FenBrowser.Core.EngineLogCompat.Info(
-                    $"[BG-URL] data URI extracted len={url.Length} cssLen={style.BackgroundImage?.Length ?? -1} urlPreview={(url.Length > 80 ? url.Substring(0, 80) + "..." : url)}",
-                    FenBrowser.Core.Logging.LogCategory.Rendering);
-            }
             if (string.IsNullOrWhiteSpace(url) &&
                 style.BackgroundImage.Contains("gradient", StringComparison.OrdinalIgnoreCase))
             {
@@ -2788,17 +2730,6 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (string.IsNullOrWhiteSpace(url))
             {
-                if (node is Element debugElemNoUrl)
-                {
-                    var classAttr = debugElemNoUrl.GetAttribute("class") ?? string.Empty;
-                    if (classAttr.Contains("logo", StringComparison.OrdinalIgnoreCase) ||
-                        classAttr.Contains("powered-by", StringComparison.OrdinalIgnoreCase))
-                    {
-                        global::FenBrowser.Core.EngineLogCompat.Warn(
-                            $"[BG-TRACE] class='{classAttr}' did not yield URL from backgroundImage='{style.BackgroundImage}'",
-                            FenBrowser.Core.Logging.LogCategory.Rendering);
-                    }
-                }
                 // Might be a gradient or other value we don't support yet as image
                 return null;
             }
@@ -2818,7 +2749,6 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var bitmap = ImageLoader.GetImage(url, ownerDocument: node?.OwnerDocument);
-            global::FenBrowser.Core.EngineLogCompat.Info($"[BG-IMG] URL={(url?.Length > 60 ? url.Substring(0, 60) + "..." : url)} Bitmap={(bitmap != null ? $"{bitmap.Width}x{bitmap.Height}" : (url != null ? "loading" : "NO_URL"))}");
 
             // PROGRESSIVE: When the bitmap isn't cached yet (async load in flight),
             // create a stub node so the paint tree includes this background image.
@@ -3449,12 +3379,18 @@ namespace FenBrowser.FenEngine.Rendering
                     textNode.NodeName == "#text" &&
                     (box.Lines.Count < 5 || box.Lines.Count > 50))
                 {
-                    FenBrowser.Core.EngineLogCompat.Debug($"[PAINT-GEOMETRY] Node={textNode.GetHashCode()} Lines={box.Lines.Count} Box={box.ContentBox}");
+                    FenBrowser.Core.EngineLogCompat.Log(
+                        LogCategory.Paint,
+                        LogLevel.Debug,
+                        $"[PAINT-GEOMETRY] Node={textNode.GetHashCode()} Lines={box.Lines.Count} Box={box.ContentBox}");
                     foreach(var l in box.Lines)
                     {
                          var finalX = box.ContentBox.Left + l.Origin.X;
                          var finalY = box.ContentBox.Top + l.Origin.Y;
-                         FenBrowser.Core.EngineLogCompat.Debug($"   - Line: '{l.Text}' Origin=({l.Origin.X}, {l.Origin.Y}) Final=({finalX}, {finalY})");
+                         FenBrowser.Core.EngineLogCompat.Log(
+                             LogCategory.Paint,
+                             LogLevel.Debug,
+                             $"   - Line: '{l.Text}' Origin=({l.Origin.X}, {l.Origin.Y}) Final=({finalX}, {finalY})");
                     }
                 }
 
@@ -3707,39 +3643,6 @@ namespace FenBrowser.FenEngine.Rendering
                     var textOrigin = new SKPoint(absX, absY + line.Baseline);
                     var glyphs = BuildDiagnosticPaintGlyphs(lineDisplayText, fontFamily, fontSize, weight, textOrigin);
 
-                    if (string.Equals(lineDisplayText, "Sign in", StringComparison.OrdinalIgnoreCase))
-                    {
-                        string parentTag = textNode.ParentElement?.TagName ?? "null";
-                        string parentClass = textNode.ParentElement?.ClassName ?? string.Empty;
-                        string grandParentClass = textNode.ParentElement?.ParentElement?.ClassName ?? string.Empty;
-                        string parentBoxSummary = "pbox=null";
-                        if (textNode.ParentNode != null &&
-                            _boxes.TryGetValue(textNode.ParentNode, out var debugParentBox) &&
-                            debugParentBox != null)
-                        {
-                            parentBoxSummary = $"pbox=({debugParentBox.ContentBox.Left:F1},{debugParentBox.ContentBox.Top:F1},{debugParentBox.ContentBox.Width:F1}x{debugParentBox.ContentBox.Height:F1})";
-                        }
-                        FenBrowser.Core.EngineLogCompat.Info(
-                            $"[GOOGLE-SIGNIN-TEXT] parent=<{parentTag}> pcls={parentClass} gpcls={grandParentClass} lineBounds=({lineBounds.Left:F1},{lineBounds.Top:F1},{lineBounds.Width:F1}x{lineBounds.Height:F1}) origin=({textOrigin.X:F1},{textOrigin.Y:F1}) tbox=({box.ContentBox.Left:F1},{box.ContentBox.Top:F1},{box.ContentBox.Width:F1}x{box.ContentBox.Height:F1}) {parentBoxSummary} color=#{color.Red:X2}{color.Green:X2}{color.Blue:X2}{color.Alpha:X2}",
-                            LogCategory.Paint);
-                    }
-
-                    if (ShouldTraceWhatIsMyBrowserText(lineDisplayText))
-                    {
-                        string parentTag = textNode.ParentElement?.TagName ?? "null";
-                        string grandParentTag = textNode.ParentElement?.ParentElement?.TagName ?? "null";
-                        string boxSummary = $"Box=({box.ContentBox.Left:F1},{box.ContentBox.Top:F1},{box.ContentBox.Width:F1}x{box.ContentBox.Height:F1})";
-                        string parentSummary = "ParentBox=null";
-                        if (textNode.ParentNode != null && _boxes.TryGetValue(textNode.ParentNode, out var traceParentBox) && traceParentBox != null)
-                        {
-                            parentSummary = $"ParentBox=({traceParentBox.ContentBox.Left:F1},{traceParentBox.ContentBox.Top:F1},{traceParentBox.ContentBox.Width:F1}x{traceParentBox.ContentBox.Height:F1})";
-                        }
-
-                        global::FenBrowser.Core.EngineLogCompat.Info(
-                            $"[WIMB-TEXT-BUILD] Text='{lineDisplayText}' Parent=<{parentTag}> GrandParent=<{grandParentTag}> Color=#{color.Red:X2}{color.Green:X2}{color.Blue:X2}{color.Alpha:X2} {boxSummary} {parentSummary} LineOrigin=({line.Origin.X:F1},{line.Origin.Y:F1}) LineSize=({resolvedLineWidth:F1}x{line.Height:F1}) Baseline={line.Baseline:F1} DrawOrigin=({textOrigin.X:F1},{textOrigin.Y:F1})",
-                            LogCategory.Rendering);
-                    }
-
                     list.Add(new TextPaintNode
                     {
                         Bounds = lineBounds,
@@ -3854,22 +3757,6 @@ namespace FenBrowser.FenEngine.Rendering
                 FenBrowser.Core.EngineLogCompat.Info($"[TEXT-POS] '{displayText.Substring(0, Math.Min(20, displayText.Length))}...' TextBoxTop={drawBounds.Top} TextBoxH={drawBounds.Height} TextBoxW={drawBounds.Width} LineH={fbLineHeight} BaselineY={baselineY}", FenBrowser.Core.Logging.LogCategory.Layout);
             }
 
-            if (ShouldTraceWhatIsMyBrowserText(displayText))
-            {
-                string parentTag = textNode.ParentElement?.TagName ?? "null";
-                string grandParentTag = textNode.ParentElement?.ParentElement?.TagName ?? "null";
-                string boxSummary = $"Box=({box.ContentBox.Left:F1},{box.ContentBox.Top:F1},{box.ContentBox.Width:F1}x{box.ContentBox.Height:F1})";
-                string parentSummary = "ParentBox=null";
-                if (textNode.ParentNode != null && _boxes.TryGetValue(textNode.ParentNode, out var traceParentBox) && traceParentBox != null)
-                {
-                    parentSummary = $"ParentBox=({traceParentBox.ContentBox.Left:F1},{traceParentBox.ContentBox.Top:F1},{traceParentBox.ContentBox.Width:F1}x{traceParentBox.ContentBox.Height:F1})";
-                }
-
-                global::FenBrowser.Core.EngineLogCompat.Info(
-                    $"[WIMB-TEXT-FALLBACK] Text='{displayText}' Parent=<{parentTag}> GrandParent=<{grandParentTag}> Color=#{color.Red:X2}{color.Green:X2}{color.Blue:X2}{color.Alpha:X2} {boxSummary} {parentSummary} DrawBounds=({drawBounds.Left:F1},{drawBounds.Top:F1},{drawBounds.Width:F1}x{drawBounds.Height:F1}) BaselineY={baselineY:F1}",
-                    LogCategory.Rendering);
-            }
-            
             return new List<TextPaintNode>
             {
                 new TextPaintNode
@@ -3927,7 +3814,10 @@ namespace FenBrowser.FenEngine.Rendering
                     catch (Exception ex) { global::FenBrowser.Core.EngineLogCompat.Warn($"[IMG-BUILD] Failed normalizing image URL: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
                 }
 
-                global::FenBrowser.Core.EngineLogCompat.Debug($"[IMG-BUILD] Tag={tag} URL={(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}");
+                global::FenBrowser.Core.EngineLogCompat.Log(
+                    LogCategory.Paint,
+                    LogLevel.Debug,
+                    $"[IMG-BUILD] Tag={tag} URL={(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}");
                 var bitmap = ImageLoader.GetImage(url, ownerDocument: elem.OwnerDocument);
                 
                 return new ImagePaintNode
@@ -5618,12 +5508,6 @@ namespace FenBrowser.FenEngine.Rendering
         {
             // Only for Elements
             if (!(node is Element elem)) return null;
-
-            string tag = elem.TagName;
-            string id = elem.GetAttribute("id") ?? "";
-            string type = style?.ListStyleType ?? "disc";
-
-            global::FenBrowser.Core.EngineLogCompat.Info($"[MARKER-BUILD] <{tag}#{id}> Type={type} Display={style?.Display}", global::FenBrowser.Core.Logging.LogCategory.Rendering);
 
             string listStyleType = ResolveEffectiveListStyleType(elem, style) ?? "disc"; // Default to disc
             string listStylePosition = style?.ListStylePosition ?? "outside";

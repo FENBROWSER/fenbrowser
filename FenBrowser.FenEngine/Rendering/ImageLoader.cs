@@ -957,8 +957,6 @@ namespace FenBrowser.FenEngine.Rendering
                 return null;
             }
 
-            EngineLogCompat.Info($"[ImageLoader] GetImage called for {(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
-
             // Animated GIF: return the current frame based on elapsed time
             if (_animatedGifs.TryGetValue(cacheKey, out var anim))
             {
@@ -969,7 +967,6 @@ namespace FenBrowser.FenEngine.Rendering
             // Check new cache first
             if (_memoryCache.TryGetValue(cacheKey, out var entry))
             {
-                EngineLogCompat.Debug($"[ImageLoader] Found in memory cache: {url}", LogCategory.Rendering);
                 entry.LastAccessed = DateTime.UtcNow;
                 RegisterCacheHit();
                 return entry.Bitmap;
@@ -978,7 +975,6 @@ namespace FenBrowser.FenEngine.Rendering
             // Check legacy cache
             if (_legacyCache.TryGetValue(cacheKey, out var bitmap))
             {
-                EngineLogCompat.Debug($"[ImageLoader] Found in legacy cache: {url}", LogCategory.Rendering);
                 RegisterCacheHit();
                 return bitmap;
             }
@@ -1033,15 +1029,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // Either not lazy, or in viewport - load immediately
-            EngineLogCompat.Info($"[ImageLoader] Queueing async load for: {(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
             CapturePendingLoadContext(cacheKey, loadContext);
             if (!TryRegisterPendingLoad(cacheKey))
             {
-                EngineLogCompat.Debug($"[ImageLoader] Already pending: {url}", LogCategory.Rendering);
                 return null; // Already loading
             }
-            
-            EngineLogCompat.Debug($"[ImageLoader] Starting LoadImageAsync: {url}", LogCategory.Rendering);
+
             _ = LoadImageAsync(
                 url,
                 cacheKey,
@@ -1257,8 +1250,6 @@ namespace FenBrowser.FenEngine.Rendering
                      return;
                 }
 
-                EngineLogCompat.Debug($"[ImageLoader] Fetching: {url}", LogCategory.Rendering);
-
                 if (!Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
                 {
                     EngineLogCompat.Warn($"[ImageLoader] Invalid absolute URI, skipping: {(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
@@ -1462,7 +1453,10 @@ namespace FenBrowser.FenEngine.Rendering
                             bitmap = animated.Frames[0];
                             EvictIfNeeded();
                             EnsureGifAnimationTimer();
-                            EngineLogCompat.Info($"[ImageLoader] Animated GIF: {url} ({animated.Frames.Length} frames, {animated.TotalDuration}ms total)", LogCategory.Rendering);
+                            EngineLogCompat.Log(
+                                LogCategory.Rendering,
+                                LogLevel.Debug,
+                                $"[ImageLoader] Animated GIF: {url} ({animated.Frames.Length} frames, {animated.TotalDuration}ms total)");
                         }
                         else
                         {
@@ -1588,7 +1582,10 @@ namespace FenBrowser.FenEngine.Rendering
             EvictIfNeeded();
             _lazyRegistry.TryRemove(cacheKey, out _);
             Interlocked.Increment(ref _cacheVersion);
-            EngineLogCompat.Info($"[ImageLoader] SUCCESS: {url} ({bitmap.Width}x{bitmap.Height})", LogCategory.Rendering);
+            EngineLogCompat.Log(
+                LogCategory.Rendering,
+                LogLevel.Debug,
+                $"[ImageLoader] SUCCESS: {url} ({bitmap.Width}x{bitmap.Height})");
             return true;
         }
 

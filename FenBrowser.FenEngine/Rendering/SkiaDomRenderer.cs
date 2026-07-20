@@ -356,7 +356,12 @@ namespace FenBrowser.FenEngine.Rendering
             {
             using var frameTimeline = TimelineTracer.Instance.Begin("RenderFrame.Total", "render");
             using var _frameScope = pipelineContext.BeginScopedFrame();
-            DiagnosticPaths.AppendRootText("debug_render_start.txt", $"Render Start: Root={root?.GetType().Name}\n");
+            if (DiagnosticPaths.AppendEnabled)
+            {
+                DiagnosticPaths.AppendRootText(
+                    "debug_render_start.txt",
+                    $"Render Start: Root={root?.GetType().Name}\n");
+            }
             CurrentOverlays.Clear();
             
             // Detect style changes via DOM dirty flags (primary) or dictionary identity (fallback).
