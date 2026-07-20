@@ -267,6 +267,8 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.HandleLoadSuperElement), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiHandleLoadSuperConstructor = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.HandleLoadSuperConstructor), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiCheckExecutionBudget = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.CheckExecutionBudgetForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly PropertyInfo PiRegisters = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Registers))!;
     private static readonly PropertyInfo PiFunction = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Function))!;
     private static readonly PropertyInfo PiConstants = typeof(BytecodeFunction).GetProperty(nameof(BytecodeFunction.Constants))!;
@@ -311,6 +313,7 @@ public static class JitCompiler
         for (var i = 0; i < function.Instructions.Count; i++)
         {
             body.Add(Expression.Label(instructionLabels[i]));
+            body.Add(Expression.Call(interpParam, MiCheckExecutionBudget));
             var ins = function.Instructions[i];
             if (!TryEmitOpcode(function, ins, i, interpParam, frameParam, registersLocal, constantsLocal, instructionLabels, returnLabel, body))
             {

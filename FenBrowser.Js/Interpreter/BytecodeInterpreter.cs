@@ -12,6 +12,7 @@ using FenBrowser.Js.Source;
 using FenBrowser.Js.Temporal;
 using System.Linq;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using FenBrowser.Js.Regex;
@@ -376,6 +377,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _wallClockDeadlineTicks = previousDeadlineTicks;
             _wallClockCheckCountdown = previousCheckCountdown;
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void CheckExecutionBudgetForJit()
+    {
+        if (InstructionBudget > 0 && ++_instructionCount > InstructionBudget)
+            throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
+
+        if (--_wallClockCheckCountdown > 0)
+            return;
+
+        _wallClockCheckCountdown = WallClockCheckInterval;
+        if (InterruptCallback is { } callback && !callback())
+            throw new JsThrownException(CreateRangeError("Execution interrupted."));
+        if (_wallClockDeadlineTicks != 0 && Environment.TickCount64 >= _wallClockDeadlineTicks)
+            throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded."));
     }
 
     // Tier 5 #25: per-realm CSP eval policy. When false, eval() and the

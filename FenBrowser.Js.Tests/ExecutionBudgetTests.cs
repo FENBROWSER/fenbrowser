@@ -109,6 +109,27 @@ public class ExecutionBudgetTests
         Assert.Equal(5000.0, v.AsNumber());
     }
 
+    [Fact]
+    public void WallClockTimeout_StopsRunawayLoop_AfterJitTierUp()
+    {
+        var interp = new BytecodeInterpreter { WallClockTimeoutMs = 100 };
+        var fn = Compile(@"
+            function hot(skip) {
+                if (skip) return 1;
+                while (true) {}
+            }
+            for (var i = 0; i < 100; i++) hot(true);
+            hot(false);
+        ");
+
+        var sw = Stopwatch.StartNew();
+        Assert.Throws<JsThrownException>(() => interp.Execute(fn));
+        sw.Stop();
+
+        Assert.True(sw.ElapsedMilliseconds < 5000,
+            $"JIT execution ignored the wall-clock deadline -- elapsed={sw.ElapsedMilliseconds}ms");
+    }
+
     // ---- InterruptCallback ----
 
     [Fact]
