@@ -340,6 +340,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // because the budget exists to bound runaway scripts, not to provide
     // sub-millisecond precision.
     public long WallClockTimeoutMs { get; set; }
+    public int MicrotaskCheckpointJobBudget { get; set; } = 10_000;
     private const int WallClockCheckInterval = 1024;
     private long _wallClockDeadlineTicks;
     private int _wallClockCheckCountdown;
@@ -813,6 +814,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private void DrainPendingMicrotasks(Action<JsValue, Exception>? onQueueMicrotaskFailure = null)
     {
+        var checkpointDeadlineTicks = WallClockTimeoutMs > 0
+            ? Environment.TickCount64 + WallClockTimeoutMs
+            : 0;
+        var checkpointJobs = 0;
+
+        void CheckCheckpointBudget()
+        {
+            if (MicrotaskCheckpointJobBudget > 0 && ++checkpointJobs > MicrotaskCheckpointJobBudget)
+                throw new JsThrownException(CreateRangeError("Maximum microtask checkpoint budget exceeded."));
+            if (checkpointDeadlineTicks != 0 && Environment.TickCount64 >= checkpointDeadlineTicks)
+                throw new JsThrownException(CreateRangeError("Microtask checkpoint wall-clock timeout exceeded."));
+            CheckExecutionBudgetAtTaskBoundary();
+        }
+
         while (_pendingMicrotasks.Count > 0 || _jobQueue.Count > 0)
         {
             // Drain queueMicrotask first so an early host callback that resolves a
@@ -820,7 +835,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // start running jobs - keeping HTML's tail-call ordering intact.
             while (_pendingMicrotasks.Count > 0)
             {
-                CheckExecutionBudgetAtTaskBoundary();
+                CheckCheckpointBudget();
                 var callback = _pendingMicrotasks.Dequeue();
                 try
                 {
@@ -843,7 +858,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             _ = _jobQueue.RunMicrotaskCheckpoint(job =>
             {
-                CheckExecutionBudgetAtTaskBoundary();
+                CheckCheckpointBudget();
                 return RunPromiseJob(job);
             });
         }

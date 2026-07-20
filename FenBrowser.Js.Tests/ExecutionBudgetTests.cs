@@ -147,6 +147,18 @@ public class ExecutionBudgetTests
             $"microtask checkpoint ignored the wall-clock deadline -- elapsed={sw.ElapsedMilliseconds}ms");
     }
 
+    [Fact]
+    public void MicrotaskCheckpointJobBudget_StopsSelfReplenishingQueueWithoutTimeout()
+    {
+        var interp = new BytecodeInterpreter { MicrotaskCheckpointJobBudget = 100 };
+        var fn = Compile(@"
+            function again() { queueMicrotask(again); }
+            queueMicrotask(again);
+        ");
+
+        Assert.Throws<JsThrownException>(() => interp.Execute(fn));
+    }
+
     // ---- InterruptCallback ----
 
     [Fact]
