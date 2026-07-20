@@ -8,6 +8,7 @@ using System.Threading;
 using System.Linq;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Network;
 using FenBrowser.FenEngine.Adapters;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -79,6 +80,7 @@ namespace FenBrowser.FenEngine.Rendering
         {
             public string OwnerId { get; set; }
             public Func<Uri, Task<byte[]>> FetchBytesAsync { get; set; }
+            public Func<Uri, Task<BinaryFetchResult>> FetchDetailedAsync { get; set; }
             public Action RequestRepaint { get; set; }
             public Action RequestRelayout { get; set; }
         }
@@ -109,6 +111,8 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly AsyncLocal<ImageLoaderRequestContext> _ambientContext = new AsyncLocal<ImageLoaderRequestContext>();
         private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, ImageLoaderRequestContext>> _pendingLoadContexts =
             new ConcurrentDictionary<string, ConcurrentDictionary<string, ImageLoaderRequestContext>>(StringComparer.Ordinal);
+        private static readonly ConcurrentDictionary<string, BinaryFetchResult> _lastLoadResults =
+            new ConcurrentDictionary<string, BinaryFetchResult>(StringComparer.Ordinal);
 
         // Main cache with metadata for memory tracking
         private static readonly ConcurrentDictionary<string, ImageCacheEntry> _memoryCache = 
@@ -170,6 +174,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// Avoids direct ImageLoader network access paths.
         /// </summary>
         public static Func<Uri, Task<byte[]>> FetchBytesAsync { get; set; }
+        public static Func<Uri, Task<BinaryFetchResult>> FetchDetailedAsync { get; set; }
 
         // Callback to request a repaint when image loads
         public static Action RequestRepaint { get; set; }
@@ -196,6 +201,17 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return fetcher(uri);
+        }
+
+        public static bool TryGetLastLoadResult(string url, out BinaryFetchResult result)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                result = null;
+                return false;
+            }
+
+            return _lastLoadResults.TryGetValue(url, out result);
         }
 
         // Emits authoritative pending network-image load count changes.
@@ -346,6 +362,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
             _legacyCache.Clear();
+            _lastLoadResults.Clear();
 
             foreach (var bitmap in disposalSet)
             {
@@ -1186,25 +1203,80 @@ namespace FenBrowser.FenEngine.Rendering
                     return;
                 }
 
-                var fetcher = context?.FetchBytesAsync ?? _ambientContext.Value?.FetchBytesAsync ?? FetchBytesAsync;
-                if (fetcher == null)
+                var effectiveContext = context ?? _ambientContext.Value;
+                var hasScopedFetcher = effectiveContext?.FetchDetailedAsync != null || effectiveContext?.FetchBytesAsync != null;
+                var detailedFetcher = hasScopedFetcher ? effectiveContext.FetchDetailedAsync : FetchDetailedAsync;
+                var fetcher = hasScopedFetcher ? effectiveContext.FetchBytesAsync : FetchBytesAsync;
+                if (detailedFetcher == null && fetcher == null)
                 {
-                    EngineLogCompat.Warn("[ImageLoader] FetchBytesAsync delegate is not configured; skipping image load", LogCategory.Rendering);
+                    EngineLogCompat.Warn("[ImageLoader] No image fetch delegate is configured; skipping image load", LogCategory.Rendering);
                     return;
                 }
 
-                var data = await fetcher(absoluteUri).ConfigureAwait(false);
+                BinaryFetchResult fetchResult;
+                if (detailedFetcher != null)
+                {
+                    fetchResult = await detailedFetcher(absoluteUri).ConfigureAwait(false);
+                }
+                else
+                {
+                    var legacyBody = await fetcher(absoluteUri).ConfigureAwait(false);
+                    fetchResult = new BinaryFetchResult
+                    {
+                        Body = legacyBody,
+                        FinalUri = absoluteUri,
+                        FailureReason = legacyBody == null || legacyBody.Length == 0
+                            ? BinaryFetchFailureReason.BodyReadFailed
+                            : BinaryFetchFailureReason.None,
+                        FailureDetail = legacyBody == null || legacyBody.Length == 0 ? "Empty image response" : null
+                    };
+                }
+
+                if (fetchResult == null)
+                {
+                    fetchResult = new BinaryFetchResult
+                    {
+                        FinalUri = absoluteUri,
+                        FailureReason = BinaryFetchFailureReason.TransportFailure,
+                        FailureDetail = "Image fetch returned no result"
+                    };
+                }
+                _lastLoadResults[url] = fetchResult;
+
+                if (!fetchResult.Succeeded)
+                {
+                    EngineLogCompat.Warn($"[ImageLoader] Fetch failed: url={url} reason={fetchResult.FailureReason} status={fetchResult.StatusCode}", LogCategory.Rendering);
+                    return;
+                }
+
+                var data = fetchResult.Body;
                 if (data == null || data.Length == 0)
                 {
                     EngineLogCompat.Warn($"[ImageLoader] Empty image response for: {url}", LogCategory.Rendering);
                     return;
                 }
-                var bitmap = DecodeBitmapFromBytes(url, data, targetWidth, targetHeight);
+                var decodeFormat = DetectDecodeFormat(url, data, fetchResult.ContentType);
+                SKBitmap bitmap;
+                try
+                {
+                    bitmap = DecodeBitmapFromBytes(url, data, targetWidth, targetHeight);
+                }
+                catch (Exception ex)
+                {
+                    _lastLoadResults[url] = fetchResult with
+                    {
+                        DecodeFormat = decodeFormat,
+                        DecodeFailureReason = ex.Message
+                    };
+                    EngineLogCompat.Warn($"[ImageLoader] Decode failed: url={url} format={decodeFormat ?? "unknown"}", LogCategory.Rendering);
+                    return;
+                }
                 
                 if (bitmap != null)
                 {
                     if (TryStoreDecodedBitmap(url, bitmap, isLazy))
                     {
+                        _lastLoadResults[url] = fetchResult with { DecodeFormat = decodeFormat };
                         RequestDebouncedRepaint(url, context);
                         RequestDebouncedRelayout(url, context);
                     }
@@ -1224,6 +1296,11 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 else
                 {
+                    _lastLoadResults[url] = fetchResult with
+                    {
+                        DecodeFormat = decodeFormat,
+                        DecodeFailureReason = "Decoder returned no bitmap"
+                    };
                     EngineLogCompat.Warn($"[ImageLoader] Decode Failed: {url}", LogCategory.Rendering);
                 }
             }
@@ -1234,6 +1311,28 @@ namespace FenBrowser.FenEngine.Rendering
             finally
             {
                 CompletePendingLoad(url);
+            }
+        }
+
+        private static string DetectDecodeFormat(string url, byte[] data, string contentType)
+        {
+            if (!string.IsNullOrWhiteSpace(contentType))
+            {
+                return contentType;
+            }
+            if (url.EndsWith(".svg", StringComparison.OrdinalIgnoreCase) ||
+                url.StartsWith("data:image/svg+xml", StringComparison.OrdinalIgnoreCase))
+            {
+                return "image/svg+xml";
+            }
+            try
+            {
+                using var codec = SKCodec.Create(new MemoryStream(data));
+                return codec?.EncodedFormat.ToString();
+            }
+            catch
+            {
+                return null;
             }
         }
 

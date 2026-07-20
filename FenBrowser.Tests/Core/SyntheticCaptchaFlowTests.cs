@@ -73,6 +73,20 @@ public sealed class SyntheticCaptchaFlowTests
                 return imageResponse;
             }));
             var resources = new ResourceManager(client, isPrivate: true);
+            var imageRequestContext = new ImageLoader.ImageLoaderRequestContext
+            {
+                OwnerId = "synthetic-captcha",
+                FetchBytesAsync = uri => resources.FetchBytesAsync(new FetchContext
+                {
+                    RequestUri = uri,
+                    InitiatorUri = frameUri,
+                    FrameDocumentUri = frameUri,
+                    TopLevelDocumentUri = parentUri,
+                    Destination = "image",
+                    Mode = "no-cors",
+                    CredentialsMode = "include"
+                }, BrowserNetworkCapabilities.ImageAcceptHeader)
+            };
             using var host = new BrowserHost(isPrivate: true);
             var renderer = new SkiaDomRenderer();
             host.EnableJavaScript = true;
@@ -178,8 +192,11 @@ public sealed class SyntheticCaptchaFlowTests
                     return string.Equals(iframe.GetAttribute("height"), "300", StringComparison.Ordinal);
                 },
                 "challenge expansion message");
-            await host.FlushPendingLayoutAsync();
-            RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+            using (ImageLoader.EnterRequestContext(imageRequestContext))
+            {
+                await host.FlushPendingLayoutAsync();
+                RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+            }
 
             Assert.True(renderer.LastLayout.TryGetElementRect(iframe, out var expandedFrame));
             Assert.InRange(expandedFrame.Width, 419f, 421f);
@@ -191,26 +208,24 @@ public sealed class SyntheticCaptchaFlowTests
                 .Where(url => !string.IsNullOrWhiteSpace(url))
                 .ToArray();
             Assert.Equal(2, imageUrls.Length);
-            using (ImageLoader.EnterRequestContext(new ImageLoader.ImageLoaderRequestContext
-            {
-                OwnerId = "synthetic-captcha",
-                FetchBytesAsync = uri => resources.FetchBytesAsync(new FetchContext
-                {
-                    RequestUri = uri,
-                    InitiatorUri = frameUri,
-                    FrameDocumentUri = frameUri,
-                    TopLevelDocumentUri = parentUri,
-                    Destination = "image",
-                    Mode = "no-cors",
-                    CredentialsMode = "include"
-                }, BrowserNetworkCapabilities.ImageAcceptHeader)
-            }))
+            using (ImageLoader.EnterRequestContext(imageRequestContext))
             {
                 foreach (var imageUrl in imageUrls)
                 {
                     ImageLoader.GetImage(imageUrl);
                 }
 
+                await WaitForAsync(
+                    () => ImageLoader.PendingLoadCount == 0 &&
+                          imageUrls.All(url => ImageLoader.TryGetLastLoadResult(url, out _)),
+                    "redirected challenge image results");
+                Assert.All(imageUrls, imageUrl =>
+                {
+                    Assert.True(ImageLoader.TryGetLastLoadResult(imageUrl, out var result));
+                    Assert.True(result.Succeeded,
+                        $"{imageUrl}: fetch={result.FailureReason} status={result.StatusCode} detail={result.FailureDetail}");
+                    Assert.Null(result.DecodeFailureReason);
+                });
                 await WaitForAsync(
                     () => imageUrls.All(ImageLoader.ContainsCachedImage),
                     "redirected challenge images to decode");

@@ -989,6 +989,7 @@ namespace FenBrowser.FenEngine.Rendering
             // reach this host. Last host instantiated wins, mirroring how a single
             // process hosts one active browser at a time.
             ImageLoader.FetchBytesAsync = _imageLoaderContext.FetchBytesAsync;
+            ImageLoader.FetchDetailedAsync = _imageLoaderContext.FetchDetailedAsync;
             ImageLoader.RequestRepaint = _imageLoaderContext.RequestRepaint;
             ImageLoader.RequestRelayout = _imageLoaderContext.RequestRelayout;
 
@@ -1014,6 +1015,33 @@ namespace FenBrowser.FenEngine.Rendering
             return new ImageLoader.ImageLoaderRequestContext
             {
                 OwnerId = _imageLoaderContextId,
+                FetchDetailedAsync = async uri =>
+                {
+                    if (uri == null)
+                    {
+                        return new BinaryFetchResult
+                        {
+                            FailureReason = BinaryFetchFailureReason.InvalidRequest,
+                            FailureDetail = "Image URI is null"
+                        };
+                    }
+
+                    var fetchUri = MapRuntimeUri(uri);
+                    return await _resources.FetchBytesDetailedAsync(
+                            new FetchContext
+                            {
+                                RequestUri = fetchUri,
+                                InitiatorUri = _current,
+                                FrameDocumentUri = _current,
+                                TopLevelDocumentUri = _current,
+                                Destination = "image",
+                                Mode = "no-cors",
+                                CredentialsMode = "include",
+                                Method = "GET"
+                            },
+                            BrowserNetworkCapabilities.ImageAcceptHeader)
+                        .ConfigureAwait(false);
+                },
                 FetchBytesAsync = async uri =>
                 {
                     if (uri == null)
@@ -10218,6 +10246,10 @@ pre {{
             if (ReferenceEquals(ImageLoader.FetchBytesAsync, _imageLoaderContext?.FetchBytesAsync))
             {
                 ImageLoader.FetchBytesAsync = null;
+            }
+            if (ReferenceEquals(ImageLoader.FetchDetailedAsync, _imageLoaderContext?.FetchDetailedAsync))
+            {
+                ImageLoader.FetchDetailedAsync = null;
             }
             if (ReferenceEquals(ImageLoader.RequestRelayout, _imageLoaderContext?.RequestRelayout))
             {
