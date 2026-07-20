@@ -2228,9 +2228,37 @@ namespace FenBrowser.Core
         /// Sends a generic HTTP request with CSP checks and standard headers.
         /// Used by Fetch API and other generic networking needs.
         /// </summary>
-        public async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CspPolicy policy)
+        public Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CspPolicy policy)
         {
             if (request == null || request.RequestUri == null) throw new ArgumentNullException(nameof(request));
+            var referrer = request.Headers.Referrer;
+            return SendAsync(request, policy, new FetchContext
+            {
+                RequestUri = request.RequestUri,
+                InitiatorUri = referrer,
+                FrameDocumentUri = referrer,
+                TopLevelDocumentUri = referrer,
+                Destination = GetHeaderValue(request.Headers, "Sec-Fetch-Dest") ?? "empty",
+                Mode = GetHeaderValue(request.Headers, "Sec-Fetch-Mode") ?? "cors",
+                CredentialsMode = "include",
+                Method = request.Method.Method
+            });
+        }
+
+        public async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CspPolicy policy,
+            FetchContext context)
+        {
+            if (request == null || request.RequestUri == null) throw new ArgumentNullException(nameof(request));
+            if (context == null) throw new ArgumentNullException(nameof(context));
+            context = context with { RequestUri = request.RequestUri, Method = request.Method.Method };
+            BrowserRequestHeaderPolicy.Apply(
+                request,
+                context,
+                ActiveReferrerPolicy,
+                request.Headers.Accept.Count > 0 ? null : "*/*",
+                context.InitiatorUri ?? context.FrameDocumentUri);
             var requestUrl = request.RequestUri.AbsoluteUri;
             var logContext = new EngineLogContext(
                 NavigationId: LogContext.CurrentCorrelationId,
@@ -2262,39 +2290,6 @@ namespace FenBrowser.Core
                 }
             }
 
-            // Standard Browser Headers
-            if (!request.Headers.Contains("User-Agent"))
-            {
-                request.Headers.Add("User-Agent", BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent));
-            }
-
-            // Sec-Fetch defaults for generic fetch requests.
-            if (!request.Headers.Contains("Sec-Fetch-Dest")) request.Headers.Add("Sec-Fetch-Dest", "empty");
-            if (!request.Headers.Contains("Sec-Fetch-Mode")) request.Headers.Add("Sec-Fetch-Mode", "cors");
-            if (!request.Headers.Contains("Sec-Fetch-Site"))
-            {
-                request.Headers.Add("Sec-Fetch-Site", DetermineSecFetchSite(request.Headers.Referrer, request.RequestUri));
-            }
-
-            // Accept-* defaults. Bot-detection systems (Akamai/PerimeterX/Cloudflare)
-            // routinely flag clients that send no Accept-Language or send only Accept: */*
-            // with no quality values. These match the headers Chrome sends for fetch().
-            if (!request.Headers.Contains("Accept"))
-                request.Headers.Add("Accept", "*/*");
-            if (!request.Headers.Contains("Accept-Language"))
-                request.Headers.Add("Accept-Language", "en-US,en;q=0.9");
-            if (!request.Headers.Contains("Accept-Encoding"))
-                request.Headers.Add("Accept-Encoding", "gzip, deflate, br");
-
-            // User-Agent Client Hints — Chrome sends these on every request to first-party
-            // hosts and after Accept-CH on third-party. Without them, Twitter's anti-bot
-            // layer treats the request as non-Chrome and 429s.
-            try { BrowserSettings.ApplyBrowserRequestHeaders(request); }
-            catch (Exception chEx)
-            {
-                EngineLogCompat.Debug($"[ResourceManager] Failed to apply browser client hints: {chEx.Message}", LogCategory.Network);
-            }
-
             try
             {
                 // Go through INetworkClient pipeline (handles cookies, HSTS, tracking prevention)
@@ -2320,7 +2315,16 @@ namespace FenBrowser.Core
                     throw new HttpRequestException($"Blocked by CORS policy (missing origin context): {request.RequestUri}");
                 }
 
-                AttachCookies(request, request.Headers.Referrer ?? request.RequestUri, GetHeaderValue(request.Headers, "Sec-Fetch-Dest"));
+                var topLevelDocumentUri = context.TopLevelDocumentUri ?? context.FrameDocumentUri ?? context.InitiatorUri ?? request.RequestUri;
+                var credentialsMode = (context.CredentialsMode ?? "same-origin").Trim();
+                var credentialsAllowed = string.Equals(credentialsMode, "include", StringComparison.OrdinalIgnoreCase) ||
+                    (string.Equals(credentialsMode, "same-origin", StringComparison.OrdinalIgnoreCase) &&
+                     context.InitiatorUri != null &&
+                     CorsHandler.IsSameOrigin(context.InitiatorUri, request.RequestUri));
+                if (credentialsAllowed)
+                {
+                    AttachCookies(request, topLevelDocumentUri, GetHeaderValue(request.Headers, "Sec-Fetch-Dest"));
+                }
                 ApplyCorsOriginHeader(request, originUri);
                 await EnsureCorsPreflightAsync(request, originUri, cts.Token).ConfigureAwait(false);
                 var response = await SendRequestTrackedAsync(request, cts.Token).ConfigureAwait(false);
@@ -2343,7 +2347,10 @@ namespace FenBrowser.Core
                     throw new HttpRequestException($"Blocked by CORS policy (response validation failed): {request.RequestUri}");
                 }
 
-                StoreResponseCookies(response, request.Headers.Referrer ?? request.RequestUri);
+                if (credentialsAllowed)
+                {
+                    StoreResponseCookies(response, topLevelDocumentUri);
+                }
                 return response;
             }
             catch (Exception ex)

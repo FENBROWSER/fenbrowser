@@ -742,7 +742,21 @@ namespace FenBrowser.FenEngine.Rendering
             _engine.FetchHandler = (req) => 
             {
                 req.RequestUri = MapRuntimeUri(req.RequestUri);
-                return _resources.SendAsync(req, CurrentPolicy);
+                string Header(string name) => req.Headers.TryGetValues(name, out var values)
+                    ? values.FirstOrDefault()
+                    : null;
+                var frameDocumentUri = req.Headers.Referrer ?? _current;
+                return _resources.SendAsync(req, CurrentPolicy, new FetchContext
+                {
+                    RequestUri = req.RequestUri,
+                    InitiatorUri = frameDocumentUri,
+                    FrameDocumentUri = frameDocumentUri,
+                    TopLevelDocumentUri = _current ?? frameDocumentUri,
+                    Destination = Header("Sec-Fetch-Dest") ?? "empty",
+                    Mode = Header("Sec-Fetch-Mode") ?? "cors",
+                    CredentialsMode = "same-origin",
+                    Method = req.Method.Method
+                });
             };
             _engine.FrameElementLoader = LoadFrameElementAsync;
 

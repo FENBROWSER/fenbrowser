@@ -132,7 +132,7 @@ internal static class BrowserRequestHeaderPolicy
 
     private static void Add(HttpRequestMessage request, string name, string value)
     {
-        if (!string.IsNullOrWhiteSpace(value))
+        if (!string.IsNullOrWhiteSpace(value) && !request.Headers.Contains(name))
         {
             request.Headers.TryAddWithoutValidation(name, value);
         }
