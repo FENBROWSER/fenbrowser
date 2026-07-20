@@ -5,9 +5,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.IO;
-using System.Net;
-using System.Net.Http;
 using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
@@ -53,14 +50,8 @@ namespace FenBrowser.FenEngine.Rendering
         
         // CSS Counters state - tracks counter values during tree traversal
         private readonly Dictionary<string, int> _counters = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        
+
         private readonly Interaction.ScrollManager _scrollManager;
-        private static readonly HttpClient s_iframeTopTextHttpClient = new HttpClient
-        {
-            Timeout = TimeSpan.FromSeconds(5)
-        };
-        private static readonly Dictionary<string, string> s_iframeTopTextByUrl = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        private static readonly object s_iframeTopTextLock = new object();
 
         private static bool IsOverflowClipMode(string overflow)
         {
@@ -4954,100 +4945,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
-            var sourceText = TryExtractIframeTopTextFromSource(iframeElement);
-            if (!string.IsNullOrWhiteSpace(sourceText))
-            {
-                return sourceText;
-            }
-
             return string.Empty;
-        }
-
-        private string TryExtractIframeTopTextFromSource(Element iframeElement)
-        {
-            var src = iframeElement?.GetAttribute("src");
-            if (string.IsNullOrWhiteSpace(src))
-            {
-                return string.Empty;
-            }
-
-            var ownerDocument = iframeElement.OwnerDocument;
-            var baseUrl = !string.IsNullOrWhiteSpace(_baseUri)
-                ? _baseUri
-                : ownerDocument?.BaseURI ?? ownerDocument?.DocumentURI ?? ownerDocument?.URL;
-            if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri))
-            {
-                return string.Empty;
-            }
-
-            if (!Uri.TryCreate(baseUri, src, out var targetUri) || targetUri == null)
-            {
-                return string.Empty;
-            }
-
-            var cacheKey = targetUri.AbsoluteUri;
-            lock (s_iframeTopTextLock)
-            {
-                if (s_iframeTopTextByUrl.TryGetValue(cacheKey, out var cached))
-                {
-                    return cached;
-                }
-            }
-
-            string markup = string.Empty;
-            try
-            {
-                if (targetUri.IsFile)
-                {
-                    var localPath = targetUri.LocalPath;
-                    if (!string.IsNullOrWhiteSpace(localPath) && File.Exists(localPath))
-                    {
-                        markup = File.ReadAllText(localPath);
-                    }
-                }
-                else if (string.Equals(targetUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
-                         string.Equals(targetUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
-                {
-                    markup = s_iframeTopTextHttpClient
-                        .GetStringAsync(targetUri)
-                        .ConfigureAwait(false)
-                        .GetAwaiter()
-                        .GetResult();
-                }
-            }
-            catch
-            {
-                markup = string.Empty;
-            }
-
-            if (string.IsNullOrWhiteSpace(markup))
-            {
-                return string.Empty;
-            }
-
-            var match = Regex.Match(
-                markup,
-                "<[^>]*id\\s*=\\s*['\\\"]top['\\\"][^>]*>(.*?)</[^>]+>",
-                RegexOptions.IgnoreCase | RegexOptions.Singleline);
-            if (!match.Success)
-            {
-                return string.Empty;
-            }
-
-            var inner = Regex.Replace(match.Groups[1].Value, "<[^>]+>", " ");
-            var decoded = WebUtility.HtmlDecode(inner);
-            var text = Regex.Replace(decoded ?? string.Empty, "\\s+", " ").Trim();
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                return string.Empty;
-            }
-
-            lock (s_iframeTopTextLock)
-            {
-                s_iframeTopTextByUrl[cacheKey] = text;
-            }
-
-            return text;
         }
 
         private static Element FindElementById(Element root, string id)
