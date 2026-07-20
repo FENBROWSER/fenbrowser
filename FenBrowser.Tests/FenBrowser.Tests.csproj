@@ -74,6 +74,8 @@
     <Compile Include="Host\Phase2AnimationCoalescingTests.cs" />
     <!-- Phase 5/6 scoped image repaint/relayout callback regression. -->
     <Compile Include="Rendering\Phase5ImageScopingTests.cs" />
+    <!-- Phase 9 verification/screenshot gating regression. -->
+    <Compile Include="Host\Phase9VerificationGatingTests.cs" />
     <!-- Phase 11 interaction re-cascade CancellationTokenSource ownership. -->
     <Compile Include="Host\Phase11InteractionRecascadeCtsTests.cs" />
   </ItemGroup>

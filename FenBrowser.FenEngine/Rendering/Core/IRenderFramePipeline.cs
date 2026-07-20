@@ -143,7 +143,11 @@ namespace FenBrowser.FenEngine.Rendering.Core
 
         public string RequestedBy { get; set; } = "unspecified";
 
-        public bool EmitVerificationReport { get; set; } = true;
+        // Phase 9: verification (debug screenshot capture + content-verifier
+        // registration) is OFF by default. Normal browsing frames must never
+        // capture a screenshot; it is enabled only for explicit visual test /
+        // screenshot / WPT / debug requests.
+        public bool EmitVerificationReport { get; set; } = false;
 
         public bool CollectAllocationTelemetry { get; set; }
     }

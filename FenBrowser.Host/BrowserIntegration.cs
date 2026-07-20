@@ -35,6 +35,19 @@ public enum PageVisibilityState
 }
 
 /// <summary>
+/// Phase 9: explicit, opt-in verification request. Normal browsing never emits a
+/// verification report or debug screenshot; callers (visual test runner,
+/// screenshot command, WPT/reftest mode, explicit debugging) must supply one of
+/// these to enable capture for a single frame.
+/// </summary>
+public sealed class VerificationRequest
+{
+    public bool Enabled { get; init; }
+    public string Reason { get; init; }
+    public bool CaptureScreenshot { get; init; }
+}
+
+/// <summary>
 /// Integration layer connecting BrowserHost to the Host render loop.
 /// Manages page loading, rendering, and input coordination.
 /// Handles Window → UI → Document coordinate translation.
@@ -857,16 +870,49 @@ public class BrowserIntegration : IDisposable
             : existing + "|" + source;
     }
 
-    private static bool ShouldEmitVerificationReport(RenderFrameInvalidationReason invalidationReasons)
-    {
-        var lowSignalReasons =
-            RenderFrameInvalidationReason.Timer |
-            RenderFrameInvalidationReason.Animation |
-            RenderFrameInvalidationReason.Scroll |
-            RenderFrameInvalidationReason.Input |
-            RenderFrameInvalidationReason.Overlay;
+    private static readonly bool VerificationGloballyEnabled =
+        ReadBoolEnvironment("FEN_ENABLE_VERIFICATION");
 
-        return (invalidationReasons & ~lowSignalReasons) != RenderFrameInvalidationReason.None;
+    // Phase 9: one-shot verification request consumed by the next rendered frame.
+    private VerificationRequest _pendingVerification;
+    private int _verificationScreenshotCount;
+
+    /// <summary>
+    /// Requests that the next rendered frame emit a verification report / debug
+    /// screenshot. Normal browsing never does this; only visual test runners,
+    /// screenshot commands, WPT/reftest mode, or explicit debugging use it.
+    /// </summary>
+    public void RequestVerification(VerificationRequest request)
+    {
+        if (request == null || !request.Enabled)
+        {
+            return;
+        }
+
+        Volatile.Write(ref _pendingVerification, request);
+        RequestFrame(RenderFrameInvalidationReason.Diagnostics, "VerificationRequest");
+    }
+
+    private bool ShouldEmitVerificationReport(RenderFrameInvalidationReason invalidationReasons)
+    {
+        // Phase 9: a generic Paint (or any other browsing) invalidation must NOT
+        // enable verification. Verification is opt-in only:
+        //   - globally, via a visual-test/WPT/debug environment switch;
+        //   - per-frame, via an explicit one-shot RequestVerification token.
+        if (VerificationGloballyEnabled)
+        {
+            _verificationScreenshotCount++;
+            return true;
+        }
+
+        var pending = Interlocked.Exchange(ref _pendingVerification, null);
+        if (pending != null && pending.Enabled)
+        {
+            _verificationScreenshotCount++;
+            return true;
+        }
+
+        return false;
     }
 
     private void OnFrameReceivedFromRenderer(int tabId, FenBrowser.Host.ProcessIsolation.RendererFrameReadyPayload payload)
@@ -2746,6 +2792,21 @@ public class BrowserIntegration : IDisposable
     {
         var raw = Environment.GetEnvironmentVariable(variableName);
         return int.TryParse(raw, out var value) && value > 0 ? value : fallback;
+    }
+
+    private static bool ReadBoolEnvironment(string variableName)
+    {
+        var raw = Environment.GetEnvironmentVariable(variableName);
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        raw = raw.Trim();
+        return raw.Equals("1", StringComparison.Ordinal) ||
+               raw.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+               raw.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+               raw.Equals("on", StringComparison.OrdinalIgnoreCase);
     }
 
     internal static bool IsNewTabSurfaceUrl(string url)
