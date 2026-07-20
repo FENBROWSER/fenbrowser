@@ -3141,6 +3141,39 @@ private static double? ExtractResolution(string query, string prop)
 
 private static double? ExtractPx(string text, string prop)
 {
+    var propertyMatch = Regex.Match(
+        text,
+        Regex.Escape(prop) + @"\s*:\s*",
+        RegexOptions.IgnoreCase);
+    if (propertyMatch.Success)
+    {
+        int valueStart = propertyMatch.Index + propertyMatch.Length;
+        if (text.AsSpan(valueStart).StartsWith("calc(", StringComparison.OrdinalIgnoreCase))
+        {
+            int depth = 0;
+            for (int i = valueStart; i < text.Length; i++)
+            {
+                if (text[i] == '(')
+                {
+                    depth++;
+                }
+                else if (text[i] == ')' && --depth == 0)
+                {
+                    string expression = text.Substring(valueStart, i - valueStart + 1);
+                    double percentBase = prop.Contains("width", StringComparison.OrdinalIgnoreCase)
+                        ? CssParser.MediaViewportWidth ?? 1920
+                        : CssParser.MediaViewportHeight ?? 1080;
+                    if (TryParseCalc(expression, out double calculatedPx, percentBase: percentBase))
+                    {
+                        return calculatedPx;
+                    }
+
+                    break;
+                }
+            }
+        }
+    }
+
     // Support decimal values and optional units (default px)
     // Matches prop: 123.45px or prop: 123.45
     // Using named groups to avoid index confusion
