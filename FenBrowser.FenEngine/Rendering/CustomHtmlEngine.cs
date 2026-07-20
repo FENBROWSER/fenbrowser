@@ -1624,6 +1624,8 @@ public void Dispose()
             return IsCurrentRenderGeneration(renderGeneration);
         }
 
+        private string _lastConfiguredMediaSignature;
+
         private void ConfigureMedia(double? viewportWidth, double? viewportHeight)
         {
             try
@@ -1648,8 +1650,20 @@ public void Dispose()
                 CssParser.MediaDisplayMode = "browser";
                 try
                 {
-                    var mediaDiag = $"ConfigureMedia: input={viewportWidth?.ToString() ?? "null"}x{viewportHeight?.ToString() ?? "null"} resolved={CssParser.MediaViewportWidth?.ToString() ?? "null"}x{CssParser.MediaViewportHeight?.ToString() ?? "null"} dppx={CssParser.MediaDppx?.ToString() ?? "null"}";
-                    File.AppendAllText(DiagnosticPaths.GetRootArtifactPath("debug_render_start.txt"), mediaDiag + Environment.NewLine);
+                    // Phase 13: only write the media diagnostic when the resolved
+                    // configuration actually changes (width/height/dppx/scheme).
+                    // ConfigureMedia is called on every render; appending an
+                    // identical line per frame floods the diagnostic file.
+                    var signature =
+                        $"{CssParser.MediaViewportWidth?.ToString() ?? "null"}x{CssParser.MediaViewportHeight?.ToString() ?? "null"}" +
+                        $"|dppx={CssParser.MediaDppx?.ToString() ?? "null"}" +
+                        $"|scheme={CssParser.MediaPrefersColorScheme ?? "null"}";
+                    if (!string.Equals(signature, _lastConfiguredMediaSignature, StringComparison.Ordinal))
+                    {
+                        _lastConfiguredMediaSignature = signature;
+                        var mediaDiag = $"ConfigureMedia: input={viewportWidth?.ToString() ?? "null"}x{viewportHeight?.ToString() ?? "null"} resolved={CssParser.MediaViewportWidth?.ToString() ?? "null"}x{CssParser.MediaViewportHeight?.ToString() ?? "null"} dppx={CssParser.MediaDppx?.ToString() ?? "null"}";
+                        File.AppendAllText(DiagnosticPaths.GetRootArtifactPath("debug_render_start.txt"), mediaDiag + Environment.NewLine);
+                    }
                 }
                 catch
                 {

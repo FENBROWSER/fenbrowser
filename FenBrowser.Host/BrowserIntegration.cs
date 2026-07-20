@@ -415,7 +415,12 @@ public class BrowserIntegration : IDisposable
             // Seed fragment intent before the first post-navigation frame.
             UpdatePendingFragmentNavigation(_browser.CurrentUri);
 
-            EngineLogBridge.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}, Styles={_styles?.Count ?? 0}", LogCategory.Rendering);
+            EngineLogBridge.WriteRateLimited(
+                "BrowserIntegration.RepaintReady",
+                TimeSpan.FromSeconds(5),
+                LogCategory.Rendering,
+                LogSeverity.Debug,
+                $"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}, Styles={_styles?.Count ?? 0}");
 
             // ── No-op RepaintReady suppression (Phase 7) ──
             // Repeated RepaintReady signalling without any actual DOM/style/image
@@ -2084,9 +2089,12 @@ public class BrowserIntegration : IDisposable
     private void LogCommittedFrame(RenderFrameResult frameResult, SKSize viewportSize)
     {
         var telemetry = frameResult?.Telemetry;
-        EngineLogBridge.Info(
-            $"[BrowserIntegration] Frame recorded. Viewport={viewportSize.Width}x{viewportSize.Height} Reasons={frameResult?.InvalidationReason} Raster={frameResult?.RasterMode}",
-            LogCategory.Rendering);
+        EngineLogBridge.WriteRateLimited(
+            "BrowserIntegration.FrameRecorded",
+            TimeSpan.FromSeconds(5),
+            LogCategory.Rendering,
+            LogSeverity.Debug,
+            $"[BrowserIntegration] Frame recorded. Viewport={viewportSize.Width}x{viewportSize.Height} Reasons={frameResult?.InvalidationReason} Raster={frameResult?.RasterMode}");
 
         if (telemetry == null)
         {
