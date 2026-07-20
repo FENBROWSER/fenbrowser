@@ -1065,6 +1065,9 @@ namespace FenBrowser.FenEngine.Rendering
                             BrowserNetworkCapabilities.ImageAcceptHeader)
                         .ConfigureAwait(false);
                 },
+                FetchDetailedForDocumentAsync = FetchFrameAwareImageAsync,
+                FetchBytesForDocumentAsync = async (uri, document) =>
+                    (await FetchFrameAwareImageAsync(uri, document).ConfigureAwait(false))?.Body,
                 FetchBytesAsync = async uri =>
                 {
                     if (uri == null)
@@ -4486,6 +4489,10 @@ pre {{
 
                 var executionOptions = CreateFrameExecutionOptions(result, finalUri, parsedDocument);
                 frameElement.AppendChild(parsedDocument);
+                using (EnterImageLoaderContext())
+                {
+                    await _engine.PrewarmSubdocumentImagesAsync(parsedRoot, finalUri).ConfigureAwait(false);
+                }
                 await TryInitializeFrameScriptsAsync(
                     frameElement,
                     parsedRoot,
@@ -4600,6 +4607,10 @@ pre {{
 
                 var executionOptions = CreateFrameExecutionOptions(frameFetchResult, frameUri, parsedDocument);
                 frameElement.AppendChild(parsedDocument);
+                using (EnterImageLoaderContext())
+                {
+                    await _engine.PrewarmSubdocumentImagesAsync(parsedRoot, frameUri).ConfigureAwait(false);
+                }
                 await TryInitializeFrameScriptsAsync(
                     frameElement,
                     parsedRoot,
@@ -4663,6 +4674,67 @@ pre {{
                 IsUserInitiated = false,
                 Method = "GET"
             };
+        }
+
+        private async Task<BinaryFetchResult> FetchFrameAwareImageAsync(Uri resourceUri, Document ownerDocument)
+        {
+            if (resourceUri == null)
+            {
+                return new BinaryFetchResult
+                {
+                    FailureReason = BinaryFetchFailureReason.InvalidRequest,
+                    FailureDetail = "Image URI is null"
+                };
+            }
+
+            if (ownerDocument == null ||
+                !_frameResourceSecurity.TryGetValue(ownerDocument, out var frameContext))
+            {
+                return await _resources.FetchBytesDetailedAsync(
+                        new FetchContext
+                        {
+                            RequestUri = MapRuntimeUri(resourceUri),
+                            InitiatorUri = _current,
+                            FrameDocumentUri = _current,
+                            TopLevelDocumentUri = _current,
+                            Destination = "image",
+                            Mode = "no-cors",
+                            CredentialsMode = "include",
+                            Method = "GET"
+                        },
+                        BrowserNetworkCapabilities.ImageAcceptHeader)
+                    .ConfigureAwait(false);
+            }
+
+            if (frameContext.Policy != null &&
+                !frameContext.Policy.IsAllowed("img-src", resourceUri, frameContext.DocumentUri))
+            {
+                return new BinaryFetchResult
+                {
+                    FinalUri = resourceUri,
+                    FailureReason = BinaryFetchFailureReason.CspBlocked,
+                    FailureDetail = "Blocked by img-src",
+                    CspAllowed = false
+                };
+            }
+
+            return await _resources.FetchBytesDetailedAsync(
+                    new FetchContext
+                    {
+                        RequestUri = MapRuntimeUri(resourceUri),
+                        InitiatorUri = frameContext.DocumentUri,
+                        FrameDocumentUri = frameContext.DocumentUri,
+                        TopLevelDocumentUri = _current ?? frameContext.DocumentUri,
+                        Destination = "image",
+                        Mode = "no-cors",
+                        CredentialsMode = "include",
+                        ReferrerPolicy = frameContext.ReferrerPolicy,
+                        IsTopLevelNavigation = false,
+                        IsUserInitiated = false,
+                        Method = "GET"
+                    },
+                    BrowserNetworkCapabilities.ImageAcceptHeader)
+                .ConfigureAwait(false);
         }
 
         private BrowserFrameExecutionOptions CreateFrameExecutionOptions(

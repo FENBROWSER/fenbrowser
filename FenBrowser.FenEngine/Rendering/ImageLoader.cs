@@ -6,7 +6,9 @@ using System.Threading.Tasks;
 using System.IO;
 using System.Threading;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using FenBrowser.Core;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Network;
 using FenBrowser.FenEngine.Adapters;
@@ -81,6 +83,8 @@ namespace FenBrowser.FenEngine.Rendering
             public string OwnerId { get; set; }
             public Func<Uri, Task<byte[]>> FetchBytesAsync { get; set; }
             public Func<Uri, Task<BinaryFetchResult>> FetchDetailedAsync { get; set; }
+            public Func<Uri, Document, Task<byte[]>> FetchBytesForDocumentAsync { get; set; }
+            public Func<Uri, Document, Task<BinaryFetchResult>> FetchDetailedForDocumentAsync { get; set; }
             public Action RequestRepaint { get; set; }
             public Action RequestRelayout { get; set; }
         }
@@ -187,20 +191,39 @@ namespace FenBrowser.FenEngine.Rendering
             return new ContextScope(context);
         }
 
-        public static Task<byte[]> FetchBytesForCurrentContextAsync(Uri uri)
+        public static async Task<byte[]> FetchBytesForCurrentContextAsync(Uri uri, Document ownerDocument = null)
         {
             if (uri == null)
             {
-                return Task.FromResult<byte[]>(null);
+                return null;
             }
 
-            var fetcher = _ambientContext.Value?.FetchBytesAsync ?? FetchBytesAsync;
+            var context = CreateDocumentRequestContext(_ambientContext.Value, ownerDocument);
+            var detailedFetcher = context?.FetchDetailedAsync ?? FetchDetailedAsync;
+            if (detailedFetcher != null)
+            {
+                var result = await detailedFetcher(uri).ConfigureAwait(false);
+                if (result != null)
+                {
+                    _lastLoadResults[uri.AbsoluteUri] = result;
+                }
+                return result?.Body;
+            }
+
+            var fetcher = context?.FetchBytesAsync ?? FetchBytesAsync;
             if (fetcher == null)
             {
-                return Task.FromResult<byte[]>(null);
+                return null;
             }
 
-            return fetcher(uri);
+            return await fetcher(uri).ConfigureAwait(false);
+        }
+
+        public static bool HasDocumentAwareFetcher(Document ownerDocument)
+        {
+            var context = _ambientContext.Value;
+            return ownerDocument != null && context != null &&
+                (context.FetchBytesForDocumentAsync != null || context.FetchDetailedForDocumentAsync != null);
         }
 
         public static bool TryGetLastLoadResult(string url, out BinaryFetchResult result)
@@ -231,12 +254,21 @@ namespace FenBrowser.FenEngine.Rendering
 
         public static bool ContainsCachedImage(string url)
         {
+            return ContainsCachedImage(url, ownerDocument: null);
+        }
+
+        public static bool ContainsCachedImage(string url, Document ownerDocument)
+        {
             if (string.IsNullOrWhiteSpace(url))
             {
                 return false;
             }
 
-            return _memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url) || _animatedGifs.ContainsKey(url);
+            var context = CreateDocumentRequestContext(_ambientContext.Value, ownerDocument);
+            var cacheKey = CreateCacheKey(url, context);
+            return _memoryCache.ContainsKey(cacheKey) ||
+                _legacyCache.ContainsKey(cacheKey) ||
+                _animatedGifs.ContainsKey(cacheKey);
         }
 
         /// <summary>
@@ -263,14 +295,15 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Register an image for lazy loading. Will not load until visible in viewport.
         /// </summary>
-        public static void RegisterLazyImage(string url, SKRect elementBounds)
+        public static void RegisterLazyImage(string url, SKRect elementBounds, string cacheKey = null)
         {
             if (string.IsNullOrEmpty(url)) return;
-            
+            cacheKey ??= url;
+
             // Already cached? No need to register as lazy
-            if (_memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url) || _animatedGifs.ContainsKey(url)) return;
-            
-            _lazyRegistry[url] = new LazyImageInfo
+            if (_memoryCache.ContainsKey(cacheKey) || _legacyCache.ContainsKey(cacheKey) || _animatedGifs.ContainsKey(cacheKey)) return;
+
+            _lazyRegistry[cacheKey] = new LazyImageInfo
             {
                 Url = url,
                 ElementBounds = elementBounds,
@@ -308,7 +341,11 @@ namespace FenBrowser.FenEngine.Rendering
                     kvp.Value.LoadStarted = true;
                     if (TryRegisterPendingLoad(kvp.Key))
                     {
-                        _ = LoadImageAsync(kvp.Key, isLazy: true, context: GetPendingLoadContext(kvp.Key));
+                        _ = LoadImageAsync(
+                            kvp.Value.Url,
+                            kvp.Key,
+                            isLazy: true,
+                            context: GetPendingLoadContext(kvp.Key));
                     }
                 }
             }
@@ -901,10 +938,18 @@ namespace FenBrowser.FenEngine.Rendering
         /// <param name="url">Image URL</param>
         /// <param name="isLazy">If true, only register for lazy loading if not in viewport</param>
         /// <param name="elementBounds">Element bounds for lazy loading registration</param>
-        public static SKBitmap GetImage(string url, bool isLazy = false, SKRect? elementBounds = null, int? targetWidth = null, int? targetHeight = null)
+        public static SKBitmap GetImage(
+            string url,
+            bool isLazy = false,
+            SKRect? elementBounds = null,
+            int? targetWidth = null,
+            int? targetHeight = null,
+            Document ownerDocument = null)
         {
             if (string.IsNullOrEmpty(url)) return null;
             url = url.Trim();
+            var loadContext = CreateDocumentRequestContext(_ambientContext.Value, ownerDocument);
+            var cacheKey = CreateCacheKey(url, loadContext);
 
             if (IsCssImageFunction(url))
             {
@@ -915,14 +960,14 @@ namespace FenBrowser.FenEngine.Rendering
             EngineLogCompat.Info($"[ImageLoader] GetImage called for {(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
 
             // Animated GIF: return the current frame based on elapsed time
-            if (_animatedGifs.TryGetValue(url, out var anim))
+            if (_animatedGifs.TryGetValue(cacheKey, out var anim))
             {
                 RegisterCacheHit();
                 return anim.GetCurrentFrame();
             }
 
             // Check new cache first
-            if (_memoryCache.TryGetValue(url, out var entry))
+            if (_memoryCache.TryGetValue(cacheKey, out var entry))
             {
                 EngineLogCompat.Debug($"[ImageLoader] Found in memory cache: {url}", LogCategory.Rendering);
                 entry.LastAccessed = DateTime.UtcNow;
@@ -931,7 +976,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             // Check legacy cache
-            if (_legacyCache.TryGetValue(url, out var bitmap))
+            if (_legacyCache.TryGetValue(cacheKey, out var bitmap))
             {
                 EngineLogCompat.Debug($"[ImageLoader] Found in legacy cache: {url}", LogCategory.Rendering);
                 RegisterCacheHit();
@@ -957,8 +1002,8 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     EngineLogCompat.Debug($"[ImageLoader] Lazy defer: {url}", LogCategory.Rendering);
                     // Not in viewport - register for lazy loading
-                    CapturePendingLoadContext(url);
-                    RegisterLazyImage(url, elementBounds.Value);
+                    CapturePendingLoadContext(cacheKey, loadContext);
+                    RegisterLazyImage(url, elementBounds.Value, cacheKey);
                     return null; // Renderer should show placeholder
                 }
             }
@@ -977,8 +1022,8 @@ namespace FenBrowser.FenEngine.Rendering
                         LastAccessed = DateTime.UtcNow,
                         IsLazy = isLazy
                     };
-                    _memoryCache[url] = dataEntry;
-                    _legacyCache[url] = dataBitmap;
+                    _memoryCache[cacheKey] = dataEntry;
+                    _legacyCache[cacheKey] = dataBitmap;
                     lock (_cacheLock) { _currentCacheBytes += dataBitmap.ByteCount; }
                     EvictIfNeeded();
                     
@@ -989,15 +1034,21 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Either not lazy, or in viewport - load immediately
             EngineLogCompat.Info($"[ImageLoader] Queueing async load for: {(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
-            CapturePendingLoadContext(url);
-            if (!TryRegisterPendingLoad(url))
+            CapturePendingLoadContext(cacheKey, loadContext);
+            if (!TryRegisterPendingLoad(cacheKey))
             {
                 EngineLogCompat.Debug($"[ImageLoader] Already pending: {url}", LogCategory.Rendering);
                 return null; // Already loading
             }
             
             EngineLogCompat.Debug($"[ImageLoader] Starting LoadImageAsync: {url}", LogCategory.Rendering);
-            _ = LoadImageAsync(url, isLazy, targetWidth, targetHeight, GetPendingLoadContext(url));
+            _ = LoadImageAsync(
+                url,
+                cacheKey,
+                isLazy,
+                targetWidth,
+                targetHeight,
+                loadContext ?? GetPendingLoadContext(cacheKey));
             return null;
         }
 
@@ -1025,14 +1076,22 @@ namespace FenBrowser.FenEngine.Rendering
         /// Decode and cache a fetched image stream so the first render can consume it synchronously.
         /// Used by navigation-time image prewarming to avoid a second image-fetch path racing after first paint.
         /// </summary>
-        public static async Task<bool> PrewarmImageAsync(string url, Stream stream, bool isLazy = false, int? targetWidth = null, int? targetHeight = null)
+        public static async Task<bool> PrewarmImageAsync(
+            string url,
+            Stream stream,
+            bool isLazy = false,
+            int? targetWidth = null,
+            int? targetHeight = null,
+            Document ownerDocument = null)
         {
             if (string.IsNullOrWhiteSpace(url) || stream == null)
             {
                 return false;
             }
 
-            if (_memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url) || _animatedGifs.ContainsKey(url))
+            var context = CreateDocumentRequestContext(_ambientContext.Value, ownerDocument);
+            var cacheKey = CreateCacheKey(url, context);
+            if (_memoryCache.ContainsKey(cacheKey) || _legacyCache.ContainsKey(cacheKey) || _animatedGifs.ContainsKey(cacheKey))
             {
                 return true;
             }
@@ -1049,13 +1108,13 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            var bitmap = DecodeBitmapFromBytes(url, data, targetWidth, targetHeight);
+            var bitmap = DecodeBitmapFromBytes(url, data, targetWidth, targetHeight, cacheKey);
             if (bitmap == null)
             {
                 return false;
             }
 
-            if (!TryStoreDecodedBitmap(url, bitmap, isLazy))
+            if (!TryStoreDecodedBitmap(cacheKey, url, bitmap, isLazy))
             {
                 try
                 {
@@ -1068,7 +1127,9 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                 }
 
-                return _memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url) || _animatedGifs.ContainsKey(url);
+                return _memoryCache.ContainsKey(cacheKey) ||
+                    _legacyCache.ContainsKey(cacheKey) ||
+                    _animatedGifs.ContainsKey(cacheKey);
             }
 
             RequestDebouncedRepaint();
@@ -1177,6 +1238,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static async Task LoadImageAsync(
             string url,
+            string cacheKey,
             bool isLazy = false,
             int? targetWidth = null,
             int? targetHeight = null,
@@ -1185,8 +1247,8 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 // Check caches before loading
-                if (_animatedGifs.ContainsKey(url)) return;
-                if (_memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url)) return;
+                if (_animatedGifs.ContainsKey(cacheKey)) return;
+                if (_memoryCache.ContainsKey(cacheKey) || _legacyCache.ContainsKey(cacheKey)) return;
 
                 // Only allow http/https for now — data URIs are handled synchronously above.
                 if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
@@ -1259,7 +1321,7 @@ namespace FenBrowser.FenEngine.Rendering
                 SKBitmap bitmap;
                 try
                 {
-                    bitmap = DecodeBitmapFromBytes(url, data, targetWidth, targetHeight);
+                    bitmap = DecodeBitmapFromBytes(url, data, targetWidth, targetHeight, cacheKey);
                 }
                 catch (Exception ex)
                 {
@@ -1274,11 +1336,11 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 if (bitmap != null)
                 {
-                    if (TryStoreDecodedBitmap(url, bitmap, isLazy))
+                    if (TryStoreDecodedBitmap(cacheKey, url, bitmap, isLazy))
                     {
                         _lastLoadResults[url] = fetchResult with { DecodeFormat = decodeFormat };
-                        RequestDebouncedRepaint(url, context);
-                        RequestDebouncedRelayout(url, context);
+                        RequestDebouncedRepaint(cacheKey, context);
+                        RequestDebouncedRelayout(cacheKey, context);
                     }
                     else
                     {
@@ -1310,7 +1372,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
             finally
             {
-                CompletePendingLoad(url);
+                CompletePendingLoad(cacheKey);
             }
         }
 
@@ -1336,9 +1398,15 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private static SKBitmap DecodeBitmapFromBytes(string url, byte[] data, int? targetWidth, int? targetHeight)
+        private static SKBitmap DecodeBitmapFromBytes(
+            string url,
+            byte[] data,
+            int? targetWidth,
+            int? targetHeight,
+            string cacheKey = null)
         {
             SKBitmap bitmap = null;
+            cacheKey ??= url;
 
             bool isSvg = url.EndsWith(".svg", StringComparison.OrdinalIgnoreCase);
             if (!isSvg && url.StartsWith("data:image/svg+xml", StringComparison.OrdinalIgnoreCase))
@@ -1386,7 +1454,7 @@ namespace FenBrowser.FenEngine.Rendering
                         if (animated != null && animated.Frames?.Length > 0)
                         {
                             animated.LastAccessed = DateTime.UtcNow;
-                            _animatedGifs[url] = animated;
+                            _animatedGifs[cacheKey] = animated;
                             lock (_cacheLock)
                             {
                                 _currentCacheBytes += animated.ByteSize;
@@ -1479,20 +1547,20 @@ namespace FenBrowser.FenEngine.Rendering
             return bitmap;
         }
 
-        private static bool TryStoreDecodedBitmap(string url, SKBitmap bitmap, bool isLazy)
+        private static bool TryStoreDecodedBitmap(string cacheKey, string url, SKBitmap bitmap, bool isLazy)
         {
-            if (string.IsNullOrWhiteSpace(url) || bitmap == null || bitmap.IsNull || bitmap.Width <= 0 || bitmap.Height <= 0)
+            if (string.IsNullOrWhiteSpace(cacheKey) || bitmap == null || bitmap.IsNull || bitmap.Width <= 0 || bitmap.Height <= 0)
             {
                 return false;
             }
 
-            if (_animatedGifs.ContainsKey(url))
+            if (_animatedGifs.ContainsKey(cacheKey))
             {
-                _lazyRegistry.TryRemove(url, out _);
+                _lazyRegistry.TryRemove(cacheKey, out _);
                 return true;
             }
 
-            if (_memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url))
+            if (_memoryCache.ContainsKey(cacheKey) || _legacyCache.ContainsKey(cacheKey))
             {
                 return false;
             }
@@ -1505,12 +1573,12 @@ namespace FenBrowser.FenEngine.Rendering
                 IsLazy = isLazy
             };
 
-            if (!_memoryCache.TryAdd(url, entry))
+            if (!_memoryCache.TryAdd(cacheKey, entry))
             {
                 return false;
             }
 
-            _legacyCache[url] = bitmap;
+            _legacyCache[cacheKey] = bitmap;
 
             lock (_cacheLock)
             {
@@ -1518,30 +1586,60 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             EvictIfNeeded();
-            _lazyRegistry.TryRemove(url, out _);
+            _lazyRegistry.TryRemove(cacheKey, out _);
             Interlocked.Increment(ref _cacheVersion);
             EngineLogCompat.Info($"[ImageLoader] SUCCESS: {url} ({bitmap.Width}x{bitmap.Height})", LogCategory.Rendering);
             return true;
         }
 
-        private static void CapturePendingLoadContext(string url)
+        private static void CapturePendingLoadContext(
+            string loadKey,
+            ImageLoaderRequestContext context)
         {
-            if (string.IsNullOrWhiteSpace(url))
-            {
-                return;
-            }
-
-            var context = _ambientContext.Value;
-            if (context == null)
+            if (string.IsNullOrWhiteSpace(loadKey) || context == null)
             {
                 return;
             }
 
             var ownerId = string.IsNullOrWhiteSpace(context.OwnerId) ? "_default" : context.OwnerId;
             var contexts = _pendingLoadContexts.GetOrAdd(
-                url,
+                loadKey,
                 _ => new ConcurrentDictionary<string, ImageLoaderRequestContext>(StringComparer.Ordinal));
             contexts[ownerId] = context;
+        }
+
+        private static ImageLoaderRequestContext CreateDocumentRequestContext(
+            ImageLoaderRequestContext context,
+            Document ownerDocument)
+        {
+            if (context == null || ownerDocument == null ||
+                (context.FetchDetailedForDocumentAsync == null && context.FetchBytesForDocumentAsync == null))
+            {
+                return context;
+            }
+
+            return new ImageLoaderRequestContext
+            {
+                OwnerId = $"{context.OwnerId}:{RuntimeHelpers.GetHashCode(ownerDocument)}",
+                FetchDetailedAsync = context.FetchDetailedForDocumentAsync == null
+                    ? context.FetchDetailedAsync
+                    : uri => context.FetchDetailedForDocumentAsync(uri, ownerDocument),
+                FetchBytesAsync = context.FetchBytesForDocumentAsync == null
+                    ? context.FetchBytesAsync
+                    : uri => context.FetchBytesForDocumentAsync(uri, ownerDocument),
+                RequestRepaint = context.RequestRepaint,
+                RequestRelayout = context.RequestRelayout
+            };
+        }
+
+        private static string CreateCacheKey(string url, ImageLoaderRequestContext context)
+        {
+            if (string.IsNullOrWhiteSpace(context?.OwnerId))
+            {
+                return url;
+            }
+
+            return $"{context.OwnerId}\n{url}";
         }
 
         private static ImageLoaderRequestContext GetPendingLoadContext(string url)

@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Network;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
@@ -269,6 +270,66 @@ namespace FenBrowser.Tests.Core
             Assert.False(
                 handler.StylesheetRequested,
                 $"unexpected stylesheet referrer={handler.StylesheetReferrer?.AbsoluteUri ?? "<null>"}");
+        }
+
+        [Fact]
+        public async Task ScriptCreatedIframe_UsesFrameResponseCspForImages()
+        {
+            ImageLoader.ClearCache();
+            try
+            {
+                using var handler = new FrameImageSecurityHandler(blockImage: true);
+                using var httpClient = new HttpClient(handler);
+                var resources = new ResourceManager(httpClient, isPrivate: true);
+                var navigation = new NavigationManager(resources);
+
+                using var browser = new BrowserHost(isPrivate: true);
+                SetPrivateField(browser, "_resources", resources);
+                SetPrivateField(browser, "_navManager", navigation);
+
+                Assert.True(await browser.NavigateAsync("https://example.test/page"));
+                Assert.NotNull(await WaitForElementAsync(browser, "frame-image"));
+                await Task.Delay(200);
+
+                Assert.False(handler.ImageRequested);
+                Assert.True(ImageLoader.TryGetLastLoadResult(
+                    "https://example.test/frames/challenge.png",
+                    out var imageResult));
+                Assert.Equal(BinaryFetchFailureReason.CspBlocked, imageResult.FailureReason);
+                Assert.False(imageResult.CspAllowed);
+            }
+            finally
+            {
+                ImageLoader.ClearCache();
+            }
+        }
+
+        [Fact]
+        public async Task ScriptCreatedIframe_UsesFrameReferrerPolicyForImages()
+        {
+            ImageLoader.ClearCache();
+            try
+            {
+                using var handler = new FrameImageSecurityHandler(blockImage: false);
+                using var httpClient = new HttpClient(handler);
+                var resources = new ResourceManager(httpClient, isPrivate: true);
+                var navigation = new NavigationManager(resources);
+
+                using var browser = new BrowserHost(isPrivate: true);
+                SetPrivateField(browser, "_resources", resources);
+                SetPrivateField(browser, "_navManager", navigation);
+
+                Assert.True(await browser.NavigateAsync("https://example.test/page"));
+                await handler.ImageRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+                Assert.True(handler.ImageRequested);
+                Assert.Null(handler.ImageReferrer);
+                Assert.Equal("image", handler.ImageFetchDestination);
+            }
+            finally
+            {
+                ImageLoader.ClearCache();
+            }
         }
 
         [Fact]
@@ -653,6 +714,76 @@ namespace FenBrowser.Tests.Core
                             "text/html")
                     };
                     response.Headers.TryAddWithoutValidation("Content-Security-Policy", "style-src 'none'");
+                    return Task.FromResult(response);
+                }
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent(
+                        "<!doctype html><html><body><script>" +
+                        "var frame=document.createElement('iframe');frame.src='/frames/frame.html';document.body.appendChild(frame);" +
+                        "</script></body></html>",
+                        Encoding.UTF8,
+                        "text/html")
+                });
+            }
+        }
+
+        private sealed class FrameImageSecurityHandler : HttpMessageHandler
+        {
+            private static readonly byte[] OnePixelPng = Convert.FromBase64String(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=");
+            private readonly bool _blockImage;
+
+            public FrameImageSecurityHandler(bool blockImage)
+            {
+                _blockImage = blockImage;
+            }
+
+            public bool ImageRequested { get; private set; }
+            public Uri ImageReferrer { get; private set; }
+            public string ImageFetchDestination { get; private set; }
+            public TaskCompletionSource<object> ImageRequestStarted { get; } =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            protected override Task<HttpResponseMessage> SendAsync(
+                HttpRequestMessage request,
+                CancellationToken cancellationToken)
+            {
+                var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+                if (path == "/frames/challenge.png")
+                {
+                    ImageRequested = true;
+                    ImageReferrer = request.Headers.Referrer;
+                    ImageFetchDestination = request.Headers.TryGetValues("Sec-Fetch-Dest", out var destinations)
+                        ? destinations.SingleOrDefault()
+                        : null;
+                    ImageRequestStarted.TrySetResult(null);
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        RequestMessage = request,
+                        Content = new ByteArrayContent(OnePixelPng)
+                        {
+                            Headers = { ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png") }
+                        }
+                    });
+                }
+
+                if (path == "/frames/frame.html")
+                {
+                    var response = new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        RequestMessage = request,
+                        Content = new StringContent(
+                            "<!doctype html><html><body><img id='frame-image' src='challenge.png' width='1' height='1'></body></html>",
+                            Encoding.UTF8,
+                            "text/html")
+                    };
+                    response.Headers.TryAddWithoutValidation(
+                        "Content-Security-Policy",
+                        _blockImage ? "img-src 'none'" : "img-src 'self'");
+                    response.Headers.TryAddWithoutValidation("Referrer-Policy", "no-referrer");
                     return Task.FromResult(response);
                 }
 

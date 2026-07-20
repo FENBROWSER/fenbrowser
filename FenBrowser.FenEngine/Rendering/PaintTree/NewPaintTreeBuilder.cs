@@ -2072,7 +2072,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (!string.IsNullOrWhiteSpace(url))
                 {
-                    inlineBackgroundBitmap = ImageLoader.GetImage(url);
+                    inlineBackgroundBitmap = ImageLoader.GetImage(url, ownerDocument: node?.OwnerDocument);
                 }
 
                 (inlineTileModeX, inlineTileModeY) = ResolveBackgroundTileModes(style?.BackgroundRepeat);
@@ -2817,7 +2817,7 @@ namespace FenBrowser.FenEngine.Rendering
                 catch (Exception ex) { global::FenBrowser.Core.EngineLogCompat.Warn($"[IMG-BUILD] Failed resolving image URL against base URI: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
             }
 
-            var bitmap = ImageLoader.GetImage(url);
+            var bitmap = ImageLoader.GetImage(url, ownerDocument: node?.OwnerDocument);
             global::FenBrowser.Core.EngineLogCompat.Info($"[BG-IMG] URL={(url?.Length > 60 ? url.Substring(0, 60) + "..." : url)} Bitmap={(bitmap != null ? $"{bitmap.Width}x{bitmap.Height}" : (url != null ? "loading" : "NO_URL"))}");
 
             // PROGRESSIVE: When the bitmap isn't cached yet (async load in flight),
@@ -3928,7 +3928,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 global::FenBrowser.Core.EngineLogCompat.Debug($"[IMG-BUILD] Tag={tag} URL={(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}");
-                var bitmap = ImageLoader.GetImage(url);
+                var bitmap = ImageLoader.GetImage(url, ownerDocument: elem.OwnerDocument);
                 
                 return new ImagePaintNode
                 {
@@ -3953,7 +3953,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 string resolvedUrl = NormalizeResourceUrl(dataUrl);
-                var bitmap = ImageLoader.GetImage(resolvedUrl);
+                var bitmap = ImageLoader.GetImage(resolvedUrl, ownerDocument: elem.OwnerDocument);
                 if (bitmap == null)
                 {
                     return null;
@@ -5652,7 +5652,7 @@ namespace FenBrowser.FenEngine.Rendering
                     url = new Uri(new Uri(_baseUri), url).ToString();
                 }
 
-                var bitmap = ImageLoader.GetImage(url);
+                var bitmap = ImageLoader.GetImage(url, ownerDocument: node?.OwnerDocument);
                 float markerSize = (float)(style?.FontSize ?? 16.0);
                 float markerX, markerY;
 
@@ -6277,7 +6277,7 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                     }
                     
-                    var bitmap = ImageLoader.GetImage(url);
+                    var bitmap = ImageLoader.GetImage(url, ownerDocument: SourceNode?.OwnerDocument);
                     if (bitmap != null)
                     {
                          var maskNode = new MaskPaintNode

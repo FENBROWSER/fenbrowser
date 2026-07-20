@@ -264,7 +264,7 @@ namespace FenBrowser.FenEngine.Layout
                 return false;
             }
 
-            var bitmap = ImageLoader.GetImage(resolved);
+            var bitmap = ImageLoader.GetImage(resolved, ownerDocument: element.OwnerDocument);
             if (bitmap == null)
             {
                 return false;
@@ -296,7 +296,7 @@ namespace FenBrowser.FenEngine.Layout
                 return false;
             }
 
-            var bitmap = ImageLoader.GetImage(resolved);
+            var bitmap = ImageLoader.GetImage(resolved, ownerDocument: element.OwnerDocument);
             if (bitmap == null)
             {
                 return false;

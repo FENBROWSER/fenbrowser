@@ -979,6 +979,9 @@ public void Dispose()
                 try { if (dw <= 0) dw = GetPrimaryWindowWidth(); } catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] Failed reading primary window width: {ex.Message}", LogCategory.Rendering); }
                 if (dw <= 0) dw = 480;
 
+                var ownerDocument = root.OwnerDocument;
+                var hasDocumentFetcher = ImageLoader.HasDocumentAwareFetcher(ownerDocument);
+
                 async Task LoadAndCacheAsync(Uri abs)
                 {
                     try
@@ -986,13 +989,17 @@ public void Dispose()
                         await gate.WaitAsync().ConfigureAwait(false);
                         try
                         {
-                            var data = await ImageLoader.FetchBytesForCurrentContextAsync(abs).ConfigureAwait(false);
+                            var data = await ImageLoader.FetchBytesForCurrentContextAsync(abs, ownerDocument).ConfigureAwait(false);
                             if (data != null && data.Length > 0)
                             {
                                 try
                                 {
                                     using var memory = new MemoryStream(data, writable: false);
-                                    if (await ImageLoader.PrewarmImageAsync(abs.AbsoluteUri, memory).ConfigureAwait(false))
+                                    if (await ImageLoader.PrewarmImageAsync(
+                                            abs.AbsoluteUri,
+                                            memory,
+                                            ownerDocument: ownerDocument)
+                                        .ConfigureAwait(false))
                                     {
                                         return;
                                     }
@@ -1003,10 +1010,19 @@ public void Dispose()
                                 }
                             }
 
+                            if (hasDocumentFetcher)
+                            {
+                                return;
+                            }
+
                             using var stream = await imageLoader(abs).ConfigureAwait(false);
                             if (stream != null)
                             {
-                                await ImageLoader.PrewarmImageAsync(abs.AbsoluteUri, stream).ConfigureAwait(false);
+                                await ImageLoader.PrewarmImageAsync(
+                                        abs.AbsoluteUri,
+                                        stream,
+                                        ownerDocument: ownerDocument)
+                                    .ConfigureAwait(false);
                             }
                         }
                         finally
@@ -1138,7 +1154,8 @@ public void Dispose()
         private static async Task PrewarmCssBackgroundImagesAsync(
             IReadOnlyDictionary<Node, CssComputed> computedStyles,
             Uri baseUri,
-            Func<Uri, Task<Stream>> imageLoader)
+            Func<Uri, Task<Stream>> imageLoader,
+            Document ownerDocument)
         {
             if (computedStyles == null || computedStyles.Count == 0 || baseUri == null || imageLoader == null)
             {
@@ -1147,6 +1164,7 @@ public void Dispose()
 
             try
             {
+                var hasDocumentFetcher = ImageLoader.HasDocumentAwareFetcher(ownerDocument);
                 var urls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var kvp in computedStyles)
                 {
@@ -1176,18 +1194,31 @@ public void Dispose()
                     try
                     {
                         var uri = new Uri(url);
-                        var data = await ImageLoader.FetchBytesForCurrentContextAsync(uri).ConfigureAwait(false);
+                        var data = await ImageLoader.FetchBytesForCurrentContextAsync(uri, ownerDocument).ConfigureAwait(false);
                         if (data != null && data.Length > 0)
                         {
                             using var memory = new MemoryStream(data, writable: false);
-                            await ImageLoader.PrewarmImageAsync(uri.AbsoluteUri, memory).ConfigureAwait(false);
+                            await ImageLoader.PrewarmImageAsync(
+                                    uri.AbsoluteUri,
+                                    memory,
+                                    ownerDocument: ownerDocument)
+                                .ConfigureAwait(false);
+                            continue;
+                        }
+
+                        if (hasDocumentFetcher)
+                        {
                             continue;
                         }
 
                         using var stream = await imageLoader(uri).ConfigureAwait(false);
                         if (stream != null)
                         {
-                            await ImageLoader.PrewarmImageAsync(uri.AbsoluteUri, stream).ConfigureAwait(false);
+                            await ImageLoader.PrewarmImageAsync(
+                                    uri.AbsoluteUri,
+                                    stream,
+                                    ownerDocument: ownerDocument)
+                                .ConfigureAwait(false);
                         }
                     }
                     catch (Exception ex)
@@ -2213,6 +2244,11 @@ public void Dispose()
             }
         }
 
+        internal Task PrewarmSubdocumentImagesAsync(Element root, Uri baseUri)
+        {
+            return PrewarmImagesAsync(root, baseUri, _activeImageLoader, _activeViewportWidth);
+        }
+
         private async Task DrainScheduledRecascadesAsync()
         {
             while (true)
@@ -3149,7 +3185,7 @@ public void Dispose()
                 // 4. Prewarm Images
                 EngineLogCompat.Debug("[CustomHtmlEngine] Prewarming images...", LogCategory.Rendering);
                 try { await PrewarmImagesAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, imageLoader, viewportWidth).ConfigureAwait(false); } catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] PrewarmImages invocation failed: {ex.Message}", LogCategory.Rendering); }
-                try { await PrewarmCssBackgroundImagesAsync(LastComputedStyles, baseUri, imageLoader).ConfigureAwait(false); } catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] PrewarmCssBackgroundImages invocation failed: {ex.Message}", LogCategory.Rendering); }
+                try { await PrewarmCssBackgroundImagesAsync(LastComputedStyles, baseUri, imageLoader, (dom as Document) ?? dom.OwnerDocument).ConfigureAwait(false); } catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] PrewarmCssBackgroundImages invocation failed: {ex.Message}", LogCategory.Rendering); }
 
                 // HTML spec Â§4.12.1: When scripting is enabled, <noscript> must not render.
                 // Remove noscript elements entirely when JS is on to prevent their raw HTML-encoded
