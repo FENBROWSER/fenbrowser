@@ -2657,18 +2657,7 @@ namespace FenBrowser.Tooling
 
             private static Dictionary<string, string> CaptureHeaders(HttpHeaders headers)
             {
-                var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                if (headers == null)
-                {
-                    return result;
-                }
-
-                foreach (var header in headers)
-                {
-                    result[header.Key] = string.Join(", ", header.Value);
-                }
-
-                return result;
+                return CaptureDebugSiteHeaders(headers);
             }
 
             private static long? CalculateDurationMs(string startedUtc, string completedUtc)
@@ -2682,6 +2671,33 @@ namespace FenBrowser.Tooling
                 return null;
             }
         }
+
+        internal static Dictionary<string, string> CaptureDebugSiteHeaders(HttpHeaders headers)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (headers == null)
+            {
+                return result;
+            }
+
+            foreach (var header in headers)
+            {
+                result[header.Key] = IsSensitiveDiagnosticHeader(header.Key)
+                    ? "[redacted]"
+                    : string.Join(", ", header.Value);
+            }
+
+            return result;
+        }
+
+        private static bool IsSensitiveDiagnosticHeader(string name) =>
+            string.Equals(name, "Cookie", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "Set-Cookie", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "Authorization", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "Proxy-Authorization", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "X-Api-Key", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "Api-Key", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "X-Auth-Token", StringComparison.OrdinalIgnoreCase);
 
         private sealed class DebugSiteNetworkRecord
         {
