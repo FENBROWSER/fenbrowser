@@ -90,6 +90,7 @@ namespace FenBrowser.FenEngine.Rendering
         public RendererSafetyPolicy SafetyPolicy { get; set; } = RendererSafetyPolicy.Default;
         public bool LastFrameWatchdogTriggered { get; private set; }
         public string LastFrameWatchdogReason { get; private set; }
+        public RenderFrameWatchdogAction LastFrameWatchdogAction { get; private set; }
         public RenderFrameTelemetry LastFrameTelemetry { get; private set; }
         public bool LastFrameUsedIncrementalLayout { get; private set; }
         public int LastFrameIncrementalLayoutRootCount { get; private set; }
@@ -281,6 +282,7 @@ namespace FenBrowser.FenEngine.Rendering
                 Overlays = CurrentOverlays.ToArray(),
                 WatchdogTriggered = LastFrameWatchdogTriggered,
                 WatchdogReason = LastFrameWatchdogReason,
+                WatchdogAction = LastFrameWatchdogAction,
                 UsedDamageRasterization = LastFrameUsedDamageRasterization,
                 DamageAreaRatio = LastDamageAreaRatio,
                 InvalidationReason = request.InvalidationReason,
@@ -350,6 +352,7 @@ namespace FenBrowser.FenEngine.Rendering
             var rasterMode = RenderFrameRasterMode.None;
             LastFrameWatchdogTriggered = false;
             LastFrameWatchdogReason = null;
+            LastFrameWatchdogAction = RenderFrameWatchdogAction.None;
             LastFrameUsedIncrementalLayout = false;
             LastFrameIncrementalLayoutRootCount = 0;
             try
@@ -841,10 +844,27 @@ namespace FenBrowser.FenEngine.Rendering
                     LastDamageAreaRatio = damageAreaRatio;
                     LastFrameUsedDamageRasterization = useDamageRasterization;
                     LastRetainedTileRasterization = default;
-                    // Rebuilt paint trees must never preserve a stale base frame.
-                    // Under watchdog pressure this prevents "white/stale lock" where
-                    // we keep reusing an old frame after building a new tree.
-                    bool mustPresentFreshFrame = rebuiltPaintTree;
+                    // Rebuilt paint trees must never preserve a stale base frame when the
+                    // change is structural (DOM/layout/style/navigation/viewport): presenting
+                    // an old frame there would show geometry inconsistent with the new DOM.
+                    //
+                    // Phase 10: an animation-only late frame is different. The DOM/geometry
+                    // is unchanged, so the previous frame is still structurally consistent;
+                    // forcing an expensive full raster here is exactly what drives the
+                    // recurring watchdog full-raster loop. For an animation-only over-budget
+                    // frame we instead drop the obsolete frame and preserve the last
+                    // presentable frame; the animation engine re-requests a follow-up, so the
+                    // newest animation state is presented on a subsequent in-budget frame.
+                    const RenderFrameInvalidationReason structuralReasons =
+                        RenderFrameInvalidationReason.Navigation |
+                        RenderFrameInvalidationReason.Dom |
+                        RenderFrameInvalidationReason.Style |
+                        RenderFrameInvalidationReason.Layout |
+                        RenderFrameInvalidationReason.Viewport;
+                    bool animationOnlyLateFrame =
+                        (invalidationReason & RenderFrameInvalidationReason.Animation) != 0 &&
+                        (invalidationReason & structuralReasons) == 0;
+                    bool mustPresentFreshFrame = rebuiltPaintTree && !animationOnlyLateFrame;
 
                     if (watchdogAbortBeforeRaster && SafetyPolicy?.SkipRasterWhenOverBudget == true)
                     {
@@ -857,6 +877,9 @@ namespace FenBrowser.FenEngine.Rendering
                         if (preserveBaseFrame)
                         {
                             // Preserve the caller-seeded base frame instead of presenting a blank fallback.
+                            LastFrameWatchdogAction = animationOnlyLateFrame
+                                ? RenderFrameWatchdogAction.DroppedObsoleteAnimationFrame
+                                : RenderFrameWatchdogAction.PreservedPreviousFrame;
                             EngineLogCompat.Warn(
                                 "[SkiaDomRenderer] Watchdog budget exceeded before raster; preserving the caller-supplied base frame.",
                                 LogCategory.Performance);
@@ -864,6 +887,7 @@ namespace FenBrowser.FenEngine.Rendering
                         else
                         {
                             // DOM/layout/paint changes must present a fresh frame even under budget pressure.
+                            LastFrameWatchdogAction = RenderFrameWatchdogAction.ForcedFreshRaster;
                             EngineLogCompat.Warn(
                                 "[SkiaDomRenderer] Watchdog budget exceeded before raster on a fresh paint tree; forcing full raster to avoid presenting stale content.",
                                 LogCategory.Performance);
@@ -1285,6 +1309,7 @@ namespace FenBrowser.FenEngine.Rendering
                 BaseFrameSeeded = hasBaseFrame,
                 WatchdogTriggered = LastFrameWatchdogTriggered,
                 WatchdogReason = LastFrameWatchdogReason,
+                WatchdogAction = LastFrameWatchdogAction,
                 LayoutDurationMs = layoutDurationMs,
                 PaintDurationMs = paintDurationMs,
                 RasterDurationMs = rasterDurationMs,

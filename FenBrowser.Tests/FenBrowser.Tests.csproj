@@ -80,6 +80,8 @@
     <Compile Include="Host\Phase14FrameRequestCoalescingTests.cs" />
     <!-- Phase 11 interaction re-cascade CancellationTokenSource ownership. -->
     <Compile Include="Host\Phase11InteractionRecascadeCtsTests.cs" />
+    <!-- Phase 10 watchdog late-frame policy regression. -->
+    <Compile Include="Rendering\Phase10WatchdogLateFramePolicyTests.cs" />
   </ItemGroup>
 
 </Project>

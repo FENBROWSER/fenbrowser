@@ -38,6 +38,20 @@ namespace FenBrowser.FenEngine.Rendering.Core
         Full = 3
     }
 
+    /// <summary>
+    /// Phase 10: the concrete decision the frame watchdog took for a late frame.
+    /// Replaces a bare boolean so late-frame policy can be reasoned about and tested.
+    /// </summary>
+    public enum RenderFrameWatchdogAction
+    {
+        None = 0,
+        PreservedPreviousFrame = 1,
+        DroppedObsoleteAnimationFrame = 2,
+        ScheduledFollowup = 3,
+        ForcedFreshRaster = 4,
+        AbortedInvalidFrame = 5
+    }
+
     public sealed class RenderFrameTelemetry
     {
         public long FrameSequence { get; init; }
@@ -83,6 +97,8 @@ namespace FenBrowser.FenEngine.Rendering.Core
         public bool WatchdogTriggered { get; init; }
 
         public string WatchdogReason { get; init; }
+
+        public RenderFrameWatchdogAction WatchdogAction { get; init; }
 
         public double LayoutDurationMs { get; init; }
 
@@ -165,6 +181,8 @@ namespace FenBrowser.FenEngine.Rendering.Core
         public bool WatchdogTriggered { get; init; }
 
         public string WatchdogReason { get; init; }
+
+        public RenderFrameWatchdogAction WatchdogAction { get; init; }
 
         public bool UsedDamageRasterization { get; init; }
 
