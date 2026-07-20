@@ -10835,6 +10835,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     "tabindex",
                     ((int)CoerceToFiniteNumber(value, 0)).ToString(CultureInfo.InvariantCulture));
                 break;
+            case "width" when IsIFrameElement(element):
+            case "height" when IsIFrameElement(element):
+                element.SetAttribute(property, CoerceToHostString(value));
+                NotifyResizeObservers(element);
+                break;
             case "src":
             case "srcdoc":
             case "href":
@@ -12520,6 +12525,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private void NotifyResizeObservers(Element element)
     {
+        RefreshFrameRealmViewport(element);
         var notify = ReadGlobalValueOrUndefined("__fenNotifyResizeObservers");
         if (_interpreter.CanCallValue(notify))
         {
@@ -12527,6 +12533,86 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 notify,
                 new[] { ToHostOrNull(element, HostObjectKind.DomElement) },
                 _fenJsGlobalThis);
+        }
+    }
+
+    private void RefreshFrameRealmViewport(Element frameElement)
+    {
+        if (!IsIFrameElement(frameElement) ||
+            !_iframeRealms.TryGetValue(frameElement, out var frameRealm))
+        {
+            return;
+        }
+
+        var width = ResolveFrameViewportDimension(frameElement, "width", WindowWidth);
+        var height = ResolveFrameViewportDimension(frameElement, "height", WindowHeight);
+        var proxy = GetStoredHostPropertyOrUndefined(frameElement, "__fenIframeContentWindow");
+        if (proxy.Tag == JsValueTag.Object)
+        {
+            SetIFrameViewportProperties(proxy, frameElement);
+        }
+        frameRealm.UpdateOwnedViewport(width, height);
+    }
+
+    private void UpdateOwnedViewport(double width, double height)
+    {
+        var changed = false;
+        lock (_fenJsLock)
+        {
+            changed = Math.Abs(WindowWidth - width) > 0.001 || Math.Abs(WindowHeight - height) > 0.001;
+            WindowWidth = width;
+            WindowHeight = height;
+            _interpreter.RegisterGlobalValue("innerWidth", JsValue.FromNumber(width));
+            _interpreter.RegisterGlobalValue("innerHeight", JsValue.FromNumber(height));
+            _interpreter.RegisterGlobalValue("outerWidth", JsValue.FromNumber(width));
+            _interpreter.RegisterGlobalValue("outerHeight", JsValue.FromNumber(height));
+            var screen = ReadGlobalValueOrUndefined("screen");
+            if (screen.Tag == JsValueTag.Object)
+            {
+                _interpreter.SetObjectProperty(screen, "width", JsValue.FromNumber(width));
+                _interpreter.SetObjectProperty(screen, "height", JsValue.FromNumber(height));
+                _interpreter.SetObjectProperty(screen, "availWidth", JsValue.FromNumber(width));
+                _interpreter.SetObjectProperty(screen, "availHeight", JsValue.FromNumber(height));
+            }
+        }
+
+        if (changed)
+        {
+            QueueOwnedWindowEvent("resize");
+        }
+    }
+
+    private void QueueOwnedWindowEvent(string type)
+    {
+        var sessionGeneration = _fenJsSessionGeneration;
+        lock (_windowMessageQueueLock)
+        {
+            _windowMessageDeliveryTail = _windowMessageDeliveryTail.ContinueWith(
+                _ =>
+                {
+                    if (sessionGeneration != _fenJsSessionGeneration)
+                    {
+                        return;
+                    }
+
+                    RunFenJsWithLargeStack<object>(() =>
+                    {
+                        lock (_fenJsLock)
+                        {
+                            var eventValue = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                            {
+                                ["type"] = JsValue.FromString(type)
+                            });
+                            DispatchWindowHostEvent(eventValue);
+                            _interpreter.PumpMicrotasks();
+                        }
+                        return null;
+                    });
+                    try { RequestRender?.Invoke(); } catch { }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.None,
+                TaskScheduler.Default);
         }
     }
 
@@ -15245,6 +15331,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case Element element when string.Equals(property, "onerror", StringComparison.Ordinal):
                     _owner.SetStoredHostProperty(element, "onerror", value);
                     return true;
+                case Element element when IsIFrameElement(element) &&
+                    (string.Equals(property, "width", StringComparison.Ordinal) ||
+                     string.Equals(property, "height", StringComparison.Ordinal)):
+                    element.SetAttribute(property, CoerceToHostString(value));
+                    _owner.NotifyResizeObservers(element);
+                    return true;
                 case Element element:
                     // Catch-all for arbitrary element properties (e.g. Google sets
                     // __gwbp, __jsl, and other internal bookkeeping properties on
@@ -16282,6 +16374,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                 IsIFrameElement(element))
                             {
                                 _owner.QueueFrameElementLoad(element);
+                            }
+                            if (IsIFrameElement(element) &&
+                                (string.Equals(attributeName, "width", StringComparison.OrdinalIgnoreCase) ||
+                                 string.Equals(attributeName, "height", StringComparison.OrdinalIgnoreCase) ||
+                                 string.Equals(attributeName, "style", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                _owner.NotifyResizeObservers(element);
                             }
                             return JsValue.Undefined;
                         },

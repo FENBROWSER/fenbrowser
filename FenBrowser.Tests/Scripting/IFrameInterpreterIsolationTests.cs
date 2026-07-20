@@ -255,6 +255,47 @@ public sealed class IFrameInterpreterIsolationTests
         Assert.Null(topLevelNavigation);
     }
 
+    [Fact]
+    public async Task FrameResize_UpdatesOwnedViewportAndDispatchesResize()
+    {
+        var parentUri = new Uri("https://same.test/page");
+        var parentDocument = new HtmlParser(
+            "<html><body><iframe id='child' src='/frame' style='width:300px;height:150px'></iframe></body></html>",
+            parentUri).Parse();
+        var engine = CreateEngine();
+        await engine.SetDomAsync(parentDocument.DocumentElement, parentUri);
+
+        var childUri = new Uri("https://same.test/frame");
+        var childDocument = new HtmlParser(
+            "<html><body><script>window.__resizeCount=0;" +
+            "addEventListener('resize',function(){window.__resizeCount++;" +
+            "window.__resizeShape=innerWidth+'x'+innerHeight;});</script></body></html>",
+            childUri).Parse();
+        var frame = Assert.IsType<Element>(parentDocument.GetElementById("child"));
+        frame.AppendChild(childDocument);
+        await engine.SetSubdocumentDomAsync(childDocument.DocumentElement, childUri);
+
+        engine.Evaluate(
+            "var frame=document.getElementById('child');" +
+            "frame.style.width='640px';frame.style.height='420px';");
+
+        var deadline = DateTime.UtcNow.AddSeconds(1);
+        while (DateTime.UtcNow < deadline &&
+               engine.EvaluateInSubdocumentForTest(childDocument, "String(window.__resizeShape || '')")?.ToString() != "640x420")
+        {
+            await Task.Delay(25);
+        }
+
+        Assert.Equal("640", engine.EvaluateInSubdocumentForTest(childDocument, "String(innerWidth)")?.ToString());
+        Assert.Equal("420", engine.EvaluateInSubdocumentForTest(childDocument, "String(innerHeight)")?.ToString());
+        Assert.Equal("640x420", engine.EvaluateInSubdocumentForTest(childDocument, "String(window.__resizeShape)")?.ToString());
+        Assert.Equal(
+            "640x420",
+            engine.Evaluate(
+                "var frame=document.getElementById('child').contentWindow;" +
+                "String(frame.innerWidth)+'x'+String(frame.innerHeight)")?.ToString());
+    }
+
     private static FenJsBrowserScriptEngine CreateEngine() => new(CreateHost())
     {
         Sandbox = SandboxPolicy.AllowAll
