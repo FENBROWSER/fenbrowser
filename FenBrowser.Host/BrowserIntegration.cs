@@ -21,6 +21,20 @@ using FenBrowser.Host.Input;
 namespace FenBrowser.Host;
 
 /// <summary>
+/// Explicit page-visibility states used to gate rendering work. Mirrors the
+/// intent of the Page Visibility spec without disabling standards-required
+/// behavior: animations simply advance less frequently (or not at all) when the
+/// tab/window is not presented to the user.
+/// </summary>
+public enum PageVisibilityState
+{
+    Visible,
+    Hidden,
+    Minimized,
+    Suspended
+}
+
+/// <summary>
 /// Integration layer connecting BrowserHost to the Host render loop.
 /// Manages page loading, rendering, and input coordination.
 /// Handles Window → UI → Document coordinate translation.
@@ -96,6 +110,20 @@ public class BrowserIntegration : IDisposable
     private string _pendingInvalidationSource = "startup";
     private Action<AnimationFrameEvent> _animationFrameHandler;
     private bool _animationEventsDisposed;
+    // Per-integration single-flight gate for animation-driven frames.
+    // A global 16ms animation tick can fire many times while one frame is still
+    // being rendered; we coalesce those into at most one in-flight frame plus one
+    // pending follow-up so a slow renderer never accumulates dozens of requests.
+    private int _animationFrameInFlight;
+    private int _animationFramePending;
+    // No-op RepaintReady suppression (Phase 7).
+    private long _lastAdoptedRenderSnapshotVersion = -1;
+    private long _lastRenderedImageCacheVersion = -1;
+    private int _noOpRepaintReadyCount;
+    // Phase 16: last time a throttled background-tab animation frame was requested.
+    private DateTime _lastBackgroundAnimationFrameUtc = DateTime.MinValue;
+    // Phase 8: duration of the second full-frame seed raster (when it runs).
+    private long _lastSeedImageCreateMs;
     // Remote frame bitmap delivered from a brokered renderer child via shared memory.
     private SKBitmap _remoteFrameBitmap;
     private float _remoteFrameScrollY;
@@ -178,6 +206,41 @@ public class BrowserIntegration : IDisposable
     }
     
     public FenBrowser.Host.Tabs.BrowserTab OwnerTab { get; }
+    
+    /// <summary>
+    /// Current visibility state derived from tab activation and window state.
+    /// Drives how aggressively this integration renders (Phase 16).
+    /// </summary>
+    public PageVisibilityState VisibilityState
+    {
+        get
+        {
+            if (OwnerTab == null)
+            {
+                return PageVisibilityState.Visible;
+            }
+
+            if (!OwnerTab.IsActive)
+            {
+                return PageVisibilityState.Hidden;
+            }
+
+            try
+            {
+                var window = WindowManager.Instance?.Window;
+                if (window != null &&
+                    window.WindowState == Silk.NET.Windowing.WindowState.Minimized)
+                {
+                    return PageVisibilityState.Minimized;
+                }
+            }
+            catch
+            {
+            }
+
+            return PageVisibilityState.Visible;
+        }
+    }
     
     public BrowserIntegration(FenBrowser.Host.Tabs.BrowserTab ownerTab = null)
     {
@@ -341,6 +404,35 @@ public class BrowserIntegration : IDisposable
 
             EngineLogBridge.Info($"[BrowserIntegration] RepaintReady: Root={(_root?.TagName ?? "NULL")}, Styles={_styles?.Count ?? 0}", LogCategory.Rendering);
 
+            // ── No-op RepaintReady suppression (Phase 7) ──
+            // Repeated RepaintReady signalling without any actual DOM/style/image
+            // change must not request a frame. Compare everything that could make a
+            // frame meaningful before waking the engine loop.
+            bool versionChanged = snapshot.Version != _lastAdoptedRenderSnapshotVersion;
+            bool dirty =
+                snapshot.Root?.StyleDirty == true ||
+                snapshot.Root?.ChildStyleDirty == true ||
+                snapshot.Root?.LayoutDirty == true ||
+                snapshot.Root?.ChildLayoutDirty == true ||
+                snapshot.Root?.PaintDirty == true ||
+                snapshot.Root?.ChildPaintDirty == true;
+            bool imageUpdate = ImageLoader.CacheVersion != _lastRenderedImageCacheVersion;
+            bool animationUpdate = HasDocumentAnimationUpdate();
+
+            if (!rootChanged &&
+                !stylesChanged &&
+                !versionChanged &&
+                !dirty &&
+                !imageUpdate &&
+                !animationUpdate)
+            {
+                RecordNoOpRepaintReady();
+                return;
+            }
+
+            _lastAdoptedRenderSnapshotVersion = snapshot.Version;
+            _lastRenderedImageCacheVersion = ImageLoader.CacheVersion;
+
             // Wake the engine thread. RecordFrame will call NeedsRepaint?.Invoke() only
             // after a valid frame is committed. Many repaint-ready signals are paint-only
             // wakeups, especially image/animation callbacks; avoid upgrading those to
@@ -456,9 +548,67 @@ public class BrowserIntegration : IDisposable
             return;
         }
 
+        // Phase 2: per-integration single-flight gating. If a frame is already in
+        // flight for this tab, coalesce the new animation tick into one pending
+        // follow-up instead of requesting another frame. This prevents a free-
+        // running animation timer from stacking dozens of frame requests on a
+        // slow renderer; the latest animation state is still presented because
+        // the pending flag re-requests after the in-flight frame commits.
+        if (Interlocked.CompareExchange(ref _animationFrameInFlight, 1, 0) != 0)
+        {
+            Volatile.Write(ref _animationFramePending, 1);
+            return;
+        }
+
         RequestFrame(
             MapAnimationInvalidation(animation.Invalidation),
             "CssAnimationEngine");
+    }
+
+    /// <summary>
+    /// Called by the engine loop after a frame is committed so the animation
+    /// single-flight gate can be released and any coalesced follow-up requested.
+    /// </summary>
+    internal void CompleteAnimationFrame()
+    {
+        if (Interlocked.Exchange(ref _animationFrameInFlight, 0) == 1 &&
+            Interlocked.Exchange(ref _animationFramePending, 0) == 1)
+        {
+            RequestFrame(
+                RenderFrameInvalidationReason.Animation,
+                "CssAnimationEngine");
+        }
+    }
+
+    private void RecordNoOpRepaintReady()
+    {
+        _noOpRepaintReadyCount++;
+        EngineLogBridge.WriteRateLimited(
+            "BrowserIntegration.NoOpRepaintReady",
+            TimeSpan.FromSeconds(5),
+            LogCategory.Rendering,
+            LogSeverity.Debug,
+            $"[BrowserIntegration] Suppressed no-op RepaintReady (total={_noOpRepaintReadyCount}).");
+    }
+
+    private bool HasDocumentAnimationUpdate()
+    {
+        var activeDocument = _root?.OwnerDocument;
+        if (activeDocument == null)
+        {
+            return false;
+        }
+
+        var active = CssAnimationEngine.Instance.GetAllActiveAnimationElements();
+        foreach (var element in active)
+        {
+            if (ReferenceEquals(element.OwnerDocument, activeDocument))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static RenderFrameInvalidationReason MapAnimationInvalidation(InvalidationKind kind)
@@ -484,9 +634,13 @@ public class BrowserIntegration : IDisposable
 
     private void RecordThrottledBackgroundAnimation(AnimationFrameEvent animation)
     {
-        // Background-tab animation: suppressed from normal-frequency rendering here.
-        // Phases 2/16 introduce proper background-tab throttling; for now we avoid
-        // requesting a full-frequency frame for an inactive tab.
+        // Phase 16 / Phase 2: a background (hidden/minimized/suspended) tab must not
+        // consume a continuous animation render loop. The hard performance target is
+        // zero hidden-tab raster frames, so we request no frame here. Animation time
+        // still advances logically in the engine (CssAnimationEngine interpolates by
+        // wall clock), so when the tab is reactivated the correct interpolated state
+        // is presented without a backlog of stale frames.
+        return;
     }
 
     public void Dispose()
@@ -999,6 +1153,11 @@ public class BrowserIntegration : IDisposable
 
             // Stage 3: Style sync + Layout + Paint + Present
             bool rendered = SyncAndRender(deadline, coordinator);
+
+            // Release the animation single-flight gate (Phase 2). Any coalesced
+            // follow-up animation tick requests exactly one follow-up frame. Called
+            // unconditionally so the gate can never deadlock if a frame was skipped.
+            CompleteAnimationFrame();
 
             // Stage 4: Adaptive wait
             bool inputPending = _inputQueue.Count > 0;
@@ -1737,7 +1896,29 @@ public class BrowserIntegration : IDisposable
 
             // Finish recording and derive the next seed image from the committed picture.
             var newFrame = _recorder.EndRecording();
-            var newSeedImage = CreateSeedImageFromFrame(newFrame, viewportSize);
+
+            // Phase 8: Do NOT re-raster a full seed image on every committed frame.
+            // When the raster mode is PreservedBaseFrame or None the committed frame's
+            // content is identical to the previously published seed (the base frame was
+            // reused with no content change), so re-drawing the whole picture into a new
+            // surface would be a redundant full-frame raster. Reuse the existing seed.
+            var rasterMode = frameResult?.RasterMode ?? RenderFrameRasterMode.Full;
+            bool canSkipSeedRaster =
+                rasterMode == RenderFrameRasterMode.PreservedBaseFrame ||
+                rasterMode == RenderFrameRasterMode.None;
+
+            SKImage newSeedImage;
+            if (canSkipSeedRaster && _currentFrameSeedImage != null)
+            {
+                newSeedImage = _currentFrameSeedImage;
+                _lastSeedImageCreateMs = 0;
+            }
+            else
+            {
+                var seedStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                newSeedImage = CreateSeedImageFromFrame(newFrame, viewportSize);
+                _lastSeedImageCreateMs = seedStopwatch.ElapsedMilliseconds;
+            }
 
             // Publish the new content snapshot FIRST — atomic reference write,
             // visible to the compositor thread immediately without any lock.
@@ -1763,10 +1944,20 @@ public class BrowserIntegration : IDisposable
             _pendingDisposeFrame = retiringSnapshot?.Frame;
 
             // Seed-image management is engine-thread-only; no lock needed.
-            _currentFrameSeedImage?.Dispose();
-            _currentFrameSeedImage = newSeedImage;
-            _currentFrameSeedCreatedUtc = newSeedImage != null ? DateTime.UtcNow : DateTime.MinValue;
-            _consecutiveBaseFrameReuseCount = (canReuseBaseFrame && newSeedImage != null)
+            if (ReferenceEquals(newSeedImage, _currentFrameSeedImage))
+            {
+                // Reusing the existing seed: do not dispose it. Refresh the age so the
+                // reuse policy does not evict a perfectly valid base frame.
+                _currentFrameSeedCreatedUtc = DateTime.UtcNow;
+            }
+            else
+            {
+                _currentFrameSeedImage?.Dispose();
+                _currentFrameSeedImage = newSeedImage;
+                _currentFrameSeedCreatedUtc = newSeedImage != null ? DateTime.UtcNow : DateTime.MinValue;
+            }
+
+            _consecutiveBaseFrameReuseCount = (canReuseBaseFrame && _currentFrameSeedImage != null)
                 ? _consecutiveBaseFrameReuseCount + 1
                 : 0;
 
@@ -1887,6 +2078,7 @@ public class BrowserIntegration : IDisposable
                 ["layoutMs"] = Math.Round(Math.Max(0d, telemetry.LayoutDurationMs), 2),
                 ["paintMs"] = Math.Round(Math.Max(0d, telemetry.PaintDurationMs), 2),
                 ["rasterMs"] = Math.Round(Math.Max(0d, telemetry.RasterDurationMs), 2),
+                ["seedImageCreateMs"] = _lastSeedImageCreateMs,
                 ["totalMs"] = Math.Round(Math.Max(0d, telemetry.TotalDurationMs), 2),
                 ["watchdogTriggered"] = telemetry.WatchdogTriggered,
                 ["watchdogReason"] = telemetry.WatchdogReason ?? string.Empty

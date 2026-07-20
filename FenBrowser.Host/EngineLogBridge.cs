@@ -56,6 +56,21 @@ internal static class EngineLogBridge
         Write(LogSeverity.Error, message, category, ex, memberName, sourceFile, sourceLine);
     }
 
+    public static void WriteRateLimited(
+        string key,
+        TimeSpan window,
+        LogCategory category,
+        LogSeverity severity,
+        string message)
+    {
+        EngineLog.WriteRateLimited(
+            key,
+            window,
+            EngineLogCompatibility.FromLegacyCategory(category),
+            severity,
+            message ?? string.Empty);
+    }
+
     private static void Write(
         LogSeverity severity,
         string message,
