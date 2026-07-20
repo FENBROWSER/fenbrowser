@@ -14313,6 +14313,34 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         });
     }
 
+    private void NavigateOwningBrowsingContext(Uri targetUri)
+    {
+        if (targetUri == null)
+        {
+            return;
+        }
+
+        if (_parentRealmOwner != null && _embeddingFrameElement != null)
+        {
+            _parentRealmOwner.QueueFrameNavigation(_embeddingFrameElement, targetUri);
+            return;
+        }
+
+        _host.Navigate(targetUri);
+    }
+
+    private void QueueFrameNavigation(Element frameElement, Uri targetUri)
+    {
+        if (frameElement == null || targetUri == null || !frameElement.IsConnected)
+        {
+            return;
+        }
+
+        frameElement.SetAttribute("src", targetUri.AbsoluteUri);
+        SetStoredHostProperty(frameElement, "__fenFrameLoadUrl", JsValue.Undefined);
+        QueueFrameElementLoad(frameElement);
+    }
+
     private void AdoptTransferredMessagePorts(JsValue ports, JsValue targetWindow)
     {
         if (ports.Tag != JsValueTag.Object || targetWindow.Tag != JsValueTag.Object)
@@ -15283,7 +15311,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case FenJsLocationHost location when string.Equals(property, "href", StringComparison.Ordinal):
                     var hrefStr = CoerceToHostString(value);
                     if (!string.IsNullOrWhiteSpace(hrefStr) && Uri.TryCreate(location.Uri, hrefStr, out var navUri))
-                        _owner._host.Navigate(navUri);
+                        _owner.NavigateOwningBrowsingContext(navUri);
                     return true;
                 case FenJsHistoryHost history
                     when string.Equals(property, "pushState", StringComparison.Ordinal) ||
@@ -18598,7 +18626,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "reload":
                     value = _owner.GetOrCreateHostCallable(
                         location, "reload",
-                        (_, _2) => { _owner._host.Navigate(uri); return JsValue.Undefined; },
+                        (_, _2) => { _owner.NavigateOwningBrowsingContext(uri); return JsValue.Undefined; },
                         length: 1);
                     return true;
                 case "replace":
@@ -18608,7 +18636,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         {
                             var url = args.Count > 0 ? CoerceToHostString(args[0]) : null;
                             if (!string.IsNullOrWhiteSpace(url) && Uri.TryCreate(uri, url, out var navUri))
-                                _owner._host.Navigate(navUri);
+                                _owner.NavigateOwningBrowsingContext(navUri);
                             return JsValue.Undefined;
                         }, length: 1);
                     return true;
@@ -18619,7 +18647,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         {
                             var url = args.Count > 0 ? CoerceToHostString(args[0]) : null;
                             if (!string.IsNullOrWhiteSpace(url) && Uri.TryCreate(uri, url, out var navUri))
-                                _owner._host.Navigate(navUri);
+                                _owner.NavigateOwningBrowsingContext(navUri);
                             return JsValue.Undefined;
                         }, length: 1);
                     return true;

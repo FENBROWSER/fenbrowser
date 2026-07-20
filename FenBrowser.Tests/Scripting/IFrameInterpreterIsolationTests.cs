@@ -214,6 +214,47 @@ public sealed class IFrameInterpreterIsolationTests
             engine.EvaluateInSubdocumentForTest(childDocument, "window.__order.join(',')")?.ToString());
     }
 
+    [Fact]
+    public async Task FrameLocationNavigation_ReloadsFrameWithoutNavigatingTopLevel()
+    {
+        Uri topLevelNavigation = null;
+        var host = new JsHostAdapter(
+            navigate: uri => topLevelNavigation = uri,
+            post: (_, _) => { },
+            status: _ => { },
+            log: _ => { });
+        var engine = new FenJsBrowserScriptEngine(host) { Sandbox = SandboxPolicy.AllowAll };
+        var parentUri = new Uri("https://parent.test/page");
+        var parentDocument = new HtmlParser(
+            "<html><body><iframe id='child' src='https://child.test/frame'></iframe></body></html>",
+            parentUri).Parse();
+        await engine.SetDomAsync(parentDocument.DocumentElement, parentUri);
+
+        var navigation = new TaskCompletionSource<(Element Frame, Uri Uri)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        engine.FrameElementLoader = (frame, uri) =>
+        {
+            navigation.TrySetResult((frame, uri));
+            return Task.CompletedTask;
+        };
+        var childUri = new Uri("https://child.test/frame");
+        var childDocument = new HtmlParser(
+            "<html><body><script>location.assign('/next');</script></body></html>",
+            childUri).Parse();
+        var frameElement = Assert.IsType<Element>(parentDocument.GetElementById("child"));
+        frameElement.AppendChild(childDocument);
+
+        await engine.SetSubdocumentDomAsync(childDocument.DocumentElement, childUri);
+        var completed = await Task.WhenAny(navigation.Task, Task.Delay(1000));
+
+        Assert.Same(navigation.Task, completed);
+        var frameNavigation = await navigation.Task;
+        Assert.Same(frameElement, frameNavigation.Frame);
+        Assert.Equal("https://child.test/next", frameNavigation.Uri.AbsoluteUri);
+        Assert.Equal("https://child.test/next", frameElement.GetAttribute("src"));
+        Assert.Null(topLevelNavigation);
+    }
+
     private static FenJsBrowserScriptEngine CreateEngine() => new(CreateHost())
     {
         Sandbox = SandboxPolicy.AllowAll
