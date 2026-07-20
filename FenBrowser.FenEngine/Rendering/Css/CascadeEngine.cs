@@ -698,33 +698,15 @@ return computed;
                 if (!scopeMatched) return; // Not inside the required scope
             }
 
-            // 2. Match the actual selector
-            var matchedChain = SelectorMatcher.GetMatchingChain(element, styleRule.Selector);
+            // 2. Match the actual selector in the requested element/pseudo context.
+            // A selector list can contain multiple branches that match the same
+            // originating element but target different generated boxes. Selecting
+            // by specificity before filtering that context can apply declarations
+            // from the wrong branch.
+            var matchedChain = GetMatchingChainForContext(element, styleRule.Selector, pseudoElement);
             if (matchedChain == null)
             {
                 return;
-            }
-
-            {
-                var segments = matchedChain.Segments;
-                var lastSeg = segments.Count > 0 ? segments[segments.Count - 1] : null;
-                bool hasPe = lastSeg?.PseudoElements != null && lastSeg.PseudoElements.Count > 0;
-                bool hasPc = lastSeg?.PseudoClasses != null && lastSeg.PseudoClasses.Count > 0;
-
-                if (string.IsNullOrEmpty(pseudoElement))
-                {
-                    // Fast path: no pseudo requested. If rule has no pseudo-element segment
-                    // and no legacy single-colon pseudo-class candidates, no allocation needed.
-                    if (!hasPe && !hasPc) { /* fall through to declarations */ }
-                    else if (RuleHasAnyPseudoElement(lastSeg, hasPe, hasPc)) return;
-                }
-                else
-                {
-                    if (!hasPe && !hasPc) return;
-
-                    string requestedPseudo = pseudoElement.Trim().TrimStart(':').ToLowerInvariant();
-                    if (!RuleMatchesPseudo(lastSeg, hasPe, hasPc, requestedPseudo)) return;
-                }
             }
 
             for (int declarationIndex = 0; declarationIndex < styleRule.Declarations.Count; declarationIndex++)
@@ -750,6 +732,51 @@ return computed;
                     SelectorText = styleRule.Selector?.Raw ?? styleRule.Selector?.ToString() ?? string.Empty
                 });
             }
+        }
+
+        private static SelectorChain GetMatchingChainForContext(
+            Element element,
+            CssSelector selector,
+            string pseudoElement)
+        {
+            if (element == null || selector == null)
+            {
+                return null;
+            }
+
+            if (selector.Chains == null || selector.Chains.Count == 0)
+            {
+                selector.Chains = SelectorMatcher.ParseSelectorList(selector.Raw);
+            }
+
+            string requestedPseudo = string.IsNullOrWhiteSpace(pseudoElement)
+                ? null
+                : pseudoElement.Trim().TrimStart(':').ToLowerInvariant();
+            SelectorChain best = null;
+
+            foreach (var chain in selector.Chains)
+            {
+                if (!SelectorMatcher.MatchesChain(element, chain))
+                {
+                    continue;
+                }
+
+                var segments = chain.Segments;
+                var lastSegment = segments.Count > 0 ? segments[segments.Count - 1] : null;
+                bool hasPseudoElements = lastSegment?.PseudoElements?.Count > 0;
+                bool hasPseudoClasses = lastSegment?.PseudoClasses?.Count > 0;
+                bool contextMatches = requestedPseudo == null
+                    ? !RuleHasAnyPseudoElement(lastSegment, hasPseudoElements, hasPseudoClasses)
+                    : RuleMatchesPseudo(lastSegment, hasPseudoElements, hasPseudoClasses, requestedPseudo);
+
+                if (contextMatches &&
+                    (best == null || chain.Specificity.CompareTo(best.Specificity) > 0))
+                {
+                    best = chain;
+                }
+            }
+
+            return best;
         }
 
         private static void ApplyDeclaration(Dictionary<string, CssDeclaration> computed, CssDeclaration declaration)

@@ -3551,13 +3551,22 @@ private static double? ExtractPx(string text, string prop)
             return result;
         }
 
-        private static void ResolvePseudo(Element n, CssComputed parent, CascadeEngine engine, string pseudo, Action<CssComputed, CssComputed> setProp)
+        internal static void ResolvePseudo(Element n, CssComputed parent, CascadeEngine engine, string pseudo, Action<CssComputed, CssComputed> setProp)
         {
             var props = engine.ComputeCascadedValues(n, pseudo);
             if (props.Count > 0)
             {
                 // Pseudo-elements inherit from their originating element (parent)
                 var resolved = ResolveStyle(n, parent, props);
+                // ResolveStyle receives the originating element so inherited values
+                // and relative units have the correct parent context. Its tag-based
+                // defaults must not leak onto the generated box, though: the initial
+                // display of ::before/::after is inline unless a pseudo rule says otherwise.
+                if (!props.ContainsKey("display"))
+                {
+                    resolved.Display = "inline";
+                    resolved.Map["display"] = "inline";
+                }
                 setProp(parent, resolved);
             }
         }

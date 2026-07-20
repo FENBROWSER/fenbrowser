@@ -199,13 +199,13 @@ namespace FenBrowser.FenEngine.Rendering
                     CssLoader.SetRootFontSize(css.FontSize.Value);
                 }
 
-                if (engine.HasPseudoRules("before")) ResolvePseudo(n, css, engine, "before", (c, s) => c.Before = s, parentCss);
-                if (engine.HasPseudoRules("after")) ResolvePseudo(n, css, engine, "after", (c, s) => c.After = s, parentCss);
-                if (engine.HasPseudoRules("marker")) ResolvePseudo(n, css, engine, "marker", (c, s) => c.Marker = s, parentCss);
-                if (engine.HasPseudoRules("placeholder")) ResolvePseudo(n, css, engine, "placeholder", (c, s) => c.Placeholder = s, parentCss);
-                if (engine.HasPseudoRules("selection")) ResolvePseudo(n, css, engine, "selection", (c, s) => c.Selection = s, parentCss);
-                if (engine.HasPseudoRules("first-line")) ResolvePseudo(n, css, engine, "first-line", (c, s) => c.FirstLine = s, parentCss);
-                if (engine.HasPseudoRules("first-letter")) ResolvePseudo(n, css, engine, "first-letter", (c, s) => c.FirstLetter = s, parentCss);
+                if (engine.HasPseudoRules("before")) CssLoader.ResolvePseudo(n, css, engine, "before", (c, s) => c.Before = s);
+                if (engine.HasPseudoRules("after")) CssLoader.ResolvePseudo(n, css, engine, "after", (c, s) => c.After = s);
+                if (engine.HasPseudoRules("marker")) CssLoader.ResolvePseudo(n, css, engine, "marker", (c, s) => c.Marker = s);
+                if (engine.HasPseudoRules("placeholder")) CssLoader.ResolvePseudo(n, css, engine, "placeholder", (c, s) => c.Placeholder = s);
+                if (engine.HasPseudoRules("selection")) CssLoader.ResolvePseudo(n, css, engine, "selection", (c, s) => c.Selection = s);
+                if (engine.HasPseudoRules("first-line")) CssLoader.ResolvePseudo(n, css, engine, "first-line", (c, s) => c.FirstLine = s);
+                if (engine.HasPseudoRules("first-letter")) CssLoader.ResolvePseudo(n, css, engine, "first-letter", (c, s) => c.FirstLetter = s);
 
                 result[n] = css;
                 FenBrowser.FenEngine.Layout.LayoutStyleResolver.NormalizeForLayout(css);
@@ -219,14 +219,5 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private static void ResolvePseudo(Element n, CssComputed parent, CascadeEngine engine, string pseudo, Action<CssComputed, CssComputed> setProp, CssComputed parentCss)
-        {
-            var props = engine.ComputeCascadedValues(n, pseudo);
-            if (props.Count > 0)
-            {
-                var resolved = CssLoader.ResolveStyle(n, parent, props);
-                setProp(parent, resolved);
-            }
-        }
     }
 }
