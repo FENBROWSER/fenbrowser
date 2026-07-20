@@ -137,6 +137,83 @@ public sealed class IFrameInterpreterIsolationTests
         Assert.Equal(settledRenderRequests, Volatile.Read(ref renderRequests));
     }
 
+    [Fact]
+    public async Task CrossOriginFrame_TransfersMessagePortsBetweenOwningRealms()
+    {
+        var parentUri = new Uri("https://parent.test/page");
+        var parentDocument = new HtmlParser(
+            "<html><body><iframe id='child' src='https://child.test/frame'></iframe><script>" +
+            "addEventListener('message',function(event){" +
+            "window.__portCount=event.ports.length;" +
+            "var response=new MessageChannel();" +
+            "response.port1.onmessage=function(reply){window.__nestedReply=reply.data;};" +
+            "event.ports[0].onmessage=function(reply){window.__directReply=reply.data;};" +
+            "event.ports[0].postMessage('parent-ack',[response.port2]);" +
+            "});</script></body></html>",
+            parentUri).Parse();
+        var engine = CreateEngine();
+        await engine.SetDomAsync(parentDocument.DocumentElement, parentUri);
+
+        var childUri = new Uri("https://child.test/frame");
+        var childDocument = new HtmlParser(
+            "<html><body><script>" +
+            "var channel=new MessageChannel();window.__channel=channel;" +
+            "channel.port1.onmessage=function(event){" +
+            "window.__childReply=event.data+'|'+event.ports.length+'|'+String(event.source===null);" +
+            "event.ports[0].postMessage('frame-ack');this.postMessage('frame-direct');};" +
+            "parent.postMessage('handshake','https://parent.test',[channel.port2]);" +
+            "</script></body></html>",
+            childUri).Parse();
+        var frame = Assert.IsType<Element>(parentDocument.GetElementById("child"));
+        frame.AppendChild(childDocument);
+        await engine.SetSubdocumentDomAsync(childDocument.DocumentElement, childUri);
+
+        await WaitForValueAsync(engine, "String(globalThis.__nestedReply || '')", "frame-ack");
+
+        Assert.Equal("1", engine.Evaluate("String(globalThis.__portCount)")?.ToString());
+        Assert.Equal("frame-ack", engine.Evaluate("String(globalThis.__nestedReply)")?.ToString());
+        Assert.Equal("frame-direct", engine.Evaluate("String(globalThis.__directReply)")?.ToString());
+        Assert.Equal(
+            "parent-ack|1|true",
+            engine.EvaluateInSubdocumentForTest(childDocument, "String(window.__childReply)")?.ToString());
+    }
+
+    [Fact]
+    public async Task CrossOriginFrame_PreservesQueuedMessageOrderInOwningRealm()
+    {
+        var parentUri = new Uri("https://parent.test/page");
+        var parentDocument = new HtmlParser(
+            "<html><body><iframe id='child' src='https://child.test/frame'></iframe></body></html>",
+            parentUri).Parse();
+        var engine = CreateEngine();
+        await engine.SetDomAsync(parentDocument.DocumentElement, parentUri);
+
+        var childUri = new Uri("https://child.test/frame");
+        var childDocument = new HtmlParser(
+            "<html><body><script>window.__order=[];" +
+            "addEventListener('message',function(event){window.__order.push(event.data);});" +
+            "</script></body></html>",
+            childUri).Parse();
+        var frame = Assert.IsType<Element>(parentDocument.GetElementById("child"));
+        frame.AppendChild(childDocument);
+        await engine.SetSubdocumentDomAsync(childDocument.DocumentElement, childUri);
+
+        engine.Evaluate(
+            "var target=document.getElementById('child').contentWindow;" +
+            "for(var i=0;i<20;i++)target.postMessage(i,'https://child.test');");
+
+        var deadline = DateTime.UtcNow.AddSeconds(1);
+        while (DateTime.UtcNow < deadline &&
+               engine.EvaluateInSubdocumentForTest(childDocument, "window.__order.length")?.ToString() != "20")
+        {
+            await Task.Delay(25);
+        }
+
+        Assert.Equal(
+            "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19",
+            engine.EvaluateInSubdocumentForTest(childDocument, "window.__order.join(',')")?.ToString());
+    }
+
     private static FenJsBrowserScriptEngine CreateEngine() => new(CreateHost())
     {
         Sandbox = SandboxPolicy.AllowAll

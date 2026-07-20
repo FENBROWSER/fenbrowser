@@ -359,6 +359,14 @@ internal sealed record BrowserHostLifetimeSnapshot(
 /// </summary>
 public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 {
+    private sealed class MessagePortEndpoint
+    {
+        public MessagePortEndpoint Peer { get; set; }
+        public FenJsBrowserScriptEngine Owner { get; set; }
+        public JsValue Port { get; set; } = JsValue.Undefined;
+        public bool Closed { get; set; }
+    }
+
     private readonly object _fenJsLock = new();
     private readonly object _windowMessageQueueLock = new();
     private Task _windowMessageDeliveryTail = Task.CompletedTask;
@@ -391,6 +399,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private int _webSocketIdCounter;
     private ConditionalWeakTable<Element, List<BrowserEventListener>> _iframeWindowEventListeners = new();
     private ConditionalWeakTable<Element, FenJsBrowserScriptEngine> _iframeRealms = new();
+    private readonly Dictionary<long, MessagePortEndpoint> _messagePortEndpoints = new();
     private FenJsBrowserScriptEngine _parentRealmOwner;
     private Element _embeddingFrameElement;
     private JsValue _embeddedParentWindowProxy = JsValue.Undefined;
@@ -2849,6 +2858,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         RequestRender = null;
         _parentRealmOwner = null;
         _embeddingFrameElement = null;
+        CloseOwnedMessagePorts();
 
         foreach (var timerEntry in _fenJsTimers.ToArray())
         {
@@ -2866,6 +2876,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 try { host.Dispose(); } catch { }
             }
             _webSocketHosts.Clear();
+        }
+    }
+
+    private void CloseOwnedMessagePorts()
+    {
+        lock (_fenJsLock)
+        {
+            foreach (var endpoint in _messagePortEndpoints.Values.Distinct())
+            {
+                endpoint.Closed = true;
+                endpoint.Owner = null;
+                endpoint.Port = JsValue.Undefined;
+            }
+            _messagePortEndpoints.Clear();
         }
     }
 
@@ -2888,6 +2912,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         {
         lock (_fenJsLock)
         {
+            CloseOwnedMessagePorts();
             foreach (var timerEntry in _fenJsTimers.ToArray())
             {
                 if (_fenJsTimers.TryRemove(timerEntry.Key, out var timer))
@@ -3467,6 +3492,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return JsValue.Undefined;
                 },
                 length: 4));
+        _interpreter.RegisterGlobalValue(
+            "__fenRegisterMessageChannel",
+            _interpreter.AllocateNativeFunction(
+                "__fenRegisterMessageChannel",
+                (_, args) => RegisterMessageChannel(args),
+                length: 2));
+        _interpreter.RegisterGlobalValue(
+            "__fenPostMessagePort",
+            _interpreter.AllocateNativeFunction(
+                "__fenPostMessagePort",
+                (_, args) => PostMessagePort(args),
+                length: 3));
+        _interpreter.RegisterGlobalValue(
+            "__fenCloseMessagePort",
+            _interpreter.AllocateNativeFunction(
+                "__fenCloseMessagePort",
+                (_, args) => CloseMessagePort(args),
+                length: 1));
         // Register a native logging hook that console.log/warn/error forward to.
         // Uses FenLogger so output appears in engine logs and any attached debug console.
         _interpreter.RegisterGlobalValue(
@@ -7230,6 +7273,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     }
 
                     MessagePort.prototype.postMessage = function (data, transfer) {
+                        if (typeof __fenPostMessagePort === 'function' &&
+                            __fenPostMessagePort(this, data, transfer || [])) {
+                            return;
+                        }
                         var target = this._fenPeer;
                         if (!target || target._fenClosed) return;
                         if (transfer && transfer.length) {
@@ -7258,6 +7305,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     };
                     MessagePort.prototype.start = function () {};
                     MessagePort.prototype.close = function () {
+                        if (typeof __fenCloseMessagePort === 'function') {
+                            __fenCloseMessagePort(this);
+                        }
                         this._fenClosed = true;
                         this._fenListeners.length = 0;
                     };
@@ -7280,6 +7330,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         this.port2 = new MessagePort();
                         this.port1._fenPeer = this.port2;
                         this.port2._fenPeer = this.port1;
+                        if (typeof __fenRegisterMessageChannel === 'function') {
+                            __fenRegisterMessageChannel(this.port1, this.port2);
+                        }
                     };
                 })();
 
@@ -11237,7 +11290,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         frameRealm.QueueMessageFromParent(
                             ConvertJsValueToObject(data),
                             GetCurrentWindowOrigin(),
-                            targetOrigin);
+                            targetOrigin,
+                            ExtractTransferredMessagePorts(ports));
                         return JsValue.Undefined;
                     }
                     QueueWindowMessage(window, frameWindowListeners, data, _fenJsGlobalThis, ports, targetOrigin);
@@ -11354,6 +11408,208 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return window;
     }
 
+    private JsValue RegisterMessageChannel(IReadOnlyList<JsValue> args)
+    {
+        if (args == null || args.Count < 2 ||
+            args[0].Tag != JsValueTag.Object || args[1].Tag != JsValueTag.Object)
+        {
+            return JsValue.FromBoolean(false);
+        }
+
+        var first = new MessagePortEndpoint();
+        var second = new MessagePortEndpoint();
+        first.Peer = second;
+        second.Peer = first;
+        BindMessagePort(first, args[0]);
+        BindMessagePort(second, args[1]);
+        return JsValue.FromBoolean(true);
+    }
+
+    private JsValue PostMessagePort(IReadOnlyList<JsValue> args)
+    {
+        if (args == null || args.Count == 0 ||
+            !TryGetMessagePortEndpoint(args[0], out var source))
+        {
+            return JsValue.FromBoolean(false);
+        }
+
+        var target = source.Peer;
+        if (source.Closed || target == null || target.Closed || target.Owner == null)
+        {
+            return JsValue.FromBoolean(true);
+        }
+
+        var data = args.Count > 1 ? ConvertJsValueToObject(args[1]) : null;
+        var transferredPorts = args.Count > 2
+            ? ExtractTransferredMessagePorts(args[2])
+            : Array.Empty<MessagePortEndpoint>();
+        target.Owner.QueueMessagePort(target, data, transferredPorts);
+        return JsValue.FromBoolean(true);
+    }
+
+    private JsValue CloseMessagePort(IReadOnlyList<JsValue> args)
+    {
+        if (args != null && args.Count > 0 && TryGetMessagePortEndpoint(args[0], out var endpoint))
+        {
+            endpoint.Closed = true;
+            _messagePortEndpoints.Remove(args[0].AsObjectHandle().ToInt64());
+        }
+        return JsValue.Undefined;
+    }
+
+    private bool TryGetMessagePortEndpoint(JsValue port, out MessagePortEndpoint endpoint)
+    {
+        if (port.Tag == JsValueTag.Object)
+        {
+            return _messagePortEndpoints.TryGetValue(port.AsObjectHandle().ToInt64(), out endpoint);
+        }
+
+        endpoint = null;
+        return false;
+    }
+
+    private void BindMessagePort(MessagePortEndpoint endpoint, JsValue port)
+    {
+        endpoint.Owner = this;
+        endpoint.Port = port;
+        endpoint.Closed = false;
+        _messagePortEndpoints[port.AsObjectHandle().ToInt64()] = endpoint;
+        _interpreter.SetObjectProperty(port, "_fenWindow", _fenJsGlobalThis);
+        _interpreter.SetObjectProperty(port, "_fenClosed", JsValue.FromBoolean(false));
+    }
+
+    private IReadOnlyList<MessagePortEndpoint> ExtractTransferredMessagePorts(JsValue ports)
+    {
+        if (ports.Tag != JsValueTag.Object)
+        {
+            return Array.Empty<MessagePortEndpoint>();
+        }
+
+        var result = new List<MessagePortEndpoint>();
+        var length = ReadArrayLikeLength(ports);
+        for (var index = 0; index < length; index++)
+        {
+            var port = ReadJsProperty(ports, index.ToString(CultureInfo.InvariantCulture));
+            if (!TryGetMessagePortEndpoint(port, out var endpoint) || result.Contains(endpoint))
+            {
+                continue;
+            }
+
+            _messagePortEndpoints.Remove(port.AsObjectHandle().ToInt64());
+            _interpreter.SetObjectProperty(port, "_fenClosed", JsValue.FromBoolean(true));
+            endpoint.Owner = null;
+            endpoint.Port = JsValue.Undefined;
+            result.Add(endpoint);
+        }
+        return result;
+    }
+
+    private JsValue ImportTransferredMessagePorts(IReadOnlyList<MessagePortEndpoint> endpoints)
+    {
+        if (endpoints == null || endpoints.Count == 0)
+        {
+            return _interpreter.AllocateArray(Array.Empty<JsValue>());
+        }
+
+        var ports = new JsValue[endpoints.Count];
+        for (var index = 0; index < endpoints.Count; index++)
+        {
+            var port = EvaluateWithFenJsRaw("new MessagePort()");
+            BindMessagePort(endpoints[index], port);
+            ports[index] = port;
+        }
+        return _interpreter.AllocateArray(ports);
+    }
+
+    private int ReadArrayLikeLength(JsValue value)
+    {
+        var length = ReadJsProperty(value, "length");
+        return length.Tag switch
+        {
+            JsValueTag.Int32 => Math.Max(0, length.AsInt32()),
+            JsValueTag.Number => Math.Max(0, (int)length.AsNumber()),
+            _ => 0
+        };
+    }
+
+    private void QueueMessagePort(
+        MessagePortEndpoint target,
+        object data,
+        IReadOnlyList<MessagePortEndpoint> transferredEndpoints)
+    {
+        JsValue transferredPorts;
+        lock (_fenJsLock)
+        {
+            transferredPorts = ImportTransferredMessagePorts(transferredEndpoints);
+        }
+
+        var sessionGeneration = _fenJsSessionGeneration;
+        lock (_windowMessageQueueLock)
+        {
+            _windowMessageDeliveryTail = _windowMessageDeliveryTail.ContinueWith(
+                _ =>
+                {
+                    if (sessionGeneration != _fenJsSessionGeneration ||
+                        target.Owner != this || target.Closed || target.Port.Tag != JsValueTag.Object)
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        RunFenJsWithLargeStack<object>(() =>
+                        {
+                            lock (_fenJsLock)
+                            {
+                                var eventValue = CreateMessageEventValue(
+                                    ConvertObjectToJsValue(data),
+                                    string.Empty,
+                                    JsValue.Null,
+                                    _fenJsGlobalThis,
+                                    transferredPorts);
+                                _interpreter.SetObjectProperty(eventValue, "target", target.Port);
+                                _interpreter.SetObjectProperty(eventValue, "currentTarget", target.Port);
+                                _interpreter.SetObjectProperty(eventValue, "srcElement", target.Port);
+
+                                using (ActivateWindowCallbackContext(_fenJsGlobalThis, _windowEventListeners))
+                                {
+                                    var handler = ReadJsProperty(target.Port, "onmessage");
+                                    if (_interpreter.CanCallValue(handler))
+                                    {
+                                        TryInvokeFenJsEventCallback(handler, target.Port, eventValue, "message");
+                                    }
+
+                                    var listeners = ReadJsProperty(target.Port, "_fenListeners");
+                                    var listenerCount = ReadArrayLikeLength(listeners);
+                                    for (var index = 0; index < listenerCount; index++)
+                                    {
+                                        var listener = ReadJsProperty(listeners, index.ToString(CultureInfo.InvariantCulture));
+                                        if (_interpreter.CanCallValue(listener))
+                                        {
+                                            TryInvokeFenJsEventCallback(listener, target.Port, eventValue, "message");
+                                        }
+                                    }
+                                }
+                                _interpreter.PumpMicrotasks();
+                            }
+                            return null;
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        FenBrowser.Core.EngineLogCompat.Warn(
+                            $"[FenJsBridge] MessagePort delivery failed: {ex.Message}",
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    }
+
+                    try { RequestRender?.Invoke(); } catch { }
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.None,
+                TaskScheduler.Default);
+        }
+    }
+
     private void ConfigureEmbeddedRealmGlobals()
     {
         var parentDocumentUri = GetParentDocumentUri(_embeddingFrameElement);
@@ -11394,10 +11650,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 {
                     var data = args.Count > 0 ? ConvertJsValueToObject(args[0]) : null;
                     var targetOrigin = args.Count > 1 ? CoerceToHostString(args[1]) : "*";
+                    var ports = args.Count > 2
+                        ? ExtractTransferredMessagePorts(args[2])
+                        : Array.Empty<MessagePortEndpoint>();
                     _parentRealmOwner?.QueueMessageFromFrame(
                         _embeddingFrameElement,
                         data,
-                        targetOrigin);
+                        targetOrigin,
+                        ports);
                     return JsValue.Undefined;
                 },
                 length: 1));
@@ -11411,7 +11671,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 : JsValue.Null);
     }
 
-    private void QueueMessageFromFrame(Element frame, object data, string targetOrigin)
+    private void QueueMessageFromFrame(
+        Element frame,
+        object data,
+        string targetOrigin,
+        IReadOnlyList<MessagePortEndpoint> transferredEndpoints)
     {
         if (frame == null)
         {
@@ -11421,27 +11685,33 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         lock (_fenJsLock)
         {
             var sourceWindow = GetOrCreateIFrameContentWindow(frame);
+            var ports = ImportTransferredMessagePorts(transferredEndpoints);
             QueueWindowMessage(
                 _fenJsGlobalThis,
                 _windowEventListeners,
                 ConvertObjectToJsValue(data),
                 sourceWindow,
-                JsValue.Undefined,
+                ports,
                 targetOrigin,
                 _currentBaseUri?.GetLeftPart(UriPartial.Authority));
         }
     }
 
-    private void QueueMessageFromParent(object data, string sourceOrigin, string targetOrigin)
+    private void QueueMessageFromParent(
+        object data,
+        string sourceOrigin,
+        string targetOrigin,
+        IReadOnlyList<MessagePortEndpoint> transferredEndpoints)
     {
         lock (_fenJsLock)
         {
+            var ports = ImportTransferredMessagePorts(transferredEndpoints);
             QueueWindowMessage(
                 _fenJsGlobalThis,
                 _windowEventListeners,
                 ConvertObjectToJsValue(data),
                 _embeddedParentWindowProxy,
-                JsValue.Undefined,
+                ports,
                 targetOrigin,
                 GetCurrentWindowOrigin(),
                 sourceOrigin);
@@ -11612,7 +11882,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         frameRealm.QueueMessageFromParent(
                             ConvertJsValueToObject(data),
                             GetCurrentWindowOrigin(),
-                            targetOrigin);
+                            targetOrigin,
+                            ExtractTransferredMessagePorts(ports));
                         return JsValue.Undefined;
                     }
                     QueueWindowMessage(
