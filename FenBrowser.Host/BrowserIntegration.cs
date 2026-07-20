@@ -779,8 +779,17 @@ public class BrowserIntegration : IDisposable
 
         _pendingInvalidationReasons |= reason;
         _pendingInvalidationSource = MergeInvalidationSource(_pendingInvalidationSource, source);
+
+        // Phase 14: wake the engine only on the transition from "no pending frame"
+        // to "pending frame". Repeatedly signalling _wakeEvent while a frame is
+        // already pending (e.g. an animation burst) just adds kernel traffic; the
+        // pending reasons are already merged above and consumed on the next render.
+        bool wasPending = _needsRepaint;
         _needsRepaint = true;
-        _wakeEvent.Set();
+        if (!wasPending)
+        {
+            _wakeEvent.Set();
+        }
 
         if (notifyUi)
         {
@@ -853,6 +862,10 @@ public class BrowserIntegration : IDisposable
         _pendingInvalidationSource = "idle";
     }
 
+    // Phase 14: cap the number of distinct sources retained so a long-lived pending
+    // frame never accumulates an unbounded "a|b|c|..." string across many requests.
+    private const int MaxTrackedInvalidationSources = 8;
+
     private static string MergeInvalidationSource(string existing, string source)
     {
         if (string.IsNullOrWhiteSpace(source))
@@ -865,14 +878,32 @@ public class BrowserIntegration : IDisposable
             return source;
         }
 
-        if (string.Equals(existing, source, StringComparison.Ordinal))
+        // Token-exact dedup (avoids substring false matches like "a" in "ab").
+        var tokens = existing.Split('|');
+        int realCount = 0;
+        foreach (var token in tokens)
         {
-            return existing;
+            if (string.Equals(token, source, StringComparison.Ordinal))
+            {
+                return existing;
+            }
+
+            if (!token.EndsWith("+more", StringComparison.Ordinal))
+            {
+                realCount++;
+            }
         }
 
-        return existing.Contains(source, StringComparison.Ordinal)
-            ? existing
-            : existing + "|" + source;
+        if (realCount >= MaxTrackedInvalidationSources)
+        {
+            // Bounded: keep the accumulated primary sources; note that more exist
+            // without growing without limit.
+            return existing.EndsWith("+more", StringComparison.Ordinal)
+                ? existing
+                : existing + "|+more";
+        }
+
+        return existing + "|" + source;
     }
 
     private static readonly bool VerificationGloballyEnabled =

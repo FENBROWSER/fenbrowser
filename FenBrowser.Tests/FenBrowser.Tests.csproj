@@ -76,6 +76,8 @@
     <Compile Include="Rendering\Phase5ImageScopingTests.cs" />
     <!-- Phase 9 verification/screenshot gating regression. -->
     <Compile Include="Host\Phase9VerificationGatingTests.cs" />
+    <!-- Phase 14 bounded/coalesced frame-request regression. -->
+    <Compile Include="Host\Phase14FrameRequestCoalescingTests.cs" />
     <!-- Phase 11 interaction re-cascade CancellationTokenSource ownership. -->
     <Compile Include="Host\Phase11InteractionRecascadeCtsTests.cs" />
   </ItemGroup>
