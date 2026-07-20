@@ -4405,10 +4405,8 @@ pre {{
             {
                 TryLogInfo($"[BrowserHost] Loading iframe '{frameUri}'", LogCategory.Navigation);
                 var result = await _resources.FetchTextDetailedAsync(
-                    frameUri,
-                    _current,
-                    accept: "text/html,application/xhtml+xml",
-                    secFetchDest: "iframe").ConfigureAwait(false);
+                    CreateFrameFetchContext(frameElement, frameUri, _current),
+                    "text/html,application/xhtml+xml").ConfigureAwait(false);
 
                 if (result?.Status != FetchStatus.Success || string.IsNullOrWhiteSpace(result.Content))
                 {
@@ -4503,10 +4501,8 @@ pre {{
                         try
                         {
                             var result = await _resources.FetchTextDetailedAsync(
-                                frameUri,
-                                _current,
-                                accept: "text/html,application/xhtml+xml",
-                                secFetchDest: "iframe");
+                                CreateFrameFetchContext(frameElement, frameUri, _current),
+                                "text/html,application/xhtml+xml");
 
                             if (result?.Status == FetchStatus.Success && !string.IsNullOrWhiteSpace(result.Content))
                             {
@@ -4589,6 +4585,41 @@ pre {{
             }
 
             return _current;
+        }
+
+        internal static FetchContext CreateFrameFetchContext(
+            Element frameElement,
+            Uri requestUri,
+            Uri topLevelDocumentUri)
+        {
+            var frameDocumentUri = ResolveOwningDocumentUri(frameElement) ?? topLevelDocumentUri;
+            return new FetchContext
+            {
+                RequestUri = requestUri,
+                InitiatorUri = frameDocumentUri,
+                FrameDocumentUri = frameDocumentUri,
+                TopLevelDocumentUri = topLevelDocumentUri ?? frameDocumentUri,
+                Destination = "iframe",
+                Mode = "navigate",
+                CredentialsMode = "include",
+                IsTopLevelNavigation = false,
+                IsUserInitiated = false,
+                Method = "GET"
+            };
+        }
+
+        private static Uri ResolveOwningDocumentUri(Element frameElement)
+        {
+            var document = frameElement?.OwnerDocument;
+            foreach (var candidate in new[] { document?.URL, document?.DocumentURI, document?.BaseURI })
+            {
+                if (Uri.TryCreate(candidate, UriKind.Absolute, out var uri))
+                {
+                    return uri;
+                }
+            }
+
+            return null;
         }
 
         private async Task TryInitializeFrameScriptsAsync(Element frameElement, Element frameRoot, Uri frameUri)
