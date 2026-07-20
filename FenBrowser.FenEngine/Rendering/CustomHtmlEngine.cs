@@ -1079,6 +1079,12 @@ public void Dispose()
                 {
                     if (budget <= 0 || string.IsNullOrWhiteSpace(rawUrl)) return;
                     var clean = RewriteWebPToJpg(rawUrl);
+                    if (clean.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ImageLoader.GetImage(clean, ownerDocument: ownerDocument);
+                        return;
+                    }
+
                     var abs = ResolveUri(baseUri, clean);
                     if (abs == null || !seen.Add(abs.AbsoluteUri)) return;
 
@@ -1216,6 +1222,12 @@ public void Dispose()
                     var firstUrl = ExtractFirstBackgroundImageUrl(style.BackgroundImage);
                     if (string.IsNullOrWhiteSpace(firstUrl))
                     {
+                        continue;
+                    }
+
+                    if (firstUrl.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ImageLoader.GetImage(firstUrl, ownerDocument: ownerDocument);
                         continue;
                     }
 
