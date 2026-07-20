@@ -2322,7 +2322,10 @@ public class BrowserIntegration
                 break;
             case BrowserInputType.Click:
                 var activationStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-                _browser.DispatchClickAndActivate(input.X, input.Y, input.Button).GetAwaiter().GetResult();
+                ObserveDeferredInputTask(
+                    _browser.DispatchClickAndActivate(input.X, input.Y, input.Button),
+                    input.Sequence,
+                    input.Type);
                 activationDurationMs = System.Diagnostics.Stopwatch
                     .GetElapsedTime(activationStarted)
                     .TotalMilliseconds;
@@ -2388,7 +2391,10 @@ public class BrowserIntegration
                     }
                     else
                     {
-                        _browser.HandleKeyPress(input.Text).GetAwaiter().GetResult();
+                        ObserveDeferredInputTask(
+                            _browser.HandleKeyPress(input.Text),
+                            input.Sequence,
+                            input.Type);
                     }
                 }
                 break;
@@ -2413,6 +2419,29 @@ public class BrowserIntegration
                 $"activationMs={activationDurationMs:0.0} pending={_inputQueue.Count}",
                 LogCategory.Events);
         }
+    }
+
+    internal static void ObserveDeferredInputTask(
+        Task task,
+        long sequence,
+        BrowserInputType inputType)
+    {
+        if (task == null || task.IsCompletedSuccessfully || task.IsCanceled)
+        {
+            return;
+        }
+
+        _ = task.ContinueWith(
+            completed =>
+            {
+                var error = completed.Exception?.GetBaseException();
+                EngineLogBridge.Error(
+                    $"[InputLatency] sequence={sequence} type={inputType} deferred_failed={error?.Message ?? "unknown"}",
+                    LogCategory.Events);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private long EnqueueInput(
