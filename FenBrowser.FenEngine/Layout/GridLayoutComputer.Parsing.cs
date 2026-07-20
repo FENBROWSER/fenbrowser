@@ -247,6 +247,7 @@ namespace FenBrowser.FenEngine.Layout
         private static GridTrackSize ParseSimpleSize(string val)
         {
             val = val.Trim().ToLowerInvariant();
+            if (val == "0") return GridTrackSize.FromPx(0);
             if (val == "min-content") return GridTrackSize.MinContent;
             if (val == "max-content") return GridTrackSize.MaxContent;
             

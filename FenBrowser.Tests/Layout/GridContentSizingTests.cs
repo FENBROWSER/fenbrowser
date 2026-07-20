@@ -257,5 +257,85 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(10, boxes[items[1]].ContentBox.Top);
             Assert.Equal(210, boxes[items[2]].ContentBox.Top);
         }
+
+        [Fact]
+        public void FlexibleColumns_HonorAutomaticMinimumContributions()
+        {
+            var (container, items, styles) = CreateGrid("1fr 1fr", "100px", 2);
+            styles[container].Width = 600;
+            styles[container].Height = 100;
+            styles[items[0]].Width = null;
+            styles[items[1]].Width = null;
+
+            var boxes = ArrangeWithIntrinsicWidths(container, items, styles, 500, 100);
+
+            Assert.Equal(500, boxes[items[0]].ContentBox.Width);
+            Assert.Equal(500, boxes[items[1]].ContentBox.Left);
+            Assert.Equal(100, boxes[items[1]].ContentBox.Width);
+        }
+
+        [Theory]
+        [InlineData("minmax(0,1fr) minmax(0,1fr)", false)]
+        [InlineData("1fr 1fr", true)]
+        public void FlexibleColumns_RespectExplicitMinimumShrinkPermission(string columns, bool useItemMinWidthZero)
+        {
+            var (container, items, styles) = CreateGrid(columns, "100px", 2);
+            styles[container].Width = 600;
+            styles[container].Height = 100;
+            styles[items[0]].Width = null;
+            styles[items[1]].Width = null;
+            if (useItemMinWidthZero)
+            {
+                styles[items[0]].MinWidth = 0;
+            }
+
+            var boxes = ArrangeWithIntrinsicWidths(container, items, styles, 500, 100);
+
+            Assert.Equal(300, boxes[items[0]].ContentBox.Width);
+            Assert.Equal(300, boxes[items[1]].ContentBox.Left);
+            Assert.Equal(300, boxes[items[1]].ContentBox.Width);
+        }
+
+        private static Dictionary<Node, BoxModel> ArrangeWithIntrinsicWidths(
+            Element container,
+            IReadOnlyList<Element> items,
+            Dictionary<Node, CssComputed> styles,
+            float firstMinWidth,
+            float secondMinWidth)
+        {
+            LayoutMetrics MeasureChild(Node node, SKSize available, int depth)
+            {
+                float width = ReferenceEquals(node, items[0]) ? firstMinWidth : secondMinWidth;
+                return new LayoutMetrics
+                {
+                    MaxChildWidth = width,
+                    MinContentWidth = width,
+                    MaxContentWidth = width,
+                    ContentHeight = 100,
+                    ActualHeight = 100
+                };
+            }
+
+            var size = new SKSize((float)styles[container].Width.Value, (float)styles[container].Height.Value);
+            GridLayoutComputer.Measure(container, size, styles, 0, MeasureChild);
+
+            var boxes = new Dictionary<Node, BoxModel>();
+            GridLayoutComputer.Arrange(
+                container,
+                new SKRect(0, 0, size.Width, size.Height),
+                styles,
+                boxes,
+                0,
+                (node, rect, depth) =>
+                {
+                    boxes[node] = new BoxModel
+                    {
+                        ContentBox = rect,
+                        BorderBox = rect
+                    };
+                },
+                MeasureChild);
+            return boxes;
+        }
     }
 }

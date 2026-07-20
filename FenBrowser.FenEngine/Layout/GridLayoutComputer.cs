@@ -1050,39 +1050,55 @@ namespace FenBrowser.FenEngine.Layout
                 return;
             }
 
-            // Calculate used space by FIXED tracks (non-flex)
-            float usedSpace = 0;
-            foreach (var t in tracks)
-            {
-                // If track is flex, it doesn't contribute to usedSpace (it consumes freeSpace)
-                if (t.MaxLimit.IsFlex) continue;
-
-                if (t.MinLimit.IsPx) usedSpace += t.MinLimit.Value;
-                else if (t.BaseSize > 0) usedSpace += t.BaseSize; // Fallback
-            }
+            float usedSpace = tracks
+                .Where(static track => !track.MaxLimit.IsFlex)
+                .Sum(static track => Math.Max(0f, track.BaseSize));
 
             float gapSpace = Math.Max(0, tracks.Count - 1) * gap;
             float freeSpace = Math.Max(0, availableSpace - usedSpace - gapSpace);
-            float totalFlex = tracks.Sum(t => t.FlexFactor);
+            var flexTracks = tracks.Where(static track => track.MaxLimit.IsFlex).ToList();
+            float totalFlex = flexTracks.Sum(static track => track.FlexFactor);
 
-            // Distribute free space to Flex tracks
             if (totalFlex > 0)
             {
-                float frUnit = freeSpace / totalFlex;
-                foreach (var track in tracks)
+                float totalFloor = flexTracks.Sum(static track => Math.Max(0f, track.BaseSize));
+                if (totalFloor >= freeSpace)
                 {
-                    if (track.MaxLimit.IsFlex)
+                    foreach (var track in flexTracks)
                     {
-                        float size = track.FlexFactor * frUnit;
-                        
-                        // Clamp to MinLimit
-                        if (track.MinLimit.IsPx) size = Math.Max(size, track.MinLimit.Value);
-                        
-                        // Clamp to MaxLimit (if Px) - e.g. minmax(10, 100px) is not flex. 
-                        // If minmax(100px, 1fr), Max is Flex.
-                        // If minmax(100px, 200px), it is not flex.
-                        
-                        track.BaseSize = size;
+                        track.BaseSize = Math.Max(0f, track.BaseSize);
+                    }
+                }
+                else
+                {
+                    var unfrozen = new List<GridTrack>(flexTracks);
+                    float remainingSpace = freeSpace;
+                    while (unfrozen.Count > 0)
+                    {
+                        float remainingFlex = unfrozen.Sum(static track => track.FlexFactor);
+                        if (remainingFlex <= 0f)
+                        {
+                            break;
+                        }
+
+                        float frUnit = remainingSpace / remainingFlex;
+                        var belowFloor = unfrozen
+                            .Where(track => track.BaseSize > track.FlexFactor * frUnit)
+                            .ToList();
+                        if (belowFloor.Count == 0)
+                        {
+                            foreach (var track in unfrozen)
+                            {
+                                track.BaseSize = track.FlexFactor * frUnit;
+                            }
+                            break;
+                        }
+
+                        foreach (var track in belowFloor)
+                        {
+                            remainingSpace = Math.Max(0f, remainingSpace - track.BaseSize);
+                            unfrozen.Remove(track);
+                        }
                     }
                 }
             }
@@ -1212,7 +1228,9 @@ namespace FenBrowser.FenEngine.Layout
                 // Measure item accurately
                 var metrics = measureNode(item, new SKSize(float.PositiveInfinity, float.PositiveInfinity), depth + 1);
                 
-                float minSize = isColumn ? metrics.MinContentWidth : metrics.ContentHeight;
+                float minSize = isColumn
+                    ? ResolveGridItemMinimumContribution(style, metrics.MinContentWidth)
+                    : metrics.ContentHeight;
                 float maxSize = isColumn ? metrics.MaxContentWidth : metrics.ContentHeight;
 
                 UpdateTrackSizes(track, minSize, maxSize);
@@ -1235,7 +1253,9 @@ namespace FenBrowser.FenEngine.Layout
                 // Measure multi-track item
                 var metrics = measureNode(item, new SKSize(float.PositiveInfinity, float.PositiveInfinity), depth + 1);
 
-                float minSize = isColumn ? metrics.MinContentWidth : metrics.ContentHeight;
+                float minSize = isColumn
+                    ? ResolveGridItemMinimumContribution(style, metrics.MinContentWidth)
+                    : metrics.ContentHeight;
                 float maxSize = isColumn ? metrics.MaxContentWidth : metrics.ContentHeight;
 
                 // Distribute minSize
@@ -1249,7 +1269,19 @@ namespace FenBrowser.FenEngine.Layout
         {
             if (track.MaxLimit.IsFlex)
             {
-                track.BaseSize = Math.Max(track.BaseSize, minSize);
+                if (track.MinLimit.Type == GridUnitType.Auto || track.MinLimit.Type == GridUnitType.MinContent)
+                {
+                    track.BaseSize = Math.Max(track.BaseSize, minSize);
+                }
+                else if (track.MinLimit.Type == GridUnitType.MaxContent)
+                {
+                    track.BaseSize = Math.Max(track.BaseSize, maxSize);
+                }
+                else if (track.MinLimit.IsPx)
+                {
+                    track.BaseSize = Math.Max(track.BaseSize, track.MinLimit.Value);
+                }
+
                 track.GrowthLimit = Math.Max(track.GrowthLimit, maxSize);
                 return;
             }
@@ -1261,6 +1293,27 @@ namespace FenBrowser.FenEngine.Layout
 
             if (track.MaxLimit.Type == GridUnitType.MaxContent || track.MaxLimit.Type == GridUnitType.Auto)
                 track.GrowthLimit = Math.Max(track.GrowthLimit, maxSize);
+        }
+
+        private static float ResolveGridItemMinimumContribution(CssComputed style, float minContentWidth)
+        {
+            if (style == null)
+            {
+                return Math.Max(0f, minContentWidth);
+            }
+
+            if (style.MinWidth.HasValue)
+            {
+                return Math.Max(0f, (float)style.MinWidth.Value);
+            }
+
+            string overflow = (style.OverflowX ?? style.Overflow)?.Trim().ToLowerInvariant();
+            if (!string.IsNullOrEmpty(overflow) && overflow != "visible")
+            {
+                return 0f;
+            }
+
+            return Math.Max(0f, minContentWidth);
         }
 
         private static void DistributeExtraSpace(List<GridTrack> tracks, float requiredSpace, bool isMin)
