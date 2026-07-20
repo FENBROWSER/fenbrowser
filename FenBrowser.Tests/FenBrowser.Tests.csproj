@@ -84,6 +84,8 @@
     <Compile Include="Rendering\Phase10WatchdogLateFramePolicyTests.cs" />
     <!-- Phase 3 property-specific animation invalidation classification. -->
     <Compile Include="Rendering\Phase3AnimationClassificationTests.cs" />
+    <!-- Phase 17 final multi-tab performance/isolation regression suite. -->
+    <Compile Include="Host\Phase17MultiTabPerformanceTests.cs" />
   </ItemGroup>
 
 </Project>
