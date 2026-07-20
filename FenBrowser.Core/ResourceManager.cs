@@ -1291,6 +1291,10 @@ namespace FenBrowser.Core
             }
 
             var refererOriginal = referer;
+            var topLevelDocumentUri = context.TopLevelDocumentUri ??
+                context.FrameDocumentUri ??
+                refererOriginal ??
+                url;
             Uri previousRequest = null;
             var redirectChain = new List<Uri>();
             if (url != null)
@@ -1316,7 +1320,11 @@ namespace FenBrowser.Core
                             ? BrowserNetworkCapabilities.DocumentAcceptHeader
                             : accept,
                         effectiveReferer);
-                    AttachCookies(req, refererOriginal ?? current, secFetchDest);
+                    var credentialsAllowed = AreCredentialsAllowed(context, current);
+                    if (credentialsAllowed)
+                    {
+                        AttachCookies(req, topLevelDocumentUri, secFetchDest);
+                    }
                     
                     var cts = new System.Threading.CancellationTokenSource();
                     try
@@ -1387,7 +1395,10 @@ namespace FenBrowser.Core
                              FailureReason = FetchFailureReasonCode.Unknown
                          };
                     }
-                    StoreResponseCookies(resp, refererOriginal ?? current);
+                    if (credentialsAllowed)
+                    {
+                        StoreResponseCookies(resp, topLevelDocumentUri);
+                    }
                     
                     if (resp != null)
                     {
@@ -2316,11 +2327,7 @@ namespace FenBrowser.Core
                 }
 
                 var topLevelDocumentUri = context.TopLevelDocumentUri ?? context.FrameDocumentUri ?? context.InitiatorUri ?? request.RequestUri;
-                var credentialsMode = (context.CredentialsMode ?? "same-origin").Trim();
-                var credentialsAllowed = string.Equals(credentialsMode, "include", StringComparison.OrdinalIgnoreCase) ||
-                    (string.Equals(credentialsMode, "same-origin", StringComparison.OrdinalIgnoreCase) &&
-                     context.InitiatorUri != null &&
-                     CorsHandler.IsSameOrigin(context.InitiatorUri, request.RequestUri));
+                var credentialsAllowed = AreCredentialsAllowed(context, request.RequestUri);
                 if (credentialsAllowed)
                 {
                     AttachCookies(request, topLevelDocumentUri, GetHeaderValue(request.Headers, "Sec-Fetch-Dest"));
@@ -2368,6 +2375,15 @@ namespace FenBrowser.Core
             }
 
             return ExtractOrigin(request.Headers.Referrer);
+        }
+
+        private static bool AreCredentialsAllowed(FetchContext context, Uri requestUri)
+        {
+            var credentialsMode = (context?.CredentialsMode ?? "same-origin").Trim();
+            return string.Equals(credentialsMode, "include", StringComparison.OrdinalIgnoreCase) ||
+                (string.Equals(credentialsMode, "same-origin", StringComparison.OrdinalIgnoreCase) &&
+                 context?.InitiatorUri != null &&
+                 CorsHandler.IsSameOrigin(context.InitiatorUri, requestUri));
         }
 
         private static void ApplyCorsOriginHeader(HttpRequestMessage request, Uri originUri)

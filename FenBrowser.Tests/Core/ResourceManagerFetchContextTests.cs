@@ -97,6 +97,56 @@ public sealed class ResourceManagerFetchContextTests
     }
 
     [Fact]
+    public async Task FetchTextDetailedAsync_UsesTopLevelSiteForPartitionedCookies()
+    {
+        var requestUri = new Uri("https://assets.challenge.test/frame.js");
+        var frameUri = new Uri("https://challenge.test/widget");
+        var firstPartyTop = new Uri("https://parent.test/page");
+        var otherTop = new Uri("https://other.test/page");
+        var cookieJar = new FenBrowser.Core.Storage.BrowserCookieJar();
+        cookieJar.SetDocumentCookie(
+            requestUri,
+            "challenge_partition=opaque; Secure; SameSite=None; Partitioned",
+            firstPartyTop,
+            blockThirdPartyCookies: false);
+        var observedCookies = new System.Collections.Generic.List<string>();
+        using var client = new HttpClient(new StubHandler(request =>
+        {
+            observedCookies.Add(request.Headers.TryGetValues("Cookie", out var values)
+                ? string.Join(";", values)
+                : string.Empty);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent("ok")
+            };
+        }));
+        var manager = new ResourceManager(client, isPrivate: true, cookieJar);
+
+        var firstResult = await manager.FetchTextDetailedAsync(Context(firstPartyTop, requestUri), "application/javascript");
+        var secondResult = await manager.FetchTextDetailedAsync(
+            Context(otherTop, new Uri(requestUri + "?second=1")),
+            "application/javascript");
+
+        Assert.Equal(FetchStatus.Success, firstResult.Status);
+        Assert.Equal(FetchStatus.Success, secondResult.Status);
+        Assert.Contains("challenge_partition=opaque", observedCookies[0]);
+        Assert.DoesNotContain("challenge_partition=opaque", observedCookies[1]);
+
+        FetchContext Context(Uri topLevel, Uri resource) => new()
+        {
+            RequestUri = resource,
+            InitiatorUri = frameUri,
+            FrameDocumentUri = frameUri,
+            TopLevelDocumentUri = topLevel,
+            Destination = "script",
+            Mode = "no-cors",
+            CredentialsMode = "include",
+            Method = "GET"
+        };
+    }
+
+    [Fact]
     public async Task FetchBytesAsync_RedirectKeepsTopLevelCookiePartitionAndImageMetadata()
     {
         var previousThirdPartySetting = BrowserSettings.Instance.BlockThirdPartyCookies;
