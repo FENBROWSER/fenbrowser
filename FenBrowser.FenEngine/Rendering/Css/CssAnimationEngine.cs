@@ -14,6 +14,22 @@ using SkiaSharp;
 namespace FenBrowser.FenEngine.Rendering
 {
     /// <summary>
+    /// Ownership-scoped payload emitted on every animation/transition tick so
+    /// subscribers can filter by owning document and tab instead of reacting to
+    /// every global animation tick from the process-wide singleton engine.
+    /// </summary>
+    public sealed record AnimationFrameEvent
+    {
+        public Element Element { get; init; }
+
+        public Document OwnerDocument { get; init; }
+
+        public InvalidationKind Invalidation { get; set; }
+
+        public List<string> ChangedProperties { get; set; }
+    }
+
+    /// <summary>
     /// CSS Animation Engine - executes @keyframes animations at runtime.
     /// Manages animation state, timing, interpolation, and triggers repaints.
     /// </summary>
@@ -158,7 +174,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Event raised on animation ticks for elements with updated animated values.
         /// </summary>
-        public event Action<Element> OnAnimationFrame;
+        public event Action<AnimationFrameEvent> OnAnimationFrame;
 
         /// <summary>
         /// Event raised when transition completes.
@@ -277,7 +293,13 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             foreach (var element in toNotify)
-                OnAnimationFrame?.Invoke(element);
+                OnAnimationFrame?.Invoke(new AnimationFrameEvent
+                {
+                    Element = element,
+                    OwnerDocument = element.OwnerDocument,
+                    Invalidation = InvalidationKind.Paint,
+                    ChangedProperties = new List<string>()
+                });
         }
 
         private double ComputeScrollDrivenProgress(Element element, CssComputed style, string animTimeline,
@@ -971,9 +993,38 @@ namespace FenBrowser.FenEngine.Rendering
             
             var now = Now();
             var toRemove = new List<(Element element, ActiveAnimation anim)>();
-            var toNotify = new HashSet<Element>();
+            var notifications = new Dictionary<Element, AnimationFrameEvent>();
             var staleAnimationElements = new HashSet<Element>();
             var staleTransitionElements = new HashSet<Element>();
+
+            AnimationFrameEvent NotifyElement(Element element, InvalidationKind invalidation, IEnumerable<string> properties)
+            {
+                if (!notifications.TryGetValue(element, out var ev))
+                {
+                    ev = new AnimationFrameEvent
+                    {
+                        Element = element,
+                        OwnerDocument = element.OwnerDocument,
+                        Invalidation = InvalidationKind.None,
+                        ChangedProperties = new List<string>()
+                    };
+                    notifications[element] = ev;
+                }
+
+                ev.Invalidation |= invalidation;
+                if (properties != null)
+                {
+                    foreach (var p in properties)
+                    {
+                        if (!ev.ChangedProperties.Contains(p))
+                        {
+                            ev.ChangedProperties.Add(p);
+                        }
+                    }
+                }
+
+                return ev;
+            }
             
             lock (_activeAnimations)
             {
@@ -1008,7 +1059,7 @@ namespace FenBrowser.FenEngine.Rendering
                             {
                                 if (ApplyAnimationFrame(element, anim, 0))
                                 {
-                                    toNotify.Add(element);
+                                    NotifyElement(element, DetermineInvalidationKind(anim.ComputedProperties.Keys), anim.ComputedProperties.Keys);
                                 }
                             }
                             continue;
@@ -1026,7 +1077,7 @@ namespace FenBrowser.FenEngine.Rendering
                             {
                                 if (ApplyAnimationFrame(element, anim, 100))
                                 {
-                                    toNotify.Add(element);
+                                    NotifyElement(element, DetermineInvalidationKind(anim.ComputedProperties.Keys), anim.ComputedProperties.Keys);
                                 }
                             }
                             toRemove.Add((element, anim));
@@ -1047,7 +1098,7 @@ namespace FenBrowser.FenEngine.Rendering
                         progress = ApplyEasing(progress, anim.TimingFunction);
                         if (ApplyAnimationFrame(element, anim, progress * 100))
                         {
-                            toNotify.Add(element);
+                            NotifyElement(element, DetermineInvalidationKind(anim.ComputedProperties.Keys), anim.ComputedProperties.Keys);
                         }
                     }
                 }
@@ -1081,6 +1132,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                     bool elementDirty = false;
                     var invalidation = InvalidationKind.None;
+                    var changedProps = new List<string>();
 
                     foreach (var trans in kvp.Value)
                     {
@@ -1101,6 +1153,7 @@ namespace FenBrowser.FenEngine.Rendering
                                 currentStyle.AnimationOverlay[trans.Property] = interpolated;
                                 elementDirty = true;
                                 invalidation |= ClassifyPropertyInvalidation(trans.Property);
+                                changedProps.Add(trans.Property);
                             }
                         }
                         if (progress >= 1.0)
@@ -1113,7 +1166,7 @@ namespace FenBrowser.FenEngine.Rendering
                     if (elementDirty)
                     {
                         element.MarkDirty(invalidation);
-                        toNotify.Add(element);
+                        NotifyElement(element, invalidation, changedProps);
                     }
                 }
                 
@@ -1129,12 +1182,12 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
             
-            foreach (var element in toNotify)
+            foreach (var ev in notifications.Values)
             {
-                OnAnimationFrame?.Invoke(element);
+                OnAnimationFrame?.Invoke(ev);
             }
 
-            if (toNotify.Count == 0 && _activeAnimations.Count == 0 && _activeTransitions.Count == 0)
+            if (notifications.Count == 0 && _activeAnimations.Count == 0 && _activeTransitions.Count == 0)
                 Stop();
         }
 

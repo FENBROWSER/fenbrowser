@@ -31,11 +31,21 @@ public class TabManager
     }
     
     // Wire up crash events
-    private void Initialize()
-    {
-        ProcessIsolationRuntime.CoordinatorChanged += BindProcessIsolationCoordinator;
-        BindProcessIsolationCoordinator(ProcessIsolationRuntime.Current);
-    }
+        private void Initialize()
+        {
+            ProcessIsolationRuntime.CoordinatorChanged += BindProcessIsolationCoordinator;
+            BindProcessIsolationCoordinator(ProcessIsolationRuntime.Current);
+            ActiveTabChanged += UpdateTabActiveStates;
+        }
+
+        private void UpdateTabActiveStates(BrowserTab _)
+        {
+            var active = ActiveTab;
+            foreach (var tab in _tabs)
+            {
+                tab.IsActive = ReferenceEquals(tab, active);
+            }
+        }
 
     private void BindProcessIsolationCoordinator(IProcessIsolationCoordinator coordinator)
     {
@@ -144,6 +154,7 @@ public class TabManager
         _tabs.RemoveAt(index);
         
         TabRemoved?.Invoke(tab);
+        tab.Dispose();
         
         // Adjust active index
         if (_tabs.Count == 0)

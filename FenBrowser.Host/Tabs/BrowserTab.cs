@@ -8,7 +8,7 @@ namespace FenBrowser.Host.Tabs;
 /// Each tab owns its own BrowserIntegration (engine instance).
 /// No shared DOM, no cross-tab leakage.
 /// </summary>
-public class BrowserTab
+public class BrowserTab : IDisposable
 {
     private static int _nextId = 1;
     private readonly object _initialNavigationLock = new();
@@ -51,10 +51,17 @@ public class BrowserTab
     /// </summary>
     public string CrashReason { get; private set; }
     
-    /// <summary>
-    /// Current URL of this tab.
-    /// </summary>
-    public string Url => Browser.CurrentUrl;
+        /// <summary>
+        /// Whether this tab is currently the active tab. Used to suppress
+        /// normal-frequency rendering work (e.g. animation frames) for
+        /// background/inactive tabs.
+        /// </summary>
+        public bool IsActive { get; internal set; } = true;
+
+        /// <summary>
+        /// Current URL of this tab.
+        /// </summary>
+        public string Url => Browser.CurrentUrl;
 
     /// <summary>
     /// URL chrome should display, including an initial navigation that has not
@@ -285,6 +292,15 @@ public class BrowserTab
         }
 
         Browser.Render(canvas, viewport);
+    }
+    
+    /// <summary>
+    /// Releases the tab's engine integration (unsubscribes global animation
+    /// events, disposes retained resources).
+    /// </summary>
+    public void Dispose()
+    {
+        Browser.Dispose();
     }
     
     private void RenderCrashScreen(SKCanvas canvas, SKRect viewport)

@@ -25,7 +25,7 @@ namespace FenBrowser.Host;
 /// Manages page loading, rendering, and input coordination.
 /// Handles Window → UI → Document coordinate translation.
 /// </summary>
-public class BrowserIntegration
+public class BrowserIntegration : IDisposable
 {
     private readonly BrowserHost _browser;
     private readonly SkiaDomRenderer _renderer;
@@ -94,6 +94,8 @@ public class BrowserIntegration
     private RenderFrameInvalidationReason _pendingInvalidationReasons =
         RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Viewport;
     private string _pendingInvalidationSource = "startup";
+    private Action<AnimationFrameEvent> _animationFrameHandler;
+    private bool _animationEventsDisposed;
     // Remote frame bitmap delivered from a brokered renderer child via shared memory.
     private SKBitmap _remoteFrameBitmap;
     private float _remoteFrameScrollY;
@@ -425,10 +427,80 @@ public class BrowserIntegration
         // CssAnimationEngine runs a 16ms timer that interpolates values but never signals
         // the engine thread on its own. Subscribe here so each animation tick wakes the
         // engine loop and the interpolated frame is actually rendered.
-        CssAnimationEngine.Instance.OnAnimationFrame += _ =>
+        //
+        // The engine is process-global, so we scope every notification to the document
+        // this integration actually owns (see OnAnimationFrame). This prevents an
+        // animation in one tab from waking unrelated tabs.
+        _animationFrameHandler = OnAnimationFrame;
+        CssAnimationEngine.Instance.OnAnimationFrame += _animationFrameHandler;
+    }
+
+    private void OnAnimationFrame(AnimationFrameEvent animation)
+    {
+        if (_animationEventsDisposed)
         {
-            RequestFrame(RenderFrameInvalidationReason.Animation, "CssAnimationEngine");
-        };
+            return;
+        }
+
+        var activeDocument = _root?.OwnerDocument;
+        if (animation == null ||
+            animation.OwnerDocument == null ||
+            !ReferenceEquals(animation.OwnerDocument, activeDocument))
+        {
+            return;
+        }
+
+        if (OwnerTab != null && !OwnerTab.IsActive)
+        {
+            RecordThrottledBackgroundAnimation(animation);
+            return;
+        }
+
+        RequestFrame(
+            MapAnimationInvalidation(animation.Invalidation),
+            "CssAnimationEngine");
+    }
+
+    private static RenderFrameInvalidationReason MapAnimationInvalidation(InvalidationKind kind)
+    {
+        var reason = RenderFrameInvalidationReason.Animation;
+        if ((kind & InvalidationKind.Layout) != 0)
+        {
+            reason |= RenderFrameInvalidationReason.Layout;
+        }
+
+        if ((kind & InvalidationKind.Paint) != 0)
+        {
+            reason |= RenderFrameInvalidationReason.Paint;
+        }
+
+        if ((kind & InvalidationKind.Style) != 0)
+        {
+            reason |= RenderFrameInvalidationReason.Style;
+        }
+
+        return reason;
+    }
+
+    private void RecordThrottledBackgroundAnimation(AnimationFrameEvent animation)
+    {
+        // Background-tab animation: suppressed from normal-frequency rendering here.
+        // Phases 2/16 introduce proper background-tab throttling; for now we avoid
+        // requesting a full-frequency frame for an inactive tab.
+    }
+
+    public void Dispose()
+    {
+        if (_animationEventsDisposed)
+        {
+            return;
+        }
+
+        _animationEventsDisposed = true;
+        if (_animationFrameHandler != null)
+        {
+            CssAnimationEngine.Instance.OnAnimationFrame -= _animationFrameHandler;
+        }
     }
 
     private (int Left, int Top, int Right, int Bottom) GetViewportInsets()

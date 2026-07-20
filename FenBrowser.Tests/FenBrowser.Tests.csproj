@@ -67,6 +67,9 @@
     <!-- Active renderer-child stdin polling contract; keep Architecture legacy
          and policy tests excluded until they are reviewed independently. -->
     <Compile Include="Architecture\RendererChildLoopIoTests.cs" />
+    <!-- Phase 1 animation-scoping regression (BrowserIntegration is in Host,
+         which is otherwise excluded). -->
+    <Compile Include="Host\Phase1AnimationScopingTests.cs" />
   </ItemGroup>
 
 </Project>
