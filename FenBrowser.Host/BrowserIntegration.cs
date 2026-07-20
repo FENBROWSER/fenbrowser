@@ -579,7 +579,7 @@ public class BrowserIntegration : IDisposable
         }
 
         RequestFrame(
-            MapAnimationInvalidation(animation.Invalidation),
+            MapAnimationInvalidation(animation),
             "CssAnimationEngine");
     }
 
@@ -648,6 +648,43 @@ public class BrowserIntegration : IDisposable
         }
 
         return reason;
+    }
+
+    /// <summary>
+    /// Phase 3: map an animation tick to the cheapest correct frame invalidation
+    /// using the property-specific <see cref="AnimationUpdateKind"/>. A compositor-only
+    /// animation (transform/opacity/filter/clip-path) requests only an Animation frame,
+    /// so it does not carry the Paint/Layout bits that would force heavier work; paint-
+    /// only and layout-affecting animations escalate to Paint and Layout respectively.
+    /// </summary>
+    internal static RenderFrameInvalidationReason MapAnimationInvalidation(AnimationFrameEvent animation)
+    {
+        if (animation == null)
+        {
+            return RenderFrameInvalidationReason.Animation;
+        }
+
+        // Prefer the property-specific classification when available; fall back to the
+        // legacy InvalidationKind mapping for events that predate Phase 3.
+        if (animation.UpdateKind != AnimationUpdateKind.None)
+        {
+            var reason = RenderFrameInvalidationReason.Animation;
+            if ((animation.UpdateKind & AnimationUpdateKind.Layout) != 0)
+            {
+                reason |= RenderFrameInvalidationReason.Layout | RenderFrameInvalidationReason.Paint;
+            }
+
+            if ((animation.UpdateKind & AnimationUpdateKind.Paint) != 0)
+            {
+                reason |= RenderFrameInvalidationReason.Paint;
+            }
+
+            // Composite-only animations carry no Paint/Layout bits: the compositor can
+            // update transform/opacity without rebuilding or re-rastering content.
+            return reason;
+        }
+
+        return MapAnimationInvalidation(animation.Invalidation);
     }
 
     private void RecordThrottledBackgroundAnimation(AnimationFrameEvent animation)

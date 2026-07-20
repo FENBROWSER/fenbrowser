@@ -18,6 +18,22 @@ namespace FenBrowser.FenEngine.Rendering
     /// subscribers can filter by owning document and tab instead of reacting to
     /// every global animation tick from the process-wide singleton engine.
     /// </summary>
+    /// <summary>
+    /// Phase 3: property-specific animation invalidation classification. Unlike
+    /// <see cref="InvalidationKind"/> (which only knows Style/Layout/Paint), this
+    /// distinguishes compositor-only properties (transform/opacity/filter/clip-path)
+    /// that can be updated by re-compositing existing content without a paint-tree
+    /// rebuild, from paint-only and layout-affecting properties.
+    /// </summary>
+    [Flags]
+    public enum AnimationUpdateKind
+    {
+        None = 0,
+        Composite = 1,
+        Paint = 2,
+        Layout = 4
+    }
+
     public sealed record AnimationFrameEvent
     {
         public Element Element { get; init; }
@@ -25,6 +41,13 @@ namespace FenBrowser.FenEngine.Rendering
         public Document OwnerDocument { get; init; }
 
         public InvalidationKind Invalidation { get; set; }
+
+        /// <summary>
+        /// Phase 3: property-specific classification of the changed properties.
+        /// Used by the renderer/host to pick the cheapest correct update path
+        /// (compositor-only vs paint-only vs layout) instead of always rebuilding.
+        /// </summary>
+        public AnimationUpdateKind UpdateKind { get; set; }
 
         public List<string> ChangedProperties { get; set; }
     }
@@ -165,6 +188,16 @@ namespace FenBrowser.FenEngine.Rendering
             "border-width", "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
             "flex", "flex-basis", "flex-grow", "flex-shrink",
             "grid-template-columns", "grid-template-rows", "grid-auto-columns", "grid-auto-rows"
+        };
+        /// <summary>
+        /// Phase 3: properties that can be animated by updating a composited layer's
+        /// transform/opacity/filter state and re-compositing existing content, without
+        /// rebuilding the paint tree or re-rasterizing content. Anything not in this set
+        /// and not layout-affecting is treated as a paint-only update.
+        /// </summary>
+        private static readonly HashSet<string> _compositorOnlyProperties = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "transform", "translate", "rotate", "scale", "opacity", "filter", "clip-path"
         };
         /// <summary>
         /// Event raised when an animation completes.
@@ -967,6 +1000,54 @@ namespace FenBrowser.FenEngine.Rendering
                 : InvalidationKind.Paint;
         }
 
+        /// <summary>
+        /// Phase 3: classify a single animated property into the cheapest correct
+        /// update kind. Layout-affecting wins over paint, paint wins over composite.
+        /// Unknown visual properties default to Paint (never silently reduced to a
+        /// full layout, per the property-specific invalidation requirement).
+        /// </summary>
+        public static AnimationUpdateKind ClassifyAnimationUpdateKind(string property)
+        {
+            if (string.IsNullOrWhiteSpace(property))
+            {
+                return AnimationUpdateKind.None;
+            }
+
+            var trimmed = property.Trim();
+            if (_layoutAffectingProperties.Contains(trimmed))
+            {
+                return AnimationUpdateKind.Layout;
+            }
+
+            if (_compositorOnlyProperties.Contains(trimmed))
+            {
+                return AnimationUpdateKind.Composite;
+            }
+
+            return AnimationUpdateKind.Paint;
+        }
+
+        /// <summary>
+        /// Phase 3: classify a set of animated properties. The result carries every
+        /// bit that applies so callers can pick the strongest required stage while
+        /// still detecting the "compositor-only" case (Composite bit set alone).
+        /// </summary>
+        public static AnimationUpdateKind DetermineAnimationUpdateKind(IEnumerable<string> properties)
+        {
+            if (properties == null)
+            {
+                return AnimationUpdateKind.None;
+            }
+
+            var kind = AnimationUpdateKind.None;
+            foreach (var property in properties)
+            {
+                kind |= ClassifyAnimationUpdateKind(property);
+            }
+
+            return kind;
+        }
+
         #endregion
         
         #region Animation Loop
@@ -1014,6 +1095,7 @@ namespace FenBrowser.FenEngine.Rendering
                 ev.Invalidation |= invalidation;
                 if (properties != null)
                 {
+                    ev.UpdateKind |= DetermineAnimationUpdateKind(properties);
                     foreach (var p in properties)
                     {
                         if (!ev.ChangedProperties.Contains(p))
