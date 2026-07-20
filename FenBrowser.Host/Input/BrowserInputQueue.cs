@@ -167,11 +167,19 @@ public sealed class BrowserInputQueue
             if (_pending.Count >= _maxPendingEvents)
             {
                 var staleInput = FindOldestCoalescibleInput();
+                if (staleInput == null && IsButtonTransition(input))
+                {
+                    staleInput = FindOldestNonTransitionInput();
+                }
                 if (staleInput != null)
                 {
                     if (CanCoalesceMouseMove(staleInput.Value))
                     {
                         _droppedMouseMoveCount++;
+                    }
+                    else if (!IsCoalescibleInput(staleInput.Value))
+                    {
+                        _droppedOverflowCount++;
                     }
                     _pending.Remove(staleInput);
                 }
@@ -179,6 +187,13 @@ public sealed class BrowserInputQueue
                 {
                     _droppedMouseMoveCount++;
                     return;
+                }
+                else if (IsButtonTransition(input))
+                {
+                    // Preserve physical button state even during an all-transition
+                    // burst. The configured capacity is a soft bound for this one
+                    // critical class; losing MouseUp can otherwise leave the page in
+                    // a permanently pressed state.
                 }
                 else
                 {
@@ -246,10 +261,7 @@ public sealed class BrowserInputQueue
     {
         for (var node = _pending.First; node != null; node = node.Next)
         {
-            if (CanCoalesceMouseMove(node.Value) ||
-                node.Value.Type == BrowserInputType.MouseWheel ||
-                node.Value.Type == BrowserInputType.ScrollTo ||
-                node.Value.Type == BrowserInputType.ScrollAnimationTick)
+            if (IsCoalescibleInput(node.Value))
             {
                 return node;
             }
@@ -257,6 +269,28 @@ public sealed class BrowserInputQueue
 
         return null;
     }
+
+    private LinkedListNode<BrowserInputEvent> FindOldestNonTransitionInput()
+    {
+        for (var node = _pending.First; node != null; node = node.Next)
+        {
+            if (!IsButtonTransition(node.Value))
+            {
+                return node;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsButtonTransition(BrowserInputEvent input) =>
+        input.Type is BrowserInputType.MouseDown or BrowserInputType.MouseUp;
+
+    private static bool IsCoalescibleInput(BrowserInputEvent input) =>
+        CanCoalesceMouseMove(input) ||
+        input.Type is BrowserInputType.MouseWheel or
+            BrowserInputType.ScrollTo or
+            BrowserInputType.ScrollAnimationTick;
 
     private static bool CanCoalesceMouseMove(BrowserInputEvent input) =>
         input.Type == BrowserInputType.MouseMove && input.Buttons == 0;

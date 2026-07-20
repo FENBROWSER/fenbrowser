@@ -131,6 +131,46 @@ public sealed class BrowserInputQueueTests
     }
 
     [Fact]
+    public void Enqueue_ButtonTransitions_DisplaceOtherDiscreteInputInsteadOfDroppingState()
+    {
+        var queue = new BrowserInputQueue(maxPendingEvents: 4);
+        queue.Enqueue(Input(BrowserInputType.Click, 1));
+        queue.Enqueue(Input(BrowserInputType.KeyDown, 2));
+        queue.Enqueue(Input(BrowserInputType.Click, 3));
+        queue.Enqueue(Input(BrowserInputType.KeyUp, 4));
+
+        queue.Enqueue(Input(BrowserInputType.MouseDown, 5, buttons: 1));
+        queue.Enqueue(Input(BrowserInputType.MouseUp, 6));
+
+        var drained = new List<BrowserInputEvent>();
+        queue.Drain(drained.Add, TimeSpan.FromSeconds(1), maxEvents: 8);
+
+        Assert.Equal(4, drained.Count);
+        Assert.Contains(drained, input => input.Type == BrowserInputType.MouseDown && input.Sequence == 5);
+        Assert.Contains(drained, input => input.Type == BrowserInputType.MouseUp && input.Sequence == 6);
+        Assert.True(drained.FindIndex(input => input.Sequence == 5) <
+                    drained.FindIndex(input => input.Sequence == 6));
+        Assert.Equal(2, queue.DroppedOverflowCount);
+    }
+
+    [Fact]
+    public void Enqueue_AllTransitionBurst_PreservesEveryMouseDownAndMouseUp()
+    {
+        var queue = new BrowserInputQueue(maxPendingEvents: 4);
+        for (var sequence = 1; sequence <= 10; sequence++)
+        {
+            var type = sequence % 2 == 1 ? BrowserInputType.MouseDown : BrowserInputType.MouseUp;
+            queue.Enqueue(Input(type, sequence, buttons: type == BrowserInputType.MouseDown ? 1 : 0));
+        }
+
+        var drained = new List<long>();
+        queue.Drain(input => drained.Add(input.Sequence), TimeSpan.FromSeconds(1), maxEvents: 16);
+
+        Assert.Equal(new long[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 }, drained);
+        Assert.Equal(0, queue.DroppedOverflowCount);
+    }
+
+    [Fact]
     public void Enqueue_AdjacentScrollTicks_CoalescesElapsedTime()
     {
         var queue = new BrowserInputQueue(maxPendingEvents: 8);
