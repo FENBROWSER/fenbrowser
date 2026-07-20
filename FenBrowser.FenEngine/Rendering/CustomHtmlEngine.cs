@@ -401,6 +401,7 @@ namespace FenBrowser.FenEngine.Rendering
         private Uri _activeBaseUri;
         private Func<Uri, Task<string>> _activeFetchCss;
         private Func<Uri, Task<Stream>> _activeImageLoader;
+        internal Func<Element, Uri, Task<string>> FetchExternalCssForRootAsync { get; set; }
         private Action<Uri> _activeOnNavigate;
         private double? _activeViewportWidth;
         private double? _activeViewportHeight;
@@ -1633,7 +1634,15 @@ public void Dispose()
                     var cssEngine = CssEngineFactory.GetEngine();
                     EngineLogCompat.Debug($"[CustomHtmlEngine] BuildVisualTree: Engine={cssEngine.EngineName}", LogCategory.Rendering);
 
-                    var computedStyles = await cssEngine.ComputeStylesAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight);
+                    var computedStyles = FetchExternalCssForRootAsync == null
+                        ? await cssEngine.ComputeStylesAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight)
+                        : await CssLoader.ComputeAsync(
+                            dom,
+                            baseUri,
+                            cssFetcher,
+                            viewportWidth,
+                            viewportHeight,
+                            fetchExternalCssForRootAsync: FetchExternalCssForRootAsync);
                     if (!UpdateRenderState(dom, computedStyles, renderGeneration))
                     {
                         return null;
@@ -2105,7 +2114,8 @@ public void Dispose()
                      fetchExternalCssAsync,
                      resolvedViewportWidth,
                      resolvedViewportHeight,
-                     msg => EngineLogCompat.Debug(msg, LogCategory.Rendering));
+                     msg => EngineLogCompat.Debug(msg, LogCategory.Rendering),
+                     fetchExternalCssForRootAsync: FetchExternalCssForRootAsync);
                  var timeoutTask = Task.Delay(30000); // Increased from 10s to 30s for complex pages
                  var completedTask = await Task.WhenAny(cssTask, timeoutTask);
                  
@@ -2392,7 +2402,8 @@ public void Dispose()
                         subtreeBaseUri,
                         activeFetchCss,
                         activeViewportWidth,
-                        activeViewportHeight).ConfigureAwait(false);
+                        activeViewportHeight,
+                        fetchExternalCssForRootAsync: FetchExternalCssForRootAsync).ConfigureAwait(false);
                     
                     if (subtreeStyles != null)
                     {

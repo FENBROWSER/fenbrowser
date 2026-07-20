@@ -97,6 +97,49 @@ public sealed class ResourceManagerFetchContextTests
     }
 
     [Fact]
+    public async Task FetchCssAsync_UsesExplicitFrameAndReferrerPolicy()
+    {
+        HttpRequestMessage observed = null;
+        using var client = new HttpClient(new StubHandler(request =>
+        {
+            observed = request;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent("body{color:green}")
+                {
+                    Headers = { ContentType = new MediaTypeHeaderValue("text/css") }
+                }
+            };
+        }));
+        var manager = new ResourceManager(client, isPrivate: true);
+        var frameUri = new Uri("https://frame.example.test/widget/");
+        var resourceUri = new Uri(frameUri, "frame.css");
+
+        var css = await manager.FetchCssAsync(new FetchContext
+        {
+            RequestUri = resourceUri,
+            InitiatorUri = frameUri,
+            FrameDocumentUri = frameUri,
+            TopLevelDocumentUri = new Uri("https://top.example.test/"),
+            Destination = "style",
+            Mode = "no-cors",
+            CredentialsMode = "include",
+            ReferrerPolicy = ReferrerPolicyDirective.NoReferrer,
+            IsTopLevelNavigation = false,
+            IsUserInitiated = false,
+            Method = "GET"
+        });
+
+        Assert.Equal("body{color:green}", css);
+        Assert.NotNull(observed);
+        Assert.Null(observed.Headers.Referrer);
+        Assert.Equal("style", Assert.Single(observed.Headers.GetValues("Sec-Fetch-Dest")));
+        Assert.Equal("no-cors", Assert.Single(observed.Headers.GetValues("Sec-Fetch-Mode")));
+        Assert.Equal("same-origin", Assert.Single(observed.Headers.GetValues("Sec-Fetch-Site")));
+    }
+
+    [Fact]
     public async Task FrameResponsePolicy_DoesNotReplaceTopLevelPolicy_AndAppliesToFrameSubresources()
     {
         HttpRequestMessage frameScriptRequest = null;

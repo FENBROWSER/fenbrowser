@@ -2496,13 +2496,32 @@ namespace FenBrowser.Core
                 throw;
             }
         }
-        public async Task<string> FetchCssAsync(Uri url)
+        public Task<string> FetchCssAsync(Uri url)
         {
-            if (url == null) return null;
+            if (url == null) return Task.FromResult<string>(null);
+            return FetchCssAsync(new FetchContext
+            {
+                RequestUri = url,
+                Destination = "style",
+                Mode = "no-cors",
+                CredentialsMode = "include",
+                Method = "GET"
+            });
+        }
+
+        public async Task<string> FetchCssAsync(FetchContext context)
+        {
+            if (context?.RequestUri == null) return null;
+            var url = context.RequestUri;
             // Use FetchTextDetailedAsync to inspect headers before returning
-            var result = await FetchTextDetailedAsync(url, 
-                accept: "text/css,*/*;q=0.1", 
-                secFetchDest: "style");
+            var result = await FetchTextDetailedAsync(
+                context with
+                {
+                    Destination = "style",
+                    Mode = string.IsNullOrWhiteSpace(context.Mode) ? "no-cors" : context.Mode,
+                    Method = "GET"
+                },
+                accept: "text/css,*/*;q=0.1");
 
             if (result.Status != FetchStatus.Success)
             {

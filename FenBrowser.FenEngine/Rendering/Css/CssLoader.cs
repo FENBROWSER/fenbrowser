@@ -308,9 +308,18 @@ namespace FenBrowser.FenEngine.Rendering
             double? viewportWidth = null,
             double? viewportHeight = null,
             Action<string> log = null,
-            FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
+            FenBrowser.Core.Deadlines.FrameDeadline deadline = null,
+            Func<Element, Uri, Task<string>> fetchExternalCssForRootAsync = null)
         {
-            var result = await ComputeWithResultAsync(root, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, log, deadline);
+            var result = await ComputeWithResultAsync(
+                root,
+                baseUri,
+                fetchExternalCssAsync,
+                viewportWidth,
+                viewportHeight,
+                log,
+                deadline,
+                fetchExternalCssForRootAsync);
             return result.Computed;
         }
 
@@ -322,7 +331,8 @@ namespace FenBrowser.FenEngine.Rendering
             double? viewportWidth = null,
             double? viewportHeight = null,
             Action<string> log = null,
-            FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
+            FenBrowser.Core.Deadlines.FrameDeadline deadline = null,
+            Func<Element, Uri, Task<string>> fetchExternalCssForRootAsync = null)
         {
             if (stylesheetRoot == null || cascadeRoot == null)
             {
@@ -353,7 +363,8 @@ namespace FenBrowser.FenEngine.Rendering
                     viewportHeight,
                     log,
                     deadline,
-                    result.Computed).ConfigureAwait(false);
+                    result.Computed,
+                    fetchExternalCssForRootAsync).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -370,7 +381,8 @@ namespace FenBrowser.FenEngine.Rendering
             double? viewportWidth = null,
             double? viewportHeight = null,
             Action<string> log = null,
-            FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
+            FenBrowser.Core.Deadlines.FrameDeadline deadline = null,
+            Func<Element, Uri, Task<string>> fetchExternalCssForRootAsync = null)
         {
             var result = await ComputeWithResultCoreAsync(
                 root, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, log, deadline)
@@ -388,7 +400,15 @@ namespace FenBrowser.FenEngine.Rendering
             try
             {
                 await StyleIframeSubdocumentsAsync(
-                    root, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, log, deadline, result.Computed)
+                    root,
+                    baseUri,
+                    fetchExternalCssAsync,
+                    viewportWidth,
+                    viewportHeight,
+                    log,
+                    deadline,
+                    result.Computed,
+                    fetchExternalCssForRootAsync)
                     .ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -407,7 +427,8 @@ namespace FenBrowser.FenEngine.Rendering
             double? viewportHeight,
             Action<string> log,
             FenBrowser.Core.Deadlines.FrameDeadline deadline,
-            Dictionary<Node, CssComputed> aggregate)
+            Dictionary<Node, CssComputed> aggregate,
+            Func<Element, Uri, Task<string>> fetchExternalCssForRootAsync)
         {
             if (root == null)
             {
@@ -449,8 +470,18 @@ namespace FenBrowser.FenEngine.Rendering
                 double? frameVh = ResolveFrameViewportDimension(frame, "height", viewportHeight);
 
                 var frameBaseUri = ResolveDocumentBaseUri(frameDoc, baseUri);
+                var frameCssFetcher = fetchExternalCssForRootAsync == null
+                    ? fetchExternalCssAsync
+                    : new Func<Uri, Task<string>>(uri => fetchExternalCssForRootAsync(frameRoot, uri));
                 var nested = await ComputeWithResultAsync(
-                    frameRoot, frameBaseUri, fetchExternalCssAsync, frameVw, frameVh, log, deadline)
+                    frameRoot,
+                    frameBaseUri,
+                    frameCssFetcher,
+                    frameVw,
+                    frameVh,
+                    log,
+                    deadline,
+                    fetchExternalCssForRootAsync)
                     .ConfigureAwait(false);
 
                 if (nested?.Computed != null && aggregate != null)

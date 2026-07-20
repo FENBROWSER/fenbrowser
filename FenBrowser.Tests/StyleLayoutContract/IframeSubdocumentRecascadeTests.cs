@@ -14,6 +14,43 @@ namespace FenBrowser.Tests.StyleLayoutContract;
 public sealed class IframeSubdocumentRecascadeTests
 {
     [Fact]
+    public async Task ComputeAsync_FrameStylesheetUsesOwningSubdocumentFetchContext()
+    {
+        var parentUri = new Uri("https://parent.example.test/");
+        var parentDocument = new HtmlParser(
+            "<!doctype html><html><body><iframe></iframe></body></html>",
+            parentUri).Parse();
+        var parentRoot = parentDocument.DocumentElement ?? parentDocument.Children.OfType<Element>().First();
+        var iframe = parentRoot.Descendants().OfType<Element>().Single(element =>
+            string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase));
+        var frameUri = new Uri("https://frame.example.test/widget/");
+        var frameDocument = new HtmlParser(
+            "<!doctype html><html><head><link rel='stylesheet' href='frame.css'></head><body><div id='target'></div></body></html>",
+            frameUri).Parse();
+        iframe.AppendChild(frameDocument);
+        Element observedRoot = null;
+        Uri observedUri = null;
+
+        var computed = await CssLoader.ComputeAsync(
+            parentRoot,
+            parentUri,
+            fetchExternalCssAsync: _ => throw new InvalidOperationException("Frame CSS used the top-level fetcher."),
+            viewportWidth: 1280,
+            viewportHeight: 800,
+            fetchExternalCssForRootAsync: (root, uri) =>
+            {
+                observedRoot = root;
+                observedUri = uri;
+                return Task.FromResult("#target{width:37px}");
+            });
+
+        var target = Assert.IsType<Element>(frameDocument.GetElementById("target"));
+        Assert.Same(frameDocument.DocumentElement, observedRoot);
+        Assert.Equal(new Uri(frameUri, "frame.css"), observedUri);
+        Assert.Equal(37d, computed[target].Width);
+    }
+
+    [Fact]
     public async Task ComputeSubtreeAsync_NewIframeDocument_UsesFrameLocalStylesheets()
     {
         var parentUri = new Uri("https://parent.example.test/");

@@ -174,6 +174,8 @@ namespace FenBrowser.Tests.Core
             Assert.True(navigated);
             Assert.Contains(handler.RequestUris, uri => uri.AbsoluteUri == "https://example.test/frames/frame.html");
             Assert.Contains(handler.RequestUris, uri => uri.AbsoluteUri == "https://example.test/frames/frame.css");
+            Assert.Equal(new Uri("https://example.test/frames/frame.html"), handler.CssReferrer);
+            Assert.Equal("style", handler.CssFetchDestination);
             Assert.Same(frameDocument, frameDocument.DocumentElement.OwnerDocument);
             Assert.Equal("https://example.test/frames/frame.html", frameDocument.URL);
             Assert.NotNull(marker);
@@ -246,6 +248,27 @@ namespace FenBrowser.Tests.Core
 
             Assert.True(handler.ScriptRequested);
             Assert.Null(handler.ScriptReferrer);
+        }
+
+        [Fact]
+        public async Task ScriptCreatedIframe_UsesFrameResponseCspForExternalStylesheets()
+        {
+            using var handler = new FrameStyleSecurityHandler();
+            using var httpClient = new HttpClient(handler);
+            var resources = new ResourceManager(httpClient, isPrivate: true);
+            var navigation = new NavigationManager(resources);
+
+            using var browser = new BrowserHost(isPrivate: true);
+            SetPrivateField(browser, "_resources", resources);
+            SetPrivateField(browser, "_navManager", navigation);
+
+            Assert.True(await browser.NavigateAsync("https://example.test/page"));
+            Assert.NotNull(await WaitForElementAsync(browser, "frame-style-ready"));
+            await Task.Delay(100);
+
+            Assert.False(
+                handler.StylesheetRequested,
+                $"unexpected stylesheet referrer={handler.StylesheetReferrer?.AbsoluteUri ?? "<null>"}");
         }
 
         [Fact]
@@ -427,6 +450,8 @@ namespace FenBrowser.Tests.Core
         {
             private readonly object _lock = new();
             private readonly List<Uri> _requestUris = new();
+            public Uri CssReferrer { get; private set; }
+            public string CssFetchDestination { get; private set; }
 
             public IReadOnlyList<Uri> RequestUris
             {
@@ -448,6 +473,10 @@ namespace FenBrowser.Tests.Core
 
                 if (string.Equals(request.RequestUri?.AbsolutePath, "/frames/frame.css", StringComparison.OrdinalIgnoreCase))
                 {
+                    CssReferrer = request.Headers.Referrer;
+                    CssFetchDestination = request.Headers.TryGetValues("Sec-Fetch-Dest", out var destinations)
+                        ? destinations.SingleOrDefault()
+                        : null;
                     return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
                     {
                         Content = new StringContent(".frame-marker{color:#010203;display:block}", Encoding.UTF8, "text/css"),
@@ -575,6 +604,55 @@ namespace FenBrowser.Tests.Core
                         "Content-Security-Policy",
                         _useExternalScript ? "script-src 'self'" : "script-src 'none'");
                     response.Headers.TryAddWithoutValidation("Referrer-Policy", "no-referrer");
+                    return Task.FromResult(response);
+                }
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent(
+                        "<!doctype html><html><body><script>" +
+                        "var frame=document.createElement('iframe');frame.src='/frames/frame.html';document.body.appendChild(frame);" +
+                        "</script></body></html>",
+                        Encoding.UTF8,
+                        "text/html")
+                });
+            }
+        }
+
+        private sealed class FrameStyleSecurityHandler : HttpMessageHandler
+        {
+            public bool StylesheetRequested { get; private set; }
+            public Uri StylesheetReferrer { get; private set; }
+
+            protected override Task<HttpResponseMessage> SendAsync(
+                HttpRequestMessage request,
+                CancellationToken cancellationToken)
+            {
+                var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+                if (path == "/frames/frame.css")
+                {
+                    StylesheetRequested = true;
+                    StylesheetReferrer = request.Headers.Referrer;
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        RequestMessage = request,
+                        Content = new StringContent("#frame-style-ready{color:red}", Encoding.UTF8, "text/css")
+                    });
+                }
+
+                if (path == "/frames/frame.html")
+                {
+                    var response = new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        RequestMessage = request,
+                        Content = new StringContent(
+                            "<!doctype html><html><head><link rel='stylesheet' href='frame.css'></head>" +
+                            "<body><div id='frame-style-ready'></div></body></html>",
+                            Encoding.UTF8,
+                            "text/html")
+                    };
+                    response.Headers.TryAddWithoutValidation("Content-Security-Policy", "style-src 'none'");
                     return Task.FromResult(response);
                 }
 

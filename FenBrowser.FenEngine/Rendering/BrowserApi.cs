@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -232,6 +233,7 @@ namespace FenBrowser.FenEngine.Rendering
             BindingFlags.Instance | BindingFlags.NonPublic);
         private readonly CustomHtmlEngine _engine = new CustomHtmlEngine();
         private readonly ResourceManager _resources;
+        private readonly ConditionalWeakTable<Document, FrameResourceSecurityContext> _frameResourceSecurity = new();
         // Per-host speculative prefetcher fed by the HTML PreloadScanner;
         // populates the ResourceManager text/image caches before the parser
         // reaches the resource references in the stream.
@@ -272,6 +274,11 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly string _imageLoaderContextId = Guid.NewGuid().ToString("N");
         private double? _hostViewportHintWidth;
         private double? _hostViewportHintHeight;
+
+        private sealed record FrameResourceSecurityContext(
+            Uri DocumentUri,
+            CspPolicy Policy,
+            ReferrerPolicyDirective ReferrerPolicy);
 
         // External renderer reference: BrowserIntegration injects the actual renderer used for
         // painting so that hit tests in DispatchInputEvent use the correct (populated) paint tree
@@ -736,6 +743,7 @@ namespace FenBrowser.FenEngine.Rendering
                 (isPrivate ? new BrowserCookieJar() : SharedProfileCookieJar);
             _resources = new ResourceManager(httpClient, isPrivate, sessionCookieJar);
             _engine.CookieJar = _resources.CookieJar;
+            _engine.FetchExternalCssForRootAsync = FetchFrameAwareCssAsync;
             _prefetcher = new FenBrowser.Core.Network.ResourcePrefetcher(_resources);
             _engine.Prefetcher = _prefetcher;
 
@@ -4476,12 +4484,13 @@ pre {{
                     frameElement.RemoveChild(frameElement.FirstChild);
                 }
 
+                var executionOptions = CreateFrameExecutionOptions(result, finalUri, parsedDocument);
                 frameElement.AppendChild(parsedDocument);
                 await TryInitializeFrameScriptsAsync(
                     frameElement,
                     parsedRoot,
                     finalUri,
-                    CreateFrameExecutionOptions(result, finalUri)).ConfigureAwait(false);
+                    executionOptions).ConfigureAwait(false);
                 frameElement.MarkDirty(InvalidationKind.Style | InvalidationKind.Layout | InvalidationKind.Paint);
                 _engine.ScheduleRecascade(fullRecascade: true);
                 SyncScriptContextToSelectedBrowsingContext();
@@ -4589,12 +4598,13 @@ pre {{
                     frameElement.RemoveChild(frameElement.FirstChild);
                 }
 
+                var executionOptions = CreateFrameExecutionOptions(frameFetchResult, frameUri, parsedDocument);
                 frameElement.AppendChild(parsedDocument);
                 await TryInitializeFrameScriptsAsync(
                     frameElement,
                     parsedRoot,
                     frameUri,
-                    CreateFrameExecutionOptions(frameFetchResult, frameUri)).ConfigureAwait(false);
+                    executionOptions).ConfigureAwait(false);
                 TraceWebDriverFrame(
                     $"EnsureFrameRoot attached parsedRoot='{parsedRoot.TagName}' frameAfter={DescribeFrameElement(frameElement)}");
             }
@@ -4655,7 +4665,10 @@ pre {{
             };
         }
 
-        private BrowserFrameExecutionOptions CreateFrameExecutionOptions(FetchResult result, Uri frameUri)
+        private BrowserFrameExecutionOptions CreateFrameExecutionOptions(
+            FetchResult result,
+            Uri frameUri,
+            Document frameDocument = null)
         {
             if (frameUri == null)
             {
@@ -4671,6 +4684,13 @@ pre {{
 
             var referrerPolicy = result?.ReferrerPolicy ?? ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
             var topLevelUri = _current ?? frameUri;
+            if (frameDocument != null)
+            {
+                _frameResourceSecurity.Remove(frameDocument);
+                _frameResourceSecurity.Add(
+                    frameDocument,
+                    new FrameResourceSecurityContext(frameUri, framePolicy, referrerPolicy));
+            }
 
             return new BrowserFrameExecutionOptions
             {
@@ -4739,6 +4759,41 @@ pre {{
                     });
                 }
             };
+        }
+
+        private async Task<string> FetchFrameAwareCssAsync(Element stylesheetRoot, Uri resourceUri)
+        {
+            if (resourceUri == null)
+            {
+                return null;
+            }
+
+            var document = stylesheetRoot?.OwnerDocument;
+            if (document == null || !_frameResourceSecurity.TryGetValue(document, out var frameContext))
+            {
+                return await _resources.FetchCssAsync(resourceUri).ConfigureAwait(false);
+            }
+
+            if (frameContext.Policy != null &&
+                !frameContext.Policy.IsAllowed("style-src", resourceUri, frameContext.DocumentUri))
+            {
+                return null;
+            }
+
+            return await _resources.FetchCssAsync(new FetchContext
+            {
+                RequestUri = MapRuntimeUri(resourceUri),
+                InitiatorUri = frameContext.DocumentUri,
+                FrameDocumentUri = frameContext.DocumentUri,
+                TopLevelDocumentUri = _current ?? frameContext.DocumentUri,
+                Destination = "style",
+                Mode = "no-cors",
+                CredentialsMode = "include",
+                ReferrerPolicy = frameContext.ReferrerPolicy,
+                IsTopLevelNavigation = false,
+                IsUserInitiated = false,
+                Method = "GET"
+            }).ConfigureAwait(false);
         }
 
         private static Uri ResolveOwningDocumentUri(Element frameElement)
