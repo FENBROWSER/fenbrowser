@@ -681,10 +681,18 @@ namespace FenBrowser.FenEngine.Rendering
                                               || styleInvalidation
                                               || root.PaintDirty
                                               || root.ChildPaintDirty
-                                              || ImageLoader.HasActiveAnimatedImages
                                               || scrollAnimationActive
                                               || (animationInvalidation & InvalidationKind.Paint) != 0
                                               || ImageLoader.CacheVersion != _lastImageCacheVersion;
+                    // Phase 5: an animated GIF in one document must NOT mark every
+                    // other document's paint tree dirty. Animated-image playback is
+                    // already driven per owning document through
+                    // ImageLoader.RepaintAnimatedImageOwners (which invokes the
+                    // owner-scoped RequestRepaint registered for that document), so
+                    // the process-global HasActiveAnimatedImages flag is intentionally
+                    // NOT used here as a paint-invalidation signal. Using it would
+                    // force every tab to rebuild and rasterize whenever any GIF
+                    // anywhere advanced a frame.
                     // PC-4: Suppress forced rebuilds under sustained frame-budget pressure.
                     bool adaptiveSuppressed = _frameBudgetAdaptivePolicy.ShouldSuppressForcedRebuild(RenderPipeline.FrameBudget);
                     bool forcePaintRebuild = _paintStabilityController.ShouldForcePaintRebuild && !adaptiveSuppressed;
