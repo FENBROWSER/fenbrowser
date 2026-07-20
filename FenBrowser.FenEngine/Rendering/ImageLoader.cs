@@ -165,10 +165,34 @@ namespace FenBrowser.FenEngine.Rendering
         private static Timer _gifAnimationTimer;
         private static readonly object _gifTimerLock = new object();
 
+        // Phase 5: Animated-GIF playback state is tracked per browsing context owner
+        // so a GIF in one tab only ever repaints that tab. The process-global
+        // `RequestRepaint` callback historically pointed at whichever host registered
+        // last, so an animating GIF in tab A would wake tab B. We instead remember the
+        // owner that actually displayed each GIF and repaint only those owners.
+        private static readonly ConcurrentDictionary<string, ImageLoaderRequestContext> _animatedGifOwners =
+            new ConcurrentDictionary<string, ImageLoaderRequestContext>(StringComparer.Ordinal);
+
         /// <summary>
         /// True when there are active animated GIFs that need periodic repainting
         /// </summary>
         public static bool HasActiveAnimatedImages => !_animatedGifs.IsEmpty;
+
+        /// <summary>
+        /// Records that the given request context (browsing-context owner) is currently
+        /// displaying an animated GIF, so the GIF animation timer can repaint only the
+        /// owners that actually use animated images.
+        /// </summary>
+        private static void NoteAnimatedImageOwner(ImageLoaderRequestContext context)
+        {
+            var ownerId = context?.OwnerId;
+            if (string.IsNullOrWhiteSpace(ownerId))
+            {
+                return;
+            }
+
+            _animatedGifOwners[ownerId] = context;
+        }
         
         // RULE 3 & 5: SVG rendering through adapter with safety limits
         private static readonly ISvgRenderer _svgRenderer = new SvgSkiaRenderer();
@@ -886,13 +910,25 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static void InvokeRepaint(List<ImageLoaderRequestContext> contexts)
         {
-            if (contexts != null && contexts.Count > 0)
+            // Phase 6: prefer document/browsing-context scoped callbacks. Only fall
+            // back to the process-global RequestRepaint when no scoped callback could
+            // be invoked, so a single decoded image produces at most one repaint per
+            // owning document and never a duplicate global signal.
+            bool invokedScopedCallback = false;
+
+            if (contexts != null)
             {
                 foreach (var context in contexts)
                 {
+                    if (context?.RequestRepaint == null)
+                    {
+                        continue;
+                    }
+
                     try
                     {
-                        context?.RequestRepaint?.Invoke();
+                        context.RequestRepaint.Invoke();
+                        invokedScopedCallback = true;
                     }
                     catch
                     {
@@ -900,30 +936,31 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
-            // Always also invoke the global fallback as a safety net.
-            // Context-specific callbacks may point to stale BrowserApi instances
-            // (e.g. after navigation/dispose), but the global RequestRepaint is
-            // kept current by the active BrowserHost. This ensures at least one
-            // repaint signal reaches the active host even when pending-load
-            // contexts outlive their originating navigation.
-            try
+            if (!invokedScopedCallback)
             {
-                RequestRepaint?.Invoke();
-            }
-            catch
-            {
+                try { RequestRepaint?.Invoke(); }
+                catch { }
             }
         }
 
         private static void InvokeRelayout(List<ImageLoaderRequestContext> contexts)
         {
-            if (contexts != null && contexts.Count > 0)
+            // Phase 6: same scoped-first policy as InvokeRepaint.
+            bool invokedScopedCallback = false;
+
+            if (contexts != null)
             {
                 foreach (var context in contexts)
                 {
+                    if (context?.RequestRelayout == null)
+                    {
+                        continue;
+                    }
+
                     try
                     {
-                        context?.RequestRelayout?.Invoke();
+                        context.RequestRelayout.Invoke();
+                        invokedScopedCallback = true;
                     }
                     catch
                     {
@@ -931,13 +968,10 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
 
-            // Always also invoke the global fallback (see InvokeRepaint comment).
-            try
+            if (!invokedScopedCallback)
             {
-                RequestRelayout?.Invoke();
-            }
-            catch
-            {
+                try { RequestRelayout?.Invoke(); }
+                catch { }
             }
         }
 
@@ -970,6 +1004,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (_animatedGifs.TryGetValue(cacheKey, out var anim))
             {
                 RegisterCacheHit();
+                NoteAnimatedImageOwner(loadContext);
                 return anim.GetCurrentFrame();
             }
 
@@ -1847,9 +1882,34 @@ namespace FenBrowser.FenEngine.Rendering
                         StopGifAnimationTimer();
                         return;
                     }
-                    // Immediate repaint for animation frames (skip debounce)
-                    RequestRepaint?.Invoke();
+                    // Repaint only the owners that actually display animated GIFs.
+                    // Phase 5: do NOT call the process-global RequestRepaint, which
+                    // would wake an unrelated tab. Fall back to the global callback
+                    // only when no owner-scoped context is registered.
+                    RepaintAnimatedImageOwners();
                 }, null, 50, 50); // ~20fps tick
+            }
+        }
+
+        private static void RepaintAnimatedImageOwners()
+        {
+            bool invokedScoped = false;
+            foreach (var context in _animatedGifOwners.Values)
+            {
+                try
+                {
+                    context?.RequestRepaint?.Invoke();
+                    invokedScoped = true;
+                }
+                catch
+                {
+                }
+            }
+
+            if (!invokedScoped)
+            {
+                try { RequestRepaint?.Invoke(); }
+                catch { }
             }
         }
 
@@ -1861,6 +1921,10 @@ namespace FenBrowser.FenEngine.Rendering
                 _gifAnimationTimer?.Dispose();
                 _gifAnimationTimer = null;
             }
+
+            // Drop stale owner→context mappings so a disposed browsing context is
+            // never repainted after its GIFs stop animating.
+            _animatedGifOwners.Clear();
         }
     }
 }
