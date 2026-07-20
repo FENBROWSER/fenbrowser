@@ -15,6 +15,7 @@ public sealed record FetchContext
     public string Destination { get; init; } = "empty";
     public string Mode { get; init; } = "cors";
     public string CredentialsMode { get; init; } = "same-origin";
+    public ReferrerPolicyDirective? ReferrerPolicy { get; init; }
     public bool IsTopLevelNavigation { get; init; }
     public bool IsUserInitiated { get; init; }
     public string Method { get; init; } = "GET";

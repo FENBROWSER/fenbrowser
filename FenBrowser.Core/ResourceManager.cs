@@ -807,9 +807,9 @@ namespace FenBrowser.Core
             }
         }
 
-        private void AdoptResponseReferrerPolicy(HttpResponseMessage response, string secFetchDest)
+        private void AdoptResponseReferrerPolicy(HttpResponseMessage response, FetchContext context)
         {
-            if (!IsNavigationDestination(secFetchDest))
+            if (context?.IsTopLevelNavigation != true)
             {
                 return;
             }
@@ -1315,7 +1315,7 @@ namespace FenBrowser.Core
                     BrowserRequestHeaderPolicy.Apply(
                         req,
                         context,
-                        ActiveReferrerPolicy,
+                        context.ReferrerPolicy ?? ActiveReferrerPolicy,
                         string.IsNullOrWhiteSpace(accept)
                             ? BrowserNetworkCapabilities.DocumentAcceptHeader
                             : accept,
@@ -1596,7 +1596,7 @@ namespace FenBrowser.Core
                 }
 
                 var referrerPolicy = ParseReferrerPolicy(resp);
-                AdoptResponseReferrerPolicy(resp, secFetchDest);
+                AdoptResponseReferrerPolicy(resp, context);
 
                 if (string.Equals(secFetchDest, "iframe", StringComparison.OrdinalIgnoreCase) &&
                     !IsFrameEmbeddingAllowed(xFramePolicy, xFrameAllowFrom, refererOriginal, finalUri))
@@ -1720,7 +1720,10 @@ namespace FenBrowser.Core
                     EngineLogCompat.Debug($"[FetchTextOptFail] url={url} status={(resp != null ? (int)resp.StatusCode : 0)}", LogCategory.Network);
                     return null;
                 }
-                AdoptResponseReferrerPolicy(resp, secFetchDest);
+                if (IsTopLevelDocumentRequest(secFetchDest))
+                {
+                    ActiveReferrerPolicy = ParseReferrerPolicy(resp);
+                }
                 LastTextResponseUri = resp.RequestMessage != null ? resp.RequestMessage.RequestUri : url;
                 string text = null;
                 try
@@ -1893,7 +1896,7 @@ namespace FenBrowser.Core
                     BrowserRequestHeaderPolicy.Apply(
                         req,
                         context,
-                        ActiveReferrerPolicy,
+                        context.ReferrerPolicy ?? ActiveReferrerPolicy,
                         BrowserNetworkCapabilities.ImageAcceptHeader,
                         effectiveReferer,
                         acceptEncoding: "gzip, deflate");
@@ -2057,7 +2060,7 @@ namespace FenBrowser.Core
                     BrowserRequestHeaderPolicy.Apply(
                         req,
                         context,
-                        ActiveReferrerPolicy,
+                        context.ReferrerPolicy ?? ActiveReferrerPolicy,
                         string.IsNullOrWhiteSpace(accept) ? "*/*" : accept,
                         referer);
                     AttachCookies(req, topLevelDocumentUri ?? current, secFetchDest);
@@ -2267,7 +2270,7 @@ namespace FenBrowser.Core
             BrowserRequestHeaderPolicy.Apply(
                 request,
                 context,
-                ActiveReferrerPolicy,
+                context.ReferrerPolicy ?? ActiveReferrerPolicy,
                 request.Headers.Accept.Count > 0 ? null : "*/*",
                 context.InitiatorUri ?? context.FrameDocumentUri);
             var requestUrl = request.RequestUri.AbsoluteUri;

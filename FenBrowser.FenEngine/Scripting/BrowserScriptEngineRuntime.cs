@@ -36,6 +36,14 @@ using DomRange = FenBrowser.Core.Dom.V2.Range;
 
 namespace FenBrowser.FenEngine.Scripting;
 
+public sealed record BrowserFrameExecutionOptions
+{
+    public Func<Uri, string, bool> SubresourceAllowed { get; init; }
+    public Func<string, bool> NonceAllowed { get; init; }
+    public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; init; }
+    public Func<HttpRequestMessage, Task<HttpResponseMessage>> FetchHandler { get; init; }
+}
+
 public sealed class BrowserScriptLoadingSnapshot
 {
     public string Status { get; set; } = "not-run";
@@ -886,21 +894,35 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return SetDomAsyncCore(domRoot, baseUri);
     }
 
-    public Task SetSubdocumentDomAsync(Node domRoot, Uri baseUri = null)
+    public Task SetSubdocumentDomAsync(
+        Node domRoot,
+        Uri baseUri = null,
+        BrowserFrameExecutionOptions options = null)
     {
         var document = domRoot as Document ?? domRoot?.OwnerDocument;
         var frameElement = TryGetFrameElementForDocument(document);
         return frameElement == null
             ? SetDomAsyncCore(domRoot, baseUri, resetSession: false, restorePreviousContext: true)
-            : SetSubdocumentRealmAsync(frameElement, domRoot, baseUri);
+            : SetSubdocumentRealmAsync(frameElement, domRoot, baseUri, options);
     }
 
-    private async Task SetSubdocumentRealmAsync(Element frameElement, Node domRoot, Uri baseUri)
+    private async Task SetSubdocumentRealmAsync(
+        Element frameElement,
+        Node domRoot,
+        Uri baseUri,
+        BrowserFrameExecutionOptions options)
     {
         var frameRealm = _iframeRealms.GetValue(frameElement, CreateFrameRealm);
         frameRealm._parentRealmOwner = this;
         frameRealm._embeddingFrameElement = frameElement;
         CopyFrameRealmConfiguration(frameRealm);
+        if (options != null)
+        {
+            frameRealm.SubresourceAllowed = options.SubresourceAllowed ?? frameRealm.SubresourceAllowed;
+            frameRealm.NonceAllowed = options.NonceAllowed ?? frameRealm.NonceAllowed;
+            frameRealm.ExternalScriptFetcher = options.ExternalScriptFetcher ?? frameRealm.ExternalScriptFetcher;
+            frameRealm.FetchHandler = options.FetchHandler ?? frameRealm.FetchHandler;
+        }
 
         await frameRealm.SetDomAsync(domRoot, baseUri).ConfigureAwait(false);
 
@@ -1976,6 +1998,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     if (!Sandbox.Allows(SandboxFeature.InlineScripts))
                     {
                         MarkScriptSkipped(scriptRecord, "inline-disabled");
+                        continue;
+                    }
+
+                    var inlineNonce = scriptElement.GetAttribute("nonce");
+                    if (NonceAllowed != null && !NonceAllowed(inlineNonce))
+                    {
+                        MarkScriptSkipped(scriptRecord, "csp-inline-blocked");
                         continue;
                     }
 

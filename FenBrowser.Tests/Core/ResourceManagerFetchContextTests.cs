@@ -97,6 +97,86 @@ public sealed class ResourceManagerFetchContextTests
     }
 
     [Fact]
+    public async Task FrameResponsePolicy_DoesNotReplaceTopLevelPolicy_AndAppliesToFrameSubresources()
+    {
+        HttpRequestMessage frameScriptRequest = null;
+        using var client = new HttpClient(new StubHandler(request =>
+        {
+            if (request.RequestUri.AbsolutePath == "/top")
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent("top")
+                };
+                response.Headers.TryAddWithoutValidation("Referrer-Policy", "unsafe-url");
+                return response;
+            }
+
+            if (request.RequestUri.AbsolutePath == "/frame")
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent("frame")
+                };
+                response.Headers.TryAddWithoutValidation("Referrer-Policy", "no-referrer");
+                return response;
+            }
+
+            frameScriptRequest = request;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new StringContent("script")
+            };
+        }));
+        var manager = new ResourceManager(client, isPrivate: true);
+        var topUri = new Uri("https://top.example.test/top");
+        var frameUri = new Uri("https://frame.example.test/frame");
+
+        await manager.FetchTextDetailedAsync(new FetchContext
+        {
+            RequestUri = topUri,
+            InitiatorUri = topUri,
+            FrameDocumentUri = topUri,
+            TopLevelDocumentUri = topUri,
+            Destination = "document",
+            Mode = "navigate",
+            CredentialsMode = "include",
+            IsTopLevelNavigation = true
+        });
+        var frameResult = await manager.FetchTextDetailedAsync(new FetchContext
+        {
+            RequestUri = frameUri,
+            InitiatorUri = topUri,
+            FrameDocumentUri = topUri,
+            TopLevelDocumentUri = topUri,
+            Destination = "iframe",
+            Mode = "navigate",
+            CredentialsMode = "include",
+            IsTopLevelNavigation = false
+        });
+        await manager.FetchTextDetailedAsync(new FetchContext
+        {
+            RequestUri = new Uri("https://frame.example.test/frame.js"),
+            InitiatorUri = frameUri,
+            FrameDocumentUri = frameUri,
+            TopLevelDocumentUri = topUri,
+            Destination = "script",
+            Mode = "no-cors",
+            CredentialsMode = "include",
+            ReferrerPolicy = frameResult.ReferrerPolicy,
+            IsTopLevelNavigation = false
+        });
+
+        Assert.Equal(ReferrerPolicyDirective.UnsafeUrl, manager.ActiveReferrerPolicy);
+        Assert.Equal(ReferrerPolicyDirective.NoReferrer, frameResult.ReferrerPolicy);
+        Assert.NotNull(frameScriptRequest);
+        Assert.Null(frameScriptRequest.Headers.Referrer);
+    }
+
+    [Fact]
     public async Task FetchTextDetailedAsync_UsesTopLevelSiteForPartitionedCookies()
     {
         var requestUri = new Uri("https://assets.challenge.test/frame.js");

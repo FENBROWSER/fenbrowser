@@ -4477,7 +4477,11 @@ pre {{
                 }
 
                 frameElement.AppendChild(parsedDocument);
-                await TryInitializeFrameScriptsAsync(frameElement, parsedRoot, finalUri).ConfigureAwait(false);
+                await TryInitializeFrameScriptsAsync(
+                    frameElement,
+                    parsedRoot,
+                    finalUri,
+                    CreateFrameExecutionOptions(result, finalUri)).ConfigureAwait(false);
                 frameElement.MarkDirty(InvalidationKind.Style | InvalidationKind.Layout | InvalidationKind.Paint);
                 _engine.ScheduleRecascade(fullRecascade: true);
                 SyncScriptContextToSelectedBrowsingContext();
@@ -4510,6 +4514,7 @@ pre {{
             var frameHtml = srcDoc;
             Uri frameUri = _current;
             var src = frameElement.GetAttribute("src");
+            FetchResult frameFetchResult = null;
             if (string.IsNullOrWhiteSpace(srcDoc) && string.IsNullOrWhiteSpace(src))
             {
                 TraceWebDriverFrame($"EnsureFrameRoot no-src frame={DescribeFrameElement(frameElement)}");
@@ -4540,6 +4545,7 @@ pre {{
                             var result = await _resources.FetchTextDetailedAsync(
                                 CreateFrameFetchContext(frameElement, frameUri, _current),
                                 "text/html,application/xhtml+xml");
+                            frameFetchResult = result;
 
                             if (result?.Status == FetchStatus.Success && !string.IsNullOrWhiteSpace(result.Content))
                             {
@@ -4584,7 +4590,11 @@ pre {{
                 }
 
                 frameElement.AppendChild(parsedDocument);
-                await TryInitializeFrameScriptsAsync(frameElement, parsedRoot, frameUri).ConfigureAwait(false);
+                await TryInitializeFrameScriptsAsync(
+                    frameElement,
+                    parsedRoot,
+                    frameUri,
+                    CreateFrameExecutionOptions(frameFetchResult, frameUri)).ConfigureAwait(false);
                 TraceWebDriverFrame(
                     $"EnsureFrameRoot attached parsedRoot='{parsedRoot.TagName}' frameAfter={DescribeFrameElement(frameElement)}");
             }
@@ -4645,6 +4655,92 @@ pre {{
             };
         }
 
+        private BrowserFrameExecutionOptions CreateFrameExecutionOptions(FetchResult result, Uri frameUri)
+        {
+            if (frameUri == null)
+            {
+                return null;
+            }
+
+            CspPolicy framePolicy = null;
+            if (result?.Headers != null &&
+                result.Headers.TryGetValues("Content-Security-Policy", out var cspValues))
+            {
+                framePolicy = CspPolicy.Parse(string.Join(";", cspValues));
+            }
+
+            var referrerPolicy = result?.ReferrerPolicy ?? ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
+            var topLevelUri = _current ?? frameUri;
+
+            return new BrowserFrameExecutionOptions
+            {
+                SubresourceAllowed = (resourceUri, kind) =>
+                {
+                    if (framePolicy == null)
+                    {
+                        return true;
+                    }
+
+                    var directive = kind switch
+                    {
+                        "script" => "script-src",
+                        "style" => "style-src",
+                        "img" => "img-src",
+                        "font" => "font-src",
+                        "media" => "media-src",
+                        "connect" => "connect-src",
+                        "frame" => "frame-src",
+                        "object" => "object-src",
+                        _ => "default-src"
+                    };
+                    return framePolicy.IsAllowed(directive, resourceUri, frameUri);
+                },
+                NonceAllowed = nonce => framePolicy == null ||
+                    framePolicy.IsAllowed("script-src", null, nonce, frameUri, isInline: true),
+                ExternalScriptFetcher = async (resourceUri, _) =>
+                {
+                    var mappedUri = MapRuntimeUri(resourceUri);
+                    var scriptResult = await _resources.FetchTextDetailedAsync(
+                        new FetchContext
+                        {
+                            RequestUri = mappedUri,
+                            InitiatorUri = frameUri,
+                            FrameDocumentUri = frameUri,
+                            TopLevelDocumentUri = topLevelUri,
+                            Destination = "script",
+                            Mode = "no-cors",
+                            CredentialsMode = "include",
+                            ReferrerPolicy = referrerPolicy,
+                            IsTopLevelNavigation = false,
+                            IsUserInitiated = false,
+                            Method = "GET"
+                        }).ConfigureAwait(false);
+                    return scriptResult?.Status == FetchStatus.Success ? scriptResult.Content : null;
+                },
+                FetchHandler = request =>
+                {
+                    request.RequestUri = MapRuntimeUri(request.RequestUri);
+                    string Header(string name) => request.Headers.TryGetValues(name, out var values)
+                        ? values.FirstOrDefault()
+                        : null;
+                    return _resources.SendAsync(request, framePolicy, new FetchContext
+                    {
+                        RequestUri = request.RequestUri,
+                        InitiatorUri = frameUri,
+                        FrameDocumentUri = frameUri,
+                        TopLevelDocumentUri = topLevelUri,
+                        Destination = Header("Sec-Fetch-Dest") ?? "empty",
+                        Mode = Header("Sec-Fetch-Mode") ?? "cors",
+                        CredentialsMode = "same-origin",
+                        ReferrerPolicy = referrerPolicy,
+                        IsTopLevelNavigation = false,
+                        IsUserInitiated = false,
+                        Method = request.Method.Method
+                    });
+                }
+            };
+        }
+
         private static Uri ResolveOwningDocumentUri(Element frameElement)
         {
             var document = frameElement?.OwnerDocument;
@@ -4659,7 +4755,11 @@ pre {{
             return null;
         }
 
-        private async Task TryInitializeFrameScriptsAsync(Element frameElement, Element frameRoot, Uri frameUri)
+        private async Task TryInitializeFrameScriptsAsync(
+            Element frameElement,
+            Element frameRoot,
+            Uri frameUri,
+            BrowserFrameExecutionOptions options = null)
         {
             if (frameElement == null || frameRoot == null)
             {
@@ -4681,7 +4781,7 @@ pre {{
             {
                 if (jsEngine is FenJsBrowserScriptEngine fenJsEngine)
                 {
-                    await fenJsEngine.SetSubdocumentDomAsync(frameRoot, frameUri).ConfigureAwait(false);
+                    await fenJsEngine.SetSubdocumentDomAsync(frameRoot, frameUri, options).ConfigureAwait(false);
                 }
                 else
                 {

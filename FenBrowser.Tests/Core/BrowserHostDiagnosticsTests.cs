@@ -209,6 +209,46 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public async Task ScriptCreatedIframe_UsesFrameResponseCspForInlineScripts()
+        {
+            using var handler = new FrameSecurityHandler(useExternalScript: false);
+            using var httpClient = new HttpClient(handler);
+            var resources = new ResourceManager(httpClient, isPrivate: true);
+            var navigation = new NavigationManager(resources);
+
+            using var browser = new BrowserHost(isPrivate: true);
+            SetPrivateField(browser, "_resources", resources);
+            SetPrivateField(browser, "_navManager", navigation);
+
+            Assert.True(await browser.NavigateAsync("https://example.test/page"));
+            Assert.NotNull(await WaitForElementAsync(browser, "frame-ready"));
+            await Task.Delay(100);
+
+            var engine = GetPrivateField<CustomHtmlEngine>(browser, "_engine");
+            Assert.Null(FindFirstElement(engine.GetActiveDom(), element =>
+                string.Equals(element.GetAttribute("id"), "blocked-inline-marker", StringComparison.Ordinal)));
+        }
+
+        [Fact]
+        public async Task ScriptCreatedIframe_UsesFrameResponseReferrerPolicyForExternalScripts()
+        {
+            using var handler = new FrameSecurityHandler(useExternalScript: true);
+            using var httpClient = new HttpClient(handler);
+            var resources = new ResourceManager(httpClient, isPrivate: true);
+            var navigation = new NavigationManager(resources);
+
+            using var browser = new BrowserHost(isPrivate: true);
+            SetPrivateField(browser, "_resources", resources);
+            SetPrivateField(browser, "_navManager", navigation);
+
+            Assert.True(await browser.NavigateAsync("https://example.test/page"));
+            Assert.NotNull(await WaitForElementAsync(browser, "external-script-marker"));
+
+            Assert.True(handler.ScriptRequested);
+            Assert.Null(handler.ScriptReferrer);
+        }
+
+        [Fact]
         public void DecodeFavicon_DecodesPngBackedIcoContainer()
         {
             var icoBytes = CreatePngBackedIcoBytes();
@@ -483,6 +523,70 @@ namespace FenBrowser.Tests.Core
                 {
                     Content = new StringContent(html, Encoding.UTF8, "text/html"),
                     RequestMessage = request
+                });
+            }
+        }
+
+        private sealed class FrameSecurityHandler : HttpMessageHandler
+        {
+            private readonly bool _useExternalScript;
+
+            public FrameSecurityHandler(bool useExternalScript)
+            {
+                _useExternalScript = useExternalScript;
+            }
+
+            public bool ScriptRequested { get; private set; }
+            public Uri ScriptReferrer { get; private set; }
+
+            protected override Task<HttpResponseMessage> SendAsync(
+                HttpRequestMessage request,
+                CancellationToken cancellationToken)
+            {
+                var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+                if (path == "/frames/frame.js")
+                {
+                    ScriptRequested = true;
+                    ScriptReferrer = request.Headers.Referrer;
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        RequestMessage = request,
+                        Content = new StringContent(
+                            "var marker=document.createElement('p');" +
+                            "marker.id='external-script-marker';document.body.appendChild(marker);",
+                            Encoding.UTF8,
+                            "application/javascript")
+                    });
+                }
+
+                if (path == "/frames/frame.html")
+                {
+                    var html = _useExternalScript
+                        ? "<!doctype html><html><body><div id='frame-ready'></div><script src='/frames/frame.js'></script></body></html>"
+                        : "<!doctype html><html><body><div id='frame-ready'></div><script>" +
+                          "var marker=document.createElement('p');marker.id='blocked-inline-marker';document.body.appendChild(marker);" +
+                          "</script></body></html>";
+                    var response = new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        RequestMessage = request,
+                        Content = new StringContent(html, Encoding.UTF8, "text/html")
+                    };
+                    response.Headers.TryAddWithoutValidation(
+                        "Content-Security-Policy",
+                        _useExternalScript ? "script-src 'self'" : "script-src 'none'");
+                    response.Headers.TryAddWithoutValidation("Referrer-Policy", "no-referrer");
+                    return Task.FromResult(response);
+                }
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent(
+                        "<!doctype html><html><body><script>" +
+                        "var frame=document.createElement('iframe');frame.src='/frames/frame.html';document.body.appendChild(frame);" +
+                        "</script></body></html>",
+                        Encoding.UTF8,
+                        "text/html")
                 });
             }
         }
