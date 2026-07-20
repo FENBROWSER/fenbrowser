@@ -283,6 +283,71 @@ public sealed class IframeInputRetargetingTests
     }
 
     [Fact]
+    public async Task BrowserHostWheel_ScrollsOwnedIframeBeforeTopLevel()
+    {
+        const int viewportWidth = 320;
+        const int viewportHeight = 220;
+        const string html = """
+<!doctype html>
+<html><head><style>html,body{margin:0}iframe{display:block;width:180px;height:80px;margin:20px;border:0}</style></head>
+<body><iframe id="frame"></iframe><script>
+var frame=document.getElementById('frame');
+var doc=frame.contentDocument;
+doc.open();
+doc.write('<!doctype html><html><body style="margin:0;height:300px"><div id="surface" style="height:300px">surface</div></body></html>');
+doc.close();
+</script></body></html>
+""";
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        host.SetActiveRenderer(renderer);
+        host.Engine.SetExternalRenderer(renderer);
+
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/iframe-wheel"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth,
+            viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var iframe = FindById(root, "frame");
+        await WaitForAsync(
+            () => iframe.FirstChild is Document document && document.GetElementById("surface") != null,
+            "iframe wheel surface to be written");
+        var frameDocument = Assert.IsType<Document>(iframe.FirstChild);
+        var surface = Assert.IsType<Element>(frameDocument.GetElementById("surface"));
+
+        RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+        Assert.True(renderer.LastLayout.TryGetElementRect(iframe, out var iframeRect));
+        Assert.True(renderer.LastLayout.TryGetElementRect(surface, out var surfaceRect));
+        renderer.ScrollManager.SetScrollBounds(
+            iframe,
+            iframeRect.Width,
+            300f,
+            iframeRect.Width,
+            iframeRect.Height);
+
+        var defaultAllowed = host.OnMouseWheel(
+            surfaceRect.Left + 20f,
+            surfaceRect.Top + 20f,
+            deltaX: 0,
+            deltaY: -1);
+
+        Assert.False(defaultAllowed);
+        Assert.Equal(60f, renderer.ScrollManager.GetScrollOffset(iframe).y, 1f);
+        Assert.Equal(
+            "60",
+            host.Engine.Evaluate(
+                "String(document.getElementById('frame').contentWindow.scrollY)")?.ToString());
+    }
+
+    [Fact]
     public async Task BrowserHostClick_UsesFenJsDefaultPreventionForFallbackActivation()
     {
         const int viewportWidth = 640;

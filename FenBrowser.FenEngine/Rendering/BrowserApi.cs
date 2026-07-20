@@ -313,6 +313,7 @@ namespace FenBrowser.FenEngine.Rendering
         private bool _lastClickDefaultAllowed = true;
         private bool _lastClickHadTarget;
         private Element _lastClickTarget;
+        private Element _lastDispatchedInputTarget;
         private bool _pendingWebDriverClickPointValid;
         private int _pendingWebDriverClickClientX;
         private int _pendingWebDriverClickClientY;
@@ -3093,7 +3094,42 @@ pre {{
 
         public bool OnMouseWheel(float x, float y, float deltaX, float deltaY)
         {
-            return DispatchInputEvent("wheel", x, y, 0, deltaX: deltaX, deltaY: deltaY);
+            var defaultAllowed = DispatchInputEvent("wheel", x, y, 0, deltaX: deltaX, deltaY: deltaY);
+            if (!defaultAllowed || _activeRenderer == null)
+            {
+                return defaultAllowed;
+            }
+
+            var frame = TryGetEmbeddingFrame(_lastDispatchedInputTarget);
+            if (frame == null)
+            {
+                return true;
+            }
+
+            const float nestedWheelStepPixels = 60f;
+            var before = _activeRenderer.ScrollManager.GetScrollOffset(frame);
+            _activeRenderer.ScrollManager.Scroll(
+                frame,
+                -(deltaX * nestedWheelStepPixels),
+                -(deltaY * nestedWheelStepPixels));
+            var after = _activeRenderer.ScrollManager.GetScrollOffset(frame);
+            if (Math.Abs(after.x - before.x) <= 0.01f && Math.Abs(after.y - before.y) <= 0.01f)
+            {
+                return true;
+            }
+
+            _engine.ScriptEngine?.NotifyFrameScrollChanged(frame);
+            _engine.ScriptEngine?.RequestRender?.Invoke();
+            return false;
+        }
+
+        private static Element TryGetEmbeddingFrame(Element target)
+        {
+            var ownerDocument = target?.OwnerDocument;
+            return ownerDocument?.ParentNode is Element frame &&
+                string.Equals(frame.TagName, "iframe", StringComparison.OrdinalIgnoreCase)
+                    ? frame
+                    : null;
         }
 
         private static bool ShouldRetryTopLevelNavigation(FetchResult result, string url, int attempt, int maxAttempts)
@@ -3199,6 +3235,7 @@ pre {{
             {
                 inputEvent.Target = fallbackTarget;
             }
+            _lastDispatchedInputTarget = inputEvent.Target;
 
             var eventInit = new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
             {

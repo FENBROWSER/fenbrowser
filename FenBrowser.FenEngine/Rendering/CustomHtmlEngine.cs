@@ -2748,6 +2748,14 @@ public void Dispose()
                 // Use a late-bound lookup so scripts that run after layout completes
                 // (setTimeout, event handlers, React hydration) see real box geometry.
                 js.LayoutBoxResolver = el => _cachedRenderer?.GetElementBox(el);
+                js.FrameScrollReader = el =>
+                {
+                    var renderer = _externalRenderer ?? _cachedRenderer;
+                    var offset = renderer?.ScrollManager.GetScrollOffset(el) ?? (0f, 0f);
+                    return (offset.x, offset.y);
+                };
+                js.FrameScrollWriter = (el, x, y) =>
+                    (_externalRenderer ?? _cachedRenderer)?.ScrollManager.SetScrollPosition(el, (float)x, (float)y);
 
                 // Capture every uncaught script exception to logs/js_diagnostics.log.
                 // This is how we find out *why* a heavily-fenced site (x.com, etc.)

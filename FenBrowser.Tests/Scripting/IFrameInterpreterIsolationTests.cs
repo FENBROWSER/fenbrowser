@@ -296,6 +296,69 @@ public sealed class IFrameInterpreterIsolationTests
                 "String(frame.innerWidth)+'x'+String(frame.innerHeight)")?.ToString());
     }
 
+    [Fact]
+    public async Task FrameScroll_UsesOwnedRendererStateAndDispatchesScroll()
+    {
+        var parentUri = new Uri("https://same.test/page");
+        var parentDocument = new HtmlParser(
+            "<html><body><iframe id='child' src='/frame'></iframe>" +
+            "<script>window.__topMarker='unchanged';</script></body></html>",
+            parentUri).Parse();
+        var engine = CreateEngine();
+        var scrollX = 4d;
+        var scrollY = 8d;
+        Element writtenFrame = null;
+        engine.FrameScrollReader = _ => (scrollX, scrollY);
+        engine.FrameScrollWriter = (frame, x, y) =>
+        {
+            writtenFrame = frame;
+            scrollX = Math.Min(500, Math.Max(0, x));
+            scrollY = Math.Min(500, Math.Max(0, y));
+        };
+        await engine.SetDomAsync(parentDocument.DocumentElement, parentUri);
+
+        var childUri = new Uri("https://same.test/frame");
+        var childDocument = new HtmlParser(
+            "<html><body><script>window.__scrollCount=0;" +
+            "addEventListener('scroll',function(){window.__scrollCount++;});</script></body></html>",
+            childUri).Parse();
+        var frame = Assert.IsType<Element>(parentDocument.GetElementById("child"));
+        frame.AppendChild(childDocument);
+        await engine.SetSubdocumentDomAsync(childDocument.DocumentElement, childUri);
+
+        engine.EvaluateInSubdocumentForTest(
+            childDocument,
+            "scrollTo({left:10,top:120});scrollBy(5,30);");
+        await WaitForValueAsync(
+            engine,
+            "String(document.getElementById('child').contentWindow.__scrollCount || 0)",
+            "2");
+
+        Assert.Same(frame, writtenFrame);
+        Assert.Equal(
+            "15|150|15|150",
+            engine.EvaluateInSubdocumentForTest(
+                childDocument,
+                "[scrollX,scrollY,pageXOffset,pageYOffset].join('|')")?.ToString());
+        Assert.Equal("unchanged", engine.Evaluate("String(window.__topMarker)")?.ToString());
+
+        scrollX = 22;
+        scrollY = 240;
+        engine.NotifyFrameScrollChanged(frame);
+        await WaitForValueAsync(
+            engine,
+            "String(document.getElementById('child').contentWindow.__scrollCount || 0)",
+            "3");
+
+        Assert.Equal(
+            "22|240",
+            engine.EvaluateInSubdocumentForTest(childDocument, "scrollX+'|'+scrollY")?.ToString());
+        Assert.Equal(
+            "22|240",
+            engine.Evaluate(
+                "var child=document.getElementById('child').contentWindow;child.scrollX+'|'+child.scrollY")?.ToString());
+    }
+
     private static FenJsBrowserScriptEngine CreateEngine() => new(CreateHost())
     {
         Sandbox = SandboxPolicy.AllowAll

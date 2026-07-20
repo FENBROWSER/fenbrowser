@@ -291,6 +291,8 @@ public interface IBrowserScriptEngine
     Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
     Func<Element, Uri, Task> FrameElementLoader { get; set; }
     Func<Element, object> LayoutBoxResolver { get; set; }
+    Func<Element, (double X, double Y)> FrameScrollReader { get; set; }
+    Action<Element, double, double> FrameScrollWriter { get; set; }
     SandboxPolicy Sandbox { get; set; }
     bool AllowExternalScripts { get; set; }
     bool ExecuteInlineScriptsOnInnerHTML { get; set; }
@@ -304,6 +306,7 @@ public interface IBrowserScriptEngine
     BrowserEventLoopSnapshot GetEventLoopSnapshot();
     void SetHistoryBridge(IHistoryBridge bridge);
     void NotifyPopState(object state);
+    void NotifyFrameScrollChanged(Element frameElement);
     bool DispatchEventForElement(Element element, string eventName, BrowserDomEventInit eventInit = null);
     object Evaluate(string script);
     bool TryResolveHostObject(FenBrowser.Js.Runtime.JsValue value, out object hostObject);
@@ -513,6 +516,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
     public Func<Element, Uri, Task> FrameElementLoader { get; set; }
     public Func<Element, object> LayoutBoxResolver { get; set; }
+    public Func<Element, (double X, double Y)> FrameScrollReader { get; set; }
+    public Action<Element, double, double> FrameScrollWriter { get; set; }
     public SandboxPolicy Sandbox { get; set; }
     public bool AllowExternalScripts { get; set; }
     public bool ExecuteInlineScriptsOnInnerHTML { get; set; }
@@ -936,6 +941,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         realm.ExternalScriptFetcher = ExternalScriptFetcher;
         realm.FrameElementLoader = FrameElementLoader;
         realm.LayoutBoxResolver = LayoutBoxResolver;
+        realm.FrameScrollReader = FrameScrollReader;
+        realm.FrameScrollWriter = FrameScrollWriter;
         realm.Sandbox = Sandbox;
         realm.AllowExternalScripts = AllowExternalScripts;
         realm.ExecuteInlineScriptsOnInnerHTML = ExecuteInlineScriptsOnInnerHTML;
@@ -11617,9 +11624,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private void ConfigureEmbeddedRealmGlobals()
     {
-        var parentDocumentUri = GetParentDocumentUri(_embeddingFrameElement);
+        var embeddingFrame = _embeddingFrameElement;
+        if (embeddingFrame == null)
+        {
+            return;
+        }
+
+        var parentDocumentUri = GetParentDocumentUri(embeddingFrame);
         var frameUri = _currentBaseUri ?? TryCreateUri((_currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument)?.URL);
-        var sameOrigin = IsSameOriginFrameAccess(_embeddingFrameElement, frameUri?.AbsoluteUri, parentDocumentUri);
+        var sameOrigin = IsSameOriginFrameAccess(embeddingFrame, frameUri?.AbsoluteUri, parentDocumentUri);
         var parentProxy = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
         _embeddedParentWindowProxy = parentProxy;
         _interpreter.SetObjectProperty(parentProxy, "window", parentProxy);
@@ -11629,18 +11642,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         _interpreter.SetObjectProperty(parentProxy, "frames", parentProxy);
         _interpreter.SetObjectProperty(parentProxy, "length", JsValue.FromInt32(1));
         _interpreter.SetObjectProperty(parentProxy, "0", _fenJsGlobalThis);
-        var frameName = _embeddingFrameElement.GetAttribute("name") ?? string.Empty;
+        var frameName = embeddingFrame.GetAttribute("name") ?? string.Empty;
         _interpreter.RegisterGlobalValue("name", JsValue.FromString(frameName));
         if (!string.IsNullOrWhiteSpace(frameName))
         {
             _interpreter.SetObjectProperty(parentProxy, frameName, _fenJsGlobalThis);
         }
-        if (sameOrigin && _embeddingFrameElement.OwnerDocument != null)
+        if (sameOrigin && embeddingFrame.OwnerDocument != null)
         {
             _interpreter.SetObjectProperty(
                 parentProxy,
                 "document",
-                ToHostOrNull(_embeddingFrameElement.OwnerDocument, HostObjectKind.DomDocument));
+                ToHostOrNull(embeddingFrame.OwnerDocument, HostObjectKind.DomDocument));
             _interpreter.SetObjectProperty(
                 parentProxy,
                 "location",
@@ -11659,7 +11672,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         ? ExtractTransferredMessagePorts(args[2])
                         : Array.Empty<MessagePortEndpoint>();
                     _parentRealmOwner?.QueueMessageFromFrame(
-                        _embeddingFrameElement,
+                        embeddingFrame,
                         data,
                         targetOrigin,
                         ports);
@@ -11672,8 +11685,86 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         _interpreter.RegisterGlobalValue(
             "frameElement",
             sameOrigin
-                ? ToHostOrNull(_embeddingFrameElement, HostObjectKind.DomElement)
+                ? ToHostOrNull(embeddingFrame, HostObjectKind.DomElement)
                 : JsValue.Null);
+        InstallOwnedFrameScrollGlobals();
+    }
+
+    private void InstallOwnedFrameScrollGlobals()
+    {
+        var initial = ReadOwnedFrameScroll();
+        SetOwnedScrollGlobals(initial.X, initial.Y);
+
+        var scrollTo = _interpreter.AllocateNativeFunction(
+            "scrollTo",
+            (_, args) =>
+            {
+                var (x, y) = ReadScrollArguments(args, relative: false);
+                ScrollOwnedFrameTo(x, y);
+                return JsValue.Undefined;
+            },
+            length: 2);
+        var scrollBy = _interpreter.AllocateNativeFunction(
+            "scrollBy",
+            (_, args) =>
+            {
+                var (x, y) = ReadScrollArguments(args, relative: true);
+                ScrollOwnedFrameTo(x, y);
+                return JsValue.Undefined;
+            },
+            length: 2);
+        _interpreter.RegisterGlobalValue("scrollTo", scrollTo);
+        _interpreter.RegisterGlobalValue("scroll", scrollTo);
+        _interpreter.RegisterGlobalValue("scrollBy", scrollBy);
+    }
+
+    private (double X, double Y) ReadScrollArguments(IReadOnlyList<JsValue> args, bool relative)
+    {
+        var current = ReadOwnedFrameScroll();
+        var x = relative ? current.X : 0d;
+        var y = relative ? current.Y : 0d;
+        if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
+        {
+            var left = ReadJsProperty(args[0], "left");
+            var top = ReadJsProperty(args[0], "top");
+            if (left.Tag != JsValueTag.Undefined)
+            {
+                x = (relative ? current.X : 0d) + CoerceToFiniteNumber(left, 0);
+            }
+            if (top.Tag != JsValueTag.Undefined)
+            {
+                y = (relative ? current.Y : 0d) + CoerceToFiniteNumber(top, 0);
+            }
+            return (x, y);
+        }
+
+        if (args.Count > 0)
+        {
+            x = (relative ? current.X : 0d) + CoerceToFiniteNumber(args[0], 0);
+        }
+        if (args.Count > 1)
+        {
+            y = (relative ? current.Y : 0d) + CoerceToFiniteNumber(args[1], 0);
+        }
+        return (x, y);
+    }
+
+    private (double X, double Y) ReadOwnedFrameScroll() =>
+        _embeddingFrameElement != null && FrameScrollReader != null
+            ? FrameScrollReader(_embeddingFrameElement)
+            : (0d, 0d);
+
+    private void ScrollOwnedFrameTo(double x, double y)
+    {
+        if (_embeddingFrameElement == null)
+        {
+            return;
+        }
+
+        FrameScrollWriter?.Invoke(_embeddingFrameElement, Math.Max(0, x), Math.Max(0, y));
+        var actual = ReadOwnedFrameScroll();
+        UpdateOwnedScroll(actual.X, actual.Y);
+        RequestRender?.Invoke();
     }
 
     private void QueueMessageFromFrame(
@@ -12036,10 +12127,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         _interpreter.SetObjectProperty(window, "outerWidth", JsValue.FromNumber(width));
         _interpreter.SetObjectProperty(window, "outerHeight", JsValue.FromNumber(height));
         _interpreter.SetObjectProperty(window, "devicePixelRatio", JsValue.FromNumber(1));
-        _interpreter.SetObjectProperty(window, "pageXOffset", JsValue.FromInt32(0));
-        _interpreter.SetObjectProperty(window, "pageYOffset", JsValue.FromInt32(0));
-        _interpreter.SetObjectProperty(window, "scrollX", JsValue.FromInt32(0));
-        _interpreter.SetObjectProperty(window, "scrollY", JsValue.FromInt32(0));
+        var scroll = FrameScrollReader?.Invoke(iframe) ?? (0d, 0d);
+        _interpreter.SetObjectProperty(window, "pageXOffset", JsValue.FromNumber(scroll.Item1));
+        _interpreter.SetObjectProperty(window, "pageYOffset", JsValue.FromNumber(scroll.Item2));
+        _interpreter.SetObjectProperty(window, "scrollX", JsValue.FromNumber(scroll.Item1));
+        _interpreter.SetObjectProperty(window, "scrollY", JsValue.FromNumber(scroll.Item2));
     }
 
     private void RegisterChildFrameOnParent(JsValue parent, JsValue window, string frameName)
@@ -12580,6 +12672,74 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         {
             QueueOwnedWindowEvent("resize");
         }
+    }
+
+    public void NotifyFrameScrollChanged(Element frameElement)
+    {
+        if (!IsIFrameElement(frameElement))
+        {
+            return;
+        }
+
+        if (!_iframeRealms.TryGetValue(frameElement, out var frameRealm))
+        {
+            if (TryGetFrameRealm(frameElement.OwnerDocument, out var owningRealm) &&
+                !ReferenceEquals(owningRealm, this))
+            {
+                owningRealm.NotifyFrameScrollChanged(frameElement);
+            }
+            return;
+        }
+
+        var scroll = FrameScrollReader?.Invoke(frameElement) ?? (0d, 0d);
+        lock (_fenJsLock)
+        {
+            var proxy = GetStoredHostPropertyOrUndefined(frameElement, "__fenIframeContentWindow");
+            if (proxy.Tag == JsValueTag.Object)
+            {
+                SetWindowScrollProperties(proxy, scroll.Item1, scroll.Item2);
+            }
+        }
+        frameRealm.UpdateOwnedScroll(scroll.Item1, scroll.Item2);
+    }
+
+    private void UpdateOwnedScroll(double x, double y)
+    {
+        var changed = false;
+        lock (_fenJsLock)
+        {
+            var previousX = ReadGlobalValueOrUndefined("scrollX");
+            var previousY = ReadGlobalValueOrUndefined("scrollY");
+            changed = previousX.Tag == JsValueTag.Undefined || previousY.Tag == JsValueTag.Undefined ||
+                Math.Abs(CoerceToFiniteNumber(previousX, 0) - x) > 0.001 ||
+                Math.Abs(CoerceToFiniteNumber(previousY, 0) - y) > 0.001;
+            SetOwnedScrollGlobals(x, y);
+        }
+
+        if (changed)
+        {
+            QueueOwnedWindowEvent("scroll");
+        }
+    }
+
+    private void SetOwnedScrollGlobals(double x, double y)
+    {
+        _interpreter.RegisterGlobalValue("pageXOffset", JsValue.FromNumber(x));
+        _interpreter.RegisterGlobalValue("pageYOffset", JsValue.FromNumber(y));
+        _interpreter.RegisterGlobalValue("scrollX", JsValue.FromNumber(x));
+        _interpreter.RegisterGlobalValue("scrollY", JsValue.FromNumber(y));
+        if (_fenJsGlobalThis.Tag == JsValueTag.Object)
+        {
+            SetWindowScrollProperties(_fenJsGlobalThis, x, y);
+        }
+    }
+
+    private void SetWindowScrollProperties(JsValue window, double x, double y)
+    {
+        _interpreter.SetObjectProperty(window, "pageXOffset", JsValue.FromNumber(x));
+        _interpreter.SetObjectProperty(window, "pageYOffset", JsValue.FromNumber(y));
+        _interpreter.SetObjectProperty(window, "scrollX", JsValue.FromNumber(x));
+        _interpreter.SetObjectProperty(window, "scrollY", JsValue.FromNumber(y));
     }
 
     private void QueueOwnedWindowEvent(string type)
