@@ -114,9 +114,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         baseline = resolvedBaseline;
                     }
 
+                    float outerWidth = Math.Max(0f, childBox.Geometry.MarginBox.Width);
+                    float minContentWidth = ResolveMinContentWidth(childBox, state.ViewportWidth, outerWidth);
+
                     var metrics = new LayoutMetrics
                     {
-                        MaxChildWidth = Math.Max(0f, childBox.Geometry.MarginBox.Width),
+                        MaxChildWidth = outerWidth,
+                        MinContentWidth = minContentWidth,
+                        MaxContentWidth = outerWidth,
                         ContentHeight = Math.Max(0f, childBox.Geometry.MarginBox.Height),
                         ActualHeight = Math.Max(0f, childBox.Geometry.MarginBox.Height),
                         Baseline = baseline
@@ -319,6 +324,47 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             for (var index = 0; index < children.Count; index++)
             {
                 CollectNodeMappings(children[index], nodeToBox, styles);
+            }
+        }
+
+        private static float ResolveMinContentWidth(LayoutBox box, float viewportWidth, float outerWidth)
+        {
+            if (box?.ComputedStyle?.Width.HasValue == true)
+            {
+                return outerWidth;
+            }
+
+            float textMinContentWidth = 0f;
+            CollectTextMinContentWidth(box, viewportWidth, ref textMinContentWidth);
+            if (textMinContentWidth <= 0f)
+            {
+                return outerWidth;
+            }
+
+            float horizontalChrome = Math.Max(0f, outerWidth - Math.Max(0f, box.Geometry.ContentBox.Width));
+            return Math.Min(outerWidth, textMinContentWidth + horizontalChrome);
+        }
+
+        private static void CollectTextMinContentWidth(LayoutBox box, float viewportWidth, ref float minContentWidth)
+        {
+            if (box?.SourceNode is Text)
+            {
+                var textMetrics = TextLayoutComputer.ComputeTextLayout(
+                    box.SourceNode,
+                    box.ComputedStyle ?? new CssComputed(),
+                    new SKSize(float.PositiveInfinity, float.PositiveInfinity),
+                    viewportWidth).Metrics;
+                minContentWidth = Math.Max(minContentWidth, Math.Max(0f, textMetrics.MinContentWidth));
+            }
+
+            if (box == null)
+            {
+                return;
+            }
+
+            foreach (var child in box.Children)
+            {
+                CollectTextMinContentWidth(child, viewportWidth, ref minContentWidth);
             }
         }
 

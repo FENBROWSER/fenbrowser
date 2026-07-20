@@ -250,6 +250,51 @@ namespace FenBrowser.Tests.Layout
                 $"Expected label grid height to include both text and input rows. root={rootBox.Geometry.MarginBox} input={inputBox.Geometry.MarginBox}");
         }
 
+        [Fact]
+        public void GridFormattingContext_MinContentSidebar_LeavesRemainingWidthForFlexibleTrack()
+        {
+            var root = new Element("main");
+            var content = new Element("article");
+            var sidebar = new Element("aside");
+            root.AppendChild(content);
+            root.AppendChild(sidebar);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed
+                {
+                    Display = "grid",
+                    Width = 1192,
+                    GridTemplateColumns = "minmax(0,1fr) min-content"
+                },
+                [content] = new CssComputed
+                {
+                    Display = "block",
+                    GridColumnStart = "1",
+                    GridColumnEnd = "2",
+                    Height = 40
+                },
+                [sidebar] = new CssComputed
+                {
+                    Display = "block",
+                    Width = 196,
+                    GridColumnStart = "2",
+                    GridColumnEnd = "3",
+                    Height = 40
+                }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 1192, 200);
+            var contentBox = FindBox(rootBox, content);
+            var sidebarBox = FindBox(rootBox, sidebar);
+
+            Assert.NotNull(contentBox);
+            Assert.NotNull(sidebarBox);
+            Assert.Equal(996f, contentBox.Geometry.MarginBox.Width, 1);
+            Assert.Equal(996f, sidebarBox.Geometry.MarginBox.Left, 1);
+            Assert.Equal(1192f, sidebarBox.Geometry.MarginBox.Right, 1);
+        }
+
         private static LayoutBox LayoutRoot(Element root, Dictionary<Node, CssComputed> styles, float width, float height)
         {
             var builder = new BoxTreeBuilder(styles);
