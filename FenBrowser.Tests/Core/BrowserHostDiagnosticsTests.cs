@@ -333,6 +333,61 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public async Task ScriptCreatedIframe_UsesFrameResponseCspForFonts()
+        {
+            FontRegistry.Clear();
+            try
+            {
+                using var handler = new FrameFontSecurityHandler(blockFont: true);
+                using var httpClient = new HttpClient(handler);
+                var resources = new ResourceManager(httpClient, isPrivate: true);
+                var navigation = new NavigationManager(resources);
+
+                using var browser = new BrowserHost(isPrivate: true);
+                SetPrivateField(browser, "_resources", resources);
+                SetPrivateField(browser, "_navManager", navigation);
+
+                Assert.True(await browser.NavigateAsync("https://example.test/page"));
+                Assert.NotNull(await WaitForElementAsync(browser, "frame-font-marker"));
+                await FontRegistry.LoadPendingFontsAsync();
+
+                Assert.False(handler.FontRequested);
+            }
+            finally
+            {
+                FontRegistry.Clear();
+            }
+        }
+
+        [Fact]
+        public async Task ScriptCreatedIframe_UsesFrameReferrerPolicyForFonts()
+        {
+            FontRegistry.Clear();
+            try
+            {
+                using var handler = new FrameFontSecurityHandler(blockFont: false);
+                using var httpClient = new HttpClient(handler);
+                var resources = new ResourceManager(httpClient, isPrivate: true);
+                var navigation = new NavigationManager(resources);
+
+                using var browser = new BrowserHost(isPrivate: true);
+                SetPrivateField(browser, "_resources", resources);
+                SetPrivateField(browser, "_navManager", navigation);
+
+                Assert.True(await browser.NavigateAsync("https://example.test/page"));
+                await handler.FontRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+                Assert.True(handler.FontRequested);
+                Assert.Null(handler.FontReferrer);
+                Assert.Equal("font", handler.FontFetchDestination);
+            }
+            finally
+            {
+                FontRegistry.Clear();
+            }
+        }
+
+        [Fact]
         public void DecodeFavicon_DecodesPngBackedIcoContainer()
         {
             var icoBytes = CreatePngBackedIcoBytes();
@@ -783,6 +838,74 @@ namespace FenBrowser.Tests.Core
                     response.Headers.TryAddWithoutValidation(
                         "Content-Security-Policy",
                         _blockImage ? "img-src 'none'" : "img-src 'self'");
+                    response.Headers.TryAddWithoutValidation("Referrer-Policy", "no-referrer");
+                    return Task.FromResult(response);
+                }
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    RequestMessage = request,
+                    Content = new StringContent(
+                        "<!doctype html><html><body><script>" +
+                        "var frame=document.createElement('iframe');frame.src='/frames/frame.html';document.body.appendChild(frame);" +
+                        "</script></body></html>",
+                        Encoding.UTF8,
+                        "text/html")
+                });
+            }
+        }
+
+        private sealed class FrameFontSecurityHandler : HttpMessageHandler
+        {
+            private readonly bool _blockFont;
+
+            public FrameFontSecurityHandler(bool blockFont)
+            {
+                _blockFont = blockFont;
+            }
+
+            public bool FontRequested { get; private set; }
+            public Uri FontReferrer { get; private set; }
+            public string FontFetchDestination { get; private set; }
+            public TaskCompletionSource<object> FontRequestStarted { get; } =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            protected override Task<HttpResponseMessage> SendAsync(
+                HttpRequestMessage request,
+                CancellationToken cancellationToken)
+            {
+                var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+                if (path == "/frames/challenge.woff2")
+                {
+                    FontRequested = true;
+                    FontReferrer = request.Headers.Referrer;
+                    FontFetchDestination = request.Headers.TryGetValues("Sec-Fetch-Dest", out var destinations)
+                        ? destinations.SingleOrDefault()
+                        : null;
+                    FontRequestStarted.TrySetResult(null);
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        RequestMessage = request,
+                        Content = new ByteArrayContent(new byte[] { 0, 1, 0, 0 })
+                    });
+                }
+
+                if (path == "/frames/frame.html")
+                {
+                    var response = new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        RequestMessage = request,
+                        Content = new StringContent(
+                            "<!doctype html><html><head><style>" +
+                            "@font-face{font-family:'FrameFont';src:url('challenge.woff2') format('woff2')}" +
+                            "#frame-font-marker{font-family:'FrameFont'}</style></head>" +
+                            "<body><div id='frame-font-marker'>font</div></body></html>",
+                            Encoding.UTF8,
+                            "text/html")
+                    };
+                    response.Headers.TryAddWithoutValidation(
+                        "Content-Security-Policy",
+                        _blockFont ? "font-src 'none'" : "font-src 'self'");
                     response.Headers.TryAddWithoutValidation("Referrer-Policy", "no-referrer");
                     return Task.FromResult(response);
                 }

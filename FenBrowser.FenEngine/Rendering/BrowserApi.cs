@@ -271,6 +271,7 @@ namespace FenBrowser.FenEngine.Rendering
         private bool _frameContextInvalidated;
         private Action<string> _fontLoadedHandler;
         private readonly ImageLoader.ImageLoaderRequestContext _imageLoaderContext;
+        private readonly FontRegistry.FontLoaderRequestContext _fontLoaderContext;
         private readonly string _imageLoaderContextId = Guid.NewGuid().ToString("N");
         private double? _hostViewportHintWidth;
         private double? _hostViewportHintHeight;
@@ -279,6 +280,33 @@ namespace FenBrowser.FenEngine.Rendering
             Uri DocumentUri,
             CspPolicy Policy,
             ReferrerPolicyDirective ReferrerPolicy);
+
+        private sealed class ResourceLoaderContextScope : IDisposable
+        {
+            private readonly IDisposable _imageScope;
+            private readonly IDisposable _fontScope;
+            private bool _disposed;
+
+            public ResourceLoaderContextScope(
+                ImageLoader.ImageLoaderRequestContext imageContext,
+                FontRegistry.FontLoaderRequestContext fontContext)
+            {
+                _imageScope = ImageLoader.EnterRequestContext(imageContext);
+                _fontScope = FontRegistry.EnterRequestContext(fontContext);
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _fontScope.Dispose();
+                _imageScope.Dispose();
+                _disposed = true;
+            }
+        }
 
         // External renderer reference: BrowserIntegration injects the actual renderer used for
         // painting so that hit tests in DispatchInputEvent use the correct (populated) paint tree
@@ -1006,6 +1034,7 @@ namespace FenBrowser.FenEngine.Rendering
                 TryInvokeNavigationLifecycleChanged(transition);
             };
             _imageLoaderContext = CreateImageLoaderContext();
+            _fontLoaderContext = CreateFontLoaderContext();
 
             // Wire static ImageLoader callbacks so image-load notifications routed
             // outside an explicit ambient context (e.g. background prewarms) still
@@ -1015,6 +1044,8 @@ namespace FenBrowser.FenEngine.Rendering
             ImageLoader.FetchDetailedAsync = _imageLoaderContext.FetchDetailedAsync;
             ImageLoader.RequestRepaint = _imageLoaderContext.RequestRepaint;
             ImageLoader.RequestRelayout = _imageLoaderContext.RequestRelayout;
+            FontRegistry.FetchDetailedAsync = _fontLoaderContext.FetchDetailedAsync;
+            FontRegistry.FetchDetailedForDocumentAsync = _fontLoaderContext.FetchDetailedForDocumentAsync;
 
             // Wire up FontRegistry to trigger full relayout/repaint when fonts finish loading
             _fontLoadedHandler = (family) =>
@@ -1118,9 +1149,19 @@ namespace FenBrowser.FenEngine.Rendering
             };
         }
 
+        private FontRegistry.FontLoaderRequestContext CreateFontLoaderContext()
+        {
+            return new FontRegistry.FontLoaderRequestContext
+            {
+                OwnerId = _imageLoaderContextId,
+                FetchDetailedAsync = uri => FetchFrameAwareFontAsync(uri, ownerDocument: null),
+                FetchDetailedForDocumentAsync = FetchFrameAwareFontAsync
+            };
+        }
+
         public IDisposable EnterImageLoaderContext()
         {
-            return ImageLoader.EnterRequestContext(_imageLoaderContext);
+            return new ResourceLoaderContextScope(_imageLoaderContext, _fontLoaderContext);
         }
 
         private Uri MapRuntimeUri(Uri uri)
@@ -4734,6 +4775,54 @@ pre {{
                         Method = "GET"
                     },
                     BrowserNetworkCapabilities.ImageAcceptHeader)
+                .ConfigureAwait(false);
+        }
+
+        private async Task<BinaryFetchResult> FetchFrameAwareFontAsync(Uri resourceUri, Document ownerDocument)
+        {
+            if (resourceUri == null)
+            {
+                return new BinaryFetchResult
+                {
+                    FailureReason = BinaryFetchFailureReason.InvalidRequest,
+                    FailureDetail = "Font URI is null"
+                };
+            }
+
+            FrameResourceSecurityContext frameContext = null;
+            var isFrameDocument = ownerDocument != null &&
+                _frameResourceSecurity.TryGetValue(ownerDocument, out frameContext);
+            var documentUri = isFrameDocument ? frameContext.DocumentUri : _current;
+            var policy = isFrameDocument ? frameContext.Policy : CurrentPolicy;
+            if (policy != null && !policy.IsAllowed("font-src", resourceUri, documentUri))
+            {
+                return new BinaryFetchResult
+                {
+                    FinalUri = resourceUri,
+                    FailureReason = BinaryFetchFailureReason.CspBlocked,
+                    FailureDetail = "Blocked by font-src",
+                    CspAllowed = false
+                };
+            }
+
+            return await _resources.FetchBytesDetailedAsync(
+                    new FetchContext
+                    {
+                        RequestUri = MapRuntimeUri(resourceUri),
+                        InitiatorUri = documentUri,
+                        FrameDocumentUri = documentUri,
+                        TopLevelDocumentUri = _current ?? documentUri,
+                        Destination = "font",
+                        Mode = "cors",
+                        CredentialsMode = "same-origin",
+                        ReferrerPolicy = isFrameDocument
+                            ? frameContext.ReferrerPolicy
+                            : ReferrerPolicyDirective.StrictOriginWhenCrossOrigin,
+                        IsTopLevelNavigation = false,
+                        IsUserInitiated = false,
+                        Method = "GET"
+                    },
+                    accept: "*/*")
                 .ConfigureAwait(false);
         }
 
@@ -10563,6 +10652,16 @@ pre {{
             if (ReferenceEquals(ImageLoader.RequestRelayout, _imageLoaderContext?.RequestRelayout))
             {
                 ImageLoader.RequestRelayout = null;
+            }
+            if (ReferenceEquals(FontRegistry.FetchDetailedAsync, _fontLoaderContext?.FetchDetailedAsync))
+            {
+                FontRegistry.FetchDetailedAsync = null;
+            }
+            if (ReferenceEquals(
+                    FontRegistry.FetchDetailedForDocumentAsync,
+                    _fontLoaderContext?.FetchDetailedForDocumentAsync))
+            {
+                FontRegistry.FetchDetailedForDocumentAsync = null;
             }
 
             _disposed = true;

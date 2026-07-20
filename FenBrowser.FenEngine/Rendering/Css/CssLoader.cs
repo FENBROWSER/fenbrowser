@@ -945,7 +945,11 @@ namespace FenBrowser.FenEngine.Rendering
                     int myLen = blob.CssText?.Length ?? 0;
                     try
                     {
-                        string processedCss = ExtractFontFace(blob.CssText, blob.BaseUri, log);
+                        string processedCss = ExtractFontFace(
+                            blob.CssText,
+                            blob.BaseUri,
+                            log,
+                            root.OwnerDocument);
                         
                         List<NewCss.CssRule> parsed = null;
                         Task<List<NewCss.CssRule>> inFlightTask = null;
@@ -1718,7 +1722,11 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Extract and register @font-face rules from CSS text
         /// </summary>
-        private static string ExtractFontFace(string text, Uri baseUri, Action<string> log)
+        private static string ExtractFontFace(
+            string text,
+            Uri baseUri,
+            Action<string> log,
+            Document ownerDocument = null)
         {
             // EngineLogCompat.Debug($"[PERF-CSS-TRACK] Enter ExtractFontFace Len={text?.Length ?? 0}", LogCategory.Rendering);
             if (string.IsNullOrEmpty(text)) return text;
@@ -1766,7 +1774,7 @@ namespace FenBrowser.FenEngine.Rendering
                 try
                 {
                     // EngineLogCompat.Debug($"[PERF-CSS-TRACK] calling ParseAndRegister", LogCategory.Rendering);
-                    FontRegistry.ParseAndRegister(fontFaceBody, baseUri);
+                    FontRegistry.ParseAndRegister(fontFaceBody, baseUri, ownerDocument);
                     // EngineLogCompat.Debug($"[PERF-CSS-TRACK] done ParseAndRegister", LogCategory.Rendering);
                 }
                 catch (Exception ex)

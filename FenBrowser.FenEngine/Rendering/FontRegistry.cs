@@ -2,11 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net.Http;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using SkiaSharp;
 using FenBrowser.Core;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Logging;
 
@@ -19,6 +20,41 @@ namespace FenBrowser.FenEngine.Rendering
     /// </summary>
     public static class FontRegistry
     {
+        public sealed class FontLoaderRequestContext
+        {
+            public string OwnerId { get; init; }
+            public Func<Uri, Task<BinaryFetchResult>> FetchDetailedAsync { get; init; }
+            public Func<Uri, Document, Task<BinaryFetchResult>> FetchDetailedForDocumentAsync { get; init; }
+        }
+
+        private sealed class ContextScope : IDisposable
+        {
+            private readonly FontLoaderRequestContext _previous;
+            private bool _disposed;
+
+            public ContextScope(FontLoaderRequestContext context)
+            {
+                _previous = _ambientContext.Value;
+                _ambientContext.Value = context;
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _ambientContext.Value = _previous;
+                _disposed = true;
+            }
+        }
+
+        private static readonly AsyncLocal<FontLoaderRequestContext> _ambientContext = new();
+
+        public static Func<Uri, Task<BinaryFetchResult>> FetchDetailedAsync { get; set; }
+        public static Func<Uri, Document, Task<BinaryFetchResult>> FetchDetailedForDocumentAsync { get; set; }
+
         private static readonly Dictionary<string, List<FontFaceDescriptor>> _fontFaces 
             = new Dictionary<string, List<FontFaceDescriptor>>(StringComparer.OrdinalIgnoreCase);
 
@@ -32,6 +68,11 @@ namespace FenBrowser.FenEngine.Rendering
 
         public static event Action<string> FontLoaded;
         public static event Action<int> PendingLoadCountChanged;
+
+        public static IDisposable EnterRequestContext(FontLoaderRequestContext context)
+        {
+            return new ContextScope(context);
+        }
 
         public static int PendingLoadCount
         {
@@ -69,6 +110,8 @@ namespace FenBrowser.FenEngine.Rendering
             public string FeatureSettings { get; set; } 
             public string VariationSettings { get; set; } 
             public Uri BaseUri { get; set; } // Added for relative path resolution
+            public Document OwnerDocument { get; set; }
+            internal FontLoaderRequestContext RequestContext { get; set; }
         }
 
         /// <summary>
@@ -92,6 +135,10 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (descriptor == null || string.IsNullOrEmpty(descriptor.Family))
                 return;
+
+            descriptor.RequestContext ??= CreateDocumentRequestContext(
+                _ambientContext.Value ?? CreateFallbackRequestContext(),
+                descriptor.OwnerDocument);
 
             lock (_lock)
             {
@@ -138,7 +185,8 @@ namespace FenBrowser.FenEngine.Rendering
             if (string.IsNullOrEmpty(src)) return null;
 
             // Check if already loading/loaded
-            string cacheKey = $"{descriptor.Family}|{descriptor.Weight}|{descriptor.Style}";
+            var requestOwner = descriptor.RequestContext?.OwnerId ?? "_default";
+            string cacheKey = $"{requestOwner}|{descriptor.Family}|{descriptor.Weight}|{descriptor.Style}";
             Task<SKTypeface> existingTask = null;
             lock (_lock)
             {
@@ -197,12 +245,27 @@ namespace FenBrowser.FenEngine.Rendering
 
                         if (uri.Scheme == "http" || uri.Scheme == "https")
                         {
-                            var httpClient = HttpClientFactory.GetSharedClient();
-                            using (var stream = await httpClient.GetStreamAsync(uri))
-                            using (var ms = new MemoryStream())
+                            var fetcher = descriptor.RequestContext?.FetchDetailedAsync;
+                            if (fetcher == null)
                             {
-                                await stream.CopyToAsync(ms);
-                                ms.Position = 0;
+                                EngineLogCompat.Warn(
+                                    $"[FontRegistry] No browser font fetcher is configured for {uri.Host}",
+                                    LogCategory.Network);
+                                continue;
+                            }
+
+                            var result = await fetcher(uri).ConfigureAwait(false);
+                            if (result?.Succeeded != true || result.Body == null || result.Body.Length == 0)
+                            {
+                                EngineLogCompat.Log(
+                                    LogCategory.Network,
+                                    LogLevel.Debug,
+                                    $"[FontRegistry] Font fetch failed: host={uri.Host} reason={result?.FailureReason}");
+                                continue;
+                            }
+
+                            using (var ms = new MemoryStream(result.Body, writable: false))
+                            {
                                 typeface = SKTypeface.FromStream(ms);
                             }
                         }
@@ -259,6 +322,38 @@ namespace FenBrowser.FenEngine.Rendering
 
             tcs.SetResult(null);
             return null;
+        }
+
+        private static FontLoaderRequestContext CreateFallbackRequestContext()
+        {
+            if (FetchDetailedAsync == null && FetchDetailedForDocumentAsync == null)
+            {
+                return null;
+            }
+
+            return new FontLoaderRequestContext
+            {
+                OwnerId = "_global",
+                FetchDetailedAsync = FetchDetailedAsync,
+                FetchDetailedForDocumentAsync = FetchDetailedForDocumentAsync
+            };
+        }
+
+        private static FontLoaderRequestContext CreateDocumentRequestContext(
+            FontLoaderRequestContext context,
+            Document ownerDocument)
+        {
+            if (context == null || ownerDocument == null || context.FetchDetailedForDocumentAsync == null)
+            {
+                return context;
+            }
+
+            return new FontLoaderRequestContext
+            {
+                OwnerId = $"{context.OwnerId}:{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(ownerDocument)}",
+                FetchDetailedAsync = uri => context.FetchDetailedForDocumentAsync(uri, ownerDocument),
+                FetchDetailedForDocumentAsync = context.FetchDetailedForDocumentAsync
+            };
         }
 
         private static IEnumerable<string> ExtractLocalSources(string source)
@@ -351,14 +446,21 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Parse @font-face block and register it
         /// </summary>
-        public static void ParseAndRegister(string fontFaceBlock, Uri baseUri = null)
+        public static void ParseAndRegister(
+            string fontFaceBlock,
+            Uri baseUri = null,
+            Document ownerDocument = null)
         {
             if (string.IsNullOrWhiteSpace(fontFaceBlock))
                 return;
 
             try
             {
-                var descriptor = new FontFaceDescriptor { BaseUri = baseUri };
+                var descriptor = new FontFaceDescriptor
+                {
+                    BaseUri = baseUri,
+                    OwnerDocument = ownerDocument
+                };
 
                 // Parse font-family
                 var familyMatch = Regex.Match(fontFaceBlock, @"font-family\s*:\s*([""']?)([^;""']+)\1", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
