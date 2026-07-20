@@ -372,22 +372,32 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
-        public void Measure_NoTemplateColumns_CreatesAutoColumns()
+        public void Measure_NoTemplateColumns_UsesOneImplicitColumnAndAutoRows()
         {
-            // Grid with no template but 3 items
             var container = CreateGridContainer(3);
             var style = new CssComputed
             {
-                Display = "grid"
-                // No grid-template-columns
+                Display = "grid",
+                RowGap = 5
             };
-            
+
             var styles = CreateStyles(container, style);
-            
-            var result = GridLayoutComputer.Measure(container, new SKSize(600, 500), styles, 0, (n, sz, d) => new LayoutMetrics());
-            
-            // Should create auto columns for each item
-            Assert.True(result.MaxChildWidth > 0);
+
+            var result = GridLayoutComputer.Measure(
+                container,
+                new SKSize(600, 500),
+                styles,
+                0,
+                (n, sz, d) => new LayoutMetrics
+                {
+                    MaxChildWidth = 100,
+                    MinContentWidth = 80,
+                    MaxContentWidth = 100,
+                    ContentHeight = 40,
+                    ActualHeight = 40
+                });
+
+            Assert.Equal(130f, result.ContentHeight, 1);
         }
     }
 }

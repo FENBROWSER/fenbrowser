@@ -35,10 +35,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // Grid formatting should follow the laid-out box tree children that survived
             // visibility/display filtering, not raw DOM children.
-            var childrenSource = container.Children
-                .Select(child => child.SourceNode)
-                .Where(node => node != null)
-                .ToList();
+            var childrenSource = new List<Node>(container.Children.Count);
+            foreach (var child in container.Children)
+            {
+                var itemNode = child.SourceNode ?? FindFirstSourceNode(child);
+                if (itemNode == null)
+                {
+                    continue;
+                }
+
+                childrenSource.Add(itemNode);
+                nodeToBox[itemNode] = child;
+                styles[itemNode] = child.ComputedStyle ?? new CssComputed();
+            }
             var arrangedBoxes = new Dictionary<Node, BoxModel>();
             var measureCache = new Dictionary<GridMeasureKey, LayoutMetrics>();
             var activeMeasurements = new HashSet<GridMeasureKey>();
@@ -311,6 +320,25 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 CollectNodeMappings(children[index], nodeToBox, styles);
             }
+        }
+
+        private static Node FindFirstSourceNode(LayoutBox box)
+        {
+            foreach (var child in box.Children)
+            {
+                if (child.SourceNode != null)
+                {
+                    return child.SourceNode;
+                }
+
+                var descendant = FindFirstSourceNode(child);
+                if (descendant != null)
+                {
+                    return descendant;
+                }
+            }
+
+            return null;
         }
 
         private static float ComputeChildrenBottom(LayoutBox container)

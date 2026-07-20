@@ -558,21 +558,6 @@ namespace FenBrowser.FenEngine.Layout
                 .Where(IsGridItemNode)
                 .ToList();
 
-            // If no explicit columns defined, default to single-column (per spec:
-            // grid-auto-flow:row with no template stacks items vertically).
-            // When grid-template-columns IS specified but failed to parse (e.g.
-            // CSS cascade didn't propagate it), this leaves everything in one
-            // column. For a better out-of-box experience with common 2-column
-            // layouts, auto-spread items across columns when there's no template.
-            if (columnTracks.Count == 0 && items.Count > 1)
-            {
-                // Create one auto column per item so they spread horizontally
-                // instead of all stacking in col 1. This is a pragmatic fallback
-                // for when grid-template-columns is missing from the cascade.
-                for (int i = 0; i < items.Count; i++)
-                    columnTracks.Add(new GridTrack { MinLimit = GridTrackSize.Auto, MaxLimit = GridTrackSize.FromFr(1f) });
-            }
-            
             // Parse auto tracks
             var autoColTracks = ParseTracks(style.GridAutoColumns, availableSize.Width, (float)(style.ColumnGap ?? style.Gap ?? 0));
             var autoRowTracks = ParseTracks(style.GridAutoRows, availableSize.Height, (float)(style.RowGap ?? style.Gap ?? 0));
