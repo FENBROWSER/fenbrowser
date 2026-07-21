@@ -1,5 +1,6 @@
 using SkiaSharp;
 using System.Text.Json;
+using System.Threading;
 using FenBrowser.DevTools.Core;
 using FenBrowser.DevTools.Core.Protocol;
 using FenBrowser.DevTools.Domains.DTOs;
@@ -20,10 +21,16 @@ public class ConsolePanel : DevToolsPanelBase
     private readonly List<string> _history = new();
     private int _historyIndex = -1;
     private bool _inputFocused;
-    private bool _showBrowserLogs = true; // Toggle to show FenLogger entries
+    private bool _showBrowserLogs; // Default false: engine logs hidden by default
     private readonly SemaphoreSlim _protocolEntryLock = new(1, 1);
     private int _hostVersion;
-    
+    private bool _userHasScrolledUp;
+
+    // Entry cap and collapse state.
+    private const int MaxEntries = 5000;
+    private const int BatchTrimSize = 500;
+    private int _protocolParseFailureCount;
+
     private const float INPUT_HEIGHT = 28f;
     
     protected override void OnHostChanging(IDevToolsHost? previousHost)
@@ -73,7 +80,7 @@ public class ConsolePanel : DevToolsPanelBase
             using var doc = JsonDocument.Parse(json);
             if (!doc.RootElement.TryGetProperty("method", out var methodProp)) return;
             var method = methodProp.GetString();
-            
+
             if (method == "Runtime.consoleAPICalled")
             {
                 var evt = JsonSerializer.Deserialize<ProtocolEvent<ConsoleAPICalledEvent>>(json, ProtocolJson.Options);
@@ -92,7 +99,17 @@ public class ConsolePanel : DevToolsPanelBase
                 }
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            // Increment failure counter; emit at most one rate-limited diagnostic.
+            Interlocked.Increment(ref _protocolParseFailureCount);
+            if (_protocolParseFailureCount <= 3)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"[DevTools.Console] Protocol parse failure #{_protocolParseFailureCount}: " +
+                    $"{ex.GetType().Name}: {ex.Message}");
+            }
+        }
     }
 
     private void AppendEngineLogEntry(LogEntryPayload entry)
@@ -117,27 +134,60 @@ public class ConsolePanel : DevToolsPanelBase
         var markerText = string.IsNullOrWhiteSpace(entry.Marker) || string.Equals(entry.Marker, "None", StringComparison.OrdinalIgnoreCase)
             ? string.Empty
             : $"[{entry.Marker}]";
-        var message = $"[{entry.Subsystem}][{entry.Severity}]{markerText} {entry.Message}".TrimEnd();
+        var message = $"[Eng][{entry.Subsystem}][{entry.Severity}]{markerText} {entry.Message}".TrimEnd();
 
-        _entries.Add(new ConsoleEntry(message, level, timestamp.ToLocalTime(), entry.SourceFile, entry.SourceLine > 0 ? entry.SourceLine : null));
-        MaxScrollY = Math.Max(0, _entries.Count * DevToolsTheme.ItemHeight - Bounds.Height + INPUT_HEIGHT + 20);
-        ScrollY = MaxScrollY;
-        Invalidate();
+        AddEntryInternal(new ConsoleEntry(message, level, timestamp.ToLocalTime(), entry.SourceFile, entry.SourceLine > 0 ? entry.SourceLine : null));
     }
     
     private void AddEntry(ConsoleMessageInfo msg)
     {
-        _entries.Add(new ConsoleEntry(
+        AddEntryInternal(new ConsoleEntry(
             msg.Message,
             msg.Level,
             msg.Timestamp,
             msg.SourceFile,
             msg.LineNumber
         ));
-        
-        // Update scroll
+    }
+
+    private void AddEntryInternal(ConsoleEntry entry)
+    {
+        // Collapse repeated messages: update the last entry's repeat count if it matches.
+        if (_entries.Count > 0)
+        {
+            var last = _entries[_entries.Count - 1];
+            if (string.Equals(last.Message, entry.Message, StringComparison.Ordinal) &&
+                last.Level == entry.Level)
+            {
+                last.RepeatCount++;
+                last.Timestamp = entry.Timestamp;
+                Invalidate();
+                return;
+            }
+        }
+
+        _entries.Add(entry);
+
+        // Hard cap: trim oldest entries in batches.
+        if (_entries.Count > MaxEntries)
+        {
+            var trimCount = Math.Min(BatchTrimSize, _entries.Count - MaxEntries + BatchTrimSize);
+            if (trimCount > 0 && trimCount < _entries.Count)
+            {
+                _entries.RemoveRange(0, trimCount);
+                // Adjust scroll to compensate for removed entries.
+                ScrollY = Math.Max(0, ScrollY - trimCount * DevToolsTheme.ItemHeight);
+            }
+        }
+
+        // Update scroll — only auto-scroll if user hasn't manually scrolled up.
         MaxScrollY = Math.Max(0, _entries.Count * DevToolsTheme.ItemHeight - Bounds.Height + INPUT_HEIGHT + 20);
-        ScrollY = MaxScrollY; // Auto-scroll to bottom
+        if (!_userHasScrolledUp)
+        {
+            ScrollY = MaxScrollY;
+        }
+
+        Invalidate();
     }
     
     protected override void OnPaint(SKCanvas canvas, SKRect bounds)
@@ -204,10 +254,13 @@ public class ConsolePanel : DevToolsPanelBase
             canvas.DrawText(icon, x, textY, iconFont, iconColorPaint);
             x += 20;
 
-            // Message
+            // Message (with collapse count for repeated entries)
             using var msgFont = DevToolsTheme.CreateTextFont();
             using var msgColorPaint = DevToolsTheme.CreateTextColorPaint(color);
-            canvas.DrawText(entry.Message, x, textY, msgFont, msgColorPaint);
+            var displayText = entry.RepeatCount > 1
+                ? $"{entry.Message}  × {entry.RepeatCount}"
+                : entry.Message;
+            canvas.DrawText(displayText, x, textY, msgFont, msgColorPaint);
 
             // Source location
             if (!string.IsNullOrEmpty(entry.Source))
@@ -264,6 +317,24 @@ public class ConsolePanel : DevToolsPanelBase
         }
     }
     
+    public override void OnMouseWheel(float x, float y, float deltaX, float deltaY)
+    {
+        var wasAtBottom = MaxScrollY <= 0 || ScrollY >= MaxScrollY - 4;
+
+        base.OnMouseWheel(x, y, deltaX, deltaY);
+
+        // If the user scrolls up from the bottom, mark as manually scrolled.
+        // If they scroll back to the bottom, reset.
+        if (MaxScrollY > 0 && ScrollY >= MaxScrollY - 4)
+        {
+            _userHasScrolledUp = false;
+        }
+        else if (!wasAtBottom)
+        {
+            _userHasScrolledUp = true;
+        }
+    }
+
     public override void OnMouseMove(float x, float y)
     {
         // Check if over input area
@@ -392,13 +463,13 @@ public class ConsolePanel : DevToolsPanelBase
         _historyIndex = -1;
         
         // Add input as entry visually
-        _entries.Add(new ConsoleEntry("> " + input, ConsoleLevel.Log, DateTime.Now, null, null));
-        
+        AddEntryInternal(new ConsoleEntry("> " + input, ConsoleLevel.Log, DateTime.Now, null, null));
+
         // Clear input immediately
         _inputText = "";
         _cursorPosition = 0;
         Invalidate();
-        
+
         // Execute via protocol
         try
         {
@@ -407,23 +478,23 @@ public class ConsolePanel : DevToolsPanelBase
                 Method = "Runtime.evaluate",
                 Params = new { expression = input }
             };
-            
+
             var responseJson = await Host.SendProtocolCommandAsync(JsonSerializer.Serialize(request, ProtocolJson.Options));
             var response = JsonSerializer.Deserialize<ProtocolResponse<EvaluateResult>>(responseJson, ProtocolJson.Options);
-            
+
             if (response?.Result?.Result != null)
             {
                 string output = await FormatRemoteObjectAsync(response.Result.Result);
-                _entries.Add(new ConsoleEntry("< " + output, ConsoleLevel.Log, DateTime.Now, null, null));
+                AddEntryInternal(new ConsoleEntry("< " + output, ConsoleLevel.Log, DateTime.Now, null, null));
             }
             else if (response?.Error != null)
             {
-                _entries.Add(new ConsoleEntry(response.Error.Message, ConsoleLevel.Error, DateTime.Now, null, null));
+                AddEntryInternal(new ConsoleEntry(response.Error.Message, ConsoleLevel.Error, DateTime.Now, null, null));
             }
         }
         catch (Exception ex)
         {
-            _entries.Add(new ConsoleEntry(ex.Message, ConsoleLevel.Error, DateTime.Now, null, null));
+            AddEntryInternal(new ConsoleEntry(ex.Message, ConsoleLevel.Error, DateTime.Now, null, null));
         }
         
         // Scroll to bottom
@@ -544,7 +615,25 @@ public class ConsolePanel : DevToolsPanelBase
     }
     
     /// <summary>
-    /// Console entry.
+    /// Console entry with deduplication support.
     /// </summary>
-    private record ConsoleEntry(string Message, ConsoleLevel Level, DateTime Timestamp, string? Source, int? Line);
+    private sealed class ConsoleEntry
+    {
+        public string Message { get; }
+        public ConsoleLevel Level { get; }
+        public DateTime Timestamp { get; set; }
+        public string? Source { get; }
+        public int? Line { get; }
+        public int RepeatCount { get; set; }
+
+        public ConsoleEntry(string message, ConsoleLevel level, DateTime timestamp, string? source, int? line)
+        {
+            Message = message;
+            Level = level;
+            Timestamp = timestamp;
+            Source = source;
+            Line = line;
+            RepeatCount = 1;
+        }
+    }
 }
