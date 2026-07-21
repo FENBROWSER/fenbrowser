@@ -104,6 +104,15 @@ namespace FenBrowser.FenEngine.Rendering
         private const int MaxIncrementalLayoutDirtyNodeScan = 8192;
         private const int MaxIncrementalLayoutRootCount = 16;
         private long _lastImageCacheVersion;
+        // Phase 15: cached unmaterialized iframe tracking to avoid full-DOM
+        // DescendantsAndSelf() scan every non-forced-layout frame.
+        private HashSet<Node> _knownUnmaterializedIframes;
+        private int _knownUnmaterializedIframesDomNodeCount;
+
+        // Phase 15: cached overlay collection to avoid full paint-tree walk
+        // and CollectAllNodes every frame when nothing changed.
+        private int _lastOverlayPaintTreeFrameId = -1;
+        private List<InputOverlayData> _cachedOverlays;
         
         /// <summary>
         /// Current overlays for input elements.
@@ -212,6 +221,14 @@ namespace FenBrowser.FenEngine.Rendering
             _lastStyles = effectiveStyles is Dictionary<Node, CssComputed> styleDictionary
                 ? styleDictionary
                 : new Dictionary<Node, CssComputed>(effectiveStyles);
+            // Phase 15: reuse cached node count when root hasn't changed.
+            // EnsureLayout is called synchronously from script accessors
+            // (getBoundingClientRect, etc.); avoid an O(N) full-tree walk
+            // on every lazy layout flush when the DOM is unchanged.
+            if (_lastDomNodeCount <= 0 || !ReferenceEquals(root, _lastRoot))
+            {
+                _lastDomNodeCount = CountNodes(root);
+            }
             var layoutEngine = GetOrCreateLayoutEngine(effectiveStyles, baseUrl);
             _lastLayout = layoutEngine.ComputeLayout(
                 root,
@@ -221,7 +238,7 @@ namespace FenBrowser.FenEngine.Rendering
                 availableHeight: _viewportHeight,
                 deadline: CreateLayoutDeadline(
                     "EnsureLayout",
-                    CountNodes(root),
+                    _lastDomNodeCount,
                     fullDocumentLayout: true));
             _boxes.Clear();
             foreach (var box in layoutEngine.AllBoxes)
@@ -413,13 +430,29 @@ namespace FenBrowser.FenEngine.Rendering
             pipelineContext.SetViewport(_viewportWidth, _viewportHeight);
 
             // Check if resize occurred or if root node changed (new page navigation)
-            bool forceLayout = _lastLayout == null || 
+            bool forceLayout = _lastLayout == null ||
                                root != _lastRoot ||
-                               Math.Abs(_viewportWidth - _lastViewportWidth) > 0.1f || 
+                               Math.Abs(_viewportWidth - _lastViewportWidth) > 0.1f ||
                                Math.Abs(_viewportHeight - _lastViewportHeight) > 0.1f;
-            if (!forceLayout && HasUnmaterializedNestedBrowsingContext(root, _lastLayout))
+            // Phase 15: cache the unmaterialized iframe set. Only re-scan the DOM
+            // for unmaterialized nested browsing contexts when the root changed or
+            // the DOM node count changed since the last scan. On most frames this
+            // avoids a full DescendantsAndSelf().OfType<Element>() LINQ allocation.
+            if (!forceLayout)
             {
-                forceLayout = true;
+                bool iframeScanNeeded = root != _lastRoot
+                    || _knownUnmaterializedIframes == null
+                    || _knownUnmaterializedIframesDomNodeCount != _lastDomNodeCount;
+                if (iframeScanNeeded)
+                {
+                    _knownUnmaterializedIframes = CollectUnmaterializedIframes(root, _lastLayout);
+                    _knownUnmaterializedIframesDomNodeCount = _lastDomNodeCount;
+                }
+                forceLayout = _knownUnmaterializedIframes?.Count > 0;
+            }
+            else
+            {
+                _knownUnmaterializedIframes = null;
             }
             
             _lastViewportWidth = _viewportWidth;
@@ -637,7 +670,23 @@ namespace FenBrowser.FenEngine.Rendering
                         }
 
                         EngineLogCompat.Debug($"[SkiaDomRenderer] Layout ready. Boxes={_boxes.Count}, Incremental={LastFrameUsedIncrementalLayout}, Roots={LastFrameIncrementalLayoutRootCount}", LogCategory.Rendering);
-                        RecursivelyClearDirty(root, InvalidationKind.Layout);
+                        // Phase 15: scope dirty-flag clearing to the subtrees that were
+                        // actually laid out. When incremental layout ran, only those
+                        // roots are dirty; a full-tree walk would redundantly clear
+                        // already-clean flags on the rest of the document.
+                        if (LastFrameUsedIncrementalLayout &&
+                            incrementalPlan.DirtyRoots != null &&
+                            incrementalPlan.DirtyRoots.Count > 0)
+                        {
+                            foreach (var dirtyRoot in incrementalPlan.DirtyRoots)
+                            {
+                                RecursivelyClearDirty(dirtyRoot, InvalidationKind.Layout);
+                            }
+                        }
+                        else
+                        {
+                            RecursivelyClearDirty(root, InvalidationKind.Layout);
+                        }
                     }
                     RenderPipeline.EndLayout(); // State -> LayoutFrozen
                     pipelineContext.SetLayoutSnapshot(_lastLayout);
@@ -768,8 +817,22 @@ namespace FenBrowser.FenEngine.Rendering
                                 LogCategory.Rendering);
                         }
 
-                        // Clear Paint Dirty Flags
-                        RecursivelyClearDirty(root, InvalidationKind.Paint);
+                        // Phase 15: scope paint dirty-flag clearing to the subtrees
+                        // that were actually repainted. Collect paint-dirty leaf roots
+                        // (nodes where PaintDirty is set but ChildPaintDirty is not)
+                        // so we only walk the affected subtrees.
+                        var paintDirtyRoots = CollectPaintDirtyRoots(root);
+                        if (paintDirtyRoots != null && paintDirtyRoots.Count > 0)
+                        {
+                            foreach (var dirtyRoot in paintDirtyRoots)
+                            {
+                                RecursivelyClearDirty(dirtyRoot, InvalidationKind.Paint);
+                            }
+                        }
+                        else
+                        {
+                            RecursivelyClearDirty(root, InvalidationKind.Paint);
+                        }
                     }
                     else
                     {
@@ -998,7 +1061,23 @@ namespace FenBrowser.FenEngine.Rendering
                     RenderPipeline.EnterPresent();
                     // Callback with layout info
                     CurrentOverlays.Clear();
-                    CollectOverlays();
+                    // Phase 15: cache overlay collection. The overlay set only
+                    // changes when the paint tree or box count changes. On
+                    // compositor-only or scroll-only frames the previous set is
+                    // still valid and re-scanning every paint node is wasted work.
+                    var currentPaintFrameId = _lastPaintTree?.FrameId ?? -1;
+                    if (rebuiltPaintTree || _boxes.Count != (_cachedOverlays?.Count ?? 0) ||
+                        _lastOverlayPaintTreeFrameId != currentPaintFrameId ||
+                        _cachedOverlays == null)
+                    {
+                        CollectOverlays();
+                        _cachedOverlays = new List<InputOverlayData>(CurrentOverlays);
+                        _lastOverlayPaintTreeFrameId = currentPaintFrameId;
+                    }
+                    else
+                    {
+                        CurrentOverlays.AddRange(_cachedOverlays);
+                    }
                     float totalHeight = _lastLayout?.ContentHeight ?? _viewportHeight;
                     onLayoutUpdated?.Invoke(new SKSize(_viewportWidth, totalHeight), CurrentOverlays);
 
@@ -1883,6 +1962,38 @@ namespace FenBrowser.FenEngine.Rendering
             return false;
         }
 
+        /// <summary>
+        /// Phase 15: collects the set of iframe elements whose nested document root
+        /// has no layout rect yet. The result is cached across frames and only
+        /// re-scanned when the DOM node count changes (implying a new iframe was
+        /// inserted or an existing one was cleaned up).
+        /// </summary>
+        private static HashSet<Node> CollectUnmaterializedIframes(Node root, LayoutResult layout)
+        {
+            var set = new HashSet<Node>();
+            if (root == null || layout == null)
+            {
+                return set;
+            }
+
+            foreach (var frameElement in root.DescendantsAndSelf().OfType<Element>())
+            {
+                if (!string.Equals(frameElement.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var frameDocument = frameElement.ChildNodes?.OfType<Document>().FirstOrDefault();
+                var frameRoot = frameDocument?.DocumentElement;
+                if (frameRoot != null && !layout.TryGetElementRect(frameRoot, out _))
+                {
+                    set.Add(frameElement);
+                }
+            }
+
+            return set;
+        }
+
         private sealed class IncrementalLayoutPlan
         {
             private IncrementalLayoutPlan(bool fullLayoutRequired, List<Element> dirtyRoots, string reason)
@@ -2258,6 +2369,46 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 RecursivelyClearDirty(child, kind);
             }
+        }
+
+        /// <summary>
+        /// Phase 15: collects the topmost DOM nodes that are paint-dirty — nodes where
+        /// <c>PaintDirty</c> is true but no child carries <c>ChildPaintDirty</c>. These
+        /// are the "leaf" dirty roots for scoped paint-dirty-flag clearing, avoiding a
+        /// full-tree walk when only a few subtrees changed. Returns an empty list when
+        /// the root has no paint-dirty descendants.
+        /// </summary>
+        private static List<Node> CollectPaintDirtyRoots(Node root)
+        {
+            if (root == null || (!root.PaintDirty && !root.ChildPaintDirty))
+            {
+                return new List<Node>();
+            }
+
+            var roots = new List<Node>();
+            var stack = new Stack<Node>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var node = stack.Pop();
+                if (node == null) continue;
+                // A node that is directly paint-dirty but has no further dirty children
+                // is a leaf root — the subtree under it needs clearing.
+                if (node.PaintDirty && !node.ChildPaintDirty)
+                {
+                    roots.Add(node);
+                    continue; // don't descend; this subtree is already captured
+                }
+                // Descend into children looking for deeper dirty nodes.
+                for (var child = node.FirstChild; child != null; child = child.NextSibling)
+                {
+                    if (child.PaintDirty || child.ChildPaintDirty)
+                    {
+                        stack.Push(child);
+                    }
+                }
+            }
+            return roots;
         }
 
         /// <summary>

@@ -210,7 +210,32 @@ namespace FenBrowser.FenEngine.Rendering
                     ["normalizedClipRects"] = builder._normalizedClipRectCount
                 });
 
-            return new ImmutablePaintTree(rootNodes, frameId);
+            return new ImmutablePaintTree(rootNodes, frameId, nodeCount: CountPaintTreeNodes(rootNodes));
+        }
+
+        /// <summary>
+        /// Phase 15: pre-counts paint nodes before constructing the immutable tree
+        /// so the constructor can skip its own recursive traversal. The builder has
+        /// just assembled these nodes; they are hot in cache.
+        /// </summary>
+        private static int CountPaintTreeNodes(IReadOnlyList<PaintNodeBase> nodes)
+        {
+            if (nodes == null || nodes.Count == 0) return 0;
+            var count = 0;
+            var stack = new Stack<PaintNodeBase>();
+            for (int i = nodes.Count - 1; i >= 0; i--) stack.Push(nodes[i]);
+            while (stack.Count > 0)
+            {
+                var node = stack.Pop();
+                if (node == null) continue;
+                count++;
+                var children = node.Children;
+                if (children != null)
+                {
+                    for (int i = children.Count - 1; i >= 0; i--) stack.Push(children[i]);
+                }
+            }
+            return count;
         }
 
         /// <summary>

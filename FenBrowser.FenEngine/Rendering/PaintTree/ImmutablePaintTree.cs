@@ -40,11 +40,15 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Creates a new immutable paint tree.
         /// </summary>
-        public ImmutablePaintTree(IReadOnlyList<PaintNodeBase> roots, int frameId = 0)
+        /// <param name="nodeCount">
+        /// Phase 15: pre-counted node count from the builder. When provided, the
+        /// constructor skips the recursive <see cref="CountNodes"/> traversal.
+        /// </param>
+        public ImmutablePaintTree(IReadOnlyList<PaintNodeBase> roots, int frameId = 0, int? nodeCount = null)
         {
             Roots = roots ?? throw new ArgumentNullException(nameof(roots));
             FrameId = frameId;
-            NodeCount = CountNodes(roots);
+            NodeCount = nodeCount ?? CountNodes(roots);
             BuildTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         }
         
