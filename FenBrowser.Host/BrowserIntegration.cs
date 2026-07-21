@@ -494,7 +494,10 @@ public class BrowserIntegration : IDisposable
                 snapshot.Root?.ChildLayoutDirty == true ||
                 snapshot.Root?.PaintDirty == true ||
                 snapshot.Root?.ChildPaintDirty == true;
-            bool imageUpdate = ImageLoader.CacheVersion != _lastRenderedImageCacheVersion;
+            // Phase 7: use per-owner image generation for scoped invalidation.
+            var ownerId = _browser?.CurrentUri?.AbsoluteUri ?? "about:blank";
+            long currentImageGen = ImageLoader.GetCacheGeneration(ownerId);
+            bool imageUpdate = currentImageGen != _lastRenderedImageCacheVersion;
             bool animationUpdate = HasDocumentAnimationUpdate();
 
             if (!rootChanged &&
@@ -509,7 +512,7 @@ public class BrowserIntegration : IDisposable
             }
 
             _lastAdoptedRenderSnapshotVersion = snapshot.Version;
-            _lastRenderedImageCacheVersion = ImageLoader.CacheVersion;
+            _lastRenderedImageCacheVersion = currentImageGen;
 
             // Wake the engine thread. RecordFrame will call NeedsRepaint?.Invoke() only
             // after a valid frame is committed. Many repaint-ready signals are paint-only
@@ -2216,7 +2219,10 @@ public class BrowserIntegration : IDisposable
                         // Phase 2: consume accumulated animation work atomically
                         // before building the frame request.
                         var animWork = ConsumeAnimationWork();
-                        bool imageGenChanged = ImageLoader.CacheVersion != _lastRenderedImageGeneration;
+                        // Phase 7: use per-owner image generation.
+                        var ownerId = _browser?.CurrentUri?.AbsoluteUri ?? "about:blank";
+                        long currentImageGen = ImageLoader.GetCacheGeneration(ownerId);
+                        bool imageGenChanged = currentImageGen != _lastRenderedImageGeneration;
 
                         frameResult = _renderer.RenderFrame(new RenderFrameRequest
                         {
@@ -2242,7 +2248,7 @@ public class BrowserIntegration : IDisposable
                             CompositeDirtyElements = animWork.CompositeDirtyElements,
                             PaintDirtyElements = animWork.PaintDirtyElements,
                             AnimationGeneration = animWork.Generation,
-                            ImageGeneration = ImageLoader.CacheVersion,
+                            ImageGeneration = currentImageGen,
                             ImageGenerationChanged = imageGenChanged
                         });
                     }

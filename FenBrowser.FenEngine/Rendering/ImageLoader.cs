@@ -179,6 +179,71 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly ConcurrentDictionary<string, ImageLoaderRequestContext> _animatedGifOwners =
             new ConcurrentDictionary<string, ImageLoaderRequestContext>(StringComparer.Ordinal);
 
+        // Phase 7: per-owner cache invalidation generations. When an image decode
+        // completes, only the generations of owners that use that image are bumped.
+        // This prevents an image arriving in tab A from making tab B think its image
+        // state changed.
+        private static readonly ConcurrentDictionary<string, long> _ownerCacheGenerations = new(StringComparer.Ordinal);
+        private static readonly ConcurrentDictionary<string, HashSet<string>> _imageToOwners = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Phase 7: returns the cache generation for a specific owner. Used by
+        /// BrowserIntegration to scope RepaintReady suppression per-document.
+        /// </summary>
+        public static long GetCacheGeneration(string ownerId)
+        {
+            if (string.IsNullOrWhiteSpace(ownerId)) return CacheVersion;
+            return _ownerCacheGenerations.TryGetValue(ownerId, out var gen) ? gen : 0;
+        }
+
+        /// <summary>
+        /// Phase 7: increments the cache generation only for owners that use the
+        /// given cache key. Called when a decode completes.
+        /// </summary>
+        private static void BumpOwnerGenerations(string cacheKey)
+        {
+            if (string.IsNullOrWhiteSpace(cacheKey)) return;
+            if (_imageToOwners.TryGetValue(cacheKey, out var owners))
+            {
+                foreach (var ownerId in owners)
+                {
+                    _ownerCacheGenerations.AddOrUpdate(ownerId, 1, (_, v) => v + 1);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Phase 7: register that an owner uses a particular image. Called when an
+        /// image is requested for rendering.
+        /// </summary>
+        public static void RegisterImageOwner(string cacheKey, string ownerId)
+        {
+            if (string.IsNullOrWhiteSpace(cacheKey) || string.IsNullOrWhiteSpace(ownerId))
+                return;
+            _imageToOwners.AddOrUpdate(
+                cacheKey,
+                _ => new HashSet<string>(StringComparer.Ordinal) { ownerId },
+                (_, set) => { lock (set) { set.Add(ownerId); } return set; });
+        }
+
+        /// <summary>
+        /// Phase 7: remove all image ownership registrations for a disposed owner.
+        /// </summary>
+        public static void ReleaseOwner(string ownerId)
+        {
+            if (string.IsNullOrWhiteSpace(ownerId)) return;
+            _ownerCacheGenerations.TryRemove(ownerId, out _);
+            _animatedGifOwners.TryRemove(ownerId, out _);
+            // Clean up image-to-owner mappings.
+            foreach (var kv in _imageToOwners)
+            {
+                lock (kv.Value)
+                {
+                    kv.Value.Remove(ownerId);
+                }
+            }
+        }
+
         /// <summary>
         /// True when there are active animated GIFs that need periodic repainting
         /// </summary>
@@ -1680,6 +1745,9 @@ namespace FenBrowser.FenEngine.Rendering
             EvictIfNeeded();
             _lazyRegistry.TryRemove(cacheKey, out _);
             Interlocked.Increment(ref _cacheVersion);
+            // Phase 7: bump per-owner generations so only affected documents
+            // see the image change, not every tab in the process.
+            BumpOwnerGenerations(cacheKey);
             EngineLogCompat.Log(
                 LogCategory.Rendering,
                 LogLevel.Debug,
