@@ -86,6 +86,14 @@
     <Compile Include="Rendering\Phase3AnimationClassificationTests.cs" />
     <!-- Phase 17 final multi-tab performance/isolation regression suite. -->
     <Compile Include="Host\Phase17MultiTabPerformanceTests.cs" />
+    <!-- Phase 15 no-op full-document work elimination regression. -->
+    <Compile Include="Rendering\Phase15NoOpWorkEliminationTests.cs" />
+    <!-- Phase 6 image-loader repaint coalescing and disposal regression. -->
+    <Compile Include="Rendering\Phase6ImageRepaintCoalescingTests.cs" />
+    <!-- Phase 4 compositor-only fast-path and rebuild telemetry regression. -->
+    <Compile Include="Rendering\Phase4CompositorOnlyPathTests.cs" />
+    <!-- Phase 12 async input dispatch non-blocking regression. -->
+    <Compile Include="Engine\Phase12AsyncInputDispatchTests.cs" />
   </ItemGroup>
 
 </Project>
