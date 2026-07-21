@@ -3024,7 +3024,6 @@ public void Dispose()
 
             var renderGeneration = BeginRenderGeneration();
 
-            await RaiseLoadingChangedAsync(true);
             var navigationStartedAtUtc = DateTimeOffset.UtcNow;
             long allocatedBytesBefore = GC.GetTotalAllocatedBytes(precise: false);
             int gen0Before = GC.CollectionCount(0);
@@ -3056,6 +3055,7 @@ public void Dispose()
             
             try
             {
+                await RaiseLoadingChangedAsync(true);
                 EngineLogCompat.Info($"[CustomHtmlEngine] RenderAsync Start. HTML Length: {html?.Length ?? 0}", LogCategory.Rendering);
                 lock (_renderStateLock)
                 {
