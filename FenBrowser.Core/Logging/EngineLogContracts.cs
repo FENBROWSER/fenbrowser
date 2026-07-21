@@ -406,38 +406,6 @@ public sealed class EngineLogDeduplicator : ILogDeduplicator
         return key.Length <= MaxKeyLength ? key : key.Substring(0, MaxKeyLength);
     }
 
-    private static void TruncateKey(ReadOnlySpan<char> key, Span<char> destination)
-    {
-        var length = Math.Min(key.Length, MaxKeyLength);
-        key.Slice(0, length).CopyTo(destination);
-    }
-
-    private static string TruncateKey(ReadOnlySpan<char> docSpan, ReadOnlySpan<char> sep, ReadOnlySpan<char> keySpan)
-    {
-        var totalLen = docSpan.Length + sep.Length + keySpan.Length;
-        if (totalLen <= MaxKeyLength)
-        {
-            return string.Concat(docSpan, sep, keySpan);
-        }
-
-        Span<char> buf = stackalloc char[MaxKeyLength];
-        var pos = 0;
-        var docLen = Math.Min(docSpan.Length, MaxKeyLength / 2);
-        docSpan.Slice(0, docLen).CopyTo(buf.Slice(pos));
-        pos += docLen;
-        sep.CopyTo(buf.Slice(pos));
-        pos += sep.Length;
-        var remaining = MaxKeyLength - pos;
-        if (remaining > 0)
-        {
-            var keyLen = Math.Min(keySpan.Length, remaining);
-            keySpan.Slice(0, keyLen).CopyTo(buf.Slice(pos));
-            pos += keyLen;
-        }
-
-        return new string(buf.Slice(0, pos));
-    }
-
     private static void EvictOldest(Dictionary<string, byte> dict)
     {
         // Remove ~10% of entries to make room. Simple FIFO approximation:

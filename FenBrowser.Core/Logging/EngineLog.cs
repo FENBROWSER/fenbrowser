@@ -18,6 +18,11 @@ public static class EngineLog
     private static readonly ILogDeduplicator Deduplicator = new EngineLogDeduplicator();
     private static event Action<EngineLogEvent> EngineEventWrittenInternal;
 
+    // Re-entrancy guard: prevents recursive Write() calls from event handlers
+    // that could stack-overflow into a native buffer overrun (0xc0000409).
+    [ThreadStatic]
+    private static bool _isWriting;
+
     public static event Action<LogEntry> CompatibilityEntryAdded;
 
     public static event Action<EngineLogEvent> EngineEventWritten
@@ -169,17 +174,33 @@ public static class EngineLog
         [CallerLineNumber] int sourceLine = 0,
         [CallerMemberName] string sourceMember = "")
     {
-        EnsureInitialized();
-        _logger.Write(
-            subsystem,
-            severity,
-            message,
-            marker,
-            context,
-            fields,
-            string.IsNullOrWhiteSpace(sourceFile) ? null : Path.GetFileName(sourceFile),
-            sourceLine,
-            sourceMember);
+        // Re-entrancy guard: if a log write triggers an event handler that
+        // calls Write() again on the same thread, drop the recursive call
+        // to prevent stack overflow → native buffer overrun (0xc0000409).
+        if (_isWriting)
+        {
+            return;
+        }
+
+        _isWriting = true;
+        try
+        {
+            EnsureInitialized();
+            _logger.Write(
+                subsystem,
+                severity,
+                message,
+                marker,
+                context,
+                fields,
+                string.IsNullOrWhiteSpace(sourceFile) ? null : Path.GetFileName(sourceFile),
+                sourceLine,
+                sourceMember);
+        }
+        finally
+        {
+            _isWriting = false;
+        }
     }
 
     public static ITraceScope BeginScope(
