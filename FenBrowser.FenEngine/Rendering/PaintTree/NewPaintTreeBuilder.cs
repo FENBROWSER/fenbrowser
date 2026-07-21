@@ -3,6 +3,7 @@
 // Determinism: strict
 // FallbackPolicy: spec-defined
 using System;
+using System.Runtime.CompilerServices;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core;
@@ -1596,7 +1597,34 @@ namespace FenBrowser.FenEngine.Rendering
                 return new List<PaintNodeBase> { groupNode };
             }
             
+            // Phase 4: stamp every paint node with a stable identity derived from
+            // the DOM node's object reference. This persists across rebuilds so the
+            // previous frame's nodes can be matched for incremental replacement.
+            var stableId = ComputeStableId(node);
+            for (int i = 0; i < nodes.Count; i++)
+            {
+                if (nodes[i] != null && nodes[i].StableNodeId == 0)
+                {
+                    nodes[i].StableNodeId = stableId;
+                }
+            }
             return nodes;
+        }
+
+        /// <summary>
+        /// Phase 4: compute a stable numeric identity for a DOM node. Uses the CLR
+        /// object identity (which is stable for the lifetime of the Node) combined
+        /// with the runtime hash for collision resistance across allocations.
+        /// Synthetic nodes without a DOM source receive id 0.
+        /// </summary>
+        private static ulong ComputeStableId(FenBrowser.Core.Dom.V2.Node source)
+        {
+            if (source == null) return 0;
+            unchecked
+            {
+                return ((ulong)(uint)RuntimeHelpers.GetHashCode(source) << 32)
+                       | (uint)source.GetHashCode();
+            }
         }
 
         private bool HasLaidOutPseudoElement(CssComputed pseudoStyle)

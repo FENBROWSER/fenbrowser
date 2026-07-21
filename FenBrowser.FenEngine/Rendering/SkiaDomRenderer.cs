@@ -95,6 +95,7 @@ namespace FenBrowser.FenEngine.Rendering
         public bool LastFrameUsedIncrementalLayout { get; private set; }
         public int LastFrameIncrementalLayoutRootCount { get; private set; }
         public int LastPromotedLayerCount { get; private set; }
+        public PaintTreeRebuildReason LastPaintTreeRebuildReason => _paintTreeRebuildReason;
         private readonly Stopwatch _lastDomDumpWatch = new Stopwatch();
         private LayoutEngine _retainedLayoutEngine;
         private IReadOnlyDictionary<Node, CssComputed> _retainedLayoutStyles;
@@ -104,6 +105,8 @@ namespace FenBrowser.FenEngine.Rendering
         private const int MaxIncrementalLayoutDirtyNodeScan = 8192;
         private const int MaxIncrementalLayoutRootCount = 16;
         private long _lastImageCacheVersion;
+        // Phase 4: why the paint tree was (or was not) rebuilt on this frame.
+        private PaintTreeRebuildReason _paintTreeRebuildReason;
         // Phase 15: cached unmaterialized iframe tracking to avoid full-DOM
         // DescendantsAndSelf() scan every non-forced-layout frame.
         private HashSet<Node> _knownUnmaterializedIframes;
@@ -745,9 +748,34 @@ namespace FenBrowser.FenEngine.Rendering
                     // PC-4: Suppress forced rebuilds under sustained frame-budget pressure.
                     bool adaptiveSuppressed = _frameBudgetAdaptivePolicy.ShouldSuppressForcedRebuild(RenderPipeline.FrameBudget);
                     bool forcePaintRebuild = _paintStabilityController.ShouldForcePaintRebuild && !adaptiveSuppressed;
-                    bool isPaintDirty = paintInvalidationSignal || _lastPaintTree == null || forcePaintRebuild;
+                    // Phase 4: compositor-only fast path. When only animated
+                    // compositor properties (transform, opacity, filter, clip-path)
+                    // changed and the paint tree is structurally unchanged, skip
+                    // NewPaintTreeBuilder.Build entirely — re-layerize from the
+                    // existing paint tree with updated style values instead.
+                    bool compositorOnly =
+                        _lastPaintTree != null &&
+                        _lastCompositedLayers.Count > 0 &&
+                        (invalidationReason & ~RenderFrameInvalidationReason.Animation) == 0 &&
+                        (animationInvalidation & InvalidationKind.Paint) == 0 &&
+                        (animationInvalidation & InvalidationKind.Layout) == 0 &&
+                        !scrollAnimationActive &&
+                        !root.PaintDirty && !root.ChildPaintDirty;
+                    bool isPaintDirty = !compositorOnly &&
+                        (paintInvalidationSignal || _lastPaintTree == null || forcePaintRebuild);
 
-                    if (isPaintDirty)
+                    if (compositorOnly)
+                    {
+                        // Re-layerize the existing paint tree with updated animated
+                        // style values. Animated transforms/opacities/filters are
+                        // picked up from styles → CssComputed in the layerizer.
+                        var layerization = _paintTreeLayerizer.Layerize(_lastPaintTree, styles);
+                        _lastCompositedLayers = layerization.Layers;
+                        LastPromotedLayerCount = layerization.PromotedLayerCount;
+                        _lastDamageRegions = Array.Empty<SKRect>();
+                        _paintTreeRebuildReason = PaintTreeRebuildReason.None;
+                    }
+                    else if (isPaintDirty)
                     {
                         pipelineContext.DirtyFlags.InvalidatePaint();
                         EngineLogCompat.Debug($"[SkiaDomRenderer] Invoke NewPaintTreeBuilder... Root={root.GetType().Name} BoxCount={_boxes.Count}");
@@ -763,6 +791,12 @@ namespace FenBrowser.FenEngine.Rendering
                         _lastPaintTree = paintTree;
                         _lastImageCacheVersion = ImageLoader.CacheVersion;
                         rebuiltPaintTree = true;
+
+                        // Phase 4: classify why the paint tree was rebuilt.
+                        _paintTreeRebuildReason = ClassifyPaintTreeRebuildReason(
+                            invalidationReason, forcePaintRebuild,
+                            ImageLoader.CacheVersion != _lastImageCacheVersion,
+                            isLayoutDirty);
 
                         var layerization = _paintTreeLayerizer.Layerize(_lastPaintTree, styles);
                         _lastCompositedLayers = layerization.Layers;
@@ -836,7 +870,10 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                     else
                     {
-                        // Paint tree is clean, but the viewport may have scrolled.
+                        // Paint tree is clean (no dirty flags, no invalidation that
+                        // requires a rebuild). Reuse the prior tree as-is.
+                        _paintTreeRebuildReason = PaintTreeRebuildReason.None;
+                        // The viewport may have scrolled, though.
                         // Compute scroll-induced damage strips so that the newly
                         // exposed edge band gets repainted on top of the (now
                         // correctly-shifted) seed image.  Without this, a
@@ -1347,6 +1384,27 @@ namespace FenBrowser.FenEngine.Rendering
                     !string.IsNullOrWhiteSpace(style.BackgroundImage));
         }
 
+        /// <summary>
+        /// Phase 4: classifies why the paint tree was rebuilt based on invalidation
+        /// reason and dirty flags. Used to populate telemetry so we can prove that
+        /// compositor-only frames (transform/opacity) do not rebuild the paint tree.
+        /// </summary>
+        private static PaintTreeRebuildReason ClassifyPaintTreeRebuildReason(
+            RenderFrameInvalidationReason invalidationReason,
+            bool forcePaintRebuild,
+            bool imageCacheChanged,
+            bool isLayoutDirty)
+        {
+            if (forcePaintRebuild) return PaintTreeRebuildReason.StabilityForced;
+            if ((invalidationReason & RenderFrameInvalidationReason.Navigation) != 0) return PaintTreeRebuildReason.Navigation;
+            if ((invalidationReason & RenderFrameInvalidationReason.Dom) != 0) return PaintTreeRebuildReason.StructuralPaintChange;
+            if (imageCacheChanged) return PaintTreeRebuildReason.ImageCacheChange;
+            if (isLayoutDirty || (invalidationReason & RenderFrameInvalidationReason.Layout) != 0) return PaintTreeRebuildReason.LayoutChanged;
+            if ((invalidationReason & RenderFrameInvalidationReason.Style) != 0) return PaintTreeRebuildReason.StyleChange;
+            if ((invalidationReason & RenderFrameInvalidationReason.Paint) != 0) return PaintTreeRebuildReason.PaintOnly;
+            return PaintTreeRebuildReason.None;
+        }
+
         private RenderFrameTelemetry CreateTelemetry(
             string baseUrl,
             string requestedBy,
@@ -1393,6 +1451,7 @@ namespace FenBrowser.FenEngine.Rendering
                 IncrementalLayoutRootCount = incrementalLayoutRootCount,
                 LayoutUpdated = layoutUpdated,
                 PaintTreeRebuilt = rebuiltPaintTree,
+                PaintTreeRebuildReason = _paintTreeRebuildReason,
                 BaseFrameSeeded = hasBaseFrame,
                 WatchdogTriggered = LastFrameWatchdogTriggered,
                 WatchdogReason = LastFrameWatchdogReason,

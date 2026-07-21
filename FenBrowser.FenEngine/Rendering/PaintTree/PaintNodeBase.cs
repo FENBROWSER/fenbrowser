@@ -31,6 +31,14 @@ namespace FenBrowser.FenEngine.Rendering
         public FenBrowser.Core.Dom.V2.Node SourceNode { get; init; }
 
         /// <summary>
+        /// Phase 4: stable identity for incremental paint-tree update.
+        /// Computed once from the owning DOM node; persists across rebuilds so
+        /// the previous frame's paint nodes can be matched to the current frame's
+        /// replacements. Zero means unassigned / synthetic node.
+        /// </summary>
+        public ulong StableNodeId { get; set; }
+
+        /// <summary>
         /// Whether this node represents a focused element.
         /// </summary>
         public bool IsFocused { get; init; }
