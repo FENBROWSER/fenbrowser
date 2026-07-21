@@ -39,6 +39,30 @@ namespace FenBrowser.FenEngine.Rendering.Core
     }
 
     /// <summary>
+    /// Phase 1: authoritative animation invalidation result. Combines the property-
+    /// specific update kind with the corresponding DOM dirty flags. Composite-only
+    /// properties carry no DOM invalidation — they must not mark elements PaintDirty.
+    /// </summary>
+    public readonly record struct AnimationInvalidationResult(
+        AnimationUpdateKind UpdateKind,
+        InvalidationKind DomInvalidation,
+        IReadOnlyList<string> ChangedProperties);
+
+    /// <summary>
+    /// Phase 2: the execution path taken for a composite animation frame. Surfaces
+    /// whether the element was promoted to a composited layer, fell back to localized
+    /// paint, or required a full paint rebuild.
+    /// </summary>
+    public enum CompositeAnimationExecutionPath
+    {
+        None,
+        CachedLayerComposite,
+        PromotedDuringFrame,
+        LocalizedPaintFallback,
+        FullPaintFallback
+    }
+
+    /// <summary>
     /// Phase 10: the concrete decision the frame watchdog took for a late frame.
     /// Replaces a bare boolean so late-frame policy can be reasoned about and tested.
     /// </summary>
@@ -50,6 +74,29 @@ namespace FenBrowser.FenEngine.Rendering.Core
         ScheduledFollowup = 3,
         ForcedFreshRaster = 4,
         AbortedInvalidFrame = 5
+    }
+
+    /// <summary>
+    /// Phase 4: classifier describing why this frame did or did not rebuild the
+    /// paint tree. Replaces the bare boolean: a frame may legitimately be presentable
+    /// without rebuilding the paint tree when no DOM/layout/style change happened
+    /// (compositor-only frames, repair tails, etc.). Telemetry surfaces the
+    /// classifier so multi-tab and animation-heavy workloads can prove that
+    /// hundreds of animation frames do not produce hundreds of paint-tree rebuilds.
+    ///</summary>
+    public enum PaintTreeRebuildReason
+    {
+        None = 0,
+        FirstFrame = 1,
+        Navigation = 2,
+        RootChanged = 3,
+        LayoutChanged = 4,
+        StructuralPaintChange = 5,
+        StyleChange = 6,
+        PaintOnly = 7,
+        ImageCacheChange = 8,
+        StabilityForced = 9,
+        DiagnosticForce = 10
     }
 
     public sealed class RenderFrameTelemetry
@@ -91,6 +138,14 @@ namespace FenBrowser.FenEngine.Rendering.Core
         public bool LayoutUpdated { get; init; }
 
         public bool PaintTreeRebuilt { get; init; }
+
+        /// <summary>
+        /// Phase 4: classifies the cause of any paint-tree rebuild — when
+        /// <see cref="PaintTreeRebuilt"/> is true, this tells callers WHY; when
+        /// false, this tells callers that the prior paint tree was intentionally
+        /// preserved (compositor-only update, scroll-driven re-layerization, etc.).
+        ///</summary>
+        public PaintTreeRebuildReason PaintTreeRebuildReason { get; init; }
 
         public bool BaseFrameSeeded { get; init; }
 

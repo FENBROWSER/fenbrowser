@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.Rendering.Core;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -49,7 +50,21 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public AnimationUpdateKind UpdateKind { get; set; }
 
+        /// <summary>
+        /// Phase 1: DOM dirty flags derived from the authoritative classification.
+        /// Composite-only properties carry InvalidationKind.None — they must not
+        /// cause PaintDirty or ChildPaintDirty to be set on any element.
+        /// </summary>
+        public InvalidationKind DomInvalidation { get; set; }
+
         public List<string> ChangedProperties { get; set; }
+
+        /// <summary>
+        /// Phase 1: per-document monotonic animation generation. Incremented only
+        /// when a visible animation value actually changes. Used by the host to
+        /// detect whether animation state is newer than the last rendered frame.
+        /// </summary>
+        public long Generation { get; set; }
     }
 
     /// <summary>
@@ -157,6 +172,28 @@ namespace FenBrowser.FenEngine.Rendering
         private bool _isRunning = false;
         private System.Threading.Timer _timer;
         private const int FrameIntervalMs = 16; // ~60fps
+
+        // Phase 1: per-document animation generation. Incremented only when a visible
+        // animation value actually changes on an element belonging to that document.
+        // Used by the host to detect whether animation state is newer than the last
+        // rendered frame without scanning all active elements.
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<Document, long> _documentAnimationGenerations = new();
+
+        /// <summary>
+        /// Phase 1: returns the current animation generation for a document.
+        /// Incremented monotonically each time a visible animation value changes.
+        /// </summary>
+        public long GetDocumentGeneration(Document doc)
+        {
+            if (doc == null) return 0;
+            return _documentAnimationGenerations.TryGetValue(doc, out var gen) ? gen : 0;
+        }
+
+        private long IncrementDocumentGeneration(Document doc)
+        {
+            if (doc == null) return 0;
+            return _documentAnimationGenerations.AddOrUpdate(doc, 1, (_, v) => v + 1);
+        }
 
         // Scroll-driven animation state
         private readonly Dictionary<string, ScrollTimelineRegistration> _scrollTimelines = new(StringComparer.Ordinal);
@@ -1001,6 +1038,49 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         /// <summary>
+        /// Phase 1: authoritative single-point classification of animation properties.
+        /// Returns the AnimationUpdateKind AND the correct DOM InvalidationKind.
+        /// Composite-only properties (transform, opacity, filter, clip-path) carry
+        /// InvalidationKind.None — they must NOT mark elements PaintDirty.
+        /// Paint properties carry Paint. Layout properties carry Layout|Paint.
+        /// </summary>
+        public static AnimationInvalidationResult ClassifyAnimationProperties(
+            IEnumerable<string> properties)
+        {
+            AnimationUpdateKind updateKind = AnimationUpdateKind.None;
+            InvalidationKind domInvalidation = InvalidationKind.None;
+            var changed = new List<string>();
+
+            foreach (var rawProperty in properties ?? Array.Empty<string>())
+            {
+                if (string.IsNullOrWhiteSpace(rawProperty))
+                    continue;
+
+                var property = rawProperty.Trim();
+                changed.Add(property);
+
+                var kind = ClassifyAnimationUpdateKind(property);
+                updateKind |= kind;
+
+                if ((kind & AnimationUpdateKind.Layout) != 0)
+                {
+                    domInvalidation |= InvalidationKind.Layout | InvalidationKind.Paint;
+                }
+                else if ((kind & AnimationUpdateKind.Paint) != 0)
+                {
+                    domInvalidation |= InvalidationKind.Paint;
+                }
+
+                // Composite-only properties intentionally add no DOM dirty flags.
+            }
+
+            return new AnimationInvalidationResult(
+                updateKind,
+                domInvalidation,
+                changed);
+        }
+
+        /// <summary>
         /// Phase 3: classify a single animated property into the cheapest correct
         /// update kind. Layout-affecting wins over paint, paint wins over composite.
         /// Unknown visual properties default to Paint (never silently reduced to a
@@ -1087,6 +1167,7 @@ namespace FenBrowser.FenEngine.Rendering
                         Element = element,
                         OwnerDocument = element.OwnerDocument,
                         Invalidation = InvalidationKind.None,
+                        DomInvalidation = InvalidationKind.None,
                         ChangedProperties = new List<string>()
                     };
                     notifications[element] = ev;
@@ -1095,8 +1176,13 @@ namespace FenBrowser.FenEngine.Rendering
                 ev.Invalidation |= invalidation;
                 if (properties != null)
                 {
-                    ev.UpdateKind |= DetermineAnimationUpdateKind(properties);
-                    foreach (var p in properties)
+                    // Phase 1: use authoritative classification for both UpdateKind
+                    // and DomInvalidation. Composite-only properties must not carry
+                    // Paint in DomInvalidation.
+                    var classification = ClassifyAnimationProperties(properties);
+                    ev.UpdateKind |= classification.UpdateKind;
+                    ev.DomInvalidation |= classification.DomInvalidation;
+                    foreach (var p in classification.ChangedProperties)
                     {
                         if (!ev.ChangedProperties.Contains(p))
                         {
@@ -1141,17 +1227,18 @@ namespace FenBrowser.FenEngine.Rendering
                             {
                                 if (ApplyAnimationFrame(element, anim, 0))
                                 {
-                                    NotifyElement(element, DetermineInvalidationKind(anim.ComputedProperties.Keys), anim.ComputedProperties.Keys);
+                                    var classification = ClassifyAnimationProperties(anim.ComputedProperties.Keys);
+                                    NotifyElement(element, classification.DomInvalidation, classification.ChangedProperties);
                                 }
                             }
                             continue;
                         }
-                        
+
                         elapsed -= anim.DelayMs;
                         double iterationProgress = anim.DurationMs > 0 ? elapsed / anim.DurationMs : 1;
                         int iteration = (int)Math.Floor(iterationProgress);
                         double progress = iterationProgress - iteration;
-                        
+
                         if (anim.IterationCount >= 0 && iteration >= anim.IterationCount)
                         {
                             anim.IsComplete = true;
@@ -1159,14 +1246,15 @@ namespace FenBrowser.FenEngine.Rendering
                             {
                                 if (ApplyAnimationFrame(element, anim, 100))
                                 {
-                                    NotifyElement(element, DetermineInvalidationKind(anim.ComputedProperties.Keys), anim.ComputedProperties.Keys);
+                                    var classification = ClassifyAnimationProperties(anim.ComputedProperties.Keys);
+                                    NotifyElement(element, classification.DomInvalidation, classification.ChangedProperties);
                                 }
                             }
                             toRemove.Add((element, anim));
                             OnAnimationEnd?.Invoke(element, anim.AnimationName);
                             continue;
                         }
-                        
+
                         anim.CurrentIteration = iteration;
                         bool reverse = false;
                         switch (anim.Direction)
@@ -1175,12 +1263,13 @@ namespace FenBrowser.FenEngine.Rendering
                             case "alternate": reverse = iteration % 2 == 1; break;
                             case "alternate-reverse": reverse = iteration % 2 == 0; break;
                         }
-                        
+
                         if (reverse) progress = 1 - progress;
                         progress = ApplyEasing(progress, anim.TimingFunction);
                         if (ApplyAnimationFrame(element, anim, progress * 100))
                         {
-                            NotifyElement(element, DetermineInvalidationKind(anim.ComputedProperties.Keys), anim.ComputedProperties.Keys);
+                            var classification = ClassifyAnimationProperties(anim.ComputedProperties.Keys);
+                            NotifyElement(element, classification.DomInvalidation, classification.ChangedProperties);
                         }
                     }
                 }
@@ -1234,7 +1323,14 @@ namespace FenBrowser.FenEngine.Rendering
                                 currentStyle.AnimationOverlay ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                                 currentStyle.AnimationOverlay[trans.Property] = interpolated;
                                 elementDirty = true;
-                                invalidation |= ClassifyPropertyInvalidation(trans.Property);
+                                // Phase 1: use authoritative classification. Composite-only
+                                // transitions (transform, opacity) must not mark PaintDirty.
+                                var transitionKind = ClassifyAnimationUpdateKind(trans.Property);
+                                if ((transitionKind & AnimationUpdateKind.Layout) != 0)
+                                    invalidation |= InvalidationKind.Layout | InvalidationKind.Paint;
+                                else if ((transitionKind & AnimationUpdateKind.Paint) != 0)
+                                    invalidation |= InvalidationKind.Paint;
+                                // Composite-only: no DOM invalidation.
                                 changedProps.Add(trans.Property);
                             }
                         }
@@ -1247,7 +1343,8 @@ namespace FenBrowser.FenEngine.Rendering
 
                     if (elementDirty)
                     {
-                        element.MarkDirty(invalidation);
+                        if (invalidation != InvalidationKind.None)
+                            element.MarkDirty(invalidation);
                         NotifyElement(element, invalidation, changedProps);
                     }
                 }
@@ -1266,6 +1363,14 @@ namespace FenBrowser.FenEngine.Rendering
             
             foreach (var ev in notifications.Values)
             {
+                // Phase 1: stamp the current per-document generation on the event.
+                // The host uses this to detect whether animation state is newer than
+                // the last rendered frame. Set directly since 'with' on a foreach
+                // iteration variable is not permitted.
+                if (ev.Element?.OwnerDocument != null)
+                {
+                    ev.Generation = GetDocumentGeneration(ev.Element.OwnerDocument);
+                }
                 OnAnimationFrame?.Invoke(ev);
             }
 
@@ -1287,7 +1392,19 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            element.MarkDirty(DetermineInvalidationKind(anim.ComputedProperties.Keys));
+            // Phase 1: use the authoritative classifier. Composite-only properties
+            // (transform, opacity, filter, clip-path) must NOT call MarkDirty with
+            // Paint — that would set ChildPaintDirty on every ancestor and defeat
+            // the compositor-only fast path.
+            var classification = ClassifyAnimationProperties(anim.ComputedProperties.Keys);
+            if (classification.DomInvalidation != InvalidationKind.None)
+            {
+                element.MarkDirty(classification.DomInvalidation);
+            }
+
+            // Increment per-document generation so the host can detect new work.
+            IncrementDocumentGeneration(element.OwnerDocument);
+
             return true;
         }
 

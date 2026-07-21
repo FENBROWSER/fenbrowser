@@ -508,18 +508,26 @@ namespace FenBrowser.FenEngine.Rendering
                         if (animatedProps.Count > 0 || transitionProps.Count > 0)
                         {
                             hasActiveAnimations = true;
-                            animationInvalidation |= CssAnimationEngine.DetermineInvalidationKind(
+                            // Phase 1: use authoritative classification. Map AnimationUpdateKind
+                            // to InvalidationKind for compatibility with existing layout/paint
+                            // dirty checks below. Composite-only properties add NO invalidation.
+                            var animUpdateKind = CssAnimationEngine.DetermineAnimationUpdateKind(
                                 animatedProps.Keys.Concat(transitionProps.Keys));
+                            if ((animUpdateKind & AnimationUpdateKind.Layout) != 0)
+                                animationInvalidation |= InvalidationKind.Layout | InvalidationKind.Paint;
+                            else if ((animUpdateKind & AnimationUpdateKind.Paint) != 0)
+                                animationInvalidation |= InvalidationKind.Paint;
+                            // Composite-only: no invalidation — compositor-only path stays viable.
 
                             // Create a clone for this frame to avoid persisting animated values into the base style
                             var frameStyle = style.Clone();
-                            
+
                             foreach(var kvp in transitionProps)
                                 FenBrowser.FenEngine.Rendering.Css.CssStyleApplicator.ApplyProperty(frameStyle, kvp.Key, kvp.Value);
-                                
+
                             foreach(var kvp in animatedProps)
                                 FenBrowser.FenEngine.Rendering.Css.CssStyleApplicator.ApplyProperty(frameStyle, kvp.Key, kvp.Value);
-                                
+
                             styles[elem] = frameStyle;
                         }
                     }
