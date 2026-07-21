@@ -786,16 +786,56 @@ namespace FenBrowser.FenEngine.Rendering
                     else if (isPaintDirty)
                     {
                         pipelineContext.DirtyFlags.InvalidatePaint();
-                        EngineLogCompat.Debug($"[SkiaDomRenderer] Invoke NewPaintTreeBuilder... Root={root.GetType().Name} BoxCount={_boxes.Count}");
                         var previousPaintTree = _lastPaintTree;
-                        var paintTree = NewPaintTreeBuilder.Build(
-                            root,
-                            _boxes,
-                            styles,
-                            _viewportWidth,
-                            _viewportHeight,
-                            _scrollManager,
-                            baseUrl);
+
+                        // Bottleneck 1: incremental paint subtree rebuild. When only
+                        // a small number of subtrees are paint-dirty (not layout-dirty)
+                        // and we have a retained paint tree, rebuild only the affected
+                        // subtrees and merge them into the retained tree instead of
+                        // walking the full document.
+                        var paintDirtyRoots = CollectPaintDirtyRoots(root);
+                        bool useIncrementalPaint =
+                            !forcePaintRebuild &&
+                            previousPaintTree != null &&
+                            paintDirtyRoots.Count > 0 &&
+                            paintDirtyRoots.Count <= 16 &&
+                            !isLayoutDirty &&
+                            (invalidationReason & (RenderFrameInvalidationReason.Navigation |
+                                                   RenderFrameInvalidationReason.Dom |
+                                                   RenderFrameInvalidationReason.Layout)) == 0;
+
+                        ImmutablePaintTree paintTree;
+                        if (useIncrementalPaint)
+                        {
+                            EngineLogCompat.Debug(
+                                $"[SkiaDomRenderer] Incremental paint: {paintDirtyRoots.Count} dirty roots",
+                                LogCategory.Rendering);
+                            var mergedTree = previousPaintTree;
+                            foreach (var dirtyRoot in paintDirtyRoots)
+                            {
+                                var newSubtree = NewPaintTreeBuilder.BuildSubtree(
+                                    dirtyRoot, _boxes, styles,
+                                    _viewportWidth, _viewportHeight,
+                                    _scrollManager, baseUrl);
+                                if (newSubtree.Count > 0)
+                                {
+                                    mergedTree = mergedTree.WithReplacedSubtree(
+                                        dirtyRoot, newSubtree);
+                                }
+                            }
+                            paintTree = mergedTree;
+                        }
+                        else
+                        {
+                            EngineLogCompat.Debug(
+                                $"[SkiaDomRenderer] Invoke NewPaintTreeBuilder... Root={root.GetType().Name} BoxCount={_boxes.Count}",
+                                LogCategory.Rendering);
+                            paintTree = NewPaintTreeBuilder.Build(
+                                root, _boxes, styles,
+                                _viewportWidth, _viewportHeight,
+                                _scrollManager, baseUrl);
+                        }
+
                         _lastPaintTree = paintTree;
                         _lastImageCacheVersion = ImageLoader.CacheVersion;
                         rebuiltPaintTree = true;
@@ -860,10 +900,7 @@ namespace FenBrowser.FenEngine.Rendering
                         }
 
                         // Phase 15: scope paint dirty-flag clearing to the subtrees
-                        // that were actually repainted. Collect paint-dirty leaf roots
-                        // (nodes where PaintDirty is set but ChildPaintDirty is not)
-                        // so we only walk the affected subtrees.
-                        var paintDirtyRoots = CollectPaintDirtyRoots(root);
+                        // that were actually repainted (same roots collected above).
                         if (paintDirtyRoots != null && paintDirtyRoots.Count > 0)
                         {
                             foreach (var dirtyRoot in paintDirtyRoots)

@@ -73,6 +73,64 @@ namespace FenBrowser.FenEngine.Rendering
         }
         
         /// <summary>
+        /// Bottleneck 1: returns a new <see cref="ImmutablePaintTree"/> where the
+        /// paint subtree rooted at <paramref name="sourceNode"/> is replaced with
+        /// <paramref name="newSubtreeNodes"/>. Unchanged subtrees share references
+        /// with the original tree (copy-on-write). If <paramref name="sourceNode"/>
+        /// is not found in the tree, returns this instance unchanged.
+        /// </summary>
+        public ImmutablePaintTree WithReplacedSubtree(
+            FenBrowser.Core.Dom.V2.Node sourceNode,
+            IReadOnlyList<PaintNodeBase> newSubtreeNodes)
+        {
+            if (sourceNode == null || newSubtreeNodes == null || newSubtreeNodes.Count == 0)
+                return this;
+
+            var newRoots = ReplaceInNodeList(Roots, sourceNode, newSubtreeNodes);
+            if (ReferenceEquals(newRoots, Roots))
+                return this; // No match found
+
+            return new ImmutablePaintTree(newRoots, FrameId);
+        }
+
+        private static IReadOnlyList<PaintNodeBase> ReplaceInNodeList(
+            IReadOnlyList<PaintNodeBase> nodes,
+            FenBrowser.Core.Dom.V2.Node sourceNode,
+            IReadOnlyList<PaintNodeBase> replacement)
+        {
+            if (nodes == null || nodes.Count == 0) return nodes;
+
+            for (int i = 0; i < nodes.Count; i++)
+            {
+                var node = nodes[i];
+                if (ReferenceEquals(node.SourceNode, sourceNode))
+                {
+                    // Found the exact match — replace this node's position
+                    // with the new subtree nodes.
+                    var newList = new List<PaintNodeBase>(nodes);
+                    newList.RemoveAt(i);
+                    newList.InsertRange(i, replacement);
+                    return newList;
+                }
+
+                if (node.Children != null && node.Children.Count > 0)
+                {
+                    var newChildren = ReplaceInNodeList(node.Children, sourceNode, replacement);
+                    if (!ReferenceEquals(newChildren, node.Children))
+                    {
+                        node.Children = newChildren;
+                        // Children changed — mark this position as modified.
+                        var newList = new List<PaintNodeBase>(nodes);
+                        newList[i] = node; // Same node object, children updated in-place
+                        return newList;
+                    }
+                }
+            }
+
+            return nodes;
+        }
+
+        /// <summary>
         /// Traverses the tree in paint order, invoking action for each node.
         /// </summary>
         public void Traverse(Action<PaintNodeBase> action)

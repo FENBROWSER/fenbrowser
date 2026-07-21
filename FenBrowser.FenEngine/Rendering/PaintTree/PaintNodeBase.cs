@@ -61,7 +61,13 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Child nodes in paint order.
         /// </summary>
-        public IReadOnlyList<PaintNodeBase> Children { get; init; } = System.Array.Empty<PaintNodeBase>();
+        /// <summary>
+        /// Child paint nodes in z-ordered paint sequence.
+        /// Intentionally settable (not init-only) to support copy-on-write
+        /// subtree replacement in <see cref="ImmutablePaintTree.WithReplacedSubtree"/>.
+        /// Once the tree is published, children should be treated as immutable.
+        /// </summary>
+        public IReadOnlyList<PaintNodeBase> Children { get; set; } = System.Array.Empty<PaintNodeBase>();
         
         /// <summary>
         /// Accept a visitor for double dispatch.

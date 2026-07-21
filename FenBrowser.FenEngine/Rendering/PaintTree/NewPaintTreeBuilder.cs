@@ -48,6 +48,7 @@ namespace FenBrowser.FenEngine.Rendering
         private int _frameId;
         private int _normalizedBoxRectCount;
         private int _normalizedClipRectCount;
+        internal int _nodeCount;
         
         // CSS Counters state - tracks counter values during tree traversal
         private readonly Dictionary<string, int> _counters = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -212,6 +213,38 @@ namespace FenBrowser.FenEngine.Rendering
                 });
 
             return new ImmutablePaintTree(rootNodes, frameId, nodeCount: CountPaintTreeNodes(rootNodes));
+        }
+
+        /// <summary>
+        /// Bottleneck 1: builds paint nodes for a single DOM subtree without walking
+        /// the full document. Creates a fresh builder and stacking context, calls
+        /// <see cref="BuildRecursive"/> on the subtree root, and returns the
+        /// flattened paint-order list. The caller merges these nodes into a retained
+        /// <see cref="ImmutablePaintTree"/> via <see cref="ImmutablePaintTree.WithReplacedSubtree"/>.
+        /// </summary>
+        public static IReadOnlyList<PaintNodeBase> BuildSubtree(
+            Node subtreeRoot,
+            IReadOnlyDictionary<Node, Layout.BoxModel> boxes,
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            float viewportWidth,
+            float viewportHeight,
+            Interaction.ScrollManager scrollManager,
+            string baseUri = null)
+        {
+            if (subtreeRoot == null || boxes == null || boxes.Count == 0)
+                return Array.Empty<PaintNodeBase>();
+
+            if (!boxes.TryGetValue(subtreeRoot, out _))
+                return Array.Empty<PaintNodeBase>();
+
+            var builder = new NewPaintTreeBuilder(boxes, styles, viewportWidth, viewportHeight, scrollManager, baseUri);
+            // Start a fresh counter scope — subtree rebuilds don't need the
+            // global counter accumulator from the full document build.
+            var subtreeContext = new BuilderStackingContext(subtreeRoot);
+            builder.BuildRecursive(subtreeRoot, subtreeContext, 0, null, false);
+            var flatNodes = subtreeContext.Flatten();
+            builder._nodeCount = flatNodes.Count;
+            return flatNodes;
         }
 
         /// <summary>
