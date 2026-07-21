@@ -276,6 +276,9 @@ internal static class MissingApiTracker
         {
             Sites.Clear();
             _outputRootOverrideForTests = outputRoot;
+            // Zero debounce: tests read snapshot files immediately after
+            // JS execution and must not wait for a timer to fire.
+            _debounceOverrideForTests = TimeSpan.Zero;
         }
     }
 
