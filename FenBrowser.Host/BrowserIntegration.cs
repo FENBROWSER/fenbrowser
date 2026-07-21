@@ -127,7 +127,6 @@ public class BrowserIntegration : IDisposable
     // atomically snapshots and clears pending state. Request counters for telemetry.
     private readonly FrameRequestAccumulator _frameRequestAccumulator = new();
     private Action<AnimationFrameEvent> _animationFrameHandler;
-    private bool _animationEventsDisposed;
     // Per-integration single-flight gate for animation-driven frames.
     // A global 16ms animation tick can fire many times while one frame is still
     // being rendered; we coalesce those into at most one in-flight frame plus one
@@ -155,6 +154,40 @@ public class BrowserIntegration : IDisposable
     private RenderFrameInvalidationReason _hiddenAccumulatedReasons;
     private long _hiddenAccumulatedGeneration;
     private bool _requiresVisibilitySyncFrame;
+
+    /// <summary>
+    /// Phase 6: notify the integration of a visibility change. On Hidden→Visible,
+    /// requests one synchronization frame with all accumulated dirty work.
+    /// Callers: TabManager when activating/deactivating tabs.
+    /// </summary>
+    public void SetVisibilityState(PageVisibilityState state)
+    {
+        var previous = VisibilityState;
+        if (previous == state) return;
+
+        bool wasHidden = previous == PageVisibilityState.Hidden ||
+                         previous == PageVisibilityState.Minimized ||
+                         previous == PageVisibilityState.Suspended;
+        bool isVisible = state == PageVisibilityState.Visible;
+
+        if (wasHidden && isVisible && _requiresVisibilitySyncFrame)
+        {
+            // Request one sync frame with accumulated reasons.
+            var accumulated = _hiddenAccumulatedReasons;
+            _hiddenAccumulatedReasons = RenderFrameInvalidationReason.None;
+            _requiresVisibilitySyncFrame = false;
+
+            if (accumulated != RenderFrameInvalidationReason.None)
+            {
+                RequestFrame(
+                    accumulated | RenderFrameInvalidationReason.HostRequest,
+                    "BrowserIntegration.VisibilitySync");
+            }
+        }
+
+        // Wake the engine so the sync frame is processed immediately.
+        _wakeEvent.Set();
+    }
 
     // ── Phase 2: accumulated animation work for the next frame ──
     private readonly object _animationWorkLock = new();
@@ -574,7 +607,7 @@ public class BrowserIntegration : IDisposable
 
     private void OnAnimationFrame(AnimationFrameEvent animation)
     {
-        if (_animationEventsDisposed)
+        if (Volatile.Read(ref _disposeState) != 0)
         {
             return;
         }
@@ -816,28 +849,83 @@ public class BrowserIntegration : IDisposable
 
     private void RecordThrottledBackgroundAnimation(AnimationFrameEvent animation)
     {
-        // Phase 16 / Phase 2: a background (hidden/minimized/suspended) tab must not
-        // consume a continuous animation render loop. The hard performance target is
-        // zero hidden-tab raster frames, so we request no frame here. Animation time
-        // still advances logically in the engine (CssAnimationEngine interpolates by
-        // wall clock), so when the tab is reactivated the correct interpolated state
-        // is presented without a backlog of stale frames.
-        return;
+        // Phase 6: a background (hidden/minimized/suspended) tab must not
+        // consume a continuous animation render loop. Accumulate the animation
+        // reason and update kind for the visibility-sync frame on activation.
+        // Animation time still advances logically in CssAnimationEngine, so when
+        // the tab is reactivated the correct interpolated state is presented.
+        _hiddenAccumulatedReasons |= RenderFrameInvalidationReason.Animation;
+        if ((animation.UpdateKind & AnimationUpdateKind.Paint) != 0)
+            _hiddenAccumulatedReasons |= RenderFrameInvalidationReason.Paint;
+        if ((animation.UpdateKind & AnimationUpdateKind.Layout) != 0)
+            _hiddenAccumulatedReasons |= RenderFrameInvalidationReason.Layout;
+        _hiddenAccumulatedGeneration++;
+        _requiresVisibilitySyncFrame = true;
     }
 
     public void Dispose()
     {
-        if (_animationEventsDisposed)
+        // Phase 5: idempotent disposal — only run once.
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0)
         {
             return;
         }
 
-        _animationEventsDisposed = true;
+        // 1. Stop accepting new work immediately.
+        _running = false;
+        _lifetimeCts.Cancel();
+
+        // 2. Unblock and stop the engine thread.
+        _wakeEvent.Set();
+        const int engineJoinMs = 3000;
+        if (_engineThread != null && _engineThread.IsAlive &&
+            Environment.CurrentManagedThreadId != _engineThread.ManagedThreadId)
+        {
+            if (!_engineThread.Join(engineJoinMs))
+            {
+                EngineLogBridge.Warn(
+                    $"[BrowserIntegration] Engine thread did not exit within {engineJoinMs}ms",
+                    LogCategory.Rendering);
+            }
+        }
+
+        // 3. Dispose timers.
+        _domPoller?.Dispose();
+        _domPoller = null;
+
+        // 4. Unsubscribe all events.
         if (_animationFrameHandler != null)
         {
             CssAnimationEngine.Instance.OnAnimationFrame -= _animationFrameHandler;
+            _animationFrameHandler = null;
         }
+
+        if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current != null)
+        {
+            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.FrameReceived -= OnFrameReceivedFromRenderer;
+            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.MetadataChanged -= OnMetadataChangedFromRenderer;
+        }
+
+        if (_browser?.Engine?.EventLoopCoordinator != null)
+        {
+            _browser.Engine.EventLoopCoordinator.OnWorkEnqueued -= () => _wakeEvent.Set();
+        }
+
+        // 5. Dispose rendering resources in safe order.
+        _latestSnapshot?.Frame?.Dispose();
+        _latestSnapshot = null;
+        _pendingDisposeFrame?.Dispose();
+        _pendingDisposeFrame = null;
+        _currentFrameSeedImage?.Dispose();
+        _currentFrameSeedImage = null;
+        _remoteFrameBitmap?.Dispose();
+        _remoteFrameBitmap = null;
+        _recorder?.Dispose();
     }
+
+    // Phase 5: idempotent disposal guard.
+    private int _disposeState;
+    private readonly CancellationTokenSource _lifetimeCts = new();
 
     private (int Left, int Top, int Right, int Bottom) GetViewportInsets()
     {
