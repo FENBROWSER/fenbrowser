@@ -170,6 +170,14 @@ namespace FenBrowser.FenEngine.Rendering.Core
         public double TotalDurationMs { get; init; }
 
         public float DamageAreaRatio { get; init; }
+
+        // ── Phase 2: animation telemetry ──
+        public AnimationUpdateKind RequestedAnimationUpdateKind { get; set; }
+        public int CompositeDirtyElementCount { get; set; }
+        public int PaintDirtyElementCount { get; set; }
+        public long AnimationGeneration { get; set; }
+        public CompositeAnimationExecutionPath CompositeExecutionPath { get; set; }
+        public bool DomPaintDirtyObserved { get; set; }
     }
 
     /// <summary>
@@ -221,6 +229,44 @@ namespace FenBrowser.FenEngine.Rendering.Core
         public bool EmitVerificationReport { get; set; } = false;
 
         public bool CollectAllocationTelemetry { get; set; }
+
+        // ── Phase 2: authoritative animation work passed from the host ──
+        /// <summary>
+        /// Property-specific animation update kind for this frame. Set by the host
+        /// from accumulated AnimationFrameEvents. The renderer uses this instead of
+        /// re-scanning active animations to determine the cheapest update path.
+        /// </summary>
+        public AnimationUpdateKind AnimationUpdateKind { get; set; }
+
+        /// <summary>
+        /// Elements whose animated properties are composite-only (transform, opacity,
+        /// filter, clip-path) and were dirtied by this frame's animation ticks.
+        /// </summary>
+        public IReadOnlyCollection<Element> CompositeDirtyElements { get; set; }
+
+        /// <summary>
+        /// Elements whose animated properties require paint or layout and were
+        /// dirtied by this frame's animation ticks.
+        /// </summary>
+        public IReadOnlyCollection<Element> PaintDirtyElements { get; set; }
+
+        /// <summary>
+        /// Monotonic animation generation from the owning document. Used to detect
+        /// whether animation state changed since the last rendered frame.
+        /// </summary>
+        public long AnimationGeneration { get; set; }
+
+        /// <summary>
+        /// Per-owner image cache generation at request time. The renderer compares
+        /// this against its last-rendered value to determine whether images changed.
+        /// </summary>
+        public long ImageGeneration { get; set; }
+
+        /// <summary>
+        /// Pre-computed by the host: true when ImageGeneration differs from the
+        /// last rendered image generation, avoiding a second global comparison.
+        /// </summary>
+        public bool ImageGenerationChanged { get; set; }
     }
 
     public sealed class RenderFrameResult

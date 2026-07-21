@@ -137,6 +137,15 @@ public class BrowserIntegration : IDisposable
     private DateTime _lastBackgroundAnimationFrameUtc = DateTime.MinValue;
     // Phase 8: duration of the second full-frame seed raster (when it runs).
     private long _lastSeedImageCreateMs;
+
+    // ── Phase 2: accumulated animation work for the next frame ──
+    private readonly object _animationWorkLock = new();
+    private AnimationUpdateKind _pendingAnimationUpdateKind;
+    private HashSet<Element> _pendingCompositeDirtyElements = new();
+    private HashSet<Element> _pendingAnimationPaintDirtyElements = new();
+    private long _pendingAnimationGeneration;
+    private long _lastRenderedAnimationGeneration;
+    private long _lastRenderedImageGeneration;
     // Remote frame bitmap delivered from a brokered renderer child via shared memory.
     private SKBitmap _remoteFrameBitmap;
     private float _remoteFrameScrollY;
@@ -566,6 +575,25 @@ public class BrowserIntegration : IDisposable
             return;
         }
 
+        // Phase 2: accumulate animation work for the next frame request.
+        // Composite-only animation ticks stack up their dirty elements and
+        // update kind without setting DOM paint-dirty flags; paint and layout
+        // ticks escalate accordingly. The accumulated work is consumed atomically
+        // when building the RenderFrameRequest.
+        lock (_animationWorkLock)
+        {
+            _pendingAnimationUpdateKind |= animation.UpdateKind;
+
+            if ((animation.UpdateKind & AnimationUpdateKind.Composite) != 0)
+                _pendingCompositeDirtyElements.Add(animation.Element);
+
+            if ((animation.UpdateKind & (AnimationUpdateKind.Paint | AnimationUpdateKind.Layout)) != 0)
+                _pendingAnimationPaintDirtyElements.Add(animation.Element);
+
+            _pendingAnimationGeneration =
+                Math.Max(_pendingAnimationGeneration, animation.Generation);
+        }
+
         // Phase 2: per-integration single-flight gating. If a frame is already in
         // flight for this tab, coalesce the new animation tick into one pending
         // follow-up instead of requesting another frame. This prevents a free-
@@ -686,6 +714,45 @@ public class BrowserIntegration : IDisposable
 
         return MapAnimationInvalidation(animation.Invalidation);
     }
+
+    /// <summary>
+    /// Phase 2: atomically consume accumulated animation work into an immutable
+    /// snapshot for the RenderFrameRequest. Clears accumulators so the next tick
+    /// starts fresh.
+    /// </summary>
+    private PendingAnimationFrameWork ConsumeAnimationWork()
+    {
+        lock (_animationWorkLock)
+        {
+            var work = new PendingAnimationFrameWork(
+                _pendingAnimationUpdateKind,
+                _pendingCompositeDirtyElements.Count > 0
+                    ? _pendingCompositeDirtyElements.ToArray()
+                    : Array.Empty<Element>(),
+                _pendingAnimationPaintDirtyElements.Count > 0
+                    ? _pendingAnimationPaintDirtyElements.ToArray()
+                    : Array.Empty<Element>(),
+                _pendingAnimationGeneration);
+
+            _pendingAnimationUpdateKind = AnimationUpdateKind.None;
+            _pendingCompositeDirtyElements = new HashSet<Element>();
+            _pendingAnimationPaintDirtyElements = new HashSet<Element>();
+            // Keep _pendingAnimationGeneration — it's only consumed for the
+            // follow-up comparison, not reset.
+
+            return work;
+        }
+    }
+
+    /// <summary>
+    /// Phase 2: immutable snapshot of pending animation work consumed atomically
+    /// at the start of each frame.
+    /// </summary>
+    public sealed record PendingAnimationFrameWork(
+        AnimationUpdateKind UpdateKind,
+        IReadOnlyCollection<Element> CompositeDirtyElements,
+        IReadOnlyCollection<Element> PaintDirtyElements,
+        long Generation);
 
     private void RecordThrottledBackgroundAnimation(AnimationFrameEvent animation)
     {
@@ -1981,6 +2048,11 @@ public class BrowserIntegration : IDisposable
                 {
                     using (_browser.EnterImageLoaderContext())
                     {
+                        // Phase 2: consume accumulated animation work atomically
+                        // before building the frame request.
+                        var animWork = ConsumeAnimationWork();
+                        bool imageGenChanged = ImageLoader.CacheVersion != _lastRenderedImageGeneration;
+
                         frameResult = _renderer.RenderFrame(new RenderFrameRequest
                         {
                             Root = _root,
@@ -1999,7 +2071,14 @@ public class BrowserIntegration : IDisposable
                             HasBaseFrame = canReuseBaseFrame && reusableSeedImage != null,
                             InvalidationReason = invalidationReasons,
                             RequestedBy = requestedBy,
-                            EmitVerificationReport = ShouldEmitVerificationReport(invalidationReasons)
+                            EmitVerificationReport = ShouldEmitVerificationReport(invalidationReasons),
+                            // Phase 2: pass authoritative animation work to the renderer
+                            AnimationUpdateKind = animWork.UpdateKind,
+                            CompositeDirtyElements = animWork.CompositeDirtyElements,
+                            PaintDirtyElements = animWork.PaintDirtyElements,
+                            AnimationGeneration = animWork.Generation,
+                            ImageGeneration = ImageLoader.CacheVersion,
+                            ImageGenerationChanged = imageGenChanged
                         });
                     }
                 }

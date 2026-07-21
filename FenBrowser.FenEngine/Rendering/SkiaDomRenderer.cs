@@ -116,6 +116,15 @@ namespace FenBrowser.FenEngine.Rendering
         // and CollectAllNodes every frame when nothing changed.
         private int _lastOverlayPaintTreeFrameId = -1;
         private List<InputOverlayData> _cachedOverlays;
+
+        // Phase 2: animation fields carried from RenderFrameRequest into Render.
+        private AnimationUpdateKind _requestAnimationUpdateKind;
+        private IReadOnlyCollection<Element> _requestCompositeDirtyElements;
+        private IReadOnlyCollection<Element> _requestPaintDirtyElements;
+        private long _requestAnimationGeneration;
+        private long _requestImageGeneration;
+        private bool _requestImageGenerationChanged;
+        private bool _frameWasCompositorOnly;
         
         /// <summary>
         /// Current overlays for input elements.
@@ -277,6 +286,16 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 throw new ArgumentNullException(nameof(request));
             }
+
+            // Phase 2: carry animation fields from the request into the Render method
+            // via instance fields. Render's parameter list is already large; these are
+            // frame-scoped metadata consumed during paint/raster decisions.
+            _requestAnimationUpdateKind = request.AnimationUpdateKind;
+            _requestCompositeDirtyElements = request.CompositeDirtyElements;
+            _requestPaintDirtyElements = request.PaintDirtyElements;
+            _requestAnimationGeneration = request.AnimationGeneration;
+            _requestImageGeneration = request.ImageGeneration;
+            _requestImageGenerationChanged = request.ImageGenerationChanged;
 
             Render(
                 request.Root,
@@ -743,7 +762,7 @@ namespace FenBrowser.FenEngine.Rendering
                                               || root.ChildPaintDirty
                                               || scrollAnimationActive
                                               || (animationInvalidation & InvalidationKind.Paint) != 0
-                                              || ImageLoader.CacheVersion != _lastImageCacheVersion;
+                                              || (_requestImageGenerationChanged && _requestImageGeneration != _lastImageCacheVersion);
                     // Phase 5: an animated GIF in one document must NOT mark every
                     // other document's paint tree dirty. Animated-image playback is
                     // already driven per owning document through
@@ -761,14 +780,23 @@ namespace FenBrowser.FenEngine.Rendering
                     // changed and the paint tree is structurally unchanged, skip
                     // NewPaintTreeBuilder.Build entirely — re-layerize from the
                     // existing paint tree with updated style values instead.
+                    // Phase 2: use the host-provided authoritative animation update
+                    // kind. The renderer no longer recalculates animation invalidation
+                    // by scanning active animation elements — that classification is
+                    // done once by CssAnimationEngine and forwarded by the host.
+                    bool structuralInvalidation =
+                        (invalidationReason & ~RenderFrameInvalidationReason.Animation) != 0;
                     bool compositorOnly =
                         _lastPaintTree != null &&
                         _lastCompositedLayers.Count > 0 &&
-                        (invalidationReason & ~RenderFrameInvalidationReason.Animation) == 0 &&
-                        (animationInvalidation & InvalidationKind.Paint) == 0 &&
-                        (animationInvalidation & InvalidationKind.Layout) == 0 &&
+                        _requestAnimationUpdateKind != AnimationUpdateKind.None &&
+                        !structuralInvalidation &&
+                        (_requestAnimationUpdateKind &
+                            (AnimationUpdateKind.Paint | AnimationUpdateKind.Layout)) == 0 &&
                         !scrollAnimationActive &&
-                        !root.PaintDirty && !root.ChildPaintDirty;
+                        !root.PaintDirty && !root.ChildPaintDirty &&
+                        !root.LayoutDirty && !root.ChildLayoutDirty;
+                    _frameWasCompositorOnly = compositorOnly;
                     bool isPaintDirty = !compositorOnly &&
                         (paintInvalidationSignal || _lastPaintTree == null || forcePaintRebuild);
 
@@ -845,13 +873,18 @@ namespace FenBrowser.FenEngine.Rendering
                         }
 
                         _lastPaintTree = paintTree;
-                        _lastImageCacheVersion = ImageLoader.CacheVersion;
+                        // Phase 11: capture image-changed BEFORE updating the cached version.
+                        bool imageChanged = _requestImageGenerationChanged ||
+                            (_requestImageGeneration > 0 && _requestImageGeneration != _lastImageCacheVersion);
+                        _lastImageCacheVersion = _requestImageGeneration > 0
+                            ? _requestImageGeneration
+                            : ImageLoader.CacheVersion;
                         rebuiltPaintTree = true;
 
                         // Phase 4: classify why the paint tree was rebuilt.
                         _paintTreeRebuildReason = ClassifyPaintTreeRebuildReason(
                             invalidationReason, forcePaintRebuild,
-                            ImageLoader.CacheVersion != _lastImageCacheVersion,
+                            imageChanged,
                             isLayoutDirty);
 
                         var layerization = _paintTreeLayerizer.Layerize(_lastPaintTree, styles);
@@ -1213,6 +1246,30 @@ namespace FenBrowser.FenEngine.Rendering
                         RenderPipeline.LastFrameDuration.TotalMilliseconds > 0
                             ? RenderPipeline.LastFrameDuration.TotalMilliseconds
                             : frameWatchdog.Elapsed.TotalMilliseconds);
+
+                    // Phase 2: populate animation telemetry from instance fields
+                    // (carried from RenderFrameRequest via RenderFrame).
+                    if (LastFrameTelemetry != null)
+                    {
+                        LastFrameTelemetry.RequestedAnimationUpdateKind =
+                            _requestAnimationUpdateKind;
+                        LastFrameTelemetry.CompositeDirtyElementCount =
+                            _requestCompositeDirtyElements?.Count ?? 0;
+                        LastFrameTelemetry.PaintDirtyElementCount =
+                            _requestPaintDirtyElements?.Count ?? 0;
+                        LastFrameTelemetry.AnimationGeneration =
+                            _requestAnimationGeneration;
+                        LastFrameTelemetry.DomPaintDirtyObserved =
+                            root.PaintDirty || root.ChildPaintDirty;
+                        LastFrameTelemetry.CompositeExecutionPath = _frameWasCompositorOnly
+                            ? CompositeAnimationExecutionPath.CachedLayerComposite
+                            : (_requestAnimationUpdateKind != AnimationUpdateKind.None &&
+                               (_requestAnimationUpdateKind & AnimationUpdateKind.Composite) != 0)
+                                ? (LastPromotedLayerCount > 0
+                                    ? CompositeAnimationExecutionPath.PromotedDuringFrame
+                                    : CompositeAnimationExecutionPath.LocalizedPaintFallback)
+                                : CompositeAnimationExecutionPath.None;
+                    }
                 }
             }
             catch (Exception ex)
