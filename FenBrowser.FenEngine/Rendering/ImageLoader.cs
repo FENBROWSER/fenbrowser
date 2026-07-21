@@ -48,6 +48,10 @@ namespace FenBrowser.FenEngine.Rendering
         public long ByteSize;
         public DateTime LastAccessed;
 
+        // Phase 8: tracks the last known frame index so the GIF timer only repaints
+        // when the frame actually changes, not on every tick.
+        public int CurrentFrameIndex;
+
         public SKBitmap GetCurrentFrame()
         {
             if (Frames == null || Frames.Length == 0) return null;
@@ -59,8 +63,13 @@ namespace FenBrowser.FenEngine.Rendering
             for (int i = 0; i < Frames.Length; i++)
             {
                 accum += Durations[i];
-                if (pos < accum) return Frames[i];
+                if (pos < accum)
+                {
+                    CurrentFrameIndex = i;
+                    return Frames[i];
+                }
             }
+            CurrentFrameIndex = Frames.Length - 1;
             return Frames[Frames.Length - 1];
         }
     }
@@ -1997,6 +2006,9 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (_gifAnimationTimer != null) return;
 
+                // Phase 8: schedule to the nearest frame deadline instead of a fixed
+                // 50ms tick. The callback computes the actual next deadline from all
+                // active animated GIFs and reschedules the timer accordingly.
                 _gifAnimationTimer = new Timer(_ =>
                 {
                     if (_animatedGifs.IsEmpty)
@@ -2004,12 +2016,74 @@ namespace FenBrowser.FenEngine.Rendering
                         StopGifAnimationTimer();
                         return;
                     }
-                    // Repaint only the owners that actually display animated GIFs.
-                    // Phase 5: do NOT call the process-global RequestRepaint, which
-                    // would wake an unrelated tab. Fall back to the global callback
-                    // only when no owner-scoped context is registered.
-                    RepaintAnimatedImageOwners();
-                }, null, 50, 50); // ~20fps tick
+
+                    bool anyFrameChanged = false;
+                    long nowTicks = DateTime.UtcNow.Ticks;
+                    long nearestDeadlineTicks = long.MaxValue;
+
+                    foreach (var (cacheKey, anim) in _animatedGifs)
+                    {
+                        if (anim.Frames == null || anim.Frames.Length == 0) continue;
+
+                        // Phase 8: compute current frame by elapsed time, not tick count.
+                        long elapsedMs = Environment.TickCount64 - anim.StartTick;
+                        int totalFrames = anim.Frames.Length;
+                        double totalDurationMs = anim.TotalDuration;
+
+                        // Which frame should be displayed now?
+                        double posInCycle = totalDurationMs > 0
+                            ? elapsedMs % totalDurationMs
+                            : 0;
+                        double accumulated = 0;
+                        int newFrameIndex = 0;
+                        for (int i = 0; i < totalFrames; i++)
+                        {
+                            accumulated += Math.Max(anim.Durations[i], 20);
+                            if (posInCycle < accumulated)
+                            {
+                                newFrameIndex = i;
+                                break;
+                            }
+                        }
+
+                        // Only repaint if the frame index actually changed.
+                        bool frameChanged = newFrameIndex != anim.CurrentFrameIndex;
+                        anim.CurrentFrameIndex = newFrameIndex;
+
+                        if (frameChanged)
+                        {
+                            anyFrameChanged = true;
+                        }
+
+                        // Compute next deadline for this GIF.
+                        double remainingInFrame = accumulated - posInCycle;
+                        long frameEndTicks = nowTicks +
+                            (long)(remainingInFrame * TimeSpan.TicksPerMillisecond);
+                        if (frameEndTicks < nearestDeadlineTicks)
+                            nearestDeadlineTicks = frameEndTicks;
+                    }
+
+                    // Only repaint when at least one GIF actually changed frames.
+                    if (anyFrameChanged)
+                    {
+                        RepaintAnimatedImageOwners();
+                    }
+
+                    // Reschedule to nearest deadline (clamp to 16ms-200ms range).
+                    long delayMs = nearestDeadlineTicks == long.MaxValue
+                        ? 50
+                        : Math.Max(16, Math.Min(200,
+                            (nearestDeadlineTicks - DateTime.UtcNow.Ticks) / TimeSpan.TicksPerMillisecond));
+
+                    lock (_gifTimerLock)
+                    {
+                        if (_gifAnimationTimer != null)
+                        {
+                            try { _gifAnimationTimer.Change(delayMs, Timeout.Infinite); }
+                            catch { }
+                        }
+                    }
+                }, null, 50, Timeout.Infinite); // One-shot; rescheduled after each tick.
             }
         }
 
