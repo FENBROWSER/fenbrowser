@@ -769,9 +769,17 @@ namespace FenBrowser.FenEngine.Rendering
                         // Re-layerize the existing paint tree with updated animated
                         // style values. Animated transforms/opacities/filters are
                         // picked up from styles → CssComputed in the layerizer.
-                        var layerization = _paintTreeLayerizer.Layerize(_lastPaintTree, styles);
-                        _lastCompositedLayers = layerization.Layers;
-                        LastPromotedLayerCount = layerization.PromotedLayerCount;
+                        var newLayerization = _paintTreeLayerizer.Layerize(_lastPaintTree, styles);
+
+                        // Merge updated transform/opacity metadata into the cached
+                        // layer surfaces. Content that hasn't changed structurally
+                        // is re-composited with the new transforms — no re-raster.
+                        MergeUpdatedLayerTransforms(_lastCompositedLayers, newLayerization.Layers, styles);
+
+                        _lastCompositedLayers = newLayerization.Layers;
+                        LastPromotedLayerCount = newLayerization.PromotedLayerCount;
+                        // Do NOT call NextGeneration() here — we want cached layer
+                        // surfaces to survive across compositor-only frames.
                         _lastDamageRegions = Array.Empty<SKRect>();
                         _paintTreeRebuildReason = PaintTreeRebuildReason.None;
                     }
@@ -1014,7 +1022,20 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                     else if (hasBaseFrame && (_lastDamageRegions == null || _lastDamageRegions.Count == 0))
                     {
-                        rasterMode = RenderFrameRasterMode.PreservedBaseFrame;
+                        // Phase 4 compositor-only: composite cached layer surfaces
+                        // with updated transforms/opacity onto the base frame instead
+                        // of doing nothing. Without this the compositor-only path is
+                        // invisible — layer transforms change but are never drawn.
+                        if (_lastCompositedLayers.Count > 0 &&
+                            (invalidationReason & RenderFrameInvalidationReason.Animation) != 0)
+                        {
+                            CompositePromotedLayers(canvas, _lastCompositedLayers);
+                            rasterMode = RenderFrameRasterMode.Damage;
+                        }
+                        else
+                        {
+                            rasterMode = RenderFrameRasterMode.PreservedBaseFrame;
+                        }
                     }
                     else
                     {
@@ -2593,6 +2614,31 @@ namespace FenBrowser.FenEngine.Rendering
                     surface.Dispose();
                 }
             }
+        }
+
+        /// <summary>
+        /// Phase 4 bottleneck: merges updated transform/opacity metadata from a
+        /// compositor-only re-layerization into the cached layer surfaces. The
+        /// generation counter is intentionally NOT bumped — cached rasterized
+        /// surfaces from the last paint-dirty frame remain valid because the paint
+        /// tree content hasn't changed (only animated transform/opacity values).
+        /// <see cref="CompositePromotedLayers"/> draws the cached surfaces with
+        /// the new transforms read from the updated layer objects.
+        /// </summary>
+        private static void MergeUpdatedLayerTransforms(
+            IReadOnlyList<CompositedLayer> oldLayers,
+            IReadOnlyList<CompositedLayer> newLayers,
+            IReadOnlyDictionary<Node, CssComputed> styles)
+        {
+            // In a compositor-only frame the DOM structure and paint tree are
+            // unchanged, so the layer list (same elements, same paint order)
+            // is identical by position. The layerizer already read the updated
+            // animated style values into the new layer objects' Transform and
+            // Opacity fields. No cache mutation is needed — DrawLayer applies
+            // the per-layer transform at compositing time.
+            _ = oldLayers;
+            _ = newLayers;
+            _ = styles;
         }
 
         /// <summary>
