@@ -70,10 +70,17 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
     private readonly string _basePath;
     private readonly int _maxFileSizeBytes;
     private readonly int _maxArchivedFiles;
+    private readonly int _flushEveryN;
+    private readonly int _flushIntervalMs;
 
     private string _currentPath;
     private long _currentFileSize;
     private int _rotationIndex;
+
+    private FileStream _stream;
+    private StreamWriter _writer;
+    private int _eventsSinceFlush;
+    private long _lastFlushTicks;
 
     private int _failureCount;
     private volatile string _lastFailureType;
@@ -82,11 +89,15 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
     protected BufferedFileLogSink(
         string baseFilePath,
         int maxFileSizeBytes = 10 * 1024 * 1024,
-        int maxArchivedFiles = 10)
+        int maxArchivedFiles = 10,
+        int flushEveryN = 200,
+        int flushIntervalMs = 500)
     {
         _basePath = baseFilePath ?? throw new ArgumentNullException(nameof(baseFilePath));
         _maxFileSizeBytes = Math.Max(1024 * 1024, maxFileSizeBytes);
         _maxArchivedFiles = Math.Max(1, maxArchivedFiles);
+        _flushEveryN = Math.Max(10, flushEveryN);
+        _flushIntervalMs = Math.Max(50, flushIntervalMs);
 
         var dir = Path.GetDirectoryName(_basePath);
         if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
@@ -95,6 +106,7 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
         }
 
         ResolveCurrentPath();
+        EnsureStreamLocked();
     }
 
     public bool IsHealthy => _failureCount < 3;
@@ -118,14 +130,30 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
 
         lock (_lock)
         {
+            if (_writer == null)
+            {
+                return;
+            }
+
             try
             {
-                AppendLineToFile(json);
-
+                _writer.Write(json);
+                _writer.Write('\n');
                 _currentFileSize += System.Text.Encoding.UTF8.GetByteCount(json) + 1;
+                _eventsSinceFlush++;
+
+                var nowTicks = Stopwatch.GetTimestamp();
+                var elapsedMs = (nowTicks - _lastFlushTicks) * 1000L / Stopwatch.Frequency;
+                var isHighSeverity = evt.Header.Severity >= LogSeverity.Error;
+
+                if (isHighSeverity || _eventsSinceFlush >= _flushEveryN || elapsedMs >= _flushIntervalMs)
+                {
+                    FlushLocked();
+                }
 
                 if (_currentFileSize >= _maxFileSizeBytes)
                 {
+                    FlushLocked();
                     RotateLocked();
                 }
 
@@ -134,37 +162,69 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
             catch (Exception ex)
             {
                 MarkFailure(ex);
+                CloseStreamLocked();
             }
         }
     }
 
     public void Dispose()
     {
-        // Nothing to dispose — streams are short-lived per-write.
+        lock (_lock)
+        {
+            try { FlushLocked(); } catch { }
+            CloseStreamLocked();
+        }
     }
 
     public bool Flush(TimeSpan timeout)
     {
-        // Each write already flushes; nothing to do.
-        return true;
+        lock (_lock)
+        {
+            if (_writer == null) return true;
+            try { FlushLocked(); return true; }
+            catch { return false; }
+        }
     }
 
     protected abstract string FormatEvent(in EngineLogEvent evt);
 
-    private void AppendLineToFile(string json)
+    private void EnsureStreamLocked()
     {
-        using var stream = new FileStream(
-            _currentPath,
-            FileMode.Append,
-            FileAccess.Write,
-            FileShare.ReadWrite | FileShare.Delete,
-            bufferSize: 4096);
+        if (_writer != null) return;
+        try
+        {
+            _stream = new FileStream(
+                _currentPath,
+                FileMode.Append,
+                FileAccess.Write,
+                FileShare.ReadWrite | FileShare.Delete,
+                bufferSize: 65536);
 
-        using var writer = new StreamWriter(stream, System.Text.Encoding.UTF8, 4096);
-        writer.Write(json);
-        writer.Write('\n');
-        writer.Flush();
-        stream.Flush();
+            _writer = new StreamWriter(_stream, System.Text.Encoding.UTF8, 65536);
+            _currentFileSize = _stream.Length;
+            _eventsSinceFlush = 0;
+            _lastFlushTicks = Stopwatch.GetTimestamp();
+        }
+        catch (Exception ex)
+        {
+            MarkFailure(ex);
+        }
+    }
+
+    private void FlushLocked()
+    {
+        _writer?.Flush();
+        _stream?.Flush();
+        _eventsSinceFlush = 0;
+        _lastFlushTicks = Stopwatch.GetTimestamp();
+    }
+
+    private void CloseStreamLocked()
+    {
+        try { _writer?.Dispose(); } catch { }
+        try { _stream?.Dispose(); } catch { }
+        _writer = null;
+        _stream = null;
     }
 
     private void ResolveCurrentPath()
@@ -184,10 +244,12 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
 
     private void RotateLocked()
     {
+        CloseStreamLocked();
         _rotationIndex++;
         ResolveCurrentPath();
         _currentFileSize = 0;
         DeleteExcessArchives(_maxArchivedFiles - 1);
+        EnsureStreamLocked();
     }
 
     private void DeleteExcessArchives(int maxKeep)
@@ -209,13 +271,10 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
 
             for (var i = maxKeep; i < files.Count; i++)
             {
-                try { File.Delete(files[i]); } catch { /* best-effort */ }
+                try { File.Delete(files[i]); } catch { }
             }
         }
-        catch
-        {
-            // best-effort
-        }
+        catch { }
     }
 
     private void MarkFailure(Exception ex)
@@ -233,10 +292,7 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
                     $"[EngineLog] File sink failure #{fc} (path={_currentPath ?? "?"}): " +
                     $"{ex.GetType().Name}: {ex.Message}");
             }
-            catch
-            {
-                // absolute last resort
-            }
+            catch { }
         }
     }
 }

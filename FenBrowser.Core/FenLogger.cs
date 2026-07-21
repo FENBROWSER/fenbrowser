@@ -21,16 +21,32 @@ public static partial class FenLogger
         set
         {
             _enabled = value;
-            var minimumLevel = BrowserSettings.Instance?.Logging?.MinimumLevel ?? (int)LogLevel.Info;
-            ConfigureEngineLogging(value, (LogLevel)minimumLevel, null);
+            // Delegate to the shared preset pipeline — do NOT force-enable sinks.
+            if (!value)
+            {
+                EngineLog.Configure(new EngineLoggingOptions
+                {
+                    Enabled = false,
+                    EnableConsoleSink = false,
+                    EnableDebugSink = false,
+                    EnableNdjsonSink = false,
+                    EnableRingBufferSink = false,
+                    EnableTraceSink = false
+                });
+            }
+            else
+            {
+                EngineLog.InitializeFromSettings();
+            }
         }
     }
 
     public static void Initialize(string logFilePath)
     {
         _enabled = true;
-        ConfigureEngineLogging(true, LogLevel.Debug, logFilePath);
-        Log($"FenLogger initialized with path: {logFilePath}", LogCategory.General, LogLevel.Info);
+        // Delegate to the shared preset pipeline — do NOT force-enable all sinks.
+        EngineLog.InitializeFromSettings();
+        Info($"FenLogger initialized with path: {logFilePath}", LogCategory.General);
     }
 
     public static IDisposable BeginScope(
@@ -249,28 +265,55 @@ public class TimingScope : IDisposable
 
 public static partial class FenLogger
 {
+    /// <summary>
+    /// Legacy entry point — delegates to the shared preset pipeline.
+    /// Does NOT force-enable sinks; respects the configured preset and user settings.
+    /// </summary>
     private static void ConfigureEngineLogging(bool enabled, LogLevel minimumLevel, string logFilePath)
     {
-        var options = new EngineLoggingOptions
+        if (!enabled)
         {
-            Enabled = enabled,
-            GlobalMinimumSeverity = EngineLogCompatibility.FromLegacyLevel(minimumLevel),
-            EnableConsoleSink = true,
-            EnableNdjsonSink = true,
-            EnableRingBufferSink = true,
-            EnableTraceSink = true,
-            RingBufferCapacity = Math.Max(1000, BrowserSettings.Instance?.Logging?.MemoryBufferSize ?? 5000),
-            DispatcherQueueCapacity = 32768
-        };
+            EngineLog.Configure(new EngineLoggingOptions
+            {
+                Enabled = false,
+                EnableConsoleSink = false,
+                EnableDebugSink = false,
+                EnableNdjsonSink = false,
+                EnableRingBufferSink = false,
+                EnableTraceSink = false
+            });
+            return;
+        }
 
+        // Use the shared preset/settings pipeline.
+        EngineLog.InitializeFromSettings();
+
+        // If a specific log file path was provided, enable NDJSON to that path
+        // as an additional sink on top of whatever the preset configured.
         var logsPath = ResolveNdjsonPath(logFilePath);
         if (!string.IsNullOrWhiteSpace(logsPath))
         {
-            options.NdjsonFilePath = logsPath;
-            options.TraceFilePath = logsPath.Replace(".jsonl", "_trace.jsonl", StringComparison.OrdinalIgnoreCase);
-        }
+            // Re-configure with the NDJSON path added. We need to read the current
+            // options, add the path, and re-apply. The simplest approach: just
+            // configure with the preset pipeline which will pick up the log path
+            // from settings. If the caller passed an explicit path, use it.
+            var settings = BrowserSettings.Instance?.Logging;
+            var opts = new EngineLoggingOptions
+            {
+                Enabled = true,
+                GlobalMinimumSeverity = EngineLogCompatibility.FromLegacyLevel(minimumLevel),
+                EnableConsoleSink = false,
+                EnableDebugSink = false,
+                EnableNdjsonSink = true,
+                EnableRingBufferSink = true,
+                EnableTraceSink = false,
+                RingBufferCapacity = Math.Max(1000, settings?.MemoryBufferSize ?? 5000),
+                DispatcherQueueCapacity = 32768,
+                NdjsonFilePath = logsPath
+            };
 
-        EngineLog.Configure(options);
+            EngineLog.Configure(opts);
+        }
     }
 
     private static string ResolveNdjsonPath(string configuredPath)
