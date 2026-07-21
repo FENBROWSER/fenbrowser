@@ -4,6 +4,18 @@ using System.Diagnostics.CodeAnalysis;
 
 namespace FenBrowser.Core.Logging;
 
+/// <summary>
+/// Log severity levels for engine diagnostics.
+///
+/// Policy:
+///   Fatal  — Process or critical subsystem cannot safely continue.
+///   Error  — Requested operation failed and was not recovered.
+///   Warn   — Behaviour degraded, fallback used, or significant
+///            implementation gap encountered. Emit once per cause.
+///   Info   — Low-frequency lifecycle milestone (nav start/finish).
+///   Debug  — Developer investigation details and non-fatal gaps.
+///   Trace  — High-frequency per-frame/per-node/per-property data.
+/// </summary>
 public enum LogSeverity
 {
     Trace = 0,
@@ -14,6 +26,20 @@ public enum LogSeverity
     Fatal = 5
 }
 
+/// <summary>
+/// Diagnostic markers for classifying log events.
+///
+/// Usage:
+///   Unimplemented — Known standards feature not implemented.
+///   Partial       — Feature implemented incompletely.
+///   Fallback      — A fallback path was selected.
+///   Recovered     — A real failure occurred but the engine recovered.
+///   SpecGap       — Behaviour unclear, incomplete, or awaiting standards work.
+///   EngineBug     — Internal engine defect.
+///   Invariant     — Internal invariant violation.
+///   Unexpected    — Unexpected condition that does not fit a more precise
+///                   marker. Do NOT use as a generic catch-all.
+/// </summary>
 public enum LogMarker
 {
     None = 0,
@@ -176,6 +202,14 @@ public interface ILogDeduplicator
 
 public sealed class EngineLogDeduplicator : ILogDeduplicator
 {
+    // Bounded limits to prevent unbounded growth.
+    private const int MaxPerDocumentKeys = 20000;
+    private const int MaxPerSessionKeys = 10000;
+    private const int MaxRateLimitKeys = 5000;
+    private const int MaxSuppressedKeys = 5000;
+    private const int MaxKeyLength = 256;
+    private static readonly TimeSpan SessionKeyTtl = TimeSpan.FromHours(1);
+
     private readonly Dictionary<string, byte> _perDocument = new(StringComparer.Ordinal);
     private readonly Dictionary<string, byte> _perSession = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DateTime> _rateLimit = new(StringComparer.Ordinal);
@@ -189,13 +223,19 @@ public sealed class EngineLogDeduplicator : ILogDeduplicator
             return true;
         }
 
+        var combined = TruncateKey(string.Concat(documentId.AsSpan(), "::", key.AsSpan()));
+
         lock (_sync)
         {
-            var combined = string.Concat(documentId, "::", key);
             if (_perDocument.ContainsKey(combined))
             {
                 IncrementSuppressedLocked(combined);
                 return false;
+            }
+
+            if (_perDocument.Count >= MaxPerDocumentKeys)
+            {
+                EvictOldest(_perDocument);
             }
 
             _perDocument[combined] = 1;
@@ -210,15 +250,22 @@ public sealed class EngineLogDeduplicator : ILogDeduplicator
             return true;
         }
 
+        var k = TruncateKey(key);
+
         lock (_sync)
         {
-            if (_perSession.ContainsKey(key))
+            if (_perSession.ContainsKey(k))
             {
-                IncrementSuppressedLocked(key);
+                IncrementSuppressedLocked(k);
                 return false;
             }
 
-            _perSession[key] = 1;
+            if (_perSession.Count >= MaxPerSessionKeys)
+            {
+                EvictOldest(_perSession);
+            }
+
+            _perSession[k] = 1;
             return true;
         }
     }
@@ -235,16 +282,23 @@ public sealed class EngineLogDeduplicator : ILogDeduplicator
             return true;
         }
 
+        var k = TruncateKey(key);
         var now = DateTime.UtcNow;
+
         lock (_sync)
         {
-            if (_rateLimit.TryGetValue(key, out var last) && (now - last) < window)
+            if (_rateLimit.TryGetValue(k, out var last) && (now - last) < window)
             {
-                IncrementSuppressedLocked(key);
+                IncrementSuppressedLocked(k);
                 return false;
             }
 
-            _rateLimit[key] = now;
+            if (_rateLimit.Count >= MaxRateLimitKeys)
+            {
+                PruneExpiredRateLimitKeysLocked(now);
+            }
+
+            _rateLimit[k] = now;
             return true;
         }
     }
@@ -259,6 +313,71 @@ public sealed class EngineLogDeduplicator : ILogDeduplicator
         }
     }
 
+    /// <summary>
+    /// Clears all per-document dedup keys for the given document.
+    /// Call when a document is destroyed, navigation is replaced, or a tab is closed.
+    /// </summary>
+    public void ClearDocument(string documentId)
+    {
+        if (string.IsNullOrWhiteSpace(documentId))
+        {
+            return;
+        }
+
+        var prefix = documentId + "::";
+
+        lock (_sync)
+        {
+            var toRemove = _perDocument.Keys
+                .Where(k => k.StartsWith(prefix, StringComparison.Ordinal))
+                .ToList();
+
+            foreach (var key in toRemove)
+            {
+                _perDocument.Remove(key);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Clears all per-session dedup keys. Call on session reset.
+    /// </summary>
+    public void ClearSession()
+    {
+        lock (_sync)
+        {
+            _perSession.Clear();
+            _suppressedCounts.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Prunes rate-limit entries older than their window.
+    /// Safe to call periodically; cheap when there's nothing to do.
+    /// </summary>
+    public void PruneExpired(DateTimeOffset now)
+    {
+        lock (_sync)
+        {
+            PruneExpiredRateLimitKeysLocked(now.UtcDateTime);
+        }
+    }
+
+    private void PruneExpiredRateLimitKeysLocked(DateTime now)
+    {
+        // Remove rate-limit entries older than SessionKeyTtl.
+        var cutoff = now - SessionKeyTtl;
+        var toRemove = _rateLimit
+            .Where(kvp => kvp.Value < cutoff)
+            .Select(kvp => kvp.Key)
+            .ToList();
+
+        foreach (var key in toRemove)
+        {
+            _rateLimit.Remove(key);
+        }
+    }
+
     private void IncrementSuppressedLocked(string key)
     {
         if (_suppressedCounts.TryGetValue(key, out var count))
@@ -267,7 +386,70 @@ public sealed class EngineLogDeduplicator : ILogDeduplicator
             return;
         }
 
+        if (_suppressedCounts.Count >= MaxSuppressedKeys)
+        {
+            // Drop the smallest-count entry to make room.
+            var min = _suppressedCounts.MinBy(kvp => kvp.Value);
+            _suppressedCounts.Remove(min.Key);
+        }
+
         _suppressedCounts[key] = 1;
+    }
+
+    private static string TruncateKey(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return string.Empty;
+        }
+
+        return key.Length <= MaxKeyLength ? key : key.Substring(0, MaxKeyLength);
+    }
+
+    private static void TruncateKey(ReadOnlySpan<char> key, Span<char> destination)
+    {
+        var length = Math.Min(key.Length, MaxKeyLength);
+        key.Slice(0, length).CopyTo(destination);
+    }
+
+    private static string TruncateKey(ReadOnlySpan<char> docSpan, ReadOnlySpan<char> sep, ReadOnlySpan<char> keySpan)
+    {
+        var totalLen = docSpan.Length + sep.Length + keySpan.Length;
+        if (totalLen <= MaxKeyLength)
+        {
+            return string.Concat(docSpan, sep, keySpan);
+        }
+
+        Span<char> buf = stackalloc char[MaxKeyLength];
+        var pos = 0;
+        var docLen = Math.Min(docSpan.Length, MaxKeyLength / 2);
+        docSpan.Slice(0, docLen).CopyTo(buf.Slice(pos));
+        pos += docLen;
+        sep.CopyTo(buf.Slice(pos));
+        pos += sep.Length;
+        var remaining = MaxKeyLength - pos;
+        if (remaining > 0)
+        {
+            var keyLen = Math.Min(keySpan.Length, remaining);
+            keySpan.Slice(0, keyLen).CopyTo(buf.Slice(pos));
+            pos += keyLen;
+        }
+
+        return new string(buf.Slice(0, pos));
+    }
+
+    private static void EvictOldest(Dictionary<string, byte> dict)
+    {
+        // Remove ~10% of entries to make room. Simple FIFO approximation:
+        // remove first enumerated entries since Dictionary doesn't track order.
+        var toRemove = Math.Max(1, dict.Count / 10);
+        var count = 0;
+        foreach (var key in dict.Keys.ToList())
+        {
+            if (count >= toRemove) break;
+            dict.Remove(key);
+            count++;
+        }
     }
 }
 
