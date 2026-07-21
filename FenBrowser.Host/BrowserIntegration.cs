@@ -2266,15 +2266,17 @@ public class BrowserIntegration : IDisposable
             // Finish recording and derive the next seed image from the committed picture.
             var newFrame = _recorder.EndRecording();
 
-            // Phase 8: Do NOT re-raster a full seed image on every committed frame.
-            // When the raster mode is PreservedBaseFrame or None the committed frame's
-            // content is identical to the previously published seed (the base frame was
-            // reused with no content change), so re-drawing the whole picture into a new
-            // surface would be a redundant full-frame raster. Reuse the existing seed.
+            // Phase 8/9: Do NOT re-raster a full seed image when the frame's content
+            // is already preserved. Extended from Phase 8 (only PreservedBaseFrame/None)
+            // to Phase 9: when the retained tile backing store was updated (Damage mode
+            // with tiles rasterized), the tiles already hold the latest content — a full
+            // seed reraster would be redundant.
             var rasterMode = frameResult?.RasterMode ?? RenderFrameRasterMode.Full;
             bool canSkipSeedRaster =
                 rasterMode == RenderFrameRasterMode.PreservedBaseFrame ||
-                rasterMode == RenderFrameRasterMode.None;
+                rasterMode == RenderFrameRasterMode.None ||
+                (rasterMode == RenderFrameRasterMode.Damage &&
+                 frameResult?.RetainedBackingStoreUpdated == true);
 
             SKImage newSeedImage;
             if (canSkipSeedRaster && _currentFrameSeedImage != null)

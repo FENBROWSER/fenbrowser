@@ -114,8 +114,14 @@ namespace FenBrowser.FenEngine.Rendering
 
         // Phase 15: cached overlay collection to avoid full paint-tree walk
         // and CollectAllNodes every frame when nothing changed.
+        // Phase 10: use explicit generations instead of comparing
+        // box-count to overlay-count (which are unrelated values).
         private int _lastOverlayPaintTreeFrameId = -1;
         private List<InputOverlayData> _cachedOverlays;
+        private long _overlayLayoutGeneration = -1;
+        private long _overlayPaintTreeGeneration = -1;
+        private long _layoutGeneration;
+        private long _paintTreeGeneration;
 
         // Phase 2: animation fields carried from RenderFrameRequest into Render.
         private AnimationUpdateKind _requestAnimationUpdateKind;
@@ -125,6 +131,13 @@ namespace FenBrowser.FenEngine.Rendering
         private long _requestImageGeneration;
         private bool _requestImageGenerationChanged;
         private bool _frameWasCompositorOnly;
+
+        // Phase 12: frame-local animated style overrides. Instead of writing
+        // animated clones back into the shared styles dictionary (which mutates
+        // BrowserIntegration._styles), we store frame-local clones here. The
+        // paint/layout stages consult this dictionary for animated values without
+        // ever touching the base style snapshot.
+        private Dictionary<Element, CssComputed> _frameAnimatedStyles;
         
         /// <summary>
         /// Current overlays for input elements.
@@ -313,6 +326,12 @@ namespace FenBrowser.FenEngine.Rendering
 
             PerformanceDiagnosticsStore.RecordFrame(LastFrameTelemetry);
 
+            // Phase 9: the retained backing store was updated when the tile
+            // rasterizer ran successfully and actually rasterized tiles.
+            bool retainedBackingUpdated =
+                LastRetainedTileRasterization.Enabled &&
+                LastRetainedTileRasterization.RasterizedTileCount > 0;
+
             return new RenderFrameResult
             {
                 Layout = _lastLayout,
@@ -327,7 +346,8 @@ namespace FenBrowser.FenEngine.Rendering
                 InvalidationReason = request.InvalidationReason,
                 RequestedBy = request.RequestedBy,
                 RasterMode = LastFrameTelemetry?.RasterMode ?? RenderFrameRasterMode.None,
-                Telemetry = LastFrameTelemetry
+                Telemetry = LastFrameTelemetry,
+                RetainedBackingStoreUpdated = retainedBackingUpdated
             };
         }
 
@@ -500,30 +520,31 @@ namespace FenBrowser.FenEngine.Rendering
 
                 // PHASE 0: Update Animations
                 // Integrate CSS Animation Engine
+                _frameAnimatedStyles = null;
                 if (root is Element && styles != null)
                 {
                     // PERF: Only check for new transitions/animations if style is dirty OR on navigation.
                     // ALWAYS update existing active animations/transitions.
-                    
+
                     // 1. Check for NEW animations/transitions starting only on elements with potentially changed styles
                     // To do this properly we'd need a list of elements whose styles were JUST changed.
                     // For now, we optimize by only checking elements that POSSESS animation/transition properties
                     // OR we just iterate over all elements but avoid the Keys.ToList() allocation.
-                    
+
                     // 2. Update existing animations (O(N_active) instead of O(N_total))
                     var activeElements = CssAnimationEngine.Instance.GetAllActiveAnimationElements();
                     foreach (var elem in activeElements)
                     {
                         if (!styles.TryGetValue(elem, out var style)) continue;
-                        
+
                         // Check for transitions/animations start (needed even for active ones to handle interruptions)
                         CssAnimationEngine.Instance.CheckTransitions(elem, style);
                         CssAnimationEngine.Instance.StartAnimation(elem, style);
-                        
+
                         // Get current animated values
                         var animatedProps = CssAnimationEngine.Instance.GetAnimatedProperties(elem);
                         var transitionProps = CssAnimationEngine.Instance.GetTransitionedProperties(elem);
-                        
+
                         if (animatedProps.Count > 0 || transitionProps.Count > 0)
                         {
                             hasActiveAnimations = true;
@@ -538,7 +559,9 @@ namespace FenBrowser.FenEngine.Rendering
                                 animationInvalidation |= InvalidationKind.Paint;
                             // Composite-only: no invalidation — compositor-only path stays viable.
 
-                            // Create a clone for this frame to avoid persisting animated values into the base style
+                            // Phase 12: create a frame-local clone and store it in
+                            // _frameAnimatedStyles instead of writing back into the shared
+                            // styles dictionary. The base style snapshot remains immutable.
                             var frameStyle = style.Clone();
 
                             foreach(var kvp in transitionProps)
@@ -547,17 +570,18 @@ namespace FenBrowser.FenEngine.Rendering
                             foreach(var kvp in animatedProps)
                                 FenBrowser.FenEngine.Rendering.Css.CssStyleApplicator.ApplyProperty(frameStyle, kvp.Key, kvp.Value);
 
-                            styles[elem] = frameStyle;
+                            _frameAnimatedStyles ??= new Dictionary<Element, CssComputed>();
+                            _frameAnimatedStyles[elem] = frameStyle;
                         }
                     }
-                    
+
                     // 3. Check for NEW animations on other elements if style was invalidated globally
                     if (styleInvalidation)
                     {
                         foreach(var kvp in styles)
                         {
                             if (kvp.Key is not Element elem || activeElements.Contains(elem)) continue;
-                            
+
                             // Check if this element should START an animation
                             var style = kvp.Value;
                             if (style.Map.ContainsKey("animation-name") || style.Map.ContainsKey("transition"))
@@ -568,6 +592,22 @@ namespace FenBrowser.FenEngine.Rendering
                             }
                         }
                     }
+                }
+
+                // Phase 12: merge frame-local animated styles into a frame-owned
+                // dictionary. The base styles parameter is NOT mutated — we reassign
+                // `styles` to a shallow copy that includes animated overrides for this
+                // frame only. All downstream consumers (layout, paint, compositing)
+                // read from this frame-local copy. BrowserIntegration._styles remains
+                // immutable across frames.
+                if (_frameAnimatedStyles != null && _frameAnimatedStyles.Count > 0)
+                {
+                    var merged = new Dictionary<Node, CssComputed>(styles);
+                    foreach (var (elem, animatedStyle) in _frameAnimatedStyles)
+                    {
+                        merged[elem] = animatedStyle;
+                    }
+                    styles = merged;
                 }
 
                 using (pipelineContext.BeginScopedStage(PipelineStage.Styling))
@@ -657,6 +697,7 @@ namespace FenBrowser.FenEngine.Rendering
                         }
 
                         layoutUpdated = true;
+                        _layoutGeneration++;
 
                         if (scrollable != null)
                         {
@@ -873,6 +914,7 @@ namespace FenBrowser.FenEngine.Rendering
                         }
 
                         _lastPaintTree = paintTree;
+                        _paintTreeGeneration++;
                         // Phase 11: capture image-changed BEFORE updating the cached version.
                         bool imageChanged = _requestImageGenerationChanged ||
                             (_requestImageGeneration > 0 && _requestImageGeneration != _lastImageCacheVersion);
@@ -1199,16 +1241,26 @@ namespace FenBrowser.FenEngine.Rendering
                     CurrentOverlays.Clear();
                     // Phase 15: cache overlay collection. The overlay set only
                     // changes when the paint tree or box count changes. On
-                    // compositor-only or scroll-only frames the previous set is
-                    // still valid and re-scanning every paint node is wasted work.
+                    // Phase 10: use layout and paint-tree generations for overlay
+                    // cache invalidation. The previous comparison of _boxes.Count
+                    // (layout boxes) against _cachedOverlays.Count (input overlays)
+                    // compared unrelated values — a page with 5000 boxes and 3 input
+                    // fields would rebuild overlays every frame.
                     var currentPaintFrameId = _lastPaintTree?.FrameId ?? -1;
-                    if (rebuiltPaintTree || _boxes.Count != (_cachedOverlays?.Count ?? 0) ||
-                        _lastOverlayPaintTreeFrameId != currentPaintFrameId ||
-                        _cachedOverlays == null)
+                    bool overlayCacheValid =
+                        !rebuiltPaintTree &&
+                        _cachedOverlays != null &&
+                        _overlayLayoutGeneration == _layoutGeneration &&
+                        _overlayPaintTreeGeneration == _paintTreeGeneration &&
+                        _lastOverlayPaintTreeFrameId == currentPaintFrameId;
+
+                    if (!overlayCacheValid)
                     {
                         CollectOverlays();
                         _cachedOverlays = new List<InputOverlayData>(CurrentOverlays);
                         _lastOverlayPaintTreeFrameId = currentPaintFrameId;
+                        _overlayLayoutGeneration = _layoutGeneration;
+                        _overlayPaintTreeGeneration = _paintTreeGeneration;
                     }
                     else
                     {

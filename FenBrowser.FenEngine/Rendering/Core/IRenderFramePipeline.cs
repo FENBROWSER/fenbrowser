@@ -296,5 +296,12 @@ namespace FenBrowser.FenEngine.Rendering.Core
         public RenderFrameRasterMode RasterMode { get; init; }
 
         public RenderFrameTelemetry Telemetry { get; init; }
+
+        /// <summary>
+        /// Phase 9: true when the retained tile backing store was updated with new
+        /// content. When true, the host can skip the redundant full-frame seed raster
+        /// — the retained tiles already contain the latest rendering state.
+        /// </summary>
+        public bool RetainedBackingStoreUpdated { get; init; }
     }
 }
