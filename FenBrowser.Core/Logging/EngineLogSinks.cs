@@ -12,8 +12,28 @@ namespace FenBrowser.Core.Logging;
 
 internal sealed class ConsoleEngineLogSink : ILogSink
 {
+    // Throttle: skip console output if we're emitting faster than ~100 events/sec.
+    // Console.WriteLine on Windows is synchronous and slow — flooding it during
+    // animations/scroll can compete with the render thread and cause frame drops.
+    private long _lastWriteTicks;
+    private int _burstCount;
+    private const int MaxBurst = 20;
+    private const long ThrottleIntervalTicks = 10_000_000 / 100; // 100 events/sec = 10ms between
+
     public void Write(in EngineLogEvent evt)
     {
+        var nowTicks = Stopwatch.GetTimestamp();
+
+        // Burst: allow up to MaxBurst events at any rate.
+        if (_burstCount >= MaxBurst)
+        {
+            var elapsed = nowTicks - Interlocked.Read(ref _lastWriteTicks);
+            if (elapsed < ThrottleIntervalTicks)
+            {
+                return; // throttle — don't write to console
+            }
+        }
+
         var marker = evt.Header.Marker == LogMarker.None ? string.Empty : $"[{evt.Header.Marker}]";
         var ctx = string.IsNullOrWhiteSpace(evt.Header.Context.Url) ? string.Empty : $" | url={evt.Header.Context.Url}";
         var source = string.IsNullOrWhiteSpace(evt.Payload?.SourceFile) ? string.Empty : $" | source={evt.Payload.SourceFile}:{evt.Payload.SourceLine}";
@@ -22,10 +42,17 @@ internal sealed class ConsoleEngineLogSink : ILogSink
         try
         {
             Console.WriteLine(line);
+            Interlocked.Exchange(ref _lastWriteTicks, nowTicks);
+            var bc = Interlocked.Increment(ref _burstCount);
+            // Reset burst counter every ~1 second of quiet.
+            if (bc > MaxBurst * 10)
+            {
+                Interlocked.Exchange(ref _burstCount, 0);
+            }
         }
         catch
         {
-            // no-op — console output must not crash the engine
+            // no-op
         }
     }
 
