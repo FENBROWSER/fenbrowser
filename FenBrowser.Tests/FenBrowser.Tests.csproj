@@ -92,6 +92,8 @@
     <Compile Include="Rendering\Phase6ImageRepaintCoalescingTests.cs" />
     <!-- Phase 4 compositor-only fast-path and rebuild telemetry regression. -->
     <Compile Include="Rendering\Phase4CompositorOnlyPathTests.cs" />
+    <!-- Phase 13 end-to-end pipeline animation tests (real renderer verification). -->
+    <Compile Include="Rendering\PipelineAnimationTests.cs" />
     <!-- Phase 12 async input dispatch non-blocking regression. -->
     <Compile Include="Engine\Phase12AsyncInputDispatchTests.cs" />
   </ItemGroup>
