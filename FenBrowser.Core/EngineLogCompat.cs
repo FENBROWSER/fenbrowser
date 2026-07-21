@@ -187,45 +187,72 @@ public static class EngineLogCompat
         var loggingSettings = BrowserSettings.Instance?.Logging;
         var settingsEnabled = loggingSettings?.EnableLogging ?? true;
         var effectiveEnabled = enabled && settingsEnabled;
-        var logToFile = loggingSettings?.LogToFile ?? true;
-        var logToDebug = loggingSettings?.LogToDebug ?? true;
-        var minimumLevel = loggingSettings?.MinimumLevel ?? (int)LogLevel.Info;
+        var logToFile = loggingSettings?.LogToFile ?? false;
+        var minimumLevel = loggingSettings?.MinimumLevel ?? (int)LogLevel.Warn;
+
+        // Start from framework defaults (quiet).
         var options = new EngineLoggingOptions
         {
             Enabled = effectiveEnabled,
             EnabledCategories = loggingSettings != null ? (LogCategory)loggingSettings.EnabledCategories : LogCategory.All,
             GlobalMinimumSeverity = EngineLogCompatibility.FromLegacyLevel((LogLevel)minimumLevel),
-            EnableConsoleSink = effectiveEnabled && logToDebug,
-            EnableDebugSink = effectiveEnabled && logToDebug,
-            EnableNdjsonSink = effectiveEnabled && logToFile,
+            EnableConsoleSink = false,
+            EnableDebugSink = false,
+            EnableNdjsonSink = false,
             EnableRingBufferSink = effectiveEnabled,
-            EnableTraceSink = effectiveEnabled && logToFile,
+            EnableTraceSink = false,
             RingBufferCapacity = Math.Max(1000, loggingSettings?.MemoryBufferSize ?? 5000),
             DispatcherQueueCapacity = 32768
         };
 
+        // Step 1: Apply the configured preset (or Normal fallback).
         var preset = Environment.GetEnvironmentVariable("FEN_LOG_PRESET");
         if (string.IsNullOrWhiteSpace(preset))
         {
-            preset = BrowserSettings.Instance?.Logging?.LoggingPreset;
+            preset = loggingSettings?.LoggingPreset;
         }
 
-        EngineLoggingPresets.Apply(preset, options);
-        options.Enabled = effectiveEnabled;
-        options.EnabledCategories = loggingSettings != null ? (LogCategory)loggingSettings.EnabledCategories : LogCategory.All;
-        options.EnableConsoleSink = effectiveEnabled && logToDebug;
-        options.EnableDebugSink = effectiveEnabled && logToDebug;
-        options.EnableNdjsonSink = effectiveEnabled && logToFile;
-        options.EnableRingBufferSink = effectiveEnabled;
-        options.EnableTraceSink = effectiveEnabled && logToFile;
+        if (!EngineLoggingPresets.Apply(preset, options))
+        {
+            EngineLoggingPresets.Apply(EngineLoggingPresets.Normal, options);
+        }
 
-        if (effectiveEnabled && logToFile)
+        // Step 2: Apply user settings as restrictive gates.
+        // User settings may DISABLE sinks the preset enabled,
+        // but must NOT re-enable sinks the preset deliberately disabled.
+        if (!effectiveEnabled)
+        {
+            options.EnableRingBufferSink = false;
+        }
+
+        // LogToDebug only gates the debugger sink (not console).
+        if (loggingSettings != null && !loggingSettings.LogToDebug)
+        {
+            options.EnableDebugSink = false;
+        }
+
+        // LogToFile only gates file sinks.
+        if (!logToFile)
+        {
+            options.EnableNdjsonSink = false;
+            options.EnableTraceSink = false;
+        }
+
+        // Step 3: Resolve file paths only for sinks that remain enabled.
+        if (options.EnableNdjsonSink || options.EnableTraceSink)
         {
             var logsPath = ResolveNdjsonPath(logFilePath);
             if (!string.IsNullOrWhiteSpace(logsPath))
             {
-                options.NdjsonFilePath = logsPath;
-                options.TraceFilePath = logsPath.Replace(".jsonl", "_trace.jsonl", StringComparison.OrdinalIgnoreCase);
+                if (options.EnableNdjsonSink)
+                {
+                    options.NdjsonFilePath = logsPath;
+                }
+
+                if (options.EnableTraceSink)
+                {
+                    options.TraceFilePath = logsPath.Replace(".jsonl", "_trace.jsonl", StringComparison.OrdinalIgnoreCase);
+                }
             }
         }
 
