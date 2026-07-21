@@ -169,6 +169,20 @@ public static class MissingApiClassifier
             _ => "UNCLASSIFIED"
         };
 
+    /// <summary>
+    /// Parses a classification token string back to the enum value.
+    /// Unknown tokens default to Unclassified.
+    /// </summary>
+    public static MissingApiClassification ParseClassificationToken(string token)
+        => token switch
+        {
+            "STANDARD_API" => MissingApiClassification.StandardApi,
+            "SITE_EXPANDO" => MissingApiClassification.SiteExpando,
+            "WRONG_RECEIVER" => MissingApiClassification.WrongReceiver,
+            "LEGACY_PROBE" => MissingApiClassification.LegacyProbe,
+            _ => MissingApiClassification.Unclassified
+        };
+
     public static string ToToken(MissingApiOperationKind operationKind)
         => operationKind switch
         {

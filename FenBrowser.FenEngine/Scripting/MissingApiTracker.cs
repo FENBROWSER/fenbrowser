@@ -84,10 +84,20 @@ internal static class MissingApiTracker
     private const string TraceCategory = "MissingAPI";
     private const string EventName = "MissingApiObserved";
     internal const int SnapshotRecordLimit = 512;
+    internal const int MaxExceptionTextLength = 4096;
+
+    /// <summary>Debounce interval for snapshot writes. Tests may override via SetDebounceForTests.</summary>
+    private static TimeSpan DebounceInterval = TimeSpan.FromSeconds(1);
 
     private static readonly object Sync = new();
     private static readonly Dictionary<string, SiteMissingApis> Sites = new(StringComparer.Ordinal);
     private static string _outputRootOverrideForTests;
+    private static TimeSpan? _debounceOverrideForTests;
+
+    // Debounced snapshot writer state.
+    private static readonly object FlushSync = new();
+    private static Task _pendingFlushTask;
+    private static CancellationTokenSource _flushCts;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -105,22 +115,34 @@ internal static class MissingApiTracker
         try
         {
             MissingApiRecord recordSnapshot;
-            string outputPath;
+            string previousClassification;
+            bool firstEncounter;
+            bool classificationChanged;
+            string siteKey;
 
             lock (Sync)
             {
-                var siteKey = BuildSiteKey(observation.SiteUrl);
+                siteKey = BuildSiteKey(observation.SiteUrl);
                 var site = GetOrCreateSiteLocked(siteKey, observation.SiteUrl);
                 var recordKey = BuildRecordKey(observation);
+
                 if (!site.Records.TryGetValue(recordKey, out var record))
                 {
+                    // First encounter — create new record.
                     record = CreateRecord(observation);
                     site.Records[recordKey] = record;
+                    firstEncounter = true;
+                    classificationChanged = false;
+                    previousClassification = record.Classification;
                 }
                 else
                 {
+                    firstEncounter = false;
+                    previousClassification = record.Classification;
+
                     record.EncounterCount++;
                     record.LastSeenUtc = Now();
+
                     var evidenceChanged = record.AddOperation(observation.OperationKind);
                     var assignmentObserved = observation.AssignmentObserved ||
                         observation.OperationKind == MissingApiOperationKind.Write;
@@ -143,18 +165,40 @@ internal static class MissingApiTracker
                     {
                         record.RefreshClassification();
                     }
+
+                    classificationChanged = !string.Equals(
+                        previousClassification, record.Classification, StringComparison.Ordinal);
+
+                    // Capture first exception text; truncate to reasonable maximum.
                     if (string.IsNullOrWhiteSpace(record.ExceptionText) &&
                         !string.IsNullOrWhiteSpace(observation.ExceptionText))
                     {
-                        record.ExceptionText = observation.ExceptionText;
+                        record.ExceptionText = TruncateExceptionText(observation.ExceptionText);
                     }
                 }
 
-                outputPath = WriteSiteSnapshotLocked(siteKey, site);
+                // Mark the site dirty for deferred snapshot writing.
+                site.Dirty = true;
+
+                // Clone for trace emission outside the lock.
                 recordSnapshot = record.Clone();
             }
 
-            WriteTrace(recordSnapshot, outputPath);
+            // Determine whether to emit a structured diagnostic event.
+            var classification = MissingApiClassifier.ParseClassificationToken(recordSnapshot.Classification);
+            var shouldEmit = firstEncounter || classificationChanged;
+
+            if (shouldEmit)
+            {
+                var diag = GetDiagnosticSeverity(classification, firstEncounter: true);
+                if (diag.HasValue)
+                {
+                    WriteTrace(recordSnapshot);
+                }
+            }
+
+            // Schedule debounced snapshot write (outside the main lock).
+            ScheduleSnapshotFlush(siteKey);
         }
         catch (Exception ex)
         {
@@ -237,10 +281,277 @@ internal static class MissingApiTracker
 
     internal static void ResetForTests()
     {
+        CancelPendingFlush();
         lock (Sync)
         {
             Sites.Clear();
             _outputRootOverrideForTests = null;
+            _debounceOverrideForTests = null;
+        }
+    }
+
+    /// <summary>
+    /// Override the debounce interval for tests (pass null to restore default).
+    /// </summary>
+    internal static void SetDebounceForTests(TimeSpan? interval)
+    {
+        lock (Sync)
+        {
+            _debounceOverrideForTests = interval;
+        }
+    }
+
+    /// <summary>
+    /// Flush all pending snapshot writes synchronously. Call during
+    /// navigation-end diagnostics capture, failure-bundle export, shutdown, or test cleanup.
+    /// </summary>
+    internal static Task FlushPendingWritesAsync(CancellationToken cancellationToken = default)
+    {
+        Task pending;
+        lock (FlushSync)
+        {
+            pending = _pendingFlushTask;
+        }
+
+        if (pending == null || pending.IsCompleted)
+        {
+            return Task.CompletedTask;
+        }
+
+        return Task.WhenAny(pending, Task.Delay(Timeout.Infinite, cancellationToken));
+    }
+
+    /// <summary>
+    /// Maps a classification to the diagnostic severity that should be emitted
+    /// for the first encounter (or classification change) of a missing API.
+    /// Returns null when no structured event should be emitted at all.
+    /// </summary>
+    private static (LogSeverity severity, LogMarker marker)? GetDiagnosticSeverity(
+        MissingApiClassification classification,
+        bool firstEncounter)
+    {
+        switch (classification)
+        {
+            case MissingApiClassification.StandardApi:
+                if (firstEncounter)
+                {
+                    return (LogSeverity.Warn, LogMarker.Unimplemented);
+                }
+
+                // Repeated encounters: no individual event (tracked in snapshot only).
+                return null;
+
+            case MissingApiClassification.Unclassified:
+                if (firstEncounter)
+                {
+                    return (LogSeverity.Debug, LogMarker.None);
+                }
+
+                return null;
+
+            case MissingApiClassification.WrongReceiver:
+                if (firstEncounter)
+                {
+                    return (LogSeverity.Debug, LogMarker.None);
+                }
+
+                return null;
+
+            case MissingApiClassification.SiteExpando:
+                // Do not emit a warning. Track in snapshot only.
+                // Optional Trace event in developer mode.
+                return null;
+
+            case MissingApiClassification.LegacyProbe:
+                // Do not emit a warning. Track in snapshot only.
+                // Optional Trace event in developer mode.
+                return null;
+
+            default:
+                return null;
+        }
+    }
+
+    private static void CancelPendingFlush()
+    {
+        CancellationTokenSource cts;
+        lock (FlushSync)
+        {
+            cts = _flushCts;
+            _flushCts = null;
+            _pendingFlushTask = null;
+        }
+
+        try
+        {
+            cts?.Cancel();
+            cts?.Dispose();
+        }
+        catch
+        {
+            // best-effort
+        }
+    }
+
+    private static void ScheduleSnapshotFlush(string siteKey)
+    {
+        TimeSpan debounce;
+        lock (Sync)
+        {
+            debounce = _debounceOverrideForTests ?? DebounceInterval;
+        }
+
+        // For zero-interval (test mode), flush immediately.
+        if (debounce <= TimeSpan.Zero)
+        {
+            FlushSiteNow(siteKey);
+            return;
+        }
+
+        lock (FlushSync)
+        {
+            CancelPendingFlushUnsafe();
+
+            var cts = new CancellationTokenSource();
+            _flushCts = cts;
+            _pendingFlushTask = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(debounce, cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                FlushAllDirtySites();
+            }, cts.Token);
+        }
+    }
+
+    private static void CancelPendingFlushUnsafe()
+    {
+        // Must be called under FlushSync lock.
+        var cts = _flushCts;
+        _flushCts = null;
+        _pendingFlushTask = null;
+
+        try
+        {
+            cts?.Cancel();
+            cts?.Dispose();
+        }
+        catch
+        {
+            // best-effort
+        }
+    }
+
+    private static void FlushSiteNow(string siteKey)
+    {
+        SiteMissingApis site;
+        List<MissingApiRecord> snapshot;
+
+        lock (Sync)
+        {
+            if (!Sites.TryGetValue(siteKey, out site))
+            {
+                return;
+            }
+
+            if (!site.Dirty)
+            {
+                return;
+            }
+
+            snapshot = site.Records.Values.Select(r => r.Clone()).ToList();
+            site.Dirty = false;
+            site.Generation++;
+        }
+
+        WriteSnapshotAtomic(siteKey, site.SiteUrl, snapshot);
+    }
+
+    private static void FlushAllDirtySites()
+    {
+        List<(string SiteKey, string SiteUrl, List<MissingApiRecord> Records)> dirtySites = new();
+
+        lock (Sync)
+        {
+            foreach (var (key, site) in Sites)
+            {
+                if (!site.Dirty)
+                {
+                    continue;
+                }
+
+                var snapshot = site.Records.Values.Select(r => r.Clone()).ToList();
+                site.Dirty = false;
+                site.Generation++;
+                dirtySites.Add((key, site.SiteUrl, snapshot));
+            }
+        }
+
+        foreach (var (siteKey, siteUrl, records) in dirtySites)
+        {
+            WriteSnapshotAtomic(siteKey, siteUrl, records);
+        }
+    }
+
+    private static void WriteSnapshotAtomic(string siteKey, string siteUrl, List<MissingApiRecord> records)
+    {
+        var outputPath = Path.Combine(ResolveOutputRoot(), siteKey, "missing_apis.json");
+        var dir = Path.GetDirectoryName(outputPath);
+
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            var output = new MissingApiSiteOutput
+            {
+                Schema = Schema,
+                GeneratedAtUtc = Now(),
+                SiteKey = siteKey,
+                SiteUrl = siteUrl ?? string.Empty,
+                Records = records
+                    .OrderBy(r => r.ApiName, StringComparer.Ordinal)
+                    .ToList()
+            };
+
+            var json = JsonSerializer.Serialize(output, JsonOptions);
+
+            // Write to temp file then atomically replace.
+            var tmpPath = outputPath + ".tmp";
+            File.WriteAllText(tmpPath, json, new UTF8Encoding(false));
+
+            try
+            {
+                File.Move(tmpPath, outputPath, overwrite: true);
+            }
+            catch
+            {
+                // If Move fails (e.g. antivirus), try direct overwrite as fallback.
+                File.WriteAllText(outputPath, json, new UTF8Encoding(false));
+                try { File.Delete(tmpPath); } catch { /* best-effort */ }
+            }
+        }
+        catch (Exception ex)
+        {
+            EngineLog.Write(
+                LogSubsystem.Js,
+                LogSeverity.Warn,
+                $"[MissingAPI] Failed to write snapshot for site '{siteKey}': {ex.GetType().Name}: {ex.Message}",
+                LogMarker.Unexpected,
+                fields: new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["event"] = "MissingApiSnapshotWriteFailed",
+                    ["exceptionType"] = ex.GetType().FullName ?? ex.GetType().Name,
+                    ["siteKey"] = siteKey
+                });
         }
     }
 
@@ -358,34 +669,13 @@ internal static class MissingApiTracker
         return site;
     }
 
-    private static string WriteSiteSnapshotLocked(string siteKey, SiteMissingApis site)
+    private static void WriteTrace(MissingApiRecord record)
     {
-        var outputPath = Path.Combine(ResolveOutputRoot(), siteKey, "missing_apis.json");
-        var output = new MissingApiSiteOutput
-        {
-            Schema = Schema,
-            GeneratedAtUtc = Now(),
-            SiteKey = site.SiteKey,
-            SiteUrl = site.SiteUrl,
-            Records = site.Records.Values
-                .OrderBy(record => record.ApiName, StringComparer.Ordinal)
-                .Select(record => record.Clone())
-                .ToList()
-        };
+        var classification = MissingApiClassifier.ParseClassificationToken(record.Classification);
+        var diag = GetDiagnosticSeverity(classification, firstEncounter: true);
+        var severity = diag?.severity ?? LogSeverity.Debug;
+        var marker = diag?.marker ?? LogMarker.None;
 
-        var json = JsonSerializer.Serialize(output, JsonOptions);
-        var dir = Path.GetDirectoryName(outputPath);
-        if (!string.IsNullOrWhiteSpace(dir))
-        {
-            Directory.CreateDirectory(dir);
-        }
-
-        File.WriteAllText(outputPath, json, new UTF8Encoding(false));
-        return outputPath;
-    }
-
-    private static void WriteTrace(MissingApiRecord record, string outputPath)
-    {
         var fields = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
         {
             ["event"] = EventName,
@@ -412,8 +702,7 @@ internal static class MissingApiTracker
             ["assignmentBeforeRead"] = record.AssignmentBeforeRead,
             ["knownWebIdlMember"] = record.KnownWebIdlMember,
             ["definedInterface"] = record.DefinedInterface,
-            ["receiverMatchesDefinedInterface"] = record.ReceiverMatchesDefinedInterface,
-            ["outputPath"] = outputPath ?? string.Empty
+            ["receiverMatchesDefinedInterface"] = record.ReceiverMatchesDefinedInterface
         };
 
         if (record.Line.HasValue)
@@ -430,9 +719,9 @@ internal static class MissingApiTracker
 
         EngineLog.Write(
             LogSubsystem.Js,
-            LogSeverity.Warn,
-            "[FenJsBridge] Missing browser API observed",
-            LogMarker.Unimplemented,
+            severity,
+            $"[FenJsBridge] Missing browser API: {record.ApiName} [{record.Classification}]",
+            marker,
             new EngineLogContext(
                 NavigationId: string.IsNullOrWhiteSpace(record.NavigationId)
                     ? LogContext.CurrentCorrelationId
@@ -442,6 +731,21 @@ internal static class MissingApiTracker
                 ScriptId: record.ScriptId,
                 SpecArea: "WebIDL"),
             fields);
+    }
+
+    private static string TruncateExceptionText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        if (text.Length <= MaxExceptionTextLength)
+        {
+            return text;
+        }
+
+        return text.Substring(0, MaxExceptionTextLength);
     }
 
     private static string ResolveOutputRoot()
@@ -500,6 +804,8 @@ internal static class MissingApiTracker
         public string SiteKey { get; init; } = string.Empty;
         public string SiteUrl { get; set; } = string.Empty;
         public Dictionary<string, MissingApiRecord> Records { get; } = new(StringComparer.Ordinal);
+        public bool Dirty { get; set; }
+        public long Generation { get; set; }
     }
 
     private sealed class MissingApiSiteOutput
