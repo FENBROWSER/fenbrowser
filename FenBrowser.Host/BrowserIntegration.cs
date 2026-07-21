@@ -127,8 +127,14 @@ public class BrowserIntegration : IDisposable
     // A global 16ms animation tick can fire many times while one frame is still
     // being rendered; we coalesce those into at most one in-flight frame plus one
     // pending follow-up so a slow renderer never accumulates dozens of requests.
+    // Phase 3: the pending slot carries typed bits (reason + update kind) so the
+    // follow-up frame preserves the strongest requirements — a transform tick
+    // followed by a width tick must produce a Layout+Paint follow-up, not a bare
+    // Animation frame.
     private int _animationFrameInFlight;
-    private int _animationFramePending;
+    private int _pendingAnimationReasonBits;
+    private int _pendingAnimationUpdateKindBits;
+    private long _pendingAnimationGenerationCoalesced;
     // No-op RepaintReady suppression (Phase 7).
     private long _lastAdoptedRenderSnapshotVersion = -1;
     private long _lastRenderedImageCacheVersion = -1;
@@ -137,6 +143,13 @@ public class BrowserIntegration : IDisposable
     private DateTime _lastBackgroundAnimationFrameUtc = DateTime.MinValue;
     // Phase 8: duration of the second full-frame seed raster (when it runs).
     private long _lastSeedImageCreateMs;
+
+    // Phase 6: hidden-tab accumulation. Dirty work that arrives while the tab is
+    // not visible is accumulated here and synchronized on the first post-activation
+    // frame instead of being dropped or continuously rastered in the background.
+    private RenderFrameInvalidationReason _hiddenAccumulatedReasons;
+    private long _hiddenAccumulatedGeneration;
+    private bool _requiresVisibilitySyncFrame;
 
     // ── Phase 2: accumulated animation work for the next frame ──
     private readonly object _animationWorkLock = new();
@@ -594,15 +607,16 @@ public class BrowserIntegration : IDisposable
                 Math.Max(_pendingAnimationGeneration, animation.Generation);
         }
 
-        // Phase 2: per-integration single-flight gating. If a frame is already in
-        // flight for this tab, coalesce the new animation tick into one pending
-        // follow-up instead of requesting another frame. This prevents a free-
-        // running animation timer from stacking dozens of frame requests on a
-        // slow renderer; the latest animation state is still presented because
-        // the pending flag re-requests after the in-flight frame commits.
+        // Phase 2/3: per-integration single-flight gating with typed pending bits.
+        // If a frame is already in flight for this tab, merge the new animation
+        // tick into the pending slot atomically. The follow-up frame will use the
+        // strongest accumulated reason and update kind, not just a bare boolean.
         if (Interlocked.CompareExchange(ref _animationFrameInFlight, 1, 0) != 0)
         {
-            Volatile.Write(ref _animationFramePending, 1);
+            var reasonBits = (int)MapAnimationInvalidation(animation);
+            AtomicOr(ref _pendingAnimationReasonBits, reasonBits);
+            AtomicOr(ref _pendingAnimationUpdateKindBits, (int)animation.UpdateKind);
+            AtomicMax(ref _pendingAnimationGenerationCoalesced, animation.Generation);
             return;
         }
 
@@ -614,16 +628,57 @@ public class BrowserIntegration : IDisposable
     /// <summary>
     /// Called by the engine loop after a frame is committed so the animation
     /// single-flight gate can be released and any coalesced follow-up requested.
+    /// Phase 3: the follow-up frame uses the strongest accumulated reason and
+    /// update kind from the pending bits, not a bare boolean.
     /// </summary>
     internal void CompleteAnimationFrame()
     {
-        if (Interlocked.Exchange(ref _animationFrameInFlight, 0) == 1 &&
-            Interlocked.Exchange(ref _animationFramePending, 0) == 1)
+        if (Interlocked.Exchange(ref _animationFrameInFlight, 0) != 1)
         {
-            RequestFrame(
-                RenderFrameInvalidationReason.Animation,
-                "CssAnimationEngine");
+            return;
         }
+
+        int pendingReasons = Interlocked.Exchange(ref _pendingAnimationReasonBits, 0);
+        int pendingUpdateKind = Interlocked.Exchange(ref _pendingAnimationUpdateKindBits, 0);
+        long pendingGen = Interlocked.Read(ref _pendingAnimationGenerationCoalesced);
+
+        if (pendingReasons != 0)
+        {
+            var reasons = (RenderFrameInvalidationReason)pendingReasons;
+            // Ensure the Animation bit is set — it's always an animation follow-up.
+            reasons |= RenderFrameInvalidationReason.Animation;
+            RequestFrame(reasons, "CssAnimationEngine.FollowUp");
+        }
+    }
+
+    /// <summary>
+    /// Phase 3: atomically OR a value into an int location.
+    /// </summary>
+    private static void AtomicOr(ref int location, int value)
+    {
+        int observed;
+        int updated;
+        do
+        {
+            observed = Volatile.Read(ref location);
+            updated = observed | value;
+        }
+        while (Interlocked.CompareExchange(ref location, updated, observed) != observed);
+    }
+
+    /// <summary>
+    /// Phase 3: atomically set a long to the max of current and value.
+    /// </summary>
+    private static void AtomicMax(ref long location, long value)
+    {
+        long observed;
+        long updated;
+        do
+        {
+            observed = Interlocked.Read(ref location);
+            updated = Math.Max(observed, value);
+        }
+        while (Interlocked.CompareExchange(ref location, updated, observed) != observed);
     }
 
     private void RecordNoOpRepaintReady()
@@ -1338,12 +1393,16 @@ public class BrowserIntegration : IDisposable
             _lastEventLoopSliceTelemetry = sliceTelemetry;
 
             // Stage 3: Style sync + Layout + Paint + Present
-            bool rendered = SyncAndRender(deadline, coordinator);
+            var frameResult = SyncAndRender(deadline, coordinator);
 
-            // Release the animation single-flight gate (Phase 2). Any coalesced
-            // follow-up animation tick requests exactly one follow-up frame. Called
-            // unconditionally so the gate can never deadlock if a frame was skipped.
-            CompleteAnimationFrame();
+            // Phase 3: release the animation single-flight gate only when the
+            // frame was actually committed. Skipped, deferred, hidden-suppressed,
+            // and failed frames must retain their pending work so the follow-up
+            // frame carries the strongest accumulated invalidation.
+            if (frameResult == FrameAttemptResult.Committed)
+            {
+                CompleteAnimationFrame();
+            }
 
             // Stage 4: Adaptive wait
             bool inputPending = _inputQueue.Count > 0;
@@ -1465,7 +1524,7 @@ public class BrowserIntegration : IDisposable
     /// Stage 3: Sync DOM/styles from browser host, gate on CSS readiness, then render.
     /// Returns true if a frame was recorded.
     /// </summary>
-    private bool SyncAndRender(FenBrowser.Core.Deadlines.FrameDeadline deadline, FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator coordinator)
+    private FrameAttemptResult SyncAndRender(FenBrowser.Core.Deadlines.FrameDeadline deadline, FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator coordinator)
     {
         try
         {
@@ -1473,7 +1532,20 @@ public class BrowserIntegration : IDisposable
             {
                 if (_needsRepaint && _lastViewportSize.Width <= 0 && _hasReceivedViewportSize)
                     Console.WriteLine("[DBG-EL] WARNING: _needsRepaint=true but _lastViewportSize.Width=0!");
-                return false;
+                return FrameAttemptResult.NoWork;
+            }
+
+            // Phase 6: hidden/minimized tabs must not raster normal visual frames.
+            // Accumulate dirty work but skip raster/presentation.
+            if (VisibilityState == PageVisibilityState.Hidden ||
+                VisibilityState == PageVisibilityState.Minimized)
+            {
+                _hiddenAccumulatedReasons |=
+                    _pendingInvalidationReasons;
+                _hiddenAccumulatedGeneration++;
+                _requiresVisibilitySyncFrame = true;
+                ClearPendingFrameRequest();
+                return FrameAttemptResult.HiddenSuppressed;
             }
 
             // Sync latest state from browser host
@@ -1496,12 +1568,12 @@ public class BrowserIntegration : IDisposable
         {
             _rendererLock.ExitWriteLock();
         }
-            return true;
+            return FrameAttemptResult.Committed;
         }
         catch (Exception ex)
         {
             EngineLogBridge.Error($"[EngineLoop] CRASH: {ex}", LogCategory.Rendering);
-            return false;
+            return FrameAttemptResult.Failed;
         }
     }
     
@@ -3541,6 +3613,20 @@ public class BrowserIntegration : IDisposable
             var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
             ContextMenuRequested?.Invoke(new ContextMenuRequest(windowX, windowY, viewportOffsetX, viewportOffsetY, result));
         }
+    }
+
+    /// <summary>
+    /// Phase 3: result of a frame attempt, used to gate animation single-flight
+    /// release. The gate must only be released after a successful commit; skipped,
+    /// deferred, hidden-suppressed, and failed frames must retain pending work.
+    /// </summary>
+    public enum FrameAttemptResult
+    {
+        NoWork,
+        Deferred,
+        HiddenSuppressed,
+        Failed,
+        Committed
     }
 
     public event Action<ContextMenuRequest> ContextMenuRequested;

@@ -46,22 +46,25 @@ public class Phase2AnimationCoalescingTests
         }
 
         // Exactly one frame was requested (needsRepaint set once), and the gate
-        // never accumulated more than one in-flight + one pending tick.
+        // never accumulated more than one in-flight frame. Phase 3: pending bits
+        // now carry typed reason flags, not a bare boolean.
         Assert.True(GetNeedsRepaint(bi));
         Assert.Equal(1, GetInt(bi, "_animationFrameInFlight"));
-        Assert.Equal(1, GetInt(bi, "_animationFramePending"));
+        // The pending reason bits must be non-zero (Animation+Paint from 999 merged ticks).
+        int pendingReason = GetInt(bi, "_pendingAnimationReasonBits");
+        Assert.NotEqual(0, pendingReason);
 
         // Simulate the engine thread committing the frame: the pending follow-up
         // is released as exactly one additional frame request.
         InvokeCompleteAnimationFrame(bi);
         Assert.Equal(0, GetInt(bi, "_animationFrameInFlight"));
-        Assert.Equal(0, GetInt(bi, "_animationFramePending"));
+        Assert.Equal(0, GetInt(bi, "_pendingAnimationReasonBits"));
         Assert.True(GetNeedsRepaint(bi));
 
         // Committing again with no pending work must not request more frames.
         InvokeCompleteAnimationFrame(bi);
         Assert.Equal(0, GetInt(bi, "_animationFrameInFlight"));
-        Assert.Equal(0, GetInt(bi, "_animationFramePending"));
+        Assert.Equal(0, GetInt(bi, "_pendingAnimationReasonBits"));
     }
 
     [Fact]
@@ -93,7 +96,8 @@ public class Phase2AnimationCoalescingTests
 
         Assert.False(GetNeedsRepaint(bi));
         Assert.Equal(0, GetInt(bi, "_animationFrameInFlight"));
-        Assert.Equal(0, GetInt(bi, "_animationFramePending"));
+        Assert.Equal(0, GetInt(bi, "_pendingAnimationReasonBits"));
+        Assert.Equal(0, GetInt(bi, "_pendingAnimationUpdateKindBits"));
     }
 
     private static void SetOwnerDocument(Element element, Document doc)
