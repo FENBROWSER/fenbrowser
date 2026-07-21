@@ -192,6 +192,35 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         }
 
         /// <summary>
+        /// <summary>
+        /// Bottleneck 3: removes cached layout and style entries for elements
+        /// that are no longer in the live DOM. Called after each full layout
+        /// to prevent unbounded cache growth over a tab's lifetime.
+        /// </summary>
+        public void ClearOrphanedEntries(HashSet<Element> liveElements)
+        {
+            if (liveElements == null || liveElements.Count == 0) return;
+
+            var orphanedLayoutKeys = new List<Element>();
+            foreach (var key in _layoutCache.Keys)
+            {
+                if (!liveElements.Contains(key))
+                    orphanedLayoutKeys.Add(key);
+            }
+            foreach (var key in orphanedLayoutKeys)
+                _layoutCache.TryRemove(key, out _);
+
+            var orphanedStyleKeys = new List<Element>();
+            foreach (var key in _styleCache.Keys)
+            {
+                if (!liveElements.Contains(key))
+                    orphanedStyleKeys.Add(key);
+            }
+            foreach (var key in orphanedStyleKeys)
+                _styleCache.TryRemove(key, out _);
+        }
+
+        /// <summary>
         /// Clear all caches.
         /// </summary>
         public void ClearAll()

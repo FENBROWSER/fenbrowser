@@ -102,8 +102,8 @@ namespace FenBrowser.FenEngine.Rendering
         private float _retainedLayoutViewportWidth;
         private float _retainedLayoutViewportHeight;
         private string _retainedLayoutBaseUrl;
-        private const int MaxIncrementalLayoutDirtyNodeScan = 8192;
-        private const int MaxIncrementalLayoutRootCount = 16;
+        private const int MaxIncrementalLayoutDirtyNodeScan = 16384;
+        private const int MaxIncrementalLayoutRootCount = 32;
         private long _lastImageCacheVersion;
         // Phase 4: why the paint tree was (or was not) rebuilt on this frame.
         private PaintTreeRebuildReason _paintTreeRebuildReason;
@@ -1753,6 +1753,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private void CaptureLayoutCaches()
         {
+            var liveElements = new HashSet<Element>();
             foreach (var entry in _boxes)
             {
                 if (entry.Key is not Element element || entry.Value == null)
@@ -1760,8 +1761,14 @@ namespace FenBrowser.FenEngine.Rendering
                     continue;
                 }
 
+                liveElements.Add(element);
                 _incrementalLayoutManager.CacheLayout(element, entry.Value.BorderBox, entry.Value.ContentBox.Height);
             }
+
+            // Bottleneck 3: evict cached layouts/styles for elements that are no
+            // longer in the DOM. Without this, the IncrementalLayoutManager caches
+            // grow without bound over the lifetime of a tab/session.
+            _incrementalLayoutManager.ClearOrphanedEntries(liveElements);
         }
 
         private static bool CollectLayoutDirtyElements(Node root, List<Element> target, int maxNodeScan)
@@ -1803,9 +1810,17 @@ namespace FenBrowser.FenEngine.Rendering
                     continue;
                 }
 
+                // Bottleneck 3: prune subtrees that are entirely clean by checking
+                // ChildLayoutDirty. If a child has neither LayoutDirty nor
+                // ChildLayoutDirty set, its entire subtree is clean and can be
+                // skipped. This makes the scan O(dirty subtrees) instead of O(n).
                 for (var i = children.Length - 1; i >= 0; i--)
                 {
-                    stack.Push(children[i]);
+                    var child = children[i];
+                    if (child != null && (child.LayoutDirty || child.ChildLayoutDirty))
+                    {
+                        stack.Push(child);
+                    }
                 }
             }
 
@@ -1870,11 +1885,33 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (isolatedRoot == null)
             {
-                return false;
+                // Bottleneck 3: when the dirty element is in-flow with no
+                // formatting-context ancestor, use the dirty element itself as
+                // the isolation root, provided it has a parent with a layout box.
+                // This avoids falling back to full layout just because the page
+                // has no BFC-creating wrapper around the changed content.
+                // Only safe when no style change forced the full-layout plan
+                // (the BuildIncrementalLayoutPlan caller already checked that).
+                if (dirtyRoot.ParentElement != null && dirtyRoot.ParentElement != documentRoot)
+                {
+                    isolatedRoot = dirtyRoot;
+                }
+                else
+                {
+                    return false;
+                }
             }
 
             if (ReferenceEquals(isolatedRoot, documentRoot) || isolatedRoot.ParentElement == null)
             {
+                // If we promoted dirtyRoot itself as the isolation root and it
+                // sits directly under the document, it's still workable — the
+                // parent box comes from the document body.
+                if (isolatedRoot == dirtyRoot && dirtyRoot.ParentElement != null)
+                {
+                    return true;
+                }
+
                 return false;
             }
 
