@@ -3540,11 +3540,15 @@ public void Dispose()
                     }
                 }
 
+                // Always signal loading complete — even if a newer navigation
+                // (renderGeneration mismatch) superseded this one. Otherwise the
+                // loading bar spins forever after a tab switch.
+                await RaiseLoadingChangedAsync(false);
+
                 if (publishTelemetry)
                 {
                     PerformanceDiagnosticsStore.RecordNavigation(telemetry);
                     EngineLogCompat.Debug($"[PERF] FULL PAGE LOAD TIME: {totalRenderMs}ms", LogCategory.Rendering);
-                    await RaiseLoadingChangedAsync(false);
                 }
             }
         }
