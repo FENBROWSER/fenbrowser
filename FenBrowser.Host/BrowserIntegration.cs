@@ -121,6 +121,11 @@ public class BrowserIntegration : IDisposable
     private RenderFrameInvalidationReason _pendingInvalidationReasons =
         RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Viewport;
     private string _pendingInvalidationSource = "startup";
+
+    // Phase 4: synchronized frame-request accumulator. Add() returns true only on
+    // the no-pending→pending transition (used for wake signalling). Consume()
+    // atomically snapshots and clears pending state. Request counters for telemetry.
+    private readonly FrameRequestAccumulator _frameRequestAccumulator = new();
     private Action<AnimationFrameEvent> _animationFrameHandler;
     private bool _animationEventsDisposed;
     // Per-integration single-flight gate for animation-driven frames.
@@ -939,16 +944,14 @@ public class BrowserIntegration : IDisposable
         _pendingInvalidationReasons |= reason;
         _pendingInvalidationSource = MergeInvalidationSource(_pendingInvalidationSource, source);
 
-        // Phase 14: wake the engine only on the transition from "no pending frame"
-        // to "pending frame". Repeatedly signalling _wakeEvent while a frame is
-        // already pending (e.g. an animation burst) just adds kernel traffic; the
-        // pending reasons are already merged above and consumed on the next render.
-        bool wasPending = _needsRepaint;
-        _needsRepaint = true;
-        if (!wasPending)
+        // Phase 4: use the accumulator to gate wake signalling. Add() returns true
+        // only on the no-pending→pending transition — avoids spurious wake events
+        // when a frame is already pending.
+        if (_frameRequestAccumulator.Add(reason, source))
         {
             _wakeEvent.Set();
         }
+        _needsRepaint = true;
 
         if (notifyUi)
         {
@@ -1019,6 +1022,8 @@ public class BrowserIntegration : IDisposable
         _needsRepaint = false;
         _pendingInvalidationReasons = RenderFrameInvalidationReason.None;
         _pendingInvalidationSource = "idle";
+        // Phase 4: consume the accumulator so follow-up frames get a clean snapshot.
+        _frameRequestAccumulator.Consume();
     }
 
     // Phase 14: cap the number of distinct sources retained so a long-lived pending
@@ -4104,4 +4109,127 @@ public class ScrollPhysics
         IsAnimating = false;
     }
 }
+
+// ── Phase 4: atomic frame-request accumulator ──
+
+/// <summary>
+/// Thread-safe accumulator for frame requests. Producers call Add(); the consumer
+/// (RecordFrame) calls Consume() to atomically snapshot and clear pending state.
+/// Prevents the classic race where a request arrives on one thread while the
+/// render thread is clearing state after publishing.
+/// </summary>
+internal sealed class FrameRequestAccumulator
+{
+    private readonly object _gate = new();
+    private RenderFrameInvalidationReason _pendingReasons;
+    private readonly Dictionary<string, int> _sourceCounts = new();
+    private long _requestGeneration;
+    private bool _pending;
+
+    // Telemetry counters.
+    public long TotalRequests;
+    public long MergedRequests;
+    public long WakeSignals;
+    public long CommittedFrames;
+    public long FollowUpFrames;
+    public long RequestsWhileRendering;
+
+    public RenderFrameInvalidationReason CurrentReasons
+    {
+        get { lock (_gate) return _pendingReasons; }
+    }
+
+    public string CurrentPrimarySource
+    {
+        get
+        {
+            lock (_gate)
+            {
+                int best = 0;
+                string bestSource = "idle";
+                foreach (var kv in _sourceCounts)
+                {
+                    if (kv.Value > best) { best = kv.Value; bestSource = kv.Key; }
+                }
+                return bestSource;
+            }
+        }
+    }
+
+    public bool HasPending
+    {
+        get { lock (_gate) return _pending; }
+    }
+
+    /// <summary>
+    /// Returns true only on the transition from no-pending to pending.
+    /// Callers use this to gate wake-event signalling.
+    /// </summary>
+    public bool Add(RenderFrameInvalidationReason reason, string source)
+    {
+        lock (_gate)
+        {
+            TotalRequests++;
+            bool wasPending = _pending;
+            _pending = true;
+            _pendingReasons |= reason;
+            _requestGeneration++;
+
+            if (!string.IsNullOrWhiteSpace(source))
+            {
+                _sourceCounts.TryGetValue(source, out int count);
+                _sourceCounts[source] = count + 1;
+                // Bounded: keep at most 8 distinct sources.
+                if (_sourceCounts.Count > 8)
+                {
+                    var toRemove = _sourceCounts.OrderBy(kv => kv.Value).First().Key;
+                    _sourceCounts.Remove(toRemove);
+                }
+            }
+
+            if (wasPending)
+            {
+                MergedRequests++;
+                return false;
+            }
+            else
+            {
+                WakeSignals++;
+                return true;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Atomically snapshot and clear pending state. Returns the consumed snapshot.
+    /// </summary>
+    public FrameRequestSnapshot Consume()
+    {
+        lock (_gate)
+        {
+            var snapshot = new FrameRequestSnapshot(
+                _pendingReasons,
+                CurrentPrimarySource,
+                new Dictionary<string, int>(_sourceCounts),
+                _requestGeneration);
+
+            _pending = false;
+            _pendingReasons = RenderFrameInvalidationReason.None;
+            _sourceCounts.Clear();
+            _requestGeneration = 0;
+            CommittedFrames++;
+
+            return snapshot;
+        }
+    }
+}
+
+/// <summary>
+/// Immutable snapshot of pending frame-request state consumed atomically.
+/// </summary>
+internal sealed record FrameRequestSnapshot(
+    RenderFrameInvalidationReason Reasons,
+    string PrimarySource,
+    IReadOnlyDictionary<string, int> SourceCounts,
+    long Generation);
 
