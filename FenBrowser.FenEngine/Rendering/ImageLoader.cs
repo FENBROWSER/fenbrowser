@@ -87,6 +87,12 @@ namespace FenBrowser.FenEngine.Rendering
             public Func<Uri, Document, Task<BinaryFetchResult>> FetchDetailedForDocumentAsync { get; set; }
             public Action RequestRepaint { get; set; }
             public Action RequestRelayout { get; set; }
+            /// <summary>
+            /// Phase 6: set to true when the owning browsing context (tab/document)
+            /// is navigated away or disposed. Callbacks belonging to disposed
+            /// contexts are silently skipped.
+            /// </summary>
+            public bool IsDisposed { get; set; }
         }
 
         private sealed class ContextScope : IDisposable
@@ -397,6 +403,17 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public static void ClearLazyRegistry()
         {
+            // Phase 6: mark all pending request contexts as disposed before clearing
+            // so that any in-flight async callback (debounced repaint or relayout)
+            // can detect the stale context and skip it silently.
+            foreach (var urlEntry in _pendingLoadContexts)
+            {
+                foreach (var context in urlEntry.Value.Values)
+                {
+                    if (context != null) context.IsDisposed = true;
+                }
+            }
+
             _lazyRegistry.Clear();
             _pendingLoadContexts.Clear();
             lock (_pendingLock)
@@ -894,12 +911,18 @@ namespace FenBrowser.FenEngine.Rendering
                         continue;
                     }
 
+                    // Phase 6: skip contexts belonging to navigated-away documents.
+                    if (context.IsDisposed)
+                    {
+                        continue;
+                    }
+
                     var ownerId = string.IsNullOrWhiteSpace(context.OwnerId) ? "_default" : context.OwnerId;
                     contexts[ownerId] = context;
                 }
             }
 
-            if (fallbackContext != null)
+            if (fallbackContext != null && !fallbackContext.IsDisposed)
             {
                 var ownerId = string.IsNullOrWhiteSpace(fallbackContext.OwnerId) ? "_default" : fallbackContext.OwnerId;
                 contexts[ownerId] = fallbackContext;
@@ -914,15 +937,32 @@ namespace FenBrowser.FenEngine.Rendering
             // back to the process-global RequestRepaint when no scoped callback could
             // be invoked, so a single decoded image produces at most one repaint per
             // owning document and never a duplicate global signal.
+            // Phase 6: skip disposed contexts (navigated-away tabs) and deduplicate
+            // by OwnerId so multiple image completions in one debounce window invoke
+            // each owner at most once.
             bool invokedScopedCallback = false;
+            var invokedOwners = new HashSet<string>(StringComparer.Ordinal);
 
             if (contexts != null)
             {
-                foreach (var context in contexts)
+                for (int i = contexts.Count - 1; i >= 0; i--)
                 {
+                    var context = contexts[i];
                     if (context?.RequestRepaint == null)
                     {
                         continue;
+                    }
+
+                    if (context.IsDisposed)
+                    {
+                        contexts.RemoveAt(i);
+                        continue;
+                    }
+
+                    var ownerId = context.OwnerId ?? "_default";
+                    if (!invokedOwners.Add(ownerId))
+                    {
+                        continue; // already invoked for this owner
                     }
 
                     try
@@ -945,14 +985,28 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static void InvokeRelayout(List<ImageLoaderRequestContext> contexts)
         {
-            // Phase 6: same scoped-first policy as InvokeRepaint.
+            // Phase 6: same scoped-first + disposal + per-owner dedup policy as InvokeRepaint.
             bool invokedScopedCallback = false;
+            var invokedOwners = new HashSet<string>(StringComparer.Ordinal);
 
             if (contexts != null)
             {
-                foreach (var context in contexts)
+                for (int i = contexts.Count - 1; i >= 0; i--)
                 {
+                    var context = contexts[i];
                     if (context?.RequestRelayout == null)
+                    {
+                        continue;
+                    }
+
+                    if (context.IsDisposed)
+                    {
+                        contexts.RemoveAt(i);
+                        continue;
+                    }
+
+                    var ownerId = context.OwnerId ?? "_default";
+                    if (!invokedOwners.Add(ownerId))
                     {
                         continue;
                     }
@@ -1893,17 +1947,46 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static void RepaintAnimatedImageOwners()
         {
+            // Phase 6: skip disposed contexts and deduplicate by owner so a GIF in
+            // two sibling frames with the same owner invokes the callback only once.
             bool invokedScoped = false;
-            foreach (var context in _animatedGifOwners.Values)
+            var invokedOwners = new HashSet<string>(StringComparer.Ordinal);
+            var staleOwners = new List<string>();
+
+            foreach (var kvp in _animatedGifOwners)
             {
+                var context = kvp.Value;
+                if (context?.RequestRepaint == null)
+                {
+                    continue;
+                }
+
+                if (context.IsDisposed)
+                {
+                    staleOwners.Add(kvp.Key);
+                    continue;
+                }
+
+                var ownerId = context.OwnerId ?? "_default";
+                if (!invokedOwners.Add(ownerId))
+                {
+                    continue;
+                }
+
                 try
                 {
-                    context?.RequestRepaint?.Invoke();
+                    context.RequestRepaint.Invoke();
                     invokedScoped = true;
                 }
                 catch
                 {
                 }
+            }
+
+            // Prune disposed entries so the dictionary doesn't grow unbounded.
+            foreach (var key in staleOwners)
+            {
+                _animatedGifOwners.TryRemove(key, out _);
             }
 
             if (!invokedScoped)
