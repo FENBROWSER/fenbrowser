@@ -1,24 +1,17 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 
 namespace FenBrowser.Core.Logging;
 
 internal sealed class ConsoleEngineLogSink : ILogSink
 {
-    private readonly bool _writeConsole;
-    private readonly bool _writeDebug;
-
-    public ConsoleEngineLogSink(bool writeConsole = true, bool writeDebug = true)
-    {
-        _writeConsole = writeConsole;
-        _writeDebug = writeDebug;
-    }
-
     public void Write(in EngineLogEvent evt)
     {
         var marker = evt.Header.Marker == LogMarker.None ? string.Empty : $"[{evt.Header.Marker}]";
@@ -26,28 +19,13 @@ internal sealed class ConsoleEngineLogSink : ILogSink
         var source = string.IsNullOrWhiteSpace(evt.Payload?.SourceFile) ? string.Empty : $" | source={evt.Payload.SourceFile}:{evt.Payload.SourceLine}";
         var line = $"{evt.Header.TimestampUtc:HH:mm:ss.fff} [{evt.Header.Subsystem}][{evt.Header.Severity}]{marker} {evt.Payload?.MessageTemplate ?? string.Empty}{ctx}{source}";
 
-        if (_writeConsole)
+        try
         {
-            try
-            {
-                Console.WriteLine(line);
-            }
-            catch
-            {
-                // no-op
-            }
+            Console.WriteLine(line);
         }
-
-        if (_writeDebug)
+        catch
         {
-            try
-            {
-                System.Diagnostics.Debug.WriteLine(line);
-            }
-            catch
-            {
-                // no-op
-            }
+            // no-op — console output must not crash the engine
         }
     }
 
@@ -56,22 +34,224 @@ internal sealed class ConsoleEngineLogSink : ILogSink
     }
 }
 
-internal sealed class NdjsonEngineLogSink : ILogSink
+internal sealed class DebugEngineLogSink : ILogSink
 {
-    private readonly string _path;
-    private readonly object _lock = new();
-
-    public NdjsonEngineLogSink(string path)
+    public void Write(in EngineLogEvent evt)
     {
-        _path = path ?? throw new ArgumentNullException(nameof(path));
-        var dir = Path.GetDirectoryName(path);
+        var marker = evt.Header.Marker == LogMarker.None ? string.Empty : $"[{evt.Header.Marker}]";
+        var ctx = string.IsNullOrWhiteSpace(evt.Header.Context.Url) ? string.Empty : $" | url={evt.Header.Context.Url}";
+        var source = string.IsNullOrWhiteSpace(evt.Payload?.SourceFile) ? string.Empty : $" | source={evt.Payload.SourceFile}:{evt.Payload.SourceLine}";
+        var line = $"{evt.Header.TimestampUtc:HH:mm:ss.fff} [{evt.Header.Subsystem}][{evt.Header.Severity}]{marker} {evt.Payload?.MessageTemplate ?? string.Empty}{ctx}{source}";
+
+        try
+        {
+            System.Diagnostics.Debug.WriteLine(line);
+        }
+        catch
+        {
+            // no-op — debugger output must not crash the engine
+        }
+    }
+
+    public void Dispose()
+    {
+    }
+}
+
+/// <summary>
+/// Base class for rotating file sinks. Opens the file only for the
+/// duration of each write — no persistent file handle is held, so
+/// external readers (tests, log viewers, failure-bundle exporters)
+/// can always access the file between events.
+/// </summary>
+internal abstract class BufferedFileLogSink : ILogSink, IDisposable
+{
+    private readonly object _lock = new();
+    private readonly string _basePath;
+    private readonly int _maxFileSizeBytes;
+    private readonly int _maxArchivedFiles;
+
+    private string _currentPath;
+    private long _currentFileSize;
+    private int _rotationIndex;
+
+    private int _failureCount;
+    private volatile string _lastFailureType;
+    private volatile string _lastFailureMessage;
+
+    protected BufferedFileLogSink(
+        string baseFilePath,
+        int maxFileSizeBytes = 10 * 1024 * 1024,
+        int maxArchivedFiles = 10)
+    {
+        _basePath = baseFilePath ?? throw new ArgumentNullException(nameof(baseFilePath));
+        _maxFileSizeBytes = Math.Max(1024 * 1024, maxFileSizeBytes);
+        _maxArchivedFiles = Math.Max(1, maxArchivedFiles);
+
+        var dir = Path.GetDirectoryName(_basePath);
         if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
         {
             Directory.CreateDirectory(dir);
         }
+
+        ResolveCurrentPath();
     }
 
+    public bool IsHealthy => _failureCount < 3;
+    public int FailureCount => _failureCount;
+    public string LastFailureType => _lastFailureType;
+    public string LastFailureMessage => _lastFailureMessage;
+    public string CurrentPath => _currentPath;
+
     public void Write(in EngineLogEvent evt)
+    {
+        if (!IsHealthy)
+        {
+            return;
+        }
+
+        var json = FormatEvent(evt);
+        if (json == null)
+        {
+            return;
+        }
+
+        lock (_lock)
+        {
+            try
+            {
+                AppendLineToFile(json);
+
+                _currentFileSize += System.Text.Encoding.UTF8.GetByteCount(json) + 1;
+
+                if (_currentFileSize >= _maxFileSizeBytes)
+                {
+                    RotateLocked();
+                }
+
+                _failureCount = 0;
+            }
+            catch (Exception ex)
+            {
+                MarkFailure(ex);
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        // Nothing to dispose — streams are short-lived per-write.
+    }
+
+    public bool Flush(TimeSpan timeout)
+    {
+        // Each write already flushes; nothing to do.
+        return true;
+    }
+
+    protected abstract string FormatEvent(in EngineLogEvent evt);
+
+    private void AppendLineToFile(string json)
+    {
+        using var stream = new FileStream(
+            _currentPath,
+            FileMode.Append,
+            FileAccess.Write,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 4096);
+
+        using var writer = new StreamWriter(stream, System.Text.Encoding.UTF8, 4096);
+        writer.Write(json);
+        writer.Write('\n');
+        writer.Flush();
+        stream.Flush();
+    }
+
+    private void ResolveCurrentPath()
+    {
+        var dir = Path.GetDirectoryName(_basePath) ?? ".";
+        var nameWithoutExt = Path.GetFileNameWithoutExtension(_basePath);
+        var ext = Path.GetExtension(_basePath);
+        if (string.IsNullOrWhiteSpace(ext))
+        {
+            ext = ".jsonl";
+        }
+
+        _currentPath = _rotationIndex == 0
+            ? _basePath
+            : Path.Combine(dir, $"{nameWithoutExt}.{_rotationIndex:D3}{ext}");
+    }
+
+    private void RotateLocked()
+    {
+        _rotationIndex++;
+        ResolveCurrentPath();
+        _currentFileSize = 0;
+        DeleteExcessArchives(_maxArchivedFiles - 1);
+    }
+
+    private void DeleteExcessArchives(int maxKeep)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(_basePath) ?? ".";
+            var nameWithoutExt = Path.GetFileNameWithoutExtension(_basePath);
+            var ext = Path.GetExtension(_basePath);
+            if (string.IsNullOrWhiteSpace(ext))
+            {
+                ext = ".jsonl";
+            }
+
+            var pattern = $"{nameWithoutExt}.*{ext}";
+            var files = Directory.GetFiles(dir, pattern)
+                .OrderByDescending(f => f, StringComparer.Ordinal)
+                .ToList();
+
+            for (var i = maxKeep; i < files.Count; i++)
+            {
+                try { File.Delete(files[i]); } catch { /* best-effort */ }
+            }
+        }
+        catch
+        {
+            // best-effort
+        }
+    }
+
+    private void MarkFailure(Exception ex)
+    {
+        Interlocked.Increment(ref _failureCount);
+        _lastFailureType = ex.GetType().Name;
+        _lastFailureMessage = ex.Message;
+
+        var fc = _failureCount;
+        if (fc == 1 || fc == 3)
+        {
+            try
+            {
+                Debug.WriteLine(
+                    $"[EngineLog] File sink failure #{fc} (path={_currentPath ?? "?"}): " +
+                    $"{ex.GetType().Name}: {ex.Message}");
+            }
+            catch
+            {
+                // absolute last resort
+            }
+        }
+    }
+}
+
+internal sealed class NdjsonEngineLogSink : BufferedFileLogSink
+{
+    public NdjsonEngineLogSink(string path)
+        : base(
+            baseFilePath: path,
+            maxFileSizeBytes: (BrowserSettings.Instance?.Logging?.MaxLogFileSizeMB ?? 10) * 1024 * 1024,
+            maxArchivedFiles: BrowserSettings.Instance?.Logging?.MaxArchivedFiles ?? 10)
+    {
+    }
+
+    protected override string FormatEvent(in EngineLogEvent evt)
     {
         var fields = evt.Payload?.Fields;
         var obj = new Dictionary<string, object>
@@ -94,76 +274,21 @@ internal sealed class NdjsonEngineLogSink : ILogSink
             ["fields"] = fields
         };
 
-        var json = JsonSerializer.Serialize(obj);
-        lock (_lock)
-        {
-            ResilientFileWriter.AppendAllText(_path, json + Environment.NewLine);
-        }
-    }
-
-    public void Dispose()
-    {
+        return JsonSerializer.Serialize(obj);
     }
 }
 
-internal sealed class RingBufferEngineLogSink : ILogSink
+internal sealed class DiagnosticTraceEngineLogSink : BufferedFileLogSink
 {
-    private readonly ConcurrentQueue<EngineLogEvent> _events = new();
-    private readonly int _capacity;
-
-    public RingBufferEngineLogSink(int capacity)
-    {
-        _capacity = Math.Max(100, capacity);
-    }
-
-    public void Write(in EngineLogEvent evt)
-    {
-        _events.Enqueue(evt);
-        while (_events.Count > _capacity)
-        {
-            _events.TryDequeue(out _);
-        }
-    }
-
-    public List<EngineLogEvent> Snapshot(int count)
-    {
-        var all = _events.ToArray();
-        if (count <= 0 || all.Length <= count)
-        {
-            return new List<EngineLogEvent>(all);
-        }
-
-        var start = all.Length - count;
-        var list = new List<EngineLogEvent>(count);
-        for (var i = start; i < all.Length; i++)
-        {
-            list.Add(all[i]);
-        }
-
-        return list;
-    }
-
-    public void Dispose()
-    {
-    }
-}
-
-internal sealed class DiagnosticTraceEngineLogSink : ILogSink
-{
-    private readonly string _path;
-    private readonly object _lock = new();
-
     public DiagnosticTraceEngineLogSink(string path)
+        : base(
+            baseFilePath: path,
+            maxFileSizeBytes: (BrowserSettings.Instance?.Logging?.MaxLogFileSizeMB ?? 10) * 1024 * 1024,
+            maxArchivedFiles: BrowserSettings.Instance?.Logging?.MaxArchivedFiles ?? 10)
     {
-        _path = path ?? throw new ArgumentNullException(nameof(path));
-        var dir = Path.GetDirectoryName(path);
-        if (!string.IsNullOrWhiteSpace(dir) && !Directory.Exists(dir))
-        {
-            Directory.CreateDirectory(dir);
-        }
     }
 
-    public void Write(in EngineLogEvent evt)
+    protected override string FormatEvent(in EngineLogEvent evt)
     {
         var data = BuildData(evt);
         var traceEvent = new Dictionary<string, object>
@@ -191,15 +316,7 @@ internal sealed class DiagnosticTraceEngineLogSink : ILogSink
             traceEvent["event_id"] = evt.Header.EventId.ToString();
         }
 
-        var json = JsonSerializer.Serialize(traceEvent);
-        lock (_lock)
-        {
-            ResilientFileWriter.AppendAllText(_path, json + Environment.NewLine);
-        }
-    }
-
-    public void Dispose()
-    {
+        return JsonSerializer.Serialize(traceEvent);
     }
 
     private static Dictionary<string, object> BuildData(in EngineLogEvent evt)
@@ -291,5 +408,73 @@ internal sealed class DiagnosticTraceEngineLogSink : ILogSink
             LogSubsystem.Verification => "Performance",
             _ => "Performance"
         };
+    }
+}
+
+internal sealed class RingBufferEngineLogSink : ILogSink
+{
+    private readonly ConcurrentQueue<EngineLogEvent> _events = new();
+    private readonly int _capacity;
+    private int _count;
+
+    public RingBufferEngineLogSink(int capacity)
+    {
+        _capacity = Math.Max(100, capacity);
+    }
+
+    public void Write(in EngineLogEvent evt)
+    {
+        _events.Enqueue(evt);
+        var c = Interlocked.Increment(ref _count);
+
+        if (c > _capacity + 256)
+        {
+            TrimExcess();
+        }
+        else
+        {
+            while (c > _capacity && _events.TryDequeue(out _))
+            {
+                c = Interlocked.Decrement(ref _count);
+            }
+        }
+    }
+
+    private void TrimExcess()
+    {
+        var excess = Math.Max(0, _count - _capacity + 128);
+        for (var i = 0; i < excess; i++)
+        {
+            if (_events.TryDequeue(out _))
+            {
+                Interlocked.Decrement(ref _count);
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+
+    public List<EngineLogEvent> Snapshot(int count)
+    {
+        var all = _events.ToArray();
+        if (count <= 0 || all.Length <= count)
+        {
+            return new List<EngineLogEvent>(all);
+        }
+
+        var start = all.Length - count;
+        var list = new List<EngineLogEvent>(count);
+        for (var i = start; i < all.Length; i++)
+        {
+            list.Add(all[i]);
+        }
+
+        return list;
+    }
+
+    public void Dispose()
+    {
     }
 }

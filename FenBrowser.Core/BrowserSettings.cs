@@ -40,14 +40,14 @@ namespace FenBrowser.Core
     {
         public bool EnableLogging { get; set; } = true;
         public int EnabledCategories { get; set; } = -1;
-        public int MinimumLevel { get; set; } = (int)FenBrowser.Core.Logging.LogLevel.Info;
-        public bool LogToFile { get; set; } = true;
-        public bool LogToDebug { get; set; } = true;
+        public int MinimumLevel { get; set; } = (int)FenBrowser.Core.Logging.LogLevel.Warn;
+        public bool LogToFile { get; set; } = false;
+        public bool LogToDebug { get; set; } = false;
         public int MaxLogFileSizeMB { get; set; } = 10;
         public int MaxArchivedFiles { get; set; } = 10;
-        public int MemoryBufferSize { get; set; } = 1000;
-        public bool MirrorStructuredLogs { get; set; } = true;
-        public string LoggingPreset { get; set; } = "developer";
+        public int MemoryBufferSize { get; set; } = 5000;
+        public bool MirrorStructuredLogs { get; set; } = false;
+        public string LoggingPreset { get; set; } = "normal";
 
         /// <summary>
         /// Enables structured cookie ingress/egress diagnostics (PII-safe: names,
@@ -81,7 +81,7 @@ namespace FenBrowser.Core
                 MemoryBufferSize = 1000;
 
             if (string.IsNullOrWhiteSpace(LoggingPreset))
-                LoggingPreset = "developer";
+                LoggingPreset = "normal";
 
             var legacyBaseDirectoryPath = Path.Combine(AppContext.BaseDirectory, "logs");
             if (string.IsNullOrWhiteSpace(LogPath) ||

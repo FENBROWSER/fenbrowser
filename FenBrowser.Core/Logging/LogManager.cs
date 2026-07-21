@@ -28,20 +28,69 @@ public sealed class LogManager
 
     public static void Initialize(bool enabled, LogCategory categories, LogLevel minLevel)
     {
-        var options = new EngineLoggingOptions
+        // Delegate to the shared preset/settings pipeline — do NOT force-enable sinks.
+        // This entry point is kept for backward compatibility with legacy callers;
+        // it respects the current LogSettings (including the selected preset).
+        var settings = BrowserSettings.Instance?.Logging;
+        var opts = new EngineLoggingOptions
         {
             Enabled = enabled,
+            EnabledCategories = categories,
             GlobalMinimumSeverity = EngineLogCompatibility.FromLegacyLevel(minLevel),
-            EnableConsoleSink = true,
-            EnableNdjsonSink = true,
-            EnableRingBufferSink = true,
-            EnableTraceSink = true,
-            RingBufferCapacity = Math.Max(1000, BrowserSettings.Instance?.Logging?.MemoryBufferSize ?? 5000)
+            EnableConsoleSink = false,
+            EnableDebugSink = false,
+            EnableNdjsonSink = false,
+            EnableRingBufferSink = enabled,
+            EnableTraceSink = false,
+            RingBufferCapacity = Math.Max(1000, settings?.MemoryBufferSize ?? 5000),
+            DispatcherQueueCapacity = 32768
         };
 
-        options.NdjsonFilePath = BuildNdjsonPath(BrowserSettings.Instance?.Logging?.LogPath);
-        options.TraceFilePath = options.NdjsonFilePath.Replace(".jsonl", "_trace.jsonl", StringComparison.OrdinalIgnoreCase);
-        EngineLog.Configure(options);
+        // Apply the configured preset, then gate with user settings.
+        var preset = Environment.GetEnvironmentVariable("FEN_LOG_PRESET");
+        if (string.IsNullOrWhiteSpace(preset))
+        {
+            preset = settings?.LoggingPreset;
+        }
+
+        if (!EngineLoggingPresets.Apply(preset, opts))
+        {
+            EngineLoggingPresets.Apply(EngineLoggingPresets.Normal, opts);
+        }
+
+        // Gate: user settings can only disable sinks.
+        if (settings != null)
+        {
+            if (!settings.EnableLogging)
+            {
+                opts.Enabled = false;
+                opts.EnableRingBufferSink = false;
+            }
+
+            if (!settings.LogToFile)
+            {
+                opts.EnableNdjsonSink = false;
+                opts.EnableTraceSink = false;
+            }
+
+            if (!settings.LogToDebug)
+            {
+                opts.EnableDebugSink = false;
+            }
+        }
+
+        if (opts.EnableNdjsonSink)
+        {
+            opts.NdjsonFilePath = BuildNdjsonPath(settings?.LogPath);
+        }
+
+        if (opts.EnableTraceSink)
+        {
+            opts.TraceFilePath = (opts.NdjsonFilePath ?? BuildNdjsonPath(settings?.LogPath))
+                .Replace(".jsonl", "_trace.jsonl", StringComparison.OrdinalIgnoreCase);
+        }
+
+        EngineLog.Configure(opts);
     }
 
     public void SetLogFilePath(string path)
@@ -51,22 +100,26 @@ public sealed class LogManager
             return;
         }
 
-        var options = new EngineLoggingOptions
+        // Use the shared pipeline, not a force-everything constructor.
+        // Enable only the file-based sinks requested.
+        var settings = BrowserSettings.Instance?.Logging;
+        var opts = new EngineLoggingOptions
         {
             Enabled = true,
             GlobalMinimumSeverity = LogSeverity.Debug,
-            EnableConsoleSink = true,
+            EnableConsoleSink = false,
+            EnableDebugSink = false,
             EnableNdjsonSink = true,
             EnableRingBufferSink = true,
-            EnableTraceSink = true,
-            RingBufferCapacity = Math.Max(1000, BrowserSettings.Instance?.Logging?.MemoryBufferSize ?? 5000),
+            EnableTraceSink = false,
+            RingBufferCapacity = Math.Max(1000, settings?.MemoryBufferSize ?? 5000),
+            DispatcherQueueCapacity = 32768,
             NdjsonFilePath = path.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase)
                 ? path
                 : path.Replace(".log", ".jsonl", StringComparison.OrdinalIgnoreCase)
         };
-        options.TraceFilePath = options.NdjsonFilePath.Replace(".jsonl", "_trace.jsonl", StringComparison.OrdinalIgnoreCase);
 
-        EngineLog.Configure(options);
+        EngineLog.Configure(opts);
     }
 
     public static bool IsEnabled(LogCategory category, LogLevel level)

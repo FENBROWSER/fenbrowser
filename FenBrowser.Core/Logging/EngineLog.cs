@@ -51,34 +51,52 @@ public static class EngineLog
     {
         var settings = BrowserSettings.Instance?.Logging;
         var loggingEnabled = settings?.EnableLogging ?? true;
-        var logToFile = loggingEnabled && (settings?.LogToFile ?? true);
-        var logToDebug = loggingEnabled && (settings?.LogToDebug ?? true);
+
+        // Start from framework defaults (all sinks off, ring buffer on).
         var opts = new EngineLoggingOptions
         {
             Enabled = loggingEnabled,
             EnabledCategories = settings != null ? (LogCategory)settings.EnabledCategories : LogCategory.All,
             GlobalMinimumSeverity = settings != null
                 ? EngineLogCompatibility.FromLegacyLevel((LogLevel)settings.MinimumLevel)
-                : LogSeverity.Info,
-            EnableConsoleSink = logToDebug,
-            EnableDebugSink = logToDebug,
-            EnableNdjsonSink = logToFile,
-            EnableRingBufferSink = loggingEnabled,
-            EnableTraceSink = logToFile,
+                : LogSeverity.Warn,
+            EnableConsoleSink = false,
+            EnableDebugSink = false,
+            EnableNdjsonSink = false,
+            EnableRingBufferSink = true,
+            EnableTraceSink = false,
             RingBufferCapacity = Math.Max(1000, settings?.MemoryBufferSize ?? 5000),
-            DispatcherQueueCapacity = 32768,
-            NdjsonFilePath = logToFile ? BuildNdjsonPath(settings?.LogPath) : null,
-            TraceFilePath = logToFile ? BuildTracePath(settings?.LogPath) : null
+            DispatcherQueueCapacity = 32768
         };
 
+        // Step 1: Apply the selected preset (or Normal as fallback).
         var preset = Environment.GetEnvironmentVariable("FEN_LOG_PRESET");
         if (string.IsNullOrWhiteSpace(preset))
         {
             preset = settings?.LoggingPreset;
         }
 
-        EngineLoggingPresets.Apply(preset, opts);
+        if (!EngineLoggingPresets.Apply(preset, opts))
+        {
+            // Unrecognized or missing preset → fall back to Normal.
+            EngineLoggingPresets.Apply(EngineLoggingPresets.Normal, opts);
+        }
+
+        // Step 2: Apply explicit user restrictions as gates.
+        // User settings may further DISABLE sinks but must NOT re-enable
+        // sinks that the preset deliberately disabled.
         ApplySettingsSinkGates(opts, settings);
+
+        // Step 3: Resolve file paths only for sinks that remain enabled.
+        if (opts.EnableNdjsonSink)
+        {
+            opts.NdjsonFilePath = BuildNdjsonPath(settings?.LogPath);
+        }
+
+        if (opts.EnableTraceSink)
+        {
+            opts.TraceFilePath = BuildTracePath(settings?.LogPath);
+        }
 
         Configure(opts);
     }
@@ -332,9 +350,16 @@ public static class EngineLog
             sinks.Add(ring);
         }
 
+        // Console sink writes ONLY to Console.WriteLine.
         if (options.EnableConsoleSink)
         {
-            sinks.Add(new ConsoleEngineLogSink(writeConsole: true, writeDebug: options.EnableDebugSink));
+            sinks.Add(new ConsoleEngineLogSink());
+        }
+
+        // Debug sink writes ONLY to System.Diagnostics.Debug.WriteLine.
+        if (options.EnableDebugSink)
+        {
+            sinks.Add(new DebugEngineLogSink());
         }
 
         if (options.EnableNdjsonSink && !string.IsNullOrWhiteSpace(options.NdjsonFilePath))
@@ -351,6 +376,12 @@ public static class EngineLog
         return new EngineLogger(options, dispatcher, ring);
     }
 
+    /// <summary>
+    /// Applies explicit user settings as restrictive gates over the preset.
+    /// User settings may further DISABLE a sink the preset selected,
+    /// but must NOT re-enable a sink the preset deliberately disabled.
+    /// Ring buffer is always gated by the global EnableLogging switch.
+    /// </summary>
     private static void ApplySettingsSinkGates(EngineLoggingOptions options, LogSettings settings)
     {
         if (settings == null)
@@ -358,14 +389,42 @@ public static class EngineLog
             return;
         }
 
-        options.Enabled = settings.EnableLogging;
-        options.EnabledCategories = (LogCategory)settings.EnabledCategories;
-        options.EnableConsoleSink = settings.EnableLogging && settings.LogToDebug;
-        options.EnableDebugSink = settings.EnableLogging && settings.LogToDebug;
-        options.EnableNdjsonSink = settings.EnableLogging && settings.LogToFile;
-        options.EnableTraceSink = settings.EnableLogging && settings.LogToFile;
-        options.EnableRingBufferSink = settings.EnableLogging;
+        // Global on/off gate: if logging is disabled entirely, turn off everything.
+        if (!settings.EnableLogging)
+        {
+            options.Enabled = false;
+            options.EnableConsoleSink = false;
+            options.EnableDebugSink = false;
+            options.EnableNdjsonSink = false;
+            options.EnableTraceSink = false;
+            options.EnableRingBufferSink = false;
+            options.NdjsonFilePath = null;
+            options.TraceFilePath = null;
+            return;
+        }
 
+        // When logging is enabled, apply category filter.
+        options.EnabledCategories = (LogCategory)settings.EnabledCategories;
+
+        // Console and Debug are now separate sinks controlled independently.
+        // LogToDebug only gates the debugger sink (not console).
+        if (!settings.LogToDebug)
+        {
+            options.EnableDebugSink = false;
+        }
+
+        // LogToFile only gates file sinks (NDJSON + trace).
+        if (!settings.LogToFile)
+        {
+            options.EnableNdjsonSink = false;
+            options.EnableTraceSink = false;
+        }
+
+        // Ring buffer is always enabled when logging is on.
+        // It's gated ONLY by EnableLogging — individual settings cannot disable it.
+        // (The preset controls it.)
+
+        // Clean up file paths for disabled sinks.
         if (!options.EnableNdjsonSink)
         {
             options.NdjsonFilePath = null;
