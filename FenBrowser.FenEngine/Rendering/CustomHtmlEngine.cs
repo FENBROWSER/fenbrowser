@@ -373,6 +373,25 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        /// <summary>
+        /// Phase 12: async variant that does not block the calling thread while
+        /// the JS worker executes click/keyboard event handlers.
+        /// </summary>
+        public async System.Threading.Tasks.Task<bool> DispatchPointerEventAsync(Element element, string eventType, BrowserDomEventInit eventInit = null)
+        {
+            if (element == null || _activeJs == null || string.IsNullOrWhiteSpace(eventType)) return true;
+
+            try
+            {
+                return await _activeJs.DispatchEventForElementAsync(element, eventType, eventInit).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Error($"[CustomHtmlEngine] DispatchPointerEventAsync error: {ex.Message}", LogCategory.Rendering);
+                return true;
+            }
+        }
+
         public void ClearAllCookies()
         {
             CookieJar.ClearAll();

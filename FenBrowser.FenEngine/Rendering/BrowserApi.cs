@@ -3219,7 +3219,10 @@ pre {{
         /// </summary>
         public async Task DispatchClickAndActivate(float x, float y, int button)
         {
-            DispatchInputEvent("click", x, y, button);
+            // Phase 12: use the async dispatch path so the engine thread is not
+            // blocked while the JS worker executes the click handler. The hit-test
+            // and event creation are synchronous; only JS dispatch is awaited.
+            await DispatchInputEventAsync("click", x, y, button).ConfigureAwait(false);
             var activationTarget = _lastClickTarget;
             if (activationTarget != null)
             {
@@ -3364,6 +3367,118 @@ pre {{
             // NOTE: HandleElementClick is NOT called here because BrowserIntegration's
             // HandleMouseUp already calls it with the paint-tree hit-test result. Calling it
             // here too would cause double-navigation for links and double-focus for inputs.
+            return defaultAllowed;
+        }
+
+        /// <summary>
+        /// Phase 12: async variant of <see cref="DispatchInputEvent"/>. Performs the
+        /// same hit-test and event-creation synchronously, then asynchronously
+        /// dispatches the JS event via <see cref="CustomHtmlEngine.DispatchPointerEventAsync"/>
+        /// without blocking the calling thread while the JS worker executes.
+        /// </summary>
+        private async System.Threading.Tasks.Task<bool> DispatchInputEventAsync(
+            string type,
+            float x,
+            float y,
+            int button,
+            Element fallbackTarget = null,
+            float deltaX = 0,
+            float deltaY = 0)
+        {
+            var eventType = MapToInputEventType(type);
+            var buttonMask = BuildButtonMask(button, type);
+            var renderContext = _activeRenderer?.CreateRenderContext() ?? _engine.BuildRenderContext();
+            var context = _engine.Context;
+            var inputEvent = new InputEvent
+            {
+                Type = eventType,
+                X = x,
+                Y = y,
+                Button = button,
+                DeltaX = deltaX,
+                DeltaY = deltaY,
+                Buttons = buttonMask,
+                PointerId = 1,
+                PointerType = "mouse",
+                Pressure = buttonMask != 0 ? 0.5f : 0f,
+                IsPrimary = true,
+                PageX = x,
+                PageY = y,
+                ScreenX = x,
+                ScreenY = y
+            };
+
+            _inputManager.ProcessEvent(inputEvent, renderContext, context);
+
+            if (inputEvent.Target == null && fallbackTarget != null)
+            {
+                inputEvent.Target = fallbackTarget;
+            }
+            _lastDispatchedInputTarget = inputEvent.Target;
+
+            var eventInit = new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
+            {
+                ClientX = inputEvent.X,
+                ClientY = inputEvent.Y,
+                PageX = inputEvent.PageX,
+                PageY = inputEvent.PageY,
+                ScreenX = inputEvent.ScreenX,
+                ScreenY = inputEvent.ScreenY,
+                Button = button,
+                Buttons = buttonMask,
+                DeltaX = deltaX,
+                DeltaY = deltaY,
+                PointerId = 1,
+                PointerType = "mouse",
+                Pressure = buttonMask != 0 ? 0.5f : 0f,
+                IsPrimary = true,
+                Bubbles = true,
+                Cancelable = true
+            };
+            var defaultAllowed = true;
+
+            var isClick = string.Equals(type, "click", StringComparison.OrdinalIgnoreCase);
+            if (isClick)
+            {
+                _lastClickHadTarget = inputEvent.Target != null;
+                _lastClickTarget = inputEvent.Target;
+                _lastClickDefaultAllowed = true;
+                _suppressNextDomClickDispatchInHandleElementClick = false;
+            }
+
+            if (inputEvent.Target != null && IsScriptDomInputEvent(type))
+            {
+                var pointerAlias = MapMouseInputToPointerAlias(type);
+                if (!string.IsNullOrEmpty(pointerAlias))
+                {
+                    defaultAllowed = await _engine.DispatchPointerEventAsync(inputEvent.Target, pointerAlias, eventInit).ConfigureAwait(false);
+                }
+
+                var mouseDefaultAllowed = await _engine.DispatchPointerEventAsync(inputEvent.Target, type, eventInit).ConfigureAwait(false);
+                defaultAllowed = mouseDefaultAllowed && defaultAllowed;
+            }
+
+            if (isClick)
+            {
+                _lastClickDefaultAllowed = inputEvent.Target == null || defaultAllowed;
+                _suppressNextDomClickDispatchInHandleElementClick = inputEvent.Target != null;
+            }
+
+            if (string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase))
+            {
+                var hovered = NormalizeHoverTarget(inputEvent.Target);
+                if (!ReferenceEquals(ElementStateManager.Instance.HoveredElement, hovered))
+                {
+                    ElementStateManager.Instance.SetHoveredElement(hovered);
+                }
+            }
+
+            if (string.Equals(type, "mousedown", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(type, "click", StringComparison.OrdinalIgnoreCase))
+            {
+                SyncFocusFromPointerTarget(inputEvent.Target);
+            }
+
             return defaultAllowed;
         }
 

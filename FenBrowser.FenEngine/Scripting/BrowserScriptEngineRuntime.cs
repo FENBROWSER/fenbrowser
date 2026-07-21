@@ -316,6 +316,11 @@ public interface IBrowserScriptEngine
     void NotifyPopState(object state);
     void NotifyFrameScrollChanged(Element frameElement);
     bool DispatchEventForElement(Element element, string eventName, BrowserDomEventInit eventInit = null);
+    /// <summary>
+    /// Phase 12: non-blocking variant. Dispatches a JS event asynchronously so
+    /// the engine thread is not blocked while the JS worker executes handlers.
+    /// </summary>
+    Task<bool> DispatchEventForElementAsync(Element element, string eventName, BrowserDomEventInit eventInit = null);
     object Evaluate(string script);
     bool TryResolveHostObject(FenBrowser.Js.Runtime.JsValue value, out object hostObject);
     object ConvertJsValueToObject(FenBrowser.Js.Runtime.JsValue value);
@@ -872,6 +877,64 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
     }
 
+    /// <summary>
+    /// Phase 12: non-blocking variant of <see cref="DispatchEventForElement"/>.
+    /// Dispatches a JS event to the given element and returns a Task that
+    /// completes when JS execution finishes (or times out). The calling thread
+    /// is never blocked — the JS worker signals completion via TCS.
+    /// </summary>
+    public async Task<bool> DispatchEventForElementAsync(Element element, string eventName, BrowserDomEventInit eventInit = null)
+    {
+        if (element == null || string.IsNullOrWhiteSpace(eventName))
+            return true;
+
+        if (TryGetFrameRealm(element.OwnerDocument, out var frameRealm))
+        {
+            var defaultAllowed = frameRealm.DispatchEventForElement(element, eventName, eventInit);
+            SyncFrameRealmObservables(TryGetFrameElementForDocument(element.OwnerDocument), frameRealm);
+            return defaultAllowed;
+        }
+
+        try
+        {
+            var inputTimeoutMs = ResolveFenJsInputEventTimeoutMs();
+            return await RunFenJsWithLargeStackAsync(() =>
+            {
+                lock (_fenJsLock)
+                {
+                    var currentDocument = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument;
+                    var windowContext = _parentRealmOwner != null &&
+                        ReferenceEquals(element.OwnerDocument, currentDocument)
+                            ? null
+                            : ActivateSubdocumentWindowContext(element.OwnerDocument, null);
+                    using (windowContext)
+                    {
+                        return _interpreter.RunWithExecutionBudget(
+                            inputTimeoutMs,
+                            10_000_000,
+                            () =>
+                            {
+                                var eventValue = CreateBrowserDomEventValue(element, eventName, eventInit, out var dispatchState);
+                                var defaultAllowed = DispatchElementEventWithActivation(
+                                    element,
+                                    eventName,
+                                    eventValue,
+                                    dispatchState);
+                                _interpreter.PumpMicrotasks();
+                                RecordMicrotaskCheckpoint("event:" + eventName);
+                                return defaultAllowed;
+                            });
+                    }
+                }
+            }, inputTimeoutMs).ConfigureAwait(false);
+        }
+        catch (JsThrownException ex) when (IsFenJsInputEventTimeout(ex))
+        {
+            throw new FenBrowser.FenEngine.Errors.FenTimeoutError(
+                $"Timed out dispatching '{eventName}' event.");
+        }
+    }
+
     private static bool IsFenJsInputEventTimeout(JsThrownException ex)
     {
         var message = ex?.Message ?? string.Empty;
@@ -1249,6 +1312,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private object _fenJsWorkResult;
     private System.Runtime.ExceptionServices.ExceptionDispatchInfo _fenJsWorkException;
     private bool _fenJsWorkerRunning;
+    // Phase 12: async dispatch infrastructure. When non-null the worker thread
+    // completes the TCS instead of (or in addition to) signalling the ARE.
+    private TaskCompletionSource<object> _fenJsWorkTcs;
+    private CancellationTokenSource _fenJsWorkCts;
 
     private void EnsureFenJsWorkerRunning()
     {
@@ -1272,13 +1339,25 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             _fenJsWorkAvailable.WaitOne();
             if (!_fenJsWorkerRunning) break;
 
+            // Phase 12: capture the TCS before executing work so the calling
+            // thread cannot overwrite it mid-execution.
+            TaskCompletionSource<object> tcs;
+            lock (_fenJsWorkGate)
+            {
+                tcs = _fenJsWorkTcs;
+                _fenJsWorkTcs = null;
+            }
+
             try
             {
                 _fenJsWorkResult = _fenJsPendingWork();
+                tcs?.TrySetResult(_fenJsWorkResult);
             }
             catch (Exception ex)
             {
-                _fenJsWorkException = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex);
+                var edi = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex);
+                _fenJsWorkException = edi;
+                tcs?.TrySetException(ex);
             }
             _fenJsWorkDone.Set();
         }
@@ -1364,6 +1443,77 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             }
         }
 
+    }
+
+    /// <summary>
+    /// Phase 12: non-blocking variant of <see cref="RunFenJsWithLargeStack{T}"/>.
+    /// Posts work to the JS worker thread and returns a Task that completes when
+    /// the worker finishes, without blocking the calling (engine) thread. Applies
+    /// the same timeout policy as the synchronous path via CancellationToken.
+    /// </summary>
+    private async Task<T> RunFenJsWithLargeStackAsync<T>(Func<T> work, long timeoutMs = -1)
+    {
+        if (_onFenJsLargeStackThread)
+        {
+            // Re-entrant: run inline.
+            return work();
+        }
+
+        EnsureFenJsWorkerRunning();
+
+        var tcs = new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cts = timeoutMs > 0
+            ? new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs))
+            : null;
+
+        lock (_fenJsWorkGate)
+        {
+            _fenJsWorkException = null;
+            _fenJsWorkResult = null;
+            _fenJsPendingWork = () => (object)work();
+            _fenJsWorkTcs = tcs;
+            _fenJsWorkCts = cts;
+            _fenJsWorkAvailable.Set();
+        }
+
+        try
+        {
+            if (cts != null)
+            {
+                using var reg = cts.Token.Register(() =>
+                {
+                    tcs.TrySetException(new FenBrowser.FenEngine.Errors.FenTimeoutError(
+                        $"FenJS async work timed out after {timeoutMs}ms"));
+                });
+
+                using (cts)
+                {
+                    var result = await tcs.Task.ConfigureAwait(false);
+                    return (T)result;
+                }
+            }
+            else
+            {
+                var result = await tcs.Task.ConfigureAwait(false);
+                return (T)result;
+            }
+        }
+        catch (FenBrowser.FenEngine.Errors.FenTimeoutError)
+        {
+            // Propagate timeout directly without wrapping.
+            throw;
+        }
+        finally
+        {
+            lock (_fenJsWorkGate)
+            {
+                if (ReferenceEquals(_fenJsWorkTcs, tcs))
+                {
+                    _fenJsWorkTcs = null;
+                    _fenJsWorkCts = null;
+                }
+            }
+        }
     }
 
     private void BeginScriptLoadingSnapshot(Node domRoot, Uri baseUri)
@@ -7550,7 +7700,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     var self = this;
                     self._dispatch('loadstart');
                     if (typeof __fenSyncXhr === 'function') {
-                        var result = __fenSyncXhr(self._method || 'GET', self._url || '', body === undefined ? '' : String(body), self._requestHeaders || {});
+                        var isBinaryBody = body != null && typeof ArrayBuffer !== 'undefined' &&
+                            (body instanceof ArrayBuffer || (typeof ArrayBuffer.isView === 'function' && ArrayBuffer.isView(body)));
+                        var requestBody = body === undefined ? '' : (isBinaryBody ? body : String(body));
+                        var result = __fenSyncXhr(self._method || 'GET', self._url || '', requestBody, self._requestHeaders || {}, isBinaryBody);
                         self.readyState = XMLHttpRequest.DONE;
                         self.status = result && typeof result.status === 'number' ? result.status : 0;
                         self.statusText = result && result.statusText ? String(result.statusText) : '';
@@ -8312,7 +8465,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 };
 
                 function serializeBody(body, headers) {
-                    if (body == null) return { text: '', contentType: '' };
+                    if (body == null) return { value: '', contentType: '', isBinary: false };
                     if (body instanceof FormData) {
                         var boundary = '----FenFormData' + Math.random().toString(36).slice(2);
                         var text = '';
@@ -8323,12 +8476,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             text += String(entry[1]) + '\r\n';
                         }
                         text += '--' + boundary + '--\r\n';
-                        return { text: text, contentType: 'multipart/form-data; boundary=' + boundary };
+                        return { value: text, contentType: 'multipart/form-data; boundary=' + boundary, isBinary: false };
                     }
                     if (body instanceof Blob) {
-                        return { text: body._parts.join(''), contentType: body.type || '' };
+                        return { value: body._parts.join(''), contentType: body.type || '', isBinary: false };
                     }
-                    return { text: String(body), contentType: headers.get('content-type') || '' };
+                    var isBinary = typeof ArrayBuffer !== 'undefined' &&
+                        (body instanceof ArrayBuffer || (typeof ArrayBuffer.isView === 'function' && ArrayBuffer.isView(body)));
+                    return {
+                        value: isBinary ? body : String(body),
+                        contentType: headers.get('content-type') || '',
+                        isBinary: isBinary
+                    };
                 }
 
                 globalThis.Request = function Request(input, init) {
@@ -8382,7 +8541,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         headers.set('content-type', body.contentType);
                     }
                     try {
-                        var result = __fenSyncFetch(request.method || 'GET', request.url || '', body.text, plainHeaders(headers));
+                        var result = __fenSyncFetch(request.method || 'GET', request.url || '', body.value, plainHeaders(headers), body.isBinary);
                         return Promise.resolve(new Response(result && result.responseText ? result.responseText : '', {
                             status: result && typeof result.status === 'number' ? result.status : 0,
                             statusText: result && result.statusText ? String(result.statusText) : '',
@@ -8663,7 +8822,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     {
         var methodText = args.Count > 0 ? CoerceToHostString(args[0]) : "GET";
         var urlText = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
-        var bodyText = args.Count > 2 ? CoerceToHostString(args[2]) : string.Empty;
+        var bodyValue = args.Count > 2 ? args[2] : JsValue.FromString(string.Empty);
+        var isBinaryBody = args.Count > 4 && args[4].Tag == JsValueTag.Boolean && args[4].AsBoolean();
 
         if (FetchHandler == null || !TryResolveUri(urlText, _currentBaseUri, out var requestUri))
         {
@@ -8692,7 +8852,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             if (!string.Equals(request.Method.Method, "GET", StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(request.Method.Method, "HEAD", StringComparison.OrdinalIgnoreCase))
             {
-                request.Content = new StringContent(bodyText ?? string.Empty, Encoding.UTF8, "text/plain");
+                request.Content = CreateRequestContent(bodyValue, isBinaryBody);
             }
 
             if (args.Count > 3 && args[3].Tag == JsValueTag.Object)
@@ -8717,7 +8877,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     {
         var methodText = args.Count > 0 ? CoerceToHostString(args[0]) : "GET";
         var urlText = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
-        var bodyText = args.Count > 2 ? CoerceToHostString(args[2]) : string.Empty;
+        var bodyValue = args.Count > 2 ? args[2] : JsValue.FromString(string.Empty);
+        var isBinaryBody = args.Count > 4 && args[4].Tag == JsValueTag.Boolean && args[4].AsBoolean();
 
         if (FetchHandler == null || !TryResolveUri(urlText, _currentBaseUri, out var requestUri))
         {
@@ -8748,7 +8909,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             if (!string.Equals(request.Method.Method, "GET", StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(request.Method.Method, "HEAD", StringComparison.OrdinalIgnoreCase))
             {
-                request.Content = new StringContent(bodyText ?? string.Empty, Encoding.UTF8, "text/plain");
+                request.Content = CreateRequestContent(bodyValue, isBinaryBody);
             }
 
             if (args.Count > 3 && args[3].Tag == JsValueTag.Object)
@@ -10741,6 +10902,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private static bool IsIFrameElement(Element element)
     {
         return string.Equals(element?.TagName, "iframe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private HttpContent CreateRequestContent(JsValue bodyValue, bool isBinaryBody)
+    {
+        if (isBinaryBody)
+        {
+            return new ByteArrayContent(ExtractBytesFromArrayLike(bodyValue));
+        }
+
+        return new StringContent(CoerceToHostString(bodyValue), Encoding.UTF8, "text/plain");
     }
 
     private static bool IsCheckableInputElement(Element element)
