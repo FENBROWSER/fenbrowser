@@ -94,6 +94,7 @@ namespace FenBrowser.FenEngine.Rendering
     internal sealed class ParseCheckpointState
     {
         public long RenderGeneration { get; init; }
+        public int IncrementalRepaintMaxCount { get; init; }
         public int ParsingDocumentCheckpointCount { get; set; }
         public int ParsingCheckpointOrdinal { get; set; }
         public int IncrementalRepaintCount { get; set; }
@@ -104,7 +105,12 @@ namespace FenBrowser.FenEngine.Rendering
     /// </summary>
     public sealed class CustomHtmlEngine : IDisposable
     {
-        private const int IncrementalParseRepaintMaxCount = 8;
+        private const int IncrementalParseRepaintSmallDocumentMaxCount = 4;
+        private const int IncrementalParseRepaintMediumDocumentMaxCount = 2;
+        private const int IncrementalParseRepaintLargeDocumentMaxCount = 1;
+        private const int IncrementalParseRepaintMediumDocumentMinLength = 64 * 1024;
+        private const int IncrementalParseRepaintLargeDocumentMinLength = 128 * 1024;
+        private const int IncrementalParseRepaintVeryLargeDocumentMinLength = 512 * 1024;
         private const int IncrementalParseRepaintCheckpointStride = 2;
         private const int StreamingPreparseMinHtmlLength = 32768;
         private const int StreamingPreparseMaxHtmlLength = 131072;
@@ -2031,7 +2037,11 @@ public void Dispose()
         {
             var parseInput = html ?? string.Empty;
             var interleavedBatchSize = ResolveInterleavedTokenBatchSize(EnableInterleavedPrimaryParse, parseInput.Length);
-            var parseCheckpointState = new ParseCheckpointState { RenderGeneration = renderGeneration };
+            var parseCheckpointState = new ParseCheckpointState
+            {
+                RenderGeneration = renderGeneration,
+                IncrementalRepaintMaxCount = ResolveIncrementalParseRepaintMaxCount(parseInput.Length)
+            };
             var streamingPreparseMs = 0L;
             var streamingPreparseCheckpointCount = 0;
             var streamingPreparseRepaintCount = 0;
@@ -3699,6 +3709,7 @@ public void Dispose()
             HtmlParseCheckpoint checkpoint,
             int parsingCheckpointOrdinal,
             long renderGeneration,
+            int maxRepaintCount,
             ref int incrementalRepaintCount)
         {
             if (!EnableIncrementalParseRepaint ||
@@ -3714,7 +3725,11 @@ public void Dispose()
                 return;
             }
 
-            if (!ShouldEmitIncrementalParseRepaint(parsingCheckpointOrdinal, checkpoint.IsFinal, incrementalRepaintCount))
+            if (!ShouldEmitIncrementalParseRepaint(
+                parsingCheckpointOrdinal,
+                checkpoint.IsFinal,
+                incrementalRepaintCount,
+                maxRepaintCount))
             {
                 return;
             }
@@ -3746,9 +3761,13 @@ public void Dispose()
             OnRepaintReady(snapshotRoot);
         }
 
-        private static bool ShouldEmitIncrementalParseRepaint(int parsingCheckpointOrdinal, bool isFinalCheckpoint, int incrementalRepaintCount)
+        private static bool ShouldEmitIncrementalParseRepaint(
+            int parsingCheckpointOrdinal,
+            bool isFinalCheckpoint,
+            int incrementalRepaintCount,
+            int maxRepaintCount)
         {
-            if (incrementalRepaintCount >= IncrementalParseRepaintMaxCount)
+            if (incrementalRepaintCount >= maxRepaintCount)
             {
                 return false;
             }
@@ -3765,6 +3784,26 @@ public void Dispose()
 
             return parsingCheckpointOrdinal > 0 &&
                 (parsingCheckpointOrdinal % IncrementalParseRepaintCheckpointStride) == 0;
+        }
+
+        private static int ResolveIncrementalParseRepaintMaxCount(int htmlLength)
+        {
+            if (htmlLength >= IncrementalParseRepaintVeryLargeDocumentMinLength)
+            {
+                return 0;
+            }
+
+            if (htmlLength >= IncrementalParseRepaintLargeDocumentMinLength)
+            {
+                return IncrementalParseRepaintLargeDocumentMaxCount;
+            }
+
+            if (htmlLength >= IncrementalParseRepaintMediumDocumentMinLength)
+            {
+                return IncrementalParseRepaintMediumDocumentMaxCount;
+            }
+
+            return IncrementalParseRepaintSmallDocumentMaxCount;
         }
 
         private static bool ShouldRunStreamingParsePrepass(bool enabled, int htmlLength)
@@ -3817,6 +3856,7 @@ public void Dispose()
                         checkpoint,
                         parseCheckpointState.ParsingCheckpointOrdinal,
                         parseCheckpointState.RenderGeneration,
+                        parseCheckpointState.IncrementalRepaintMaxCount,
                         ref repaintCount);
                     parseCheckpointState.IncrementalRepaintCount = repaintCount;
                 }
