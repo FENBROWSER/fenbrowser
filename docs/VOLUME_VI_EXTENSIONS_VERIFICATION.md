@@ -87,13 +87,16 @@ This volume details the infrastructure used to extend the browser and verify its
   Object. Normal completion, timeout, stall, or forced termination therefore
   closes the complete WPT server/worker process tree instead of leaving
   orphaned Python multiprocessing workers.
-- The 2026-07-26 fixed-selection normal-profile gate completed 375 terminal
-  test results across five shards in 263.710 seconds of browser-test wall time
-  (272.3 seconds including planning/orchestration): 228 `OK`, 44 `TIMEOUT`,
-  24 `CRASH`, 1 `ERROR`, and 78 maintained `SKIP`. All shards completed
-  without runner timeout/stall and left zero orphan WPT workers. `OK` is the
-  WPT test-level status; the same run contained 9 fully passing tests and 219
-  tests with assertion failures.
+- After the IndexedDB bulk-read lifecycle and absent-storage metadata updates,
+  the 2026-07-26 fixed-selection normal-profile gate completed 348 terminal
+  test results across five shards in 236.760 seconds of browser-test wall time
+  (245.0 seconds including planning/orchestration): 230 `OK`, 21 `TIMEOUT`,
+  18 `CRASH`, 1 `ERROR`, and 78 maintained `SKIP`. All shards completed
+  without runner timeout/stall and left zero orphan WPT workers. Compared with
+  the preceding identical-profile gate, browser-test wall time fell 10.2%,
+  timeouts fell from 44 to 21, and crashes fell from 24 to 18. `OK` is the WPT
+  test-level status; the same run contained 8 fully passing tests and 222 tests
+  with assertion failures.
 
 ### 1.4 FenJS Standalone Shell Smoke Surface (2026-05-21)
 
