@@ -326,7 +326,8 @@ namespace FenBrowser.FenEngine.Rendering
             double? viewportHeight = null,
             Action<string> log = null,
             FenBrowser.Core.Deadlines.FrameDeadline deadline = null,
-            Func<Element, Uri, Task<string>> fetchExternalCssForRootAsync = null)
+            Func<Element, Uri, Task<string>> fetchExternalCssForRootAsync = null,
+            Action<Dictionary<Node, CssComputed>> progressiveStylesReady = null)
         {
             var result = await ComputeWithResultAsync(
                 root,
@@ -336,7 +337,8 @@ namespace FenBrowser.FenEngine.Rendering
                 viewportHeight,
                 log,
                 deadline,
-                fetchExternalCssForRootAsync);
+                fetchExternalCssForRootAsync,
+                progressiveStylesReady);
             return result.Computed;
         }
 
@@ -399,10 +401,18 @@ namespace FenBrowser.FenEngine.Rendering
             double? viewportHeight = null,
             Action<string> log = null,
             FenBrowser.Core.Deadlines.FrameDeadline deadline = null,
-            Func<Element, Uri, Task<string>> fetchExternalCssForRootAsync = null)
+            Func<Element, Uri, Task<string>> fetchExternalCssForRootAsync = null,
+            Action<Dictionary<Node, CssComputed>> progressiveStylesReady = null)
         {
             var result = await ComputeWithResultCoreAsync(
-                root, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, log, deadline)
+                root,
+                baseUri,
+                fetchExternalCssAsync,
+                viewportWidth,
+                viewportHeight,
+                log,
+                deadline,
+                progressiveStylesReady: progressiveStylesReady)
                 .ConfigureAwait(false);
 
             // Nested browsing contexts (iframes) hold their own Document with its own
@@ -621,7 +631,8 @@ namespace FenBrowser.FenEngine.Rendering
             double? viewportHeight = null,
             Action<string> log = null,
             FenBrowser.Core.Deadlines.FrameDeadline deadline = null,
-            Element cascadeRoot = null)
+            Element cascadeRoot = null,
+            Action<Dictionary<Node, CssComputed>> progressiveStylesReady = null)
         {
             long queueStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             await _globalComputeGate.WaitAsync().ConfigureAwait(false);
@@ -976,6 +987,19 @@ namespace FenBrowser.FenEngine.Rendering
             }
             if (extTasks.Count > 0) 
             {
+                if (progressiveStylesReady != null)
+                {
+                    TryPublishProgressiveStyles(
+                        root,
+                        cascadeRoot ?? root,
+                        cssBlobs,
+                        viewportWidth,
+                        viewportHeight,
+                        log,
+                        deadline,
+                        progressiveStylesReady);
+                }
+
                 EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS] Waiting for {extTasks.Count} external CSS fetches...");
                 try { await Task.WhenAll(extTasks); } catch { /* Ignore fetch errors */ } 
             }
@@ -1258,6 +1282,78 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 _documentStyleSets.Remove(root);
                 _documentStyleSets.Add(root, entry);
+            }
+        }
+
+        private static void TryPublishProgressiveStyles(
+            Element stylesheetRoot,
+            Element cascadeRoot,
+            List<CssSource> cssBlobs,
+            double? viewportWidth,
+            double? viewportHeight,
+            Action<string> log,
+            FenBrowser.Core.Deadlines.FrameDeadline deadline,
+            Action<Dictionary<Node, CssComputed>> progressiveStylesReady)
+        {
+            try
+            {
+                List<CssSource> localSources;
+                lock (cssBlobs)
+                {
+                    localSources = cssBlobs
+                        .Where(static source =>
+                            source != null &&
+                            source.Origin != CssOrigin.External &&
+                            source.Origin != CssOrigin.Imported)
+                        .OrderBy(static source => source.SequenceOrder)
+                        .ToList();
+                }
+
+                if (localSources.Count == 0)
+                {
+                    return;
+                }
+
+                var styleSet = new StyleSet();
+                foreach (var source in localSources)
+                {
+                    var processedCss = ExtractFontFace(
+                        source.CssText,
+                        source.BaseUri,
+                        log,
+                        stylesheetRoot?.OwnerDocument);
+                    var parsed = ParseRules(
+                        processedCss,
+                        source.SourceOrder,
+                        source.BaseUri,
+                        viewportWidth,
+                        viewportHeight,
+                        log,
+                        MapToNewCssOrigin(source.Origin));
+                    var sheet = new NewCss.CssStylesheet();
+                    sheet.Rules.AddRange(parsed);
+                    styleSet.AddSheet(sheet, MapToNewCssOrigin(source.Origin), source.SourceOrder);
+                }
+
+                var allRules = styleSet.Sheets.SelectMany(static sheet => sheet.Rules).ToList();
+                ResolveVariables(allRules);
+                var computed = FenBrowser.FenEngine.Rendering.ParallelCascadeScheduler.Cascade(
+                    cascadeRoot,
+                    styleSet,
+                    log,
+                    deadline,
+                    out var inlineStyleCacheStatistics);
+                FenBrowser.FenEngine.Rendering.Performance.PerformanceDiagnosticsStore.RecordInlineStyleCache(
+                    inlineStyleCacheStatistics);
+                progressiveStylesReady(computed);
+                EngineLogCompat.Log(
+                    LogCategory.Rendering,
+                    LogLevel.Info,
+                    $"[PERF-CSS] Published progressive local StyleSet ({localSources.Count} sources, {computed.Count} elements)");
+            }
+            catch (Exception ex)
+            {
+                Log(log, "[CssLoader] Progressive local cascade failed: " + ex.Message);
             }
         }
 

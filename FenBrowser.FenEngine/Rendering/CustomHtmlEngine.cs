@@ -2230,7 +2230,19 @@ public void Dispose()
                      resolvedViewportWidth,
                      resolvedViewportHeight,
                      msg => EngineLogCompat.Debug(msg, LogCategory.Rendering),
-                     fetchExternalCssForRootAsync: FetchExternalCssForRootAsync);
+                     fetchExternalCssForRootAsync: FetchExternalCssForRootAsync,
+                     progressiveStylesReady: progressiveStyles =>
+                     {
+                         if (!UpdateRenderState(dom, progressiveStyles, renderGeneration))
+                         {
+                             return;
+                         }
+
+                         EngineLogCompat.Debug(
+                             $"[RenderAsync] Publishing progressive local styles. Styles Count={progressiveStyles.Count}",
+                             LogCategory.Rendering);
+                         OnRepaintReady(dom);
+                     });
                  var timeoutTask = Task.Delay(30000); // Increased from 10s to 30s for complex pages
                  var completedTask = await Task.WhenAny(cssTask, timeoutTask);
                  
