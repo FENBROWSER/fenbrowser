@@ -418,6 +418,7 @@ public class BrowserIntegration : IDisposable
                 _lastNavigationTime = DateTime.Now;
                 _hasFirstStyledRender = false;
                 _hasStableStyleSnapshot = false;
+                var outgoingRoot = _root;
                 _root = null;
                 _styles = null;
                 _deferredScrollTarget = null;
@@ -443,8 +444,10 @@ public class BrowserIntegration : IDisposable
                 // so the blocked JS worker thread can unwind during navigation.
                 FenBrowser.FenEngine.Scripting.JsDialogBridge.AbortPending?.Invoke();
 
-                CssLoader.ClearCaches();
-                EngineLogBridge.Info("[BrowserIntegration] Cleared CSS caches for new navigation", LogCategory.General);
+                CssLoader.ClearDocumentScopedCaches(outgoingRoot);
+                EngineLogBridge.Info(
+                    "[BrowserIntegration] Released outgoing document CSS caches; reusable parse/font caches retained",
+                    LogCategory.General);
                 RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserHost.LoadingChanged");
             }
             LoadingChanged?.Invoke(loading);

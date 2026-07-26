@@ -188,6 +188,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (string.IsNullOrEmpty(src)) return null;
 
             string cacheKey = BuildLoadCacheKey(descriptor);
+            string failureCacheKey = BuildFailureCacheKey(descriptor, cacheKey);
             TaskCompletionSource<SKTypeface> completion = null;
             Task<SKTypeface> loadTask;
             lock (_lock)
@@ -197,7 +198,7 @@ namespace FenBrowser.FenEngine.Rendering
                     return loaded;
                 }
 
-                if (_failedFonts.Contains(cacheKey))
+                if (_failedFonts.Contains(failureCacheKey))
                 {
                     return null;
                 }
@@ -329,7 +330,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 lock (_lock)
                 {
-                    _failedFonts.Add(cacheKey);
+                    _failedFonts.Add(failureCacheKey);
                 }
             }
             catch (Exception ex)
@@ -337,7 +338,7 @@ namespace FenBrowser.FenEngine.Rendering
                 EngineLogCompat.Error($"[FontRegistry] Failed to load font {descriptor.Family}: {ex.Message}", LogCategory.Rendering, ex);
                 lock (_lock)
                 {
-                    _failedFonts.Add(cacheKey);
+                    _failedFonts.Add(failureCacheKey);
                 }
             }
             finally
@@ -359,13 +360,18 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static string BuildLoadCacheKey(FontFaceDescriptor descriptor)
         {
-            var requestOwner = descriptor.RequestContext?.OwnerId ?? "_default";
             var family = descriptor.Family?.Trim().Trim('"', '\'').ToUpperInvariant() ?? string.Empty;
             var baseUri = descriptor.BaseUri?.AbsoluteUri ?? string.Empty;
             var source = descriptor.Source?.Trim() ?? string.Empty;
             var unicodeRange = descriptor.UnicodeRange?.Trim() ?? string.Empty;
             var stretch = descriptor.Stretch?.Trim() ?? string.Empty;
-            return $"{requestOwner}|{family}|{descriptor.Weight}|{descriptor.Style}|{stretch}|{unicodeRange}|{baseUri}|{source}";
+            return $"{family}|{descriptor.Weight}|{descriptor.Style}|{stretch}|{unicodeRange}|{baseUri}|{source}";
+        }
+
+        private static string BuildFailureCacheKey(FontFaceDescriptor descriptor, string loadCacheKey)
+        {
+            var requestOwner = descriptor.RequestContext?.OwnerId ?? "_default";
+            return $"{requestOwner}|{loadCacheKey}";
         }
 
         private static FontLoaderRequestContext CreateFallbackRequestContext()
@@ -649,6 +655,35 @@ namespace FenBrowser.FenEngine.Rendering
                 _failedFonts.Clear();
             }
             NotifyPendingLoadCountChanged();
+        }
+
+        public static void ClearDocument(Document document)
+        {
+            if (document == null)
+            {
+                return;
+            }
+
+            var ownerSuffix = $":{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(document)}";
+            lock (_lock)
+            {
+                foreach (var family in _fontFaces.Keys.ToList())
+                {
+                    var descriptors = _fontFaces[family];
+                    descriptors.RemoveAll(face => ReferenceEquals(face?.OwnerDocument, document));
+                    if (descriptors.Count == 0)
+                    {
+                        _fontFaces.Remove(family);
+                    }
+                }
+
+                _failedFonts.RemoveWhere(key =>
+                {
+                    var separator = key.IndexOf('|');
+                    return separator > 0 &&
+                           key.Substring(0, separator).EndsWith(ownerSuffix, StringComparison.Ordinal);
+                });
+            }
         }
 
         private static void NotifyPendingLoadCountChanged()

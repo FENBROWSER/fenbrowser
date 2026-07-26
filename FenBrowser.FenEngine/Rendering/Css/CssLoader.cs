@@ -135,6 +135,67 @@ namespace FenBrowser.FenEngine.Rendering
             FontRegistry.Clear();
         }
 
+        /// <summary>
+        /// Releases cache entries that retain the outgoing document while preserving
+        /// immutable process-wide parse data and reusable native font/typeface state.
+        /// </summary>
+        public static void ClearDocumentScopedCaches(Element documentRoot)
+        {
+            if (documentRoot == null)
+            {
+                return;
+            }
+
+            var ownerDocument = documentRoot.OwnerDocument;
+            foreach (var key in _matchCache.Keys)
+            {
+                if (BelongsToDocument(key.Item1, documentRoot, ownerDocument))
+                {
+                    _matchCache.TryRemove(key, out _);
+                }
+            }
+
+            foreach (var element in _elementMatchedRulesCache.Keys)
+            {
+                if (BelongsToDocument(element, documentRoot, ownerDocument))
+                {
+                    _elementMatchedRulesCache.TryRemove(element, out _);
+                }
+            }
+
+            lock (_documentStyleSetsLock)
+            {
+                _documentStyleSets.Remove(documentRoot);
+            }
+
+            FontRegistry.ClearDocument(ownerDocument);
+        }
+
+        internal static int ParsedRuleCacheCount
+        {
+            get
+            {
+                lock (_parsedRulesCache)
+                {
+                    return _parsedRulesCache.Count;
+                }
+            }
+        }
+
+        private static bool BelongsToDocument(
+            Element element,
+            Element documentRoot,
+            Document ownerDocument)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            return ReferenceEquals(element, documentRoot) ||
+                   (ownerDocument != null && ReferenceEquals(element.OwnerDocument, ownerDocument));
+        }
+
         private static ParsedRuleCacheKey BuildParsedRuleCacheKey(
             string css,
             Uri baseUri,
