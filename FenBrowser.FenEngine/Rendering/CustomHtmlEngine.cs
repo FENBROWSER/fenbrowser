@@ -49,6 +49,13 @@ namespace FenBrowser.FenEngine.Rendering
         public int InterleavedBatchCount { get; init; }
         public bool InterleavedFallbackUsed { get; init; }
         public long CssAndStyleMs { get; init; }
+        public double CssQueueWaitMs { get; init; }
+        public double CssDiscoveryAndFetchMs { get; init; }
+        public double CssImportExpansionMs { get; init; }
+        public double CssRuleParseMs { get; init; }
+        public double CssVariableResolutionMs { get; init; }
+        public double CssCascadeMs { get; init; }
+        public double CssTotalMs { get; init; }
         public long InitialVisualTreeMs { get; init; }
         public long ScriptExecutionMs { get; init; }
         public long PostScriptVisualTreeMs { get; init; }
@@ -143,6 +150,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public LayoutResult LastLayout { get; private set; }
         public RenderTelemetrySnapshot LastRenderTelemetry { get; private set; }
+        private CssLoader.CssLoadTiming _lastCssLoadTiming;
         public IExecutionContext Context => _activeJs?.GlobalContext;
 
         private void SetActiveDom(Node dom, bool markSnapshotUnstable = false)
@@ -2226,7 +2234,7 @@ public void Dispose()
                  EngineLogCompat.Debug("[RenderAsync] Starting CSS load...", LogCategory.Rendering);
                  var resolvedViewportWidth = viewportWidth ?? _activeViewportWidth;
                  var resolvedViewportHeight = viewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
-                 var cssTask = CssLoader.ComputeAsync(
+                 var cssTask = CssLoader.ComputeWithResultAsync(
                      dom,
                      baseUri,
                      fetchExternalCssAsync,
@@ -2257,12 +2265,14 @@ public void Dispose()
                  else
                  {
                      // CRITICAL FIX: Actually store the computed styles!
-                     var computedStyles = await cssTask;
+                     var cssResult = await cssTask;
+                     var computedStyles = cssResult.Computed;
                      if (!UpdateRenderState(dom, computedStyles, renderGeneration))
                      {
                          EngineLogCompat.Debug("[RenderAsync] Ignoring stale CSS result from an older render generation", LogCategory.Rendering);
                          return;
                      }
+                     _lastCssLoadTiming = cssResult.Timing;
                      EngineLogCompat.Info($"[RenderAsync] CSS loading complete. Styles Count={LastComputedStyles?.Count ?? 0}", LogCategory.Rendering);
                      FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles?.Count ?? 0);
 
@@ -3067,6 +3077,7 @@ public void Dispose()
             long scriptExecutionMs = 0;
             long postScriptVisualTreeMs = 0;
             bool javascriptExecuted = false;
+            _lastCssLoadTiming = null;
             
             try
             {
@@ -3547,6 +3558,13 @@ public void Dispose()
                     InterleavedBatchCount = interleavedBatchCount,
                     InterleavedFallbackUsed = interleavedFallbackUsed,
                     CssAndStyleMs = cssAndStyleMs,
+                    CssQueueWaitMs = _lastCssLoadTiming?.QueueWaitMs ?? 0,
+                    CssDiscoveryAndFetchMs = _lastCssLoadTiming?.DiscoveryAndFetchMs ?? 0,
+                    CssImportExpansionMs = _lastCssLoadTiming?.ImportExpansionMs ?? 0,
+                    CssRuleParseMs = _lastCssLoadTiming?.RuleParseMs ?? 0,
+                    CssVariableResolutionMs = _lastCssLoadTiming?.VariableResolutionMs ?? 0,
+                    CssCascadeMs = _lastCssLoadTiming?.CascadeMs ?? 0,
+                    CssTotalMs = _lastCssLoadTiming?.TotalMs ?? 0,
                     InitialVisualTreeMs = initialVisualTreeMs,
                     ScriptExecutionMs = scriptExecutionMs,
                     PostScriptVisualTreeMs = postScriptVisualTreeMs,

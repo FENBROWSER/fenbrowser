@@ -2646,6 +2646,13 @@ pre {{
                 $"interleavedChunks={telemetry.InterleavedBatchCount};" +
                 $"interleavedFallback={(telemetry.InterleavedFallbackUsed ? 1 : 0)};" +
                 $"css={telemetry.CssAndStyleMs}ms;" +
+                $"cssQueue={telemetry.CssQueueWaitMs:F1}ms;" +
+                $"cssFetch={telemetry.CssDiscoveryAndFetchMs:F1}ms;" +
+                $"cssImports={telemetry.CssImportExpansionMs:F1}ms;" +
+                $"cssRules={telemetry.CssRuleParseMs:F1}ms;" +
+                $"cssVariables={telemetry.CssVariableResolutionMs:F1}ms;" +
+                $"cssCascade={telemetry.CssCascadeMs:F1}ms;" +
+                $"cssTotal={telemetry.CssTotalMs:F1}ms;" +
                 $"visual1={telemetry.InitialVisualTreeMs}ms;" +
                 $"script={telemetry.ScriptExecutionMs}ms;" +
                 $"visual2={telemetry.PostScriptVisualTreeMs}ms;" +
