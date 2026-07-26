@@ -1259,7 +1259,10 @@ public void Dispose()
                     urls.Add(abs.AbsoluteUri);
                 }
 
-                foreach (var url in urls)
+                await Parallel.ForEachAsync(
+                    urls,
+                    new ParallelOptions { MaxDegreeOfParallelism = 4 },
+                    async (url, cancellationToken) =>
                 {
                     try
                     {
@@ -1273,12 +1276,12 @@ public void Dispose()
                                     memory,
                                     ownerDocument: ownerDocument)
                                 .ConfigureAwait(false);
-                            continue;
+                            return;
                         }
 
                         if (hasDocumentFetcher)
                         {
-                            continue;
+                            return;
                         }
 
                         using var stream = await imageLoader(uri).ConfigureAwait(false);
@@ -1295,7 +1298,7 @@ public void Dispose()
                     {
                         EngineLogCompat.Debug($"[CustomHtmlEngine] CSS background prewarm failed for {url}: {ex.Message}", LogCategory.Rendering);
                     }
-                }
+                }).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -3278,11 +3281,6 @@ public void Dispose()
                 }
                 catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] Declarative shadow DOM processing failed: {ex.Message}", LogCategory.Rendering); }
 
-                // 4. Prewarm Images
-                EngineLogCompat.Debug("[CustomHtmlEngine] Prewarming images...", LogCategory.Rendering);
-                try { await PrewarmImagesAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, imageLoader, viewportWidth).ConfigureAwait(false); } catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] PrewarmImages invocation failed: {ex.Message}", LogCategory.Rendering); }
-                try { await PrewarmCssBackgroundImagesAsync(LastComputedStyles, baseUri, imageLoader, (dom as Document) ?? dom.OwnerDocument).ConfigureAwait(false); } catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] PrewarmCssBackgroundImages invocation failed: {ex.Message}", LogCategory.Rendering); }
-
                 // HTML spec Â§4.12.1: When scripting is enabled, <noscript> must not render.
                 // Remove noscript elements entirely when JS is on to prevent their raw HTML-encoded
                 // fallback content (scripts, styles, inline HTML strings) from leaking into the page.
@@ -3392,6 +3390,28 @@ public void Dispose()
                 initialVisualTreeMs = Math.Max(0, elapsed - lastStageMarkMs);
                 lastStageMarkMs = elapsed;
                 EngineLogCompat.Debug($"[PERF] Visual Tree 1: {elapsed}ms", LogCategory.Rendering);
+
+                // Image fetch/decode is not an interactive-readiness prerequisite.
+                // Start it only after the first visual tree is available so it cannot
+                // consume the initial frame's CPU/network budget.
+                if (imageLoader != null)
+                {
+                    var prewarmRoot = (dom as Element) ?? (dom as Document)?.DocumentElement;
+                    var prewarmStyles = LastComputedStyles;
+                    var prewarmOwnerDocument = (dom as Document) ?? dom.OwnerDocument;
+                    _ = RunDetachedAsync(async () =>
+                    {
+                        EngineLogCompat.Debug("[CustomHtmlEngine] Starting post-first-tree image prewarm", LogCategory.Rendering);
+                        await Task.WhenAll(
+                                PrewarmImagesAsync(prewarmRoot, baseUri, imageLoader, viewportWidth),
+                                PrewarmCssBackgroundImagesAsync(
+                                    prewarmStyles,
+                                    baseUri,
+                                    imageLoader,
+                                    prewarmOwnerDocument))
+                            .ConfigureAwait(false);
+                    });
+                }
 
                 // 6. Run Scripts — fire-and-forget after first paint.
                 // Real browsers show DOM+CSS immediately and let JS run in the
