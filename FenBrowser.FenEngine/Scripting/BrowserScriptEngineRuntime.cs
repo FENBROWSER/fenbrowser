@@ -4587,6 +4587,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             request.result = result;
                             request.readyState = 'done';
                             _idbDispatch(request, 'success');
+                            var transaction = request.transaction;
+                            if (transaction && transaction._pending > 0) transaction._pending--;
+                            _idbMaybeCompleteTransaction(transaction);
                         }, 0);
                     }
                     function _idbFireError(request, message) {
@@ -4594,6 +4597,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             request.error = { name: 'AbortError', message: String(message || '') };
                             request.readyState = 'done';
                             _idbDispatch(request, 'error');
+                            var transaction = request.transaction;
+                            if (transaction && transaction._pending > 0) transaction._pending--;
+                            _idbMaybeCompleteTransaction(transaction);
+                        }, 0);
+                    }
+                    function _idbMaybeCompleteTransaction(transaction) {
+                        if (!transaction || !transaction._active ||
+                            transaction._pending > 0 || transaction._completionQueued) return;
+                        transaction._completionQueued = true;
+                        globalThis.setTimeout(function () {
+                            transaction._completionQueued = false;
+                            if (!transaction._active || transaction._pending > 0) return;
+                            transaction._active = false;
+                            _idbDispatch(transaction, 'complete');
                         }, 0);
                     }
                     // ── IDBRequest ──
@@ -4611,6 +4628,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         IDBRequest.call(this);
                         this.onupgradeneeded = null;
                         this.onblocked = null;
+                    }
+                    function _idbRequestResult(source, transaction, result) {
+                        var request = new IDBRequest();
+                        request.source = source || null;
+                        request.transaction = transaction || null;
+                        if (transaction && transaction._active) transaction._pending++;
+                        _idbFireSuccess(request, result);
+                        return request;
                     }
                     // ── IDBDatabase ──
                     function IDBDatabase(name, version) {
@@ -4730,6 +4755,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             objectStoreNames: stores.slice(),
                             _dbName: dbName,
                             _active: true,
+                            _pending: 0,
+                            _completionQueued: false,
                             objectStore: function (name) {
                                 var key = dbName + '\0' + name;
                                 var storeRef = _idbStore[key] = _idbStore[key] || { _data: {}, _indexes: {}, _keyPath: null, _autoIncrement: false };
@@ -4772,8 +4799,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                         return this.put(value, k);
                                     },
                                     get: function (k) { return storeRef._data.hasOwnProperty(k) ? storeRef._data[k] : undefined; },
-                                    getAll: function () { var vals=[]; var dk=Object.keys(storeRef._data); for(var i=0;i<dk.length;i++) vals.push(storeRef._data[dk[i]]); return vals; },
-                                    getAllKeys: function () { return Object.keys(storeRef._data); },
+                                    getAll: function () {
+                                        var vals=[]; var dk=Object.keys(storeRef._data);
+                                        for(var i=0;i<dk.length;i++) vals.push(storeRef._data[dk[i]]);
+                                        return _idbRequestResult(this, tx, vals);
+                                    },
+                                    getAllKeys: function () {
+                                        return _idbRequestResult(this, tx, Object.keys(storeRef._data));
+                                    },
                                     getKey: function (k) { return storeRef._data.hasOwnProperty(k) ? k : undefined; },
                                     delete: function (k) {
                                         delete storeRef._data[k];
@@ -4792,8 +4825,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                             keyPath: idx.keyPath,
                                             get: function (k) { return idx._data.hasOwnProperty(k) ? idx._data[k] : undefined; },
                                             getKey: function (k) { return idx._data.hasOwnProperty(k) ? k : undefined; },
-                                            getAll: function () { var vals=[]; var dk=Object.keys(idx._data); for(var i=0;i<dk.length;i++) vals.push(idx._data[dk[i]]); return vals; },
-                                            getAllKeys: function () { return Object.keys(idx._data); },
+                                            getAll: function () {
+                                                var vals=[]; var dk=Object.keys(idx._data);
+                                                for(var i=0;i<dk.length;i++) vals.push(idx._data[dk[i]]);
+                                                return _idbRequestResult(this, tx, vals);
+                                            },
+                                            getAllKeys: function () {
+                                                return _idbRequestResult(this, tx, Object.keys(idx._data));
+                                            },
                                             count: function () { return Object.keys(idx._data).length; },
                                             openCursor: function () { return undefined; },
                                             openKeyCursor: function () { return undefined; }
@@ -4806,19 +4845,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             onabort: null,
                             abort: function () { this._active = false; },
                             commit: function () {
-                                var self = this;
-                                globalThis.setTimeout(function () {
-                                    if (self._active) _idbDispatch(self, 'complete');
-                                    self._active = false;
-                                }, 0);
+                                _idbMaybeCompleteTransaction(this);
                             }
                         };
                         _idbInitEventTarget(tx);
                         // Auto-commit after this event loop turn
-                        globalThis.setTimeout(function () {
-                            if (tx._active) _idbDispatch(tx, 'complete');
-                            tx._active = false;
-                        }, 0);
+                        _idbMaybeCompleteTransaction(tx);
                         return tx;
                     };
                     IDBDatabase.prototype.close = function () {};

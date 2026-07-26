@@ -10418,3 +10418,20 @@ Verification:
 - In a four-test sample of prior window IndexedDB timeouts, three reached
   terminal `OK` test status with concrete assertion failures and one remained
   a timeout, replacing blind lifecycle waits with actionable failures.
+
+## 2.394 IndexedDB Bulk-Read Request Lifecycle (2026-07-26)
+
+- Transaction-bound object-store and index `getAll()`/`getAllKeys()` calls now
+  return `IDBRequest`-shaped objects and dispatch asynchronous success events
+  instead of returning raw arrays synchronously.
+- Transactions track pending bulk-read requests and dispatch `complete` only
+  after their request success handlers run. The returned values remain the
+  compatibility facade's existing unfiltered in-memory arrays; range,
+  direction, count, cloning, and key-order semantics are still incomplete.
+
+Verification:
+
+- The focused Release Tooling build succeeds with zero errors.
+- Six upstream object-store/index `getAll` and `getAllKeys` URLs that previously
+  consumed long-test timeouts now all reach terminal `OK` test status. They
+  report 23 concrete assertion failures rather than six whole-test timeouts.
