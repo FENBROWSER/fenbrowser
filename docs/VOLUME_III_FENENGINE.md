@@ -10395,3 +10395,26 @@ Verification:
 - Browser receiver/mutation/discovery slice: pass (`7/7`, zero failed/skipped).
 - Relevant FenJS stale-generation/document-epoch/navigation-epoch/realm slice: pass (`11/11`, zero failed/skipped), with both stale-generation contracts explicitly discovered.
 - Guarded browser/process/export/receiver slice: pass (`74/74`, zero failed/skipped).
+
+## 2.393 IndexedDB Open Lifecycle Event Completion (2026-07-26)
+
+- The active FenJS IndexedDB compatibility facade now gives requests and
+  transactions EventTarget-style listener registration and dispatch.
+- A version-increasing `indexedDB.open()` exposes its upgrade transaction,
+  dispatches `upgradeneeded` with `oldVersion`/`newVersion`, completes the
+  upgrade transaction, and then dispatches `success`. Database versions are
+  retained by the facade and cleared by `deleteDatabase()`.
+- This is a lifecycle correction for the existing in-memory compatibility
+  facade, not a claim of full IndexedDB conformance. Key-path semantics,
+  exception ordering, cursor/index behavior, and durable storage remain
+  incomplete.
+
+Verification:
+
+- Release builds of FenEngine and Tooling succeed.
+- Upstream WPT
+  `IndexedDB/idbfactory-open-request-success.any.html` changed from a full
+  timeout to `OK`/pass in 12.1 seconds including harness startup.
+- In a four-test sample of prior window IndexedDB timeouts, three reached
+  terminal `OK` test status with concrete assertion failures and one remained
+  a timeout, replacing blind lifecycle waits with actionable failures.

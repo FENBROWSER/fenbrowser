@@ -4535,11 +4535,41 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 }
 
                 // ── indexedDB ── https://w3c.github.io/IndexedDB/
-                // Fully functional in-memory implementation with persistence hooks.
+                // Partial in-memory compatibility implementation with persistence hooks.
                 // Uses __fenIdb* C# native functions for persistence when available.
                 if (typeof globalThis.indexedDB === 'undefined') {
                     // ── Helpers ──
                     var _idbStore = {}; // { "db\0store": { _data: {key: value}, _indexes: {name: {keyPath, _data: {key: value}}} } }
+                    var _idbVersions = {};
+                    function _idbInitEventTarget(target) {
+                        target._idbListeners = {};
+                        target.addEventListener = function (type, callback) {
+                            if (typeof callback !== 'function') return;
+                            type = String(type || '');
+                            var listeners = this._idbListeners[type] || (this._idbListeners[type] = []);
+                            if (listeners.indexOf(callback) < 0) listeners.push(callback);
+                        };
+                        target.removeEventListener = function (type, callback) {
+                            var listeners = this._idbListeners[String(type || '')];
+                            if (!listeners) return;
+                            var index = listeners.indexOf(callback);
+                            if (index >= 0) listeners.splice(index, 1);
+                        };
+                    }
+                    function _idbDispatch(target, type, init) {
+                        var event = init || {};
+                        event.type = type;
+                        event.target = target;
+                        event.currentTarget = target;
+                        event.defaultPrevented = false;
+                        event.preventDefault = function () { this.defaultPrevented = true; };
+                        event.stopPropagation = function () {};
+                        var handler = target['on' + type];
+                        if (typeof handler === 'function') handler.call(target, event);
+                        var listeners = (target._idbListeners[type] || []).slice();
+                        for (var i = 0; i < listeners.length; i++) listeners[i].call(target, event);
+                        return !event.defaultPrevented;
+                    }
                     function _idbExtractKey(value, keyPath) {
                         if (keyPath === null || keyPath === undefined) return undefined;
                         if (typeof keyPath === 'string' && keyPath.indexOf('.') < 0) return value[keyPath];
@@ -4556,14 +4586,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         globalThis.setTimeout(function () {
                             request.result = result;
                             request.readyState = 'done';
-                            if (request.onsuccess) request.onsuccess({ type: 'success', target: request });
+                            _idbDispatch(request, 'success');
                         }, 0);
                     }
                     function _idbFireError(request, message) {
                         globalThis.setTimeout(function () {
                             request.error = { name: 'AbortError', message: String(message || '') };
                             request.readyState = 'done';
-                            if (request.onerror) request.onerror({ type: 'error', target: request });
+                            _idbDispatch(request, 'error');
                         }, 0);
                     }
                     // ── IDBRequest ──
@@ -4573,6 +4603,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         this.readyState = 'pending';
                         this.onsuccess = null;
                         this.onerror = null;
+                        this.source = null;
+                        this.transaction = null;
+                        _idbInitEventTarget(this);
                     }
                     function IDBOpenDBRequest() {
                         IDBRequest.call(this);
@@ -4775,14 +4808,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             commit: function () {
                                 var self = this;
                                 globalThis.setTimeout(function () {
-                                    if (self._active && self.oncomplete) self.oncomplete({ type: 'complete', target: self });
+                                    if (self._active) _idbDispatch(self, 'complete');
                                     self._active = false;
                                 }, 0);
                             }
                         };
+                        _idbInitEventTarget(tx);
                         // Auto-commit after this event loop turn
                         globalThis.setTimeout(function () {
-                            if (tx._active && tx.oncomplete) tx.oncomplete({ type: 'complete', target: tx });
+                            if (tx._active) _idbDispatch(tx, 'complete');
                             tx._active = false;
                         }, 0);
                         return tx;
@@ -4827,6 +4861,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                 }
                             }
                             globalThis.setTimeout(function () {
+                                var oldVersion = _idbVersions.hasOwnProperty(dbName) ? _idbVersions[dbName] : 0;
                                 var db = new IDBDatabase(dbName, ver);
                                 // Gather existing store names
                                 var prefix = dbName + '\0';
@@ -4839,8 +4874,27 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                 }
                                 request.result = db;
                                 request.readyState = 'done';
-                                __fenLog('warn', '[IDB] open onsuccess fired for "' + dbName + '" v' + ver + ' (stores: ' + db.objectStoreNames.join(',') + ')');
-                                if (request.onsuccess) request.onsuccess({ type: 'success', target: request });
+                                if (ver > oldVersion) {
+                                    var upgradeTx = db.transaction([], 'versionchange');
+                                    request.transaction = upgradeTx;
+                                    _idbDispatch(request, 'upgradeneeded', {
+                                        oldVersion: oldVersion,
+                                        newVersion: ver
+                                    });
+                                    globalThis.setTimeout(function () {
+                                        if (upgradeTx._active) {
+                                            _idbDispatch(upgradeTx, 'complete');
+                                            upgradeTx._active = false;
+                                        }
+                                        _idbVersions[dbName] = ver;
+                                        request.transaction = null;
+                                        __fenLog('warn', '[IDB] open onsuccess fired for "' + dbName + '" v' + ver + ' (stores: ' + db.objectStoreNames.join(',') + ')');
+                                        _idbDispatch(request, 'success');
+                                    }, 0);
+                                } else {
+                                    __fenLog('warn', '[IDB] open onsuccess fired for "' + dbName + '" v' + ver + ' (stores: ' + db.objectStoreNames.join(',') + ')');
+                                    _idbDispatch(request, 'success');
+                                }
                             }, 0);
                             return request;
                         },
@@ -4852,13 +4906,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             for (var i = 0; i < keys.length; i++) {
                                 if (keys[i].indexOf(prefix) === 0) delete _idbStore[keys[i]];
                             }
+                            delete _idbVersions[dbName];
                             if (typeof __fenIdbDeleteDatabase === 'function') {
                                 try { __fenIdbDeleteDatabase(dbName); } catch(e) {}
                             }
                             var request = new IDBOpenDBRequest();
                             globalThis.setTimeout(function () {
                                 request.readyState = 'done';
-                                if (request.onsuccess) request.onsuccess({ type: 'success', target: request });
+                                _idbDispatch(request, 'success');
                             }, 0);
                             return request;
                         },
