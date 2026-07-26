@@ -3456,25 +3456,6 @@ public void Dispose()
                     var capturedShouldNormalize = shouldNormalizeNoJsFallback;
                     var capturedDeferSnapshot = deferStableSnapshotUntilPostScript;
 
-                    // The pre-script layout flush must happen before we release the
-                    // render thread, so scripts can read correct getBoundingClientRect.
-                    if (control is SkiaDomRenderer activeRenderer && (dom as Element) != null)
-                    {
-                        try
-                        {
-                            activeRenderer.EnsureLayout(
-                                dom as Element,
-                                LastComputedStyles,
-                                (float)(viewportWidth ?? _activeViewportWidth ?? 1920),
-                                (float)vh,
-                                baseUri?.AbsoluteUri);
-                        }
-                        catch (Exception ex)
-                        {
-                            EngineLogCompat.Warn($"[RenderAsync] Pre-script layout flush failed: {ex.Message}", LogCategory.Rendering);
-                        }
-                    }
-
                     // Run scripts + post-script work in background.
                     _ = RunDetachedAsync(async () =>
                     {
