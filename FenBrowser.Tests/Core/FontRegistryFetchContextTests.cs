@@ -1,4 +1,6 @@
 using System;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Parsing;
@@ -65,6 +67,63 @@ public sealed class FontRegistryFetchContextTests
         {
             FontRegistry.FetchDetailedAsync = previousFetcher;
             FontRegistry.FetchDetailedForDocumentAsync = previousDocumentFetcher;
+            FontRegistry.Clear();
+        }
+    }
+
+    [Fact]
+    public async Task FailedFontLoad_IsCoalescedAndMemoizedForDocument()
+    {
+        var fetchCount = 0;
+        var releaseFetch = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var context = new FontRegistry.FontLoaderRequestContext
+        {
+            OwnerId = "font-coalescing-test",
+            FetchDetailedAsync = async uri =>
+            {
+                Interlocked.Increment(ref fetchCount);
+                await releaseFetch.Task;
+                return new BinaryFetchResult
+                {
+                    FinalUri = uri,
+                    StatusCode = 404,
+                    FailureReason = BinaryFetchFailureReason.HttpError
+                };
+            }
+        };
+
+        FontRegistry.Clear();
+        try
+        {
+            var registrations = Enumerable.Range(0, 16)
+                .Select(_ => Task.Run(() =>
+                {
+                    using (FontRegistry.EnterRequestContext(context))
+                    {
+                        FontRegistry.ParseAndRegister(
+                            "font-family: 'MissingFont'; src: url('https://cdn.example.test/missing.woff2') format('woff2');");
+                    }
+                }))
+                .ToArray();
+
+            await Task.WhenAll(registrations);
+            releaseFetch.TrySetResult(true);
+            await FontRegistry.LoadPendingFontsAsync();
+
+            using (FontRegistry.EnterRequestContext(context))
+            {
+                FontRegistry.ParseAndRegister(
+                    "font-family: 'MissingFont'; src: url('https://cdn.example.test/missing.woff2') format('woff2');");
+            }
+            await FontRegistry.LoadPendingFontsAsync();
+
+            Assert.Equal(1, Volatile.Read(ref fetchCount));
+            Assert.Null(FontRegistry.TryResolve("MissingFont"));
+        }
+        finally
+        {
+            releaseFetch.TrySetResult(true);
             FontRegistry.Clear();
         }
     }

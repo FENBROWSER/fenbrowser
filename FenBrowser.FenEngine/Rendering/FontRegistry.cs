@@ -62,7 +62,10 @@ namespace FenBrowser.FenEngine.Rendering
             = new Dictionary<string, SKTypeface>(StringComparer.OrdinalIgnoreCase);
 
         private static readonly Dictionary<string, Task<SKTypeface>> _loadingTasks 
-            = new Dictionary<string, Task<SKTypeface>>(StringComparer.OrdinalIgnoreCase);
+            = new Dictionary<string, Task<SKTypeface>>(StringComparer.Ordinal);
+
+        private static readonly HashSet<string> _failedFonts
+            = new HashSet<string>(StringComparer.Ordinal);
 
         private static readonly object _lock = new object();
 
@@ -184,22 +187,39 @@ namespace FenBrowser.FenEngine.Rendering
             string src = descriptor.Source;
             if (string.IsNullOrEmpty(src)) return null;
 
-            // Check if already loading/loaded
-            var requestOwner = descriptor.RequestContext?.OwnerId ?? "_default";
-            string cacheKey = $"{requestOwner}|{descriptor.Family}|{descriptor.Weight}|{descriptor.Style}";
-            Task<SKTypeface> existingTask = null;
+            string cacheKey = BuildLoadCacheKey(descriptor);
+            TaskCompletionSource<SKTypeface> completion = null;
+            Task<SKTypeface> loadTask;
             lock (_lock)
             {
-                 if (_loadedFonts.ContainsKey(cacheKey)) return _loadedFonts[cacheKey];
-                 if (_loadingTasks.TryGetValue(cacheKey, out existingTask)) 
-                 {
-                     // Found existing task, will await outside lock
-                 }
-            }
-            if (existingTask != null) return await existingTask;
+                if (_loadedFonts.TryGetValue(cacheKey, out var loaded))
+                {
+                    return loaded;
+                }
 
-            var tcs = new TaskCompletionSource<SKTypeface>();
-            lock (_lock) _loadingTasks[cacheKey] = tcs.Task;
+                if (_failedFonts.Contains(cacheKey))
+                {
+                    return null;
+                }
+
+                if (_loadingTasks.TryGetValue(cacheKey, out loadTask))
+                {
+                    completion = null;
+                }
+                else
+                {
+                    completion = new TaskCompletionSource<SKTypeface>(
+                        TaskCreationOptions.RunContinuationsAsynchronously);
+                    loadTask = completion.Task;
+                    _loadingTasks.Add(cacheKey, loadTask);
+                }
+            }
+
+            if (completion == null)
+            {
+                return await loadTask.ConfigureAwait(false);
+            }
+
             NotifyPendingLoadCountChanged();
 
             try
@@ -302,26 +322,50 @@ namespace FenBrowser.FenEngine.Rendering
                             _loadedFonts[descriptor.Family] = typeface;
                     }
                     EngineLogCompat.Debug($"[FontRegistry] Loaded font: {descriptor.Family} ({typeface.FamilyName})", LogCategory.Rendering);
-                    tcs.SetResult(typeface);
+                    completion.TrySetResult(typeface);
                     try { FontLoaded?.Invoke(descriptor.Family); } catch (Exception ex) { EngineLogCompat.Warn($"[FontRegistry] FontLoaded callback failed: {ex.Message}", LogCategory.Rendering); }
                     return typeface;
+                }
+
+                lock (_lock)
+                {
+                    _failedFonts.Add(cacheKey);
                 }
             }
             catch (Exception ex)
             {
                 EngineLogCompat.Error($"[FontRegistry] Failed to load font {descriptor.Family}: {ex.Message}", LogCategory.Rendering, ex);
+                lock (_lock)
+                {
+                    _failedFonts.Add(cacheKey);
+                }
             }
             finally
             {
                 lock (_lock)
                 {
-                    _loadingTasks.Remove(cacheKey);
+                    if (_loadingTasks.TryGetValue(cacheKey, out var currentTask) &&
+                        ReferenceEquals(currentTask, loadTask))
+                    {
+                        _loadingTasks.Remove(cacheKey);
+                    }
                 }
                 NotifyPendingLoadCountChanged();
             }
 
-            tcs.SetResult(null);
+            completion.TrySetResult(null);
             return null;
+        }
+
+        private static string BuildLoadCacheKey(FontFaceDescriptor descriptor)
+        {
+            var requestOwner = descriptor.RequestContext?.OwnerId ?? "_default";
+            var family = descriptor.Family?.Trim().Trim('"', '\'').ToUpperInvariant() ?? string.Empty;
+            var baseUri = descriptor.BaseUri?.AbsoluteUri ?? string.Empty;
+            var source = descriptor.Source?.Trim() ?? string.Empty;
+            var unicodeRange = descriptor.UnicodeRange?.Trim() ?? string.Empty;
+            var stretch = descriptor.Stretch?.Trim() ?? string.Empty;
+            return $"{requestOwner}|{family}|{descriptor.Weight}|{descriptor.Style}|{stretch}|{unicodeRange}|{baseUri}|{source}";
         }
 
         private static FontLoaderRequestContext CreateFallbackRequestContext()
@@ -602,6 +646,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _fontFaces.Clear();
                 _loadedFonts.Clear();
                 _loadingTasks.Clear();
+                _failedFonts.Clear();
             }
             NotifyPendingLoadCountChanged();
         }
