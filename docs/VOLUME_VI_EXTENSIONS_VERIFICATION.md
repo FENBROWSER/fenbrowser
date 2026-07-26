@@ -54,6 +54,9 @@ This volume details the infrastructure used to extend the browser and verify its
   Maintained entries currently disable WebDriver BiDi (no registered BiDi
   transport), Web Crypto key generation (no `subtle.generateKey`), and the
   tentative KangarooTwelve/TurboSHAKE digests (no native implementation).
+  Narrow storage entries also cover absent IndexedDB structured cloning,
+  Blob URL registry/resource resolution, and worker-only files whose generated
+  URL does not carry a worker-variant suffix.
 - `FenBrowser.Tooling wpt --suite normal|workers|webdriver|all` keeps classic
   WebDriver specification tests separate from normal web tests. The shard
   planner additionally separates worker-generated testharness variants from
