@@ -340,7 +340,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
 
                     // WORD FLOW - track segments for this textBox
-                    var textWrapStyle = textBox.ComputedStyle ?? box.ComputedStyle;
+                    // Wrapping is a property of the inline formatting container. The
+                    // generated text-box style does not carry non-inherited values such
+                    // as text-wrap-style, so consult the container first.
+                    var textWrapStyle = box.ComputedStyle ?? textBox.ComputedStyle;
                     if (curX <= 0.5f &&
                         UsesBalancedTextWrap(textWrapStyle) &&
                         TryBuildBalancedTextLines(fullText, textWrapStyle, contentLimit, out var balancedLines))
