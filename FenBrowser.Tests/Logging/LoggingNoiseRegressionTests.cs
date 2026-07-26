@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -392,5 +393,91 @@ public sealed class LoggingNoiseRegressionTests
 
         Assert.False(opts.EnableConsoleSink);
         Assert.False(opts.EnableDebugSink);
+    }
+
+    // ── File rotation test ──
+
+    [Fact]
+    public void FileSink_RotatesAtConfiguredSize()
+    {
+        var tracePath = Path.Combine(Path.GetTempPath(), $"fenbrowser-rotate-{Guid.NewGuid():N}.jsonl");
+        var loggingSettings = BrowserSettings.Instance.Logging;
+        var previousMaxFileSizeMb = loggingSettings.MaxLogFileSizeMB;
+        var previousMaxArchivedFiles = loggingSettings.MaxArchivedFiles;
+        try
+        {
+            loggingSettings.MaxLogFileSizeMB = 1;
+            loggingSettings.MaxArchivedFiles = 4;
+            EngineLog.Configure(new EngineLoggingOptions
+            {
+                Enabled = true,
+                GlobalMinimumSeverity = LogSeverity.Trace,
+                EnableConsoleSink = false,
+                EnableDebugSink = false,
+                EnableNdjsonSink = false,
+                EnableRingBufferSink = false,
+                EnableTraceSink = true,
+                TraceFilePath = tracePath
+            });
+
+            var largePayload = new string('x', 1024);
+            const int eventCount = 1_400;
+            for (var i = 0; i < eventCount; i++)
+            {
+                EngineLog.Write(LogSubsystem.Verification, LogSeverity.Info,
+                    $"rotate-{i:D4}", fields: new Dictionary<string, object> { ["payload"] = largePayload });
+            }
+
+            Assert.True(EngineLog.Flush(TimeSpan.FromSeconds(2)));
+            EngineLog.Configure(new EngineLoggingOptions { Enabled = false });
+
+            Assert.True(File.Exists(tracePath));
+            var dir = Path.GetDirectoryName(tracePath) ?? ".";
+            var nameWithoutExt = Path.GetFileNameWithoutExtension(tracePath);
+            var ext = Path.GetExtension(tracePath);
+            var files = new[] { tracePath }
+                .Concat(Directory.GetFiles(dir, $"{nameWithoutExt}.*{ext}"))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            Assert.True(files.Length >= 2, "Expected the trace sink to rotate at least once.");
+            var observedEvents = 0;
+            foreach (var file in files)
+            {
+                foreach (var line in File.ReadAllLines(file))
+                {
+                    using var doc = JsonDocument.Parse(line);
+                    Assert.NotNull(doc);
+                    observedEvents++;
+                }
+            }
+
+            Assert.Equal(eventCount, observedEvents);
+        }
+        finally
+        {
+            loggingSettings.MaxLogFileSizeMB = previousMaxFileSizeMb;
+            loggingSettings.MaxArchivedFiles = previousMaxArchivedFiles;
+            EngineLog.Configure(new EngineLoggingOptions
+            {
+                Enabled = false,
+                EnableConsoleSink = false,
+                EnableDebugSink = false,
+                EnableNdjsonSink = false,
+                EnableRingBufferSink = false,
+                EnableTraceSink = false
+            });
+            try
+            {
+                var dir = Path.GetDirectoryName(tracePath) ?? ".";
+                var nameWithoutExt = Path.GetFileNameWithoutExtension(tracePath);
+                var ext = Path.GetExtension(tracePath);
+                foreach (var f in Directory.GetFiles(dir, $"{nameWithoutExt}.*{ext}"))
+                {
+                    try { File.Delete(f); } catch { }
+                }
+            }
+            catch { }
+        }
     }
 }
