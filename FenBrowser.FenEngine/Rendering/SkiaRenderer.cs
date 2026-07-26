@@ -466,6 +466,17 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (node == null) return;
             if (stats != null) stats.VisitedNodes++;
+
+            // CSS opacity applies to the entire subtree. A zero-opacity group cannot
+            // contribute pixels, so avoid allocating an unbounded Skia save-layer or
+            // traversing its children. Large pages commonly retain offscreen,
+            // pre-animation sections at opacity:0; rasterizing all of them wastes
+            // substantial time and can exhaust native layer memory.
+            if (node is OpacityGroupPaintNode invisibleGroup &&
+                invisibleGroup.Opacity <= 0f)
+            {
+                return;
+            }
              
             // INVARIANT: Skip invalid geometry, don't crash
             if (!IsValidBounds(node.Bounds))
@@ -477,9 +488,22 @@ namespace FenBrowser.FenEngine.Rendering
             // Cull leaf/visual nodes outside the viewport.
             // Grouping nodes can legitimately carry approximate bounds while their children
             // remain visible after transforms, sticky offsets, or stacking-context wrapping.
-            if (ShouldCullByOwnBounds(node) &&
-                node.Bounds.Width > 0 && node.Bounds.Height > 0 &&
-                !IntersectsViewportBounds(node.Bounds, viewport))
+            bool canCullFilteredContext = false;
+            float filterVisualOutset = 0f;
+            SKRect filteredVisualBounds = node.Bounds;
+            if (node is StackingContextPaintNode filteredContext &&
+                !node.Transform.HasValue &&
+                !string.IsNullOrWhiteSpace(filteredContext.Filter) &&
+                CssFilterParser.TryGetVisualOutset(filteredContext.Filter, out filterVisualOutset))
+            {
+                filteredVisualBounds.Inflate(filterVisualOutset, filterVisualOutset);
+                canCullFilteredContext = true;
+            }
+
+            var cullBounds = canCullFilteredContext ? filteredVisualBounds : node.Bounds;
+            if ((ShouldCullByOwnBounds(node) || canCullFilteredContext) &&
+                cullBounds.Width > 0 && cullBounds.Height > 0 &&
+                !IntersectsViewportBounds(cullBounds, viewport))
             {
                 if (stats != null) stats.ViewportCulled++;
                 return;
@@ -581,9 +605,18 @@ namespace FenBrowser.FenEngine.Rendering
             // Draw children in order (recursive traversal)
             if (node.Children != null)
             {
+                // A filter can make pixels outside a child's layout bounds visible.
+                // Expand descendant culling by the known filter support so those
+                // pixels reach the context's filter layer before composition.
+                var childViewport = viewport;
+                if (canCullFilteredContext && filterVisualOutset > 0f)
+                {
+                    childViewport.Inflate(filterVisualOutset, filterVisualOutset);
+                }
+
                 foreach (var child in node.Children)
                 {
-                    DrawNodeSafe(backend, child, viewport, stats, hoverPaintedSources);
+                    DrawNodeSafe(backend, child, childViewport, stats, hoverPaintedSources);
                 }
             }
             
@@ -1196,9 +1229,15 @@ namespace FenBrowser.FenEngine.Rendering
             float anchorX = node.BackgroundAttachmentFixed ? node.FixedViewportOrigin.X : node.BackgroundOrigin.X;
             float anchorY = node.BackgroundAttachmentFixed ? node.FixedViewportOrigin.Y : node.BackgroundOrigin.Y;
 
-            var matrix = SKMatrix.CreateTranslation(
+            float renderedWidth = node.BackgroundImageSize?.Width ?? node.Bitmap.Width;
+            float renderedHeight = node.BackgroundImageSize?.Height ?? node.Bitmap.Height;
+            float scaleX = renderedWidth / node.Bitmap.Width;
+            float scaleY = renderedHeight / node.Bitmap.Height;
+
+            var matrix = SKMatrix.CreateScale(scaleX, scaleY);
+            matrix = matrix.PostConcat(SKMatrix.CreateTranslation(
                 anchorX + node.BackgroundPosition.X,
-                anchorY + node.BackgroundPosition.Y);
+                anchorY + node.BackgroundPosition.Y));
 
             using var shader = SKShader.CreateBitmap(node.Bitmap, node.TileModeX, node.TileModeY, matrix);
             backend.DrawRect(node.Bounds, shader);

@@ -689,6 +689,57 @@ namespace FenBrowser.Tests.Rendering
         }
 
         [Fact]
+        public void BackgroundSize_ScalesWholeBitmapIntoCssImageArea()
+        {
+            using var bitmap = new SKBitmap(8, 8);
+            using var canvas = new SKCanvas(bitmap);
+            canvas.Clear(SKColors.White);
+
+            using var image = new SKBitmap(4, 4);
+            image.Erase(SKColors.Blue);
+            image.SetPixel(3, 3, SKColors.Red);
+
+            var backend = new SkiaRenderBackend(canvas);
+            var renderer = new SkiaRenderer();
+            var drawBackgroundImage = typeof(SkiaRenderer).GetMethod("DrawBackgroundImageNode", BindingFlags.NonPublic | BindingFlags.Instance);
+            Assert.NotNull(drawBackgroundImage);
+
+            var node = new ImagePaintNode
+            {
+                Bounds = new SKRect(1, 1, 3, 3),
+                Bitmap = image,
+                IsBackgroundImage = true,
+                TileModeX = SKShaderTileMode.Decal,
+                TileModeY = SKShaderTileMode.Decal,
+                BackgroundOrigin = new SKPoint(1, 1),
+                BackgroundImageSize = new SKSize(2, 2)
+            };
+
+            drawBackgroundImage.Invoke(renderer, new object[] { backend, node });
+
+            Assert.Equal(SKColors.Blue, bitmap.GetPixel(1, 1));
+            Assert.Equal(SKColors.Red, bitmap.GetPixel(2, 2));
+            Assert.Equal(SKColors.White, bitmap.GetPixel(3, 2));
+        }
+
+        [Fact]
+        public void BackgroundSize_SinglePixelDimension_PreservesBitmapAspectRatio()
+        {
+            using var bitmap = new SKBitmap(48, 48);
+            var resolveSize = typeof(NewPaintTreeBuilder).GetMethod(
+                "ResolveBackgroundImageSize",
+                BindingFlags.NonPublic | BindingFlags.Static);
+            Assert.NotNull(resolveSize);
+
+            var resolved = Assert.IsType<SKSize>(resolveSize.Invoke(
+                null,
+                new object[] { "32px", new SKRect(0, 0, 32, 32), bitmap }));
+
+            Assert.Equal(32f, resolved.Width);
+            Assert.Equal(32f, resolved.Height);
+        }
+
+        [Fact]
         public void Acid2EyeTiles_OnePixelOffset_ComposeIntoSolidYellowBand()
         {
             using var bitmap = new SKBitmap(16, 4);

@@ -250,6 +250,11 @@ namespace FenBrowser.FenEngine.Rendering
         public SKPoint BackgroundPosition { get; init; }
 
         /// <summary>
+        /// Rendered CSS background-image size. Null uses the bitmap's natural size.
+        /// </summary>
+        public SKSize? BackgroundImageSize { get; init; }
+
+        /// <summary>
         /// Top-left of the box used for background-position/background-origin.
         /// Defaults to the paint bounds when not explicitly provided.
         /// </summary>

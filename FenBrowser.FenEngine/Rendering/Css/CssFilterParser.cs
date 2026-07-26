@@ -42,6 +42,55 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return combined;
         }
 
+        /// <summary>
+        /// Returns a conservative visual outset for filters whose output bounds can
+        /// be determined locally. Callers must not cull when this returns false.
+        /// </summary>
+        internal static bool TryGetVisualOutset(string filterString, out float outset)
+        {
+            outset = 0f;
+            if (string.IsNullOrWhiteSpace(filterString) ||
+                string.Equals(filterString.Trim(), "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var matches = FunctionRegex.Matches(filterString);
+            if (matches.Count == 0)
+            {
+                return false;
+            }
+
+            foreach (Match match in matches)
+            {
+                var functionName = match.Groups[1].Value.ToLowerInvariant();
+                var arguments = match.Groups[2].Value.Trim();
+                switch (functionName)
+                {
+                    case "blur":
+                        // Skia's blur argument is sigma; three sigma contains the
+                        // practical filter support used for raster bounds.
+                        outset += Math.Max(0f, ParseLength(arguments, 0f)) * 3f;
+                        break;
+                    case "brightness":
+                    case "contrast":
+                    case "grayscale":
+                    case "sepia":
+                    case "saturate":
+                    case "hue-rotate":
+                    case "invert":
+                    case "opacity":
+                        break;
+                    default:
+                        // Drop shadows and unknown filters can move output
+                        // asymmetrically, so keep the conservative no-cull path.
+                        return false;
+                }
+            }
+
+            return true;
+        }
+
         private static SKImageFilter CreateFilter(string name, string args)
         {
             switch (name)

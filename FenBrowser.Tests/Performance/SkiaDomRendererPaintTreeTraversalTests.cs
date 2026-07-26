@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using FenBrowser.FenEngine.Rendering;
+using SkiaSharp;
 using Xunit;
 
 namespace FenBrowser.Tests.Performance
@@ -39,6 +40,77 @@ namespace FenBrowser.Tests.Performance
 
             long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
             Assert.Equal(0, allocated);
+        }
+
+        [Fact]
+        public void Render_ZeroOpacityGroup_DoesNotTraverseOrPaintChildren()
+        {
+            var childPainted = false;
+            var hiddenGroup = new OpacityGroupPaintNode
+            {
+                Bounds = new SKRect(0, 0, 100, 100),
+                Opacity = 0f,
+                Children = new PaintNodeBase[]
+                {
+                    new CustomPaintNode
+                    {
+                        Bounds = new SKRect(0, 0, 100, 100),
+                        PaintAction = (_, _) => childPainted = true
+                    }
+                }
+            };
+
+            using var surface = SKSurface.Create(new SKImageInfo(100, 100));
+            var renderer = new SkiaRenderer();
+            renderer.Render(
+                surface.Canvas,
+                new ImmutablePaintTree(new[] { hiddenGroup }),
+                new SKRect(0, 0, 100, 100));
+
+            Assert.False(childPainted);
+        }
+
+        [Fact]
+        public void Render_FilteredContext_CullsOnlyOutsideBlurVisualOutset()
+        {
+            var farChildPainted = false;
+            var nearChildPainted = false;
+            var farContext = new StackingContextPaintNode
+            {
+                Bounds = new SKRect(0, 500, 100, 600),
+                Filter = "blur(20px)",
+                Children = new PaintNodeBase[]
+                {
+                    new CustomPaintNode
+                    {
+                        Bounds = new SKRect(0, 500, 100, 600),
+                        PaintAction = (_, _) => farChildPainted = true
+                    }
+                }
+            };
+            var nearContext = new StackingContextPaintNode
+            {
+                Bounds = new SKRect(0, 120, 100, 140),
+                Filter = "blur(20px)",
+                Children = new PaintNodeBase[]
+                {
+                    new CustomPaintNode
+                    {
+                        Bounds = new SKRect(0, 120, 100, 140),
+                        PaintAction = (_, _) => nearChildPainted = true
+                    }
+                }
+            };
+
+            using var surface = SKSurface.Create(new SKImageInfo(100, 100));
+            var renderer = new SkiaRenderer();
+            renderer.Render(
+                surface.Canvas,
+                new ImmutablePaintTree(new PaintNodeBase[] { farContext, nearContext }),
+                new SKRect(0, 0, 100, 100));
+
+            Assert.False(farChildPainted);
+            Assert.True(nearChildPainted);
         }
     }
 }

@@ -538,6 +538,69 @@ div { color: black; }
             Assert.True(contentBackgroundIndex >= 0, "Expected scroll content background node to be present in paint tree.");
         }
 
+        [Fact]
+        public async Task Test17_UaFormDefaultDoesNotAddBlockMargins()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<body>
+  <form id='form'><button>Submit</button></form>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var form = doc.GetElementById("form");
+
+            Assert.Equal(0, computed[form].Margin.Top);
+            Assert.Equal(0, computed[form].Margin.Bottom);
+        }
+
+        [Fact]
+        public async Task Test18_LegacyRectClipClipsPositionedInlineElementAndDescendants()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<body>
+  <a id='skip' style='position:absolute;display:inline;width:1px;height:1px;clip:rect(1px, 1px, 1px, 1px);overflow:hidden;background:red'>
+    <span id='label' style='display:inline-block;width:120px;height:20px;background:blue'></span>
+  </a>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var computed = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+
+            var layoutComputer = new LayoutEngineComputer(computed, 800, 600);
+            layoutComputer.Measure(root, new SkiaSharp.SKSize(800, 600));
+            layoutComputer.Arrange(root, new SkiaSharp.SKRect(0, 0, 800, 600));
+
+            var tree = NewPaintTreeBuilder.Build(
+                root,
+                layoutComputer.GetAllBoxes().ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
+                computed,
+                800,
+                600,
+                null);
+
+            var skip = doc.GetElementById("skip");
+            var clip = FlattenPaintNodes(tree.Roots)
+                .OfType<ClipPaintNode>()
+                .FirstOrDefault(node => ReferenceEquals(node.SourceNode, skip));
+
+            Assert.NotNull(clip);
+            Assert.InRange(clip.ClipRect.Value.Width, 0, 0.01f);
+            Assert.InRange(clip.ClipRect.Value.Height, 0, 0.01f);
+            Assert.Contains(clip.Children, node => node is BackgroundPaintNode background &&
+                ReferenceEquals(background.SourceNode, skip));
+        }
+
         private static List<PaintNodeBase> FlattenPaintNodes(IEnumerable<PaintNodeBase> nodes)
         {
             var list = new List<PaintNodeBase>();

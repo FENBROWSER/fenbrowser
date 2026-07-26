@@ -3,6 +3,7 @@
 // Determinism: strict
 // FallbackPolicy: spec-defined
 using System;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Collections.Generic;
 using System.Linq;
@@ -664,6 +665,35 @@ namespace FenBrowser.FenEngine.Rendering
                 bool isInlineLevel = display == "inline" || display == "inline-block" || display == "inline-flex" || display == "inline-grid" || display == "inline-table";
                 if (node is Text) isInlineLevel = true;
 
+                // CSS 2.1 legacy clip applies to the entire generated box (including
+                // its background/border), and only to positioned elements. GitHub's
+                // keyboard-focus skip link still uses rect(...) for its hidden state.
+                if (isPositioned && TryResolveLegacyRectClip(style, box.BorderBox, out var legacyClipRect))
+                {
+                    var tempCtx = new BuilderStackingContext(node);
+                    ProcessChildren(node, tempCtx, depth + 1, null, nodeVisibilityHidden);
+
+                    var clippedNodes = new List<PaintNodeBase>(paintNodes.Count + 1);
+                    clippedNodes.AddRange(paintNodes);
+                    clippedNodes.AddRange(tempCtx.Flatten());
+
+                    if (clippedNodes.Count > 0)
+                    {
+                        var clipNode = new ClipPaintNode
+                        {
+                            Bounds = legacyClipRect,
+                            ClipRect = legacyClipRect,
+                            Children = clippedNodes,
+                            SourceNode = node
+                        };
+
+                        var clipList = new List<PaintNodeBase> { clipNode };
+                        currentContext.AddPositionedNodes(clipList, zIndex);
+                    }
+
+                    return;
+                }
+
                 // 1. Add element's background/border nodes (UNCLIPPED by self)
                 //    (paintNodes contains the background, border, etc.)
                 if (isPositioned)
@@ -804,6 +834,72 @@ namespace FenBrowser.FenEngine.Rendering
                     ProcessChildren(node, currentContext, depth + 1, escapeContext, nodeVisibilityHidden);
                 }
             }
+        }
+
+        private static bool TryResolveLegacyRectClip(CssComputed style, SKRect borderBox, out SKRect clipRect)
+        {
+            clipRect = default;
+            if (style?.Map == null ||
+                !style.Map.TryGetValue("clip", out var rawClip) ||
+                string.IsNullOrWhiteSpace(rawClip))
+            {
+                return false;
+            }
+
+            var match = Regex.Match(
+                rawClip.Trim(),
+                @"^rect\(\s*([^,\s]+)\s*(?:,\s*|\s+)([^,\s]+)\s*(?:,\s*|\s+)([^,\s]+)\s*(?:,\s*|\s+)([^,\s]+)\s*\)$",
+                RegexOptions.IgnoreCase);
+            if (!match.Success)
+            {
+                return false;
+            }
+
+            if (!TryResolveLegacyClipEdge(match.Groups[1].Value, borderBox.Height, 0f, out float top) ||
+                !TryResolveLegacyClipEdge(match.Groups[2].Value, borderBox.Width, borderBox.Width, out float right) ||
+                !TryResolveLegacyClipEdge(match.Groups[3].Value, borderBox.Height, borderBox.Height, out float bottom) ||
+                !TryResolveLegacyClipEdge(match.Groups[4].Value, borderBox.Width, 0f, out float left))
+            {
+                return false;
+            }
+
+            clipRect = new SKRect(
+                borderBox.Left + left,
+                borderBox.Top + top,
+                borderBox.Left + right,
+                borderBox.Top + bottom);
+            return true;
+        }
+
+        private static bool TryResolveLegacyClipEdge(string token, float percentageBasis, float autoValue, out float value)
+        {
+            value = autoValue;
+            if (string.Equals(token, "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            string normalized = token.Trim();
+            if (normalized.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+            {
+                normalized = normalized.Substring(0, normalized.Length - 2);
+            }
+            else if (normalized.EndsWith("%", StringComparison.Ordinal))
+            {
+                if (!float.TryParse(
+                        normalized.Substring(0, normalized.Length - 1),
+                        NumberStyles.Float,
+                        CultureInfo.InvariantCulture,
+                        out float percentage))
+                {
+                    return false;
+                }
+
+                value = percentageBasis * percentage / 100f;
+                return true;
+            }
+
+            return float.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
         }
 
         private static bool AllowsOverflowClipping(Node node, CssComputed style, string display)
@@ -2845,66 +2941,14 @@ namespace FenBrowser.FenEngine.Rendering
                 };
             }
 
-            // Handle BackgroundSize and BackgroundPosition for Sprites
-            SKRect? srcRect = null;
-            if (bitmap.Width > 0 && bitmap.Height > 0)
-            {
-                float bgW = bitmap.Width;
-                float bgH = bitmap.Height;
-
-                // Simple Size Parsing (px only for now)
-                if (!string.IsNullOrEmpty(style.BackgroundSize) && style.BackgroundSize.Contains("px"))
-                {
-                    var sizeParts = style.BackgroundSize.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    if (sizeParts.Length >= 2 && sizeParts[0].EndsWith("px") && sizeParts[1].EndsWith("px"))
-                    {
-                        float.TryParse(sizeParts[0].Replace("px", ""), out bgW);
-                        float.TryParse(sizeParts[1].Replace("px", ""), out bgH);
-                    }
-                    else if (sizeParts.Length == 1 && sizeParts[0].EndsWith("px"))
-                    {
-                         float.TryParse(sizeParts[0].Replace("px", ""), out bgW);
-                         // height auto
-                    }
-                }
-
-                // Simple Position Parsing (px only for now)
-                float posX = 0, posY = 0;
-                if (!string.IsNullOrEmpty(style.BackgroundPosition) && style.BackgroundPosition.Contains("px"))
-                {
-                    var posParts = style.BackgroundPosition.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    if (posParts.Length >= 2)
-                    {
-                        float.TryParse(posParts[0].Replace("px", ""), out posX);
-                        float.TryParse(posParts[1].Replace("px", ""), out posY);
-                    }
-                }
-
-                // Scale factor if background-size differs from natural bitmap size
-                float scaleX = bitmap.Width / bgW;
-                float scaleY = bitmap.Height / bgH;
-
-                // CSS position is often negative for sprites (offset from top-left)
-                // Source Rect = ( -posX * scaleX, -posY * scaleY, boxWidth * scaleX, boxHeight * scaleY )
-                srcRect = new SKRect(
-                    -posX * scaleX,
-                    -posY * scaleY,
-                    (-posX + (float)box.PaddingBox.Width) * scaleX,
-                    (-posY + (float)box.PaddingBox.Height) * scaleY
-                );
-
-                // Sanity check: cap to bitmap bounds
-                srcRect = new SKRect(
-                    Math.Max(0, srcRect.Value.Left),
-                    Math.Max(0, srcRect.Value.Top),
-                    Math.Min(bitmap.Width, srcRect.Value.Right),
-                    Math.Min(bitmap.Height, srcRect.Value.Bottom)
-                );
-            }
-
             var clipBounds = ResolveBackgroundPaintBounds(box, style);
             var origin = ResolveBackgroundOriginPoint(box, style);
-            var position = ResolveBackgroundPosition(style?.BackgroundPosition, clipBounds, bitmap, origin);
+            var backgroundImageSize = ResolveBackgroundImageSize(style?.BackgroundSize, clipBounds, bitmap);
+            var position = ResolveBackgroundPosition(
+                style?.BackgroundPosition,
+                clipBounds,
+                backgroundImageSize ?? new SKSize(bitmap.Width, bitmap.Height),
+                origin);
             var (tileModeX, tileModeY) = ResolveBackgroundTileModes(style?.BackgroundRepeat);
 
             float fixedOriginX = 0;
@@ -2921,13 +2965,13 @@ namespace FenBrowser.FenEngine.Rendering
                 Bounds = clipBounds,
                 SourceNode = node,
                 Bitmap = bitmap,
-                SourceRect = srcRect,
                 ObjectFit = "none",
                 IsBackgroundImage = true,
                 TileModeX = tileModeX,
                 TileModeY = tileModeY,
                 BackgroundOrigin = origin,
                 BackgroundPosition = position,
+                BackgroundImageSize = backgroundImageSize,
                 BackgroundAttachmentFixed = string.Equals(style?.BackgroundAttachment, "fixed", StringComparison.OrdinalIgnoreCase),
                 FixedViewportOrigin = new SKPoint(fixedOriginX, fixedOriginY)
             };
@@ -5361,7 +5405,16 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static SKPoint ResolveBackgroundPosition(string value, SKRect paintBounds, SKBitmap bitmap, SKPoint origin)
         {
-            if (bitmap == null)
+            return ResolveBackgroundPosition(
+                value,
+                paintBounds,
+                bitmap == null ? SKSize.Empty : new SKSize(bitmap.Width, bitmap.Height),
+                origin);
+        }
+
+        private static SKPoint ResolveBackgroundPosition(string value, SKRect paintBounds, SKSize imageSize, SKPoint origin)
+        {
+            if (imageSize.Width <= 0 || imageSize.Height <= 0)
             {
                 return SKPoint.Empty;
             }
@@ -5380,17 +5433,17 @@ namespace FenBrowser.FenEngine.Rendering
 
             float x = 0;
             float y = 0;
-            bool hasX = TryResolveBackgroundPositionComponent(parts[0], paintBounds.Width, bitmap.Width, true, out x);
+            bool hasX = TryResolveBackgroundPositionComponent(parts[0], paintBounds.Width, imageSize.Width, true, out x);
             bool hasY = false;
 
             if (parts.Length > 1)
             {
-                hasY = TryResolveBackgroundPositionComponent(parts[1], paintBounds.Height, bitmap.Height, false, out y);
+                hasY = TryResolveBackgroundPositionComponent(parts[1], paintBounds.Height, imageSize.Height, false, out y);
             }
 
             if (!hasY && parts.Length == 1)
             {
-                hasY = TryResolveBackgroundPositionComponent(parts[0], paintBounds.Height, bitmap.Height, false, out y);
+                hasY = TryResolveBackgroundPositionComponent(parts[0], paintBounds.Height, imageSize.Height, false, out y);
             }
 
             if (!hasX && !hasY)
@@ -5399,6 +5452,62 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return new SKPoint((origin.X - paintBounds.Left) + x, (origin.Y - paintBounds.Top) + y);
+        }
+
+        private static SKSize? ResolveBackgroundImageSize(string value, SKRect positioningArea, SKBitmap bitmap)
+        {
+            if (bitmap == null || bitmap.Width <= 0 || bitmap.Height <= 0 || string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            var layer = SplitTopLevelComma(value).FirstOrDefault()?.Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(layer) || layer == "auto")
+            {
+                return null;
+            }
+
+            float naturalWidth = bitmap.Width;
+            float naturalHeight = bitmap.Height;
+            float aspect = naturalWidth / naturalHeight;
+
+            if (layer == "cover" || layer == "contain")
+            {
+                float scaleX = positioningArea.Width / naturalWidth;
+                float scaleY = positioningArea.Height / naturalHeight;
+                float scale = layer == "cover" ? Math.Max(scaleX, scaleY) : Math.Min(scaleX, scaleY);
+                return new SKSize(naturalWidth * scale, naturalHeight * scale);
+            }
+
+            var parts = layer.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0)
+            {
+                return null;
+            }
+
+            if (string.Equals(parts[0], "auto", StringComparison.OrdinalIgnoreCase) &&
+                parts.Length > 1 &&
+                TryResolveBackgroundSizeComponent(parts[1], positioningArea.Height, out var autoHeight))
+            {
+                return new SKSize(autoHeight * aspect, autoHeight);
+            }
+
+            if (!TryResolveBackgroundSizeComponent(parts[0], positioningArea.Width, out var width))
+            {
+                return null;
+            }
+
+            if (parts.Length == 1 || string.Equals(parts[1], "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                return new SKSize(width, width / aspect);
+            }
+
+            if (!TryResolveBackgroundSizeComponent(parts[1], positioningArea.Height, out var height))
+            {
+                return null;
+            }
+
+            return new SKSize(width, height);
         }
 
         private static bool TryResolveBackgroundPositionComponent(string token, float containerSize, float imageSize, bool isHorizontal, out float value)

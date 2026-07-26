@@ -14,6 +14,9 @@ namespace FenBrowser.FenEngine.Adapters
     /// </summary>
     public class SvgSkiaRenderer : ISvgRenderer
     {
+        private static readonly Lazy<bool> SvgBackendInitialized =
+            new(WarmUpSvgBackend, isThreadSafe: true);
+
         public SvgRenderResult Render(string svgContent)
         {
             return Render(svgContent, SvgRenderLimits.Default);
@@ -45,7 +48,12 @@ namespace FenBrowser.FenEngine.Adapters
             {
                 svgContent = StripExternalReferences(svgContent);
             }
-            
+
+            // Svg.Skia performs one-time parser/native initialization on its
+            // first FromSvg call. That process-wide cold-start cost is unrelated
+            // to the complexity of untrusted input and must not consume the
+            // per-document render budget.
+            _ = SvgBackendInitialized.Value;
             var stopwatch = Stopwatch.StartNew();
             
             try
@@ -123,6 +131,22 @@ namespace FenBrowser.FenEngine.Adapters
                     Success = false,
                     ErrorMessage = $"SVG render error: {ex.Message}"
                 };
+            }
+        }
+
+        private static bool WarmUpSvgBackend()
+        {
+            try
+            {
+                using var svg = new SKSvg();
+                using var picture = svg.FromSvg(
+                    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><path d=\"M0 0h1v1H0z\"/></svg>");
+                return picture != null;
+            }
+            catch
+            {
+                // The real render returns the actionable backend error.
+                return false;
             }
         }
         
