@@ -3136,7 +3136,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine("  debug-css");
             Console.WriteLine("  test");
             Console.WriteLine("  test262 --root <path> [--workers N] [--timeout-ms N] [--max N] [--filter <substring>] [--output <json_path>] [--event-log <jsonl_path>]");
-            Console.WriteLine("  wpt [--root <wpt_path>] [--binary <host_exe>] [--webdriver-binary <launcher>] [--processes N] [--timeout-seconds N] [--venv <path>] [--skip-venv-setup] [--manifest <path>] [--manifest-update] [--output-dir <dir>] [--tests <paths>]");
+            Console.WriteLine("  wpt [--root <wpt_path>] [--suite normal|workers|webdriver|all] [--metadata <path>] [--test-types <csv>] [--include-file <path>] [--exclude-file <path>] [--total-chunks N --this-chunk N --chunk-type id_hash] [--plan-shards N --history <results>] [--processes N] [--max-restarts N] [--timeout-seconds N] [--stall-timeout-seconds N] [--output-dir <dir>] [--tests <paths>]");
             Console.WriteLine("  webidl-inventory [--root <repo_path>] [--idl <idl_dir>] [--output-dir <dir>] [--wpt-root <wpt_path>] [--selected-wpt <paths>]");
         }
 

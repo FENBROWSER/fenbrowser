@@ -45,6 +45,53 @@ This volume details the infrastructure used to extend the browser and verify its
 - The wrapper propagates upstream WPT's process exit code so missing-test selections and harness-level failures fail automation instead of producing success with only a JSON-side error.
 - Use this wrapper for local and CI WPT slices so pass/fail/timeout claims are backed by machine-readable artifacts instead of terminal-only output.
 
+#### WPT suite and shard policy
+
+- FenBrowser-owned expectation metadata lives under
+  `tools/wptrunner-fenbrowser/metadata/` and is passed to upstream wptrunner
+  together with the local WPT `MANIFEST.json`. Directory-level `disabled`
+  entries are reserved for capabilities that are demonstrably absent.
+  Maintained entries currently disable WebDriver BiDi (no registered BiDi
+  transport), Web Crypto key generation (no `subtle.generateKey`), and the
+  tentative KangarooTwelve/TurboSHAKE digests (no native implementation).
+- `FenBrowser.Tooling wpt --suite normal|workers|webdriver|all` keeps classic
+  WebDriver specification tests separate from normal web tests. The shard
+  planner additionally separates worker-generated testharness variants from
+  the normal profile.
+- `scripts/run-wpt-shards.ps1` first asks upstream wptrunner to discover the
+  selected tests, then writes independent include files and starts one
+  resumable runner process per shard. Each shard owns its result directory;
+  rerunning the same command reuses the saved plan and skips shards with a
+  fully accounted summary and matching include-file hash, even when the tests
+  contain conformance failures. Pass `-Replan` only to intentionally replace
+  the saved plan from newer timing history.
+- An include file may be the sole selection source; the script preserves this
+  case without adding the default directory selection.
+- The planner derives per-test durations from prior `wpt.raw.json` timestamps
+  and uses longest-processing-time-first balancing. Tests without history use
+  the median observed duration, so timeout-heavy areas such as IndexedDB are
+  spread across shards instead of dominating one directory shard.
+- Local orchestration defaults to five independently resumable shards with
+  four internal executors each. This retains 20-way browser concurrency while
+  improving balance and avoiding 20 complete WPT server environments.
+- Each shard uses a raw-log progress
+  watchdog (90 seconds for normal/worker suites, 240 seconds for WebDriver).
+  Browser restart recovery is capped at two attempts per shard.
+  If the browser/WebDriver path stops producing harness progress, only that
+  shard's process tree is terminated and its summary records
+  `failurePhase: "wpt_stall"`; completed sibling shards remain resumable.
+- On Windows, every upstream WPT invocation runs in a kill-on-close Job
+  Object. Normal completion, timeout, stall, or forced termination therefore
+  closes the complete WPT server/worker process tree instead of leaving
+  orphaned Python multiprocessing workers.
+- The 2026-07-26 fixed-selection normal-profile gate completed 375 terminal
+  test results across five shards in 263.710 seconds of browser-test wall time
+  (272.3 seconds including planning/orchestration): 228 `OK`, 44 `TIMEOUT`,
+  24 `CRASH`, 1 `ERROR`, and 78 maintained `SKIP`. All shards completed
+  without runner timeout/stall and left zero orphan WPT workers. `OK` is the
+  WPT test-level status; the same run contained 9 fully passing tests and 219
+  tests with assertion failures.
+
 ### 1.4 FenJS Standalone Shell Smoke Surface (2026-05-21)
 
 - `FenBrowser.Js.Shell` is the standalone FenJS operator entry point for engine-foundation smoke checks before browser embedding.

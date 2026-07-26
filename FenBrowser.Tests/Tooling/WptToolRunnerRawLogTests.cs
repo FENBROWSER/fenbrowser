@@ -8,6 +8,57 @@ namespace FenBrowser.Tests.Tooling;
 public sealed class WptToolRunnerRawLogTests
 {
     [Fact]
+    public void ShardPlanner_BalancesTimeoutHeavyTestsAcrossIndependentShards()
+    {
+        var plan = WptShardPlanner.Balance(
+            new System.Collections.Generic.Dictionary<string, double>
+            {
+                ["/IndexedDB/slow-a.html"] = 60,
+                ["/IndexedDB/slow-b.html"] = 60,
+                ["/FileAPI/fast-a.html"] = 1,
+                ["/FileAPI/fast-b.html"] = 1
+            },
+            shardCount: 2);
+
+        Assert.Equal(2, plan.Count);
+        Assert.All(plan, shard => Assert.Equal(61, shard.EstimatedSeconds));
+        Assert.All(plan, shard => Assert.Equal(2, shard.Tests.Count));
+    }
+
+    [Fact]
+    public void ShardPlanner_SeparatesWorkerVariantsFromNormalTests()
+    {
+        var tests = new[]
+        {
+            "/dom/normal.html",
+            "/fetch/api/basic.any.worker.html",
+            "/workers/scope.html"
+        };
+
+        Assert.Equal(new[] { "/dom/normal.html" }, WptShardPlanner.FilterSuite(tests, "normal"));
+        Assert.Equal(
+            new[] { "/fetch/api/basic.any.worker.html", "/workers/scope.html" },
+            WptShardPlanner.FilterSuite(tests, "workers"));
+    }
+
+    [Fact]
+    public void ListTestsJson_ExcludesDisabledMetadataEntries()
+    {
+        var stdout = """
+            {
+              "": {
+                "wdspec": {
+                  "/webdriver/enabled.py": { "disabled": false, "expected": "PASS" },
+                  "/webdriver/bidi.py": { "disabled": true, "expected": "PASS" }
+                }
+              }
+            }
+            """;
+
+        Assert.Equal(new[] { "/webdriver/enabled.py" }, WptToolRunner.ParseListedTestsJson(stdout));
+    }
+
+    [Fact]
     public void AnalyzeRawLog_ExtractsUnexpectedSubtestAndTestFailures()
     {
         var rawLogPath = Path.Combine(Path.GetTempPath(), $"fen-wpt-raw-{Guid.NewGuid():N}.json");

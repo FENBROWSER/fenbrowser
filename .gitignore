@@ -39,6 +39,7 @@ bld/
 !scripts/run_test262_chunk_parallel.ps1
 !scripts/run_stage_recovery_baseline.ps1
 !scripts/run-wpt-category-sweep.ps1
+!scripts/run-wpt-shards.ps1
 *.py
 !scripts/test262_dashboard.py
 !scripts/wpt_report.py
