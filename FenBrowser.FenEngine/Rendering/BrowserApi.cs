@@ -2079,15 +2079,13 @@ pre {{
                     }
                 }
 
-                Element clickFallbackTarget = null;
-                if (!_pendingWebDriverClickPointValid &&
-                    ReferenceEquals(element.OwnerDocument?.DocumentElement, element))
+                var clickFallbackTarget = GetWebDriverClickFallbackTarget(element);
+                if (!_pendingWebDriverClickPointValid && clickFallbackTarget != null)
                 {
                     var viewport = GetWindowRect();
                     _pendingWebDriverClickPointValid = true;
                     _pendingWebDriverClickClientX = Math.Max(0, viewport.Width / 2);
                     _pendingWebDriverClickClientY = Math.Max(0, viewport.Height / 2);
-                    clickFallbackTarget = element;
                 }
 
                 if (!_pendingWebDriverClickPointValid)
@@ -2127,6 +2125,13 @@ pre {{
 
                 await HandleElementClick(activationTarget);
             }
+        }
+
+        internal static Element GetWebDriverClickFallbackTarget(Element element)
+        {
+            return ReferenceEquals(element?.OwnerDocument?.DocumentElement, element)
+                ? element
+                : null;
         }
 
         private async Task<bool> TryResolveWebDriverClickPointViaScriptAsync(string elementId)
