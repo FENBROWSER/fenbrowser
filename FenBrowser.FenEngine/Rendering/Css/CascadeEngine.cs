@@ -24,6 +24,7 @@ private readonly bool _logCascade;
 // PERF: Multi-level indexing for fast rule lookup
 private Dictionary<string, List<CssStyleRule>> _idIndex; // #id rules
 private Dictionary<string, List<CssStyleRule>> _classIndex; // .class rules
+private Dictionary<string, List<CssStyleRule>> _attributeIndex; // [attribute] rules
 private Dictionary<string, List<CssStyleRule>> _tagIndex; // tag rules
 private List<CssStyleRule> _universalRules; // * and attribute-only rules
 private bool _indexed = false;
@@ -106,6 +107,7 @@ private int _inlineStyleCacheEvictions;
             _indexed = true;
             _idIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _classIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
+            _attributeIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _tagIndex = new Dictionary<string, List<CssStyleRule>>(StringComparer.OrdinalIgnoreCase);
             _universalRules = new List<CssStyleRule>();
             
@@ -282,7 +284,7 @@ private int _inlineStyleCacheEvictions;
                 return;
             }
 
-            // Priority: ID > Class > Tag > Universal
+            // Priority: ID > Class > Attribute > Tag > Universal
             // Index by the most specific key available
             if (!string.IsNullOrEmpty(keySeg.Id))
             {
@@ -292,6 +294,12 @@ private int _inlineStyleCacheEvictions;
             {
                 // Index by first class (most rules have 1-2 classes)
                 AddToIndex(_classIndex, keySeg.Classes[0], styleRule);
+            }
+            else if (keySeg.Attributes != null &&
+                     keySeg.Attributes.Count > 0 &&
+                     !string.IsNullOrEmpty(keySeg.Attributes[0]?.Name))
+            {
+                AddToIndex(_attributeIndex, keySeg.Attributes[0].Name, styleRule);
             }
             else if (!string.IsNullOrEmpty(keySeg.TagName) && keySeg.TagName != "*")
             {
@@ -322,6 +330,24 @@ private int _inlineStyleCacheEvictions;
                 list = new List<CssStyleRule>();
             }
             list.Add(rule);
+        }
+
+        internal int GetAttributeCandidateCount(string attributeName)
+        {
+            EnsureIndex();
+            return !string.IsNullOrEmpty(attributeName) &&
+                   _attributeIndex.TryGetValue(attributeName, out var rules)
+                ? rules.Count
+                : 0;
+        }
+
+        internal int UniversalCandidateCount
+        {
+            get
+            {
+                EnsureIndex();
+                return _universalRules.Count;
+            }
         }
 
 public Dictionary<string, CssDeclaration> ComputeCascadedValues(Element element, string pseudoElement = null, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
@@ -653,8 +679,29 @@ return computed;
                     }
                 }
             }
-            
-            // 3. Check tag-specific rules (_tagIndex is OrdinalIgnoreCase)
+
+            // 3. Check attribute-specific rules. Attribute-only selectors used to
+            // fall into the universal bucket and were evaluated for every element.
+            if (element.HasAttributes())
+            {
+                var attributes = element.Attributes;
+                for (var attributeIndex = 0; attributeIndex < attributes.Length; attributeIndex++)
+                {
+                    var attribute = attributes[attributeIndex];
+                    string attributeName = attribute?.LocalName ?? attribute?.Name;
+                    if (!string.IsNullOrEmpty(attributeName) &&
+                        _attributeIndex.TryGetValue(attributeName, out var attributeRules))
+                    {
+                        foreach (var rule in attributeRules)
+                        {
+                            if (_processedRules.Add(rule))
+                                TryMatchRule(element, rule, results, pseudoElement);
+                        }
+                    }
+                }
+            }
+
+            // 4. Check tag-specific rules (_tagIndex is OrdinalIgnoreCase)
             string tag = element.TagName;
             if (!string.IsNullOrEmpty(tag) && _tagIndex.TryGetValue(tag, out var tagRules))
             {
@@ -665,7 +712,7 @@ return computed;
                 }
             }
             
-            // 4. Always check universal rules
+            // 5. Always check universal rules
             foreach (var rule in _universalRules)
             {
                 if (_processedRules.Add(rule))
