@@ -416,12 +416,13 @@ internal static class MissingApiTracker
             CancelPendingFlushUnsafe();
 
             var cts = new CancellationTokenSource();
+            var cancellationToken = cts.Token;
             _flushCts = cts;
             _pendingFlushTask = Task.Run(async () =>
             {
                 try
                 {
-                    await Task.Delay(debounce, cts.Token).ConfigureAwait(false);
+                    await Task.Delay(debounce, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -429,7 +430,7 @@ internal static class MissingApiTracker
                 }
 
                 FlushAllDirtySites();
-            }, cts.Token);
+            }, cancellationToken);
         }
     }
 

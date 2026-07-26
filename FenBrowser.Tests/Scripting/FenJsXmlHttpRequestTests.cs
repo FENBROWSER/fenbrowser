@@ -7,6 +7,8 @@ using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Scripting;
+using FenBrowser.FenEngine.Layout;
+using SkiaSharp;
 using Xunit;
 
 namespace FenBrowser.Tests.Scripting
@@ -398,6 +400,97 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal("https://www.amazon.in/_sec/verify?provider=interstitial", capturedRequest.RequestUri?.ToString());
             Assert.Equal("application/json", capturedRequest.Content?.Headers.ContentType?.MediaType);
             Assert.Contains("\"pow\":42", capturedBody);
+        }
+
+        [Fact]
+        public async Task Fetch_PostsUint8ArrayAsRawBytes()
+        {
+            var baseUri = new Uri("https://www.google.com/");
+            var document = new HtmlParser(
+                """
+                <html><body><script>
+                fetch('/recaptcha/enterprise/reload', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/octet-stream' },
+                    body: new Uint8Array([10, 24, 65, 55, 75])
+                }).then(function (response) {
+                    globalThis.__binaryFetchStatus = response.status;
+                });
+                </script></body></html>
+                """,
+                baseUri).Parse();
+            byte[] capturedBody = null;
+
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll,
+                FetchHandler = async request =>
+                {
+                    capturedBody = request.Content == null
+                        ? Array.Empty<byte>()
+                        : await request.Content.ReadAsByteArrayAsync();
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        ReasonPhrase = "OK",
+                        Content = new StringContent("ok")
+                    };
+                }
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal(new byte[] { 10, 24, 65, 55, 75 }, capturedBody);
+            Assert.Equal("200", engine.Evaluate("String(globalThis.__binaryFetchStatus)")?.ToString());
+        }
+
+        [Fact]
+        public async Task DynamicIframe_ExposesInlineDimensionsBeforeAsyncLayout()
+        {
+            var baseUri = new Uri("https://www.google.com/");
+            var document = new HtmlParser(
+                """
+                <html><body><script>
+                var container = document.createElement('div');
+                var frame = document.createElement('iframe');
+                frame.style.width = '300px';
+                frame.style.height = '480px';
+                container.appendChild(frame);
+                document.body.appendChild(container);
+                globalThis.__frameComputedWidth = getComputedStyle(frame).width;
+                globalThis.__frameOffsetWidth = frame.offsetWidth;
+                globalThis.__frameRectHeight = frame.getBoundingClientRect().height;
+                globalThis.__frameInnerWidth = frame.contentWindow.innerWidth;
+                globalThis.__frameInnerHeight = frame.contentWindow.innerHeight;
+                globalThis.__containerClientWidth = container.clientWidth;
+                globalThis.__containerClientHeight = container.clientHeight;
+                globalThis.__rootClientHeight = document.documentElement.clientHeight;
+                </script></body></html>
+                """,
+                baseUri).Parse();
+
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll,
+                WindowWidth = 1280,
+                WindowHeight = 800,
+                LayoutBoxResolver = _ => new BoxModel
+                {
+                    BorderBox = new SKRect(0, 0, 300, 78),
+                    PaddingBox = new SKRect(0, 0, 300, 78),
+                    ContentBox = new SKRect(0, 0, 300, 78)
+                }
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("300px", engine.Evaluate("globalThis.__frameComputedWidth")?.ToString());
+            Assert.Equal("300", engine.Evaluate("String(globalThis.__frameOffsetWidth)")?.ToString());
+            Assert.Equal("480", engine.Evaluate("String(globalThis.__frameRectHeight)")?.ToString());
+            Assert.Equal("300", engine.Evaluate("String(globalThis.__frameInnerWidth)")?.ToString());
+            Assert.Equal("480", engine.Evaluate("String(globalThis.__frameInnerHeight)")?.ToString());
+            Assert.Equal("300", engine.Evaluate("String(globalThis.__containerClientWidth)")?.ToString());
+            Assert.Equal("480", engine.Evaluate("String(globalThis.__containerClientHeight)")?.ToString());
+            Assert.Equal("800", engine.Evaluate("String(globalThis.__rootClientHeight)")?.ToString());
         }
 
         [Fact]

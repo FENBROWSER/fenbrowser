@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
@@ -238,6 +239,76 @@ public sealed class IFrameInterpreterIsolationTests
     }
 
     [Fact]
+    public async Task CrossOriginMessagePort_PostDoesNotWaitForBusyReceivingRealm()
+    {
+        var parentUri = new Uri("https://parent.test/page");
+        var parentDocument = new HtmlParser(
+            "<html><body><iframe id='child' src='https://child.test/frame'></iframe>" +
+            "<script>window.__channel=new MessageChannel();</script></body></html>",
+            parentUri).Parse();
+        var engine = CreateEngine();
+        await engine.SetDomAsync(parentDocument.DocumentElement, parentUri);
+
+        var childUri = new Uri("https://child.test/frame");
+        var childDocument = new HtmlParser(
+            "<html><body><script>" +
+            "addEventListener('message',function(event){" +
+            "window.__port=event.ports[0];window.__portReady=event.ports.length;" +
+            "});</script></body></html>",
+            childUri).Parse();
+        var frame = Assert.IsType<Element>(parentDocument.GetElementById("child"));
+        frame.AppendChild(childDocument);
+        await engine.SetSubdocumentDomAsync(childDocument.DocumentElement, childUri);
+
+        engine.Evaluate(
+            "document.getElementById('child').contentWindow.postMessage(" +
+            "'port','https://child.test',[window.__channel.port2]);");
+        var deadline = DateTime.UtcNow.AddSeconds(1);
+        while (DateTime.UtcNow < deadline &&
+               engine.EvaluateInSubdocumentForTest(
+                   childDocument,
+                   "String(window.__portReady || 0)")?.ToString() != "1")
+        {
+            await Task.Delay(25);
+        }
+
+        Assert.Equal(
+            "1",
+            engine.EvaluateInSubdocumentForTest(
+                childDocument,
+                "String(window.__portReady || 0)")?.ToString());
+
+        var childEngine = GetSubdocumentEngine(engine, frame);
+        var interpreterLock = GetInterpreterLock(childEngine);
+        using var lockHeld = new ManualResetEventSlim();
+        using var releaseLock = new ManualResetEventSlim();
+        var lockHolder = Task.Run(() =>
+        {
+            lock (interpreterLock)
+            {
+                lockHeld.Set();
+                releaseLock.Wait(TimeSpan.FromSeconds(5));
+            }
+        });
+
+        Assert.True(lockHeld.Wait(TimeSpan.FromSeconds(1)));
+        var postTask = Task.Run(
+            () => engine.Evaluate("window.__channel.port1.postMessage('ping');'sent'"));
+
+        try
+        {
+            var completed = await Task.WhenAny(postTask, Task.Delay(TimeSpan.FromMilliseconds(500)));
+            Assert.Same(postTask, completed);
+            Assert.Equal("sent", (await postTask)?.ToString());
+        }
+        finally
+        {
+            releaseLock.Set();
+            await lockHolder;
+        }
+    }
+
+    [Fact]
     public async Task CrossOriginFrame_PreservesQueuedMessageOrderInOwningRealm()
     {
         var parentUri = new Uri("https://parent.test/page");
@@ -463,6 +534,28 @@ public sealed class IFrameInterpreterIsolationTests
     {
         Sandbox = SandboxPolicy.AllowAll
     };
+
+    private static FenJsBrowserScriptEngine GetSubdocumentEngine(
+        FenJsBrowserScriptEngine engine,
+        Element frame)
+    {
+        var realmsField = typeof(FenJsBrowserScriptEngine).GetField(
+            "_iframeRealms",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        var realms = Assert.IsAssignableFrom<object>(realmsField?.GetValue(engine));
+        var tryGetValue = realms.GetType().GetMethod("TryGetValue");
+        var arguments = new object[] { frame, null };
+        Assert.True((bool)tryGetValue?.Invoke(realms, arguments));
+        return Assert.IsType<FenJsBrowserScriptEngine>(arguments[1]);
+    }
+
+    private static object GetInterpreterLock(FenJsBrowserScriptEngine engine)
+    {
+        var lockField = typeof(FenJsBrowserScriptEngine).GetField(
+            "_fenJsLock",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        return Assert.IsAssignableFrom<object>(lockField?.GetValue(engine));
+    }
 
     private static JsHostAdapter CreateHost() => new(
         navigate: _ => { },

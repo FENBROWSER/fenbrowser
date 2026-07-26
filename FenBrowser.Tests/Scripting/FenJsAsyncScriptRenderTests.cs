@@ -5,6 +5,8 @@ using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Scripting;
+using FenBrowser.FenEngine.Layout;
+using SkiaSharp;
 using Xunit;
 
 namespace FenBrowser.Tests.Scripting
@@ -12,13 +14,89 @@ namespace FenBrowser.Tests.Scripting
     public sealed class FenJsAsyncScriptRenderTests
     {
         [Fact]
+        public async Task ResizeObserver_DeliversUpdatedInlineGeometry()
+        {
+            var baseUri = new Uri("https://parent.test/page");
+            var document = new HtmlParser(
+                "<html><body><div id='box' style='width:300px;height:78px'></div></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            engine.Evaluate(
+                "var box=document.getElementById('box');" +
+                "var observer=new ResizeObserver(function(entries){globalThis.__resizeHeight=entries[0].contentRect.height;});" +
+                "observer.observe(box);box.style.height='480px';");
+
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                if (engine.Evaluate("String(globalThis.__resizeHeight || 0)")?.ToString() == "480")
+                {
+                    break;
+                }
+
+                await Task.Delay(25);
+            }
+
+            Assert.Equal("480", engine.Evaluate("String(globalThis.__resizeHeight)")?.ToString());
+        }
+
+        [Fact]
+        public async Task GeometryRead_FlushesPendingLayoutBeforeResolvingBox()
+        {
+            var baseUri = new Uri("https://parent.test/page");
+            var document = new HtmlParser("<html><body><div id='box'></div></body></html>", baseUri).Parse();
+            var box = new BoxModel();
+            var flushes = 0;
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll,
+                FlushPendingLayout = () =>
+                {
+                    flushes++;
+                    box.BorderBox = new SKRect(0, 0, 300, 480);
+                    box.PaddingBox = box.BorderBox;
+                    box.ContentBox = box.BorderBox;
+                },
+                LayoutBoxResolver = _ => box
+            };
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("480", engine.Evaluate("String(document.getElementById('box').offsetHeight)")?.ToString());
+            Assert.Equal(1, flushes);
+        }
+
+        [Fact]
+        public async Task ScreenMetrics_ReflectBrowsingViewport()
+        {
+            var baseUri = new Uri("https://parent.test/page");
+            var document = new HtmlParser("<html><body></body></html>", baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll,
+                WindowWidth = 1280,
+                WindowHeight = 800
+            };
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal(
+                "object|1280|800|1280|800|24|landscape-primary",
+                engine.Evaluate(
+                    "[typeof screen,screen.width,screen.height,screen.availWidth,screen.availHeight," +
+                    "screen.colorDepth,screen.orientation.type].join('|')")?.ToString());
+        }
+
+        [Fact]
         public async Task ParserDiscoveredAsyncExternalScript_RequestsRenderAfterHydration()
         {
             var baseUri = new Uri("https://www.google.com/sorry/index");
             var document = new HtmlParser(
                 """
                 <html>
-                  <body>
+                  <body id="frame-body">
                     <form id="captcha-form">
                       <div id="recaptcha" class="g-recaptcha"></div>
                       <script src="/recaptcha/enterprise.js" async defer></script>
@@ -330,7 +408,7 @@ namespace FenBrowser.Tests.Scripting
                 <html>
                   <body>
                     <div id="top-marker"></div>
-                    <iframe id="child" src="https://parent.test/frame"></iframe>
+                    <iframe id="child" name="challenge-frame" src="https://parent.test/frame"></iframe>
                     <script>
                       window.__parentMessages = 0;
                       window.addEventListener('message', function(event) {
@@ -363,6 +441,14 @@ namespace FenBrowser.Tests.Scripting
                           globalThis.__frameWindowPostMessageType = typeof window.postMessage;
                       globalThis.__frameWindowDocumentBody = window.document.body.id;
                       globalThis.__frameWindowIsSelf = String(window === self);
+                      globalThis.__frameWindowName = window.name;
+                      globalThis.__parentNamedFrameMatches = typeof parent.frames[window.name] + '|' +
+                        String(parent.frames[window.name] === window);
+                      globalThis.__parentDocumentMarker = parent.document.getElementById('top-marker').id;
+                      parent.addEventListener('message', function(event) {
+                        parent.__listenerUsesParentViewport = String(innerHeight === parent.innerHeight);
+                        parent.__listenerDocumentMarker = document.getElementById('top-marker').id;
+                      });
                       window.__frameMessages = 0;
                       window.addEventListener('message', function(event) {
                         window.__frameMessages++;
@@ -385,7 +471,33 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal("function", engine.Evaluate("String(globalThis.__frameWindowPostMessageType)")?.ToString());
             Assert.Equal("frame-body", engine.Evaluate("String(globalThis.__frameWindowDocumentBody)")?.ToString());
             Assert.Equal("true", engine.Evaluate("String(globalThis.__frameWindowIsSelf)")?.ToString());
+            Assert.Equal("challenge-frame", engine.Evaluate("String(globalThis.__frameWindowName)")?.ToString());
+            Assert.Equal("object|true", engine.Evaluate("String(globalThis.__parentNamedFrameMatches)")?.ToString());
+            Assert.Equal("top-marker", engine.Evaluate("String(globalThis.__parentDocumentMarker)")?.ToString());
             Assert.Equal("top-marker", engine.Evaluate("document.getElementById('top-marker').id")?.ToString());
+
+            engine.Evaluate("document.getElementById('child').contentWindow.parent.postMessage('top-command','*');");
+            for (var i = 0; i < 20; i++)
+            {
+                if (engine.Evaluate("String(globalThis.__listenerDocumentMarker || '')")?.ToString() == "top-marker")
+                {
+                    break;
+                }
+
+                await Task.Delay(25);
+            }
+
+            Assert.Equal(
+                "true",
+                engine.EvaluateInSubdocumentForTest(
+                    frameDocument,
+                    "String(parent.__listenerUsesParentViewport)")?.ToString());
+            Assert.Equal(
+                "top-marker",
+                engine.EvaluateInSubdocumentForTest(
+                    frameDocument,
+                    "String(parent.__listenerDocumentMarker)")?.ToString());
+            engine.Evaluate("globalThis.__parentMessages=0;globalThis.__lastParentMessage='';");
 
             engine.Evaluate(
                 "document.getElementById('child').contentWindow.postMessage('frame-command','https://parent.test');");
@@ -418,6 +530,143 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal(
                 "alive-after-frame|top-marker",
                 engine.Evaluate("String(globalThis.__lastParentMessage)")?.ToString());
+        }
+
+        [Fact]
+        public async Task FramePostMessage_PreservesQueuedDeliveryOrder()
+        {
+            var baseUri = new Uri("https://parent.test/page");
+            var document = new HtmlParser(
+                "<html><body><iframe id='child' src='https://child.test/frame'></iframe></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost()) { Sandbox = SandboxPolicy.AllowAll };
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var frameUri = new Uri("https://child.test/frame");
+            var frameDocument = new HtmlParser(
+                "<html><body><script>window.__order=[];addEventListener('message',function(e){window.__order.push(e.data);});</script></body></html>",
+                frameUri).Parse();
+            var frame = Assert.IsType<Element>(document.GetElementById("child"));
+            frame.AppendChild(frameDocument);
+            await engine.SetSubdocumentDomAsync(frameDocument.DocumentElement, frameUri);
+
+            engine.Evaluate(
+                "var target=document.getElementById('child').contentWindow;" +
+                "for(var i=0;i<20;i++)target.postMessage(i,'https://child.test');");
+            for (var attempt = 0; attempt < 40; attempt++)
+            {
+                if (engine.EvaluateInSubdocumentForTest(
+                        frameDocument,
+                        "String(window.__order.length)")?.ToString() == "20")
+                {
+                    break;
+                }
+
+                await Task.Delay(25);
+            }
+
+            Assert.Equal(
+                "0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19",
+                engine.EvaluateInSubdocumentForTest(
+                    frameDocument,
+                    "window.__order.join(',')")?.ToString());
+        }
+
+        [Fact]
+        public async Task FramePostMessage_TransfersMessagePortToParent()
+        {
+            var baseUri = new Uri("https://parent.test/page");
+            var document = new HtmlParser(
+                """
+                <html>
+                  <body>
+                    <div id="top-marker"></div>
+                    <iframe id="child" src="https://child.test/frame"></iframe>
+                    <script>
+                      window.addEventListener('message', function(event) {
+                        window.__transferredPortCount = event.ports.length;
+                        var responseChannel = new MessageChannel();
+                        responseChannel.port1.onmessage = function(reply) {
+                          window.__nestedPortReply = reply.data;
+                        };
+                        event.ports[0].postMessage('parent-ack', [responseChannel.port2]);
+                        event.ports[0].onmessage = function(portEvent) {
+                          window.__transferredPortReply = portEvent.data + '|' + document.getElementById('top-marker').id;
+                        };
+                      });
+                    </script>
+                  </body>
+                </html>
+                """,
+                baseUri).Parse();
+
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var frameUri = new Uri("https://child.test/frame");
+            var frameDocument = new HtmlParser(
+                """
+                <html>
+                  <body id="frame-body">
+                    <button id="send">Send</button>
+                    <script>
+                      document.getElementById('send').addEventListener('click', function() {
+                        try {
+                          var channel = new MessageChannel();
+                          window.__channel = channel;
+                          channel.port1.onmessage = function(event) {
+                            this.__reply = event.data + '|' + document.body.id + '|' + String(window === self) + '|' + event.ports.length + '|' + String(event.source === null);
+                            event.ports[0].postMessage('frame-ack');
+                            this.postMessage('frame-direct');
+                          };
+                          parent.postMessage('port-handshake', 'https://parent.test', [channel.port2]);
+                          window.__transferResult = 'sent';
+                        } catch (error) {
+                          window.__transferResult = String(error && error.message || error);
+                        }
+                      });
+                    </script>
+                  </body>
+                </html>
+                """,
+                frameUri).Parse();
+
+            var frameElement = Assert.IsType<Element>(document.GetElementById("child"));
+            frameElement.AppendChild(frameDocument);
+            await engine.SetSubdocumentDomAsync(frameDocument.DocumentElement, frameUri);
+
+            var sendButton = Assert.IsType<Element>(frameDocument.GetElementById("send"));
+            Assert.True(engine.DispatchEventForElement(sendButton, "click"));
+            Assert.Equal(
+                "sent",
+                engine.EvaluateInSubdocumentForTest(
+                    frameDocument,
+                    "String(window.__transferResult)")?.ToString());
+
+            for (var i = 0; i < 20; i++)
+            {
+                if (engine.Evaluate("String(globalThis.__nestedPortReply || '')")?.ToString() == "frame-ack")
+                {
+                    break;
+                }
+
+                await Task.Delay(25);
+            }
+
+            Assert.Equal("1", engine.Evaluate("String(globalThis.__transferredPortCount)")?.ToString());
+            Assert.Equal(
+                "parent-ack|frame-body|true|1|true",
+                engine.EvaluateInSubdocumentForTest(
+                    frameDocument,
+                    "String(window.__channel.port1.__reply)")?.ToString());
+            Assert.Equal("frame-ack", engine.Evaluate("String(globalThis.__nestedPortReply)")?.ToString());
+            Assert.Equal(
+                "frame-direct|top-marker",
+                engine.Evaluate("String(globalThis.__transferredPortReply)")?.ToString());
         }
 
         [Fact]
