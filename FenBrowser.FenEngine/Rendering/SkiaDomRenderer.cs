@@ -429,7 +429,11 @@ namespace FenBrowser.FenEngine.Rendering
             // Detect style changes via DOM dirty flags (primary) or dictionary identity (fallback).
             // node.ComputedStyle is the single source of truth set by CascadeIntoComputedStyles.
             bool treeDirty = root.StyleDirty || root.ChildStyleDirty;
-            bool stylesChanged = treeDirty || _lastStyles == null || _lastStyles != styles || (styles != null && _lastStyles != null && _lastStyles.Count != styles.Count);
+            bool styleSnapshotIdentityChanged =
+                _lastStyles == null ||
+                !ReferenceEquals(_lastStyles, styles) ||
+                (styles != null && _lastStyles != null && _lastStyles.Count != styles.Count);
+            bool stylesChanged = treeDirty || styleSnapshotIdentityChanged;
             bool styleInvalidation = treeDirty || stylesChanged || (invalidationReason & RenderFrameInvalidationReason.Style) != 0;
             _lastStyles = styles;
 
@@ -507,11 +511,12 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 // Track dirty state
                 bool isLayoutDirty = forceLayout || (root.LayoutDirty || root.ChildLayoutDirty);
-                if (styleInvalidation)
+                if (styleSnapshotIdentityChanged)
                 {
-                    // Author styles can arrive after the first structural layout.
-                    // Until we track per-property layout-affecting diffs, treat any
-                    // stylesheet snapshot change as requiring a fresh layout pass.
+                    // A replacement style dictionary can carry geometry changes
+                    // without node dirty flags, so it still requires full layout.
+                    // In-place incremental recascade keeps the same dictionary and
+                    // marks only affected DOM subtrees layout-dirty.
                     isLayoutDirty = true;
                 }
                 bool hasActiveAnimations = false;
@@ -629,7 +634,7 @@ namespace FenBrowser.FenEngine.Rendering
                     root,
                     styles,
                     forceLayout,
-                    styleInvalidation,
+                    styleSnapshotIdentityChanged,
                     (animationInvalidation & InvalidationKind.Layout) != 0);
 
                 if (incrementalPlan.FullLayoutRequired)
@@ -1646,10 +1651,10 @@ namespace FenBrowser.FenEngine.Rendering
             Node root,
             IReadOnlyDictionary<Node, CssComputed> styles,
             bool forceLayout,
-            bool styleInvalidation,
+            bool styleSnapshotIdentityChanged,
             bool animationLayoutInvalidation)
         {
-            if (forceLayout || styleInvalidation || animationLayoutInvalidation)
+            if (forceLayout || styleSnapshotIdentityChanged || animationLayoutInvalidation)
             {
                 return IncrementalLayoutPlan.Full("global-invalidation");
             }
