@@ -12,6 +12,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.IO;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -48,6 +49,19 @@ namespace FenBrowser.FenEngine.Rendering
             public int InlineStyleCacheMisses { get; set; }
             public int InlineStyleCacheEvictions { get; set; }
             public int InlineStyleCacheEntries { get; set; }
+            public bool StyleSetCacheHit { get; set; }
+        }
+
+        private sealed class DocumentStyleSetCacheEntry
+        {
+            public string Fingerprint { get; init; }
+            public string BaseUri { get; init; }
+            public double? ViewportWidth { get; init; }
+            public double? ViewportHeight { get; init; }
+            public StyleSet StyleSet { get; init; }
+            public int SourceCount { get; init; }
+            public int ExpandedSourceCount { get; init; }
+            public int RuleCount { get; init; }
         }
 
         // Keep file diagnostics enabled only in debug builds.
@@ -90,6 +104,8 @@ namespace FenBrowser.FenEngine.Rendering
         // don't corrupt each other.  Keys are Element instances, unique per tab DOM.
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<(Element, SelectorChain), bool> _matchCache = new();
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<Element, List<NewCss.CssRule>> _elementMatchedRulesCache = new();
+        private static readonly ConditionalWeakTable<Element, DocumentStyleSetCacheEntry> _documentStyleSets = new();
+        private static readonly object _documentStyleSetsLock = new();
         private static int _stylesheetRegistrationCounter;
 
         // UA stylesheet cache â€” read from disk only once per process lifetime
@@ -112,6 +128,7 @@ namespace FenBrowser.FenEngine.Rendering
             lock (_inFlightParses) _inFlightParses.Clear();
             _matchCache.Clear();
             _elementMatchedRulesCache.Clear();
+            lock (_documentStyleSetsLock) _documentStyleSets.Clear();
             lock (_customProperties) _customProperties.Clear();
             _rootFontSize = 16.0;
             _keyframes.Clear();
@@ -630,6 +647,51 @@ namespace FenBrowser.FenEngine.Rendering
                     };
                 }
 
+                string stylesheetFingerprint = BuildStylesheetFingerprint(root);
+                if (TryGetCachedStyleSet(
+                    root,
+                    stylesheetFingerprint,
+                    baseUri,
+                    viewportWidth,
+                    viewportHeight,
+                    out var cachedStyleSet))
+                {
+                    long cachedCascadeStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+                    var cachedComputed = FenBrowser.FenEngine.Rendering.ParallelCascadeScheduler.Cascade(
+                        cascadeRoot ?? root,
+                        cachedStyleSet.StyleSet,
+                        log,
+                        deadline,
+                        out var cachedInlineStyleStatistics);
+                    double cachedCascadeMs = System.Diagnostics.Stopwatch.GetElapsedTime(cachedCascadeStarted).TotalMilliseconds;
+                    FenBrowser.FenEngine.Rendering.Performance.PerformanceDiagnosticsStore.RecordInlineStyleCache(
+                        cachedInlineStyleStatistics);
+                    EngineLogCompat.Log(
+                        LogCategory.Rendering,
+                        LogLevel.Info,
+                        $"[PERF-CSS] Reused document StyleSet: {cachedCascadeMs:F1}ms (Elements: {cachedComputed.Count})");
+
+                    return new CssLoadResult
+                    {
+                        Computed = cachedComputed,
+                        Timing = new CssLoadTiming
+                        {
+                            QueueWaitMs = queueWaitMs,
+                            CascadeMs = cachedCascadeMs,
+                            TotalMs = System.Diagnostics.Stopwatch.GetElapsedTime(computeStarted).TotalMilliseconds,
+                            SourceCount = cachedStyleSet.SourceCount,
+                            ExpandedSourceCount = cachedStyleSet.ExpandedSourceCount,
+                            RuleCount = cachedStyleSet.RuleCount,
+                            ComputedStyleCount = cachedComputed.Count,
+                            InlineStyleCacheHits = cachedInlineStyleStatistics.Hits,
+                            InlineStyleCacheMisses = cachedInlineStyleStatistics.Misses,
+                            InlineStyleCacheEvictions = cachedInlineStyleStatistics.Evictions,
+                            InlineStyleCacheEntries = cachedInlineStyleStatistics.Entries,
+                            StyleSetCacheHit = true
+                        }
+                    };
+                }
+
                 var cssBlobs = new List<CssSource>(); // collected CSS texts with source ordering
                 int sourceIndex = 0;
                 var _cssStopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -1051,6 +1113,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }));
             }
 
+            bool parseStageTimedOut = false;
             if (parseTasks.Count > 0) 
             {
                 var allParseTask = Task.WhenAll(parseTasks);
@@ -1065,6 +1128,7 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 if (finished == parseTimeoutTask)
                 {
+                    parseStageTimedOut = true;
                     lock (styleSet)
                     {
                         parseStageSealed = true;
@@ -1091,6 +1155,19 @@ namespace FenBrowser.FenEngine.Rendering
             ResolveVariables(allRulesForVars);
             double variableResolutionMs = System.Diagnostics.Stopwatch.GetElapsedTime(variableResolutionStarted).TotalMilliseconds;
             EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms");
+            if (!parseStageTimedOut)
+            {
+                CacheStyleSet(
+                    root,
+                    stylesheetFingerprint,
+                    baseUri,
+                    viewportWidth,
+                    viewportHeight,
+                    styleSet,
+                    cssBlobs.Count,
+                    expanded.Count,
+                    allRulesForVars.Count);
+            }
             // Stage 3: Cascade
             long cascadeStarted = System.Diagnostics.Stopwatch.GetTimestamp();
             var computed = FenBrowser.FenEngine.Rendering.ParallelCascadeScheduler.Cascade(
@@ -1131,6 +1208,92 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 _globalComputeGate.Release();
             }
+        }
+
+        private static bool TryGetCachedStyleSet(
+            Element root,
+            string fingerprint,
+            Uri baseUri,
+            double? viewportWidth,
+            double? viewportHeight,
+            out DocumentStyleSetCacheEntry entry)
+        {
+            if (_documentStyleSets.TryGetValue(root, out entry) &&
+                string.Equals(entry.Fingerprint, fingerprint, StringComparison.Ordinal) &&
+                string.Equals(entry.BaseUri, baseUri?.AbsoluteUri ?? string.Empty, StringComparison.Ordinal) &&
+                entry.ViewportWidth == viewportWidth &&
+                entry.ViewportHeight == viewportHeight)
+            {
+                return true;
+            }
+
+            entry = null;
+            return false;
+        }
+
+        private static void CacheStyleSet(
+            Element root,
+            string fingerprint,
+            Uri baseUri,
+            double? viewportWidth,
+            double? viewportHeight,
+            StyleSet styleSet,
+            int sourceCount,
+            int expandedSourceCount,
+            int ruleCount)
+        {
+            var entry = new DocumentStyleSetCacheEntry
+            {
+                Fingerprint = fingerprint,
+                BaseUri = baseUri?.AbsoluteUri ?? string.Empty,
+                ViewportWidth = viewportWidth,
+                ViewportHeight = viewportHeight,
+                StyleSet = styleSet,
+                SourceCount = sourceCount,
+                ExpandedSourceCount = expandedSourceCount,
+                RuleCount = ruleCount
+            };
+
+            lock (_documentStyleSetsLock)
+            {
+                _documentStyleSets.Remove(root);
+                _documentStyleSets.Add(root, entry);
+            }
+        }
+
+        private static string BuildStylesheetFingerprint(Element root)
+        {
+            var builder = new StringBuilder();
+            foreach (var element in root.DescendantsAndSelf())
+            {
+                bool isStyle = string.Equals(element.TagName, "style", StringComparison.OrdinalIgnoreCase);
+                bool isLink = string.Equals(element.TagName, "link", StringComparison.OrdinalIgnoreCase);
+                if (!isStyle && !isLink)
+                {
+                    continue;
+                }
+
+                builder.Append(isStyle ? 'S' : 'L').Append('\0');
+                AppendStylesheetAttribute(builder, element, "rel");
+                AppendStylesheetAttribute(builder, element, "href");
+                AppendStylesheetAttribute(builder, element, "media");
+                AppendStylesheetAttribute(builder, element, "type");
+                AppendStylesheetAttribute(builder, element, "disabled");
+                AppendStylesheetAttribute(builder, element, "integrity");
+                AppendStylesheetAttribute(builder, element, "crossorigin");
+                AppendStylesheetAttribute(builder, element, "data-mw-deduplicate");
+                if (isStyle)
+                {
+                    builder.Append(element.TextContent ?? string.Empty).Append('\0');
+                }
+            }
+
+            return builder.ToString();
+        }
+
+        private static void AppendStylesheetAttribute(StringBuilder builder, Element element, string name)
+        {
+            builder.Append(element.GetAttribute(name) ?? string.Empty).Append('\0');
         }
 
         private static string NormalizeMediaWikiDedupeKey(string key)
