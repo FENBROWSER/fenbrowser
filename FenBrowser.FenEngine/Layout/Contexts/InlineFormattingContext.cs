@@ -2167,6 +2167,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     continue;
                 }
 
+                string display = child.ComputedStyle?.Display;
+                if (!string.IsNullOrWhiteSpace(display) &&
+                    !display.Equals("inline", StringComparison.OrdinalIgnoreCase) &&
+                    !display.Equals("inline-block", StringComparison.OrdinalIgnoreCase))
+                {
+                    // A block-level child establishes its own formatting context.
+                    // Its descendant line boxes are not line boxes of this
+                    // inline-block, whose fallback baseline is its bottom margin edge.
+                    continue;
+                }
+
                 float childBaseline;
                 bool found = false;
 

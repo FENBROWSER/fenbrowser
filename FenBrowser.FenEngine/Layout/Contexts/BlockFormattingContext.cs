@@ -688,6 +688,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 resolvedContentHeight = autoHeight - ((float)blockBox.Geometry.Padding.Top + (float)blockBox.Geometry.Border.Top + (float)blockBox.Geometry.Padding.Bottom + (float)blockBox.Geometry.Border.Bottom);
                 if (resolvedContentHeight < 0) resolvedContentHeight = 0;
             }
+
+            if (!explicitHeight.HasValue && !HasNonEmptyInFlowChild(blockBox))
+            {
+                resolvedContentHeight = 0f;
+            }
+
             // Apply min/max height constraints (px, %, calc)
             if (blockBox.ComputedStyle != null)
             {
@@ -1649,6 +1655,52 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float borderToMarginTop = child.Geometry.BorderBox.Top - child.Geometry.MarginBox.Top;
             float targetMarginTop = targetBorderTop - borderToMarginTop;
             LayoutBoxOps.PositionSubtree(child, targetMarginLeft, targetMarginTop, state);
+        }
+
+        private static bool HasNonEmptyInFlowChild(LayoutBox box)
+        {
+            foreach (var child in box.Children)
+            {
+                if (child == null || child.IsOutOfFlow)
+                {
+                    continue;
+                }
+
+                if (child.SourceNode is Text text &&
+                    !TextWhitespaceClassifier.IsCollapsibleWhitespaceOnly(text.Data))
+                {
+                    return true;
+                }
+
+                var style = child.ComputedStyle;
+                bool hasExplicitHeight =
+                    style?.Height.HasValue == true ||
+                    style?.HeightPercent.HasValue == true ||
+                    !string.IsNullOrWhiteSpace(style?.HeightExpression);
+                bool hasVerticalChrome =
+                    (style?.Padding.Top ?? 0) > 0 ||
+                    (style?.Padding.Bottom ?? 0) > 0 ||
+                    (style?.BorderThickness.Top ?? 0) > 0 ||
+                    (style?.BorderThickness.Bottom ?? 0) > 0;
+
+                if (hasExplicitHeight || hasVerticalChrome)
+                {
+                    return true;
+                }
+
+                if (child.SourceNode is Element element &&
+                    ReplacedElementSizing.IsReplacedElementTag(element.TagName))
+                {
+                    return true;
+                }
+
+                if (HasNonEmptyInFlowChild(child))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static void CenterSingleButtonFlowChildIfNeeded(LayoutBox parent, LayoutBox child, LayoutState state)

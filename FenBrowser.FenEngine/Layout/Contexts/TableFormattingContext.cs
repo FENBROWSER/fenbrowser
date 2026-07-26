@@ -68,6 +68,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             float[] rowHeights = MeasureRowHeights(grid, columnWidths, state);
+            float intrinsicHeight = rowHeights.Sum();
+            if (specifiedHeight > intrinsicHeight && rowHeights.Length > 0)
+            {
+                float extra = specifiedHeight - intrinsicHeight;
+                float perRow = extra / rowHeights.Length;
+                for (int i = 0; i < rowHeights.Length; i++)
+                {
+                    rowHeights[i] += perRow;
+                }
+            }
+
             float contentWidth = Math.Max(specifiedWidth, intrinsicWidth);
             float currentY = tableBox.Geometry.ContentBox.Top;
             float contentLeft = tableBox.Geometry.ContentBox.Left;
@@ -112,6 +123,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     if (IsTableCell(slot.Cell))
                     {
                         StretchBorderHeight(slot.Cell, spannedRowHeight);
+                        AlignCellContentsVertically(slot.Cell);
                     }
 
                     maxRight = Math.Max(maxRight, cellX + Math.Max(cellWidth, slot.Cell.Geometry.MarginBox.Width));
@@ -426,6 +438,45 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             SetContentSize(cell, cell.Geometry.ContentBox.Width, targetContentHeight);
+        }
+
+        private static void AlignCellContentsVertically(LayoutBox cell)
+        {
+            string verticalAlign = cell.ComputedStyle?.VerticalAlign?.Trim();
+            float alignmentFactor;
+            if (string.Equals(verticalAlign, "middle", StringComparison.OrdinalIgnoreCase))
+            {
+                alignmentFactor = 0.5f;
+            }
+            else if (string.Equals(verticalAlign, "bottom", StringComparison.OrdinalIgnoreCase))
+            {
+                alignmentFactor = 1f;
+            }
+            else
+            {
+                return;
+            }
+
+            if (cell.Children.Count == 0)
+            {
+                return;
+            }
+
+            float occupiedTop = cell.Children.Min(child => child.Geometry.MarginBox.Top);
+            float occupiedBottom = cell.Children.Max(child => child.Geometry.MarginBox.Bottom);
+            float occupiedHeight = Math.Max(0f, occupiedBottom - occupiedTop);
+            float freeSpace = cell.Geometry.ContentBox.Height - occupiedHeight;
+            if (freeSpace <= 0.5f)
+            {
+                return;
+            }
+
+            float targetTop = cell.Geometry.ContentBox.Top + freeSpace * alignmentFactor;
+            float offset = targetTop - occupiedTop;
+            foreach (var child in cell.Children)
+            {
+                LayoutBoxOps.ShiftSubtree(child, 0f, offset);
+            }
         }
 
         private static void InitializeBox(LayoutBox box)

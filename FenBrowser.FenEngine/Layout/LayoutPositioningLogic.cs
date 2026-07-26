@@ -171,7 +171,10 @@ namespace FenBrowser.FenEngine.Layout
 
             if (IsAutoInset(style, "top") && IsAutoInset(style, "bottom"))
             {
-                solved.Y = point.Y - containingBlockRect.Top;
+                solved.Y = point.Y - containingBlockRect.Top
+                    + (float)style.Margin.Top
+                    + (float)style.BorderThickness.Top
+                    + (float)style.Padding.Top;
             }
         }
 

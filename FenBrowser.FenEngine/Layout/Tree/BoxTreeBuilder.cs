@@ -74,8 +74,10 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
             if (style == null && node is Element) style = new CssComputed();
 
-            // For text nodes, inherit from parent
-            if (style == null && node is Text) style = parentStyle ?? new CssComputed();
+            // Text nodes inherit typography and other inherited CSS properties, not
+            // the parent's entire box style. Reusing the parent object here applied
+            // padding and positioned insets a second time to direct text children.
+            if (style == null && node is Text) style = CreateInheritedTextStyle(parentStyle);
 
             LayoutStyleResolver.NormalizeForLayout(style);
 
@@ -93,6 +95,13 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 string tag = e.TagName?.ToUpperInvariant();
                 if (tag == "HEAD" || tag == "SCRIPT" || tag == "STYLE" || tag == "META" || tag == "LINK" || tag == "TITLE" || tag == "NOSCRIPT" || tag == "TEMPLATE" || tag == "MAP" || tag == "AREA")
                     return;
+
+                if (tag?.Contains('-', StringComparison.Ordinal) == true &&
+                    HasNoRenderableCustomElementContent(e) &&
+                    !HasOwnLayoutDimensions(style))
+                {
+                    return;
+                }
             }
 
             // 2. Handle Text Nodes
@@ -111,6 +120,15 @@ namespace FenBrowser.FenEngine.Layout.Tree
                         whiteSpace == "pre" ||
                         whiteSpace == "pre-wrap" ||
                         whiteSpace == "break-spaces";
+
+                    // Collapsible whitespace at either edge of an inline formatting
+                    // container does not generate a line box. Pretty-printed markup
+                    // commonly puts newlines around a lone icon/control.
+                    if (!preserveWhitespace &&
+                        (textNode.PreviousSibling == null || textNode.NextSibling == null))
+                    {
+                        return;
+                    }
 
                     string parentDisplay = parentStyle?.Display?.ToLowerInvariant() ?? "inline";
                     bool inlineParent =
@@ -547,6 +565,116 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
         private bool IsBlockLevel(LayoutBox box) => box is BlockBox; // Includes AnonymousBlockBox
         private bool IsInlineLevel(LayoutBox box) => box is InlineBox || box is TextLayoutBox;
+
+        private static CssComputed CreateInheritedTextStyle(CssComputed parent)
+        {
+            var style = new CssComputed
+            {
+                Display = "inline",
+                Position = "static"
+            };
+
+            if (parent == null)
+            {
+                return style;
+            }
+
+            style.ForegroundColor = parent.ForegroundColor;
+            style.FontSize = parent.FontSize;
+            style.FontWeight = parent.FontWeight;
+            style.FontStyle = parent.FontStyle;
+            style.FontFamilyName = parent.FontFamilyName;
+            style.TextAlign = parent.TextAlign;
+            style.Hyphens = parent.Hyphens;
+            style.TextDecoration = parent.TextDecoration;
+            style.ListStyleType = parent.ListStyleType;
+            style.WordSpacing = parent.WordSpacing;
+            style.LetterSpacing = parent.LetterSpacing;
+            style.LineHeight = parent.LineHeight;
+            style.WhiteSpace = parent.WhiteSpace;
+            style.Cursor = parent.Cursor;
+            style.Direction = parent.Direction;
+            style.UnicodeBidi = parent.UnicodeBidi;
+            style.TextShadow = parent.TextShadow;
+            style.TextTransform = parent.TextTransform;
+            style.TextIndent = parent.TextIndent;
+            style.Visibility = parent.Visibility;
+            style.ListStylePosition = parent.ListStylePosition;
+            style.ListStyleImage = parent.ListStyleImage;
+
+            foreach (var property in CssComputed.InheritedProperties)
+            {
+                if (parent.Map.TryGetValue(property, out var value))
+                {
+                    style.Map[property] = value;
+                }
+            }
+
+            style.Map["display"] = "inline";
+            style.Map["position"] = "static";
+            style.InheritCustomProperties(parent);
+            return style;
+        }
+
+        private bool HasNoRenderableCustomElementContent(Element element)
+        {
+            foreach (var child in element.ChildNodes)
+            {
+                if (child is Text text)
+                {
+                    if (!FenBrowser.FenEngine.Layout.Contexts.TextWhitespaceClassifier.IsCollapsibleWhitespaceOnly(text.Data))
+                    {
+                        return false;
+                    }
+                    continue;
+                }
+
+                if (child is not Element childElement)
+                {
+                    continue;
+                }
+
+                _styles.TryGetValue(childElement, out var childStyle);
+                if (string.Equals(childStyle?.Display, "none", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (childElement.TagName?.Contains('-', StringComparison.Ordinal) == true &&
+                    HasNoRenderableCustomElementContent(childElement) &&
+                    !HasOwnLayoutDimensions(childStyle))
+                {
+                    continue;
+                }
+
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool HasOwnLayoutDimensions(CssComputed style)
+        {
+            if (style == null)
+            {
+                return false;
+            }
+
+            return style.Width.HasValue ||
+                   style.WidthPercent.HasValue ||
+                   !string.IsNullOrWhiteSpace(style.WidthExpression) ||
+                   style.Height.HasValue ||
+                   style.HeightPercent.HasValue ||
+                   !string.IsNullOrWhiteSpace(style.HeightExpression) ||
+                   style.Padding.Left > 0 ||
+                   style.Padding.Top > 0 ||
+                   style.Padding.Right > 0 ||
+                   style.Padding.Bottom > 0 ||
+                   style.BorderThickness.Left > 0 ||
+                   style.BorderThickness.Top > 0 ||
+                   style.BorderThickness.Right > 0 ||
+                   style.BorderThickness.Bottom > 0;
+        }
         private static bool IsFloated(LayoutBox box)
         {
             var floatValue = box.ComputedStyle?.Float?.Trim().ToLowerInvariant();

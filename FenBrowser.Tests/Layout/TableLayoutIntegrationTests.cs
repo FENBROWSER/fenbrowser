@@ -194,6 +194,51 @@ namespace FenBrowser.Tests.Layout
                  Assert.True(trBox.BorderBox.Height > 0, "TR height should be > 0");
              }
         }
+
+        [Fact]
+        public void TableLayout_ExplicitHeight_VerticalAlignMiddle_CentersCellContent()
+        {
+            var parser = new HtmlParser(
+                "<div id='table'><div id='cell'><div id='control'></div></div></div>");
+            var doc = parser.Parse();
+            var table = FindElementById(doc, "table");
+            var cell = FindElementById(doc, "cell");
+            var control = FindElementById(doc, "control");
+            Assert.NotNull(table);
+            Assert.NotNull(cell);
+            Assert.NotNull(control);
+
+            var styles = new Dictionary<Node, CssComputed>();
+            void ApplyStyles(Node node)
+            {
+                styles[node] = new CssComputed { Display = "block" };
+                if (node.ChildNodes != null)
+                {
+                    foreach (var child in node.ChildNodes) ApplyStyles(child);
+                }
+            }
+            ApplyStyles(doc);
+
+            styles[table].Display = "table";
+            styles[table].Width = 100;
+            styles[table].Height = 74;
+            styles[cell].Display = "table-cell";
+            styles[cell].VerticalAlign = "middle";
+            styles[control].Width = 28;
+            styles[control].Height = 28;
+            styles[control].Margin = new FenBrowser.Core.Thickness(0, 0, 0, 2);
+
+            var layout = new LayoutEngineComputer(styles, 800, 600);
+            layout.Measure(doc, new SKSize(800, 600));
+            layout.Arrange(doc, new SKRect(0, 0, 800, 600));
+
+            var boxes = layout.GetAllBoxes().ToDictionary(k => k.Key, v => v.Value);
+            Assert.Equal(74f, boxes[cell].BorderBox.Height, 1);
+
+            float expectedTop = boxes[cell].ContentBox.Top +
+                                (boxes[cell].ContentBox.Height - boxes[control].MarginBox.Height) / 2f;
+            Assert.Equal(expectedTop, boxes[control].MarginBox.Top, 1);
+        }
         
         [Fact]
         public void TableLayout_Colspan_SpansColumns()

@@ -237,6 +237,15 @@ namespace FenBrowser.FenEngine.Layout
             // Fixed parts (border + padding)
             float fixedSpace = borderLeft + paddingLeft + paddingRight + borderRight;
 
+            // For border-box sizing, the declared width includes padding and border.
+            // The solver result is always the content-box width, so normalize explicit
+            // sizes before applying the absolute-position constraint equation.
+            if (width.HasValue &&
+                string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+            {
+                width = Math.Max(0f, width.Value - fixedSpace);
+            }
+
             // Count auto values
             int autoCount = 0;
             if (!left.HasValue) autoCount++;
@@ -354,6 +363,14 @@ namespace FenBrowser.FenEngine.Layout
             float paddingBottom = (float)(style.Padding.Bottom);
 
             float fixedSpace = borderTop + paddingTop + paddingBottom + borderBottom;
+
+            // Keep the result contract content-box based while honoring an explicit
+            // border-box height (for example, reCAPTCHA's positioned spinner).
+            if (height.HasValue &&
+                string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+            {
+                height = Math.Max(0f, height.Value - fixedSpace);
+            }
 
             float mt = marginTop;
             float mb = marginBottom;

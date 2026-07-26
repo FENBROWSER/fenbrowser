@@ -149,6 +149,57 @@ namespace FenBrowser.Tests.Layout
                 $"Expected secondary button to not overlap primary. primary={primaryBox.Geometry.MarginBox} secondary={secondaryBox.Geometry.MarginBox}");
         }
 
+        [Fact]
+        public void InlineBlocks_WithBlockTableChildren_UseBottomMarginBaseline()
+        {
+            var root = new Element("div");
+            var controlWrapper = new Element("div");
+            var controlTable = new Element("div");
+            var controlCell = new Element("div");
+            var control = new Element("span");
+            var labelWrapper = new Element("div");
+            var labelTable = new Element("div");
+            var labelCell = new Element("label");
+
+            controlCell.AppendChild(control);
+            controlTable.AppendChild(controlCell);
+            controlWrapper.AppendChild(controlTable);
+            labelCell.AppendChild(new Text("I'm not a robot"));
+            labelTable.AppendChild(labelCell);
+            labelWrapper.AppendChild(labelTable);
+            root.AppendChild(controlWrapper);
+            root.AppendChild(labelWrapper);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 300 },
+                [controlWrapper] = new CssComputed { Display = "inline-block", Height = 74 },
+                [controlTable] = new CssComputed { Display = "table", Height = 74 },
+                [controlCell] = new CssComputed { Display = "table-cell", VerticalAlign = "middle" },
+                [control] = new CssComputed { Display = "inline-block", Width = 28, Height = 28 },
+                [labelWrapper] = new CssComputed { Display = "inline-block", Height = 74 },
+                [labelTable] = new CssComputed { Display = "table", Height = 74 },
+                [labelCell] = new CssComputed
+                {
+                    Display = "table-cell",
+                    VerticalAlign = "middle",
+                    FontSize = 14,
+                    LineHeight = 17
+                }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 300, 100);
+            var controlWrapperBox = FindBox(rootBox, controlWrapper);
+            var labelWrapperBox = FindBox(rootBox, labelWrapper);
+
+            Assert.NotNull(controlWrapperBox);
+            Assert.NotNull(labelWrapperBox);
+            Assert.Equal(
+                controlWrapperBox.Geometry.MarginBox.Top,
+                labelWrapperBox.Geometry.MarginBox.Top,
+                1);
+        }
+
         private static LayoutBox LayoutRoot(Element root, Dictionary<Node, CssComputed> styles, float width, float height)
         {
             var builder = new BoxTreeBuilder(styles);

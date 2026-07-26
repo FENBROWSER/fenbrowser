@@ -1537,7 +1537,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
                     else if (tag == "BUTTON")
                     {
-                        height = 44f;
+                        string label = LayoutHelper.GetRenderableTextContentTrimmed(el);
+                        height = string.IsNullOrWhiteSpace(label)
+                            ? 44f
+                            : ResolveTextControlContentHeight(box.ComputedStyle);
                     }
                     else if (tag == "SELECT")
                     {
@@ -1597,6 +1600,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // Sync boxes (Content -> Padding -> Border -> Margin)
             LayoutBoxOps.ComputeBoxModelFromContent(box, width, height);
+        }
+
+        private static float ResolveTextControlContentHeight(CssComputed style)
+        {
+            float fontSize = (float)(style?.FontSize ?? 16d);
+            double lineHeight = style?.LineHeight ?? 1.2d;
+            float resolved = lineHeight <= 4d
+                ? fontSize * (float)lineHeight
+                : (float)lineHeight;
+            return Math.Max(fontSize, resolved);
         }
 
         private static bool TryResolveAspectRatioAutoHeight(
@@ -2185,6 +2198,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             if (item.SourceNode is not Element element)
+            {
+                return false;
+            }
+
+            var style = item.ComputedStyle;
+            string overflow = (style?.OverflowX ?? style?.Overflow ?? "visible").Trim().ToLowerInvariant();
+            if (overflow is "auto" or "scroll" or "hidden" or "clip")
             {
                 return false;
             }

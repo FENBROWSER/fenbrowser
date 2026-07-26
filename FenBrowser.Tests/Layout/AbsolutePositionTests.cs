@@ -32,6 +32,30 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        [Trait("Category", "Layout")]
+        public void Solver_BorderBoxDimensions_ReturnContentSizeWithoutDoubleCountingBorders()
+        {
+            var cb = new ContainingBlock { Width = 100, Height = 100 };
+            var style = new CssComputed
+            {
+                Position = "absolute",
+                Left = -4,
+                Top = -4,
+                Width = 36,
+                Height = 36,
+                BoxSizing = "border-box",
+                BorderThickness = new FenBrowser.Core.Thickness(6)
+            };
+
+            var result = AbsolutePositionSolver.Solve(style, cb);
+
+            Assert.Equal(24f, result.Width);
+            Assert.Equal(24f, result.Height);
+            Assert.Equal(2f, result.X);
+            Assert.Equal(2f, result.Y);
+        }
+
+        [Fact]
         public void Solver_RightConstraint_CalculatesWidth()
         {
             var cb = new ContainingBlock { Width = 100, Height = 100 };

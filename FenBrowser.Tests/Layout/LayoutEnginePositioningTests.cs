@@ -350,5 +350,215 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(800f - 18f, toastGeometry.Y + toastGeometry.Height, 0.5f);
         }
 
+        [Fact]
+        public void AbsoluteAutoHeight_WithVerticalPadding_PositionsIntrinsicFlexChildInContentBox()
+        {
+            var document = new Document();
+            var html = new Element("HTML");
+            var body = new Element("BODY");
+            var wrapper = new Element("DIV");
+            var header = new Element("HEADER");
+            var row = new Element("DIV");
+            var button = new Element("BUTTON");
+
+            document.AppendChild(html);
+            html.AppendChild(body);
+            body.AppendChild(wrapper);
+            wrapper.AppendChild(header);
+            header.AppendChild(row);
+            row.AppendChild(button);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [html] = new CssComputed { Display = "block", Width = 1280, Height = 800 },
+                [body] = new CssComputed { Display = "block", Width = 1280, Height = 800 },
+                [wrapper] = new CssComputed { Display = "block", Position = "relative", Width = 1280 },
+                [header] = new CssComputed
+                {
+                    Display = "block",
+                    Position = "absolute",
+                    WidthPercent = 100,
+                    Padding = new Thickness(0, 16, 0, 16)
+                },
+                [row] = new CssComputed
+                {
+                    Display = "flex",
+                    WidthPercent = 100,
+                    HeightPercent = 100,
+                    AlignItems = "center"
+                },
+                [button] = new CssComputed { Display = "flex", Width = 100, Height = 40 }
+            };
+
+            var engine = new LayoutEngine(styles, 1280, 800);
+            var result = engine.ComputeLayout(document, 0, 0, 1280, availableHeight: 800);
+
+            Assert.True(result.ElementRects.TryGetValue(header, out var headerGeometry));
+            Assert.True(result.ElementRects.TryGetValue(row, out var rowGeometry));
+            Assert.Equal(72f, headerGeometry.Height, 0.5f);
+            Assert.Equal(headerGeometry.Y + 16f, rowGeometry.Y, 0.5f);
+            Assert.Equal(40f, rowGeometry.Height, 0.5f);
+        }
+
+        [Fact]
+        public void FlexListItem_AutoHeightMatchesItsPaddedFlexControl()
+        {
+            var document = new Document();
+            var html = new Element("HTML");
+            var body = new Element("BODY");
+            var list = new Element("UL");
+            var item = new Element("LI");
+            var link = new Element("A");
+            var label = new Element("SPAN");
+            var text = new Text("Pricing");
+
+            document.AppendChild(html);
+            html.AppendChild(body);
+            body.AppendChild(list);
+            list.AppendChild(item);
+            item.AppendChild(link);
+            link.AppendChild(label);
+            label.AppendChild(text);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [html] = new CssComputed { Display = "block", Width = 1280, Height = 800 },
+                [body] = new CssComputed { Display = "block", Width = 1280, Height = 800 },
+                [list] = new CssComputed { Display = "flex" },
+                [item] = new CssComputed { Display = "list-item", ListStyleType = "none" },
+                [link] = new CssComputed
+                {
+                    Display = "flex",
+                    AlignItems = "center",
+                    Padding = new Thickness(8),
+                    FontSize = 16,
+                    LineHeight = 1.5
+                },
+                [label] = new CssComputed { Display = "block", FontSize = 16, LineHeight = 1.5 },
+                [text] = new CssComputed { Display = "inline", FontSize = 16, LineHeight = 1.5 }
+            };
+
+            var engine = new LayoutEngine(styles, 1280, 800);
+            var result = engine.ComputeLayout(document, 0, 0, 1280, availableHeight: 800);
+
+            Assert.True(result.ElementRects.TryGetValue(list, out var listGeometry));
+            Assert.True(result.ElementRects.TryGetValue(item, out var itemGeometry));
+            Assert.True(result.ElementRects.TryGetValue(link, out var linkGeometry));
+            Assert.Equal(40f, linkGeometry.Height, 0.5f);
+            Assert.Equal(40f, itemGeometry.Height, 0.5f);
+            Assert.Equal(40f, listGeometry.Height, 0.5f);
+        }
+
+        [Fact]
+        public void AbsoluteInlineParent_DoesNotApplyInsetsTwiceToDescendants()
+        {
+            var document = new Document();
+            var html = new Element("HTML");
+            var body = new Element("BODY");
+            var field = new Element("DIV");
+            var label = new Element("LABEL");
+            var text = new Text("Enter your email");
+
+            document.AppendChild(html);
+            html.AppendChild(body);
+            body.AppendChild(field);
+            field.AppendChild(label);
+            label.AppendChild(text);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [html] = new CssComputed { Display = "block", Width = 800, Height = 600 },
+                [body] = new CssComputed { Display = "block", Width = 800, Height = 600 },
+                [field] = new CssComputed { Display = "flex", Position = "relative", Width = 300, Height = 43 },
+                [label] = new CssComputed
+                {
+                    Display = "inline",
+                    Position = "absolute",
+                    Left = 18,
+                    Top = 12,
+                    FontSize = 16,
+                    LineHeight = 1.5
+                }
+            };
+
+            var engine = new LayoutEngine(styles, 800, 600);
+            var result = engine.ComputeLayout(document, 0, 0, 800, availableHeight: 600);
+
+            Assert.True(result.ElementRects.TryGetValue(field, out var fieldGeometry));
+            Assert.True(result.ElementRects.TryGetValue(label, out var labelGeometry));
+            Assert.Equal(fieldGeometry.X + 18f, labelGeometry.X, 0.5f);
+            Assert.Equal(fieldGeometry.Y + 12f, labelGeometry.Y, 0.5f);
+
+            var computer = new LayoutEngineComputer(styles, 800, 600);
+            computer.Measure(html, new SkiaSharp.SKSize(800, 600));
+            computer.Arrange(html, new SkiaSharp.SKRect(0, 0, 800, 600));
+            var labelBox = computer.GetBox(label);
+            var textBox = computer.GetBox(text);
+            Assert.Equal(labelBox.ContentBox.Left, textBox.ContentBox.Left, 2f);
+            Assert.Equal(labelBox.ContentBox.Top, textBox.ContentBox.Top, 0.5f);
+        }
+
+        [Fact]
+        public void InlineBlock_EdgeWhitespaceAroundIconDoesNotInflateHeight()
+        {
+            var document = new Document();
+            var html = new Element("HTML");
+            var body = new Element("BODY");
+            var link = new Element("A");
+            var leading = new Text("\n  ");
+            var icon = new Element("SVG");
+            var trailing = new Text("\n");
+
+            document.AppendChild(html);
+            html.AppendChild(body);
+            body.AppendChild(link);
+            link.AppendChild(leading);
+            link.AppendChild(icon);
+            link.AppendChild(trailing);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [html] = new CssComputed { Display = "block", Width = 800, Height = 600 },
+                [body] = new CssComputed { Display = "block", Width = 800, Height = 600 },
+                [link] = new CssComputed { Display = "inline-block", FontSize = 16, LineHeight = 1.5 },
+                [icon] = new CssComputed { Display = "inline-block", Width = 32, Height = 32 }
+            };
+
+            var engine = new LayoutEngine(styles, 800, 600);
+            var result = engine.ComputeLayout(document, 0, 0, 800, availableHeight: 600);
+
+            Assert.True(result.ElementRects.TryGetValue(link, out var linkGeometry));
+            Assert.InRange(linkGeometry.Height, 32f, 34f);
+        }
+
+        [Fact]
+        public void EmptyInlineCustomElement_DoesNotCreateLineHeight()
+        {
+            var document = new Document();
+            var html = new Element("HTML");
+            var body = new Element("BODY");
+            var wrapper = new Element("DIV");
+            var helper = new Element("DIALOG-HELPER");
+
+            document.AppendChild(html);
+            html.AppendChild(body);
+            body.AppendChild(wrapper);
+            wrapper.AppendChild(helper);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [html] = new CssComputed { Display = "block", Width = 800, Height = 600 },
+                [body] = new CssComputed { Display = "block", Width = 800, Height = 600 },
+                [wrapper] = new CssComputed { Display = "block", Width = 32 },
+                [helper] = new CssComputed { Display = "inline", FontSize = 16, LineHeight = 1.5 }
+            };
+
+            var engine = new LayoutEngine(styles, 800, 600);
+            var result = engine.ComputeLayout(document, 0, 0, 800, availableHeight: 600);
+
+            Assert.True(result.ElementRects.TryGetValue(wrapper, out var wrapperGeometry));
+            Assert.Equal(0f, wrapperGeometry.Height, 0.1f);
+        }
+
     }
 }
