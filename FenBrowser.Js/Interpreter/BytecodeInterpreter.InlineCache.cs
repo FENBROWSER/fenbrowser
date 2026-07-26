@@ -14,6 +14,8 @@ public sealed partial class BytecodeInterpreter
         { result = JsValue.Undefined; return false; }
 
         var obj = _heap.GetObject(receiver.AsObjectHandle());
+        if (obj is ModuleNamespaceObject)
+        { result = JsValue.Undefined; return false; }
         if (!ic.TryGet(obj, key, out var slot) || obj.PropertyArray[slot] is not { } desc)
         { result = JsValue.Undefined; return false; }
 
@@ -32,6 +34,7 @@ public sealed partial class BytecodeInterpreter
     {
         if (receiver.Tag != JsValueTag.Object) return;
         var obj = _heap.GetObject(receiver.AsObjectHandle());
+        if (obj is ModuleNamespaceObject) return;
         if (!obj.CurrentShape.TryGetSlot(key, out var slot) || obj.PropertyArray[slot] is not { } desc) return;
         if (desc.IsAccessor) return; // accessors not cached yet
 
@@ -96,7 +99,7 @@ public sealed partial class BytecodeInterpreter
         { result = JsValue.Undefined; return false; }
 
         var obj = _heap.GetObject(receiver.AsObjectHandle());
-        if (obj is ProxyObject) { result = JsValue.Undefined; return false; }
+        if (obj is ProxyObject or ModuleNamespaceObject) { result = JsValue.Undefined; return false; }
         if (!ic.TryGet(obj, key, out var slot) || obj.PropertyArray[slot] is not { } desc)
         { result = JsValue.Undefined; return false; }
         if (desc.IsAccessor) { ic.InvalidateShape(obj.CurrentShape); result = JsValue.Undefined; return false; }

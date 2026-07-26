@@ -130,6 +130,26 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void AutomaticMajorCollectionReclaimsPromotedDeadObjects()
+    {
+        var heap = new JsHeap
+        {
+            YoungAllocationsPerMinorGc = 1,
+            PromotionThreshold = 1,
+            MinorCollectionsPerMajorGc = 2
+        };
+
+        var promotedThenDead = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        var triggeringAllocation = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+
+        Assert.Equal(2, heap.MinorCollectionCount);
+        Assert.Equal(1, heap.GcCollectionCount);
+        Assert.Throws<JsEngineFatalException>(() => heap.GetObject(promotedThenDead));
+        Assert.NotNull(heap.GetObject(triggeringAllocation));
+        Assert.Equal(1, heap.LiveCellCount);
+    }
+
+    [Fact]
     public void HeapDetectsStaleHandleAfterFree()
     {
         var heap = new JsHeap();

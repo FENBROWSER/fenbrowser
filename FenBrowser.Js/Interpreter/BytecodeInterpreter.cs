@@ -36,6 +36,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // a cell only reachable through a frame register can be reclaimed by an
     // auto-MinorCollect inside user code and surface as "Stale heap handle.".
     private readonly Stack<InterpreterFrame> _activeFrames = new();
+    // Browsers render an array that recursively contains itself as an empty
+    // element while Array.prototype.join/toString is already processing that
+    // same array. Without this guard, circular page data recurses indefinitely.
+    private readonly HashSet<ObjectHandle> _activeArrayJoins = new();
 
     private readonly struct ActiveFrameScope : IDisposable
     {
@@ -768,6 +772,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return result;
     }
 
+    public ModuleEnvironmentRecord CreateModuleEnvironment(string? importMetaUrl = null)
+        => new(EnsureGlobalEnvironment(), importMetaUrl);
+
     // E.6.next - read a binding directly from a caller-supplied env record.
     // Used by ModuleEvaluator to harvest export values out of a per-module
     // env (where the binding doesn't live on the global object).
@@ -1495,7 +1502,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     frame.Registers[ins.A] = HandleDynamicImport(frame.Registers[ins.B], frame.Registers[ins.C]);
                     break;
                 case OpCode.ImportMeta:
-                    frame.Registers[ins.A] = HandleImportMeta();
+                    frame.Registers[ins.A] = HandleImportMeta(frame.Environment);
                     break;
                 case OpCode.ImportSource:
                     frame.Registers[ins.A] = HandleImportSource(frame.Registers[ins.B], frame.Registers[ins.C]);
@@ -2330,13 +2337,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var target = frame.Registers[ins.A];
                     var name = function.PropertyNames[ins.B];
                     var value = frame.Registers[ins.C];
+                    var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+                    if (target.Tag == JsValueTag.HostObject)
+                    {
+                        try { DefineHostPrivateField(target, name, value, brand); }
+                        catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                        break;
+                    }
                     if (target.Tag != JsValueTag.Object)
                     {
                         ThrowOrHandle(frame, CreateTypeError("Cannot define private field on non-object."));
                         break;
                     }
                     var targetObj = _heap.GetObject(target.AsObjectHandle());
-                    var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
                     targetObj.PrivateBrand = targetObj.PrivateBrand != 0 ? targetObj.PrivateBrand : brand;
                     targetObj.DefineOwnProperty(name, new JsPropertyDescriptor(value, Writable: true, Enumerable: false, Configurable: false));
                     break;
@@ -2345,13 +2358,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 {
                     var objVal = frame.Registers[ins.B];
                     var name = function.PropertyNames[ins.C];
+                    var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+                    if (objVal.Tag == JsValueTag.HostObject)
+                    {
+                        try
+                        {
+                            if (!TryGetHostPrivateField(objVal, name, brand, out var hostPrivateValue))
+                            {
+                                ThrowOrHandle(frame, CreateTypeError("Cannot read private field from an object whose class did not declare it."));
+                                break;
+                            }
+                            frame.Registers[ins.A] = hostPrivateValue;
+                        }
+                        catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                        break;
+                    }
                     if (objVal.Tag != JsValueTag.Object)
                     {
                         ThrowOrHandle(frame, CreateTypeError("Cannot read private field from non-object."));
                         break;
                     }
                     var obj = _heap.GetObject(objVal.AsObjectHandle());
-                    var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
                     if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
                     {
                         ThrowOrHandle(frame, CreateTypeError("Cannot read private field from an object whose class did not declare it."));
@@ -2370,13 +2397,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var objVal = frame.Registers[ins.A];
                     var name = function.PropertyNames[ins.B];
                     var value = frame.Registers[ins.C];
+                    var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+                    if (objVal.Tag == JsValueTag.HostObject)
+                    {
+                        try
+                        {
+                            if (!TrySetHostPrivateField(objVal, name, value, brand))
+                            {
+                                ThrowOrHandle(frame, CreateTypeError("Cannot write private field to an object whose class did not declare it."));
+                            }
+                        }
+                        catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                        break;
+                    }
                     if (objVal.Tag != JsValueTag.Object)
                     {
                         ThrowOrHandle(frame, CreateTypeError("Cannot write private field to non-object."));
                         break;
                     }
                     var obj = _heap.GetObject(objVal.AsObjectHandle());
-                    var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
                     if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
                     {
                         ThrowOrHandle(frame, CreateTypeError("Cannot write private field to an object whose class did not declare it."));
@@ -16788,22 +16827,40 @@ fallbackArraySpecies:
             return string.Empty;
         }
 
-        var values = new string[length];
-        for (var i = 0; i < length; i++)
+        ObjectHandle? activeHandle = thisValue.Tag == JsValueTag.Object
+            ? thisValue.AsObjectHandle()
+            : null;
+        if (activeHandle is { } joiningHandle && !_activeArrayJoins.Add(joiningHandle))
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            var value = GetReceiverProperty(thisValue, key);
-            if (value.Tag is JsValueTag.Undefined or JsValueTag.Null)
-            {
-                values[i] = string.Empty;
-            }
-            else
-            {
-                values[i] = ToStringValue(value);
-            }
+            return string.Empty;
         }
 
-        return string.Join(separator, values);
+        try
+        {
+            var values = new string[length];
+            for (var i = 0; i < length; i++)
+            {
+                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var value = GetReceiverProperty(thisValue, key);
+                if (value.Tag is JsValueTag.Undefined or JsValueTag.Null)
+                {
+                    values[i] = string.Empty;
+                }
+                else
+                {
+                    values[i] = ToStringValue(value);
+                }
+            }
+
+            return string.Join(separator, values);
+        }
+        finally
+        {
+            if (activeHandle is { } completedHandle)
+            {
+                _activeArrayJoins.Remove(completedHandle);
+            }
+        }
     }
 
     // ECMA-262 23.1.3.16 indexOf - strict equality, starts at fromIndex (default 0,
@@ -21370,7 +21427,9 @@ fallbackArraySpecies:
         if (receiver.Tag == JsValueTag.Object)
         {
             var obj = _heap.GetObject(receiver.AsObjectHandle());
-            if (ic.TryGet(obj, prop, out var slot) && obj.PropertyArray[slot] is { } desc)
+            if (obj is not ModuleNamespaceObject &&
+                ic.TryGet(obj, prop, out var slot) &&
+                obj.PropertyArray[slot] is { } desc)
             {
                 if (desc.IsAccessor)
                 {
@@ -21389,7 +21448,8 @@ fallbackArraySpecies:
             if (receiver.Tag == JsValueTag.Object)
             {
                 var obj = _heap.GetObject(receiver.AsObjectHandle());
-                if (obj.CurrentShape.TryGetSlot(prop, out var freshSlot) &&
+                if (obj is not ModuleNamespaceObject &&
+                    obj.CurrentShape.TryGetSlot(prop, out var freshSlot) &&
                     obj.PropertyArray[freshSlot] is { } freshDesc &&
                     !freshDesc.IsAccessor)
                 {
@@ -22039,6 +22099,15 @@ fallbackArraySpecies:
             (left.Tag == JsValueTag.Undefined && right.Tag == JsValueTag.Null))
         {
             return true;
+        }
+
+        // ECMA-262 7.2.14: null and undefined only compare loosely equal to
+        // each other (plus the Annex B HTMLDDA case handled above). In
+        // particular, an Object on the other side must not be coerced.
+        if (left.Tag is JsValueTag.Null or JsValueTag.Undefined ||
+            right.Tag is JsValueTag.Null or JsValueTag.Undefined)
+        {
+            return false;
         }
 
         if ((left.Tag == JsValueTag.Int32 || left.Tag == JsValueTag.Number) &&

@@ -1200,20 +1200,24 @@ public static class RegExpCompiler
     private static bool ContainsUnicodeInvalidClassRange(string content)
     {
         // In Unicode mode, class escapes are CharSets and cannot be range bounds.
-        return content.Contains(@"\d-", StringComparison.Ordinal) ||
-               content.Contains(@"\D-", StringComparison.Ordinal) ||
-               content.Contains(@"\s-", StringComparison.Ordinal) ||
-               content.Contains(@"\S-", StringComparison.Ordinal) ||
-               content.Contains(@"\w-", StringComparison.Ordinal) ||
-               content.Contains(@"\W-", StringComparison.Ordinal) ||
-               content.Contains(@"-\d", StringComparison.Ordinal) ||
-               content.Contains(@"-\D", StringComparison.Ordinal) ||
-               content.Contains(@"-\s", StringComparison.Ordinal) ||
-               content.Contains(@"-\S", StringComparison.Ordinal) ||
-               content.Contains(@"-\w", StringComparison.Ordinal) ||
-               content.Contains(@"-\W", StringComparison.Ordinal) ||
-               System.Text.RegularExpressions.Regex.IsMatch(content, @"\\[pP]\{[^}]+\}-", RegexOptions.CultureInvariant) ||
-               System.Text.RegularExpressions.Regex.IsMatch(content, @"-\\[pP]\{[^}]+\}", RegexOptions.CultureInvariant);
+        // A leading or trailing hyphen is a literal, so `[-\d]` and `[\d-]`
+        // remain valid while `[a-\d]` and `[\d-a]` are early errors.
+        return System.Text.RegularExpressions.Regex.IsMatch(
+                   content,
+                   @"\\[dDsSwW]-.",
+                   RegexOptions.CultureInvariant) ||
+               System.Text.RegularExpressions.Regex.IsMatch(
+                   content,
+                   @".-\\[dDsSwW]",
+                   RegexOptions.CultureInvariant) ||
+               System.Text.RegularExpressions.Regex.IsMatch(
+                   content,
+                   @"\\[pP]\{[^}]+\}-.",
+                   RegexOptions.CultureInvariant) ||
+               System.Text.RegularExpressions.Regex.IsMatch(
+                   content,
+                   @".-\\[pP]\{[^}]+\}",
+                   RegexOptions.CultureInvariant);
     }
 
     private static bool ContainsUnicodeSetsBreakingChangeLiteral(string content)

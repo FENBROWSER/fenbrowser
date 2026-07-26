@@ -1447,6 +1447,17 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void LooseEqualityDoesNotCoerceObjectsComparedWithNullOrUndefined()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText(
+            "null != {} && {} != null && undefined != {} && {} != undefined;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void StrictEqualityDiffersFromLooseEqualityForMixedTypes()
     {
         var compiler = new BytecodeCompiler();

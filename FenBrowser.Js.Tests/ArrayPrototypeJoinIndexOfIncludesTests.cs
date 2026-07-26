@@ -65,6 +65,15 @@ public sealed class ArrayPrototypeJoinIndexOfIncludesTests
     }
 
     [Theory]
+    [InlineData("var sample=[];sample.push(sample);sample.join();", "")]
+    [InlineData("var sample=[1];sample.push(sample);sample.toString();", "1,")]
+    [InlineData("var left=[],right=[];left.push(right);right.push(left);left.join();", "")]
+    public void JoinTreatsCircularArrayReferencesAsEmptyElements(string source, string expected)
+    {
+        Assert.Equal(expected, RunStr(source));
+    }
+
+    [Theory]
     [InlineData("[10, 20, 30].indexOf(20);", 1)]
     [InlineData("[10, 20, 30].indexOf(99);", -1)]
     [InlineData("[10, 20, 30].indexOf(10, 1);", -1)]

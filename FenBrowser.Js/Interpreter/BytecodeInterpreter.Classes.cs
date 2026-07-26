@@ -17,10 +17,15 @@ public sealed partial class BytecodeInterpreter
         var target = frame.Registers[targetReg];
         var name = function.PropertyNames[nameIndex];
         var value = frame.Registers[valueReg];
+        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+        if (target.Tag == JsValueTag.HostObject)
+        {
+            DefineHostPrivateField(target, name, value, brand);
+            return;
+        }
         if (target.Tag != JsValueTag.Object)
             throw new JsThrownException(CreateTypeError("Cannot define private field on non-object."));
         var targetObj = _heap.GetObject(target.AsObjectHandle());
-        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
         targetObj.PrivateBrand = targetObj.PrivateBrand != 0 ? targetObj.PrivateBrand : brand;
         targetObj.DefineOwnProperty(name, new JsPropertyDescriptor(value, Writable: true, Enumerable: false, Configurable: false));
     }
@@ -31,10 +36,17 @@ public sealed partial class BytecodeInterpreter
         var function = frame.Function;
         var objVal = frame.Registers[objReg];
         var name = function.PropertyNames[nameIndex];
+        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+        if (objVal.Tag == JsValueTag.HostObject)
+        {
+            if (!TryGetHostPrivateField(objVal, name, brand, out var hostPrivateValue))
+                throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
+            frame.Registers[destReg] = hostPrivateValue;
+            return;
+        }
         if (objVal.Tag != JsValueTag.Object)
             throw new JsThrownException(CreateTypeError("Cannot read private field from non-object."));
         var obj = _heap.GetObject(objVal.AsObjectHandle());
-        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
         if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
             throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
         if (!TryGetPropertyValue(obj, objVal, name, out var privateValue))
@@ -49,10 +61,16 @@ public sealed partial class BytecodeInterpreter
         var objVal = frame.Registers[objReg];
         var name = function.PropertyNames[nameIndex];
         var value = frame.Registers[valueReg];
+        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+        if (objVal.Tag == JsValueTag.HostObject)
+        {
+            if (!TrySetHostPrivateField(objVal, name, value, brand))
+                throw new JsThrownException(CreateTypeError("Cannot write private field to an object whose class did not declare it."));
+            return;
+        }
         if (objVal.Tag != JsValueTag.Object)
             throw new JsThrownException(CreateTypeError("Cannot write private field to non-object."));
         var obj = _heap.GetObject(objVal.AsObjectHandle());
-        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
         if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
             throw new JsThrownException(CreateTypeError("Cannot write private field to an object whose class did not declare it."));
         WritePrivateField(obj, objVal, name, value);

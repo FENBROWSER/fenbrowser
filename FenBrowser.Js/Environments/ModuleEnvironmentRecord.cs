@@ -13,10 +13,13 @@ public sealed class ModuleEnvironmentRecord : DeclarativeEnvironmentRecord
 {
     private readonly Dictionary<string, ImportBinding> _importBindings = new(StringComparer.Ordinal);
 
-    public ModuleEnvironmentRecord(EnvironmentRecord? outerEnv)
+    public ModuleEnvironmentRecord(EnvironmentRecord? outerEnv, string? importMetaUrl = null)
         : base(outerEnv)
     {
+        ImportMetaUrl = importMetaUrl ?? string.Empty;
     }
+
+    public string ImportMetaUrl { get; }
 
     // 9.1.1.5.5 The module-scope `this` is always present but its value is undefined.
     public override bool HasThisBinding => true;

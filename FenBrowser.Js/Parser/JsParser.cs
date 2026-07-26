@@ -37,6 +37,7 @@ public sealed class JsParser
     };
 
     private readonly IReadOnlyList<Token> _tokens;
+    private readonly SourceText _source;
     private int _index;
     private int _syntheticBindingCounter;
     private bool _strictMode;
@@ -87,8 +88,12 @@ public sealed class JsParser
         _recursionDepth--;
     }
 
-    private JsParser(IReadOnlyList<Token> tokens, int maxRecursionDepth = DefaultMaxRecursionDepth)
+    private JsParser(
+        SourceText source,
+        IReadOnlyList<Token> tokens,
+        int maxRecursionDepth = DefaultMaxRecursionDepth)
     {
+        _source = source;
         _tokens = tokens;
         _maxRecursionDepth = maxRecursionDepth;
     }
@@ -108,21 +113,21 @@ public sealed class JsParser
     public static ProgramNode ParseScript(SourceText source, bool inheritedStrictMode, int? maxRecursionDepth)
     {
         var tokens = new JsLexer(source).LexAll();
-        var parser = new JsParser(tokens, maxRecursionDepth ?? DefaultMaxRecursionDepth);
+        var parser = new JsParser(source, tokens, maxRecursionDepth ?? DefaultMaxRecursionDepth);
         return parser.ParseProgram(ProgramKind.Script, inheritedStrictMode);
     }
 
     public static ProgramNode ParseModule(SourceText source)
     {
         var tokens = new JsLexer(source, moduleMode: true).LexAll();
-        var parser = new JsParser(tokens);
+        var parser = new JsParser(source, tokens);
         return parser.ParseProgram(ProgramKind.Module);
     }
 
     public static ProgramNode ParseModule(SourceText source, int maxRecursionDepth)
     {
         var tokens = new JsLexer(source, moduleMode: true).LexAll();
-        var parser = new JsParser(tokens, maxRecursionDepth);
+        var parser = new JsParser(source, tokens, maxRecursionDepth);
         return parser.ParseProgram(ProgramKind.Module);
     }
 
@@ -135,7 +140,7 @@ public sealed class JsParser
     public static ProgramNode ParseFunctionBody(SourceText source, int? maxRecursionDepth)
     {
         var tokens = new JsLexer(source).LexAll();
-        var parser = new JsParser(tokens, maxRecursionDepth ?? DefaultMaxRecursionDepth) { _functionBodyDepth = 1 };
+        var parser = new JsParser(source, tokens, maxRecursionDepth ?? DefaultMaxRecursionDepth) { _functionBodyDepth = 1 };
         return parser.ParseProgram(ProgramKind.Script);
     }
 
@@ -4896,7 +4901,8 @@ public sealed class JsParser
             }
             catch (Regex.RegexSyntaxError ex)
             {
-                throw new JsParserException(ex.Message);
+                throw new JsParserException(
+                    $"{ex.Message} at line {token.Span.Line}, column {token.Span.Column}.");
             }
             return new RegexLiteralExpressionNode(token.Text, token.Span);
         }
@@ -4959,64 +4965,87 @@ public sealed class JsParser
     /// </summary>
     private RegexLiteralExpressionNode RecoverRegexLiteral(Token openSlash)
     {
-        // Consume the opening /
-        Advance();
-        var sb = new System.Text.StringBuilder();
-        sb.Append('/');
-
-        // Scan for the closing / punctuator.
-        var maxLookahead = Math.Min(_tokens.Count - _index, 200);
-        for (var i = 0; i < maxLookahead; i++)
+        var start = openSlash.Span.Start;
+        var cursor = start + 1;
+        var escaped = false;
+        var inCharacterClass = false;
+        while (cursor < _source.Length)
         {
-            var t = _tokens[_index + i];
-            if (t.Kind == TokenKind.Punctuator && t.Text == "/")
+            var ch = _source.Text[cursor];
+            if (escaped)
             {
-                var closeIdx = _index + i;
-                for (var j = _index; j < closeIdx; j++)
-                {
-                    sb.Append(_tokens[j].Text);
-                }
-                sb.Append('/');
-
-                // Consume flag letters after the closing /
-                var flagStart = closeIdx + 1;
-                while (flagStart < _tokens.Count &&
-                       _tokens[flagStart].Kind == TokenKind.Identifier &&
-                       _tokens[flagStart].Text.Length > 0 &&
-                       _tokens[flagStart].Text.All(char.IsLetter))
-                {
-                    sb.Append(_tokens[flagStart].Text);
-                    flagStart++;
-                }
-
-                _index = flagStart;
-
-                try
-                {
-                    Regex.RegExpCompiler.ValidateLiteralSyntax(sb.ToString());
-                }
-                catch (Regex.RegexSyntaxError ex)
-                {
-                    throw new JsParserException(ex.Message);
-                }
-
-                var span = new SourceSpan(openSlash.Span.Start, sb.Length,
-                    openSlash.Span.Line, openSlash.Span.Column);
-                return new RegexLiteralExpressionNode(sb.ToString(), span);
+                escaped = false;
+                cursor++;
+                continue;
             }
 
-            // Bail if we hit a token that delimits the end of an expression context.
-            if (t.Kind == TokenKind.EndOfFile ||
-                (t.Kind == TokenKind.Punctuator && (t.Text == ";" || t.Text == "}")))
+            if (ch == '\\')
+            {
+                escaped = true;
+                cursor++;
+                continue;
+            }
+
+            if (ch == '[')
+            {
+                inCharacterClass = true;
+                cursor++;
+                continue;
+            }
+
+            if (ch == ']' && inCharacterClass)
+            {
+                inCharacterClass = false;
+                cursor++;
+                continue;
+            }
+
+            if (ch is '\r' or '\n' or '\u2028' or '\u2029')
             {
                 break;
             }
+
+            if (ch != '/' || inCharacterClass)
+            {
+                cursor++;
+                continue;
+            }
+
+            cursor++;
+            while (cursor < _source.Length && char.IsLetter(_source.Text[cursor]))
+            {
+                cursor++;
+            }
+
+            var raw = _source.Text[start..cursor];
+            while (_index < _tokens.Count && _tokens[_index].Span.Start < cursor)
+            {
+                _index++;
+            }
+
+            try
+            {
+                Regex.RegExpCompiler.ValidateLiteralSyntax(raw);
+            }
+            catch (Regex.RegexSyntaxError ex)
+            {
+                throw new JsParserException(
+                    $"{ex.Message} at line {openSlash.Span.Line}, column {openSlash.Span.Column}.");
+            }
+
+            var span = new SourceSpan(
+                openSlash.Span.Start,
+                raw.Length,
+                openSlash.Span.Line,
+                openSlash.Span.Column);
+            return new RegexLiteralExpressionNode(raw, span);
         }
 
         // Recovery failed.
         throw new JsParserException(
             $"Unexpected token '{openSlash.Text}' ({openSlash.Kind}) — " +
-            "expected a regex literal but could not find the closing '/'.");
+            $"expected a regex literal but could not find the closing '/' " +
+            $"at line {openSlash.Span.Line}, column {openSlash.Span.Column}.");
     }
 
     private static bool TryParseNumberLiteral(string text, out double value)
@@ -6369,8 +6398,9 @@ public sealed class JsParser
             throw new JsParserException("Template substitution expression cannot be empty.");
         }
 
-        var tokens = new JsLexer(new SourceText(expressionText, "<template>")).LexAll();
-        var parser = new JsParser(tokens)
+        var source = new SourceText(expressionText, "<template>");
+        var tokens = new JsLexer(source).LexAll();
+        var parser = new JsParser(source, tokens)
         {
             _strictMode = _strictMode,
             _moduleMode = _moduleMode,

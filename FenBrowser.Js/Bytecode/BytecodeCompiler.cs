@@ -933,12 +933,25 @@ public sealed class BytecodeCompiler
         string? className,
         ExpressionNode? baseClass,
         IReadOnlyList<ClassMemberNode> members,
-        Action<int>? bindNameBeforeStaticBlocks = null)
+        Action<int>? bindNameBeforeStaticBlocks = null,
+        bool hasInnerNameBinding = false)
     {
         var savedClassStrictMode = _isStrictMode;
         _isStrictMode = true;
         try
         {
+        // A named class expression has a class-local immutable binding that is
+        // visible to its heritage expression and every method, but does not
+        // leak into the surrounding scope. Keep that environment active while
+        // the constructor and methods are created so their closures capture it.
+        var innerNameSlot = -1;
+        if (hasInnerNameBinding && className is { Length: > 0 })
+        {
+            innerNameSlot = GetOrCreateVariableSlot(className);
+            _instructions.Add(new Instruction(OpCode.EnterScope, innerNameSlot, 1, 0));
+            _openScopeDepth++;
+        }
+
         // H.2 - evaluate the base-class expression BEFORE compiling the class body
         // so that class B extends A {} fails fast when A is a TDZ binding (ECMA-
         // 262 15.7.14 ClassDefinitionEvaluation step 7).
@@ -1153,6 +1166,11 @@ public sealed class BytecodeCompiler
         _isClassConstructor = savedIsClassConstructor;
         _isStrictMode = savedStrictMode;
 
+        if (innerNameSlot >= 0)
+        {
+            _instructions.Add(new Instruction(OpCode.InitVar, classReg, innerNameSlot, 0));
+        }
+
         // Build prototype object. A class constructor (FunctionKind.Constructor)
         // is created with a NON-writable, non-configurable own `prototype` slot
         // that already points at a fresh ordinary object carrying `constructor`.
@@ -1322,6 +1340,12 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.StoreFieldKey, keyReg, classReg, 0));
             }
             _computedFieldNames = null;
+        }
+
+        if (innerNameSlot >= 0)
+        {
+            _instructions.Add(new Instruction(OpCode.LeaveScope, 0, 0, 0));
+            _openScopeDepth--;
         }
 
         return classReg;
@@ -3810,7 +3834,11 @@ public sealed class BytecodeCompiler
             case ClassExpressionNode classExpr:
                 // ECMA-262 NamedEvaluation: an anonymous class expression adopts the
                 // pending binding name (`let C = class {}` / `[c = class {}]`).
-                return CompileClassExpressionToRegister(classExpr.Name ?? ConsumeNameHint(), classExpr.BaseClass, classExpr.Members);
+                return CompileClassExpressionToRegister(
+                    classExpr.Name ?? ConsumeNameHint(),
+                    classExpr.BaseClass,
+                    classExpr.Members,
+                    hasInnerNameBinding: classExpr.Name is { Length: > 0 });
             case ArrowFunctionExpressionNode arrow:
             {
                 IReadOnlyList<StatementNode> statements;

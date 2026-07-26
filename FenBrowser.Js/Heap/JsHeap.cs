@@ -37,6 +37,12 @@ public sealed class JsHeap
     // don't pay nursery overhead unnecessarily, small enough that long
     // allocation-heavy runs see periodic minor sweeps.
     public int YoungAllocationsPerMinorGc { get; set; } = 4096;
+    // Long-running browser workloads can keep temporary objects alive across
+    // enough nursery collections to promote them. Without a periodic major
+    // collection those dead Old cells accumulate until the whole JS realm is
+    // discarded (for example, during reCAPTCHA MessagePort/promise churn).
+    // Zero disables the automatic major collection cadence.
+    public int MinorCollectionsPerMajorGc { get; set; } = 32;
     private int _youngAllocationsSinceLastMinorGc;
     private readonly bool _verifyHeapBeforeGc;
     private readonly bool _verifyHeapAfterGc;
@@ -362,6 +368,11 @@ public sealed class JsHeap
             var mark = _roots.Count;
             _roots.Push(pin);
             MinorCollect();
+            if (MinorCollectionsPerMajorGc > 0 &&
+                _minorGcCount % MinorCollectionsPerMajorGc == 0)
+            {
+                CollectGarbage();
+            }
             _roots.PopTo(mark);
         }
     }

@@ -25,6 +25,7 @@ public sealed partial class BytecodeInterpreter
         new(CurrentRealmId: 0, CurrentDocumentEpoch: default, CurrentNavigationEpoch: default);
     private readonly Dictionary<HostObjectHandle, Dictionary<string, JsPropertyDescriptor>> _hostDefinedProperties = new();
     private readonly Dictionary<HostObjectHandle, JsValue> _hostObjectPrototypes = new();
+    private readonly Dictionary<HostObjectHandle, long> _hostPrivateBrands = new();
 
     public HostObjectTable HostObjectTable
     {
@@ -183,6 +184,69 @@ public sealed partial class BytecodeInterpreter
         }
 
         properties[key] = descriptor;
+    }
+
+    private void DefineHostPrivateField(
+        JsValue receiver,
+        string name,
+        JsValue value,
+        long brand)
+    {
+        _ = RequireHostObject(receiver, "define private field");
+        var handle = receiver.AsHostObjectHandle();
+        if (_hostPrivateBrands.TryGetValue(handle, out var existingBrand) &&
+            existingBrand != 0 &&
+            existingBrand != brand)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Cannot define private field on an object whose class did not declare it."));
+        }
+
+        _hostPrivateBrands[handle] = brand;
+        DefineHostObjectProperty(
+            handle,
+            name,
+            new JsPropertyDescriptor(value, Writable: true, Enumerable: false, Configurable: false));
+    }
+
+    private bool TryGetHostPrivateField(
+        JsValue receiver,
+        string name,
+        long brand,
+        out JsValue value)
+    {
+        _ = RequireHostObject(receiver, "read private field");
+        var handle = receiver.AsHostObjectHandle();
+        if (!_hostPrivateBrands.TryGetValue(handle, out var actualBrand) ||
+            actualBrand != brand ||
+            !TryGetHostObjectDefinedProperty(handle, name, out var descriptor))
+        {
+            value = JsValue.Undefined;
+            return false;
+        }
+
+        value = GetDescriptorValue(descriptor, receiver);
+        return true;
+    }
+
+    private bool TrySetHostPrivateField(
+        JsValue receiver,
+        string name,
+        JsValue value,
+        long brand)
+    {
+        _ = RequireHostObject(receiver, "write private field");
+        var handle = receiver.AsHostObjectHandle();
+        if (!_hostPrivateBrands.TryGetValue(handle, out var actualBrand) ||
+            actualBrand != brand ||
+            !TryGetHostObjectDefinedProperty(handle, name, out var descriptor) ||
+            descriptor.IsAccessor)
+        {
+            return false;
+        }
+
+        DefineHostObjectProperty(handle, name, descriptor with { Value = value });
+        return true;
     }
 
     public void CopyHostObjectOwnProperties(JsValue source, JsValue target)
@@ -615,6 +679,19 @@ public sealed partial class BytecodeInterpreter
         }
 
         obj.PreventExtensions();
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
+    public JsValue AllocateModuleNamespaceObject(
+        Environments.ModuleEnvironmentRecord environment,
+        IReadOnlyDictionary<string, string> localNames)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+        ArgumentNullException.ThrowIfNull(localNames);
+        var obj = new ModuleNamespaceObject(
+            environment,
+            localNames,
+            GetWellKnownSymbolId("toStringTag"));
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 }

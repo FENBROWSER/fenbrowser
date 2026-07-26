@@ -83,6 +83,25 @@ public sealed class HostObjectIntegrationTests
     }
 
     [Fact]
+    public void DerivedClassCanInitializeAndReadPrivateFieldOnHostBackedInstance()
+    {
+        var (interpreter, _, _) = Setup();
+        var result = Run(interpreter, """
+            function HostBase() { return myHost; }
+            class Probe extends HostBase {
+                #value = 41;
+                increment() { this.#value = this.#value + 1; }
+                read() { return this.#value; }
+            }
+            var probe = new Probe();
+            probe.increment();
+            probe.read();
+            """);
+
+        Assert.Equal(42d, result.AsNumber());
+    }
+
+    [Fact]
     public void ReadMissingPropertyReturnsUndefined()
     {
         var (interpreter, hooks, handle) = Setup();

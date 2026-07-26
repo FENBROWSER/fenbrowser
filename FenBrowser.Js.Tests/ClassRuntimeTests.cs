@@ -129,6 +129,30 @@ public sealed class ClassRuntimeTests
         ").AsNumber());
     }
 
+    [Fact]
+    public void NamedClassExpressionIsConstructibleFromItsStaticMethod()
+    {
+        Assert.Equal(42d, Run(@"
+            var Box = class InnerBox {
+                static create(value) { return new InnerBox(value); }
+                constructor(value = 0) { this.value = value; }
+            };
+            Box.create(42).value;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void NamedClassExpressionBindingDoesNotLeakOrReplaceOuterBinding()
+    {
+        Assert.True(Run(@"
+            var InnerBox = 7;
+            var Box = class InnerBox {
+                static self() { return InnerBox; }
+            };
+            Box.self() === Box && InnerBox === 7;
+        ").AsBoolean());
+    }
+
     // H.2 - extends prototype chain.
 
     [Fact]

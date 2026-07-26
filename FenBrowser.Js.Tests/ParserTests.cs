@@ -996,6 +996,35 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesRegexStatementAfterIfConditionWithSemicolonInCharacterClass()
+    {
+        var program = JsParser.ParseScript(
+            new SourceText("if (code < 128) /[!#$&-;=?-Z_a-z~]/.test(String.fromCharCode(code));"));
+
+        var statement = Assert.IsType<IfStatementNode>(program.Body[0]);
+        var consequent = Assert.IsType<ExpressionStatementNode>(statement.Consequent);
+        var call = Assert.IsType<CallExpressionNode>(consequent.Expression);
+        var member = Assert.IsType<MemberExpressionNode>(call.Callee);
+        Assert.IsType<RegexLiteralExpressionNode>(member.Object);
+    }
+
+    [Fact]
+    public void ParsesUnicodeCharacterClassWithLeadingHyphenBeforeClassEscape()
+    {
+        var program = JsParser.ParseScript(
+            new SourceText(@"let matrix = /^matrix3d\(([-\d.e\s,]+)\)$/u;"));
+        var declaration = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        Assert.IsType<RegexLiteralExpressionNode>(declaration.Declarators[0].Initializer);
+    }
+
+    [Fact]
+    public void RejectsUnicodeCharacterClassEscapeAsRangeEndpoint()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText(@"let invalid = /[a-\d]/u;")));
+    }
+
+    [Fact]
     public void ParsesCompoundAssignment()
     {
         var program = JsParser.ParseScript(new SourceText("let x = 1; x += 2;"));

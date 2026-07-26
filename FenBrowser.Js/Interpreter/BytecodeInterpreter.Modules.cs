@@ -1,4 +1,5 @@
 using FenBrowser.Js.Bytecode;
+using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Promises;
@@ -8,7 +9,7 @@ namespace FenBrowser.Js.Interpreter;
 
 // ECMA-262 13.3.10 ImportCall + 13.3.12 ImportMeta runtime helpers.
 // FenJS does not yet wire a host module resolver, so ImportCall produces a
-// rejected Promise (TypeError) and ImportMeta returns a fresh empty object.
+// rejected Promise (TypeError) and ImportMeta returns a fresh host-populated object.
 // These are placeholders: they're sufficient for the test262 syntax cohort
 // (where dynamic import expressions only need to parse and produce a thenable)
 // and for assertion-style tests that expect a TypeError. Tests that depend on
@@ -40,11 +41,26 @@ public sealed partial class BytecodeInterpreter
         return BuildResolvedPromise(JsValue.FromObject(nsHandle));
     }
 
-    internal JsValue HandleImportMeta()
+    internal JsValue HandleImportMeta(EnvironmentRecord environment)
     {
-        // Fresh empty object. ECMA-262 makes import.meta host-specific; with no
-        // host hook FenJS returns a plain object so property access doesn't throw.
+        string url = string.Empty;
+        for (var current = environment; current is not null; current = current.OuterEnv)
+        {
+            if (current is ModuleEnvironmentRecord moduleEnvironment)
+            {
+                url = moduleEnvironment.ImportMetaUrl;
+                break;
+            }
+        }
+
         var obj = new JsObject();
+        obj.DefineOwnProperty(
+            "url",
+            new JsPropertyDescriptor(
+                JsValue.FromString(url),
+                Writable: true,
+                Enumerable: true,
+                Configurable: true));
         var handle = _heap.AllocateObject(obj, AllocationSite.Current());
         return JsValue.FromObject(handle);
     }

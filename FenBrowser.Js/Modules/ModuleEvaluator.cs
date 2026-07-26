@@ -1,5 +1,6 @@
 using FenBrowser.Js.Ast;
 using FenBrowser.Js.Bytecode;
+using FenBrowser.Js.Environments;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Parser;
 using FenBrowser.Js.Runtime;
@@ -14,14 +15,14 @@ namespace FenBrowser.Js.Modules;
 // collapses both into a single recursive Evaluate(specifier): when an importer
 // names a module that hasn't been evaluated yet, we recursively evaluate the
 // target first, capturing its exports into a per-specifier dictionary, then
-// install the importer's import bindings as globals on the shared interpreter
-// before compiling and running the importer's body.
+// install the importer's bindings in its module environment before compiling
+// and running the module body.
 //
 // Simplifications relative to the full spec:
-//   * One realm / one interpreter / one global object - imports are installed
-//     directly into the global env rather than into a per-module
-//     ModuleEnvironmentRecord. This is observably correct for the common cases
-//     (no cross-realm imports) and avoids the deeper env-record surgery.
+//   * One realm / one interpreter / one global object. Each source module has
+//     its own ModuleEnvironmentRecord chained to that realm's global environment.
+//     Imported values are currently initialized snapshots rather than full live
+//     indirect bindings.
 //   * Cycle detection is via Status (Evaluating during recursion); a cyclic
 //     import sees the partial exports of the in-progress module - matching the
 //     spec's TDZ behaviour for unresolved imports.
@@ -67,7 +68,12 @@ public sealed class ModuleEvaluator
 
     // Evaluate the module identified by `specifier`. Returns its exports dictionary.
     public IReadOnlyDictionary<string, JsValue> Evaluate(string specifier)
+        => Evaluate(specifier, referrer: null);
+
+    private IReadOnlyDictionary<string, JsValue> Evaluate(string specifier, string? referrer)
     {
+        specifier = ResolveModuleSpecifier(specifier, referrer);
+
         if (_evaluated.TryGetValue(specifier, out var cached))
         {
             return cached.Exports;
@@ -88,25 +94,52 @@ public sealed class ModuleEvaluator
 
         // Mark in-progress before recursion so a cyclic import sees us as
         // already-being-evaluated rather than triggering infinite recursion.
-        var inProgress = new EvaluatedModule();
+        var inProgress = new EvaluatedModule(_interpreter.CreateModuleEnvironment(specifier));
         _evaluated[specifier] = inProgress;
 
         var program = JsParser.ParseModule(new SourceText(source));
+        var exportTargets = new List<(string ExportName, string LocalName)>();
+        const string DefaultLocalAlias = "__fenjs_default__";
+        foreach (var stmt in program.Body)
+        {
+            if (stmt is not ExportDeclarationNode export)
+            {
+                continue;
+            }
+
+            if (export.DefaultExpression is not null)
+            {
+                exportTargets.Add(("default", DefaultLocalAlias));
+                inProgress.ExportBindings["default"] = DefaultLocalAlias;
+                continue;
+            }
+
+            foreach (var entry in export.Entries)
+            {
+                if (entry.LocalName is { } local && entry.ExportName is { } exported)
+                {
+                    exportTargets.Add((exported, local));
+                    inProgress.ExportBindings[exported] = local;
+                }
+            }
+        }
 
         // Phase 1 - resolve every import recursively. Each imported binding is
-        // installed as a global on the interpreter so the module body can read
-        // it by its local name.
+        // installed in this module's environment so the body can read it without
+        // leaking or colliding with another module's top-level declarations.
         foreach (var stmt in program.Body)
         {
             if (stmt is ImportDeclarationNode import)
             {
-                var targetExports = Evaluate(import.ModuleRequest);
+                var targetExports = Evaluate(import.ModuleRequest, specifier);
+                var targetSpecifier = ResolveModuleSpecifier(import.ModuleRequest, specifier);
+                var targetModule = _evaluated[targetSpecifier];
                 foreach (var entry in import.Entries)
                 {
                     JsValue value;
                     if (entry.IsNamespaceImport)
                     {
-                        value = BuildNamespaceObject(targetExports);
+                        value = BuildNamespaceObject(targetModule);
                     }
                     else if (entry.IsDefaultImport)
                     {
@@ -116,7 +149,19 @@ public sealed class ModuleEvaluator
                     {
                         value = targetExports.TryGetValue(entry.ImportName, out var v) ? v : JsValue.Undefined;
                     }
-                    _interpreter.RegisterGlobalValue(entry.LocalName, value);
+                    var createResult = inProgress.Environment.CreateImmutableBinding(entry.LocalName, strict: true);
+                    if (createResult != BindingOpResult.Ok)
+                    {
+                        throw new InvalidOperationException(
+                            $"Could not create import binding '{entry.LocalName}': {createResult}.");
+                    }
+
+                    var initializeResult = inProgress.Environment.InitializeBinding(entry.LocalName, value);
+                    if (initializeResult != BindingOpResult.Ok)
+                    {
+                        throw new InvalidOperationException(
+                            $"Could not initialize import binding '{entry.LocalName}': {initializeResult}.");
+                    }
                 }
             }
         }
@@ -131,7 +176,9 @@ public sealed class ModuleEvaluator
             foreach (var entry in export.Entries)
             {
                 if (!entry.IsReexport) continue;
-                var sourceExports = Evaluate(entry.ModuleRequest!);
+                var sourceExports = Evaluate(entry.ModuleRequest!, specifier);
+                var sourceSpecifier = ResolveModuleSpecifier(entry.ModuleRequest!, specifier);
+                var sourceModule = _evaluated[sourceSpecifier];
 
                 if (entry.IsStarReexport)
                 {
@@ -147,7 +194,7 @@ public sealed class ModuleEvaluator
                 {
                     // export * as ns from 'mod' - publish a namespace object
                     // whose name is the export name, exposing all source exports.
-                    inProgress.Exports[entry.ExportName!] = BuildNamespaceObject(sourceExports);
+                    inProgress.Exports[entry.ExportName!] = BuildNamespaceObject(sourceModule);
                 }
                 else
                 {
@@ -163,8 +210,6 @@ public sealed class ModuleEvaluator
         // through the existing pipeline. Each ExportDeclarationNode becomes its
         // inner declaration (or `var __default = expr;` for export default).
         var rewritten = new List<StatementNode>(program.Body.Count);
-        var exportTargets = new List<(string ExportName, string LocalName)>();
-        const string DefaultLocalAlias = "__fenjs_default__";
 
         foreach (var stmt in program.Body)
         {
@@ -181,20 +226,12 @@ public sealed class ModuleEvaluator
                     var decl = new VariableDeclarationStatementNode("var",
                         new[] { declarator }, export.Span);
                     rewritten.Add(decl);
-                    exportTargets.Add(("default", DefaultLocalAlias));
                     break;
                 }
                 case ExportDeclarationNode export:
                     if (export.LocalDeclaration is not null)
                     {
                         rewritten.Add(export.LocalDeclaration);
-                    }
-                    foreach (var entry in export.Entries)
-                    {
-                        if (entry.LocalName is { } local && entry.ExportName is { } exported)
-                        {
-                            exportTargets.Add((exported, local));
-                        }
                     }
                     break;
                 default:
@@ -206,15 +243,30 @@ public sealed class ModuleEvaluator
         var rewrittenProgram = new ProgramNode(ProgramKind.Module, rewritten, program.Span);
         var fn = new BytecodeCompiler().CompileProgram(rewrittenProgram);
         new BytecodeVerifier().Verify(fn);
-        _ = _interpreter.Execute(fn);
+        _ = _interpreter.ExecuteWithEnvironment(fn, inProgress.Environment);
 
-        // Phase 3 - harvest export values from the interpreter's globals.
+        // Phase 3 - harvest export values from this module's environment.
         foreach (var (exportName, localName) in exportTargets)
         {
-            inProgress.Exports[exportName] = _interpreter.TryReadGlobalValue(localName, out var v) ? v : JsValue.Undefined;
+            inProgress.Exports[exportName] =
+                _interpreter.TryReadBinding(inProgress.Environment, localName, out var v)
+                    ? v
+                    : JsValue.Undefined;
         }
 
         return inProgress.Exports;
+    }
+
+    private static string ResolveModuleSpecifier(string specifier, string? referrer)
+    {
+        if (string.IsNullOrWhiteSpace(referrer) ||
+            !Uri.TryCreate(referrer, UriKind.Absolute, out var referrerUri) ||
+            !Uri.TryCreate(referrerUri, specifier, out var resolvedUri))
+        {
+            return specifier;
+        }
+
+        return resolvedUri.AbsoluteUri;
     }
 
     private JsValue BuildNamespaceObject(IReadOnlyDictionary<string, JsValue> exports)
@@ -225,8 +277,22 @@ public sealed class ModuleEvaluator
         return _interpreter.AllocateNamespaceObject(exports);
     }
 
+    private JsValue BuildNamespaceObject(EvaluatedModule module)
+    {
+        return module.ExportBindings.Count > 0
+            ? _interpreter.AllocateModuleNamespaceObject(module.Environment, module.ExportBindings)
+            : BuildNamespaceObject(module.Exports);
+    }
+
     private sealed class EvaluatedModule
     {
+        public EvaluatedModule(ModuleEnvironmentRecord environment)
+        {
+            Environment = environment;
+        }
+
+        public ModuleEnvironmentRecord Environment { get; }
         public Dictionary<string, JsValue> Exports { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, string> ExportBindings { get; } = new(StringComparer.Ordinal);
     }
 }
