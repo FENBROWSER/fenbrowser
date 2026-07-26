@@ -440,31 +440,11 @@ namespace FenBrowser.Tooling
                     lastCount = domNow;
                 }
             }
-            // ── Async-script hydration ──────────────────────────────────
-            // Pages like Google /sorry/index load reCAPTCHA via an async
-            // <script> that may have been fetched but not executed yet.
-            // Explicitly fetch and evaluate it so the CAPTCHA widget renders.
-            try
-            {
-                var finalRoot = host.GetDomRoot();
-                if (finalRoot is Element finalDoc)
-                {
-                    var scripts = finalDoc.QuerySelectorAll("script[src]");
-                    foreach (var s in scripts)
-                    {
-                        var src = ((Element)s).GetAttribute("src");
-                        if (!string.IsNullOrEmpty(src) && src.Contains("recaptcha"))
-                        {
-                            Console.WriteLine($"[debug-site] Hydrating async script: {src}");
-                            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-                            var code = await http.GetStringAsync(src).ConfigureAwait(false);
-                            await host.ExecuteScriptAsync(code).ConfigureAwait(false);
-                            Console.WriteLine($"[debug-site] reCAPTCHA script executed ({code.Length} bytes)");
-                        }
-                    }
-                }
-            }
-            catch (Exception ex) { Console.WriteLine($"[debug-site] Script hydration error: {ex.Message}"); }
+
+            // DOM stability does not imply render stability: a newly attached iframe can
+            // already be present while its own stylesheet cascade is still completing.
+            // Flush the browser's normal pending render work before capturing evidence.
+            await host.FlushPendingLayoutAsync().ConfigureAwait(false);
 
             DebugSiteInteractionResult interaction = null;
             if (interactionRequest != null)
