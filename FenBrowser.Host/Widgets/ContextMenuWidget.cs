@@ -161,7 +161,7 @@ public class ContextMenuWidget : Widget
                 Color = item.IsEnabled ? SKColors.Black : SKColors.Gray,
                 IsAntialias = true
             };
-            canvas.DrawText(item.Label ?? "", Bounds.Left + PADDING + 4, y + itemHeight / 2 + 4, font, textPaint);
+            canvas.DrawText(item.Label ?? "", Bounds.Left + PADDING + 4, y + itemHeight / 2 + 4, SKTextAlign.Left, font, textPaint);
             
             // Shortcut
             if (!string.IsNullOrEmpty(item.Shortcut))
@@ -173,7 +173,7 @@ public class ContextMenuWidget : Widget
                     IsAntialias = true
                 };
                 float shortW = shortcutFont.MeasureText(item.Shortcut);
-                canvas.DrawText(item.Shortcut, Bounds.Right - PADDING - 4 - shortW, y + itemHeight / 2 + 4, shortcutFont, shortcutPaint);
+                canvas.DrawText(item.Shortcut, Bounds.Right - PADDING - 4 - shortW, y + itemHeight / 2 + 4, SKTextAlign.Left, shortcutFont, shortcutPaint);
             }
             
             y += itemHeight;

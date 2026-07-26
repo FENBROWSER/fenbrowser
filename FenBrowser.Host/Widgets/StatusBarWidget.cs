@@ -152,7 +152,7 @@ public class StatusBarWidget : Widget
                     textWidth = textFont.MeasureText(leftText);
                 }
             }
-            canvas.DrawText(leftText, Bounds.Left + PADDING, Bounds.MidY + 4, textFont, textPaint);
+            canvas.DrawText(leftText, Bounds.Left + PADDING, Bounds.MidY + 4, SKTextAlign.Left, textFont, textPaint);
         }
         
         // Right side: Zoom level (if not 100%)
@@ -166,7 +166,7 @@ public class StatusBarWidget : Widget
             };
             string zoomText = $"{_zoomLevel:0}%";
             float zoomW = zoomFont.MeasureText(zoomText);
-            canvas.DrawText(zoomText, Bounds.Right - PADDING - zoomW, Bounds.MidY + 4, zoomFont, zoomPaint);
+            canvas.DrawText(zoomText, Bounds.Right - PADDING - zoomW, Bounds.MidY + 4, SKTextAlign.Left, zoomFont, zoomPaint);
         }
         
         // Loading indicator (small spinner or text)
@@ -181,7 +181,7 @@ public class StatusBarWidget : Widget
             string loadText = "Loading...";
             float loadW = loadFont.MeasureText(loadText);
             float x = Math.Abs(_zoomLevel - 100) > 0.1f ? Bounds.Right - 60 : Bounds.Right - PADDING;
-            canvas.DrawText(loadText, x - loadW, Bounds.MidY + 4, loadFont, loadPaint);
+            canvas.DrawText(loadText, x - loadW, Bounds.MidY + 4, SKTextAlign.Left, loadFont, loadPaint);
         }
     }
     

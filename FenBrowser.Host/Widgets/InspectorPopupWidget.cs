@@ -162,9 +162,9 @@ namespace FenBrowser.Host.Widgets
             
             // Title
             float textY = Y + PADDING + 14;
-            canvas.DrawText("Element Inspector", X + PADDING, textY, _titleFont, _titlePaint);
+            canvas.DrawText("Element Inspector", X + PADDING, textY, SKTextAlign.Left, _titleFont, _titlePaint);
 
-            canvas.DrawText("(click to close)", X + Width - 80, textY, _hintFont, _hintPaint);
+            canvas.DrawText("(click to close)", X + Width - 80, textY, SKTextAlign.Left, _hintFont, _hintPaint);
             
             // Separator line
             textY += 10;
@@ -180,14 +180,14 @@ namespace FenBrowser.Host.Widgets
                     if (line.Contains(": "))
                     {
                         var parts = line.Split(new[] { ": " }, 2, StringSplitOptions.None);
-                        canvas.DrawText(parts[0] + ": ", X + PADDING, textY, _propNameFont, _propNamePaint);
+                        canvas.DrawText(parts[0] + ": ", X + PADDING, textY, SKTextAlign.Left, _propNameFont, _propNamePaint);
                         float propWidth = _propNameFont.MeasureText(parts[0] + ": ");
                         if (parts.Length > 1)
-                            canvas.DrawText(parts[1], X + PADDING + propWidth, textY, _propValueFont, _propValuePaint);
+                            canvas.DrawText(parts[1], X + PADDING + propWidth, textY, SKTextAlign.Left, _propValueFont, _propValuePaint);
                     }
                     else
                     {
-                        canvas.DrawText(line, X + PADDING, textY, _textFont, _textPaint);
+                        canvas.DrawText(line, X + PADDING, textY, SKTextAlign.Left, _textFont, _textPaint);
                     }
                 }
                 textY += LINE_HEIGHT;

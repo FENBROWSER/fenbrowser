@@ -982,7 +982,7 @@ namespace FenBrowser.Host
             
             canvas.DrawRect(rect, bg);
             canvas.DrawRect(rect, border);
-            canvas.DrawText(text, dX + 6, dY + 6 + textHeight, font, paint);
+            canvas.DrawText(text, dX + 6, dY + 6 + textHeight, SKTextAlign.Left, font, paint);
         }
 
         private void Shutdown()

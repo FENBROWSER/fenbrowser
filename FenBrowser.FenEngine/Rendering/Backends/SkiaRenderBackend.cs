@@ -402,7 +402,7 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                     LogCategory.Paint);
             }
 
-            _canvas.DrawText(text, origin.X, origin.Y, font, paint);
+            _canvas.DrawText(text, origin.X, origin.Y, SKTextAlign.Left, font, paint);
         }
 
         #endregion

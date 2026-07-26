@@ -152,7 +152,7 @@ public class TextInputWidget : Widget
             canvas.DrawRect(new SKRect(xStart, Bounds.Top + 4, xEnd, Bounds.Bottom - 4), selectionPaint);
         }
 
-        canvas.DrawText(displayText, Bounds.Left + 10, Bounds.MidY + 5, textFont, textPaint);
+        canvas.DrawText(displayText, Bounds.Left + 10, Bounds.MidY + 5, SKTextAlign.Left, textFont, textPaint);
         
         // Cursor
         if (IsFocused && !HasSelection())

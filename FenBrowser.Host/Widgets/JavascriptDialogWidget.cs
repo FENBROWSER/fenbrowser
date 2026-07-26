@@ -229,7 +229,7 @@ public sealed class JavascriptDialogWidget : Widget
             Color = theme.Text,
             IsAntialias = true
         };
-        canvas.DrawText(title, _dialogBoxRect.Left + Padding, _dialogBoxRect.Top + Padding + 14f, titleFont, titlePaint);
+        canvas.DrawText(title, _dialogBoxRect.Left + Padding, _dialogBoxRect.Top + Padding + 14f, SKTextAlign.Left, titleFont, titlePaint);
 
         // ── Message text ──
         float textY = _dialogBoxRect.Top + Padding + 36f;
@@ -279,7 +279,7 @@ public sealed class JavascriptDialogWidget : Widget
                 Color = theme.Text,
                 IsAntialias = true
             };
-            canvas.DrawText(_inputText, _inputRect.Left + 8f, _inputRect.MidY + 5f, inputTextFont, textPaint);
+            canvas.DrawText(_inputText, _inputRect.Left + 8f, _inputRect.MidY + 5f, SKTextAlign.Left, inputTextFont, textPaint);
         }
 
         // Cursor
@@ -332,7 +332,7 @@ public sealed class JavascriptDialogWidget : Widget
             IsAntialias = true
         };
         float labelW = textFont.MeasureText(label);
-        canvas.DrawText(label, rect.MidX - labelW / 2, rect.MidY + 5f, textFont, textPaint);
+        canvas.DrawText(label, rect.MidX - labelW / 2, rect.MidY + 5f, SKTextAlign.Left, textFont, textPaint);
     }
 
     private void DrawWrappedText(SKCanvas canvas, string text, float x, float y,
@@ -363,7 +363,7 @@ public sealed class JavascriptDialogWidget : Widget
                 currentX = x;
             }
 
-            canvas.DrawText(word, currentX, currentY, font, paint);
+            canvas.DrawText(word, currentX, currentY, SKTextAlign.Left, font, paint);
             currentX += wordWidth + spaceWidth;
         }
     }

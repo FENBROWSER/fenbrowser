@@ -251,7 +251,7 @@ public class ConsolePanel : DevToolsPanelBase
             
             using var iconFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
             using var iconColorPaint = DevToolsTheme.CreateTextColorPaint(color);
-            canvas.DrawText(icon, x, textY, iconFont, iconColorPaint);
+            canvas.DrawText(icon, x, textY, SKTextAlign.Left, iconFont, iconColorPaint);
             x += 20;
 
             // Message (with collapse count for repeated entries)
@@ -260,7 +260,7 @@ public class ConsolePanel : DevToolsPanelBase
             var displayText = entry.RepeatCount > 1
                 ? $"{entry.Message}  × {entry.RepeatCount}"
                 : entry.Message;
-            canvas.DrawText(displayText, x, textY, msgFont, msgColorPaint);
+            canvas.DrawText(displayText, x, textY, SKTextAlign.Left, msgFont, msgColorPaint);
 
             // Source location
             if (!string.IsNullOrEmpty(entry.Source))
@@ -271,7 +271,7 @@ public class ConsolePanel : DevToolsPanelBase
                 using var sourceFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
                 using var sourceColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
                 float sourceWidth = sourceFont.MeasureText(source);
-                canvas.DrawText(source, bounds.Right - sourceWidth - DevToolsTheme.PaddingNormal, textY, sourceFont, sourceColorPaint);
+                canvas.DrawText(source, bounds.Right - sourceWidth - DevToolsTheme.PaddingNormal, textY, SKTextAlign.Left, sourceFont, sourceColorPaint);
             }
         }
 
@@ -280,7 +280,7 @@ public class ConsolePanel : DevToolsPanelBase
         {
             using var hintFont = DevToolsTheme.CreateTextFont();
             using var hintColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
-            canvas.DrawText("No console messages", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + 30, hintFont, hintColorPaint);
+            canvas.DrawText("No console messages", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + 30, SKTextAlign.Left, hintFont, hintColorPaint);
         }
     }
     
@@ -300,13 +300,13 @@ public class ConsolePanel : DevToolsPanelBase
         // Prompt
         using var promptFont = DevToolsTheme.CreateTextFont();
         using var promptColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TabBorder);
-        canvas.DrawText(">", x, textY, promptFont, promptColorPaint);
+        canvas.DrawText(">", x, textY, SKTextAlign.Left, promptFont, promptColorPaint);
         x += 16;
 
         // Input text
         using var textFont = DevToolsTheme.CreateTextFont();
         using var textColorPaint = DevToolsTheme.CreateTextColorPaint();
-        canvas.DrawText(_inputText, x, textY, textFont, textColorPaint);
+        canvas.DrawText(_inputText, x, textY, SKTextAlign.Left, textFont, textColorPaint);
 
         // Cursor
         if (_inputFocused)

@@ -333,21 +333,21 @@ public class BrowserTab : IDisposable
 
         // "Sad face" icon
         string sadFace = ":(";
-        canvas.DrawText(sadFace, centerX - iconFont.MeasureText(sadFace) / 2, centerY - 60, iconFont, iconPaint);
+        canvas.DrawText(sadFace, centerX - iconFont.MeasureText(sadFace) / 2, centerY - 60, SKTextAlign.Left, iconFont, iconPaint);
 
         // Title
         string titleText = "Aw, Snap!";
-        canvas.DrawText(titleText, centerX - titleFont.MeasureText(titleText) / 2, centerY, titleFont, titlePaint);
+        canvas.DrawText(titleText, centerX - titleFont.MeasureText(titleText) / 2, centerY, SKTextAlign.Left, titleFont, titlePaint);
 
         // Description
         string primaryDesc = "Something went wrong while displaying this webpage.";
-        canvas.DrawText(primaryDesc, centerX - descFont.MeasureText(primaryDesc) / 2, centerY + 40, descFont, descPaint);
+        canvas.DrawText(primaryDesc, centerX - descFont.MeasureText(primaryDesc) / 2, centerY + 40, SKTextAlign.Left, descFont, descPaint);
 
         // Crash reason details
         if (!string.IsNullOrEmpty(CrashReason))
         {
             string reasonText = $"Error code: {CrashReason}";
-            canvas.DrawText(reasonText, centerX - descFont.MeasureText(reasonText) / 2, centerY + 70, descFont, descPaint);
+            canvas.DrawText(reasonText, centerX - descFont.MeasureText(reasonText) / 2, centerY + 70, SKTextAlign.Left, descFont, descPaint);
         }
     }
 }

@@ -2856,7 +2856,7 @@ public class BrowserIntegration : IDisposable
             }
 
             canvas.DrawRect(labelRect, labelBgPaint);
-            canvas.DrawText(label, labelRect.Left + 4, labelRect.Bottom - 4, labelFont, labelPaint);
+            canvas.DrawText(label, labelRect.Left + 4, labelRect.Bottom - 4, SKTextAlign.Left, labelFont, labelPaint);
         }
     }
     
@@ -2879,7 +2879,7 @@ public class BrowserIntegration : IDisposable
             };
             string loadMsg = "Loading...";
             float loadW = textFont.MeasureText(loadMsg);
-            canvas.DrawText(loadMsg, viewport.MidX - loadW / 2, viewport.MidY, textFont, textPaint);
+            canvas.DrawText(loadMsg, viewport.MidX - loadW / 2, viewport.MidY, SKTextAlign.Left, textFont, textPaint);
         }
         else
         {
@@ -2891,7 +2891,7 @@ public class BrowserIntegration : IDisposable
             };
             string defaultMsg = "Enter a URL to browse";
             float defaultW = defaultFont.MeasureText(defaultMsg);
-            canvas.DrawText(defaultMsg, viewport.MidX - defaultW / 2, viewport.MidY, defaultFont, textPaint);
+            canvas.DrawText(defaultMsg, viewport.MidX - defaultW / 2, viewport.MidY, SKTextAlign.Left, defaultFont, textPaint);
         }
     }
 
@@ -4065,7 +4065,7 @@ public class BrowserIntegration : IDisposable
 
         canvas.Save();
         canvas.ClipRect(overlay.Bounds);
-        canvas.DrawText(text, x, y, font, paint);
+        canvas.DrawText(text, x, y, SKTextAlign.Left, font, paint);
         canvas.Restore();
     }
 

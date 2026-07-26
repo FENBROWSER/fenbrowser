@@ -611,7 +611,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         using var textPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextPrimary);
         using var mutedPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
         var displayQuery = string.IsNullOrEmpty(_searchQuery) ? "Find in DOM" : TrimToFit(_searchQuery, textFont, Math.Max(20, _searchInputBounds.Width - 18));
-        canvas.DrawText(displayQuery, _searchInputBounds.Left + 7, _searchInputBounds.MidY + 4, textFont, string.IsNullOrEmpty(_searchQuery) ? mutedPaint : textPaint);
+        canvas.DrawText(displayQuery, _searchInputBounds.Left + 7, _searchInputBounds.MidY + 4, SKTextAlign.Left, textFont, string.IsNullOrEmpty(_searchQuery) ? mutedPaint : textPaint);
 
         if (_searchFocused && _cursorBlink)
         {
@@ -623,7 +623,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         var countText = string.IsNullOrEmpty(_searchQuery)
             ? string.Empty
             : _searchResults.Count == 0 ? "0/0" : $"{_searchCurrentIndex + 1}/{_searchResults.Count}";
-        canvas.DrawText(countText, _searchInputBounds.Right + 8, bar.MidY + 4, textFont, mutedPaint);
+        canvas.DrawText(countText, _searchInputBounds.Right + 8, bar.MidY + 4, SKTextAlign.Left, textFont, mutedPaint);
 
         DrawSearchButton(canvas, _searchPrevBounds, "<", _searchResults.Count > 0);
         DrawSearchButton(canvas, _searchNextBounds, ">", _searchResults.Count > 0);
@@ -639,7 +639,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         canvas.DrawRoundRect(rect, 3, 3, bgPaint);
         canvas.DrawRoundRect(rect, 3, 3, borderPaint);
         var textWidth = font.MeasureText(label);
-        canvas.DrawText(label, rect.MidX - textWidth / 2, rect.MidY + 4, font, paint);
+        canvas.DrawText(label, rect.MidX - textWidth / 2, rect.MidY + 4, SKTextAlign.Left, font, paint);
     }
 
     private void DrawBreadcrumbBar(SKCanvas canvas, SKRect bounds)
@@ -657,7 +657,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
 
         if (_breadcrumbPath.Count == 0)
         {
-            canvas.DrawText("No node selected", bar.Left + DevToolsTheme.PaddingNormal, bar.MidY + 4, font, mutedPaint);
+            canvas.DrawText("No node selected", bar.Left + DevToolsTheme.PaddingNormal, bar.MidY + 4, SKTextAlign.Left, font, mutedPaint);
             return;
         }
 
@@ -677,12 +677,12 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
             }
 
             label = TrimToFit(label, font, available);
-            canvas.DrawText(label, x, bar.MidY + 4, font, nodeId == _selectedNodeId ? selectedPaint : tagPaint);
+            canvas.DrawText(label, x, bar.MidY + 4, SKTextAlign.Left, font, nodeId == _selectedNodeId ? selectedPaint : tagPaint);
             x += font.MeasureText(label) + 8;
 
             if (nodeId != _breadcrumbPath[^1] && x < bar.Right - 12)
             {
-                canvas.DrawText(">", x, bar.MidY + 4, font, mutedPaint);
+                canvas.DrawText(">", x, bar.MidY + 4, SKTextAlign.Left, font, mutedPaint);
                 x += font.MeasureText(">") + 8;
             }
         }
@@ -819,11 +819,11 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
             if (node.IsClosingTag)
             {
                 string closingTagName = node.Node.NodeName.ToLower();
-                canvas.DrawText("</", x, textY, punctFont, punctColorPaint);
+                canvas.DrawText("</", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                 float bracketWidth = punctFont.MeasureText("</");
-                canvas.DrawText(closingTagName, x + bracketWidth, textY, tagFont, tagColorPaint);
+                canvas.DrawText(closingTagName, x + bracketWidth, textY, SKTextAlign.Left, tagFont, tagColorPaint);
                 float tagWidth = tagFont.MeasureText(closingTagName);
-                canvas.DrawText(">", x + bracketWidth + tagWidth, textY, punctFont, punctColorPaint);
+                canvas.DrawText(">", x + bracketWidth + tagWidth, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                 continue;
             }
 
@@ -860,7 +860,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
             if (node.Node.NodeType == 0)
             {
                 using var placeholderPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
-                canvas.DrawText(node.Node.NodeValue ?? "No children", x, textY, punctFont, placeholderPaint);
+                canvas.DrawText(node.Node.NodeValue ?? "No children", x, textY, SKTextAlign.Left, punctFont, placeholderPaint);
             }
             else if (node.Node.NodeType == 3) // Text node
             {
@@ -874,7 +874,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                     canvas.DrawRoundRect(editRect, 2, 2, editBg);
                     canvas.DrawRoundRect(editRect, 2, 2, editBorder);
 
-                    canvas.DrawText(_editingNodeValue, x, textY, attrValueFont, attrValueColorPaint);
+                    canvas.DrawText(_editingNodeValue, x, textY, SKTextAlign.Left, attrValueFont, attrValueColorPaint);
 
                     // Draw cursor
                     if (_cursorBlink)
@@ -887,18 +887,18 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                 {
                     string displayText = NormalizeNodePreview(node.Node.NodeValue);
                     if (displayText.Length > 80) displayText = displayText.Substring(0, 77) + "...";
-                    canvas.DrawText("\"" + displayText + "\"", x, textY, attrValueFont, attrValueColorPaint);
+                    canvas.DrawText("\"" + displayText + "\"", x, textY, SKTextAlign.Left, attrValueFont, attrValueColorPaint);
                 }
             }
             else // Element node
             {
                 // Opening bracket
-                canvas.DrawText("<", x, textY, punctFont, punctColorPaint);
+                canvas.DrawText("<", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                 x += punctFont.MeasureText("<");
 
                 // Tag name
                 string tagName = node.Node.NodeName.ToLower();
-                canvas.DrawText(tagName, x, textY, tagFont, tagColorPaint);
+                canvas.DrawText(tagName, x, textY, SKTextAlign.Left, tagFont, tagColorPaint);
                 x += tagFont.MeasureText(tagName);
 
                 // Attributes (prioritize human-identifying fields; noisy framework internals stay in the details pane)
@@ -909,23 +909,23 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                     {
                         if (x > bounds.Right - 70)
                         {
-                            canvas.DrawText(" ...", x, textY, punctFont, punctColorPaint);
+                            canvas.DrawText(" ...", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                             break;
                         }
 
                         string attrName = " " + attr.Key;
-                        canvas.DrawText(attrName, x, textY, attrNameFont, attrNameColorPaint);
+                        canvas.DrawText(attrName, x, textY, SKTextAlign.Left, attrNameFont, attrNameColorPaint);
                         x += attrNameFont.MeasureText(attrName);
 
-                        canvas.DrawText("=\"", x, textY, punctFont, punctColorPaint);
+                        canvas.DrawText("=\"", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                         x += punctFont.MeasureText("=\"");
 
                         string attrValue = attr.Value;
                         if (attrValue.Length > 18) attrValue = attrValue.Substring(0, 15) + "...";
-                        canvas.DrawText(attrValue, x, textY, attrValueFont, attrValueColorPaint);
+                        canvas.DrawText(attrValue, x, textY, SKTextAlign.Left, attrValueFont, attrValueColorPaint);
                         x += attrValueFont.MeasureText(attrValue);
 
-                        canvas.DrawText("\"", x, textY, punctFont, punctColorPaint);
+                        canvas.DrawText("\"", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                         x += punctFont.MeasureText("\"");
 
                         attrCount++;
@@ -934,7 +934,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                     var hiddenCount = node.Node.Attributes.Count - attrCount;
                     if (hiddenCount > 0 && x < bounds.Right - 70)
                     {
-                        canvas.DrawText($" ...+{hiddenCount}", x, textY, punctFont, punctColorPaint);
+                        canvas.DrawText($" ...+{hiddenCount}", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                     }
                 }
 
@@ -944,34 +944,34 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                     var preview = GetInlineChildPreview(node.Node);
                     if (!string.IsNullOrEmpty(preview))
                     {
-                        canvas.DrawText(">", x, textY, punctFont, punctColorPaint);
+                        canvas.DrawText(">", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                         x += punctFont.MeasureText(">");
-                        canvas.DrawText(preview, x, textY, attrValueFont, attrValueColorPaint);
+                        canvas.DrawText(preview, x, textY, SKTextAlign.Left, attrValueFont, attrValueColorPaint);
                         x += attrValueFont.MeasureText(preview);
-                        canvas.DrawText("</" + tagName + ">", x, textY, punctFont, punctColorPaint);
+                        canvas.DrawText("</" + tagName + ">", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                     }
                     else if (node.HasChildren)
                     {
-                        canvas.DrawText(">...</" + tagName + ">", x, textY, punctFont, punctColorPaint);
+                        canvas.DrawText(">...</" + tagName + ">", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                     }
                     else if (IsVoidElement(tagName))
                     {
-                        canvas.DrawText(" />", x, textY, punctFont, punctColorPaint);
+                        canvas.DrawText(" />", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                     }
                     else
                     {
-                        canvas.DrawText("></" + tagName + ">", x, textY, punctFont, punctColorPaint);
+                        canvas.DrawText("></" + tagName + ">", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                     }
 
                     continue;
                     if (node.HasChildren)
-                        canvas.DrawText(">…</" + tagName + ">", x, textY, punctFont, punctColorPaint);
+                        canvas.DrawText(">…</" + tagName + ">", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                     else
-                        canvas.DrawText(" />", x, textY, punctFont, punctColorPaint);
+                        canvas.DrawText(" />", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                 }
                 else
                 {
-                    canvas.DrawText(">", x, textY, punctFont, punctColorPaint);
+                    canvas.DrawText(">", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                     x += punctFont.MeasureText(">");
                 }
 
@@ -1034,7 +1034,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         using var textPaint = DevToolsTheme.CreateTextColorPaint(new SKColor(173, 220, 255));
         canvas.DrawRoundRect(rect, 7, 7, bgPaint);
         canvas.DrawRoundRect(rect, 7, 7, strokePaint);
-        canvas.DrawText(label, rect.Left + 5, rect.Top + 10, font, textPaint);
+        canvas.DrawText(label, rect.Left + 5, rect.Top + 10, SKTextAlign.Left, font, textPaint);
     }
 
     private static string? GetInlineChildPreview(DomNodeDto node)
@@ -1114,7 +1114,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
             }
 
             float textWidth = tabFont.MeasureText(tabs[i]);
-            canvas.DrawText(tabs[i], tabRect.Left + 14, tabRect.Top + 20, tabFont, i == _sidebarTab ? tabTextColorPaint : inactiveTabTextColorPaint);
+            canvas.DrawText(tabs[i], tabRect.Left + 14, tabRect.Top + 20, SKTextAlign.Left, tabFont, i == _sidebarTab ? tabTextColorPaint : inactiveTabTextColorPaint);
             canvas.DrawLine(tabRect.Right, tabRect.Top + 4, tabRect.Right, tabRect.Bottom - 4, tabBorderPaint);
             x = tabRect.Right;
         }
@@ -1153,7 +1153,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         {
             using var hintFont = DevToolsTheme.CreateTextFont();
             using var hintColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
-            canvas.DrawText("Select an element to see " + tabs[_sidebarTab].ToLower(), bounds.Left + DevToolsTheme.PaddingNormal, contentTop + 20, hintFont, hintColorPaint);
+            canvas.DrawText("Select an element to see " + tabs[_sidebarTab].ToLower(), bounds.Left + DevToolsTheme.PaddingNormal, contentTop + 20, SKTextAlign.Left, hintFont, hintColorPaint);
             return;
         }
         
@@ -1210,9 +1210,9 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
 
         // 1. Element Inline Style
         float ex = bounds.Left + DevToolsTheme.PaddingNormal;
-        canvas.DrawText("element.style", ex, y, selectorFont, selectorColorPaint);
+        canvas.DrawText("element.style", ex, y, SKTextAlign.Left, selectorFont, selectorColorPaint);
         ex += selectorFont.MeasureText("element.style");
-        canvas.DrawText(" {", ex, y, mutedFont, mutedColorPaint);
+        canvas.DrawText(" {", ex, y, SKTextAlign.Left, mutedFont, mutedColorPaint);
         y += DevToolsTheme.ItemHeight;
         
         if (_matchedStyleData?.InlineStyle?.CssProperties is { Count: > 0 })
@@ -1233,21 +1233,21 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                 var textColor = isDisabled ? mutedColorPaint : propColorPaint;
                 var valColor = isDisabled ? mutedColorPaint : valueColorPaint;
 
-                canvas.DrawText(prop.Name, x, y, propFont, textColor);
+                canvas.DrawText(prop.Name, x, y, SKTextAlign.Left, propFont, textColor);
                 x += Math.Max(120, propFont.MeasureText(prop.Name) + 10);
-                canvas.DrawText(": ", x, y, punctFont, punctColorPaint);
+                canvas.DrawText(": ", x, y, SKTextAlign.Left, punctFont, punctColorPaint);
                 x += punctFont.MeasureText(": ");
-                canvas.DrawText(prop.Value + ";", x, y, valueFont, valColor);
+                canvas.DrawText(prop.Value + ";", x, y, SKTextAlign.Left, valueFont, valColor);
                 
                 y += DevToolsTheme.ItemHeight;
             }
         }
-        canvas.DrawText("}", bounds.Left + DevToolsTheme.PaddingNormal, y, mutedFont, mutedColorPaint);
+        canvas.DrawText("}", bounds.Left + DevToolsTheme.PaddingNormal, y, SKTextAlign.Left, mutedFont, mutedColorPaint);
         y += DevToolsTheme.ItemHeight * 1.25f;
 
         if (selectedNode.Attributes is { Count: > 0 })
         {
-            canvas.DrawText("Attributes", bounds.Left + DevToolsTheme.PaddingNormal, y, selectorFont, selectorColorPaint);
+            canvas.DrawText("Attributes", bounds.Left + DevToolsTheme.PaddingNormal, y, SKTextAlign.Left, selectorFont, selectorColorPaint);
             y += DevToolsTheme.ItemHeight;
 
             foreach (var kv in selectedNode.Attributes)
@@ -1256,11 +1256,11 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                 if (y < bounds.Top + 32) { y += DevToolsTheme.ItemHeight; continue; }
                 
                 float x = bounds.Left + DevToolsTheme.PaddingNormal * 2;
-                canvas.DrawText(kv.Key, x, y, propFont, propColorPaint);
+                canvas.DrawText(kv.Key, x, y, SKTextAlign.Left, propFont, propColorPaint);
                 x += Math.Max(120, propFont.MeasureText(kv.Key) + 14);
-                canvas.DrawText("=", x, y, punctFont, punctColorPaint);
+                canvas.DrawText("=", x, y, SKTextAlign.Left, punctFont, punctColorPaint);
                 x += punctFont.MeasureText("=") + 4;
-                canvas.DrawText("\"" + TrimToFit(kv.Value, valueFont, Math.Max(40, bounds.Right - x - DevToolsTheme.PaddingNormal)) + "\"", x, y, valueFont, valueColorPaint);
+                canvas.DrawText("\"" + TrimToFit(kv.Value, valueFont, Math.Max(40, bounds.Right - x - DevToolsTheme.PaddingNormal)) + "\"", x, y, SKTextAlign.Left, valueFont, valueColorPaint);
                 y += DevToolsTheme.ItemHeight;
             }
 
@@ -1281,15 +1281,15 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                 if (string.IsNullOrEmpty(selector)) selector = "selector";
 
                 float sx = bounds.Left + DevToolsTheme.PaddingNormal;
-                canvas.DrawText(selector, sx, y, selectorFont, selectorColorPaint);
+                canvas.DrawText(selector, sx, y, SKTextAlign.Left, selectorFont, selectorColorPaint);
                 sx += selectorFont.MeasureText(selector);
-                canvas.DrawText(" {", sx, y, mutedFont, mutedColorPaint);
+                canvas.DrawText(" {", sx, y, SKTextAlign.Left, mutedFont, mutedColorPaint);
 
                 // Draw origin (Edge parity)
                 string origin = rule.Rule?.Origin ?? "regular";
                 if (origin == "user-agent") origin = "user agent stylesheet";
                 float originWidth = mutedFont.MeasureText(origin);
-                canvas.DrawText(origin, bounds.Right - originWidth - DevToolsTheme.PaddingNormal, y, mutedFont, mutedColorPaint);
+                canvas.DrawText(origin, bounds.Right - originWidth - DevToolsTheme.PaddingNormal, y, SKTextAlign.Left, mutedFont, mutedColorPaint);
 
                 y += DevToolsTheme.ItemHeight;
                 
@@ -1303,9 +1303,9 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                         // Check if this property is being edited
                         bool isEditing = _editingCssPropertyName == prop.Name && _editingCssNodeId == _selectedNodeId;
                         
-                        canvas.DrawText(prop.Name, x, y, propFont, propColorPaint);
+                        canvas.DrawText(prop.Name, x, y, SKTextAlign.Left, propFont, propColorPaint);
                         x += Math.Max(120, propFont.MeasureText(prop.Name) + 10);
-                        canvas.DrawText(": ", x, y, punctFont, punctColorPaint);
+                        canvas.DrawText(": ", x, y, SKTextAlign.Left, punctFont, punctColorPaint);
                         x += punctFont.MeasureText(": ");
                         
                         if (isEditing)
@@ -1319,7 +1319,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                             canvas.DrawRoundRect(editRect, 2, 2, editBorderPaint);
                             
                             // Draw the editing value
-                            canvas.DrawText(_editingCssPropertyValue, x, y, valueFont, valueColorPaint);
+                            canvas.DrawText(_editingCssPropertyValue, x, y, SKTextAlign.Left, valueFont, valueColorPaint);
                             
                             // Draw cursor if blinking
                             if (_cursorBlink)
@@ -1331,14 +1331,14 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                         }
                         else
                         {
-                            canvas.DrawText(prop.Value + ";", x, y, valueFont, valueColorPaint);
+                            canvas.DrawText(prop.Value + ";", x, y, SKTextAlign.Left, valueFont, valueColorPaint);
                         }
 
                         y += DevToolsTheme.ItemHeight;
                     }
                 }
 
-                canvas.DrawText("}", bounds.Left + DevToolsTheme.PaddingNormal, y, mutedFont, mutedColorPaint);
+                canvas.DrawText("}", bounds.Left + DevToolsTheme.PaddingNormal, y, SKTextAlign.Left, mutedFont, mutedColorPaint);
                 y += DevToolsTheme.ItemHeight * 1.5f;
                 drewMatchedRules = true;
             }
@@ -1348,9 +1348,9 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         {
             const string snapshotTitle = "Computed snapshot";
             float sx = bounds.Left + DevToolsTheme.PaddingNormal;
-            canvas.DrawText(snapshotTitle, sx, y, selectorFont, selectorColorPaint);
+            canvas.DrawText(snapshotTitle, sx, y, SKTextAlign.Left, selectorFont, selectorColorPaint);
             sx += selectorFont.MeasureText(snapshotTitle);
-            canvas.DrawText(" {", sx, y, mutedFont, mutedColorPaint);
+            canvas.DrawText(" {", sx, y, SKTextAlign.Left, mutedFont, mutedColorPaint);
             y += DevToolsTheme.ItemHeight;
 
             var priorityProperties = new[]
@@ -1383,15 +1383,15 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
 
                 if (y > bounds.Bottom) break;
                 float x = bounds.Left + DevToolsTheme.PaddingNormal * 2;
-                canvas.DrawText(prop.Name, x, y, propFont, propColorPaint);
+                canvas.DrawText(prop.Name, x, y, SKTextAlign.Left, propFont, propColorPaint);
                 x += Math.Max(140, propFont.MeasureText(prop.Name) + 14);
-                canvas.DrawText(": ", x, y, punctFont, punctColorPaint);
+                canvas.DrawText(": ", x, y, SKTextAlign.Left, punctFont, punctColorPaint);
                 x += punctFont.MeasureText(": ");
-                canvas.DrawText(prop.Value + ";", x, y, valueFont, valueColorPaint);
+                canvas.DrawText(prop.Value + ";", x, y, SKTextAlign.Left, valueFont, valueColorPaint);
                 y += DevToolsTheme.ItemHeight;
             }
 
-            canvas.DrawText("}", bounds.Left + DevToolsTheme.PaddingNormal, y, mutedFont, mutedColorPaint);
+            canvas.DrawText("}", bounds.Left + DevToolsTheme.PaddingNormal, y, SKTextAlign.Left, mutedFont, mutedColorPaint);
             y += DevToolsTheme.ItemHeight * 1.5f;
         }
         
@@ -1443,7 +1443,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                 canvas.DrawRect(itemRect, selectedBgPaint);
             }
 
-            canvas.DrawText(_autocompleteSuggestions[i], dropdownX + 8, itemY + 15, textFont, textColorPaint);
+            canvas.DrawText(_autocompleteSuggestions[i], dropdownX + 8, itemY + 15, SKTextAlign.Left, textFont, textColorPaint);
             itemY += DevToolsTheme.ItemHeight;
         }
     }
@@ -1551,11 +1551,11 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         {
             var rect = SKRect.Create(centerX - boxW/2, centerY - boxH/2, boxW, boxH);
             canvas.DrawRect(rect, paint);
-            canvas.DrawText(label, rect.Left + 4, rect.Top + 12, boxTextFont, boxTextColorPaint);
-            canvas.DrawText(t, rect.MidX - boxTextFont.MeasureText(t)/2, rect.Top + 12, boxTextFont, boxTextColorPaint);
-            canvas.DrawText(b, rect.MidX - boxTextFont.MeasureText(b)/2, rect.Bottom - 4, boxTextFont, boxTextColorPaint);
-            canvas.DrawText(l, rect.Left + 4, rect.MidY + 4, boxTextFont, boxTextColorPaint);
-            canvas.DrawText(r, rect.Right - boxTextFont.MeasureText(r) - 4, rect.MidY + 4, boxTextFont, boxTextColorPaint);
+            canvas.DrawText(label, rect.Left + 4, rect.Top + 12, SKTextAlign.Left, boxTextFont, boxTextColorPaint);
+            canvas.DrawText(t, rect.MidX - boxTextFont.MeasureText(t)/2, rect.Top + 12, SKTextAlign.Left, boxTextFont, boxTextColorPaint);
+            canvas.DrawText(b, rect.MidX - boxTextFont.MeasureText(b)/2, rect.Bottom - 4, SKTextAlign.Left, boxTextFont, boxTextColorPaint);
+            canvas.DrawText(l, rect.Left + 4, rect.MidY + 4, SKTextAlign.Left, boxTextFont, boxTextColorPaint);
+            canvas.DrawText(r, rect.Right - boxTextFont.MeasureText(r) - 4, rect.MidY + 4, SKTextAlign.Left, boxTextFont, boxTextColorPaint);
         }
 
         DrawBox(mw, mh, marginPaint, "margin", mt, mr, mb, ml);
@@ -1565,7 +1565,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         var contentRect = SKRect.Create(centerX - cw/2, centerY - ch/2, cw, ch);
         canvas.DrawRect(contentRect, contentPaint);
         string contentDim = $"{w} × {h}";
-        canvas.DrawText(contentDim, centerX - boxTextFont.MeasureText(contentDim)/2, centerY + 4, boxTextFont, boxTextColorPaint);
+        canvas.DrawText(contentDim, centerX - boxTextFont.MeasureText(contentDim)/2, centerY + 4, SKTextAlign.Left, boxTextFont, boxTextColorPaint);
     }
 
     private void DrawComputedContent(SKCanvas canvas, SKRect bounds, DomNodeDto selectedNode, float y)
@@ -1586,16 +1586,16 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                 if (y < bounds.Top) { y += DevToolsTheme.ItemHeight; continue; }
 
                 float x = bounds.Left + DevToolsTheme.PaddingNormal;
-                canvas.DrawText(prop.Name, x, y, propFont, propColorPaint);
+                canvas.DrawText(prop.Name, x, y, SKTextAlign.Left, propFont, propColorPaint);
                 x += Math.Max(160, propFont.MeasureText(prop.Name) + 10);
-                canvas.DrawText(prop.Value, x, y, valueFont, valueColorPaint);
+                canvas.DrawText(prop.Value, x, y, SKTextAlign.Left, valueFont, valueColorPaint);
 
                 // Show origin (style tracing)
                 string origin = FindPropertyOrigin(prop.Name);
                 if (!string.IsNullOrEmpty(origin))
                 {
                     float originX = bounds.Right - originFont.MeasureText(origin) - DevToolsTheme.PaddingNormal;
-                    canvas.DrawText(origin, originX, y, originFont, originColorPaint);
+                    canvas.DrawText(origin, originX, y, SKTextAlign.Left, originFont, originColorPaint);
                 }
 
                 y += DevToolsTheme.ItemHeight;
@@ -1605,7 +1605,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         {
             using var hintFont = DevToolsTheme.CreateTextFont();
             using var hintColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
-            canvas.DrawText("No computed styles available", bounds.Left + DevToolsTheme.PaddingNormal, y + 20, hintFont, hintColorPaint);
+            canvas.DrawText("No computed styles available", bounds.Left + DevToolsTheme.PaddingNormal, y + 20, SKTextAlign.Left, hintFont, hintColorPaint);
             y += 40;
         }
 
@@ -1699,7 +1699,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
             canvas.DrawRect(rect, paint);
 
             // Draw Label
-            canvas.DrawText(label, rect.Left + 4, rect.Top + 12, boxTextFont, boxTextColorPaint);
+            canvas.DrawText(label, rect.Left + 4, rect.Top + 12, SKTextAlign.Left, boxTextFont, boxTextColorPaint);
 
             // Draw Values
             float midX = rect.MidX;
@@ -1707,19 +1707,19 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
 
             // Top
             float tw = boxTextFont.MeasureText(t);
-            canvas.DrawText(t, midX - tw/2, rect.Top + 12, boxTextFont, boxTextColorPaint);
+            canvas.DrawText(t, midX - tw/2, rect.Top + 12, SKTextAlign.Left, boxTextFont, boxTextColorPaint);
 
             // Bottom
             float bw = boxTextFont.MeasureText(b);
-            canvas.DrawText(b, midX - bw/2, rect.Bottom - 4, boxTextFont, boxTextColorPaint);
+            canvas.DrawText(b, midX - bw/2, rect.Bottom - 4, SKTextAlign.Left, boxTextFont, boxTextColorPaint);
 
             // Left
             float lw = boxTextFont.MeasureText(l);
-            canvas.DrawText(l, rect.Left + 4, midY + 4, boxTextFont, boxTextColorPaint);
+            canvas.DrawText(l, rect.Left + 4, midY + 4, SKTextAlign.Left, boxTextFont, boxTextColorPaint);
 
             // Right (Label might overlap, simplified)
             float rw = boxTextFont.MeasureText(r);
-            canvas.DrawText(r, rect.Right - rw - 4, midY + 4, boxTextFont, boxTextColorPaint);
+            canvas.DrawText(r, rect.Right - rw - 4, midY + 4, SKTextAlign.Left, boxTextFont, boxTextColorPaint);
         }
 
         DrawBox(mw, mh, marginPaint, "margin", marginTop, marginRight, marginBottom, marginLeft);
@@ -1731,11 +1731,11 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         canvas.DrawRect(contentRect, contentPaint);
         string contentDim = $"{width} x {height}";
         float cdw = boxTextFont.MeasureText(contentDim);
-        canvas.DrawText(contentDim, centerX - cdw/2, centerY + 5, boxTextFont, boxTextColorPaint);
+        canvas.DrawText(contentDim, centerX - cdw/2, centerY + 5, SKTextAlign.Left, boxTextFont, boxTextColorPaint);
 
         using var hintFont = DevToolsTheme.CreateTextFont();
         using var hintColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
-        canvas.DrawText("Computed Layout Properties", bounds.Left + DevToolsTheme.PaddingNormal, y + 200, hintFont, hintColorPaint);
+        canvas.DrawText("Computed Layout Properties", bounds.Left + DevToolsTheme.PaddingNormal, y + 200, SKTextAlign.Left, hintFont, hintColorPaint);
         
         _stylesMaxScrollY = Math.Max(0, (y + 200 + DevToolsTheme.ItemHeight) + _stylesScrollY - bounds.Bottom);
     }
@@ -1748,21 +1748,22 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         using var valuePaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextPrimary);
         using var propertyPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.SyntaxProperty);
 
-        canvas.DrawText("Box Model", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, labelFont, valuePaint);
+        canvas.DrawText("Box Model", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, SKTextAlign.Left, labelFont, valuePaint);
         DrawBoxModelDiagram(canvas, bounds, y + DevToolsTheme.ItemHeight);
         y += 180;
 
-        canvas.DrawText("Renderer Rects", bounds.Left + DevToolsTheme.PaddingNormal, y + 12, labelFont, labelPaint);
+        canvas.DrawText("Renderer Rects", bounds.Left + DevToolsTheme.PaddingNormal, y + 12, SKTextAlign.Left, labelFont, labelPaint);
         y += DevToolsTheme.ItemHeight;
 
         void DrawRectRow(string name, RectInfo rect)
         {
             if (y > bounds.Bottom) return;
-            canvas.DrawText(name, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, valueFont, propertyPaint);
+            canvas.DrawText(name, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, SKTextAlign.Left, valueFont, propertyPaint);
             canvas.DrawText(
                 $"x={rect.Left:0.##} y={rect.Top:0.##} w={rect.Width:0.##} h={rect.Height:0.##}",
                 bounds.Left + 120,
                 y + 12,
+                SKTextAlign.Left,
                 valueFont,
                 valuePaint);
             y += DevToolsTheme.ItemHeight;
@@ -1774,17 +1775,18 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         DrawRectRow("content", box.Content);
 
         y += DevToolsTheme.PaddingNormal;
-        canvas.DrawText("Edges", bounds.Left + DevToolsTheme.PaddingNormal, y + 12, labelFont, labelPaint);
+        canvas.DrawText("Edges", bounds.Left + DevToolsTheme.PaddingNormal, y + 12, SKTextAlign.Left, labelFont, labelPaint);
         y += DevToolsTheme.ItemHeight;
 
         void DrawEdgesRow(string name, EdgeSizesInfo edges)
         {
             if (y > bounds.Bottom) return;
-            canvas.DrawText(name, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, valueFont, propertyPaint);
+            canvas.DrawText(name, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, SKTextAlign.Left, valueFont, propertyPaint);
             canvas.DrawText(
                 $"top={edges.Top:0.##} right={edges.Right:0.##} bottom={edges.Bottom:0.##} left={edges.Left:0.##}",
                 bounds.Left + 120,
                 y + 12,
+                SKTextAlign.Left,
                 valueFont,
                 valuePaint);
             y += DevToolsTheme.ItemHeight;
@@ -1797,7 +1799,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         if (_nodeDiagnosticsData?.ComputedStyle is { } computed)
         {
             y += DevToolsTheme.PaddingNormal;
-            canvas.DrawText("Computed Summary", bounds.Left + DevToolsTheme.PaddingNormal, y + 12, labelFont, labelPaint);
+            canvas.DrawText("Computed Summary", bounds.Left + DevToolsTheme.PaddingNormal, y + 12, SKTextAlign.Left, labelFont, labelPaint);
             y += DevToolsTheme.ItemHeight;
 
             var summary = new[]
@@ -1815,8 +1817,8 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
             foreach (var (name, value) in summary)
             {
                 if (y > bounds.Bottom) break;
-                canvas.DrawText(name, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, valueFont, propertyPaint);
-                canvas.DrawText(value ?? "-", bounds.Left + 120, y + 12, valueFont, valuePaint);
+                canvas.DrawText(name, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, SKTextAlign.Left, valueFont, propertyPaint);
+                canvas.DrawText(value ?? "-", bounds.Left + 120, y + 12, SKTextAlign.Left, valueFont, valuePaint);
                 y += DevToolsTheme.ItemHeight;
             }
         }
@@ -1835,12 +1837,12 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
 
         if (_nodeDiagnosticsData == null)
         {
-            canvas.DrawText("No diagnostics available", bounds.Left + DevToolsTheme.PaddingNormal, y + 18, textFont, valuePaint);
+            canvas.DrawText("No diagnostics available", bounds.Left + DevToolsTheme.PaddingNormal, y + 18, SKTextAlign.Left, textFont, valuePaint);
             _stylesMaxScrollY = 0;
             return;
         }
 
-        canvas.DrawText("Node", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, sectionFont, sectionPaint);
+        canvas.DrawText("Node", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, SKTextAlign.Left, sectionFont, sectionPaint);
         y += DevToolsTheme.ItemHeight;
         DrawKeyValue("node", $"{_nodeDiagnosticsData.NodeName} #{_nodeDiagnosticsData.NodeId}");
         DrawKeyValue("layout box", _nodeDiagnosticsData.HasLayoutBox ? "present" : "missing");
@@ -1850,34 +1852,35 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         if (_nodeDiagnosticsData.MissingReasons.Count > 0)
         {
             y += DevToolsTheme.PaddingNormal;
-            canvas.DrawText("Missing State", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, sectionFont, warnPaint);
+            canvas.DrawText("Missing State", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, SKTextAlign.Left, sectionFont, warnPaint);
             y += DevToolsTheme.ItemHeight;
             foreach (var reason in _nodeDiagnosticsData.MissingReasons)
             {
                 if (y > bounds.Bottom) break;
-                canvas.DrawText(reason, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, textFont, warnPaint);
+                canvas.DrawText(reason, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, SKTextAlign.Left, textFont, warnPaint);
                 y += DevToolsTheme.ItemHeight;
             }
         }
 
         y += DevToolsTheme.PaddingNormal;
-        canvas.DrawText("Paint Nodes", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, sectionFont, sectionPaint);
+        canvas.DrawText("Paint Nodes", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, SKTextAlign.Left, sectionFont, sectionPaint);
         y += DevToolsTheme.ItemHeight;
         foreach (var paintNode in _nodeDiagnosticsData.PaintNodes)
         {
             if (y > bounds.Bottom) break;
-            canvas.DrawText(paintNode.Type, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, textFont, labelPaint);
+            canvas.DrawText(paintNode.Type, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, SKTextAlign.Left, textFont, labelPaint);
             canvas.DrawText(
                 $"{paintNode.Bounds.Left:0.#},{paintNode.Bounds.Top:0.#} {paintNode.Bounds.Width:0.#}x{paintNode.Bounds.Height:0.#} opacity={paintNode.Opacity:0.##}",
                 bounds.Left + 132,
                 y + 12,
+                SKTextAlign.Left,
                 textFont,
                 valuePaint);
             y += DevToolsTheme.ItemHeight;
         }
 
         y += DevToolsTheme.PaddingNormal;
-        canvas.DrawText("Frame", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, sectionFont, sectionPaint);
+        canvas.DrawText("Frame", bounds.Left + DevToolsTheme.PaddingNormal, y + 14, SKTextAlign.Left, sectionFont, sectionPaint);
         y += DevToolsTheme.ItemHeight;
         var frame = _nodeDiagnosticsData.FrameTelemetry;
         DrawKeyValue("sequence", frame.FrameSequence.ToString());
@@ -1895,8 +1898,8 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
         void DrawKeyValue(string key, string value)
         {
             if (y > bounds.Bottom) return;
-            canvas.DrawText(key, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, textFont, labelPaint);
-            canvas.DrawText(value, bounds.Left + 132, y + 12, textFont, valuePaint);
+            canvas.DrawText(key, bounds.Left + DevToolsTheme.PaddingNormal, y + 12, SKTextAlign.Left, textFont, labelPaint);
+            canvas.DrawText(value, bounds.Left + 132, y + 12, SKTextAlign.Left, textFont, valuePaint);
             y += DevToolsTheme.ItemHeight;
         }
     }
@@ -2953,10 +2956,10 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
 
         float headerX = overlayRect.Left + DevToolsTheme.PaddingLarge;
         float headerY = overlayRect.Top + 24;
-        canvas.DrawText("Edit Outer HTML", headerX, headerY, titleFont, titleColorPaint);
+        canvas.DrawText("Edit Outer HTML", headerX, headerY, SKTextAlign.Left, titleFont, titleColorPaint);
 
         float hintY = headerY + 20;
-        canvas.DrawText("Ctrl+Enter apply, Enter newline, Esc cancel", headerX, hintY, hintFont, hintColorPaint);
+        canvas.DrawText("Ctrl+Enter apply, Enter newline, Esc cancel", headerX, hintY, SKTextAlign.Left, hintFont, hintColorPaint);
 
         var editorRect = new SKRect(
             overlayRect.Left + DevToolsTheme.PaddingLarge,
@@ -2990,7 +2993,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                 break;
             }
 
-            canvas.DrawText(lines[i], textX, textY, editorTextFont, editorTextColorPaint);
+            canvas.DrawText(lines[i], textX, textY, SKTextAlign.Left, editorTextFont, editorTextColorPaint);
             textY += lineHeight;
         }
 

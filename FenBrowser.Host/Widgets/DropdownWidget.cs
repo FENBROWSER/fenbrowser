@@ -108,7 +108,7 @@ public class DropdownWidget : Widget
         string displayText = SelectedValue;
         if (string.IsNullOrEmpty(displayText)) displayText = "Select...";
 
-        canvas.DrawText(displayText, Bounds.Left + 10, Bounds.MidY + 5, textFont, textPaint);
+        canvas.DrawText(displayText, Bounds.Left + 10, Bounds.MidY + 5, SKTextAlign.Left, textFont, textPaint);
         
         // Dropdown arrow
         using var arrowPaint = new SKPaint
@@ -198,7 +198,7 @@ public class DropdownWidget : Widget
                         Color = theme.Text.WithAlpha((byte)(255 * _animationProgress)),
                         IsAntialias = true
                     };
-                    canvas.DrawText(_options[i], itemRect.Left + 10, itemRect.MidY + 5, optionFont, optionTextPaint);
+                    canvas.DrawText(_options[i], itemRect.Left + 10, itemRect.MidY + 5, SKTextAlign.Left, optionFont, optionTextPaint);
                 }
                 y += itemHeight;
             }

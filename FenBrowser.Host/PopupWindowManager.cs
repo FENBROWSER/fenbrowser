@@ -247,7 +247,7 @@ public sealed class PopupWindow : IDisposable
         foreach (var line in plainText.Split('\n'))
         {
             if (y > h - 20) break;
-            canvas.DrawText(line.Trim(), 20, y, textFont, textPaint);
+            canvas.DrawText(line.Trim(), 20, y, SKTextAlign.Left, textFont, textPaint);
             y += 20;
         }
     }
@@ -264,7 +264,7 @@ public sealed class PopupWindow : IDisposable
         };
         var msg = "Loading...";
         float tw = textFont.MeasureText(msg);
-        canvas.DrawText(msg, (w - tw) / 2f, h / 2f, textFont, textPaint);
+        canvas.DrawText(msg, (w - tw) / 2f, h / 2f, SKTextAlign.Left, textFont, textPaint);
     }
 
     private void OnResize(Silk.NET.Maths.Vector2D<int> size)

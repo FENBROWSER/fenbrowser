@@ -158,7 +158,7 @@ public class TabWidget : Widget
             string fText = "F";
             float fW = iconFont.MeasureText(fText);
             float textY = faviconY + FAVICON_SIZE / 2 + 4;
-            canvas.DrawText(fText, faviconX + FAVICON_SIZE / 2 - fW / 2, textY, iconFont, iconTextPaint);
+            canvas.DrawText(fText, faviconX + FAVICON_SIZE / 2 - fW / 2, textY, SKTextAlign.Left, iconFont, iconTextPaint);
         }
         
         // Title
@@ -185,7 +185,7 @@ public class TabWidget : Widget
             }
         }
 
-        canvas.DrawText(displayTitle, textX, bounds.MidY + 4, textFont, textPaint);
+        canvas.DrawText(displayTitle, textX, bounds.MidY + 4, SKTextAlign.Left, textFont, textPaint);
         
         // Close button
         using var closePaint = new SKPaint

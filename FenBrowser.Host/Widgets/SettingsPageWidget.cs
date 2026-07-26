@@ -762,7 +762,7 @@ public class SettingsPageWidget : Widget
             Color = theme.Text,
             IsAntialias = true
         };
-        canvas.DrawText("Settings", Bounds.Left + 20, Bounds.Top + 40, headerFont, headerPaint);
+        canvas.DrawText("Settings", Bounds.Left + 20, Bounds.Top + 40, SKTextAlign.Left, headerFont, headerPaint);
         
         // Sidebar Items
         _sidebarItemRects.Clear();
@@ -798,7 +798,7 @@ public class SettingsPageWidget : Widget
                 canvas.DrawRoundRect(new SKRect(itemRect.Left, itemRect.Top + 6, itemRect.Left + 3, itemRect.Bottom - 6), 2, 2, accentPaint);
             }
             
-            canvas.DrawText(name, itemRect.Left + 16, itemRect.MidY + 5, itemTextFont, itemTextPaint);
+            canvas.DrawText(name, itemRect.Left + 16, itemRect.MidY + 5, SKTextAlign.Left, itemTextFont, itemTextPaint);
             sideItemY += 40;
         }
         
@@ -826,7 +826,7 @@ public class SettingsPageWidget : Widget
             _ => ""
         };
         
-        canvas.DrawText(categoryTitle, contentLeft, Bounds.Top + 50, subHeaderFont, subHeaderPaint);
+        canvas.DrawText(categoryTitle, contentLeft, Bounds.Top + 50, SKTextAlign.Left, subHeaderFont, subHeaderPaint);
         canvas.DrawLine(contentLeft, Bounds.Top + 65, Bounds.Right - _padding, Bounds.Top + 65, borderPaint);
         
         // Labels for current category
@@ -841,12 +841,12 @@ public class SettingsPageWidget : Widget
         switch (_selectedCategory)
         {
             case SettingsCategory.General:
-                canvas.DrawText("Search engine", contentLeft, currentY + 18, labelFont, labelPaint);
+                canvas.DrawText("Search engine", contentLeft, currentY + 18, SKTextAlign.Left, labelFont, labelPaint);
                 // Removed Home page and Startup Action drawings
                 break;
                 
             case SettingsCategory.StartHomeNewTab:
-                canvas.DrawText("When FenBrowser starts", contentLeft, currentY + 20, labelFont, labelPaint);
+                canvas.DrawText("When FenBrowser starts", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
                 currentY += 40;
                 
                 // Radio Options
@@ -874,7 +874,7 @@ public class SettingsPageWidget : Widget
                     }
                     
                     // Text
-                    canvas.DrawText(text, contentLeft + 30, radioY + 5, labelFont, labelPaint);
+                    canvas.DrawText(text, contentLeft + 30, radioY + 5, SKTextAlign.Left, labelFont, labelPaint);
                     
                     // Save Rect for hit testing
                     float textWidth = labelFont.MeasureText(text);
@@ -895,7 +895,7 @@ public class SettingsPageWidget : Widget
                     
                     foreach (var url in urls)
                     {
-                        canvas.DrawText(url, contentLeft + 10, listY + 20, labelFont, labelPaint);
+                        canvas.DrawText(url, contentLeft + 10, listY + 20, SKTextAlign.Left, labelFont, labelPaint);
                         
                         // Draw "Remove" button visual
                         var delRect = new SKRect(contentLeft + 400, listY, contentLeft + 470, listY + 32);
@@ -905,7 +905,7 @@ public class SettingsPageWidget : Widget
                         using var delTextPaint = new SKPaint { Color = SKColors.Red, IsAntialias = true };
                         string removeText = "Remove";
                         float removeW = delTextFont.MeasureText(removeText);
-                        canvas.DrawText(removeText, delRect.MidX - removeW / 2, delRect.MidY + 4, delTextFont, delTextPaint);
+                        canvas.DrawText(removeText, delRect.MidX - removeW / 2, delRect.MidY + 4, SKTextAlign.Left, delTextFont, delTextPaint);
                         
                         listY += 40;
                     }
@@ -917,123 +917,123 @@ public class SettingsPageWidget : Widget
                 currentY += 30;
                 
                 // Home Button
-                canvas.DrawText("Home button", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Show home button on the toolbar", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Home button", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Show home button on the toolbar", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 
                 if (BrowserSettings.Instance.ShowHomeButton)
                 {
                     currentY += 80;
-                    canvas.DrawText("Set home page URL", contentLeft, currentY, descFont, descPaint);
+                    canvas.DrawText("Set home page URL", contentLeft, currentY, SKTextAlign.Left, descFont, descPaint);
                 }
                 break;
                 
             case SettingsCategory.Privacy:
-                canvas.DrawText("JavaScript", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Allow sites to run scripts", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("JavaScript", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Allow sites to run scripts", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
-                canvas.DrawText("Tracking Prevention", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Block known trackers", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Tracking Prevention", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Block known trackers", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
-                canvas.DrawText("Send \"Do Not Track\"", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Request sites not to track you", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Send \"Do Not Track\"", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Request sites not to track you", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
-                canvas.DrawText("Block Third-Party Cookies", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Prevent cross-site tracking", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Block Third-Party Cookies", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Prevent cross-site tracking", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
-                canvas.DrawText("Clear cookies on exit", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Delete all cookies when browser closes", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Clear cookies on exit", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Delete all cookies when browser closes", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
-                canvas.DrawText("Use Secure DNS", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Resolve hostnames via DNS-over-HTTPS when available", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Use Secure DNS", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Resolve hostnames via DNS-over-HTTPS when available", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
-                canvas.DrawText("Safe Browsing", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Protects you and your device from dangerous sites", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Safe Browsing", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Protects you and your device from dangerous sites", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
-                canvas.DrawText("Block pop-ups", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Prevent websites from opening unnecessary windows", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Block pop-ups", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Prevent websites from opening unnecessary windows", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 40;
                 canvas.DrawLine(contentLeft, currentY + 20, Bounds.Right - _padding, currentY + 20, borderPaint);
                 currentY += 50;
-                canvas.DrawText("Clear browsing data", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Delete history, cookies, and cache now", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Clear browsing data", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Delete history, cookies, and cache now", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 break;
                 
             case SettingsCategory.Appearance:
-                canvas.DrawText("Dark Mode", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Switch between light and dark themes", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Dark Mode", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Switch between light and dark themes", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
 
                 _showFavoritesBarSwitch.IsVisible = true;
                 _showFavoritesBarSwitch.Arrange(new SKRect(switchX, currentY + 8, switchX + 50, currentY + 32));
                 // Note: Re-enabling visibility here is redundant if Arrange handles it but harmless for paint logic flow
                 
-                canvas.DrawText("Show favorites bar", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Always show shortcuts below address bar", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Show favorites bar", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Always show shortcuts below address bar", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
 
-                canvas.DrawText("Show favorites button", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Show the favorites star in the toolbar", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Show favorites button", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Show the favorites star in the toolbar", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 70;
-                canvas.DrawText("Default zoom", contentLeft, currentY + 18, labelFont, labelPaint);
+                canvas.DrawText("Default zoom", contentLeft, currentY + 18, SKTextAlign.Left, labelFont, labelPaint);
                 currentY += 70;
-                canvas.DrawText("Font size", contentLeft, currentY + 18, labelFont, labelPaint);
+                canvas.DrawText("Font size", contentLeft, currentY + 18, SKTextAlign.Left, labelFont, labelPaint);
                 break;
                 
             case SettingsCategory.Downloads:
-                canvas.DrawText("Download location", contentLeft, currentY + 18, labelFont, labelPaint);
+                canvas.DrawText("Download location", contentLeft, currentY + 18, SKTextAlign.Left, labelFont, labelPaint);
                 currentY += 70;
-                canvas.DrawText("Ask where to save", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Prompt for download location each time", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Ask where to save", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Prompt for download location each time", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
-                canvas.DrawText("Open folder on startup", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Automatically open downloads when browser starts", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Open folder on startup", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Automatically open downloads when browser starts", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 break;
                 
             case SettingsCategory.Advanced:
-                canvas.DrawText("User Agent", contentLeft, currentY + 18, labelFont, labelPaint);
+                canvas.DrawText("User Agent", contentLeft, currentY + 18, SKTextAlign.Left, labelFont, labelPaint);
                 currentY += 70;
-                canvas.DrawText("Developer Tools", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Show developer tools in context menu", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Developer Tools", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Show developer tools in context menu", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
-                canvas.DrawText("Debug Logging", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Enable detailed logging for debugging", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Debug Logging", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Enable detailed logging for debugging", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
-                canvas.DrawText("Log save location", contentLeft, currentY + 18, labelFont, labelPaint);
+                canvas.DrawText("Log save location", contentLeft, currentY + 18, SKTextAlign.Left, labelFont, labelPaint);
                 currentY += 70;
-                canvas.DrawText("Log level", contentLeft, currentY + 18, labelFont, labelPaint);
-                canvas.DrawText("Filter by severity (Error, Warn, Info, Debug, Trace)", contentLeft, currentY + 36, descFont, descPaint);
+                canvas.DrawText("Log level", contentLeft, currentY + 18, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Filter by severity (Error, Warn, Info, Debug, Trace)", contentLeft, currentY + 36, SKTextAlign.Left, descFont, descPaint);
                 currentY += 80;
                 
                 // Category labels in 2 columns
                 float col1X = contentLeft;
                 float col2X = contentLeft + 250;
-                canvas.DrawText("Log Categories:", contentLeft, currentY - 10, labelFont, labelPaint);
+                canvas.DrawText("Log Categories:", contentLeft, currentY - 10, SKTextAlign.Left, labelFont, labelPaint);
                 
-                canvas.DrawText("Network", col1X, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("HTML Parsing", col2X, currentY + 20, labelFont, labelPaint);
+                canvas.DrawText("Network", col1X, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("HTML Parsing", col2X, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
                 currentY += 40;
                 
-                canvas.DrawText("CSS", col1X, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("JavaScript", col2X, currentY + 20, labelFont, labelPaint);
+                canvas.DrawText("CSS", col1X, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("JavaScript", col2X, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
                 currentY += 40;
                 
-                canvas.DrawText("Layout", col1X, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Rendering", col2X, currentY + 20, labelFont, labelPaint);
+                canvas.DrawText("Layout", col1X, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Rendering", col2X, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
                 break;
             
             case SettingsCategory.System:
-                canvas.DrawText("Hardware Acceleration", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Use GPU for rendering when possible", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Hardware Acceleration", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Use GPU for rendering when possible", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
-                canvas.DrawText("Sleeping Tabs", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Save resources by putting inactive tabs to sleep", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Sleeping Tabs", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Save resources by putting inactive tabs to sleep", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 currentY += 60;
-                canvas.DrawText("Continue running background apps", contentLeft, currentY + 20, labelFont, labelPaint);
-                canvas.DrawText("Keep browser running after closing last window", contentLeft, currentY + 38, descFont, descPaint);
+                canvas.DrawText("Continue running background apps", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
+                canvas.DrawText("Keep browser running after closing last window", contentLeft, currentY + 38, SKTextAlign.Left, descFont, descPaint);
                 break;
 
             case SettingsCategory.Favorites:
-                canvas.DrawText("Add new favorite", contentLeft, currentY - 5, labelFont, labelPaint);
+                canvas.DrawText("Add new favorite", contentLeft, currentY - 5, SKTextAlign.Left, labelFont, labelPaint);
                 currentY += 80;
                 canvas.DrawLine(contentLeft, currentY, Bounds.Right - _padding, currentY, borderPaint);
                 currentY += 30;
@@ -1043,8 +1043,8 @@ public class SettingsPageWidget : Widget
                 
                 foreach (var bm in bookmarks)
                 {
-                    canvas.DrawText(bm.Title, contentLeft, currentY + 15, labelFont, labelPaint);
-                    canvas.DrawText(bm.Url, contentLeft, currentY + 32, descFont, descPaint);
+                    canvas.DrawText(bm.Title, contentLeft, currentY + 15, SKTextAlign.Left, labelFont, labelPaint);
+                    canvas.DrawText(bm.Url, contentLeft, currentY + 32, SKTextAlign.Left, descFont, descPaint);
                     
                     // Delete "button" rect
                     var delRect = new SKRect(Bounds.Right - _padding - 80, currentY, Bounds.Right - _padding, currentY + 32);
@@ -1054,7 +1054,7 @@ public class SettingsPageWidget : Widget
                     using var delTextPaint = new SKPaint { Color = SKColors.Red, IsAntialias = true };
                     string removeTextFav = "Remove";
                     float removeWFav = delTextFontFav.MeasureText(removeTextFav);
-                    canvas.DrawText(removeTextFav, delRect.MidX - removeWFav / 2, delRect.MidY + 4, delTextFontFav, delTextPaint);
+                    canvas.DrawText(removeTextFav, delRect.MidX - removeWFav / 2, delRect.MidY + 4, SKTextAlign.Left, delTextFontFav, delTextPaint);
                     
                     currentY += 45;
                 }
@@ -1095,8 +1095,8 @@ public class SettingsPageWidget : Widget
                         ?? System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) 
                         ?? "0.1.0-alpha";
 
-                    canvas.DrawText("FenBrowser", textX, currentY + 25, subHeaderFont, subHeaderPaint);
-                    canvas.DrawText($"Version {version} (Advanced Edition)", textX, currentY + 50, labelFont, labelPaint);
+                    canvas.DrawText("FenBrowser", textX, currentY + 25, SKTextAlign.Left, subHeaderFont, subHeaderPaint);
+                    canvas.DrawText($"Version {version} (Advanced Edition)", textX, currentY + 50, SKTextAlign.Left, labelFont, labelPaint);
                     
                     currentY += 80;
                 }
@@ -1109,17 +1109,17 @@ public class SettingsPageWidget : Widget
                         ?? System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString(3) 
                         ?? "0.1.0-alpha";
 
-                    canvas.DrawText("FenBrowser", contentLeft, currentY + 30, subHeaderFont, subHeaderPaint);
+                    canvas.DrawText("FenBrowser", contentLeft, currentY + 30, SKTextAlign.Left, subHeaderFont, subHeaderPaint);
                     currentY += 50;
-                    canvas.DrawText($"Version {version} (Advanced Edition)", contentLeft, currentY + 20, labelFont, labelPaint);
+                    canvas.DrawText($"Version {version} (Advanced Edition)", contentLeft, currentY + 20, SKTextAlign.Left, labelFont, labelPaint);
                     currentY += 30;
                 }
                 
-                canvas.DrawText("A modular, secure, and privacy-focused browser", contentLeft, currentY + 20, descFont, descPaint);
+                canvas.DrawText("A modular, secure, and privacy-focused browser", contentLeft, currentY + 20, SKTextAlign.Left, descFont, descPaint);
                 currentY += 40;
-                canvas.DrawText("Built with .NET, SkiaSharp, and Silk.NET", contentLeft, currentY + 20, descFont, descPaint);
+                canvas.DrawText("Built with .NET, SkiaSharp, and Silk.NET", contentLeft, currentY + 20, SKTextAlign.Left, descFont, descPaint);
                 currentY += 40;
-                canvas.DrawText("Inspired by modern web design principles", contentLeft, currentY + 20, descFont, descPaint);
+                canvas.DrawText("Inspired by modern web design principles", contentLeft, currentY + 20, SKTextAlign.Left, descFont, descPaint);
                 break;
         }
         

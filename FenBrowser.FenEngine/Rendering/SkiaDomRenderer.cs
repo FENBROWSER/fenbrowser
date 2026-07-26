@@ -1346,7 +1346,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // Optional: Draw error message on screen for debug visibility
                 using var font = new SKFont(SKTypeface.Default, 20);
                 using var paint = new SKPaint { Color = SKColors.Red };
-                canvas.DrawText($"Render Error: {ex.GetType().Name}", 20, 40, font, paint);
+                canvas.DrawText($"Render Error: {ex.GetType().Name}", 20, 40, SKTextAlign.Left, font, paint);
                 LastFrameTelemetry = CreateTelemetry(
                     baseUrl,
                     requestedBy,

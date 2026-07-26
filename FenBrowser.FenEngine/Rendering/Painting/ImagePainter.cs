@@ -206,7 +206,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             float textWidth = font.MeasureText(alt);
             float x = box.Left + (box.Width - textWidth) / 2;
             float y = box.Top + box.Height / 2 + 4;
-            canvas.DrawText(alt, x, y, font, textPaint);
+            canvas.DrawText(alt, x, y, SKTextAlign.Left, font, textPaint);
         }
 
         /// <summary>

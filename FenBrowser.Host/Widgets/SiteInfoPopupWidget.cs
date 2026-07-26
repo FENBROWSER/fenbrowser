@@ -150,7 +150,7 @@ namespace FenBrowser.Host.Widgets
             // Title
             using var titleFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Bold), 15);
             using var titlePaint = new SKPaint { Color = theme.Text, IsAntialias = true };
-            canvas.DrawText($"About {Hostname}", leftX, currentY + 12, titleFont, titlePaint);
+            canvas.DrawText($"About {Hostname}", leftX, currentY + 12, SKTextAlign.Left, titleFont, titlePaint);
             
             // Close button handled by child widget
             
@@ -167,7 +167,7 @@ namespace FenBrowser.Host.Widgets
             // Section 2: Permissions Header
             using var grayFont = new SKFont(SKTypeface.Default, 12);
             using var grayHeader = new SKPaint { Color = theme.TextMuted, IsAntialias = true };
-            canvas.DrawText("Permissions for this site", leftX, currentY + 10, grayFont, grayHeader);
+            canvas.DrawText("Permissions for this site", leftX, currentY + 10, SKTextAlign.Left, grayFont, grayHeader);
             currentY += 25;
             
             // Permission 1: Location/Notifications
@@ -184,11 +184,11 @@ namespace FenBrowser.Host.Widgets
             // Switch is child widget, just draw text
             using var textFont13 = new SKFont(SKTypeface.Default, 13);
             using var textPaint = new SKPaint { Color = theme.Text, IsAntialias = true };
-            canvas.DrawText("Tracking prevention", leftX + 24, currentY + 16, textFont13, textPaint);
+            canvas.DrawText("Tracking prevention", leftX + 24, currentY + 16, SKTextAlign.Left, textFont13, textPaint);
             
             using var subTextFont = new SKFont(SKTypeface.Default, 11);
             using var subTextPaint = new SKPaint { Color = theme.TextMuted, IsAntialias = true };
-            canvas.DrawText("Trackers (0 blocked)", leftX + 24, currentY + 34, subTextFont, subTextPaint);
+            canvas.DrawText("Trackers (0 blocked)", leftX + 24, currentY + 34, SKTextAlign.Left, subTextFont, subTextPaint);
             
             // Children (Buttons/Dropdowns/Switch) will paint on top
         }
@@ -208,7 +208,7 @@ namespace FenBrowser.Host.Widgets
             
             using var textFont14 = new SKFont(SKTypeface.Default, 14);
             using var textPaint = new SKPaint { Color = theme.Text, IsAntialias = true };
-            canvas.DrawText(text, x + 30, y + 16, textFont14, textPaint);
+            canvas.DrawText(text, x + 30, y + 16, SKTextAlign.Left, textFont14, textPaint);
             
             // Chevron
             using var chevronPaint = new SKPaint { Color = theme.TextMuted, Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = true };
@@ -222,7 +222,7 @@ namespace FenBrowser.Host.Widgets
              var theme = ThemeManager.Current;
              using var permFont = new SKFont(SKTypeface.Default, 13);
              using var textPaint = new SKPaint { Color = theme.Text, IsAntialias = true };
-             canvas.DrawText(label, x, y + 16, permFont, textPaint);
+             canvas.DrawText(label, x, y + 16, SKTextAlign.Left, permFont, textPaint);
              // Dropdown is drawn by child widget
         }
         

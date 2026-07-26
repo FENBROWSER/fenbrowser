@@ -207,7 +207,7 @@ namespace FenBrowser.FenEngine.Rendering.Paint
             canvas.DrawRect(labelRect, bgPaint);
 
             // Text (baseline is at Bottom - Descent)
-            canvas.DrawText(label, labelX + 2, labelY + textHeight - 2, font, textPaint);
+            canvas.DrawText(label, labelX + 2, labelY + textHeight - 2, SKTextAlign.Left, font, textPaint);
         }
 
         // ========================================================================

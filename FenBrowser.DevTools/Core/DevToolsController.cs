@@ -288,7 +288,7 @@ public class DevToolsController : IDisposable
             // Draw tab text
             using var tabTextPaint = DevToolsTheme.CreateTextColorPaint(isActive ? DevToolsTheme.TextPrimary : DevToolsTheme.TextSecondary);
             float textY = _tabBarBounds.MidY + tabFont.Size / 3;
-            canvas.DrawText(panel.Title, x + tabPadding / 2, textY, tabFont, tabTextPaint);
+            canvas.DrawText(panel.Title, x + tabPadding / 2, textY, SKTextAlign.Left, tabFont, tabTextPaint);
             
             x += tabWidth + 2;
         }
@@ -308,13 +308,13 @@ public class DevToolsController : IDisposable
             using var hintPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextSecondary);
             string hint = "Close DevTools";
             float hintWidth = hintFont.MeasureText(hint);
-            canvas.DrawText(hint, closeX - 30 - hintWidth, closeY + 5, hintFont, hintPaint);
+            canvas.DrawText(hint, closeX - 30 - hintWidth, closeY + 5, SKTextAlign.Left, hintFont, hintPaint);
         }
 
         using var closeFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeLarge * 1.2f);
         using var closePaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextPrimary);
         float closeTextWidth = closeFont.MeasureText("×");
-        canvas.DrawText("×", closeX - closeTextWidth / 2, closeY + 6, closeFont, closePaint);
+        canvas.DrawText("×", closeX - closeTextWidth / 2, closeY + 6, SKTextAlign.Left, closeFont, closePaint);
         
         // Draw bottom border of tab bar
         using var borderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.Border);

@@ -1805,7 +1805,7 @@ namespace FenBrowser.FenEngine.Rendering
                         float textWidth = font.MeasureText(textContent);
                         float drawX = position == "before" ? bounds.Left : bounds.Right - textWidth;
                         float drawY = bounds.Top + fontSize;
-                        canvas.DrawText(textContent, drawX, drawY, font, paint);
+                        canvas.DrawText(textContent, drawX, drawY, SKTextAlign.Left, font, paint);
                     }
                 });
             }
@@ -4473,7 +4473,7 @@ namespace FenBrowser.FenEngine.Rendering
                             string val = elem.GetAttribute("value") ?? "yyyy-mm-dd";
                             using var textFont = new SKFont(SKTypeface.Default, 12);
                             using var textPaint = new SKPaint { Color = new SKColor(60, 60, 60), IsAntialias = true };
-                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, textFont, textPaint);
+                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, SKTextAlign.Left, textFont, textPaint);
                         }
                     };
                     
@@ -4505,7 +4505,7 @@ namespace FenBrowser.FenEngine.Rendering
                             string val = elem.GetAttribute("value") ?? "--:--";
                             using var textFont = new SKFont(SKTypeface.Default, 12);
                             using var textPaint = new SKPaint { Color = new SKColor(60, 60, 60), IsAntialias = true };
-                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, textFont, textPaint);
+                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, SKTextAlign.Left, textFont, textPaint);
                         }
                     };
                     
@@ -4550,7 +4550,7 @@ namespace FenBrowser.FenEngine.Rendering
                             string val = elem.GetAttribute("value") ?? "";
                             using var textFont = new SKFont(SKTypeface.Default, 12);
                             using var textPaint = new SKPaint { Color = new SKColor(60, 60, 60), IsAntialias = true };
-                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, textFont, textPaint);
+                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, SKTextAlign.Left, textFont, textPaint);
                         }
                     };
                     
@@ -4578,12 +4578,12 @@ namespace FenBrowser.FenEngine.Rendering
                             
                             using var btnLabelFont = new SKFont(SKTypeface.Default, 11);
                             using var btnLabelPaint = new SKPaint { Color = new SKColor(40, 40, 40), IsAntialias = true };
-                            canvas.DrawText("Choose File", bounds.Left + 8, bounds.MidY + 3, btnLabelFont, btnLabelPaint);
+                            canvas.DrawText("Choose File", bounds.Left + 8, bounds.MidY + 3, SKTextAlign.Left, btnLabelFont, btnLabelPaint);
                             
                             // Filename area
                             using var textFont = new SKFont(SKTypeface.Default, 11);
                             using var textPaint = new SKPaint { Color = new SKColor(100, 100, 100), IsAntialias = true };
-                            canvas.DrawText("No file chosen", bounds.Left + btnWidth + 10, bounds.MidY + 3, textFont, textPaint);
+                            canvas.DrawText("No file chosen", bounds.Left + btnWidth + 10, bounds.MidY + 3, SKTextAlign.Left, textFont, textPaint);
                         }
                     };
                     
@@ -4763,7 +4763,7 @@ namespace FenBrowser.FenEngine.Rendering
                     // Time display placeholder
                     using var timeFont = new SKFont(SKTypeface.Default, 10);
                     using var timePaint = new SKPaint { Color = new SKColor(100, 100, 100), IsAntialias = true };
-                    canvas.DrawText("0:00", bounds.Right - 50, bounds.MidY + 4, timeFont, timePaint);
+                    canvas.DrawText("0:00", bounds.Right - 50, bounds.MidY + 4, SKTextAlign.Left, timeFont, timePaint);
                     
                     // Border
                     using var borderPaint = new SKPaint { Color = new SKColor(200, 200, 200), Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
@@ -4908,7 +4908,7 @@ namespace FenBrowser.FenEngine.Rendering
                         float textWidth = textFont.MeasureText(displaySrc);
                         float textX = cx - textWidth / 2;
                         float textY = cy + iconSize + 20;
-                        canvas.DrawText(displaySrc, textX, textY, textFont, textPaint);
+                        canvas.DrawText(displaySrc, textX, textY, SKTextAlign.Left, textFont, textPaint);
                     }
                     else
                     {
@@ -4916,7 +4916,7 @@ namespace FenBrowser.FenEngine.Rendering
                         using var textPaint = new SKPaint { Color = new SKColor(150, 150, 150), IsAntialias = true };
                         string label = "<iframe>";
                         float textWidth = textFont.MeasureText(label);
-                        canvas.DrawText(label, cx - textWidth / 2, cy + iconSize + 20, textFont, textPaint);
+                        canvas.DrawText(label, cx - textWidth / 2, cy + iconSize + 20, SKTextAlign.Left, textFont, textPaint);
                     }
 
                     string topMarkerText = frameTopText;
@@ -4944,7 +4944,7 @@ namespace FenBrowser.FenEngine.Rendering
                         canvas.DrawRect(
                             new SKRect(bounds.Left, bounds.Top, bounds.Left + headerWidth, bounds.Top + headerHeight),
                             headerBgPaint);
-                        canvas.DrawText(topMarkerText, bounds.Left + 63, bounds.Top + 17, topTextFont, topTextPaint);
+                        canvas.DrawText(topMarkerText, bounds.Left + 63, bounds.Top + 17, SKTextAlign.Left, topTextFont, topTextPaint);
                     }
                 }
             };
@@ -5548,7 +5548,7 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         using var font = new SKFont(SKTypeface.Default, markerSize * 0.6f);
                         using var paint = new SKPaint { Color = style?.ForegroundColor ?? SKColors.Black, IsAntialias = true };
-                        canvas.DrawText("\u2022", bounds.Left + 2, bounds.Bottom - 2, font, paint);
+                        canvas.DrawText("\u2022", bounds.Left + 2, bounds.Bottom - 2, SKTextAlign.Left, font, paint);
                     }
                 };
             }

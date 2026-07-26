@@ -113,7 +113,7 @@ public class ButtonWidget : Widget
             var metrics = textFont.Metrics;
             float textY = Bounds.MidY - (metrics.Ascent + metrics.Descent) / 2;
             float textW = textFont.MeasureText(Text);
-            canvas.DrawText(Text, Bounds.MidX - textW / 2, textY, textFont, textPaint);
+            canvas.DrawText(Text, Bounds.MidX - textW / 2, textY, SKTextAlign.Left, textFont, textPaint);
         }
         
     // Draw IconPath if present
@@ -154,7 +154,7 @@ public class ButtonWidget : Widget
             var metrics = iconFont.Metrics;
             float iconY = Bounds.MidY - (metrics.Ascent + metrics.Descent) / 2;
             float iconW = iconFont.MeasureText(Icon);
-            canvas.DrawText(Icon, Bounds.MidX - iconW / 2, iconY, iconFont, iconPaint);
+            canvas.DrawText(Icon, Bounds.MidX - iconW / 2, iconY, SKTextAlign.Left, iconFont, iconPaint);
         }
         
         canvas.Restore();

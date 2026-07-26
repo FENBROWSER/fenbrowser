@@ -67,7 +67,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             }
             else
             {
-                canvas.DrawText(text, x, y, font, paint);
+                canvas.DrawText(text, x, y, SKTextAlign.Left, font, paint);
             }
 
             // Draw text decoration
@@ -128,7 +128,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                     if (letterSpacing != 0 || wordSpacing != 0)
                         DrawTextWithSpacing(canvas, displayLine, drawX, y, font, paint, letterSpacing, wordSpacing);
                     else
-                        canvas.DrawText(displayLine, drawX, y, font, paint);
+                        canvas.DrawText(displayLine, drawX, y, SKTextAlign.Left, font, paint);
 
                     y += lineHeight;
                     line = word;
@@ -153,7 +153,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 if (letterSpacing != 0 || wordSpacing != 0)
                     DrawTextWithSpacing(canvas, displayLine, drawX, y, font, paint, letterSpacing, wordSpacing);
                 else
-                    canvas.DrawText(displayLine, drawX, y, font, paint);
+                    canvas.DrawText(displayLine, drawX, y, SKTextAlign.Left, font, paint);
             }
         }
 
@@ -416,7 +416,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             foreach (char c in text)
             {
                 string s = c.ToString();
-                canvas.DrawText(s, currentX, y, font, paint);
+                canvas.DrawText(s, currentX, y, SKTextAlign.Left, font, paint);
                 float advance = font.MeasureText(s);
                 currentX += advance + letterSpacing;
                 if (char.IsWhiteSpace(c)) currentX += wordSpacing;

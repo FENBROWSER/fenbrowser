@@ -97,7 +97,7 @@ namespace FenBrowser.FenEngine.Rendering
                 drawX = X - font.MeasureText(Text ?? "") / 2;
             else if (TextAlign == SKTextAlign.Right)
                 drawX = X - font.MeasureText(Text ?? "");
-            canvas.DrawText(Text ?? "", drawX, Y, font, paint);
+            canvas.DrawText(Text ?? "", drawX, Y, SKTextAlign.Left, font, paint);
         }
     }
 

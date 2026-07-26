@@ -141,7 +141,7 @@ public class BookmarksBarWidget : Widget
                 IsAntialias = true
             };
             float titleW = font.MeasureText(_bookmark.Title);
-            canvas.DrawText(_bookmark.Title, Bounds.MidX - titleW / 2, Bounds.MidY + 4, font, textPaint);
+            canvas.DrawText(_bookmark.Title, Bounds.MidX - titleW / 2, Bounds.MidY + 4, SKTextAlign.Left, font, textPaint);
         }
 
         public override void OnMouseMove(float x, float y)
