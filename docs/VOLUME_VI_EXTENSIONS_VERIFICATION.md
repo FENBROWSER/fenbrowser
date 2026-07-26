@@ -2531,7 +2531,7 @@ _End of Volume VI_
   - `debug-site` subscribes to `ResourceManager.NetworkRequestStarting`, `NetworkRequestCompleted`, and `NetworkRequestFailed` for the run and exports correlated request/response/failure records.
   - `debug-site` exports the final `BrowserHost.NavigationLifecycleState` snapshot and document `readyState` probe as a stable bundle DTO.
   - `debug-site` captures `BrowserHost.NavigationLifecycleChanged` transitions during the run and exports them as ordered lifecycle timeline data.
-  - `debug-site` exports the current browser script-loading snapshot as `script_loading.json` and promotes script discovered/eligible/executed/failed counts into `summary.md` and `summary.json`.
+  - `debug-site` exports the current browser script-loading snapshot as `script_loading.json` and promotes script discovered/eligible/executed/failed counts into `summary.md` and `summary.json`. It observes the normal engine loader and does not refetch or explicitly re-execute site-specific scripts during collection.
   - `debug-site` exports the current browser event-loop snapshot as `event_loop.json` and promotes DOMContentLoaded/load, microtask, timer, and requestAnimationFrame counts into `summary.md` and `summary.json`.
   - The command now renders the settled `BrowserHost` DOM and computed-style map through `SkiaDomRenderer` into a deterministic `1280x800` headless PNG before bundle export, so `screenshot.png` exists without depending on host-window/WebDriver delegates.
   - The offscreen render snapshot now feeds `style_layout.json`, `style_dump.txt`, `layout_dump.txt`, `paint_dump.txt`, and `display_list.txt`; the summary promotes style/layout/paint counters and first layout/paint blocker classifications.
