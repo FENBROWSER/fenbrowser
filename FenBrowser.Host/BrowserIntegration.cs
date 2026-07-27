@@ -87,20 +87,9 @@ public class BrowserIntegration : IDisposable
     private BrowserInputType _inputAwaitingFrameType;
     private int _inputAwaitingFrameReceiptThreadId;
     private long _lastInputSequencePublishedInFrame;
-    // ── Content Snapshot (lock-free read path for compositor/UI thread) ──
-    // The engine thread publishes an immutable snapshot after each RecordFrame.
-    // The compositor and UI thread read _latestSnapshot directly — no lock needed.
-    // C# reference reads are atomic, so the compositor always sees a consistent
-    // (though possibly slightly stale) view of the last committed frame.
-    private ContentSnapshot _latestSnapshot;
-
-    // Deferred-disposal slot: the engine thread cannot safely Dispose() the
-    // Frame SKPicture immediately after publishing a new ContentSnapshot,
-    // because the compositor thread may have already loaded the old reference
-    // and be about to call DrawPicture on it.  We retire the previous frame
-    // here and dispose it one publish later, guaranteeing the compositor has
-    // moved on.  Engine-thread-only — no lock needed.
-    private SKPicture _pendingDisposeFrame;
+    // The engine thread publishes immutable snapshots. The native frame slot
+    // keeps each SKPicture alive for the complete compositor DrawPicture call.
+    private readonly NativeFrameSlot<ContentSnapshot> _contentSnapshot = new();
 
     // Frame seed image for incremental-damage base-frame reuse.
     // Only accessed by the engine thread — no lock needed.
@@ -430,11 +419,7 @@ public class BrowserIntegration : IDisposable
 
                 // Defensive reset: page-driven navigations can bypass NavigateInternal.
                 // Clear committed frame/seed so first frame for the new document cannot reuse stale pixels.
-                var oldSnapshot = _latestSnapshot;
-                _latestSnapshot = null;
-                oldSnapshot?.Frame?.Dispose();
-                _pendingDisposeFrame?.Dispose();
-                _pendingDisposeFrame = null;
+                _contentSnapshot.Clear();
                 _currentFrameSeedImage?.Dispose();
                 _currentFrameSeedImage = null;
                 _currentFrameSeedCreatedUtc = DateTime.MinValue;
@@ -918,10 +903,7 @@ public class BrowserIntegration : IDisposable
         }
 
         // 5. Dispose rendering resources in safe order.
-        _latestSnapshot?.Frame?.Dispose();
-        _latestSnapshot = null;
-        _pendingDisposeFrame?.Dispose();
-        _pendingDisposeFrame = null;
+        _contentSnapshot.Dispose();
         _currentFrameSeedImage?.Dispose();
         _currentFrameSeedImage = null;
         _remoteFrameBitmap?.Dispose();
@@ -1708,9 +1690,7 @@ public class BrowserIntegration : IDisposable
         ResetCompositorScrollPreview(resetDirection: true);
         ClearRemoteFrame();
         _contentHeight = 0f;
-        var oldSnapshot = _latestSnapshot;
-        _latestSnapshot = null;
-        oldSnapshot?.Frame?.Dispose();
+        _contentSnapshot.Clear();
         // Clear the DOM root so the engine thread cannot render the old
         // page while the new document is loading.  RecordFrame skips when
         // both root and styles are null, and RepaintReady restores them
@@ -1726,7 +1706,8 @@ public class BrowserIntegration : IDisposable
         // Defer RequestFrame until RepaintReady fires with the new DOM.
         // Calling RequestFrame here while _activeDom still references the
         // old page causes RecordFrame to render and publish the previous
-        // page as _latestSnapshot, which the compositor then draws — the
+        // page as the committed content snapshot, which the compositor then
+        // draws — the
         // screen appears frozen.  RepaintReady fires when the new document
         // is committed and styles are available.
         _needsRepaint = true;
@@ -1986,11 +1967,8 @@ public class BrowserIntegration : IDisposable
             return;
         }
 
-        // ── Lock-free read path ──
-        // The snapshot is published atomically by the engine thread.  C# reference
-        // reads are atomic, so we always see a consistent frame (or null).  The
-        // compositor scroll preview is protected by a short-duration lock.
-        var snapshot = _latestSnapshot;
+        // Frame ownership is held through the native slot for DrawPicture. The
+        // compositor scroll preview has its own short-duration lock.
         List<InputOverlayData> overlays = null;
         Element? highlight = _highlightedElement;
 
@@ -2000,7 +1978,7 @@ public class BrowserIntegration : IDisposable
             effectiveScrollY = _hasCompositorScrollPreview ? _compositorPreviewScrollY : _scrollY;
         }
 
-        if (snapshot?.Frame != null)
+        var drewFrame = _contentSnapshot.TryUse(snapshot =>
         {
             var scrollDelta = effectiveScrollY - snapshot.CommittedScrollY;
             if (Math.Abs(scrollDelta) > 0.5f)
@@ -2018,8 +1996,8 @@ public class BrowserIntegration : IDisposable
             {
                 overlays = snapshot.Overlays;
             }
-        }
-        else
+        });
+        if (!drewFrame)
         {
             DrawPlaceholder(canvas, viewport);
             return;
@@ -2148,12 +2126,18 @@ public class BrowserIntegration : IDisposable
 
             // Base-frame reuse is engine-thread-only; the previous snapshot provides
             // the last committed viewport and scroll for comparison.
-            var previousSnapshot = _latestSnapshot;
+            SKSize previousViewportSize = SKSize.Empty;
+            float previousCommittedScrollY = 0f;
+            _contentSnapshot.TryUse(snapshot =>
+            {
+                previousViewportSize = snapshot.ViewportSize;
+                previousCommittedScrollY = snapshot.CommittedScrollY;
+            });
             canReuseBaseFrame = allowBaseFrameReuse && BaseFrameReusePolicy.CanReuseBaseFrame(
                 _currentFrameSeedImage != null,
-                previousSnapshot?.ViewportSize ?? SKSize.Empty,
+                previousViewportSize,
                 viewportSize,
-                previousSnapshot?.CommittedScrollY ?? 0f,
+                previousCommittedScrollY,
                 _scrollY,
                 invalidationReasons,
                 _consecutiveBaseFrameReuseCount,
@@ -2178,9 +2162,9 @@ public class BrowserIntegration : IDisposable
                 // scroll offset) is drawn at (0,0) and the overlapping region shows
                 // stale document positions — every scroll step drifts further from
                 // the true content, eventually showing a white viewport.
-                // The compositor applies the identical transform in its lock-free
-                // read path (see the scrollDelta / Translate block above).
-                float scrollDelta = _scrollY - (previousSnapshot?.CommittedScrollY ?? 0f);
+                // The compositor applies the identical transform in its frame
+                // lease (see the scrollDelta / Translate block above).
+                float scrollDelta = _scrollY - previousCommittedScrollY;
                 canvas.DrawImage(reusableSeedImage, 0, -scrollDelta);
             }
 
@@ -2294,28 +2278,15 @@ public class BrowserIntegration : IDisposable
                 _lastSeedImageCreateMs = seedStopwatch.ElapsedMilliseconds;
             }
 
-            // Publish the new content snapshot FIRST — atomic reference write,
-            // visible to the compositor thread immediately without any lock.
-            // The compositor always reads _latestSnapshot once at the top of
-            // Render(); swapping before dispose guarantees it sees either the
-            // old (valid) frame or the new frame, never a disposed one.
-            var retiringSnapshot = _latestSnapshot;
-            _latestSnapshot = new ContentSnapshot(
+            // Replacement waits for an active DrawPicture lease before
+            // disposing the retired native frame.
+            _contentSnapshot.Publish(new ContentSnapshot(
                 newFrame,
                 frameOverlays,
                 viewportSize,
                 _scrollY,
-                _contentHeight);
+                _contentHeight));
             RecordFirstFrameAfterInput();
-
-            // Retire the previous frame for deferred disposal.  The compositor
-            // may still hold a reference to retiringSnapshot, but by the time
-            // we get here it has already entered Render() and loaded its local
-            // `snapshot` variable — so it either got the new snapshot or the
-            // old one.  We defer the actual Dispose() by one publish cycle to
-            // guarantee the compositor won't touch a disposed SKPicture.
-            _pendingDisposeFrame?.Dispose();
-            _pendingDisposeFrame = retiringSnapshot?.Frame;
 
             // Seed-image management is engine-thread-only; no lock needed.
             if (ReferenceEquals(newSeedImage, _currentFrameSeedImage))
@@ -2567,7 +2538,7 @@ public class BrowserIntegration : IDisposable
 
     private bool HasCommittedFrame()
     {
-        return _latestSnapshot?.Frame != null;
+        return _contentSnapshot.HasValue;
     }
 
     /// <summary>
@@ -3485,11 +3456,7 @@ public class BrowserIntegration : IDisposable
             bool hadBootstrapViewport = previousViewport.Width <= 1 || previousViewport.Height <= 1;
             if (hadBootstrapViewport || !_hasFirstStyledRender)
             {
-                var oldSnapshot = _latestSnapshot;
-                _latestSnapshot = null;
-                oldSnapshot?.Frame?.Dispose();
-                _pendingDisposeFrame?.Dispose();
-                _pendingDisposeFrame = null;
+                _contentSnapshot.Clear();
                 _currentFrameSeedImage?.Dispose();
                 _currentFrameSeedImage = null;
                 _currentFrameSeedCreatedUtc = DateTime.MinValue;
@@ -4074,10 +4041,10 @@ public class BrowserIntegration : IDisposable
 
     /// <summary>
     /// Immutable snapshot of the last committed frame produced by the engine thread.
-    /// The compositor and UI thread read this without any lock — the engine thread
-    /// publishes a new instance after each RecordFrame via atomic reference swap.
+    /// The native frame slot serializes compositor use with replacement and
+    /// disposal.
     /// </summary>
-    private sealed class ContentSnapshot
+    private sealed class ContentSnapshot : IDisposable
     {
         /// <summary>Pre-recorded display-list picture. Drawn directly by the compositor.</summary>
         public readonly SKPicture Frame;
@@ -4102,6 +4069,11 @@ public class BrowserIntegration : IDisposable
             ViewportSize = viewportSize;
             CommittedScrollY = committedScrollY;
             ContentHeight = contentHeight;
+        }
+
+        public void Dispose()
+        {
+            Frame?.Dispose();
         }
     }
 }

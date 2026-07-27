@@ -1479,3 +1479,27 @@ Verification:
 Verification:
 
 - Red result: `OutOfOrderResponseChunk_IsRejected` accepted chunk indices `1, 0` and threw no exception. The fixed network coordinator class passes `10/10`; the adjacent network/renderer process slice passes `56/56`, both with zero failures or skips.
+
+### 6.74 Native Content-Frame Lifetime (2026-07-27)
+
+- `BrowserIntegration` no longer treats an atomic `ContentSnapshot` reference
+  plus one deferred publish as sufficient ownership for its native
+  `SKPicture`. A compositor can remain inside `SKCanvas.DrawPicture` across
+  multiple engine publishes, so the old scheme could dispose the picture while
+  Skia was drawing it.
+- `NativeFrameSlot<T>` now serializes frame use, replacement, navigation clear,
+  viewport clear, and final disposal. The lock covers only snapshot metadata
+  access or the native draw; layout, script execution, and independent tabs are
+  not globally serialized.
+- A deterministic concurrency contract holds a reader open while publishing a
+  replacement and proves the retired native frame is disposed only after the
+  reader releases it.
+
+Verification:
+
+- `dotnet build FenBrowser.Host\FenBrowser.Host.csproj -c Release --no-restore`:
+  pass with zero errors.
+- The identical 1,621-entry WPT selection completed 332/332 runnable URLs with
+  zero `libSkiaSharp`/`0xC0000409` exits: 249 `OK`, 3 harness `CRASH`, 1
+  `TIMEOUT`, 1 `ERROR`, and 78 maintained `SKIP`. The preceding lifecycle run
+  had 21 process crashes; no shard timed out or stalled.
