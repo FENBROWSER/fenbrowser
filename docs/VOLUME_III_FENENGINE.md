@@ -10470,3 +10470,24 @@ Verification:
 - Upstream
   `IndexedDB/keypath-special-identifiers.any.html` changes from whole-test
   `TIMEOUT` to `OK`, with all six subtests passing and no unexpected results.
+
+## 2.397 IndexedDB Listener-Exception Lifecycle (2026-07-27)
+
+- IndexedDB event dispatch now continues through later listeners when an earlier
+  handler or listener throws, including object listeners using `handleEvent`.
+- An uncaught request listener exception aborts the active transaction after
+  dispatch completes. Error events propagate from request to transaction and
+  database before abort, while `preventDefault()` continues to suppress the
+  default abort only when dispatch itself completed without an exception.
+- Version-change listener exceptions abort the upgrade transaction and terminate
+  the open request with an error instead of allowing a later success event.
+
+Verification:
+
+- Focused Release `FenJsCallbackExceptionCatchTests` passes (`2/2`), covering
+  timer callback exception catching plus IndexedDB listener continuation and
+  transaction abort.
+- Upstream `fire-success-event-exception.any.html`,
+  `fire-error-event-exception.any.html`, and
+  `fire-upgradeneeded-event-exception.any.html` all change from `TIMEOUT` to
+  `OK`; all 29 subtests pass with zero unexpected results.

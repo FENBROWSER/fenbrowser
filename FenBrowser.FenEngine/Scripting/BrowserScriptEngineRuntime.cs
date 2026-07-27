@@ -4546,7 +4546,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     function _idbInitEventTarget(target) {
                         target._idbListeners = {};
                         target.addEventListener = function (type, callback) {
-                            if (typeof callback !== 'function') return;
+                            if (typeof callback !== 'function' &&
+                                (callback === null || typeof callback !== 'object')) return;
                             type = String(type || '');
                             var listeners = this._idbListeners[type] || (this._idbListeners[type] = []);
                             if (listeners.indexOf(callback) < 0) listeners.push(callback);
@@ -4561,15 +4562,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     function _idbDispatch(target, type, init) {
                         var event = init || {};
                         event.type = type;
-                        event.target = target;
+                        if (!event.target) event.target = target;
                         event.currentTarget = target;
-                        event.defaultPrevented = false;
+                        event.defaultPrevented = !!event.defaultPrevented;
+                        event._idbHadException = !!event._idbHadException;
                         event.preventDefault = function () { this.defaultPrevented = true; };
                         event.stopPropagation = function () {};
+                        function invoke(callback) {
+                            try {
+                                if (typeof callback === 'function') {
+                                    callback.call(target, event);
+                                } else {
+                                    var handleEvent = callback.handleEvent;
+                                    if (typeof handleEvent !== 'function') throw new TypeError('handleEvent is not callable');
+                                    handleEvent.call(callback, event);
+                                }
+                            } catch (error) {
+                                event._idbHadException = true;
+                            }
+                        }
                         var handler = target['on' + type];
-                        if (typeof handler === 'function') handler.call(target, event);
+                        if (typeof handler === 'function') invoke(handler);
                         var listeners = (target._idbListeners[type] || []).slice();
-                        for (var i = 0; i < listeners.length; i++) listeners[i].call(target, event);
+                        for (var i = 0; i < listeners.length; i++) invoke(listeners[i]);
                         return !event.defaultPrevented;
                     }
                     function _idbExtractKey(value, keyPath) {
@@ -4588,21 +4603,43 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         globalThis.setTimeout(function () {
                             request.result = result;
                             request.readyState = 'done';
-                            _idbDispatch(request, 'success');
+                            var event = {};
+                            _idbDispatch(request, 'success', event);
                             var transaction = request.transaction;
                             if (transaction && transaction._pending > 0) transaction._pending--;
-                            _idbMaybeCompleteTransaction(transaction);
+                            if (event._idbHadException) {
+                                _idbAbortTransaction(transaction);
+                            } else {
+                                _idbMaybeCompleteTransaction(transaction);
+                            }
                         }, 0);
                     }
                     function _idbFireError(request, message) {
                         globalThis.setTimeout(function () {
                             request.error = { name: 'AbortError', message: String(message || '') };
                             request.readyState = 'done';
-                            _idbDispatch(request, 'error');
+                            var event = {};
+                            _idbDispatch(request, 'error', event);
                             var transaction = request.transaction;
+                            if (transaction) {
+                                _idbDispatch(transaction, 'error', event);
+                                if (transaction.db) _idbDispatch(transaction.db, 'error', event);
+                            }
                             if (transaction && transaction._pending > 0) transaction._pending--;
-                            _idbMaybeCompleteTransaction(transaction);
+                            if (event._idbHadException || !event.defaultPrevented) {
+                                _idbAbortTransaction(transaction);
+                            } else {
+                                _idbMaybeCompleteTransaction(transaction);
+                            }
                         }, 0);
+                    }
+                    function _idbAbortTransaction(transaction) {
+                        if (!transaction || !transaction._active) return;
+                        transaction._active = false;
+                        transaction.error = { name: 'AbortError', message: 'The transaction was aborted' };
+                        var event = {};
+                        _idbDispatch(transaction, 'abort', event);
+                        if (transaction.db) _idbDispatch(transaction.db, 'abort', event);
                     }
                     function _idbMaybeCompleteTransaction(transaction) {
                         if (!transaction || !transaction._active ||
@@ -4652,6 +4689,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         this.name = String(name || 'default');
                         this.version = version || 1;
                         this.objectStoreNames = [];
+                        _idbInitEventTarget(this);
                     }
                     IDBDatabase.prototype.createObjectStore = function (storeName, options) {
                         __fenLog('warn', '[IDB] createObjectStore("' + String(storeName) + '") in "' + this.name + '"');
@@ -4762,6 +4800,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         __fenLog('warn', '[IDB] transaction([' + stores.join(',') + '], "' + txMode + '") on "' + dbName + '"');
                         var tx = {
                             mode: txMode,
+                            db: this,
                             objectStoreNames: stores.slice(),
                             _dbName: dbName,
                             _active: true,
@@ -4877,7 +4916,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             oncomplete: null,
                             onerror: null,
                             onabort: null,
-                            abort: function () { this._active = false; },
+                            abort: function () { _idbAbortTransaction(this); },
                             commit: function () {
                                 _idbMaybeCompleteTransaction(this);
                             }
@@ -4943,10 +4982,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                 if (ver > oldVersion) {
                                     var upgradeTx = db.transaction([], 'versionchange');
                                     request.transaction = upgradeTx;
-                                    _idbDispatch(request, 'upgradeneeded', {
+                                    var upgradeEvent = {
                                         oldVersion: oldVersion,
                                         newVersion: ver
-                                    });
+                                    };
+                                    _idbDispatch(request, 'upgradeneeded', upgradeEvent);
+                                    if (upgradeEvent._idbHadException) {
+                                        _idbAbortTransaction(upgradeTx);
+                                        request.error = { name: 'AbortError', message: 'The version change transaction was aborted' };
+                                        request.readyState = 'done';
+                                        _idbDispatch(request, 'error');
+                                        return;
+                                    }
                                     globalThis.setTimeout(function () {
                                         if (upgradeTx._active) {
                                             _idbDispatch(upgradeTx, 'complete');
