@@ -4637,6 +4637,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         _idbFireSuccess(request, result);
                         return request;
                     }
+                    function _idbRequestError(source, transaction, message) {
+                        var request = new IDBRequest();
+                        request.source = source || null;
+                        request.transaction = transaction || null;
+                        if (transaction && transaction._active) transaction._pending++;
+                        _idbFireError(request, message);
+                        return request;
+                    }
                     // ── IDBDatabase ──
                     function IDBDatabase(name, version) {
                         this.name = String(name || 'default');
@@ -4773,7 +4781,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                             for (var i = 0; i < dk.length; i++) { var n = +dk[i]; if (!isNaN(n) && n > max) max = n; }
                                             k = max + 1;
                                         }
-                                        if (k === undefined || k === null) return;
+                                        if (k === undefined || k === null) {
+                                            return _idbRequestError(this, tx, 'No key');
+                                        }
                                         storeRef._data[k] = value;
                                         // Update indexes
                                         var idxNames = Object.keys(storeRef._indexes);
@@ -4786,7 +4796,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                         if (typeof __fenIdbPut === 'function') {
                                             try { __fenIdbPut(dbName, String(name), String(k), JSON.stringify(value)); } catch(e) {}
                                         }
-                                        return k;
+                                        return _idbRequestResult(this, tx, k);
                                     },
                                     add: function (value, keyOverride) {
                                         var k = arguments.length > 1 ? keyOverride : _idbExtractKey(value, kp);
@@ -4795,10 +4805,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                             for (var i = 0; i < dk.length; i++) { var n = +dk[i]; if (!isNaN(n) && n > max) max = n; }
                                             k = max + 1;
                                         }
-                                        if (storeRef._data.hasOwnProperty(k)) return;
+                                        if (storeRef._data.hasOwnProperty(k)) {
+                                            return _idbRequestError(this, tx, 'Key already exists');
+                                        }
                                         return this.put(value, k);
                                     },
-                                    get: function (k) { return storeRef._data.hasOwnProperty(k) ? storeRef._data[k] : undefined; },
+                                    get: function (k) {
+                                        var result = storeRef._data.hasOwnProperty(k) ? storeRef._data[k] : undefined;
+                                        return _idbRequestResult(this, tx, result);
+                                    },
                                     getAll: function () {
                                         var vals=[]; var dk=Object.keys(storeRef._data);
                                         for(var i=0;i<dk.length;i++) vals.push(storeRef._data[dk[i]]);
@@ -4807,7 +4822,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                     getAllKeys: function () {
                                         return _idbRequestResult(this, tx, Object.keys(storeRef._data));
                                     },
-                                    getKey: function (k) { return storeRef._data.hasOwnProperty(k) ? k : undefined; },
+                                    getKey: function (k) {
+                                        var result = storeRef._data.hasOwnProperty(k) ? k : undefined;
+                                        return _idbRequestResult(this, tx, result);
+                                    },
                                     delete: function (k) {
                                         delete storeRef._data[k];
                                         var idxNames = Object.keys(storeRef._indexes);
@@ -4815,16 +4833,28 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                         if (typeof __fenIdbDelete === 'function') {
                                             try { __fenIdbDelete(dbName, String(name), String(k)); } catch(e) {}
                                         }
+                                        return _idbRequestResult(this, tx, undefined);
                                     },
-                                    clear: function () { storeRef._data = {}; },
-                                    count: function () { return Object.keys(storeRef._data).length; },
+                                    clear: function () {
+                                        storeRef._data = {};
+                                        return _idbRequestResult(this, tx, undefined);
+                                    },
+                                    count: function () {
+                                        return _idbRequestResult(this, tx, Object.keys(storeRef._data).length);
+                                    },
                                     index: function (indexName) {
                                         var idx = storeRef._indexes[String(indexName)] || { keyPath: null, _data: {} };
                                         return {
                                             name: String(indexName),
                                             keyPath: idx.keyPath,
-                                            get: function (k) { return idx._data.hasOwnProperty(k) ? idx._data[k] : undefined; },
-                                            getKey: function (k) { return idx._data.hasOwnProperty(k) ? k : undefined; },
+                                            get: function (k) {
+                                                var result = idx._data.hasOwnProperty(k) ? idx._data[k] : undefined;
+                                                return _idbRequestResult(this, tx, result);
+                                            },
+                                            getKey: function (k) {
+                                                var result = idx._data.hasOwnProperty(k) ? k : undefined;
+                                                return _idbRequestResult(this, tx, result);
+                                            },
                                             getAll: function () {
                                                 var vals=[]; var dk=Object.keys(idx._data);
                                                 for(var i=0;i<dk.length;i++) vals.push(idx._data[dk[i]]);
@@ -4833,7 +4863,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                             getAllKeys: function () {
                                                 return _idbRequestResult(this, tx, Object.keys(idx._data));
                                             },
-                                            count: function () { return Object.keys(idx._data).length; },
+                                            count: function () {
+                                                return _idbRequestResult(this, tx, Object.keys(idx._data).length);
+                                            },
                                             openCursor: function () { return undefined; },
                                             openKeyCursor: function () { return undefined; }
                                         };

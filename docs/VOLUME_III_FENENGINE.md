@@ -10435,3 +10435,22 @@ Verification:
 - Six upstream object-store/index `getAll` and `getAllKeys` URLs that previously
   consumed long-test timeouts now all reach terminal `OK` test status. They
   report 23 concrete assertion failures rather than six whole-test timeouts.
+
+## 2.395 IndexedDB Mutation And Single-Read Request Lifecycle (2026-07-27)
+
+- Transaction-bound object-store `put`, `add`, `get`, `getKey`, `delete`,
+  `clear`, and `count`, plus index `get`, `getKey`, and `count`, now return
+  asynchronous `IDBRequest`-shaped results.
+- Successful and failed requests participate in the transaction pending count,
+  so transaction completion waits until request handlers have run. Existing
+  in-memory key/value behavior is retained; exception names, structured clone,
+  key-path projection, and index ordering remain incomplete.
+
+Verification:
+
+- Release Tooling build succeeds with zero errors.
+- Four direct object-store/index request URLs that previously timed out now
+  terminate `OK` with 37 actionable subtest failures.
+- The adjacent `value.any.html` now terminates with assertions and
+  `value_recursive.any.html` becomes a full pass. Three separate key-path and
+  create-index URLs remain timeouts and are not claimed by this fix.
