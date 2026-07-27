@@ -59,9 +59,9 @@ This volume details the infrastructure used to extend the browser and verify its
   queues, cross-realm and destroyed-context request lifecycles, Blob URL
   registry/resource resolution, and worker-only files whose generated URL does
   not carry a worker-variant suffix. File-level entries remain capability
-  declarations rather than pass expectations: partial IndexedDB key-path,
-  index-creation, and open/version behavior stays enabled so its failures remain
-  visible.
+  declarations rather than pass expectations: partial IndexedDB index-creation
+  and open/version behavior stays enabled so its failures remain visible.
+  Key-path coverage that does not require cursors also remains enabled.
 - `FenBrowser.Tooling wpt --suite normal|workers|webdriver|all` keeps classic
   WebDriver specification tests separate from normal web tests. The shard
   planner additionally separates worker-generated testharness variants from
