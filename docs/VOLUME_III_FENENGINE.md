@@ -10454,3 +10454,19 @@ Verification:
 - The adjacent `value.any.html` now terminates with assertions and
   `value_recursive.any.html` becomes a full pass. Three separate key-path and
   create-index URLs remain timeouts and are not claimed by this fix.
+
+## 2.396 File Constructor And Blob Metadata (2026-07-27)
+
+- FenJS now installs `File` through the native-constructor path so it is present
+  in both the global binding table and on the browser global object.
+- Constructed files expose `name`, `lastModified`, `webkitRelativePath`,
+  normalized `type`, and UTF-8 byte `size`, and inherit from `Blob.prototype`.
+- The baseline `Blob` constructor now reports UTF-8 byte size for string parts
+  and lowercases its media type instead of exposing a constant zero size.
+
+Verification:
+
+- Focused Release test `FenJsFileApiTests` passes (`1/1`).
+- Upstream
+  `IndexedDB/keypath-special-identifiers.any.html` changes from whole-test
+  `TIMEOUT` to `OK`, with all six subtests passing and no unexpected results.

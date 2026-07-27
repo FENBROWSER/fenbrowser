@@ -426,6 +426,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         new(ReferenceEqualityComparer.Instance);
     private List<BrowserEventListener> _activeWindowEventListeners;
     private JsValue _activeWindowEventTarget = JsValue.Undefined;
+    private JsValue _fenJsFileConstructor = JsValue.Undefined;
     private Uri _activeParentBaseUri;
     private bool _fenJsDomConstructorsInstalled;
     private long _temporaryFenJsGlobalCounter;
@@ -3166,6 +3167,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             _hostPrototypeNames.Clear();
             _activeWindowEventListeners = null;
             _activeWindowEventTarget = JsValue.Undefined;
+            _fenJsFileConstructor = JsValue.Undefined;
             _activeParentBaseUri = null;
             _fenJsDomConstructorsInstalled = false;
 
@@ -6998,23 +7000,36 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             (function () {
                 // ── Blob ── https://w3c.github.io/FileAPI/#blob-section
                 // Facebook uses new Blob([data], {type: ...}) with sendBeacon.
-                // Minimal stub: stores parts+type; size is always 0.
+                function blobPartSize(part) {
+                    if (part instanceof globalThis.Blob) return part.size;
+                    if (part instanceof ArrayBuffer) return part.byteLength;
+                    if (part && typeof part.byteLength === 'number') return part.byteLength;
+                    var encoded = encodeURIComponent(String(part));
+                    var bytes = 0;
+                    for (var i = 0; i < encoded.length; i++) {
+                        if (encoded.charAt(i) === '%' && i + 2 < encoded.length) i += 2;
+                        bytes++;
+                    }
+                    return bytes;
+                }
                 globalThis.Blob = function Blob(parts, options) {
                     this._parts = parts || [];
-                    this._type = (options && options.type) || '';
+                    this._type = String((options && options.type) || '').toLowerCase();
                     this.size = 0;
+                    for (var i = 0; i < this._parts.length; i++) {
+                        this.size += blobPartSize(this._parts[i]);
+                    }
                     this.type = this._type;
                 };
-                Blob.prototype.slice = function (start, end, contentType) {
-                    return new Blob(this._parts.slice(start || 0, end), { type: contentType || this._type });
+                globalThis.Blob.prototype.slice = function (start, end, contentType) {
+                    return new globalThis.Blob(this._parts.slice(start || 0, end), { type: contentType || this._type });
                 };
-                Blob.prototype.text = function () {
+                globalThis.Blob.prototype.text = function () {
                     return Promise.resolve(this._parts.join(''));
                 };
-                Blob.prototype.arrayBuffer = function () {
+                globalThis.Blob.prototype.arrayBuffer = function () {
                     return Promise.resolve(new ArrayBuffer(0));
                 };
-
                 // ── trustedTypes ── https://w3c.github.io/trusted-types/dist/spec/
                 // Facebook creates a "comet-deferred-scripts" policy to safely
                 // create script URLs for deferred bundle loading.  Without this,
@@ -8764,6 +8779,70 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             })();
             """);
 
+        var fileConstructor = JsValue.Undefined;
+        fileConstructor = _interpreter.AllocateNativeConstructor(
+            "File",
+            (_, _) =>
+            {
+                ThrowDomException("TypeError", "Failed to construct 'File': Please use the 'new' operator.");
+                return JsValue.Undefined;
+            },
+            args =>
+            {
+                var fileBits = args.Count > 0 ? args[0] : JsValue.Undefined;
+                var name = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                var options = args.Count > 2 ? args[2] : JsValue.Undefined;
+                var typeValue = options.Tag == JsValueTag.Object
+                    ? ReadJsProperty(options, "type")
+                    : JsValue.Undefined;
+                var type = typeValue.Tag == JsValueTag.Undefined
+                    ? string.Empty
+                    : CoerceToHostString(typeValue).ToLowerInvariant();
+                var lastModifiedValue = options.Tag == JsValueTag.Object
+                    ? ReadJsProperty(options, "lastModified")
+                    : JsValue.Undefined;
+                var lastModified = lastModifiedValue.Tag == JsValueTag.Undefined
+                    ? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                    : (long)CoerceToFiniteNumber(lastModifiedValue, 0);
+                var size = 0L;
+                if (fileBits.Tag == JsValueTag.Object)
+                {
+                    var length = (int)CoerceToFiniteNumber(ReadJsProperty(fileBits, "length"), 0);
+                    for (var i = 0; i < length; i++)
+                    {
+                        var part = ReadJsProperty(fileBits, i.ToString(CultureInfo.InvariantCulture));
+                        size += Encoding.UTF8.GetByteCount(CoerceToHostString(part));
+                    }
+                }
+
+                var file = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                {
+                    ["name"] = JsValue.FromString(name),
+                    ["lastModified"] = JsValue.FromNumber(lastModified),
+                    ["webkitRelativePath"] = JsValue.FromString(string.Empty),
+                    ["size"] = JsValue.FromNumber(size),
+                    ["type"] = JsValue.FromString(type)
+                });
+                var prototype = ReadJsProperty(fileConstructor, "prototype");
+                if (prototype.Tag == JsValueTag.Object)
+                {
+                    _interpreter.Heap.GetObject(file.AsObjectHandle()).SetPrototype(prototype.AsObjectHandle());
+                }
+                return file;
+            },
+            length: 2);
+        var filePrototype = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+        var blobConstructor = ReadGlobalValueOrUndefined("Blob");
+        var blobPrototype = ReadJsProperty(blobConstructor, "prototype");
+        if (blobPrototype.Tag == JsValueTag.Object)
+        {
+            _interpreter.Heap.GetObject(filePrototype.AsObjectHandle()).SetPrototype(blobPrototype.AsObjectHandle());
+        }
+        _interpreter.SetObjectProperty(filePrototype, "constructor", fileConstructor);
+        _interpreter.SetObjectProperty(fileConstructor, "prototype", filePrototype);
+        _interpreter.RegisterGlobalValue("File", fileConstructor);
+        _fenJsFileConstructor = fileConstructor;
+
         // window.getComputedStyle(element) → returns a CSSStyleDeclaration-like object
         // with the element's computed CSS properties.  React and other frameworks call
         // this during hydration to determine whether the server HTML matches the
@@ -9921,6 +10000,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         _interpreter.RegisterGlobalHostObject(
             "sessionStorage",
             RegisterHostObject(sessionStorage, HostObjectKind.StorageArea));
+        if (_fenJsFileConstructor.Tag != JsValueTag.Undefined)
+        {
+            _interpreter.RegisterGlobalValue("File", _fenJsFileConstructor);
+        }
     }
 
     private static string ResolveStorageOrigin(Uri baseUri, Document document)
