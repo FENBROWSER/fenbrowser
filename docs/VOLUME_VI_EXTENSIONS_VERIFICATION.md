@@ -56,12 +56,13 @@ This volume details the infrastructure used to extend the browser and verify its
   tentative KangarooTwelve/TurboSHAKE digests (no native implementation).
   Narrow storage entries also cover absent IndexedDB structured cloning,
   origin isolation/partitioning, opaque-origin enforcement, cursors, connection
-  queues, cross-realm and destroyed-context request lifecycles, Blob URL
-  registry/resource resolution, and worker-only files whose generated URL does
-  not carry a worker-variant suffix. File-level entries remain capability
-  declarations rather than pass expectations: partial IndexedDB index-creation
-  and open/version behavior stays enabled so its failures remain visible.
-  Key-path coverage that does not require cursors also remains enabled.
+  queues, index renaming with abort rollback, cross-realm and destroyed-context
+  request lifecycles, Blob URL registry/resource resolution, and worker-only
+  files whose generated URL does not carry a worker-variant suffix. File-level
+  entries remain capability declarations rather than pass expectations:
+  partial IndexedDB index-creation and open/version behavior stays enabled so
+  its failures remain visible. Key-path coverage that does not require cursors
+  also remains enabled.
 - `FenBrowser.Tooling wpt --suite normal|workers|webdriver|all` keeps classic
   WebDriver specification tests separate from normal web tests. The shard
   planner additionally separates worker-generated testharness variants from
@@ -112,6 +113,19 @@ This volume details the infrastructure used to extend the browser and verify its
   timeouts fell 61.9%, crashes fell 72.2%, and slowest-shard wall time fell
   21.4%. All five shards accounted every started test without runner
   timeout/stall and left zero WPT/FenBrowser processes.
+- After the IndexedDB request, event-exception, index-creation, and absent
+  lifecycle metadata updates, the same 1,621-entry selection produced 332
+  runnable normal-profile URLs. All 332 completed across five shards in 183.385
+  seconds of browser-test wall time (193 seconds including planning and
+  orchestration): 233 `OK`, zero `TIMEOUT`, 20 `CRASH`, 1 `ERROR`, and 78
+  maintained `SKIP`. The raw logs contain 2,560 subtests (389 pass and 2,171
+  fail); 16 top-level tests were fully passing. This eliminates all eight
+  timeouts from the preceding gate, but the crash count regressed from 5 to 20
+  and remains the next stability target.
+- A comparison using two executors per shard (10 total) was slower and less
+  stable: 220.470 seconds, 239 `OK`, 1 `TIMEOUT`, 15 `CRASH`, and 78 `SKIP`
+  across 333 completed URLs. The four-executor-per-shard default is retained;
+  reducing concurrency did not correct the process-death failures.
 
 ### 1.4 FenJS Standalone Shell Smoke Surface (2026-05-21)
 
