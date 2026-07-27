@@ -10491,3 +10491,24 @@ Verification:
   `fire-error-event-exception.any.html`, and
   `fire-upgradeneeded-event-exception.any.html` all change from `TIMEOUT` to
   `OK`; all 29 subtests pass with zero unexpected results.
+
+## 2.398 IndexedDB Index-Creation Lifecycle (2026-07-27)
+
+- `IDBObjectStore.createIndex()` now returns an `IDBIndex` carrying the owning
+  object store, key path, uniqueness, and multi-entry state, and newly created
+  indexes are immediately queryable during the version-change transaction.
+- Index creation validates deleted stores, transaction mode and activity,
+  duplicate names, key-path syntax, and compound multi-entry access in the
+  required exception order.
+- Version-change transactions become inactive before their `complete` event is
+  dispatched. Aborted upgrades no longer continue to a later open success.
+- `DOMException.code` now exposes the legacy numeric codes still asserted by
+  upstream compatibility tests.
+
+Verification:
+
+- Focused Release `FenJsIndexedDbIndexTests` passes (`1/1`); the adjacent
+  `FenJsCallbackExceptionCatchTests` regression slice passes (`2/2`).
+- Upstream `IndexedDB/idbobjectstore_createIndex.any.html` changes from
+  whole-test `TIMEOUT` with three timed-out subtests to `OK`: all 21 subtests
+  terminate, 14 pass, and seven remain ordinary assertion failures.

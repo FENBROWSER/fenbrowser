@@ -4633,10 +4633,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             }
                         }, 0);
                     }
-                    function _idbAbortTransaction(transaction) {
+                    function _idbAbortTransaction(transaction, errorName) {
                         if (!transaction || !transaction._active) return;
                         transaction._active = false;
-                        transaction.error = { name: 'AbortError', message: 'The transaction was aborted' };
+                        transaction._aborted = true;
+                        transaction.error = {
+                            name: String(errorName || 'AbortError'),
+                            message: 'The transaction was aborted'
+                        };
                         var event = {};
                         _idbDispatch(transaction, 'abort', event);
                         if (transaction.db) _idbDispatch(transaction.db, 'abort', event);
@@ -4684,6 +4688,113 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         _idbFireError(request, message);
                         return request;
                     }
+                    function IDBIndex(name, objectStore, keyPath, options, indexRef, transaction) {
+                        this.name = String(name);
+                        this.objectStore = objectStore;
+                        this.keyPath = keyPath;
+                        this.unique = !!(options && options.unique);
+                        this.multiEntry = !!(options && options.multiEntry);
+                        this._indexRef = indexRef;
+                        this._transaction = transaction;
+                    }
+                    IDBIndex.prototype.get = function (key) {
+                        var data = this._indexRef._data;
+                        return _idbRequestResult(
+                            this,
+                            this._transaction,
+                            data.hasOwnProperty(key) ? data[key] : undefined);
+                    };
+                    IDBIndex.prototype.getKey = function (key) {
+                        var data = this._indexRef._data;
+                        return _idbRequestResult(
+                            this,
+                            this._transaction,
+                            data.hasOwnProperty(key) ? key : undefined);
+                    };
+                    IDBIndex.prototype.getAll = function () {
+                        var values = [];
+                        var keys = Object.keys(this._indexRef._data);
+                        for (var i = 0; i < keys.length; i++) values.push(this._indexRef._data[keys[i]]);
+                        return _idbRequestResult(this, this._transaction, values);
+                    };
+                    IDBIndex.prototype.getAllKeys = function () {
+                        return _idbRequestResult(this, this._transaction, Object.keys(this._indexRef._data));
+                    };
+                    IDBIndex.prototype.count = function () {
+                        return _idbRequestResult(this, this._transaction, Object.keys(this._indexRef._data).length);
+                    };
+                    IDBIndex.prototype.openCursor = function () { return undefined; };
+                    IDBIndex.prototype.openKeyCursor = function () { return undefined; };
+                    globalThis.IDBIndex = IDBIndex;
+
+                    function _idbIsValidKeyPath(keyPath) {
+                        if (Array.isArray(keyPath)) {
+                            if (keyPath.length === 0) return false;
+                            for (var i = 0; i < keyPath.length; i++) {
+                                if (keyPath[i] === '' || !_idbIsValidKeyPath(keyPath[i])) return false;
+                            }
+                            return true;
+                        }
+                        if (typeof keyPath !== 'string') return false;
+                        if (keyPath === '') return true;
+                        var parts = keyPath.split('.');
+                        for (var j = 0; j < parts.length; j++) {
+                            if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(parts[j])) return false;
+                        }
+                        return true;
+                    }
+
+                    function _idbCreateIndex(objectStore, storeRef, transaction, indexName, keyPath, options) {
+                        var name = String(indexName);
+                        if (storeRef._deleted || !transaction || transaction.mode !== 'versionchange') {
+                            throw new DOMException(
+                                'Index creation requires a live versionchange object store.',
+                                'InvalidStateError');
+                        }
+                        if (!transaction._active) {
+                            throw new DOMException('The transaction is inactive.', 'TransactionInactiveError');
+                        }
+                        if (storeRef._indexes.hasOwnProperty(name)) {
+                            throw new DOMException('An index with this name already exists.', 'ConstraintError');
+                        }
+                        if (!_idbIsValidKeyPath(keyPath)) {
+                            throw new DOMException('The key path is invalid.', 'SyntaxError');
+                        }
+                        if (Array.isArray(keyPath) && options && options.multiEntry) {
+                            throw new DOMException(
+                                'A multiEntry index cannot use a sequence key path.',
+                                'InvalidAccessError');
+                        }
+
+                        var indexRef = {
+                            keyPath: keyPath,
+                            unique: !!(options && options.unique),
+                            multiEntry: !!(options && options.multiEntry),
+                            _data: {}
+                        };
+                        storeRef._indexes[name] = indexRef;
+                        storeRef._indexNames = storeRef._indexNames || [];
+                        storeRef._indexNames.push(name);
+
+                        var duplicate = false;
+                        var dataKeys = Object.keys(storeRef._data);
+                        for (var i = 0; i < dataKeys.length; i++) {
+                            var value = storeRef._data[dataKeys[i]];
+                            var indexKey = _idbExtractKey(value, keyPath);
+                            if (indexKey === undefined || indexKey === null) continue;
+                            if (indexRef.unique && indexRef._data.hasOwnProperty(indexKey)) {
+                                duplicate = true;
+                                continue;
+                            }
+                            indexRef._data[indexKey] = value;
+                        }
+                        if (duplicate) {
+                            globalThis.setTimeout(function () {
+                                _idbAbortTransaction(transaction, 'ConstraintError');
+                            }, 0);
+                        }
+                        return new IDBIndex(name, objectStore, keyPath, options, indexRef, transaction);
+                    }
                     // ── IDBDatabase ──
                     function IDBDatabase(name, version) {
                         this.name = String(name || 'default');
@@ -4694,23 +4805,38 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     IDBDatabase.prototype.createObjectStore = function (storeName, options) {
                         __fenLog('warn', '[IDB] createObjectStore("' + String(storeName) + '") in "' + this.name + '"');
                         var key = this.name + '\0' + storeName;
-                        _idbStore[key] = { _data: {}, _indexes: {} };
+                        _idbStore[key] = {
+                            _data: {},
+                            _indexes: {},
+                            _indexNames: [],
+                            _deleted: false
+                        };
                         this.objectStoreNames.push(String(storeName));
                         var keyPath = (options && options.keyPath) || null;
                         var autoIncrement = !!(options && options.autoIncrement);
                         var storeRef = _idbStore[key];
                         storeRef._keyPath = keyPath;
                         storeRef._autoIncrement = autoIncrement;
-                        return {
+                        var transaction = this._versionchangeTransaction;
+                        var objectStore = {
                             name: String(storeName),
                             keyPath: keyPath,
                             autoIncrement: autoIncrement,
+                            indexNames: storeRef._indexNames,
                             createIndex: function (indexName, keyPath, opts) {
                                 __fenLog('warn', '[IDB] createIndex("' + String(indexName) + '", "' + String(keyPath) + '") on "' + String(storeName) + '"');
-                                storeRef._indexes[String(indexName)] = { keyPath: keyPath, _data: {} };
+                                return _idbCreateIndex(
+                                    objectStore,
+                                    storeRef,
+                                    transaction,
+                                    indexName,
+                                    keyPath,
+                                    opts);
                             },
                             deleteIndex: function (indexName) {
                                 delete storeRef._indexes[String(indexName)];
+                                var indexPosition = storeRef._indexNames.indexOf(String(indexName));
+                                if (indexPosition >= 0) storeRef._indexNames.splice(indexPosition, 1);
                             },
                             put: function (value, keyOverride) {
                                 __fenLog('warn', '[IDB] put in "' + String(storeName) + '"');
@@ -4786,9 +4912,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                 };
                             }
                         };
+                        return objectStore;
                     };
                     IDBDatabase.prototype.deleteObjectStore = function (storeName) {
                         var key = this.name + '\0' + storeName;
+                        if (_idbStore[key]) _idbStore[key]._deleted = true;
                         delete _idbStore[key];
                         var idx = this.objectStoreNames.indexOf(storeName);
                         if (idx >= 0) this.objectStoreNames.splice(idx, 1);
@@ -4808,13 +4936,46 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             _completionQueued: false,
                             objectStore: function (name) {
                                 var key = dbName + '\0' + name;
-                                var storeRef = _idbStore[key] = _idbStore[key] || { _data: {}, _indexes: {}, _keyPath: null, _autoIncrement: false };
+                                var storeRef = _idbStore[key] = _idbStore[key] || {
+                                    _data: {},
+                                    _indexes: {},
+                                    _indexNames: [],
+                                    _deleted: false,
+                                    _keyPath: null,
+                                    _autoIncrement: false
+                                };
+                                storeRef._indexNames = storeRef._indexNames || Object.keys(storeRef._indexes);
                                 var kp = storeRef._keyPath || null;
                                 var ai = storeRef._autoIncrement || false;
-                                return {
+                                var objectStore = {
                                     name: String(name),
                                     keyPath: kp,
                                     autoIncrement: ai,
+                                    indexNames: storeRef._indexNames,
+                                    createIndex: function (indexName, keyPath, options) {
+                                        return _idbCreateIndex(
+                                            objectStore,
+                                            storeRef,
+                                            tx,
+                                            indexName,
+                                            keyPath,
+                                            options);
+                                    },
+                                    deleteIndex: function (indexName) {
+                                        if (storeRef._deleted || tx.mode !== 'versionchange') {
+                                            throw new DOMException(
+                                                'Index deletion requires a live versionchange object store.',
+                                                'InvalidStateError');
+                                        }
+                                        if (!tx._active) {
+                                            throw new DOMException(
+                                                'The transaction is inactive.',
+                                                'TransactionInactiveError');
+                                        }
+                                        delete storeRef._indexes[String(indexName)];
+                                        var indexPosition = storeRef._indexNames.indexOf(String(indexName));
+                                        if (indexPosition >= 0) storeRef._indexNames.splice(indexPosition, 1);
+                                    },
                                     put: function (value, keyOverride) {
                                         var k = arguments.length > 1 ? keyOverride : _idbExtractKey(value, kp);
                                         if ((k === undefined || k === null) && ai) {
@@ -4885,33 +5046,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                     },
                                     index: function (indexName) {
                                         var idx = storeRef._indexes[String(indexName)] || { keyPath: null, _data: {} };
-                                        return {
-                                            name: String(indexName),
-                                            keyPath: idx.keyPath,
-                                            get: function (k) {
-                                                var result = idx._data.hasOwnProperty(k) ? idx._data[k] : undefined;
-                                                return _idbRequestResult(this, tx, result);
-                                            },
-                                            getKey: function (k) {
-                                                var result = idx._data.hasOwnProperty(k) ? k : undefined;
-                                                return _idbRequestResult(this, tx, result);
-                                            },
-                                            getAll: function () {
-                                                var vals=[]; var dk=Object.keys(idx._data);
-                                                for(var i=0;i<dk.length;i++) vals.push(idx._data[dk[i]]);
-                                                return _idbRequestResult(this, tx, vals);
-                                            },
-                                            getAllKeys: function () {
-                                                return _idbRequestResult(this, tx, Object.keys(idx._data));
-                                            },
-                                            count: function () {
-                                                return _idbRequestResult(this, tx, Object.keys(idx._data).length);
-                                            },
-                                            openCursor: function () { return undefined; },
-                                            openKeyCursor: function () { return undefined; }
-                                        };
+                                        return new IDBIndex(
+                                            String(indexName),
+                                            objectStore,
+                                            idx.keyPath,
+                                            idx,
+                                            idx,
+                                            tx);
                                     }
                                 };
+                                return objectStore;
                             },
                             oncomplete: null,
                             onerror: null,
@@ -4922,8 +5066,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             }
                         };
                         _idbInitEventTarget(tx);
-                        // Auto-commit after this event loop turn
-                        _idbMaybeCompleteTransaction(tx);
+                        // Version-change completion is coordinated by open().
+                        if (txMode !== 'versionchange') _idbMaybeCompleteTransaction(tx);
                         return tx;
                     };
                     IDBDatabase.prototype.close = function () {};
@@ -4981,6 +5125,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                 request.readyState = 'done';
                                 if (ver > oldVersion) {
                                     var upgradeTx = db.transaction([], 'versionchange');
+                                    db._versionchangeTransaction = upgradeTx;
                                     request.transaction = upgradeTx;
                                     var upgradeEvent = {
                                         oldVersion: oldVersion,
@@ -4995,9 +5140,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                         return;
                                     }
                                     globalThis.setTimeout(function () {
+                                        db._versionchangeTransaction = null;
+                                        if (upgradeTx._aborted) {
+                                            request.error = {
+                                                name: 'AbortError',
+                                                message: 'The version change transaction was aborted'
+                                            };
+                                            request.readyState = 'done';
+                                            _idbDispatch(request, 'error');
+                                            return;
+                                        }
                                         if (upgradeTx._active) {
-                                            _idbDispatch(upgradeTx, 'complete');
                                             upgradeTx._active = false;
+                                            _idbDispatch(upgradeTx, 'complete');
                                         }
                                         _idbVersions[dbName] = ver;
                                         request.transaction = null;
@@ -8453,6 +8608,31 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 globalThis.DOMException = function DOMException(message, name) {
                     this.message = message || '';
                     this.name = name || 'Error';
+                    var codes = {
+                        IndexSizeError: 1,
+                        HierarchyRequestError: 3,
+                        WrongDocumentError: 4,
+                        InvalidCharacterError: 5,
+                        NoModificationAllowedError: 7,
+                        NotFoundError: 8,
+                        NotSupportedError: 9,
+                        InUseAttributeError: 10,
+                        InvalidStateError: 11,
+                        SyntaxError: 12,
+                        InvalidModificationError: 13,
+                        NamespaceError: 14,
+                        InvalidAccessError: 15,
+                        TypeMismatchError: 17,
+                        SecurityError: 18,
+                        NetworkError: 19,
+                        AbortError: 20,
+                        URLMismatchError: 21,
+                        QuotaExceededError: 22,
+                        TimeoutError: 23,
+                        InvalidNodeTypeError: 24,
+                        DataCloneError: 25
+                    };
+                    this.code = codes[this.name] || 0;
                 };
                 DOMException.prototype = Object.create(Error.prototype);
                 DOMException.prototype.constructor = DOMException;
