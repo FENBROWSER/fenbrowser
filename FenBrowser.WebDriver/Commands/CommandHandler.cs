@@ -157,6 +157,7 @@ namespace FenBrowser.WebDriver.Commands
         private readonly ScriptCommands _scriptCommands;
         private readonly WindowCommands _windowCommands;
         private readonly ConcurrentDictionary<string, CapabilityGuard> _capabilityGuards = new();
+        private readonly ConcurrentDictionary<string, byte> _unresponsiveSessions = new();
         private readonly SandboxEnforcer _sandboxEnforcer;
         
         // Browser integration - set when browser is connected
@@ -196,8 +197,19 @@ namespace FenBrowser.WebDriver.Commands
                 json = JsonSerializer.Deserialize<JsonElement>(body);
             }
             await AlignBrowserToSessionWindowAsync(command, sessionId).ConfigureAwait(false);
-            EnsureCommandPreconditions(command, sessionId);
-            await EnforceUnhandledPromptBehaviorAsync(command, sessionId);
+            var isUnresponsiveRecoveryCommand =
+                IsSessionUnresponsive(sessionId) &&
+                command is "ReleaseActions" or "CloseWindow" or "DeleteSession" or
+                    "SwitchToWindow" or "GetWindowHandles";
+            if (isUnresponsiveRecoveryCommand)
+            {
+                _sessionManager.GetSession(sessionId);
+            }
+            else
+            {
+                EnsureCommandPreconditions(command, sessionId);
+                await EnforceUnhandledPromptBehaviorAsync(command, sessionId);
+            }
 
             try
             {
@@ -385,6 +397,29 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.InvalidElementState, "Element is in an invalid state");
             }
         }
+
+        internal int? GetProtocolCommandTimeoutMs(RouteMatch match)
+        {
+            if (match == null ||
+                !string.Equals(match.Command, "ExecuteAsyncScript", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            return GetSession(match.GetSessionId()).Timeouts.Script ?? 30000;
+        }
+
+        internal void MarkSessionUnresponsive(string sessionId)
+        {
+            if (!string.IsNullOrWhiteSpace(sessionId))
+            {
+                _unresponsiveSessions[sessionId] = 0;
+            }
+        }
+
+        internal bool IsSessionUnresponsive(string sessionId)
+            => !string.IsNullOrWhiteSpace(sessionId) &&
+               _unresponsiveSessions.ContainsKey(sessionId);
         
         private WebDriverResponse GetStatus()
         {
@@ -613,6 +648,11 @@ namespace FenBrowser.WebDriver.Commands
         private async Task<WebDriverResponse> ReleaseActionsAsync(string sessionId)
         {
             EnsureTopLevelBrowsingContext(sessionId);
+            if (IsSessionUnresponsive(sessionId))
+            {
+                return WebDriverResponse.Success(null);
+            }
+
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -768,6 +808,13 @@ namespace FenBrowser.WebDriver.Commands
                 return;
             }
 
+            if (IsSessionUnresponsive(sessionId) &&
+                command is "ReleaseActions" or "CloseWindow" or "DeleteSession" or
+                    "SwitchToWindow" or "GetWindowHandles")
+            {
+                return;
+            }
+
             // Window-management commands own their own switching semantics.
             if (command is "GetStatus" or "NewSession" or "DeleteSession" or "SwitchToWindow" or "NewWindow" or "GetWindowHandles")
             {
@@ -871,6 +918,7 @@ namespace FenBrowser.WebDriver.Commands
                 if (!string.IsNullOrEmpty(sessionId))
                 {
                     _capabilityGuards.TryRemove(sessionId, out _);
+                    _unresponsiveSessions.TryRemove(sessionId, out _);
                     _sandboxEnforcer.DestroySandbox(sessionId);
                 }
             }

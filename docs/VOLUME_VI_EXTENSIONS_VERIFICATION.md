@@ -4217,3 +4217,15 @@ Verification:
 - Red result: fail (`0/1`) because no exception was thrown. Fixed network-process class: pass (`10/10`, zero failed/skipped).
 - The active discovery guard protects this tenth network-process contract as selected browser-integration test 32.
 - `NetworkProcessCoordinatorTests|RequiredBrowserIntegrationDiscoveryTests|RendererIpcMetadataTests|RendererIsolationPoliciesTests|RendererChildLoopIoTests`: pass (`56/56`, zero failed/skipped).
+
+## 6.179 WebDriver Script-Timeout Recovery (2026-07-27)
+
+- The remote end enforces the session script timeout independently of renderer/thread-pool progress. Command queue admission occurs on the listener request worker so cleanup requests are not stranded behind starved continuations.
+- A script timeout marks that session unresponsive. WPT cleanup commands then use cached top-level browsing-context state and avoid further renderer round trips; session deletion clears the recovery marker.
+- Tooling lifecycle bundles include WebDriver command start/finish records with queue-wait and execution duration, making protocol stalls attributable without extending WPT timeouts.
+
+Verification:
+
+- Focused command-deadline, cleanup-recovery, and serialized-queue contracts: pass (`4/4`, zero failed/skipped).
+- Release build of `FenBrowser.Tooling`: pass (zero errors).
+- Identical 332-test WPT comparison: all `332/332` tests completed; `CRASH` fell from `3` to `0`, abnormal process-exit records remained `0`, and wall time fell from `208.3 s` to `172.5 s`. Five previously crash/deadlock-classified outcomes are now bounded `TIMEOUT` results.

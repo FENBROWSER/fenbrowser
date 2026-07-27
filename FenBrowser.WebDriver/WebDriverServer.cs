@@ -217,14 +217,39 @@ namespace FenBrowser.WebDriver
                 // session state must never be mutated by overlapping commands.
                 var commandId = Interlocked.Increment(ref _nextCommandId);
                 var queuedAt = Stopwatch.StartNew();
-                var result = await _commandQueue.ExecuteAsync(async () =>
+                var result = await _commandQueue.ExecuteWithSynchronousAdmissionAsync(async () =>
                 {
                     var queueWaitMs = queuedAt.ElapsedMilliseconds;
                     var execution = Stopwatch.StartNew();
                     Log($"Command {commandId} started: {routeMatch.Command} (queueWaitMs={queueWaitMs})");
                     try
                     {
-                        return await _handler.ExecuteAsync(routeMatch, body).ConfigureAwait(false);
+                        var executionTask = _handler.ExecuteAsync(routeMatch, body);
+                        var commandTimeoutMs = _handler.GetProtocolCommandTimeoutMs(routeMatch);
+                        if (commandTimeoutMs.HasValue)
+                        {
+                            try
+                            {
+                                return await WebDriverCommandDeadline.WaitAsync(
+                                    executionTask,
+                                    commandTimeoutMs.Value).ConfigureAwait(false);
+                            }
+                            catch (TimeoutException)
+                            {
+                                _handler.MarkSessionUnresponsive(routeMatch.GetSessionId());
+                                throw new WebDriverException(
+                                    ErrorCodes.ScriptTimeout,
+                                    "Script execution timed out");
+                            }
+                        }
+
+                        return await executionTask.ConfigureAwait(false);
+                    }
+                    catch (WebDriverException ex) when (
+                        string.Equals(ex.ErrorCode, ErrorCodes.ScriptTimeout, StringComparison.Ordinal))
+                    {
+                        _handler.MarkSessionUnresponsive(routeMatch.GetSessionId());
+                        throw;
                     }
                     finally
                     {

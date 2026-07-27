@@ -30,6 +30,11 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task SynchronizeWindowStateAsync(Session session)
         {
+            if (_handler.IsSessionUnresponsive(session.Id))
+            {
+                return;
+            }
+
             if (_handler.Browser == null)
             {
                 return;
@@ -131,6 +136,13 @@ namespace FenBrowser.WebDriver.Commands
             }
 
             var closedHandle = session.CurrentWindowHandle;
+
+            if (_handler.IsSessionUnresponsive(sessionId))
+            {
+                session.WindowHandles.Remove(closedHandle);
+                session.CurrentWindowHandle = session.WindowHandles.FirstOrDefault();
+                return WebDriverResponse.Success(session.WindowHandles);
+            }
 
             if (_handler.Browser != null)
             {
@@ -260,6 +272,11 @@ namespace FenBrowser.WebDriver.Commands
             }
 
             session.CurrentWindowHandle = handle;
+            if (_handler.IsSessionUnresponsive(sessionId))
+            {
+                return WebDriverResponse.Success(null);
+            }
+
             if (_handler.Browser != null)
             {
                 await _handler.Browser.SwitchToWindowAsync(handle);

@@ -85,6 +85,47 @@ namespace FenBrowser.Tests.WebDriver
         }
 
         [Fact]
+        public async Task CommandDeadline_EnforcesTimeoutWithoutCompletingBrowserTask()
+        {
+            var neverCompletes = new TaskCompletionSource<object>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            await Assert.ThrowsAsync<TimeoutException>(
+                () => WebDriverCommandDeadline.WaitAsync(neverCompletes.Task, 25));
+
+            Assert.InRange(started.ElapsedMilliseconds, 10, 500);
+            Assert.False(neverCompletes.Task.IsCompleted);
+        }
+
+        [Fact]
+        public async Task UnresponsiveSession_UsesCachedStateForWptCleanup()
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            var initialHandle = Assert.Single(session.WindowHandles);
+            session.CurrentWindowHandle = initialHandle;
+            session.WindowStateInitialized = true;
+            var browser = new ScriptStubBrowserDriver();
+            var handler = new CommandHandler(manager)
+            {
+                Browser = browser
+            };
+            handler.MarkSessionUnresponsive(session.Id);
+
+            var router = new CommandRouter();
+            await handler.ExecuteAsync(
+                router.Match("DELETE", $"/session/{session.Id}/actions"),
+                null);
+            var handles = await handler.ExecuteAsync(
+                router.Match("GET", $"/session/{session.Id}/window/handles"),
+                null);
+
+            Assert.Equal(0, browser.ReleaseActionsCallCount);
+            Assert.Equal(new[] { initialHandle }, Assert.IsAssignableFrom<IEnumerable<string>>(handles.Value));
+        }
+
+        [Fact]
         public async Task NavigateTo_WaitsForNavigationCommitBeforeReturning()
         {
             var manager = new SessionManager();
@@ -341,6 +382,7 @@ namespace FenBrowser.Tests.WebDriver
         {
             public object[] LastArgs { get; private set; } = Array.Empty<object>();
             public int NavigateCallCount { get; private set; }
+            public int ReleaseActionsCallCount { get; private set; }
             private string _currentUrl = "about:blank";
             private string _deferredCommittedUrl;
             private int _remainingReadsBeforeCommit;
@@ -430,7 +472,11 @@ namespace FenBrowser.Tests.WebDriver
             public Task DeleteCookieAsync(string name) => Task.CompletedTask;
             public Task DeleteAllCookiesAsync() => Task.CompletedTask;
             public Task PerformActionsAsync(IReadOnlyList<WdActionSequence> actions) => Task.CompletedTask;
-            public Task ReleaseActionsAsync() => Task.CompletedTask;
+            public Task ReleaseActionsAsync()
+            {
+                ReleaseActionsCallCount++;
+                return Task.CompletedTask;
+            }
             public Task<bool> HasAlertAsync() => Task.FromResult(false);
             public Task DismissAlertAsync() => Task.CompletedTask;
             public Task AcceptAlertAsync() => Task.CompletedTask;

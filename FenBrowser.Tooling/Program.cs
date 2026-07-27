@@ -3065,6 +3065,8 @@ namespace FenBrowser.Tooling
                     {
                         ChromeManager.Instance.Initialize("about:blank");
                         var server = new FenBrowser.WebDriver.WebDriverServer(driverPort);
+                        server.OnLog += message =>
+                            lifecycle.Record("webdriver_command", new { message });
                         server.SetDriver(new HostBrowserDriver());
                         server.Start();
                         lifecycle.Record("webdriver_server_started");
