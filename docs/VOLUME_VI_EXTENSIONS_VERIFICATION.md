@@ -102,6 +102,16 @@ This volume details the infrastructure used to extend the browser and verify its
   timeouts fell from 44 to 21, and crashes fell from 24 to 18. `OK` is the WPT
   test-level status; the same run contained 8 fully passing tests and 222 tests
   with assertion failures.
+- After transaction-bound IndexedDB requests and the scoped lifecycle metadata
+  update, the identical 1,621-entry selection planned 337 runnable normal-profile
+  tests and completed all 337 across five shards. The slowest shard finished in
+  186.002 seconds (194.6 seconds including planning/orchestration), with 245
+  `OK`, 8 `TIMEOUT`, 5 `CRASH`, 1 `ERROR`, and 78 maintained `SKIP`. The raw
+  log contains 2,502 subtests; 13 top-level tests were fully passing and 232
+  reached `OK` with assertion failures. Relative to the preceding gate,
+  timeouts fell 61.9%, crashes fell 72.2%, and slowest-shard wall time fell
+  21.4%. All five shards accounted every started test without runner
+  timeout/stall and left zero WPT/FenBrowser processes.
 
 ### 1.4 FenJS Standalone Shell Smoke Surface (2026-05-21)
 
