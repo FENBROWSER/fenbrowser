@@ -291,6 +291,12 @@ namespace FenBrowser.Tooling
             {
                 psi.Environment["FEN_WPT_TOOLING_EXE"] = currentToolingExe;
             }
+            var artifactDirectory = Path.GetDirectoryName(rawLogPath);
+            if (!string.IsNullOrWhiteSpace(artifactDirectory))
+            {
+                psi.Environment[WebDriverLifecycleDiagnostics.ArtifactDirectoryEnvironmentVariable] =
+                    artifactDirectory;
+            }
 
             using var stdout = new StreamWriter(stdoutPath, append: false, new UTF8Encoding(false));
             using var stderr = new StreamWriter(stderrPath, append: false, new UTF8Encoding(false));

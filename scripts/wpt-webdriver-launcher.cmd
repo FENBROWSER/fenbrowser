@@ -25,4 +25,6 @@ if not exist "%TOOLING_EXE%" (
   exit /b 3
 )
 "%TOOLING_EXE%" webdriver --headless --port "%PORT%"
-exit /b %ERRORLEVEL%
+set "TOOLING_EXIT=%ERRORLEVEL%"
+echo [wpt-webdriver-launcher] Tooling exited code %TOOLING_EXIT% on port %PORT% 1>&2
+exit /b %TOOLING_EXIT%

@@ -235,6 +235,25 @@ FenBrowser includes a compliant W3C WebDriver server, allowing it to be controll
   process-death baseline; native process-exit diagnostics remain the next
   stability target.
 
+### 2.7 WebDriver Process Lifecycle Evidence (2026-07-27)
+
+- WPT child processes inherit their shard output directory through
+  `FEN_WPT_ARTIFACT_DIR`. Each Tooling WebDriver instance writes a unique
+  `webdriver/lifecycle-port<port>-pid<pid>.jsonl` ledger containing startup,
+  window-manager, server-start, managed fatal, cancellation, and clean-exit
+  events. Writes are best-effort and cannot prevent WebDriver startup.
+- The launcher emits the Tooling exit code and port into upstream mozlog when
+  the child returns, preserving native termination status even when managed
+  exception handlers cannot run.
+- WebDriver Tooling uses the same explicit 16 MiB main/UI stack boundary as the
+  normal Host entry point. This removed a startup-mode stack disparity but did
+  not explain the dominant crash bucket.
+- Lifecycle output plus Windows Error Reporting identified the dominant failure
+  as `libSkiaSharp.dll` fast-fail `0xC0000409` at
+  `SKCanvas.DrawPicture`, reached through `BrowserIntegration.Render`. After
+  the Host native-frame lifetime fix, the identical selection completed all
+  332 runnable URLs with zero matching native exits and no runner stall.
+
 ---
 
 ## 3. Verification Ecosystem (`FenBrowser.Tests`, `FenBrowser.FenEngine.Testing`)

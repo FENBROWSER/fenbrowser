@@ -9,6 +9,8 @@ using System.Text.Json.Serialization;
 using System.Globalization;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using System.Runtime.ExceptionServices;
+using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
@@ -34,12 +36,23 @@ namespace FenBrowser.Tooling
     {
         internal const int DebugSiteViewportWidth = 1280;
         internal const int DebugSiteViewportHeight = 800;
+        internal const int WebDriverMainStackBytes = 16 * 1024 * 1024;
+        internal const string WebDriverLargeStackEnvironmentVariable =
+            "FEN_TOOLING_WEBDRIVER_LARGE_STACK";
 
         public static async Task Main(string[] args)
         {
             if (args.Length == 0)
             {
                 PrintUsage();
+                return;
+            }
+
+            if (RequiresWebDriverLargeStack(
+                    args,
+                    Environment.GetEnvironmentVariable(WebDriverLargeStackEnvironmentVariable)))
+            {
+                RunWebDriverMainOnLargeStack(args);
                 return;
             }
 
@@ -113,6 +126,41 @@ namespace FenBrowser.Tooling
                 default:
                     PrintUsage();
                     return;
+            }
+        }
+
+        internal static bool RequiresWebDriverLargeStack(string[] args, string? marker)
+            => args.Length > 0 &&
+               string.Equals(args[0], "webdriver", StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(marker, "1", StringComparison.Ordinal);
+
+        private static void RunWebDriverMainOnLargeStack(string[] args)
+        {
+            Environment.SetEnvironmentVariable(WebDriverLargeStackEnvironmentVariable, "1");
+            Exception? failure = null;
+            var worker = new Thread(
+                () =>
+                {
+                    try
+                    {
+                        Main(args).GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex)
+                    {
+                        failure = ex;
+                    }
+                },
+                WebDriverMainStackBytes)
+            {
+                IsBackground = false,
+                Name = "FenBrowser-WebDriver-Main"
+            };
+
+            worker.Start();
+            worker.Join();
+            if (failure != null)
+            {
+                ExceptionDispatchInfo.Capture(failure).Throw();
             }
         }
 
@@ -2997,6 +3045,8 @@ namespace FenBrowser.Tooling
                 }
             }
 
+            using var lifecycle = WebDriverLifecycleDiagnostics.Start(driverPort);
+
             // WPT serves many fixtures on https://web-platform.test:* with local certs.
             // Automation mode should not fail navigation on certificate trust checks.
             NetworkConfiguration.Instance.IgnoreCertificateErrors = true;
@@ -3004,9 +3054,11 @@ namespace FenBrowser.Tooling
             CssEngineConfig.CurrentEngine = CssEngineType.Custom;
             var windowManager = WindowManager.Instance;
             windowManager.Initialize("about:blank", isHeadless: headless);
+            lifecycle.Record("window_manager_initialized", new { headless });
 
             windowManager.OnLoad += () =>
             {
+                lifecycle.Record("window_manager_loaded");
                 Task.Run(() =>
                 {
                     try
@@ -3015,9 +3067,16 @@ namespace FenBrowser.Tooling
                         var server = new FenBrowser.WebDriver.WebDriverServer(driverPort);
                         server.SetDriver(new HostBrowserDriver());
                         server.Start();
+                        lifecycle.Record("webdriver_server_started");
                     }
                     catch (Exception ex)
                     {
+                        lifecycle.Record("webdriver_server_start_failed", new
+                        {
+                            type = ex.GetType().FullName,
+                            ex.Message,
+                            ex.StackTrace
+                        });
                         Console.Error.WriteLine(ex);
                         Environment.Exit(1);
                     }
@@ -3025,6 +3084,7 @@ namespace FenBrowser.Tooling
             };
 
             windowManager.Run();
+            lifecycle.Record("window_manager_stopped");
             await Task.CompletedTask.ConfigureAwait(false);
         }
 
