@@ -218,6 +218,23 @@ FenBrowser includes a compliant W3C WebDriver server, allowing it to be controll
   - close-window lifecycle isolation across concurrent sessions
 - Existing shadow-root and script marshalling contract slices continue passing under hardened ID/session rules.
 
+### 2.6 Remote-End Command Queue (2026-07-27)
+
+- The HTTP remote end serializes matched WebDriver commands through one
+  cancellation-aware request queue before they reach shared session and browser
+  state. Concurrent HTTP requests can no longer overlap navigation, window,
+  action-cleanup, or session mutation.
+- Command diagnostics include a monotonic command ID, queue wait, command name,
+  and execution duration. Server shutdown cancels queued commands without
+  allowing a canceled waiter to release the active command.
+- Focused queue contracts cover non-overlap and queued-command cancellation.
+  The identical 1,621-entry normal WPT selection completed 332/332 top-level
+  tests across five shards without runner timeout/stall in 183.812 seconds:
+  231 `OK`, 1 `TIMEOUT`, 21 `CRASH`, 1 `ERROR`, and 78 maintained `SKIP`.
+  This corrects remote-end command ordering but does not reduce the
+  process-death baseline; native process-exit diagnostics remain the next
+  stability target.
+
 ---
 
 ## 3. Verification Ecosystem (`FenBrowser.Tests`, `FenBrowser.FenEngine.Testing`)

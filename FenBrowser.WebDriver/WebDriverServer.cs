@@ -10,6 +10,7 @@
 // =============================================================================
 
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -35,6 +36,7 @@ namespace FenBrowser.WebDriver
         private readonly SessionManager _sessionManager;
         private readonly CommandRouter _router;
         private readonly CommandHandler _handler;
+        private readonly WebDriverCommandQueue _commandQueue;
         private readonly OriginValidator _originValidator;
         private readonly CancellationTokenSource _cts;
         private readonly IBiDiTransportBootstrap _biDiBootstrap;
@@ -42,6 +44,7 @@ namespace FenBrowser.WebDriver
         private static readonly string[] AllowedCorsMethods = { "GET", "POST", "DELETE", "OPTIONS" };
         private static readonly string[] AllowedCorsHeaders = { "content-type" };
         private Task _listenerTask;
+        private long _nextCommandId;
         private bool _disposed;
         
         public event Action<string> OnLog;
@@ -55,6 +58,7 @@ namespace FenBrowser.WebDriver
             _sessionManager = new SessionManager();
             _router = new CommandRouter();
             _handler = new CommandHandler(_sessionManager);
+            _commandQueue = new WebDriverCommandQueue();
             _originValidator = new OriginValidator(allowLocalhostOnly: true);
             _cts = new CancellationTokenSource();
             _biDiBootstrap = biDiBootstrap ?? new NoOpBiDiTransportBootstrap();
@@ -209,10 +213,30 @@ namespace FenBrowser.WebDriver
                     body = await reader.ReadToEndAsync();
                 }
                 
-                // Execute command
-                var result = await _handler.ExecuteAsync(routeMatch, body);
+                // The WebDriver remote end has one request queue. Browser and
+                // session state must never be mutated by overlapping commands.
+                var commandId = Interlocked.Increment(ref _nextCommandId);
+                var queuedAt = Stopwatch.StartNew();
+                var result = await _commandQueue.ExecuteAsync(async () =>
+                {
+                    var queueWaitMs = queuedAt.ElapsedMilliseconds;
+                    var execution = Stopwatch.StartNew();
+                    Log($"Command {commandId} started: {routeMatch.Command} (queueWaitMs={queueWaitMs})");
+                    try
+                    {
+                        return await _handler.ExecuteAsync(routeMatch, body).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        Log($"Command {commandId} finished: {routeMatch.Command} (durationMs={execution.ElapsedMilliseconds})");
+                    }
+                }, _cts.Token).ConfigureAwait(false);
                 
                 await SendResponseAsync(response, result);
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            {
+                response.Abort();
             }
             catch (WebDriverException wdEx)
             {
