@@ -55,8 +55,8 @@ This volume details the infrastructure used to extend the browser and verify its
   transport), Web Crypto key generation (no `subtle.generateKey`), and the
   tentative KangarooTwelve/TurboSHAKE digests (no native implementation).
   Narrow storage entries also cover absent IndexedDB structured cloning,
-  origin isolation/partitioning, opaque-origin enforcement, connection queues,
-  cross-realm and destroyed-context request lifecycles, Blob URL
+  origin isolation/partitioning, opaque-origin enforcement, cursors, connection
+  queues, cross-realm and destroyed-context request lifecycles, Blob URL
   registry/resource resolution, and worker-only files whose generated URL does
   not carry a worker-variant suffix. File-level entries remain capability
   declarations rather than pass expectations: partial IndexedDB key-path,
