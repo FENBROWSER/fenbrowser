@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using FenBrowser.WebDriver;
 
@@ -37,7 +38,7 @@ namespace FenBrowser.WebDriver.Protocol
         public string PlatformName { get; set; } = "windows";
 
         [JsonPropertyName("acceptInsecureCerts")]
-        public bool AcceptInsecureCerts { get; set; }
+        public bool? AcceptInsecureCerts { get; set; } = false;
 
         [JsonPropertyName("pageLoadStrategy")]
         public string PageLoadStrategy { get; set; } = "normal";
@@ -52,7 +53,7 @@ namespace FenBrowser.WebDriver.Protocol
         public Timeouts Timeouts { get; set; } = new();
 
         [JsonPropertyName("strictFileInteractability")]
-        public bool StrictFileInteractability { get; set; }
+        public bool? StrictFileInteractability { get; set; } = false;
 
         [JsonPropertyName("unhandledPromptBehavior")]
         public string UnhandledPromptBehavior { get; set; } = "dismiss and notify";
@@ -75,11 +76,11 @@ namespace FenBrowser.WebDriver.Protocol
             if (requested == null)
                 return merged;
 
-            merged.AcceptInsecureCerts = requested.AcceptInsecureCerts;
+            merged.AcceptInsecureCerts = requested.AcceptInsecureCerts ?? false;
             merged.PageLoadStrategy = NormalizePageLoadStrategy(requested.PageLoadStrategy);
             merged.Timeouts = requested.Timeouts?.Clone() ?? new Timeouts();
             merged.Proxy = requested.Proxy?.Clone() ?? new ProxyConfig();
-            merged.StrictFileInteractability = requested.StrictFileInteractability;
+            merged.StrictFileInteractability = requested.StrictFileInteractability ?? false;
             merged.UnhandledPromptBehavior = NormalizePromptBehavior(requested.UnhandledPromptBehavior);
             merged.FenOptions = requested.FenOptions?.Clone();
             merged.ValidateOrThrow();
@@ -123,13 +124,16 @@ namespace FenBrowser.WebDriver.Protocol
     public class Timeouts
     {
         [JsonPropertyName("script")]
-        public int? Script { get; set; } = 30000;
+        [JsonConverter(typeof(NullableLongIntegerJsonConverter))]
+        public long? Script { get; set; } = 30000;
 
         [JsonPropertyName("pageLoad")]
-        public int? PageLoad { get; set; } = 300000;
+        [JsonConverter(typeof(NullableLongIntegerJsonConverter))]
+        public long? PageLoad { get; set; } = 300000;
 
         [JsonPropertyName("implicit")]
-        public int? Implicit { get; set; } = 0;
+        [JsonConverter(typeof(NullableLongIntegerJsonConverter))]
+        public long? Implicit { get; set; } = 0;
 
         public void ValidateOrThrow()
         {
@@ -148,7 +152,7 @@ namespace FenBrowser.WebDriver.Protocol
             };
         }
 
-        private static void ValidateTimeout(string name, int? value, bool allowNull)
+        private static void ValidateTimeout(string name, long? value, bool allowNull)
         {
             if (!value.HasValue)
             {
@@ -163,6 +167,45 @@ namespace FenBrowser.WebDriver.Protocol
             if (value.Value < 0)
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} timeout must be >= 0");
+            }
+        }
+    }
+
+    internal sealed class NullableLongIntegerJsonConverter : JsonConverter<long?>
+    {
+        public override long? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.Null)
+            {
+                return null;
+            }
+
+            if (reader.TokenType != JsonTokenType.Number || !reader.TryGetDouble(out var rawValue))
+            {
+                throw new JsonException("Timeout value must be a number or null");
+            }
+
+            if (double.IsNaN(rawValue) ||
+                double.IsInfinity(rawValue) ||
+                rawValue < 0 ||
+                rawValue >= 9007199254740992d ||
+                Math.Truncate(rawValue) != rawValue)
+            {
+                throw new JsonException("Timeout value must be a non-negative integer within WebDriver's safe integer range");
+            }
+
+            return (long)rawValue;
+        }
+
+        public override void Write(Utf8JsonWriter writer, long? value, JsonSerializerOptions options)
+        {
+            if (value.HasValue)
+            {
+                writer.WriteNumberValue(value.Value);
+            }
+            else
+            {
+                writer.WriteNullValue();
             }
         }
     }

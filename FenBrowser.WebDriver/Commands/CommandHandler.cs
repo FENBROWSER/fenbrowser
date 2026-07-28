@@ -406,7 +406,13 @@ namespace FenBrowser.WebDriver.Commands
                 return null;
             }
 
-            return GetSession(match.GetSessionId()).Timeouts.Script ?? 30000;
+            var value = GetSession(match.GetSessionId()).Timeouts.Script ?? 30000;
+            if (value <= 0)
+            {
+                return 30000;
+            }
+
+            return value > int.MaxValue ? int.MaxValue : (int)value;
         }
 
         internal void MarkSessionUnresponsive(string sessionId)

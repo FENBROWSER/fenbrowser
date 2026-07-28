@@ -113,6 +113,34 @@ namespace FenBrowser.Tests.WebDriver
         }
 
         [Fact]
+        public void NewSession_EchoesSafeIntegerTimeouts()
+        {
+            var manager = new SessionManager();
+            var commands = new SessionCommands(manager);
+            using var body = JsonDocument.Parse("""{"capabilities":{"alwaysMatch":{"timeouts":{"script":0,"pageLoad":2.0,"implicit":9007199254740991}}}}""");
+
+            var response = commands.NewSession(body.RootElement.Clone());
+            var value = Assert.IsType<NewSessionResponse>(response.Value);
+
+            Assert.Equal(0, value.Capabilities.Timeouts.Script);
+            Assert.Equal(2, value.Capabilities.Timeouts.PageLoad);
+            Assert.Equal(9007199254740991, value.Capabilities.Timeouts.Implicit);
+        }
+
+        [Fact]
+        public void NewSession_RejectsDuplicateAlwaysAndFirstMatchCapabilities()
+        {
+            var manager = new SessionManager();
+            var commands = new SessionCommands(manager);
+            using var body = JsonDocument.Parse("""{"capabilities":{"alwaysMatch":{"timeouts":{"script":10}},"firstMatch":[{},{"timeouts":{"pageLoad":10}}]}}""");
+
+            var ex = Assert.Throws<WebDriverException>(() => commands.NewSession(body.RootElement.Clone()));
+
+            Assert.Equal(ErrorCodes.InvalidArgument, ex.ErrorCode);
+            Assert.False(manager.HasActiveSessions);
+        }
+
+        [Fact]
         public async Task Status_ReportsNotReadyWhileSessionIsActive()
         {
             var manager = new SessionManager();

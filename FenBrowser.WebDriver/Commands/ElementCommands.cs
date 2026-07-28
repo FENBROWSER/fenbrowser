@@ -735,7 +735,13 @@ namespace FenBrowser.WebDriver.Commands
 
             if (session.Timeouts.Implicit.HasValue)
             {
-                return Math.Max(0, session.Timeouts.Implicit.Value);
+                var value = session.Timeouts.Implicit.Value;
+                if (value <= 0)
+                {
+                    return 0;
+                }
+
+                return value > int.MaxValue ? int.MaxValue : (int)value;
             }
 
             return NullImplicitWaitFallbackMs;

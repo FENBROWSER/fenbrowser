@@ -85,7 +85,7 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.JavaScriptError, "Browser not connected");
             }
 
-            var timeout = session.Timeouts.Script ?? 30000;
+            var timeout = ToRuntimeTimeoutMs(session.Timeouts.Script, 30000);
 
             try
             {
@@ -114,6 +114,17 @@ namespace FenBrowser.WebDriver.Commands
             {
                 throw new WebDriverException(ErrorCodes.JavaScriptError, ex.Message);
             }
+        }
+
+        private static int ToRuntimeTimeoutMs(long? configuredTimeoutMs, int fallbackMs)
+        {
+            var value = configuredTimeoutMs ?? fallbackMs;
+            if (value <= 0)
+            {
+                return fallbackMs;
+            }
+
+            return value > int.MaxValue ? int.MaxValue : (int)value;
         }
 
         private static bool ShouldSurfaceAsProtocolStateError(string message)

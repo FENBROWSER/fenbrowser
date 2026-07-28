@@ -55,7 +55,7 @@ namespace FenBrowser.WebDriver
             _listener = new HttpListener();
             _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
             
-            _sessionManager = new SessionManager();
+            _sessionManager = new SessionManager(maxSessions: 1);
             _router = new CommandRouter();
             _handler = new CommandHandler(_sessionManager);
             _commandQueue = new WebDriverCommandQueue();

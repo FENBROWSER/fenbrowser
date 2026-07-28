@@ -288,7 +288,7 @@ namespace FenBrowser.WebDriver.Commands
             return uri.AbsoluteUri.TrimEnd('/');
         }
 
-        private static int ResolvePageLoadTimeoutMs(int? configuredTimeoutMs)
+        private static int ResolvePageLoadTimeoutMs(long? configuredTimeoutMs)
         {
             var value = configuredTimeoutMs ?? DefaultPageLoadTimeoutMs;
             if (value <= 0)
@@ -296,7 +296,7 @@ namespace FenBrowser.WebDriver.Commands
                 return DefaultPageLoadTimeoutMs;
             }
 
-            return Math.Min(value, MaxPageLoadTimeoutMs);
+            return value > MaxPageLoadTimeoutMs ? MaxPageLoadTimeoutMs : (int)value;
         }
 
         private static void EnsureTopLevelBrowsingContext(Session session)

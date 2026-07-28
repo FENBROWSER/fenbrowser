@@ -35,7 +35,7 @@ namespace FenBrowser.WebDriver.Security
         /// <summary>
         /// Check if insecure certificates are allowed.
         /// </summary>
-        public bool AllowInsecureCerts => _session.Capabilities.AcceptInsecureCerts;
+        public bool AllowInsecureCerts => _session.Capabilities.AcceptInsecureCerts == true;
         
         /// <summary>
         /// Check if a URL is allowed for navigation.
@@ -144,7 +144,7 @@ namespace FenBrowser.WebDriver.Security
         /// </summary>
         public int GetScriptTimeout()
         {
-            return _session.Timeouts.Script ?? 30000;
+            return ToRuntimeTimeoutMs(_session.Timeouts.Script, 30000);
         }
         
         /// <summary>
@@ -152,7 +152,18 @@ namespace FenBrowser.WebDriver.Security
         /// </summary>
         public int GetPageLoadTimeout()
         {
-            return _session.Timeouts.PageLoad ?? 300000;
+            return ToRuntimeTimeoutMs(_session.Timeouts.PageLoad, 300000);
+        }
+
+        private static int ToRuntimeTimeoutMs(long? configuredTimeoutMs, int fallbackMs)
+        {
+            var value = configuredTimeoutMs ?? fallbackMs;
+            if (value <= 0)
+            {
+                return fallbackMs;
+            }
+
+            return value > int.MaxValue ? int.MaxValue : (int)value;
         }
 
         public static SecurityDecision ValidateRequestedCapabilities(Capabilities? caps)

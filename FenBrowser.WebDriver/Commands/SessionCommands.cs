@@ -34,21 +34,14 @@ namespace FenBrowser.WebDriver.Commands
                     throw new WebDriverException(ErrorCodes.InvalidArgument, "Session payload must be a JSON object");
                 }
 
-                CapabilityRequest request;
                 try
                 {
                     ValidateNewSessionPayload(body.Value);
-                    request = JsonSerializer.Deserialize<CapabilityRequest>(body.Value.GetRawText());
+                    requestedCaps = CreateRequestedCapabilities(body.Value);
                 }
                 catch (JsonException ex)
                 {
                     throw new WebDriverException(ErrorCodes.InvalidArgument, $"Invalid capabilities payload: {ex.Message}");
-                }
-
-                requestedCaps = request?.Capabilities?.AlwaysMatch;
-                if (requestedCaps == null && request?.Capabilities?.FirstMatch?.Count > 0)
-                {
-                    requestedCaps = request.Capabilities.FirstMatch.FirstOrDefault();
                 }
             }
 
@@ -154,6 +147,104 @@ namespace FenBrowser.WebDriver.Commands
                     ValidateCapabilityObject(entry);
                 }
             }
+        }
+
+        private static Capabilities CreateRequestedCapabilities(JsonElement body)
+        {
+            var capabilities = body.GetProperty("capabilities");
+            var alwaysMatch = capabilities.TryGetProperty("alwaysMatch", out var always)
+                ? always
+                : default;
+
+            if (capabilities.TryGetProperty("firstMatch", out var firstMatch))
+            {
+                foreach (var first in firstMatch.EnumerateArray())
+                {
+                    RejectDuplicateCapabilityNames(alwaysMatch, first);
+                }
+
+                foreach (var first in firstMatch.EnumerateArray())
+                {
+                    var merged = MergeCapabilityObjects(alwaysMatch, first);
+                    if (CapabilityMatchesImplementation(merged))
+                    {
+                        return DeserializeCapabilities(merged);
+                    }
+                }
+
+                throw new WebDriverException(ErrorCodes.SessionNotCreated, "No matching capabilities found");
+            }
+
+            return DeserializeCapabilities(alwaysMatch.ValueKind == JsonValueKind.Object ? alwaysMatch.GetRawText() : "{}");
+        }
+
+        private static void RejectDuplicateCapabilityNames(JsonElement alwaysMatch, JsonElement firstMatch)
+        {
+            if (alwaysMatch.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+
+            var names = new HashSet<string>(alwaysMatch.EnumerateObject().Select(property => property.Name), StringComparer.Ordinal);
+            foreach (var property in firstMatch.EnumerateObject())
+            {
+                if (names.Contains(property.Name))
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, $"Capability {property.Name} is present in alwaysMatch and firstMatch");
+                }
+            }
+        }
+
+        private static string MergeCapabilityObjects(JsonElement alwaysMatch, JsonElement firstMatch)
+        {
+            using var buffer = new System.IO.MemoryStream();
+            using (var writer = new Utf8JsonWriter(buffer))
+            {
+                writer.WriteStartObject();
+                if (alwaysMatch.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var property in alwaysMatch.EnumerateObject())
+                    {
+                        property.WriteTo(writer);
+                    }
+                }
+
+                foreach (var property in firstMatch.EnumerateObject())
+                {
+                    property.WriteTo(writer);
+                }
+
+                writer.WriteEndObject();
+            }
+
+            return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+        }
+
+        private static bool CapabilityMatchesImplementation(string json)
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+
+            if (root.TryGetProperty("browserName", out var browserName) &&
+                browserName.ValueKind == JsonValueKind.String &&
+                !string.Equals(browserName.GetString(), "FenBrowser", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (root.TryGetProperty("platformName", out var platformName) &&
+                platformName.ValueKind == JsonValueKind.String &&
+                !string.Equals(platformName.GetString(), "windows", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static Capabilities DeserializeCapabilities(string json)
+        {
+            return JsonSerializer.Deserialize<Capabilities>(json) ?? new Capabilities();
         }
 
         private static void ValidateCapabilityObject(JsonElement capabilities)
@@ -312,7 +403,7 @@ namespace FenBrowser.WebDriver.Commands
             }
         }
 
-        private static int? ParseTimeout(string name, JsonElement element)
+        private static long? ParseTimeout(string name, JsonElement element)
         {
             if (element.ValueKind == JsonValueKind.Null)
                 return null;
@@ -322,12 +413,12 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} timeout must be a non-negative integer or null");
             }
 
-            if (double.IsNaN(rawValue) || double.IsInfinity(rawValue) || rawValue < 0 || rawValue > int.MaxValue)
+            if (double.IsNaN(rawValue) || double.IsInfinity(rawValue) || rawValue < 0 || rawValue >= 9007199254740992d)
             {
-                throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} timeout must stay within [0, {int.MaxValue}]");
+                throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} timeout must stay within [0, 2^53 - 1]");
             }
 
-            return (int)Math.Floor(rawValue);
+            return (long)Math.Floor(rawValue);
         }
     }
 }

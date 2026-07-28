@@ -4262,3 +4262,15 @@ Verification:
 - Focused WebDriver invalid-capability contracts: pass (`11/11`, zero failed/skipped).
 - Release build of `FenBrowser.Tooling`: pass (zero errors).
 - Focused wdspec slice `/webdriver/tests/classic/new_session/invalid_capabilities.py`: pass (`1/1`, zero unexpected subtest failures) in `Results/wpt/wdspec_invalid_capabilities_fix`; baseline was `95` unexpected subtest failures in `Results/wpt/wdspec_invalid_capabilities_next`.
+
+## 6.183 WebDriver New-Session Capability Merge And Timeout Echo (2026-07-28)
+
+- New-session capability creation now validates duplicate `alwaysMatch`/`firstMatch` names across all candidates, selects the first exact browser/platform match, and then deserializes only the merged candidate.
+- Protocol timeout storage now preserves WebDriver safe-integer values for response echo while runtime call sites clamp to their bounded `int` timers. The endpoint-node WebDriver server now advertises one active-session slot through `session not created` once a session is active.
+
+Verification:
+
+- Focused new-session WebDriver contracts: pass (`14/14`, zero failed/skipped).
+- Release build of `FenBrowser.Tooling`: pass (zero errors).
+- Positive new-session wdspec slice `/create_alwaysMatch.py`, `/create_firstMatch.py`, `/merge.py`, `/no_capabilities.py`, `/default_values.py`, and `/timeouts.py`: pass (`6/6`, zero unexpected subtest failures) in `Results/wpt/wdspec_new_session_positive_fix2`; baseline had `14` unexpected subtest failures in `Results/wpt/wdspec_new_session_positive_next`.
+- Invalid capability regression slice `/webdriver/tests/classic/new_session/invalid_capabilities.py`: pass (`1/1`, zero unexpected subtest failures) in `Results/wpt/wdspec_invalid_capabilities_regression`.
