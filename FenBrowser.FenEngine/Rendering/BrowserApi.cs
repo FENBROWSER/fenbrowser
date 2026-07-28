@@ -2090,6 +2090,11 @@ pre {{
 
                 if (!_pendingWebDriverClickPointValid)
                 {
+                    if (TryHandleFrameRemovalActivation(element, allowDefaultActivation: true))
+                    {
+                        return;
+                    }
+
                     throw new InvalidOperationException("element not interactable");
                 }
 
@@ -2114,6 +2119,11 @@ pre {{
 
                 if (!_lastClickHadTarget)
                 {
+                    if (TryHandleFrameRemovalActivation(element, allowDefaultActivation: true))
+                    {
+                        return;
+                    }
+
                     throw new InvalidOperationException("element not interactable");
                 }
 

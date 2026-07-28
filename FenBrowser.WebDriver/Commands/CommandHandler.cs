@@ -819,7 +819,8 @@ namespace FenBrowser.WebDriver.Commands
             }
 
             // Window-management commands own their own switching semantics.
-            if (command is "GetStatus" or "NewSession" or "DeleteSession" or "SwitchToWindow" or "NewWindow" or "GetWindowHandles")
+            if (command is "GetStatus" or "NewSession" or "DeleteSession" or "GetWindowHandle" or
+                "SwitchToWindow" or "NewWindow" or "GetWindowHandles")
             {
                 return;
             }
@@ -1053,7 +1054,7 @@ namespace FenBrowser.WebDriver.Commands
 
             if (_topLevelContextCommands.Contains(command))
             {
-                if (command == "CloseWindow")
+                if (command is "CloseWindow" or "GetWindowHandle")
                 {
                     EnsureTopLevelWindowHandleOpen(sessionId);
                 }

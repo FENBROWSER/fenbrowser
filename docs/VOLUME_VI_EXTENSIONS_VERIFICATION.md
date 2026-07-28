@@ -4240,3 +4240,14 @@ Verification:
 - Focused WebDriver capability/status contracts: pass (`4/4`, zero failed/skipped).
 - Release build of `FenBrowser.Tooling`: pass (zero errors).
 - Focused wdspec slice `/webdriver/tests/classic/new_session/response.py` and `/webdriver/tests/classic/status/status.py`: pass (`2/2`, zero unexpected subtest failures) in `Results/wpt/wdspec_capabilities_status_strict_proxy`.
+
+## 6.181 WebDriver Window Handle After Child-Frame Removal (2026-07-28)
+
+- Element click activation now gives the existing frame-removal default-action fallback a chance to run before reporting `element not interactable`, so the WPT `closed_frame` fixture can detach its selected child frame through the remote-end click path.
+- `GET /window` is treated as a top-level window-handle command. It skips selected-child-context alignment and validates only that the selected top-level window handle is still open, matching WebDriver behavior after an iframe browsing context is removed.
+
+Verification:
+
+- Focused WebDriver invalid-child-context contract: pass (`1/1`, zero failed/skipped).
+- Release build of `FenBrowser.Tooling`: pass (zero errors).
+- Focused wdspec slice `/webdriver/tests/classic/get_window_handle/get.py` and `/webdriver/tests/classic/get_window_handles/get.py`: pass (`2/2`, zero unexpected subtest failures) in `Results/wpt/wdspec_window_handle_context_fix`.

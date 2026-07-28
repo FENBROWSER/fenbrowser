@@ -175,6 +175,27 @@ namespace FenBrowser.Tests.WebDriver
         }
 
         [Fact]
+        public async Task GetWindowHandle_IgnoresInvalidSelectedChildContext()
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            var initialHandle = Assert.Single(session.WindowHandles);
+            session.CurrentWindowHandle = initialHandle;
+            session.WindowStateInitialized = true;
+            var handler = new CommandHandler(manager)
+            {
+                Browser = new InvalidChildContextBrowserDriver()
+            };
+            var router = new CommandRouter();
+
+            var response = await handler.ExecuteAsync(
+                router.Match("GET", $"/session/{session.Id}/window"),
+                null);
+
+            Assert.Equal(initialHandle, response.Value);
+        }
+
+        [Fact]
         public async Task NavigateTo_WaitsForNavigationCommitBeforeReturning()
         {
             var manager = new SessionManager();
@@ -427,7 +448,7 @@ namespace FenBrowser.Tests.WebDriver
         {
         }
 
-        private sealed class ScriptStubBrowserDriver : IBrowserDriver
+        private class ScriptStubBrowserDriver : IBrowserDriver
         {
             public object[] LastArgs { get; private set; } = Array.Empty<object>();
             public int NavigateCallCount { get; private set; }
@@ -531,7 +552,7 @@ namespace FenBrowser.Tests.WebDriver
             public Task AcceptAlertAsync() => Task.CompletedTask;
             public Task<string> GetAlertTextAsync() => Task.FromResult(string.Empty);
             public Task SendAlertTextAsync(string text) => Task.CompletedTask;
-            public bool HasValidCurrentBrowsingContext() => true;
+            public virtual bool HasValidCurrentBrowsingContext() => true;
         }
 
         private sealed class IsolatedWindowBrowserDriver : IBrowserDriver
@@ -630,6 +651,11 @@ namespace FenBrowser.Tests.WebDriver
             public Task<string> GetAlertTextAsync() => Task.FromResult(string.Empty);
             public Task SendAlertTextAsync(string text) => Task.CompletedTask;
             public bool HasValidCurrentBrowsingContext() => !string.IsNullOrWhiteSpace(_currentHandle) && _handles.Contains(_currentHandle);
+        }
+
+        private sealed class InvalidChildContextBrowserDriver : ScriptStubBrowserDriver
+        {
+            public override bool HasValidCurrentBrowsingContext() => false;
         }
 
         private sealed class StaleElementBrowserDriver : IBrowserDriver
