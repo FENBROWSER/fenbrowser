@@ -56,10 +56,14 @@ namespace FenBrowser.WebDriver.Protocol
         public bool? StrictFileInteractability { get; set; } = false;
 
         [JsonPropertyName("unhandledPromptBehavior")]
-        public string UnhandledPromptBehavior { get; set; } = "dismiss and notify";
+        public object UnhandledPromptBehavior { get; set; } = "dismiss and notify";
 
         [JsonPropertyName("userAgent")]
         public string UserAgent { get; set; } = "FenBrowser/1.0.0";
+
+        [JsonPropertyName("webSocketUrl")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public object WebSocketUrl { get; set; }
 
         [JsonPropertyName("fen:options")]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -82,6 +86,7 @@ namespace FenBrowser.WebDriver.Protocol
             merged.Proxy = requested.Proxy?.Clone() ?? new ProxyConfig();
             merged.StrictFileInteractability = requested.StrictFileInteractability ?? false;
             merged.UnhandledPromptBehavior = NormalizePromptBehavior(requested.UnhandledPromptBehavior);
+            merged.WebSocketUrl = NormalizeWebSocketUrl(requested.WebSocketUrl);
             merged.FenOptions = requested.FenOptions?.Clone();
             merged.ValidateOrThrow();
             return merged;
@@ -94,7 +99,7 @@ namespace FenBrowser.WebDriver.Protocol
                 throw new WebDriverException(ErrorCodes.InvalidArgument, $"Unsupported pageLoadStrategy: {PageLoadStrategy}");
             }
 
-            if (!AllowedPromptBehaviors.Contains(NormalizePromptBehavior(UnhandledPromptBehavior)))
+            if (!IsValidPromptBehavior(UnhandledPromptBehavior))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, $"Unsupported unhandledPromptBehavior: {UnhandledPromptBehavior}");
             }
@@ -112,9 +117,106 @@ namespace FenBrowser.WebDriver.Protocol
             return string.IsNullOrWhiteSpace(value) ? "normal" : value.Trim().ToLowerInvariant();
         }
 
-        internal static string NormalizePromptBehavior(string value)
+        internal static object NormalizePromptBehavior(object value)
         {
-            return string.IsNullOrWhiteSpace(value) ? "dismiss and notify" : value.Trim().ToLowerInvariant();
+            if (value is JsonElement element)
+            {
+                if (element.ValueKind == JsonValueKind.Null)
+                {
+                    return "dismiss and notify";
+                }
+
+                if (element.ValueKind == JsonValueKind.String)
+                {
+                    return string.IsNullOrWhiteSpace(element.GetString()) ? "dismiss and notify" : element.GetString();
+                }
+
+                if (element.ValueKind == JsonValueKind.Object)
+                {
+                    return element.Clone();
+                }
+            }
+
+            return value is string stringValue && !string.IsNullOrWhiteSpace(stringValue)
+                ? stringValue
+                : "dismiss and notify";
+        }
+
+        internal static string ResolvePromptBehaviorForRuntime(object value)
+        {
+            var normalized = NormalizePromptBehavior(value);
+            if (normalized is string stringValue)
+            {
+                return stringValue;
+            }
+
+            if (normalized is JsonElement { ValueKind: JsonValueKind.Object } element &&
+                TryGetPromptBehavior(element, "alert", out var alertBehavior))
+            {
+                return alertBehavior;
+            }
+
+            if (normalized is JsonElement { ValueKind: JsonValueKind.Object } defaultElement &&
+                TryGetPromptBehavior(defaultElement, "default", out var defaultBehavior))
+            {
+                return defaultBehavior;
+            }
+
+            return "dismiss and notify";
+        }
+
+        private static bool TryGetPromptBehavior(JsonElement element, string name, out string behavior)
+        {
+            behavior = null;
+            if (!element.TryGetProperty(name, out var property) ||
+                property.ValueKind != JsonValueKind.String ||
+                string.IsNullOrWhiteSpace(property.GetString()))
+            {
+                return false;
+            }
+
+            behavior = property.GetString();
+            return true;
+        }
+
+        private static bool IsValidPromptBehavior(object value)
+        {
+            var normalized = NormalizePromptBehavior(value);
+            if (normalized is string stringValue)
+            {
+                return AllowedPromptBehaviors.Contains(stringValue);
+            }
+
+            if (normalized is JsonElement { ValueKind: JsonValueKind.Object } element)
+            {
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (property.Value.ValueKind != JsonValueKind.String ||
+                        !AllowedPromptBehaviors.Contains(property.Value.GetString()))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        internal static object NormalizeWebSocketUrl(object value)
+        {
+            if (value is JsonElement element)
+            {
+                if (element.ValueKind == JsonValueKind.True)
+                {
+                    return true;
+                }
+
+                return null;
+            }
+
+            return value is bool boolValue && boolValue ? true : null;
         }
     }
 

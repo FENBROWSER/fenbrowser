@@ -4274,3 +4274,16 @@ Verification:
 - Release build of `FenBrowser.Tooling`: pass (zero errors).
 - Positive new-session wdspec slice `/create_alwaysMatch.py`, `/create_firstMatch.py`, `/merge.py`, `/no_capabilities.py`, `/default_values.py`, and `/timeouts.py`: pass (`6/6`, zero unexpected subtest failures) in `Results/wpt/wdspec_new_session_positive_fix2`; baseline had `14` unexpected subtest failures in `Results/wpt/wdspec_new_session_positive_next`.
 - Invalid capability regression slice `/webdriver/tests/classic/new_session/invalid_capabilities.py`: pass (`1/1`, zero unexpected subtest failures) in `Results/wpt/wdspec_invalid_capabilities_regression`.
+
+## 6.184 WebDriver Prompt Capability Objects And BiDi URL Echo (2026-07-28)
+
+- New-session capability validation accepts the WebDriver object form of `unhandledPromptBehavior` for `alert`, `beforeUnload`, `confirm`, `default`, and `prompt` entries while preserving string-form validation and invalid payload rejection.
+- Runtime prompt handling resolves alert prompts through the object `alert` entry first, then `default`, then the WebDriver default `dismiss and notify`. FenJS dialog bindings now synchronously publish modal state to the WebDriver-visible host before any asynchronous host dialog display work.
+- `webSocketUrl` is accepted as a boolean/null capability. A `true` request is echoed as a session-scoped `ws://127.0.0.1/session/{id}` URL; `false` and `null` remain omitted.
+
+Verification:
+
+- Focused new-session WebDriver contracts: pass (`16/16`, zero failed/skipped).
+- Release build of `FenBrowser.Tooling`: pass (zero errors).
+- Remaining new-session wdspec slice `/page_load_strategy.py`, `/platform_name.py`, `/response.py`, `/unhandled_prompt_behavior.py`, and `/websocket_url.py`: pass (`5/5`, zero unexpected subtest failures) in `Results/wpt/wdspec_new_session_remaining_fix2`; previous run had `2` unexpected subtest failures in `Results/wpt/wdspec_new_session_remaining_fix`.
+- Invalid capability regression slice `/webdriver/tests/classic/new_session/invalid_capabilities.py`: pass (`1/1`, zero unexpected subtest failures) in `Results/wpt/wdspec_invalid_capabilities_prompt_regression`.

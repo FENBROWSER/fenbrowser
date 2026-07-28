@@ -1095,7 +1095,7 @@ namespace FenBrowser.WebDriver.Commands
                 return;
             }
 
-            var behavior = Capabilities.NormalizePromptBehavior(session.Capabilities?.UnhandledPromptBehavior);
+            var behavior = Capabilities.ResolvePromptBehaviorForRuntime(session.Capabilities?.UnhandledPromptBehavior);
             Browser.SetUnhandledPromptBehavior(behavior);
 
             if (!await Browser.HasAlertAsync().ConfigureAwait(false))

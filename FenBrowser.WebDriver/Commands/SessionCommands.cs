@@ -57,6 +57,10 @@ namespace FenBrowser.WebDriver.Commands
 
             requestedCaps?.ValidateOrThrow();
             var session = _sessionManager.CreateSession(requestedCaps);
+            if (session.Capabilities.WebSocketUrl is bool webSocketRequested && webSocketRequested)
+            {
+                session.Capabilities.WebSocketUrl = $"ws://127.0.0.1/session/{session.Id}";
+            }
 
             return WebDriverResponse.Success(new NewSessionResponse
             {
@@ -280,6 +284,9 @@ namespace FenBrowser.WebDriver.Commands
                 case "unhandledPromptBehavior":
                     ValidateUnhandledPromptBehavior(value);
                     break;
+                case "webSocketUrl":
+                    ValidateWebSocketUrl(value);
+                    break;
                 case "setWindowRect":
                 case "userAgent":
                     throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} is not a settable capability");
@@ -396,10 +403,46 @@ namespace FenBrowser.WebDriver.Commands
                 return;
             }
 
-            if (value.ValueKind != JsonValueKind.String ||
-                value.GetString() is not ("dismiss" or "accept" or "dismiss and notify" or "accept and notify" or "ignore"))
+            if (value.ValueKind == JsonValueKind.String)
+            {
+                if (value.GetString() is not ("dismiss" or "accept" or "dismiss and notify" or "accept and notify" or "ignore"))
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "unhandledPromptBehavior is unsupported");
+                }
+
+                return;
+            }
+
+            if (value.ValueKind != JsonValueKind.Object)
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "unhandledPromptBehavior is unsupported");
+            }
+
+            var allowedPrompts = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "alert",
+                "beforeUnload",
+                "confirm",
+                "default",
+                "prompt"
+            };
+
+            foreach (var property in value.EnumerateObject())
+            {
+                if (!allowedPrompts.Contains(property.Name) ||
+                    property.Value.ValueKind != JsonValueKind.String ||
+                    property.Value.GetString() is not ("dismiss" or "accept" or "dismiss and notify" or "accept and notify" or "ignore"))
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "unhandledPromptBehavior is unsupported");
+                }
+            }
+        }
+
+        private static void ValidateWebSocketUrl(JsonElement value)
+        {
+            if (value.ValueKind is not (JsonValueKind.True or JsonValueKind.False or JsonValueKind.Null))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "webSocketUrl must be a boolean or null");
             }
         }
 

@@ -141,6 +141,37 @@ namespace FenBrowser.Tests.WebDriver
         }
 
         [Fact]
+        public void NewSession_EchoesObjectUnhandledPromptBehavior()
+        {
+            var manager = new SessionManager();
+            var commands = new SessionCommands(manager);
+            using var body = JsonDocument.Parse("""{"capabilities":{"alwaysMatch":{"unhandledPromptBehavior":{"default":"accept","alert":"ignore"}}}}""");
+
+            var response = commands.NewSession(body.RootElement.Clone());
+            var value = Assert.IsType<NewSessionResponse>(response.Value);
+            var json = JsonSerializer.Serialize(value.Capabilities);
+
+            using var document = JsonDocument.Parse(json);
+            var prompt = document.RootElement.GetProperty("unhandledPromptBehavior");
+            Assert.Equal("accept", prompt.GetProperty("default").GetString());
+            Assert.Equal("ignore", prompt.GetProperty("alert").GetString());
+        }
+
+        [Fact]
+        public void NewSession_EchoesWebSocketUrlWhenRequested()
+        {
+            var manager = new SessionManager();
+            var commands = new SessionCommands(manager);
+            using var body = JsonDocument.Parse("""{"capabilities":{"alwaysMatch":{"webSocketUrl":true}}}""");
+
+            var response = commands.NewSession(body.RootElement.Clone());
+            var value = Assert.IsType<NewSessionResponse>(response.Value);
+
+            Assert.IsType<string>(value.Capabilities.WebSocketUrl);
+            Assert.Contains(value.SessionId, (string)value.Capabilities.WebSocketUrl);
+        }
+
+        [Fact]
         public async Task Status_ReportsNotReadyWhileSessionIsActive()
         {
             var manager = new SessionManager();

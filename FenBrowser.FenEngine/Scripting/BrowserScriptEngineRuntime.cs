@@ -4114,6 +4114,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 (_, args) =>
                 {
                     var msg = args.Count > 0 ? args[0].ToString() : "";
+                    _host.Alert(msg);
                     PostDialogAsync("alert", msg, "");
                     return JsValue.Undefined;
                 },
@@ -4125,8 +4126,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 (_, args) =>
                 {
                     var msg = args.Count > 0 ? args[0].ToString() : "";
+                    var accepted = _host.Confirm(msg);
                     PostDialogAsync("confirm", msg, "");
-                    return JsValue.FromBoolean(true);
+                    return JsValue.FromBoolean(accepted);
                 },
                 length: 1));
         _interpreter.RegisterGlobalValue(
@@ -4137,8 +4139,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 {
                     var msg = args.Count > 0 ? args[0].ToString() : "";
                     var def = args.Count > 1 && args[1].Tag != FenBrowser.Js.Runtime.JsValueTag.Undefined ? args[1].ToString() : "";
+                    var response = _host.Prompt(msg, def);
                     PostDialogAsync("prompt", msg, def);
-                    return string.IsNullOrEmpty(def) ? JsValue.Null : JsValue.FromString(def);
+                    return response == null ? JsValue.Null : JsValue.FromString(response);
                 },
                 length: 2));
 
