@@ -52,6 +52,55 @@ namespace FenBrowser.Tests.WebDriver
         }
 
         [Fact]
+        public void Capabilities_Merge_ReturnsWdspecDefaultProxyAndUserAgent()
+        {
+            var capabilities = Capabilities.Merge(null);
+            var json = JsonSerializer.Serialize(capabilities);
+
+            using var document = JsonDocument.Parse(json);
+            Assert.Equal(JsonValueKind.Object, document.RootElement.GetProperty("proxy").ValueKind);
+            Assert.False(document.RootElement.GetProperty("proxy").EnumerateObject().Any());
+            Assert.False(string.IsNullOrWhiteSpace(document.RootElement.GetProperty("userAgent").GetString()));
+        }
+
+        [Fact]
+        public void Capabilities_Merge_RejectsExplicitEmptyProxy()
+        {
+            var ex = Assert.Throws<WebDriverException>(() => Capabilities.Merge(new Capabilities
+            {
+                Proxy = new ProxyConfig
+                {
+                    ProxyType = null
+                }
+            }));
+
+            Assert.Equal(ErrorCodes.InvalidArgument, ex.ErrorCode);
+        }
+
+        [Fact]
+        public async Task Status_ReportsNotReadyWhileSessionIsActive()
+        {
+            var manager = new SessionManager();
+            var handler = new CommandHandler(manager);
+            var router = new CommandRouter();
+
+            var readyResponse = await handler.ExecuteAsync(router.Match("GET", "/status"), null);
+            using var readyJson = JsonDocument.Parse(readyResponse.ToJson());
+            Assert.True(readyJson.RootElement.GetProperty("value").GetProperty("ready").GetBoolean());
+
+            var session = manager.CreateSession(new Capabilities());
+
+            var busyResponse = await handler.ExecuteAsync(router.Match("GET", "/status"), null);
+            using var busyJson = JsonDocument.Parse(busyResponse.ToJson());
+            Assert.False(busyJson.RootElement.GetProperty("value").GetProperty("ready").GetBoolean());
+
+            manager.DeleteSession(session.Id);
+            var finalResponse = await handler.ExecuteAsync(router.Match("GET", "/status"), null);
+            using var finalJson = JsonDocument.Parse(finalResponse.ToJson());
+            Assert.True(finalJson.RootElement.GetProperty("value").GetProperty("ready").GetBoolean());
+        }
+
+        [Fact]
         public async Task ScriptCommands_ResolveElementArguments_AndSerializeNestedElementResults()
         {
             var manager = new SessionManager();

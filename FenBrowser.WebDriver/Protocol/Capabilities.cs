@@ -43,8 +43,7 @@ namespace FenBrowser.WebDriver.Protocol
         public string PageLoadStrategy { get; set; } = "normal";
 
         [JsonPropertyName("proxy")]
-        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        public ProxyConfig Proxy { get; set; }
+        public ProxyConfig Proxy { get; set; } = new();
 
         [JsonPropertyName("setWindowRect")]
         public bool SetWindowRect { get; set; } = true;
@@ -57,6 +56,9 @@ namespace FenBrowser.WebDriver.Protocol
 
         [JsonPropertyName("unhandledPromptBehavior")]
         public string UnhandledPromptBehavior { get; set; } = "dismiss and notify";
+
+        [JsonPropertyName("userAgent")]
+        public string UserAgent { get; set; } = "FenBrowser/1.0.0";
 
         [JsonPropertyName("fen:options")]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -76,7 +78,7 @@ namespace FenBrowser.WebDriver.Protocol
             merged.AcceptInsecureCerts = requested.AcceptInsecureCerts;
             merged.PageLoadStrategy = NormalizePageLoadStrategy(requested.PageLoadStrategy);
             merged.Timeouts = requested.Timeouts?.Clone() ?? new Timeouts();
-            merged.Proxy = requested.Proxy?.Clone();
+            merged.Proxy = requested.Proxy?.Clone() ?? new ProxyConfig();
             merged.StrictFileInteractability = requested.StrictFileInteractability;
             merged.UnhandledPromptBehavior = NormalizePromptBehavior(requested.UnhandledPromptBehavior);
             merged.FenOptions = requested.FenOptions?.Clone();
@@ -97,7 +99,10 @@ namespace FenBrowser.WebDriver.Protocol
             }
 
             Timeouts?.ValidateOrThrow();
-            Proxy?.ValidateOrThrow();
+            if (Proxy is { HasExplicitSetting: true } || Proxy?.IsEmpty == false)
+            {
+                Proxy?.ValidateOrThrow();
+            }
             FenOptions?.ValidateOrThrow();
         }
 
@@ -167,6 +172,11 @@ namespace FenBrowser.WebDriver.Protocol
     /// </summary>
     public class ProxyConfig
     {
+        private string _proxyType;
+        private string _httpProxy;
+        private string _sslProxy;
+        private List<string> _noProxy;
+
         private static readonly HashSet<string> AllowedProxyTypes = new(StringComparer.Ordinal)
         {
             "direct",
@@ -177,16 +187,62 @@ namespace FenBrowser.WebDriver.Protocol
         };
 
         [JsonPropertyName("proxyType")]
-        public string ProxyType { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string ProxyType
+        {
+            get => _proxyType;
+            set
+            {
+                HasExplicitSetting = true;
+                _proxyType = value;
+            }
+        }
 
         [JsonPropertyName("httpProxy")]
-        public string HttpProxy { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string HttpProxy
+        {
+            get => _httpProxy;
+            set
+            {
+                HasExplicitSetting = true;
+                _httpProxy = value;
+            }
+        }
 
         [JsonPropertyName("sslProxy")]
-        public string SslProxy { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string SslProxy
+        {
+            get => _sslProxy;
+            set
+            {
+                HasExplicitSetting = true;
+                _sslProxy = value;
+            }
+        }
 
         [JsonPropertyName("noProxy")]
-        public List<string> NoProxy { get; set; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public List<string> NoProxy
+        {
+            get => _noProxy;
+            set
+            {
+                HasExplicitSetting = true;
+                _noProxy = value;
+            }
+        }
+
+        [JsonIgnore]
+        public bool HasExplicitSetting { get; private set; }
+
+        [JsonIgnore]
+        public bool IsEmpty =>
+            string.IsNullOrWhiteSpace(ProxyType) &&
+            string.IsNullOrWhiteSpace(HttpProxy) &&
+            string.IsNullOrWhiteSpace(SslProxy) &&
+            (NoProxy == null || NoProxy.Count == 0);
 
         public void ValidateOrThrow()
         {
@@ -211,13 +267,19 @@ namespace FenBrowser.WebDriver.Protocol
 
         public ProxyConfig Clone()
         {
-            return new ProxyConfig
+            if (!HasExplicitSetting)
+            {
+                return new ProxyConfig();
+            }
+
+            var clone = new ProxyConfig
             {
                 ProxyType = ProxyType,
                 HttpProxy = HttpProxy,
                 SslProxy = SslProxy,
                 NoProxy = NoProxy?.Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => value.Trim()).ToList()
             };
+            return clone;
         }
     }
 

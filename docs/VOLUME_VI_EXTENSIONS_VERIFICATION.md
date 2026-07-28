@@ -4229,3 +4229,14 @@ Verification:
 - Focused command-deadline, cleanup-recovery, and serialized-queue contracts: pass (`4/4`, zero failed/skipped).
 - Release build of `FenBrowser.Tooling`: pass (zero errors).
 - Identical 332-test WPT comparison: all `332/332` tests completed; `CRASH` fell from `3` to `0`, abnormal process-exit records remained `0`, and wall time fell from `208.3 s` to `172.5 s`. Five previously crash/deadlock-classified outcomes are now bounded `TIMEOUT` results.
+
+## 6.180 WebDriver Session Capability And Status Response Contracts (2026-07-28)
+
+- New-session responses include the WPT-required default `proxy` object and non-empty `userAgent` capability while preserving invalid explicit proxy rejection.
+- `GET /status` reports `ready: false` while an endpoint-node session is active and returns to `ready: true` after the session closes.
+
+Verification:
+
+- Focused WebDriver capability/status contracts: pass (`4/4`, zero failed/skipped).
+- Release build of `FenBrowser.Tooling`: pass (zero errors).
+- Focused wdspec slice `/webdriver/tests/classic/new_session/response.py` and `/webdriver/tests/classic/status/status.py`: pass (`2/2`, zero unexpected subtest failures) in `Results/wpt/wdspec_capabilities_status_strict_proxy`.

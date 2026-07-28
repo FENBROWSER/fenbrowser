@@ -423,10 +423,13 @@ namespace FenBrowser.WebDriver.Commands
         
         private WebDriverResponse GetStatus()
         {
+            var ready = !_sessionManager.HasActiveSessions;
             return WebDriverResponse.Success(new
             {
-                ready = true,
-                message = "FenBrowser WebDriver ready"
+                ready,
+                message = ready
+                    ? "FenBrowser WebDriver ready"
+                    : "FenBrowser WebDriver session already active"
             });
         }
         
