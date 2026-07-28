@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using FenBrowser.WebDriver.Protocol;
@@ -36,6 +37,7 @@ namespace FenBrowser.WebDriver.Commands
                 CapabilityRequest request;
                 try
                 {
+                    ValidateNewSessionPayload(body.Value);
                     request = JsonSerializer.Deserialize<CapabilityRequest>(body.Value.GetRawText());
                 }
                 catch (JsonException ex)
@@ -115,6 +117,199 @@ namespace FenBrowser.WebDriver.Commands
 
             session.Timeouts.ValidateOrThrow();
             return WebDriverResponse.Success(null);
+        }
+
+        private static void ValidateNewSessionPayload(JsonElement body)
+        {
+            if (!body.TryGetProperty("capabilities", out var capabilities) ||
+                capabilities.ValueKind != JsonValueKind.Object)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "capabilities must be a JSON object");
+            }
+
+            if (capabilities.TryGetProperty("alwaysMatch", out var alwaysMatch))
+            {
+                if (alwaysMatch.ValueKind != JsonValueKind.Object)
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "capabilities.alwaysMatch must be a JSON object");
+                }
+
+                ValidateCapabilityObject(alwaysMatch);
+            }
+
+            if (capabilities.TryGetProperty("firstMatch", out var firstMatch))
+            {
+                if (firstMatch.ValueKind != JsonValueKind.Array)
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "capabilities.firstMatch must be a JSON array");
+                }
+
+                foreach (var entry in firstMatch.EnumerateArray())
+                {
+                    if (entry.ValueKind != JsonValueKind.Object)
+                    {
+                        throw new WebDriverException(ErrorCodes.InvalidArgument, "capabilities.firstMatch entries must be JSON objects");
+                    }
+
+                    ValidateCapabilityObject(entry);
+                }
+            }
+        }
+
+        private static void ValidateCapabilityObject(JsonElement capabilities)
+        {
+            foreach (var property in capabilities.EnumerateObject())
+            {
+                ValidateCapabilityProperty(property.Name, property.Value);
+            }
+        }
+
+        private static void ValidateCapabilityProperty(string name, JsonElement value)
+        {
+            switch (name)
+            {
+                case "acceptInsecureCerts":
+                case "strictFileInteractability":
+                    RequireBooleanOrNull(name, value);
+                    break;
+                case "browserName":
+                case "browserVersion":
+                case "platformName":
+                    RequireStringOrNull(name, value);
+                    break;
+                case "pageLoadStrategy":
+                    ValidatePageLoadStrategy(value);
+                    break;
+                case "proxy":
+                    ValidateProxy(value);
+                    break;
+                case "timeouts":
+                    ValidateTimeouts(value);
+                    break;
+                case "unhandledPromptBehavior":
+                    ValidateUnhandledPromptBehavior(value);
+                    break;
+                case "setWindowRect":
+                case "userAgent":
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} is not a settable capability");
+                default:
+                    if (!name.Contains(':', StringComparison.Ordinal))
+                    {
+                        throw new WebDriverException(ErrorCodes.InvalidArgument, $"Unsupported capability: {name}");
+                    }
+                    break;
+            }
+        }
+
+        private static void RequireBooleanOrNull(string name, JsonElement value)
+        {
+            if (value.ValueKind is not (JsonValueKind.True or JsonValueKind.False or JsonValueKind.Null))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} must be a boolean or null");
+            }
+        }
+
+        private static void RequireStringOrNull(string name, JsonElement value)
+        {
+            if (value.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} must be a string or null");
+            }
+        }
+
+        private static void ValidatePageLoadStrategy(JsonElement value)
+        {
+            if (value.ValueKind == JsonValueKind.Null)
+            {
+                return;
+            }
+
+            if (value.ValueKind != JsonValueKind.String)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "pageLoadStrategy must be a string or null");
+            }
+
+            if (value.GetString() is not ("none" or "eager" or "normal"))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "pageLoadStrategy is unsupported");
+            }
+        }
+
+        private static void ValidateProxy(JsonElement value)
+        {
+            if (value.ValueKind == JsonValueKind.Null)
+            {
+                return;
+            }
+
+            if (value.ValueKind != JsonValueKind.Object)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "proxy must be a JSON object or null");
+            }
+
+            if (!value.TryGetProperty("proxyType", out var proxyType) ||
+                proxyType.ValueKind != JsonValueKind.String ||
+                proxyType.GetString() is not ("direct" or "manual" or "pac" or "autodetect" or "system"))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "proxy.proxyType is required and must be supported");
+            }
+        }
+
+        private static void ValidateTimeouts(JsonElement value)
+        {
+            if (value.ValueKind == JsonValueKind.Null)
+            {
+                return;
+            }
+
+            if (value.ValueKind != JsonValueKind.Object)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "timeouts must be a JSON object or null");
+            }
+
+            var allowed = new HashSet<string>(StringComparer.Ordinal) { "script", "pageLoad", "implicit" };
+            foreach (var property in value.EnumerateObject())
+            {
+                if (!allowed.Contains(property.Name))
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, $"Unsupported timeout: {property.Name}");
+                }
+
+                ValidateTimeoutValue(property.Name, property.Value);
+            }
+        }
+
+        private static void ValidateTimeoutValue(string name, JsonElement value)
+        {
+            if (value.ValueKind == JsonValueKind.Null)
+            {
+                return;
+            }
+
+            if (value.ValueKind != JsonValueKind.Number ||
+                !value.TryGetDouble(out var rawValue) ||
+                double.IsNaN(rawValue) ||
+                double.IsInfinity(rawValue) ||
+                rawValue < 0 ||
+                rawValue >= 9007199254740992d ||
+                Math.Truncate(rawValue) != rawValue)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} timeout must be a non-negative integer or null");
+            }
+        }
+
+        private static void ValidateUnhandledPromptBehavior(JsonElement value)
+        {
+            if (value.ValueKind == JsonValueKind.Null)
+            {
+                return;
+            }
+
+            if (value.ValueKind != JsonValueKind.String ||
+                value.GetString() is not ("dismiss" or "accept" or "dismiss and notify" or "accept and notify" or "ignore"))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "unhandledPromptBehavior is unsupported");
+            }
         }
 
         private static int? ParseTimeout(string name, JsonElement element)

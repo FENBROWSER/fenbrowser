@@ -77,6 +77,41 @@ namespace FenBrowser.Tests.WebDriver
             Assert.Equal(ErrorCodes.InvalidArgument, ex.ErrorCode);
         }
 
+        [Theory]
+        [InlineData("""{"capabilities":null}""")]
+        [InlineData("""{"capabilities":{"alwaysMatch":null}}""")]
+        [InlineData("""{"capabilities":{"firstMatch":{}}}""")]
+        [InlineData("""{"capabilities":{"firstMatch":[null]}}""")]
+        [InlineData("""{"capabilities":{"alwaysMatch":{"acceptInsecureCerts":"false"}}}""")]
+        [InlineData("""{"capabilities":{"alwaysMatch":{"pageLoadStrategy":"Eager"}}}""")]
+        [InlineData("""{"capabilities":{"alwaysMatch":{"timeouts":{"pageLoad":2.5}}}}""")]
+        [InlineData("""{"capabilities":{"alwaysMatch":{"timeouts":{"invalid":10}}}}""")]
+        [InlineData("""{"capabilities":{"alwaysMatch":{"proxy":{"proxyType":"SYSTEM"}}}}""")]
+        [InlineData("""{"capabilities":{"alwaysMatch":{"firefoxOptions":{}}}}""")]
+        public void NewSession_RejectsInvalidCapabilityPayloads(string payload)
+        {
+            var manager = new SessionManager();
+            var commands = new SessionCommands(manager);
+            using var body = JsonDocument.Parse(payload);
+
+            var ex = Assert.Throws<WebDriverException>(() => commands.NewSession(body.RootElement.Clone()));
+
+            Assert.Equal(ErrorCodes.InvalidArgument, ex.ErrorCode);
+            Assert.False(manager.HasActiveSessions);
+        }
+
+        [Fact]
+        public void NewSession_AllowsExtensionCapabilitiesWithColon()
+        {
+            var manager = new SessionManager();
+            var commands = new SessionCommands(manager);
+            using var body = JsonDocument.Parse("""{"capabilities":{"alwaysMatch":{"test:extension":{"key":"value"}}}}""");
+
+            var response = commands.NewSession(body.RootElement.Clone());
+
+            Assert.IsType<NewSessionResponse>(response.Value);
+        }
+
         [Fact]
         public async Task Status_ReportsNotReadyWhileSessionIsActive()
         {

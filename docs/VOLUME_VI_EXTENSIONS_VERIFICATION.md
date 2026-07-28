@@ -4251,3 +4251,14 @@ Verification:
 - Focused WebDriver invalid-child-context contract: pass (`1/1`, zero failed/skipped).
 - Release build of `FenBrowser.Tooling`: pass (zero errors).
 - Focused wdspec slice `/webdriver/tests/classic/get_window_handle/get.py` and `/webdriver/tests/classic/get_window_handles/get.py`: pass (`2/2`, zero unexpected subtest failures) in `Results/wpt/wdspec_window_handle_context_fix`.
+
+## 6.182 WebDriver New-Session Invalid Capability Rejection (2026-07-28)
+
+- New-session handling validates the raw JSON capability envelope before deserializing into typed defaults. Invalid `capabilities`, `alwaysMatch`, `firstMatch`, standard capability value types, timeout keys/values, proxy shape, and legacy unprefixed extension names now fail with `invalid argument` before a session is created.
+- Vendor extension capabilities remain allowed when their names contain a namespace separator such as `test:extension`.
+
+Verification:
+
+- Focused WebDriver invalid-capability contracts: pass (`11/11`, zero failed/skipped).
+- Release build of `FenBrowser.Tooling`: pass (zero errors).
+- Focused wdspec slice `/webdriver/tests/classic/new_session/invalid_capabilities.py`: pass (`1/1`, zero unexpected subtest failures) in `Results/wpt/wdspec_invalid_capabilities_fix`; baseline was `95` unexpected subtest failures in `Results/wpt/wdspec_invalid_capabilities_next`.
