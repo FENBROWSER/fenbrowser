@@ -673,7 +673,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> DismissAlertAsync(string sessionId)
         {
-            EnsureTopLevelBrowsingContext(sessionId);
+            EnsureTopLevelWindowHandleOpen(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -690,7 +690,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> AcceptAlertAsync(string sessionId)
         {
-            EnsureTopLevelBrowsingContext(sessionId);
+            EnsureTopLevelWindowHandleOpen(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -707,7 +707,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> GetAlertTextAsync(string sessionId)
         {
-            EnsureTopLevelBrowsingContext(sessionId);
+            EnsureTopLevelWindowHandleOpen(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
@@ -724,10 +724,18 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<WebDriverResponse> SendAlertTextAsync(string sessionId, JsonElement? json)
         {
-            EnsureTopLevelBrowsingContext(sessionId);
+            EnsureTopLevelWindowHandleOpen(sessionId);
             if (Browser == null)
             {
                 return WebDriverResponse.Error(ErrorCodes.UnknownError, "Browser not connected");
+            }
+
+            if (!json.HasValue ||
+                json.Value.ValueKind != JsonValueKind.Object ||
+                !json.Value.TryGetProperty("text", out var textEl) ||
+                textEl.ValueKind != JsonValueKind.String)
+            {
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "Alert text must be a string");
             }
 
             if (!await Browser.HasAlertAsync())
@@ -735,12 +743,7 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.NoSuchAlert, "No alert is open");
             }
 
-            if (!json.HasValue || !json.Value.TryGetProperty("text", out var textEl))
-            {
-                throw new WebDriverException(ErrorCodes.InvalidArgument, "Alert text is required");
-            }
-
-            await Browser.SendAlertTextAsync(textEl.GetString() ?? string.Empty);
+            await Browser.SendAlertTextAsync(textEl.GetString());
             return WebDriverResponse.Success(null);
         }
 
@@ -1060,6 +1063,12 @@ namespace FenBrowser.WebDriver.Commands
 
             if (_topLevelContextCommands.Contains(command))
             {
+                if (command is "DismissAlert" or "AcceptAlert" or "GetAlertText" or "SendAlertText")
+                {
+                    EnsureTopLevelWindowHandleOpen(sessionId);
+                    return;
+                }
+
                 if (command is "CloseWindow" or "GetWindowHandle")
                 {
                     EnsureTopLevelWindowHandleOpen(sessionId);

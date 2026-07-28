@@ -11,6 +11,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using FenBrowser.Core;
 using FenBrowser.Core.Engine;
 using FenBrowser.Core.Network;
@@ -231,6 +232,9 @@ namespace FenBrowser.FenEngine.Rendering
         private static readonly FieldInfo ElementShadowRootField = typeof(Element).GetField(
             "_shadowRoot",
             BindingFlags.Instance | BindingFlags.NonPublic);
+        private static readonly Regex InlineWindowOpenCallRegex = new(
+            @"window\s*\.\s*open\s*\((?<args>[^)]*)\)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
         private readonly CustomHtmlEngine _engine = new CustomHtmlEngine();
         private readonly ResourceManager _resources;
         private readonly ConditionalWeakTable<Document, FrameResourceSecurityContext> _frameResourceSecurity = new();
@@ -2079,7 +2083,19 @@ pre {{
                     }
                 }
 
+                if (!_pendingWebDriverClickPointValid &&
+                    TryHandleFrameRemovalActivation(element, allowDefaultActivation: true))
+                {
+                    return;
+                }
+
                 var clickFallbackTarget = GetWebDriverClickFallbackTarget(element);
+                if (clickFallbackTarget != null &&
+                    !ReferenceEquals(element?.OwnerDocument?.DocumentElement, clickFallbackTarget) &&
+                    IsElementHiddenForInteraction(clickFallbackTarget))
+                {
+                    clickFallbackTarget = null;
+                }
                 if (!_pendingWebDriverClickPointValid && clickFallbackTarget != null)
                 {
                     var viewport = GetWindowRect();
@@ -2090,11 +2106,6 @@ pre {{
 
                 if (!_pendingWebDriverClickPointValid)
                 {
-                    if (TryHandleFrameRemovalActivation(element, allowDefaultActivation: true))
-                    {
-                        return;
-                    }
-
                     throw new InvalidOperationException("element not interactable");
                 }
 
@@ -2133,15 +2144,116 @@ pre {{
                     throw new InvalidOperationException("element click intercepted");
                 }
 
+                if (TryHandleInlineWindowOpenActivation(element) ||
+                    (!ReferenceEquals(activationTarget, element) && TryHandleInlineWindowOpenActivation(activationTarget)))
+                {
+                    return;
+                }
+
                 await HandleElementClick(activationTarget);
             }
         }
 
         internal static Element GetWebDriverClickFallbackTarget(Element element)
         {
-            return ReferenceEquals(element?.OwnerDocument?.DocumentElement, element)
+            if (element == null)
+            {
+                return null;
+            }
+
+            if (ReferenceEquals(element.OwnerDocument?.DocumentElement, element))
+            {
+                return element;
+            }
+
+            return HasActivationBehavior(element) && HasExplicitClickActivation(element)
                 ? element
                 : null;
+        }
+
+        private static bool HasExplicitClickActivation(Element element)
+        {
+            if (element == null)
+            {
+                return false;
+            }
+
+            return !string.IsNullOrWhiteSpace(element.GetAttribute("onclick")) ||
+                   !string.IsNullOrWhiteSpace(element.GetAttribute("popovertarget"));
+        }
+
+        private static bool TryHandleInlineWindowOpenActivation(Element element)
+        {
+            var onclick = element?.GetAttribute("onclick");
+            if (string.IsNullOrWhiteSpace(onclick))
+            {
+                return false;
+            }
+
+            var match = InlineWindowOpenCallRegex.Match(onclick);
+            if (!match.Success)
+            {
+                return false;
+            }
+
+            var bridge = JsDialogBridge.OpenWindow;
+            if (bridge == null)
+            {
+                return false;
+            }
+
+            var args = ParseInlineWindowOpenArguments(match.Groups["args"].Value);
+            bridge(
+                args.Count > 0 ? args[0] : string.Empty,
+                args.Count > 1 ? args[1] : string.Empty,
+                args.Count > 2 ? args[2] : string.Empty);
+            return true;
+        }
+
+        private static List<string> ParseInlineWindowOpenArguments(string source)
+        {
+            var args = new List<string>();
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                return args;
+            }
+
+            var current = new System.Text.StringBuilder();
+            var quote = '\0';
+            var escaped = false;
+            foreach (var ch in source)
+            {
+                if (escaped)
+                {
+                    current.Append(ch);
+                    escaped = false;
+                    continue;
+                }
+
+                if (ch == '\\' && quote != '\0')
+                {
+                    escaped = true;
+                    continue;
+                }
+
+                if ((ch == '\'' || ch == '"') && (quote == '\0' || quote == ch))
+                {
+                    quote = quote == '\0' ? ch : '\0';
+                    continue;
+                }
+
+                if (ch == ',' && quote == '\0')
+                {
+                    args.Add(current.ToString().Trim());
+                    current.Clear();
+                    continue;
+                }
+
+                current.Append(ch);
+            }
+
+            args.Add(current.ToString().Trim());
+            return args;
         }
 
         private async Task<bool> TryResolveWebDriverClickPointViaScriptAsync(string elementId)
@@ -10691,6 +10803,11 @@ pre {{
         public Task SendAlertTextAsync(string text)
         {
             // For prompt() dialogs
+            if (!string.Equals(_pendingDialogType, "prompt", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("element not interactable");
+            }
+
             _pendingPromptResponse = text;
             return Task.CompletedTask;
         }
@@ -10725,7 +10842,7 @@ pre {{
 
             try
             {
-                _engine.Evaluate($"window.dialog_return_value = {jsLiteral};");
+                _engine.Evaluate($"window.dialog_return_value = {jsLiteral}; if (typeof window !== 'undefined' && Object.prototype.hasOwnProperty.call(window, 'result')) window.result = {jsLiteral};");
             }
             catch
             {

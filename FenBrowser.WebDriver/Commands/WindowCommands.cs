@@ -48,6 +48,13 @@ namespace FenBrowser.WebDriver.Commands
 
             // Keep only handles owned by this session and still open in browser.
             session.WindowHandles.RemoveAll(handle => !browserHandles.Contains(handle));
+            foreach (var handle in browserHandles)
+            {
+                if (!session.WindowHandles.Contains(handle))
+                {
+                    session.WindowHandles.Add(handle);
+                }
+            }
 
             if (!session.WindowStateInitialized)
             {

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -145,6 +146,7 @@ public static class HostDialogCoordinator
     private sealed class PopupState
     {
         public PopupWindow Window;
+        public BrowserTab Tab;
         public string Name;
         public string AccumulatedHtml = string.Empty;
     }
@@ -158,15 +160,53 @@ public static class HostDialogCoordinator
         PopupState state = null;
         try
         {
-            var popup = PopupWindowManager.Create(name, width, height);
-            state = new PopupState { Window = popup, Name = name };
-            lock (_popupsLock) { _popups[state] = state; }
+            using var signal = new ManualResetEventSlim(false);
+            Exception createError = null;
+            WindowManager.Instance.RunOnMainThread(() =>
+            {
+                try
+                {
+                    if (state != null)
+                    {
+                        return;
+                    }
+
+                    var navigationUrl = NormalizePopupNavigationUrl(url);
+                    var tab = TabManager.Instance.CreateTab(navigationUrl);
+                    state = new PopupState { Tab = tab, Name = name };
+                    lock (_popupsLock) { _popups[state] = state; }
+                }
+                catch (Exception ex)
+                {
+                    createError = ex;
+                }
+                finally
+                {
+                    signal.Set();
+                }
+            });
+
+            if (!signal.Wait(TimeSpan.FromMilliseconds(50)) || createError != null)
+            {
+                // WebDriver element click can invoke window.open() from the JS
+                // event path while the main thread is still inside the command.
+                // In that case the queued UI action cannot drain before WPT's
+                // new-window poll times out. Fall back to direct tab creation so
+                // the popup is still represented as a top-level browsing context.
+                var navigationUrl = NormalizePopupNavigationUrl(url);
+                var tab = TabManager.Instance.CreateTab(navigationUrl);
+                state = new PopupState { Tab = tab, Name = name };
+                lock (_popupsLock) { _popups[state] = state; }
+            }
 
             if (!string.IsNullOrEmpty(url) &&
                 !string.Equals(url, "undefined", StringComparison.OrdinalIgnoreCase) &&
                 !string.Equals(url, "null", StringComparison.OrdinalIgnoreCase))
             {
-                // For URL-based popups, set placeholder while page loads
+                // Keep a host popup fallback for document.write()/close() callers
+                // that expect the lightweight PopupWindow object surface.
+                var popup = PopupWindowManager.Create(name, width, height);
+                state.Window = popup;
                 state.AccumulatedHtml = $"<html><body style='font-family:sans-serif;padding:20px;'>Loading {url}...</body></html>";
                 popup.SetContent(state.AccumulatedHtml);
             }
@@ -180,6 +220,18 @@ public static class HostDialogCoordinator
         }
 
         return state;
+    }
+
+    private static string NormalizePopupNavigationUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url) ||
+            string.Equals(url, "undefined", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(url, "null", StringComparison.OrdinalIgnoreCase))
+        {
+            return "about:blank";
+        }
+
+        return url;
     }
 
     private static int ParseFeaturePx(string features, string key, int defaultValue)
@@ -203,20 +255,57 @@ public static class HostDialogCoordinator
 
     private static void FinalizePopupDocument(object handle, string html)
     {
-        if (handle is not PopupState state || state.Window == null || state.Window.IsClosed) return;
+        if (handle is not PopupState state) return;
         state.AccumulatedHtml = html;
-        state.Window.SetContent(html);
+        if (state.Window != null && !state.Window.IsClosed)
+        {
+            state.Window.SetContent(html);
+        }
+        if (state.Tab != null)
+        {
+            _ = WindowManager.Instance.RunOnMainThread(() =>
+            {
+                _ = state.Tab.NavigateProgrammaticAsync("data:text/html;charset=utf-8," + Uri.EscapeDataString(html ?? string.Empty));
+            });
+        }
     }
 
     private static void ClosePopupWindow(object handle)
     {
         if (handle is not PopupState state) return;
         try { state.Window?.Close(); } catch { }
+        try
+        {
+            WindowManager.Instance.RunOnMainThread(() =>
+            {
+                var tabs = TabManager.Instance;
+                for (var i = 0; i < tabs.Tabs.Count; i++)
+                {
+                    if (ReferenceEquals(tabs.Tabs[i], state.Tab))
+                    {
+                        tabs.CloseTab(i);
+                        break;
+                    }
+                }
+            });
+        }
+        catch { }
         lock (_popupsLock) { _popups.Remove(state); }
     }
 
     private static bool IsPopupWindowClosed(object handle)
     {
-        return handle is not PopupState state || state.Window == null || state.Window.IsClosed;
+        if (handle is not PopupState state)
+        {
+            return true;
+        }
+
+        if (state.Tab != null)
+        {
+            var tabs = TabManager.Instance.Tabs;
+            return !tabs.Any(tab => ReferenceEquals(tab, state.Tab));
+        }
+
+        return state.Window == null || state.Window.IsClosed;
     }
 }

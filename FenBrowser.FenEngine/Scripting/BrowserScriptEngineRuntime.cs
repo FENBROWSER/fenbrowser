@@ -4113,7 +4113,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 "alert",
                 (_, args) =>
                 {
-                    var msg = args.Count > 0 ? args[0].ToString() : "";
+                    var msg = args.Count > 0 ? ToDialogString(args[0]) : "";
                     _host.Alert(msg);
                     PostDialogAsync("alert", msg, "");
                     return JsValue.Undefined;
@@ -4125,7 +4125,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 "confirm",
                 (_, args) =>
                 {
-                    var msg = args.Count > 0 ? args[0].ToString() : "";
+                    var msg = args.Count > 0 ? ToDialogString(args[0]) : "";
                     var accepted = _host.Confirm(msg);
                     PostDialogAsync("confirm", msg, "");
                     return JsValue.FromBoolean(accepted);
@@ -4137,8 +4137,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 "prompt",
                 (_, args) =>
                 {
-                    var msg = args.Count > 0 ? args[0].ToString() : "";
-                    var def = args.Count > 1 && args[1].Tag != FenBrowser.Js.Runtime.JsValueTag.Undefined ? args[1].ToString() : "";
+                    var msg = args.Count > 0 ? ToDialogString(args[0]) : "";
+                    var def = args.Count > 1 && args[1].Tag != FenBrowser.Js.Runtime.JsValueTag.Undefined ? ToDialogString(args[1]) : "";
                     var response = _host.Prompt(msg, def);
                     PostDialogAsync("prompt", msg, def);
                     return response == null ? JsValue.Null : JsValue.FromString(response);
@@ -4153,9 +4153,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 "open",
                 (_, args) =>
                 {
-                    var url = args.Count > 0 ? args[0].ToString() : "";
-                    var name = args.Count > 1 ? args[1].ToString() : "";
-                    var features = args.Count > 2 ? args[2].ToString() : "";
+                    var url = args.Count > 0 ? ToDialogString(args[0]) : "";
+                    var name = args.Count > 1 ? ToDialogString(args[1]) : "";
+                    var features = args.Count > 2 ? ToDialogString(args[2]) : "";
 
                     var bridge = JsDialogBridge.OpenWindow;
                     if (bridge == null)
@@ -15860,6 +15860,21 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 FenLogger.Error($"[PostDialogAsync] {type} dialog failed: {ex.Message}", LogCategory.JavaScript);
             }
         });
+    }
+
+    private static string ToDialogString(JsValue value)
+    {
+        return value.Tag switch
+        {
+            JsValueTag.Undefined or JsValueTag.Null => string.Empty,
+            JsValueTag.String => value.AsString(),
+            JsValueTag.Boolean => value.AsBoolean() ? "true" : "false",
+            JsValueTag.Int32 => value.AsInt32().ToString(CultureInfo.InvariantCulture),
+            JsValueTag.Number => value.AsNumber().ToString(CultureInfo.InvariantCulture),
+            JsValueTag.BigInt => value.AsBigInt().ToString(CultureInfo.InvariantCulture),
+            JsValueTag.Symbol => value.AsSymbolDescription() ?? "Symbol()",
+            _ => value.ToString()
+        };
     }
 
     private JsValue CreatePopupWindowHostObject(object handle, string name, string url)

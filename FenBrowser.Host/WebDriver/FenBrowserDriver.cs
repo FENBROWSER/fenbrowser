@@ -23,6 +23,7 @@ namespace FenBrowser.Host.WebDriver
 
         public FenBrowserDriver(BrowserIntegration integration)
         {
+            HostDialogCoordinator.Install();
             _integration = integration;
         }
 

@@ -15,6 +15,11 @@ namespace FenBrowser.Host.WebDriver
         private static readonly TimeSpan ElementLookupPollInterval = TimeSpan.FromMilliseconds(50);
         private TabManager _tabs => TabManager.Instance;
 
+        public HostBrowserDriver()
+        {
+            HostDialogCoordinator.Install();
+        }
+
         public async Task NavigateAsync(string url)
         {
             await RunOnMainThread(async () =>

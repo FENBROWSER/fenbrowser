@@ -12,7 +12,7 @@ public sealed class HostBrowserDriverNewWindowTests
     public void DocumentRoot_RemainsFallbackTargetWhenPaintHitTestMisses()
     {
         var document = new HtmlParser(
-            "<html><body><button></button></body></html>",
+            "<html><body><button></button><button id='open' onclick='window.open(\"about:blank\")'></button></body></html>",
             new Uri("about:blank")).Parse();
 
         Assert.Same(
@@ -21,6 +21,10 @@ public sealed class HostBrowserDriverNewWindowTests
         Assert.Null(
             BrowserHost.GetWebDriverClickFallbackTarget(
                 document.QuerySelector("button")));
+        Assert.Same(
+            document.QuerySelector("#open"),
+            BrowserHost.GetWebDriverClickFallbackTarget(
+                document.QuerySelector("#open")));
     }
 
     [Fact]

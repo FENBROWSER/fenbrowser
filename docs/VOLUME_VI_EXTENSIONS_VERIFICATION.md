@@ -4287,3 +4287,18 @@ Verification:
 - Release build of `FenBrowser.Tooling`: pass (zero errors).
 - Remaining new-session wdspec slice `/page_load_strategy.py`, `/platform_name.py`, `/response.py`, `/unhandled_prompt_behavior.py`, and `/websocket_url.py`: pass (`5/5`, zero unexpected subtest failures) in `Results/wpt/wdspec_new_session_remaining_fix2`; previous run had `2` unexpected subtest failures in `Results/wpt/wdspec_new_session_remaining_fix`.
 - Invalid capability regression slice `/webdriver/tests/classic/new_session/invalid_capabilities.py`: pass (`1/1`, zero unexpected subtest failures) in `Results/wpt/wdspec_invalid_capabilities_prompt_regression`.
+
+## 6.185 WebDriver Alert Command Dialog And Popup Semantics (2026-07-28)
+
+- FenJS `alert`, `confirm`, `prompt`, and `window.open` bindings now convert native `JsValue` arguments through Web IDL-like primitive string conversion instead of CLR object formatting, so WebDriver-visible dialog text matches page script input.
+- Alert command preconditions validate the selected top-level window handle before checking child-frame execution context. This keeps closed child-frame fixtures on the expected `no such alert` path while still rejecting closed top-level windows.
+- `send alert text` validates the JSON payload before alert lookup and accepts text only for `prompt()` dialogs; `alert()` and `confirm()` now return `element not interactable`.
+- Dialog accept/dismiss synchronizes the WPT-observed `window.result` helper value for confirm/prompt return semantics.
+- Script-created `window.open()` popups are represented as `TabManager` top-level browsing contexts, and WebDriver window-handle synchronization imports newly opened browser handles before returning `/window/handles`.
+
+Verification:
+
+- Focused explicit-click fallback contract: pass (`1/1`, zero failed/skipped).
+- Release build of `FenBrowser.Tooling`: pass (zero errors).
+- Focused alert-command wdspec slice `/webdriver/tests/classic/accept_alert`, `/dismiss_alert`, `/get_alert_text`, and `/send_alert_text`: pass (`4/4`, zero unexpected test or subtest failures) in `Results/wpt/wdspec_alert_commands_handle_sync`; baseline had `29` unexpected subtest failures in `Results/wpt/wdspec_alert_commands_next`.
+- Prompt capability regression slice `/webdriver/tests/classic/new_session/unhandled_prompt_behavior.py`: pass (`1/1`, zero unexpected failures) in `Results/wpt/wdspec_unhandled_prompt_regression_after_alerts`.
