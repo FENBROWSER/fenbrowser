@@ -7857,14 +7857,18 @@ pre {{
                 return Task.FromResult(new List<WebDriverCookie>());
             }
 
-            var snapshot = _engine.GetCookieSnapshot(scope);
-            var cookies = snapshot.Select(kv => new WebDriverCookie
+            var cookies = _resources.CookieJar
+                .SnapshotCookies(scope, _current ?? scope, includeHttpOnly: true)
+                .Select(cookie => new WebDriverCookie
             {
-                Name = kv.Key,
-                Value = kv.Value,
-                Domain = scope.Host,
-                Path = "/",
-                Secure = scope.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+                Name = cookie.Name,
+                Value = cookie.Value ?? string.Empty,
+                Domain = cookie.Domain ?? scope.Host,
+                Path = string.IsNullOrWhiteSpace(cookie.Path) ? "/" : cookie.Path,
+                Secure = cookie.Secure,
+                HttpOnly = cookie.HttpOnly,
+                Expiry = cookie.Expires?.ToUnixTimeSeconds(),
+                SameSite = ToWebDriverSameSite(cookie.SameSite)
             }).ToList();
 
             return Task.FromResult(cookies);
@@ -7883,19 +7887,24 @@ pre {{
                 return Task.FromResult<WebDriverCookie>(null);
             }
 
-            var snapshot = _engine.GetCookieSnapshot(scope);
-            if (!snapshot.TryGetValue(name, out var value))
+            var cookie = _resources.CookieJar
+                .SnapshotCookies(scope, _current ?? scope, includeHttpOnly: true)
+                .FirstOrDefault(candidate => string.Equals(candidate.Name, name, StringComparison.Ordinal));
+            if (cookie == null)
             {
                 return Task.FromResult<WebDriverCookie>(null);
             }
 
             return Task.FromResult<WebDriverCookie>(new WebDriverCookie
             {
-                Name = name,
-                Value = value,
-                Domain = scope.Host,
-                Path = "/",
-                Secure = scope.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+                Name = cookie.Name,
+                Value = cookie.Value ?? string.Empty,
+                Domain = cookie.Domain ?? scope.Host,
+                Path = string.IsNullOrWhiteSpace(cookie.Path) ? "/" : cookie.Path,
+                Secure = cookie.Secure,
+                HttpOnly = cookie.HttpOnly,
+                Expiry = cookie.Expires?.ToUnixTimeSeconds(),
+                SameSite = ToWebDriverSameSite(cookie.SameSite)
             });
         }
 
@@ -7909,7 +7918,11 @@ pre {{
             var scope = ResolveCookieScope();
             if (scope != null)
             {
-                _engine.SetCookie(scope, cookie.Name, cookie.Value ?? string.Empty, cookie.Path ?? "/");
+                _resources.CookieJar.SetDocumentCookie(
+                    scope,
+                    BuildWebDriverSetCookieHeader(cookie),
+                    _current ?? scope,
+                    BrowserSettings.Instance.BlockThirdPartyCookies);
             }
             return Task.CompletedTask;
         }
@@ -7934,10 +7947,15 @@ pre {{
             var scope = ResolveCookieScope();
             if (scope == null)
             {
+                _engine.ClearAllCookies();
                 return Task.CompletedTask;
             }
 
-            var keys = _engine.GetCookieSnapshot(scope).Keys.ToArray();
+            var keys = _resources.CookieJar
+                .SnapshotCookies(scope, _current ?? scope, includeHttpOnly: true)
+                .Select(cookie => cookie.Name)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
             foreach (var key in keys)
             {
                 _engine.DeleteCookie(scope, key);
@@ -7959,6 +7977,62 @@ pre {{
             }
 
             return _current;
+        }
+
+        private static string BuildWebDriverSetCookieHeader(WebDriverCookie cookie)
+        {
+            var parts = new List<string>
+            {
+                $"{cookie.Name ?? string.Empty}={cookie.Value ?? string.Empty}",
+                $"Path={SanitizeCookieAttribute(cookie.Path, "/")}"
+            };
+
+            if (!string.IsNullOrWhiteSpace(cookie.Domain))
+            {
+                parts.Add($"Domain={SanitizeCookieAttribute(cookie.Domain, string.Empty)}");
+            }
+
+            if (cookie.Expiry.HasValue)
+            {
+                parts.Add($"Expires={DateTimeOffset.FromUnixTimeSeconds(cookie.Expiry.Value).UtcDateTime:R}");
+            }
+
+            if (cookie.Secure)
+            {
+                parts.Add("Secure");
+            }
+
+            if (cookie.HttpOnly)
+            {
+                parts.Add("HttpOnly");
+            }
+
+            if (!string.IsNullOrWhiteSpace(cookie.SameSite))
+            {
+                parts.Add($"SameSite={SanitizeCookieAttribute(cookie.SameSite, "Lax")}");
+            }
+
+            return string.Join("; ", parts);
+        }
+
+        private static string SanitizeCookieAttribute(string value, string fallback)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return fallback;
+            }
+
+            return value.Replace(";", string.Empty).Trim();
+        }
+
+        private static string ToWebDriverSameSite(CookieSameSite sameSite)
+        {
+            return sameSite switch
+            {
+                CookieSameSite.Strict => "Strict",
+                CookieSameSite.None => "None",
+                _ => "Lax"
+            };
         }
 
         // Actions - Pointer/Keyboard state

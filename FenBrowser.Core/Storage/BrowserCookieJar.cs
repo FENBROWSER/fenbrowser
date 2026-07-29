@@ -60,12 +60,7 @@ namespace FenBrowser.Core.Storage
         public IReadOnlyDictionary<string, string> Snapshot(Uri documentUri, Uri topLevelDocumentUri = null)
         {
             var map = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var cookie in GetCookies(
-                         documentUri,
-                         topLevelDocumentUri,
-                         includeHttpOnly: false,
-                         isTopLevelNavigation: false,
-                         requestMethod: HttpMethod.Get.Method))
+            foreach (var cookie in SnapshotCookies(documentUri, topLevelDocumentUri, includeHttpOnly: false))
             {
                 if (!map.ContainsKey(cookie.Name))
                 {
@@ -74,6 +69,19 @@ namespace FenBrowser.Core.Storage
             }
 
             return map;
+        }
+
+        public IReadOnlyList<Cookie> SnapshotCookies(
+            Uri documentUri,
+            Uri topLevelDocumentUri = null,
+            bool includeHttpOnly = false)
+        {
+            return GetCookies(
+                documentUri,
+                topLevelDocumentUri,
+                includeHttpOnly,
+                isTopLevelNavigation: false,
+                requestMethod: HttpMethod.Get.Method);
         }
 
         public void SetDocumentCookie(

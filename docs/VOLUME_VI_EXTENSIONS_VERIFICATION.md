@@ -4349,3 +4349,16 @@ Verification:
 - Focused WebDriver contracts for prompt-transparent context queries, stale-context cleanup, and async-script deadline grace: pass (`4/4`, zero failed/skipped).
 - Release build of `FenBrowser.Host`: pass (zero errors).
 - Combined wdspec window-context slice `/webdriver/tests/classic/get_window_handle`, `/webdriver/tests/classic/get_window_handles`, and `/webdriver/tests/classic/new_window`: pass (`8/8`, zero unexpected test or subtest failures) in `Results/wpt/wdspec_window_context_after_safe_stale_cleanup`; previous broader run completed all `8/8` files but had `36` unexpected subtest failures in the two window-context prompt files.
+
+
+## 6.190 WebDriver Add Cookie Validation and Metadata (2026-07-29)
+
+- `POST /session/{session id}/cookie` validates the current document scheme, cookie domain, `sameSite`, and `expiry` before writing to browser storage. Invalid domains now return `invalid cookie domain`; invalid `sameSite`/`expiry` values return `invalid argument`.
+- WebDriver cookie writes now preserve `Domain`, `Path`, `Secure`, `HttpOnly`, `Expiry`, and `SameSite` through the browser cookie jar, and cookie reads use a rich jar snapshot instead of name/value-only document-cookie state.
+- New WebDriver sessions clear cookie state after selecting the dedicated top-level context, preventing prior-session cookies from leaking across WPT prompt-handling cases.
+
+Verification:
+
+- Focused WebDriver contracts for add-cookie validation and metadata preservation: pass (`5/5`, zero failed/skipped).
+- Release build of `FenBrowser.Host`: pass (zero errors).
+- WPT `/webdriver/tests/classic/add_cookie`: pass (`2/2`, zero unexpected test or subtest failures) in `Results/wpt/wdspec_add_cookie_after_cookie_validation`; previous clean run had `28` unexpected subtest failures in `add.py` and `user_prompts.py`.

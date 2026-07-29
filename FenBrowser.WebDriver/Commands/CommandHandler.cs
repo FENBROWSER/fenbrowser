@@ -515,14 +515,72 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Cookie payload is required");
             }
 
+            ValidateCookieJson(cookieEl);
             var cookie = JsonSerializer.Deserialize<WdCookie>(cookieEl.GetRawText()) ?? new WdCookie();
             if (string.IsNullOrWhiteSpace(cookie.Name))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Cookie name is required");
             }
 
+            await ValidateCookieCanBeAddedAsync(cookie).ConfigureAwait(false);
             await Browser.AddCookieAsync(cookie);
             return WebDriverResponse.Success(null);
+        }
+
+        private async Task ValidateCookieCanBeAddedAsync(WdCookie cookie)
+        {
+            var currentUrl = await Browser.GetCurrentUrlAsync().ConfigureAwait(false);
+            if (!Uri.TryCreate(currentUrl, UriKind.Absolute, out var currentUri) ||
+                (!currentUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                 !currentUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidCookieDomain, "Cookies may only be added for HTTP(S) documents");
+            }
+
+            if (!string.IsNullOrWhiteSpace(cookie.Domain) &&
+                !CookieDomainMatches(currentUri.Host, cookie.Domain))
+            {
+                throw new WebDriverException(ErrorCodes.InvalidCookieDomain, "Cookie domain does not match the current document domain");
+            }
+        }
+
+        private static void ValidateCookieJson(JsonElement cookieEl)
+        {
+            if (cookieEl.TryGetProperty("sameSite", out var sameSite))
+            {
+                if (sameSite.ValueKind != JsonValueKind.String ||
+                    sameSite.GetString() is not ("Lax" or "Strict" or "None"))
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "sameSite must be one of Lax, Strict, or None");
+                }
+            }
+
+            if (cookieEl.TryGetProperty("expiry", out var expiry))
+            {
+                if (expiry.ValueKind != JsonValueKind.Number ||
+                    !expiry.TryGetDouble(out var rawExpiry) ||
+                    double.IsNaN(rawExpiry) ||
+                    double.IsInfinity(rawExpiry) ||
+                    rawExpiry < 0 ||
+                    rawExpiry >= 9007199254740992d ||
+                    Math.Truncate(rawExpiry) != rawExpiry)
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "expiry must be a non-negative integer below 2^53");
+                }
+            }
+        }
+
+        private static bool CookieDomainMatches(string host, string domain)
+        {
+            if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(domain))
+            {
+                return false;
+            }
+
+            var normalizedHost = host.TrimEnd('.').ToLowerInvariant();
+            var normalizedDomain = domain.Trim().TrimStart('.').TrimEnd('.').ToLowerInvariant();
+            return normalizedHost.Equals(normalizedDomain, StringComparison.Ordinal) ||
+                   normalizedHost.EndsWith("." + normalizedDomain, StringComparison.Ordinal);
         }
 
         private async Task<WebDriverResponse> DeleteCookieAsync(string sessionId, string name)
@@ -812,6 +870,7 @@ namespace FenBrowser.WebDriver.Commands
                 session.WindowHandles.Add(dedicatedHandle);
                 session.CurrentWindowHandle = dedicatedHandle;
                 await Browser.SwitchToWindowAsync(dedicatedHandle).ConfigureAwait(false);
+                await Browser.DeleteAllCookiesAsync().ConfigureAwait(false);
             }
             session.WindowStateInitialized = true;
             return response;

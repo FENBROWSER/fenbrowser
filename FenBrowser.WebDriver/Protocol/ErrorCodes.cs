@@ -39,6 +39,7 @@ namespace FenBrowser.WebDriver.Protocol
         
         // Argument errors
         public const string InvalidArgument = "invalid argument";
+        public const string InvalidCookieDomain = "invalid cookie domain";
         public const string InvalidSelector = "invalid selector";
         
         // General errors
@@ -72,6 +73,7 @@ namespace FenBrowser.WebDriver.Protocol
                 ElementClickIntercepted => 400,
                 InvalidElementState => 400,
                 InvalidArgument => 400,
+                InvalidCookieDomain => 400,
                 InvalidSelector => 400,
                 UnknownCommand => 404,
                 UnknownMethod => 405,

@@ -591,6 +591,65 @@ namespace FenBrowser.Tests.WebDriver
             Assert.Equal(sessionAId, errorData.SessionId);
         }
 
+        [Theory]
+        [InlineData("about:blank", ErrorCodes.InvalidCookieDomain, """{"name":"hello","value":"world"}""")]
+        [InlineData("https://web-platform.test/common/blank.html", ErrorCodes.InvalidArgument, """{"name":"hello","value":"world","sameSite":"invalid"}""")]
+        [InlineData("https://web-platform.test/common/blank.html", ErrorCodes.InvalidArgument, """{"name":"hello","value":"world","expiry":9007199254740992}""")]
+        [InlineData("https://web-platform.test/common/blank.html", ErrorCodes.InvalidCookieDomain, """{"name":"hello","value":"world","domain":"example.com"}""")]
+        public async Task AddCookie_RejectsInvalidDomainAndCookieFields(string currentUrl, string expectedError, string cookieJson)
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            session.WindowHandles.Add("window-1");
+            session.CurrentWindowHandle = "window-1";
+            var browser = new ScriptStubBrowserDriver();
+            browser.SetCurrentUrl(currentUrl);
+            var handler = new CommandHandler(manager)
+            {
+                Browser = browser
+            };
+            var router = new CommandRouter();
+            var match = router.Match("POST", $"/session/{session.Id}/cookie");
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() =>
+                handler.ExecuteAsync(match, $$"""{"cookie":{{cookieJson}}}"""));
+
+            Assert.Equal(expectedError, ex.ErrorCode);
+            Assert.Empty(browser.AddedCookies);
+        }
+
+        [Fact]
+        public async Task AddCookie_PreservesValidatedCookieMetadata()
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            session.WindowHandles.Add("window-1");
+            session.CurrentWindowHandle = "window-1";
+            var browser = new ScriptStubBrowserDriver();
+            browser.SetCurrentUrl("https://web-platform.test/common/blank.html");
+            var handler = new CommandHandler(manager)
+            {
+                Browser = browser
+            };
+            var router = new CommandRouter();
+            var match = router.Match("POST", $"/session/{session.Id}/cookie");
+
+            var response = await handler.ExecuteAsync(
+                match,
+                """{"cookie":{"name":"hello","value":"world","domain":"web-platform.test","path":"/","secure":true,"httpOnly":true,"expiry":1893456000,"sameSite":"Strict"}}""");
+
+            Assert.Null(response.Value);
+            var cookie = Assert.Single(browser.AddedCookies);
+            Assert.Equal("hello", cookie.Name);
+            Assert.Equal("world", cookie.Value);
+            Assert.Equal("web-platform.test", cookie.Domain);
+            Assert.Equal("/", cookie.Path);
+            Assert.True(cookie.Secure);
+            Assert.True(cookie.HttpOnly);
+            Assert.Equal(1893456000, cookie.Expiry);
+            Assert.Equal("Strict", cookie.SameSite);
+        }
+
         [Fact]
         public async Task NewWindow_RejectsNullCommandParameters()
         {
@@ -701,10 +760,18 @@ namespace FenBrowser.Tests.WebDriver
             public int ReleaseActionsCallCount { get; private set; }
             public int AcceptAlertCallCount { get; private set; }
             public int DismissAlertCallCount { get; private set; }
+            public List<WdCookie> AddedCookies { get; } = new();
             private string _currentUrl = "about:blank";
             private string _deferredCommittedUrl;
             private int _remainingReadsBeforeCommit;
             private string _alertText;
+
+            public void SetCurrentUrl(string url)
+            {
+                _currentUrl = url ?? "about:blank";
+                _deferredCommittedUrl = null;
+                _remainingReadsBeforeCommit = 0;
+            }
 
             public void SetAlert(string text)
             {
@@ -792,9 +859,17 @@ namespace FenBrowser.Tests.WebDriver
             public Task SwitchToParentFrameAsync() => Task.CompletedTask;
             public Task<IReadOnlyList<WdCookie>> GetAllCookiesAsync() => Task.FromResult((IReadOnlyList<WdCookie>)Array.Empty<WdCookie>());
             public Task<WdCookie> GetNamedCookieAsync(string name) => Task.FromResult<WdCookie>(null);
-            public Task AddCookieAsync(WdCookie cookie) => Task.CompletedTask;
+            public Task AddCookieAsync(WdCookie cookie)
+            {
+                AddedCookies.Add(cookie);
+                return Task.CompletedTask;
+            }
             public Task DeleteCookieAsync(string name) => Task.CompletedTask;
-            public Task DeleteAllCookiesAsync() => Task.CompletedTask;
+            public Task DeleteAllCookiesAsync()
+            {
+                AddedCookies.Clear();
+                return Task.CompletedTask;
+            }
             public Task PerformActionsAsync(IReadOnlyList<WdActionSequence> actions) => Task.CompletedTask;
             public Task ReleaseActionsAsync()
             {
