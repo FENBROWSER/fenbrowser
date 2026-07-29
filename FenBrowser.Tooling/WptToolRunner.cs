@@ -55,13 +55,14 @@ namespace FenBrowser.Tooling
                 Console.WriteLine($"[wpt] venv={options.VenvPath} skip-venv-setup={options.SkipVenvSetup}");
             }
 
+            var processTimeoutSeconds = ResolveProcessTimeoutSeconds(options);
             var result = await RunProcessAsync(
                 options.WptRoot,
                 command,
                 stdoutPath,
                 stderrPath,
                 rawLogPath,
-                options.TimeoutSeconds,
+                processTimeoutSeconds,
                 options.StallTimeoutSeconds).ConfigureAwait(false);
             var endedAt = DateTime.UtcNow;
             if (options.PlanShards > 0)
@@ -109,6 +110,7 @@ namespace FenBrowser.Tooling
                 Processes = options.Processes,
                 MaxRestarts = options.MaxRestarts,
                 TimeoutSeconds = options.TimeoutSeconds,
+                ProcessTimeoutSeconds = processTimeoutSeconds,
                 UpdateManifest = options.UpdateManifest,
                 VenvPath = options.VenvPath,
                 SkipVenvSetup = options.SkipVenvSetup,
@@ -262,6 +264,32 @@ namespace FenBrowser.Tooling
             return new WptCommand(pythonExe, arguments);
         }
 
+        private static int ResolveProcessTimeoutSeconds(WptOptions options)
+        {
+            return ResolveProcessTimeoutSeconds(options.TimeoutSeconds, CountSelectedTests(options));
+        }
+
+        internal static int ResolveProcessTimeoutSeconds(int timeoutSeconds, int selectedTestCount)
+        {
+            var perTestBudget = Math.Max(1, timeoutSeconds);
+            var scaledBudget = (long)perTestBudget * Math.Max(1, selectedTestCount);
+            var graceSeconds = Math.Max(30, Math.Min(300, selectedTestCount * 5));
+            var total = Math.Max(perTestBudget, scaledBudget + graceSeconds);
+            return total >= int.MaxValue ? int.MaxValue : (int)total;
+        }
+
+        private static int CountSelectedTests(WptOptions options)
+        {
+            if (!string.IsNullOrWhiteSpace(options.IncludeFile) &&
+                File.Exists(options.IncludeFile))
+            {
+                return File.ReadLines(options.IncludeFile)
+                    .Count(line => !string.IsNullOrWhiteSpace(line));
+            }
+
+            return Math.Max(1, options.Tests?.Count ?? 0);
+        }
+
         private static async Task<WptProcessResult> RunProcessAsync(
             string workingDirectory,
             WptCommand command,
@@ -327,7 +355,7 @@ namespace FenBrowser.Tooling
                 await exitTask.ConfigureAwait(false);
             }
 
-            await Task.WhenAll(stdoutTask, stderrTask).ConfigureAwait(false);
+            await WaitForOutputRelaysAsync(process, stdoutTask, stderrTask).ConfigureAwait(false);
             return new WptProcessResult
             {
                 ExitCode = timedOut ? -1 : process.ExitCode,
@@ -489,6 +517,42 @@ namespace FenBrowser.Tooling
             }
 
             return false;
+        }
+
+        private static async Task WaitForOutputRelaysAsync(
+            Process process,
+            Task stdoutTask,
+            Task stderrTask)
+        {
+            var relays = Task.WhenAll(stdoutTask, stderrTask);
+            if (await Task.WhenAny(relays, Task.Delay(TimeSpan.FromSeconds(5))).ConfigureAwait(false) == relays)
+            {
+                await ObserveRelayCompletionAsync(relays).ConfigureAwait(false);
+                return;
+            }
+
+            Console.Error.WriteLine("[wpt] warning: redirected output did not close after process exit; forcing stream drain shutdown");
+            try { process.StandardOutput.Dispose(); } catch { }
+            try { process.StandardError.Dispose(); } catch { }
+
+            if (await Task.WhenAny(relays, Task.Delay(TimeSpan.FromSeconds(1))).ConfigureAwait(false) == relays)
+            {
+                await ObserveRelayCompletionAsync(relays).ConfigureAwait(false);
+            }
+        }
+
+        private static async Task ObserveRelayCompletionAsync(Task relays)
+        {
+            try
+            {
+                await relays.ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (IOException)
+            {
+            }
         }
 
         private static async Task RelayOutputAsync(StreamReader reader, StreamWriter writer, string prefix)
@@ -1288,6 +1352,7 @@ namespace FenBrowser.Tooling
             public int Processes { get; set; }
             public int MaxRestarts { get; set; }
             public int TimeoutSeconds { get; set; }
+            public int ProcessTimeoutSeconds { get; set; }
             public bool UpdateManifest { get; set; }
             public string VenvPath { get; set; }
             public bool SkipVenvSetup { get; set; }

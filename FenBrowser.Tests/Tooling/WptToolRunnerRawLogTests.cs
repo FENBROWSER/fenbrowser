@@ -59,6 +59,13 @@ public sealed class WptToolRunnerRawLogTests
     }
 
     [Fact]
+    public void ProcessTimeout_ScalesWithSelectedTestCount()
+    {
+        Assert.Equal(60, WptToolRunner.ResolveProcessTimeoutSeconds(timeoutSeconds: 30, selectedTestCount: 1));
+        Assert.Equal(150, WptToolRunner.ResolveProcessTimeoutSeconds(timeoutSeconds: 30, selectedTestCount: 4));
+    }
+
+    [Fact]
     public void AnalyzeRawLog_ExtractsUnexpectedSubtestAndTestFailures()
     {
         var rawLogPath = Path.Combine(Path.GetTempPath(), $"fen-wpt-raw-{Guid.NewGuid():N}.json");

@@ -4325,3 +4325,14 @@ Verification:
 - Focused FenJS DOM regression `FenJsDomMutationTests.ContentEditableFocusSetsInitialSelection`: pass (`1/1`, zero failed/skipped).
 - Release build of `FenBrowser.Tooling`: pass (zero errors).
 - Focused wdspec slice `/webdriver/tests/classic/new_window/new_tab.py`: pass (`1/1`, zero unexpected test or subtest failures) in `Results/wpt/wdspec_new_window_new_tab_after_selection_eq`; previous selection run had `1` unexpected subtest failure in `Results/wpt/wdspec_new_window_new_tab_after_selection`.
+
+## 6.188 WPT Shard Process Timeout Scaling And Output Drain Bounds (2026-07-29)
+
+- `FenBrowser.Tooling wpt` now treats `--timeout-seconds` as the per-selected-file budget when deriving the outer process deadline. The summary records the derived `ProcessTimeoutSeconds`, so multi-file shards are not cut off after a single file's timeout budget.
+- Redirected stdout/stderr relay shutdown is bounded after the WPT child exits. If Windows keeps console pipe handles open through a leftover `conhost.exe`, the runner disposes the redirected readers and still writes `wpt.summary.json` / `wpt.failures.json` instead of orphan-stalling.
+
+Verification:
+
+- Focused tooling regression `WptToolRunnerRawLogTests.ProcessTimeout_ScalesWithSelectedTestCount`: pass (`1/1`, zero failed/skipped).
+- Release build of `FenBrowser.Tooling`: pass (zero errors).
+- Combined wdspec directory slice `/webdriver/tests/classic/new_window`: pass (`4/4`, zero unexpected test or subtest failures) in `Results/wpt/wdspec_new_window_dir_after_scaled_timeout`; previous run wrote an incomplete timeout summary after `3/4` files in `Results/wpt/wdspec_new_window_dir_after_stream_drain`, and earlier runs orphan-stalled before writing a summary.
