@@ -511,6 +511,77 @@ namespace FenBrowser.Tests.WebDriver
         }
 
         [Fact]
+        public async Task NewWindow_RejectsNullCommandParameters()
+        {
+            var manager = new SessionManager();
+            var browser = new IsolatedWindowBrowserDriver();
+            var handler = new CommandHandler(manager)
+            {
+                Browser = browser
+            };
+            var router = new CommandRouter();
+
+            var sessionResponse = await handler.ExecuteAsync(router.Match("POST", "/session"), """{"capabilities":{"alwaysMatch":{}}}""");
+            var sessionId = ((NewSessionResponse)sessionResponse.Value).SessionId;
+
+            var match = router.Match("POST", $"/session/{sessionId}/window/new");
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(match, "null"));
+
+            Assert.Equal(ErrorCodes.InvalidArgument, ex.ErrorCode);
+        }
+
+        [Fact]
+        public async Task NewWindow_RejectsNonStringType()
+        {
+            var manager = new SessionManager();
+            var browser = new IsolatedWindowBrowserDriver();
+            var handler = new CommandHandler(manager)
+            {
+                Browser = browser
+            };
+            var router = new CommandRouter();
+
+            var sessionResponse = await handler.ExecuteAsync(router.Match("POST", "/session"), """{"capabilities":{"alwaysMatch":{}}}""");
+            var sessionId = ((NewSessionResponse)sessionResponse.Value).SessionId;
+
+            var match = router.Match("POST", $"/session/{sessionId}/window/new");
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(match, """{"type":true}"""));
+
+            Assert.Equal(ErrorCodes.InvalidArgument, ex.ErrorCode);
+        }
+
+        [Fact]
+        public async Task NewWindow_RejectsClosedSelectedTopLevelContext()
+        {
+            var manager = new SessionManager();
+            var browser = new IsolatedWindowBrowserDriver();
+            var handler = new CommandHandler(manager)
+            {
+                Browser = browser
+            };
+            var router = new CommandRouter();
+
+            var sessionResponse = await handler.ExecuteAsync(router.Match("POST", "/session"), """{"capabilities":{"alwaysMatch":{}}}""");
+            var sessionId = ((NewSessionResponse)sessionResponse.Value).SessionId;
+            var createMatch = router.Match("POST", $"/session/{sessionId}/window/new");
+            var createResponse = await handler.ExecuteAsync(createMatch, """{"type":"tab"}""");
+            var createdHandle = createResponse.Value
+                ?.GetType()
+                .GetProperty("handle")
+                ?.GetValue(createResponse.Value)
+                ?.ToString();
+
+            await handler.ExecuteAsync(
+                router.Match("POST", $"/session/{sessionId}/window"),
+                $$"""{"handle":"{{createdHandle}}"}""");
+            await handler.ExecuteAsync(router.Match("DELETE", $"/session/{sessionId}/window"), null);
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(createMatch, """{"type":null}"""));
+
+            Assert.Equal(ErrorCodes.NoSuchWindow, ex.ErrorCode);
+        }
+
+        [Fact]
         public async Task CloseWindow_DeletesOnlyOwningSession_InMultiSessionMode()
         {
             var manager = new SessionManager();

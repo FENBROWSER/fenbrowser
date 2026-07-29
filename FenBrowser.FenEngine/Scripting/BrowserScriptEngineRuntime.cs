@@ -4016,6 +4016,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         _interpreter.RegisterGlobalValue("self", globalThisValue);
         _interpreter.RegisterGlobalValue("top", globalThisValue);
         _interpreter.RegisterGlobalValue("parent", globalThisValue);
+        _interpreter.RegisterGlobalValue("name", JsValue.FromString(string.Empty));
         _interpreter.RegisterGlobalValue(
             "addEventListener",
             _interpreter.AllocateNativeFunction(

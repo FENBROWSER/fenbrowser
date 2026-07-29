@@ -4302,3 +4302,15 @@ Verification:
 - Release build of `FenBrowser.Tooling`: pass (zero errors).
 - Focused alert-command wdspec slice `/webdriver/tests/classic/accept_alert`, `/dismiss_alert`, `/get_alert_text`, and `/send_alert_text`: pass (`4/4`, zero unexpected test or subtest failures) in `Results/wpt/wdspec_alert_commands_handle_sync`; baseline had `29` unexpected subtest failures in `Results/wpt/wdspec_alert_commands_next`.
 - Prompt capability regression slice `/webdriver/tests/classic/new_session/unhandled_prompt_behavior.py`: pass (`1/1`, zero unexpected failures) in `Results/wpt/wdspec_unhandled_prompt_regression_after_alerts`.
+
+## 6.186 WebDriver New Window Parameter And Top-Window Defaults (2026-07-29)
+
+- `/session/{id}/window/new` validates command parameters before creating a context. A `null` command body and non-string `type` values now return `invalid argument`; a closed selected top-level browsing context returns `no such window`.
+- FenJS top-level window bootstrap now exposes the browser default `window.name` value as an empty string, so newly-created top-level tabs report no window name through WebDriver script execution.
+
+Verification:
+
+- Focused WebDriver contract slice `WebDriverContractTests.NewWindow_Rejects*`: pass (`3/3`, zero failed/skipped).
+- Release build of `FenBrowser.Tooling`: pass (zero errors).
+- Focused wdspec slice `/webdriver/tests/classic/new_window/new.py`: pass (`1/1`, zero unexpected test or subtest failures) in `Results/wpt/wdspec_new_window_new_after`.
+- Follow-up slice `/webdriver/tests/classic/new_window/new_tab.py`: reduced from `2` unexpected subtest failures to `1`; `test_sets_no_window_name` now passes, while `test_initial_selection_for_contenteditable` remains open in `Results/wpt/wdspec_new_window_new_tab_after_selection_revert`.

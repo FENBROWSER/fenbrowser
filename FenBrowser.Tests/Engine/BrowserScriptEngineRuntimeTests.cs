@@ -97,6 +97,7 @@ namespace FenBrowser.Tests.Engine
 
             Assert.Equal(true, engine.Evaluate("window === globalThis"));
             Assert.Equal(true, engine.Evaluate("self === globalThis"));
+            Assert.Equal(string.Empty, engine.Evaluate("window.name")?.ToString());
             Assert.Equal(legacy.Evaluate("document.readyState")?.ToString(), engine.Evaluate("document.readyState")?.ToString());
             Assert.Equal("/app/index.html", engine.Evaluate("location.pathname")?.ToString());
             Assert.Equal(true, engine.Evaluate("navigator.cookieEnabled"));

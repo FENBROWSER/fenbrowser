@@ -298,13 +298,37 @@ namespace FenBrowser.WebDriver.Commands
             var session = _handler.GetSession(sessionId);
             await SynchronizeWindowStateAsync(session);
             var previousHandle = session.CurrentWindowHandle;
-            var windowType = "tab";
-            if (body.HasValue && body.Value.TryGetProperty("type", out var typeEl))
+
+            if (!body.HasValue || body.Value.ValueKind != JsonValueKind.Object)
             {
-                var requested = typeEl.GetString();
-                if (string.Equals(requested, "window", StringComparison.OrdinalIgnoreCase))
+                throw new WebDriverException(ErrorCodes.InvalidArgument, "New window parameters must be an object");
+            }
+
+            if (string.IsNullOrWhiteSpace(previousHandle) ||
+                session.WindowHandles == null ||
+                !session.WindowHandles.Contains(previousHandle))
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchWindow, "No top-level browsing context is currently selected");
+            }
+
+            var windowType = "tab";
+            if (body.Value.TryGetProperty("type", out var typeEl))
+            {
+                if (typeEl.ValueKind == JsonValueKind.Null)
                 {
-                    windowType = "window";
+                    windowType = "tab";
+                }
+                else if (typeEl.ValueKind != JsonValueKind.String)
+                {
+                    throw new WebDriverException(ErrorCodes.InvalidArgument, "New window type must be a string or null");
+                }
+                else
+                {
+                    var requested = typeEl.GetString();
+                    if (string.Equals(requested, "window", StringComparison.OrdinalIgnoreCase))
+                    {
+                        windowType = "window";
+                    }
                 }
             }
 
