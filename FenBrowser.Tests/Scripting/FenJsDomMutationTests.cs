@@ -10,6 +10,45 @@ namespace FenBrowser.Tests.Scripting
     public sealed class FenJsDomMutationTests
     {
         [Fact]
+        public async Task ContentEditableFocusSetsInitialSelection()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var document = new HtmlParser("<html><body><div contenteditable>abc</div></body></html>", baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(
+                """
+                (function () {
+                    var initial = document.querySelector('div');
+                    document.onselectionchange = function () {
+                        var selection = document.getSelection();
+                        initial.setAttribute('_focused', selection.anchorNode == initial.firstChild);
+                    };
+
+                    initial.focus();
+                    var selection = window.getSelection();
+                    return [
+                        typeof document.getSelection,
+                        typeof window.getSelection,
+                        initial.getAttribute('_focused'),
+                        String(selection.anchorNode === initial.firstChild),
+                        selection.anchorNode ? selection.anchorNode.nodeName : 'null',
+                        initial.firstChild ? initial.firstChild.nodeName : 'null',
+                        String(selection.anchorOffset),
+                        String(selection.isCollapsed)
+                    ].join('|');
+                })();
+                """);
+
+            Assert.Equal("function|function|true|true|#text|#text|0|true", result?.ToString());
+        }
+
+        [Fact]
         public async Task ReplaceChild_ReplacesElementAndDocumentFragmentChildren()
         {
             var baseUri = new Uri("https://www.youtube.com/");

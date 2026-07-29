@@ -22091,6 +22091,7 @@ fallbackArraySpecies:
                 JsValueTag.String => left.AsString() == right.AsString(),
                 JsValueTag.Symbol => left.AsSymbolId() == right.AsSymbolId(),
                 JsValueTag.Object => left.AsObjectHandle().Equals(right.AsObjectHandle()),
+                JsValueTag.HostObject => left.AsHostObjectHandle().Equals(right.AsHostObjectHandle()),
                 _ => false
             };
         }

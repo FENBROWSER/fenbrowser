@@ -404,6 +404,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private readonly Dictionary<JsValue, PendingPromiseRejectionDiagnostic> _pendingPromiseRejectionDiagnostics = new();
     private readonly Dictionary<object, HostObjectHandle> _hostHandleCache =
         new(ReferenceEqualityComparer.Instance);
+    private Node _selectionAnchorNode;
+    private Node _selectionFocusNode;
+    private int _selectionAnchorOffset;
+    private int _selectionFocusOffset;
     private readonly List<BrowserEventListener> _documentEventListeners = new();
     private readonly List<BrowserEventListener> _windowEventListeners = new();
     private readonly List<BrowserEventListener> _visualViewportEventListeners = new();
@@ -3229,6 +3233,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 ? "loading"
                 : documentReadyState;
             _documentEpoch = _documentEpoch.Next();
+            ClearSelectionState();
             ResetFenJsSession();
 
             // Process iframes that exist in the static HTML (src/srcdoc attributes).
@@ -3256,6 +3261,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 _documentReadyState = string.IsNullOrWhiteSpace(documentReadyState)
                     ? "loading"
                     : documentReadyState;
+                ClearSelectionState();
 
                 var document = domRoot as Document ?? domRoot.OwnerDocument;
                 var navigator = CreateNavigatorHost();
@@ -4017,6 +4023,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         _interpreter.RegisterGlobalValue("top", globalThisValue);
         _interpreter.RegisterGlobalValue("parent", globalThisValue);
         _interpreter.RegisterGlobalValue("name", JsValue.FromString(string.Empty));
+        _interpreter.RegisterGlobalValue(
+            "getSelection",
+            _interpreter.AllocateNativeFunction(
+                "getSelection",
+                (_, _) => CreateSelectionValue(),
+                length: 0));
         _interpreter.RegisterGlobalValue(
             "addEventListener",
             _interpreter.AllocateNativeFunction(
@@ -10682,6 +10694,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return string.IsNullOrWhiteSpace(_documentReadyState) ? "loading" : _documentReadyState;
     }
 
+    private void ClearSelectionState()
+    {
+        _selectionAnchorNode = null;
+        _selectionFocusNode = null;
+        _selectionAnchorOffset = 0;
+        _selectionFocusOffset = 0;
+    }
+
     internal void FocusElement(Element element)
     {
         if (element == null) return;
@@ -10698,6 +10718,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         if (!alreadyFocused)
         {
             DispatchElementEvent(element, "focus");
+        }
+
+        if (IsContentEditableElement(element))
+        {
+            SetCollapsedSelectionForEditable(element);
         }
     }
 
@@ -10717,6 +10742,87 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         if (wasFocused)
         {
             DispatchElementEvent(element, "blur");
+        }
+    }
+
+    private static bool IsContentEditableElement(Element element)
+    {
+        if (element == null || !element.HasAttribute("contenteditable"))
+        {
+            return false;
+        }
+
+        var value = element.GetAttribute("contenteditable");
+        return string.IsNullOrEmpty(value) ||
+               string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "plaintext-only", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SetCollapsedSelectionForEditable(Element element)
+    {
+        var anchor = element.FirstChild ?? element;
+        var changed =
+            !ReferenceEquals(_selectionAnchorNode, anchor) ||
+            !ReferenceEquals(_selectionFocusNode, anchor) ||
+            _selectionAnchorOffset != 0 ||
+            _selectionFocusOffset != 0;
+
+        _selectionAnchorNode = anchor;
+        _selectionFocusNode = anchor;
+        _selectionAnchorOffset = 0;
+        _selectionFocusOffset = 0;
+
+        if (changed)
+        {
+            DispatchSelectionChange(element.OwnerDocument);
+        }
+    }
+
+    private JsValue CreateSelectionValue()
+    {
+        var anchorNode = ToHostNodeOrNull(_selectionAnchorNode);
+        var focusNode = ToHostNodeOrNull(_selectionFocusNode);
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["anchorNode"] = anchorNode,
+            ["focusNode"] = focusNode,
+            ["anchorOffset"] = JsValue.FromInt32(_selectionAnchorOffset),
+            ["focusOffset"] = JsValue.FromInt32(_selectionFocusOffset),
+            ["isCollapsed"] = JsValue.FromBoolean(ReferenceEquals(_selectionAnchorNode, _selectionFocusNode) && _selectionAnchorOffset == _selectionFocusOffset),
+            ["rangeCount"] = JsValue.FromInt32(_selectionAnchorNode == null ? 0 : 1),
+            ["type"] = JsValue.FromString(_selectionAnchorNode == null ? "None" : "Caret")
+        });
+    }
+
+    private void DispatchSelectionChange(Document document)
+    {
+        if (document == null || _interpreter == null)
+        {
+            return;
+        }
+
+        var target = ToHostOrNull(document, HostObjectKind.DomDocument);
+        var eventValue = CreateBrowserDomEventValue(
+            null,
+            "selectionchange",
+            new BrowserDomEventInit
+            {
+                Bubbles = false,
+                Cancelable = false,
+                Composed = false,
+                IsTrusted = true
+            },
+            out _);
+        _interpreter.SetObjectProperty(eventValue, "target", target);
+        _interpreter.SetObjectProperty(eventValue, "srcElement", target);
+        _interpreter.SetObjectProperty(eventValue, "currentTarget", target);
+
+        DispatchBrowserEvent(_documentEventListeners, "selectionchange", target, eventValue);
+
+        var handler = GetStoredHostPropertyOrUndefined(document, "onselectionchange");
+        if (_interpreter.CanCallValue(handler))
+        {
+            TryInvokeFenJsEventCallback(handler, target, eventValue, "selectionchange");
         }
     }
 
@@ -16626,6 +16732,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return true;
                 case "implementation":
                     value = _owner.ToHostOrNull(new FenJsDomImplementationHost(document), HostObjectKind.Other);
+                    return true;
+                case "getSelection":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "getSelection",
+                        (_, _) => _owner.CreateSelectionValue(),
+                        length: 0);
                     return true;
                 case "getElementById":
                     value = _owner.GetOrCreateHostCallable(

@@ -4314,3 +4314,14 @@ Verification:
 - Release build of `FenBrowser.Tooling`: pass (zero errors).
 - Focused wdspec slice `/webdriver/tests/classic/new_window/new.py`: pass (`1/1`, zero unexpected test or subtest failures) in `Results/wpt/wdspec_new_window_new_after`.
 - Follow-up slice `/webdriver/tests/classic/new_window/new_tab.py`: reduced from `2` unexpected subtest failures to `1`; `test_sets_no_window_name` now passes, while `test_initial_selection_for_contenteditable` remains open in `Results/wpt/wdspec_new_window_new_tab_after_selection_revert`.
+
+## 6.187 FenJS Contenteditable Initial Selection And Host Equality (2026-07-29)
+
+- FenJS now exposes `document.getSelection()` and `window.getSelection()` with collapsed selection state for focused `contenteditable` elements. Focusing an editable element anchors the selection at its first child when present and fires document `selectionchange`, including the `document.onselectionchange` property handler path.
+- FenJS abstract equality now treats matching host-object handles as equal. Strict equality already handled host objects; loose equality previously returned `false`, which broke WPT script checks such as `selection.anchorNode == initial.firstChild`.
+
+Verification:
+
+- Focused FenJS DOM regression `FenJsDomMutationTests.ContentEditableFocusSetsInitialSelection`: pass (`1/1`, zero failed/skipped).
+- Release build of `FenBrowser.Tooling`: pass (zero errors).
+- Focused wdspec slice `/webdriver/tests/classic/new_window/new_tab.py`: pass (`1/1`, zero unexpected test or subtest failures) in `Results/wpt/wdspec_new_window_new_tab_after_selection_eq`; previous selection run had `1` unexpected subtest failure in `Results/wpt/wdspec_new_window_new_tab_after_selection`.
