@@ -409,10 +409,13 @@ namespace FenBrowser.WebDriver.Commands
             var value = GetSession(match.GetSessionId()).Timeouts.Script ?? 30000;
             if (value <= 0)
             {
-                return 30000;
+                return 31000;
             }
 
-            return value > int.MaxValue ? int.MaxValue : (int)value;
+            const int transportGraceMs = 2000;
+            return value >= int.MaxValue - transportGraceMs
+                ? int.MaxValue
+                : (int)value + transportGraceMs;
         }
 
         internal void MarkSessionUnresponsive(string sessionId)
@@ -805,12 +808,41 @@ namespace FenBrowser.WebDriver.Commands
             session.WindowHandles.Clear();
             if (!string.IsNullOrWhiteSpace(dedicatedHandle))
             {
+                await CloseStaleBrowserContextsAfterSessionBootstrapAsync(dedicatedHandle).ConfigureAwait(false);
                 session.WindowHandles.Add(dedicatedHandle);
                 session.CurrentWindowHandle = dedicatedHandle;
                 await Browser.SwitchToWindowAsync(dedicatedHandle).ConfigureAwait(false);
             }
             session.WindowStateInitialized = true;
             return response;
+        }
+
+        private async Task CloseStaleBrowserContextsAfterSessionBootstrapAsync(string dedicatedHandle)
+        {
+            if (Browser == null ||
+                string.IsNullOrWhiteSpace(dedicatedHandle) ||
+                _sessionManager.ActiveSessionCount != 1)
+            {
+                return;
+            }
+
+            var handles = (await Browser.GetWindowHandlesAsync().ConfigureAwait(false))
+                .Where(handle => !string.IsNullOrWhiteSpace(handle) &&
+                                 !string.Equals(handle, dedicatedHandle, StringComparison.Ordinal))
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+
+            foreach (var handle in handles)
+            {
+                try
+                {
+                    await Browser.SwitchToWindowAsync(handle).ConfigureAwait(false);
+                    await Browser.CloseWindowAsync().ConfigureAwait(false);
+                }
+                catch (InvalidOperationException ex) when (LooksLikeNoSuchWindow(ex))
+                {
+                }
+            }
         }
 
         private async Task AlignBrowserToSessionWindowAsync(string command, string sessionId)
@@ -1092,8 +1124,11 @@ namespace FenBrowser.WebDriver.Commands
                 return;
             }
 
-            // Alert commands themselves are exempt from prompt-interruption handling.
-            if (command is "DismissAlert" or "AcceptAlert" or "GetAlertText" or "SendAlertText")
+            // Alert commands and top-level context query commands are exempt from
+            // prompt-interruption handling. WebDriver context queries must return
+            // cached handles without accepting, dismissing, or reporting an open prompt.
+            if (command is "DismissAlert" or "AcceptAlert" or "GetAlertText" or "SendAlertText" or
+                "GetWindowHandle" or "GetWindowHandles")
             {
                 return;
             }

@@ -4336,3 +4336,16 @@ Verification:
 - Focused tooling regression `WptToolRunnerRawLogTests.ProcessTimeout_ScalesWithSelectedTestCount`: pass (`1/1`, zero failed/skipped).
 - Release build of `FenBrowser.Tooling`: pass (zero errors).
 - Combined wdspec directory slice `/webdriver/tests/classic/new_window`: pass (`4/4`, zero unexpected test or subtest failures) in `Results/wpt/wdspec_new_window_dir_after_scaled_timeout`; previous run wrote an incomplete timeout summary after `3/4` files in `Results/wpt/wdspec_new_window_dir_after_stream_drain`, and earlier runs orphan-stalled before writing a summary.
+
+
+## 6.189 WebDriver Window Context Prompt Isolation (2026-07-29)
+
+- `GET /window` and `GET /window/handles` are prompt-transparent context queries. They return the selected/cached top-level handles while leaving any open user prompt untouched, regardless of `unhandledPromptBehavior`.
+- New single-session bootstrap creates the dedicated session tab first and then closes stale pre-existing browser contexts. This preserves Host stability by avoiding a zero-window teardown state while preventing deleted-session handles from leaking into the next WPT session.
+- `execute/async` uses a small outer transport grace over the session script timeout, and the runtime gives timeout-boundary modal prompts a prompt-only event-loop drain before reporting `script timeout`. This prevents WPT dialog fixtures from racing the protocol deadline when a timer opens `alert`/`confirm`/`prompt` without invoking the async callback.
+
+Verification:
+
+- Focused WebDriver contracts for prompt-transparent context queries, stale-context cleanup, and async-script deadline grace: pass (`4/4`, zero failed/skipped).
+- Release build of `FenBrowser.Host`: pass (zero errors).
+- Combined wdspec window-context slice `/webdriver/tests/classic/get_window_handle`, `/webdriver/tests/classic/get_window_handles`, and `/webdriver/tests/classic/new_window`: pass (`8/8`, zero unexpected test or subtest failures) in `Results/wpt/wdspec_window_context_after_safe_stale_cleanup`; previous broader run completed all `8/8` files but had `36` unexpected subtest failures in the two window-context prompt files.

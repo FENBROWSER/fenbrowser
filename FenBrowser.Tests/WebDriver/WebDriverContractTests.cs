@@ -242,6 +242,21 @@ namespace FenBrowser.Tests.WebDriver
         }
 
         [Fact]
+        public void ExecuteAsyncScript_OuterDeadlineIncludesTransportGrace()
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            session.Timeouts.Script = 1000;
+            var handler = new CommandHandler(manager);
+            var router = new CommandRouter();
+
+            var timeout = handler.GetProtocolCommandTimeoutMs(
+                router.Match("POST", $"/session/{session.Id}/execute/async"));
+
+            Assert.Equal(3000, timeout);
+        }
+
+        [Fact]
         public async Task UnresponsiveSession_UsesCachedStateForWptCleanup()
         {
             var manager = new SessionManager();
@@ -287,6 +302,72 @@ namespace FenBrowser.Tests.WebDriver
                 null);
 
             Assert.Equal(initialHandle, response.Value);
+        }
+
+        [Theory]
+        [InlineData("GET", "/session/{0}/window")]
+        [InlineData("GET", "/session/{0}/window/handles")]
+        public async Task WindowContextQueries_DoNotHandleOpenUserPrompts(string method, string pathTemplate)
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities
+            {
+                UnhandledPromptBehavior = "accept and notify"
+            });
+            var initialHandle = Assert.Single(session.WindowHandles);
+            session.CurrentWindowHandle = initialHandle;
+            session.WindowStateInitialized = true;
+
+            var browser = new ScriptStubBrowserDriver();
+            browser.SetAlert("cheese");
+            var handler = new CommandHandler(manager)
+            {
+                Browser = browser
+            };
+            var router = new CommandRouter();
+
+            var response = await handler.ExecuteAsync(
+                router.Match(method, string.Format(pathTemplate, session.Id)),
+                null);
+
+            Assert.NotNull(response.Value);
+            Assert.True(await browser.HasAlertAsync());
+            Assert.Equal("cheese", await browser.GetAlertTextAsync());
+            Assert.Equal(0, browser.AcceptAlertCallCount);
+            Assert.Equal(0, browser.DismissAlertCallCount);
+        }
+
+        [Fact]
+        public async Task NewSession_ClosesStaleTopLevelContextsAfterCreatingDedicatedContext()
+        {
+            var manager = new SessionManager();
+            var browser = new IsolatedWindowBrowserDriver();
+            var handler = new CommandHandler(manager)
+            {
+                Browser = browser
+            };
+            var router = new CommandRouter();
+
+            var created = await handler.ExecuteAsync(
+                router.Match("POST", "/session"),
+                """{"capabilities":{"alwaysMatch":{}}}""");
+            var sessionId = Assert.IsType<NewSessionResponse>(created.Value).SessionId;
+
+            Assert.Equal(new[] { "window-1" }, browser.SnapshotHandles);
+
+            await handler.ExecuteAsync(
+                router.Match("DELETE", $"/session/{sessionId}"),
+                null);
+
+            Assert.Equal(new[] { "window-1" }, browser.SnapshotHandles);
+
+            var second = await handler.ExecuteAsync(
+                router.Match("POST", "/session"),
+                """{"capabilities":{"alwaysMatch":{}}}""");
+            var secondSessionId = Assert.IsType<NewSessionResponse>(second.Value).SessionId;
+
+            Assert.NotEqual(sessionId, secondSessionId);
+            Assert.Equal(new[] { "window-2" }, browser.SnapshotHandles);
         }
 
         [Fact]
@@ -618,9 +699,17 @@ namespace FenBrowser.Tests.WebDriver
             public object[] LastArgs { get; private set; } = Array.Empty<object>();
             public int NavigateCallCount { get; private set; }
             public int ReleaseActionsCallCount { get; private set; }
+            public int AcceptAlertCallCount { get; private set; }
+            public int DismissAlertCallCount { get; private set; }
             private string _currentUrl = "about:blank";
             private string _deferredCommittedUrl;
             private int _remainingReadsBeforeCommit;
+            private string _alertText;
+
+            public void SetAlert(string text)
+            {
+                _alertText = text ?? string.Empty;
+            }
 
             public void ConfigureDeferredNavigationCommit(string committedUrl, int readsBeforeCommit)
             {
@@ -712,11 +801,25 @@ namespace FenBrowser.Tests.WebDriver
                 ReleaseActionsCallCount++;
                 return Task.CompletedTask;
             }
-            public Task<bool> HasAlertAsync() => Task.FromResult(false);
-            public Task DismissAlertAsync() => Task.CompletedTask;
-            public Task AcceptAlertAsync() => Task.CompletedTask;
-            public Task<string> GetAlertTextAsync() => Task.FromResult(string.Empty);
-            public Task SendAlertTextAsync(string text) => Task.CompletedTask;
+            public Task<bool> HasAlertAsync() => Task.FromResult(_alertText != null);
+            public Task DismissAlertAsync()
+            {
+                DismissAlertCallCount++;
+                _alertText = null;
+                return Task.CompletedTask;
+            }
+            public Task AcceptAlertAsync()
+            {
+                AcceptAlertCallCount++;
+                _alertText = null;
+                return Task.CompletedTask;
+            }
+            public Task<string> GetAlertTextAsync() => Task.FromResult(_alertText ?? string.Empty);
+            public Task SendAlertTextAsync(string text)
+            {
+                _alertText = text ?? string.Empty;
+                return Task.CompletedTask;
+            }
             public virtual bool HasValidCurrentBrowsingContext() => true;
         }
 
@@ -724,6 +827,8 @@ namespace FenBrowser.Tests.WebDriver
         {
             private readonly List<string> _handles = new();
             private string _currentHandle;
+
+            public IReadOnlyList<string> SnapshotHandles => _handles.ToArray();
 
             public Task NavigateAsync(string url) => Task.CompletedTask;
             public Task<string> GetCurrentUrlAsync() => Task.FromResult("about:blank");

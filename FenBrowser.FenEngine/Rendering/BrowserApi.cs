@@ -7795,6 +7795,32 @@ pre {{
                 await Task.Delay(10);
             }
             
+            // A modal prompt can be raised by a timer at the script-timeout boundary.
+            // WPT dialog fixtures intentionally do this without invoking the async
+            // callback, so give the event loop a short prompt-only drain before
+            // reporting script timeout.
+            var modalPromptGrace = System.Diagnostics.Stopwatch.StartNew();
+            while (modalPromptGrace.ElapsedMilliseconds < 1000)
+            {
+                try
+                {
+                    var eventLoop = _engine.EventLoopCoordinator;
+                    eventLoop.ProcessNextTask();
+                    eventLoop.PerformMicrotaskCheckpoint();
+                }
+                catch
+                {
+                }
+
+                if (!string.IsNullOrEmpty(_pendingAlertText))
+                {
+                    TryLogDebug($"[AsyncScript] Completing after timeout-boundary modal prompt: '{_pendingAlertText}'", LogCategory.JavaScript);
+                    return null;
+                }
+
+                await Task.Delay(10);
+            }
+
             TryLogDebug($"[AsyncScript] Timeout after {timeoutMs}ms", LogCategory.Errors);
             
             // Timeout - throw exception
