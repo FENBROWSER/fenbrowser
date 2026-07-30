@@ -260,6 +260,23 @@ public sealed class RegExpLiteralTests
     }
 
     [Fact]
+    public void RegExpSymbolReplaceUsesFlagsAndLiteralInvalidCaptureReferences()
+    {
+        var result = Run(@"function E() {}
+            var flagsThrew = false;
+            try {
+              RegExp.prototype[Symbol.match].call({ get flags() { throw new E(); } });
+            } catch (e) {
+              flagsThrew = e instanceof E;
+            }
+            var r = /./;
+            var fake = { length: { valueOf: function () { return 3.9; } }, 0: '', 1: 'foo', 2: 'bar', 3: 'baz', index: 0 };
+            r.exec = function () { return fake; };
+            flagsThrew && r[Symbol.replace]('', '$1$2$3') === 'foobar$3';");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void RegexLiteralRejectsReversedCharacterClassRange()
     {
         Assert.Throws<JsParserException>(() => Run(@"/^[z-a]$/;"));

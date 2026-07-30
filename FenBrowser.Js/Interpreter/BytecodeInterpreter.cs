@@ -7694,15 +7694,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateTypeError("RegExp.prototype[@@match] called on non-object."));
         var rxObj = _heap.GetObject(thisValue.AsObjectHandle());
         var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
-        bool global = false;
-        if (TryGetPropertyValue(rxObj, thisValue, "global", out var globalVal))
-            global = IsTruthy(globalVal);
+        var flagsText = GetRegExpFlagsString(rxObj, thisValue);
+        var global = flagsText.Contains('g');
         if (!global)
             return RegExpExec(thisValue, input);
-        bool fullUnicode = false;
-        if (TryGetPropertyValue(rxObj, thisValue, "unicode", out var unicodeVal))
-            fullUnicode = IsTruthy(unicodeVal);
-        _ = rxObj.SetProperty("lastIndex", JsValue.FromNumber(0));
+        var fullUnicode = flagsText.Contains('u') || flagsText.Contains('v');
+        if (!rxObj.SetProperty("lastIndex", JsValue.FromNumber(0)))
+        {
+            throw new JsThrownException(CreateTypeError("Cannot set RegExp lastIndex."));
+        }
         var results = new List<JsValue>();
         while (true)
         {
@@ -7719,14 +7719,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             results.Add(JsValue.FromString(matchStr));
             if (matchStr.Length == 0)
             {
-                double thisIndex = 0;
+                var thisIndex = 0d;
                 if (TryGetPropertyValue(rxObj, thisValue, "lastIndex", out var liVal))
-                { var len = ToNumber(liVal); if (!double.IsNaN(len) && len > 0) thisIndex = Math.Min(Math.Truncate(len), 9007199254740991); }
-                int thisIndexInt = thisIndex > int.MaxValue ? int.MaxValue : (int)thisIndex;
-                var nextIndex = AdvanceStringIndex(input, thisIndexInt, fullUnicode);
-                _ = rxObj.SetProperty("lastIndex", JsValue.FromNumber(nextIndex));
+                {
+                    thisIndex = ToLengthNumber(liVal);
+                }
+                var nextIndex = AdvanceStringIndexNumber(input, thisIndex, fullUnicode);
+                if (!rxObj.SetProperty("lastIndex", JsValue.FromNumber(nextIndex)))
+                {
+                    throw new JsThrownException(CreateTypeError("Cannot set RegExp lastIndex."));
+                }
             }
         }
+    }
+
+    private string GetRegExpFlagsString(JsObject rxObj, JsValue receiver)
+    {
+        var flagsValue = JsValue.Undefined;
+        TryGetPropertyValue(rxObj, receiver, "flags", out flagsValue);
+        return ToStringValue(flagsValue);
     }
 
     // ECMA-262 22.2.5.11 RegExp.prototype [ @@search ] ( string )
@@ -7764,12 +7775,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var replacement = args.Count > 1 ? args[1] : JsValue.Undefined;
 
         // Spec path via RegExpExec.
-        bool replaceGlobal = false;
-        if (TryGetPropertyValue(rxObj, thisValue, "global", out var gVal))
-            replaceGlobal = IsTruthy(gVal);
-        bool fullUnicode = false;
-        if (TryGetPropertyValue(rxObj, thisValue, "unicode", out var uVal))
-            fullUnicode = IsTruthy(uVal);
+        var flagsText = GetRegExpFlagsString(rxObj, thisValue);
+        var replaceGlobal = flagsText.Contains('g');
+        var fullUnicode = flagsText.Contains('u') || flagsText.Contains('v');
         if (replaceGlobal && !rxObj.SetProperty("lastIndex", JsValue.FromNumber(0)))
             throw new JsThrownException(CreateTypeError("Cannot set RegExp lastIndex."));
         var execResults = new List<JsValue>();
@@ -7784,8 +7792,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 double ti = 0;
                 if (TryGetPropertyValue(rxObj, thisValue, "lastIndex", out var li))
-                { var n = ToNumber(li); if (!double.IsNaN(n) && n > 0) ti = Math.Min(Math.Truncate(n), 9007199254740991); }
-                if (!rxObj.SetProperty("lastIndex", JsValue.FromNumber(AdvanceStringIndex(input, (int)ti, fullUnicode))))
+                {
+                    ti = ToLengthNumber(li);
+                }
+                if (!rxObj.SetProperty("lastIndex", JsValue.FromNumber(AdvanceStringIndexNumber(input, ti, fullUnicode))))
                     throw new JsThrownException(CreateTypeError("Cannot set RegExp lastIndex."));
             }
         }
@@ -7901,12 +7911,40 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     default:
                         if (c >= '0' && c <= '9')
                         {
-                            var ns = c.ToString();
-                            var j = i + 2;
-                            while (j < replacement.Length && replacement[j] >= '0' && replacement[j] <= '9') { ns += replacement[j]; j++; }
-                            if (int.TryParse(ns, out var gn) && gn > 0 && gn <= captures.Count)
-                            { sb.Append(captures[gn - 1]); i += ns.Length; }
-                            else { sb.Append('$'); i++; }
+                            var first = c - '0';
+                            if (first == 0)
+                            {
+                                sb.Append('$');
+                                sb.Append(c);
+                                i++;
+                                break;
+                            }
+
+                            if (i + 2 < replacement.Length &&
+                                replacement[i + 2] >= '0' &&
+                                replacement[i + 2] <= '9')
+                            {
+                                var second = replacement[i + 2] - '0';
+                                var twoDigit = first * 10 + second;
+                                if (twoDigit <= captures.Count)
+                                {
+                                    sb.Append(captures[twoDigit - 1]);
+                                    i += 2;
+                                    break;
+                                }
+                            }
+
+                            if (first <= captures.Count)
+                            {
+                                sb.Append(captures[first - 1]);
+                                i++;
+                            }
+                            else
+                            {
+                                sb.Append('$');
+                                sb.Append(c);
+                                i++;
+                            }
                         }
                         else { sb.Append('$'); i++; sb.Append(c); }
                         break;
@@ -8197,6 +8235,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 return index + 2;
         }
         return index + 1;
+    }
+
+    private static double AdvanceStringIndexNumber(string S, double index, bool unicode)
+    {
+        if (index < 0)
+        {
+            index = 0;
+        }
+
+        if (index >= S.Length || index > int.MaxValue)
+        {
+            return index + 1;
+        }
+
+        return AdvanceStringIndex(S, (int)index, unicode);
     }
 
     // ECMA-262 7.3.18 SpeciesConstructor ( O, defaultConstructor ).
