@@ -305,6 +305,37 @@ public sealed class RegExpLiteralTests
     }
 
     [Fact]
+    public void RegExpSymbolReplaceHandlesShellPrintAndUndefinedCaptures()
+    {
+        var result = Run(@"Array.print = print;
+            var args;
+            var replacer = function() { args = arguments; };
+            var r = /./;
+            r.exec = function() { return []; };
+            r[Symbol.replace]('foo', replacer);
+
+            function E() {}
+            var captureThrew = false;
+            var poisoned = /./;
+            poisoned.exec = function() {
+              return { length: 2, 1: { toString: function() { throw new E(); } } };
+            };
+            try {
+              poisoned[Symbol.replace]('a', 'b');
+            } catch (e) {
+              captureThrew = e instanceof E;
+            }
+
+            args.length === 3 &&
+            args[0] === 'undefined' &&
+            args[1] === 0 &&
+            args[2] === 'foo' &&
+            /b(c)(z)?(.)/[Symbol.replace]('abcde', '[$01$02$03$04$00]') === 'a[cd$04$00]e' &&
+            captureThrew;");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void RegexLiteralRejectsReversedCharacterClassRange()
     {
         Assert.Throws<JsParserException>(() => Run(@"/^[z-a]$/;"));

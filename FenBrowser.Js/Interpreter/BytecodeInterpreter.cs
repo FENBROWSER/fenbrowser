@@ -7817,8 +7817,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         foreach (var execResult in execResults)
         {
             var erObj = _heap.GetObject(execResult.AsObjectHandle());
-            string matched = "";
-            if (TryGetPropertyValue(erObj, execResult, "0", out var mv)) matched = ToStringValue(mv);
+            var matchedValue = JsValue.Undefined;
+            TryGetPropertyValue(erObj, execResult, "0", out matchedValue);
+            var matched = ToStringValue(matchedValue);
             double pos = 0;
             if (TryGetPropertyValue(erObj, execResult, "index", out var iv)) { var pn = ToNumber(iv); if (!double.IsNaN(pn) && pn >= 0) pos = Math.Min(Math.Truncate(pn), input.Length); }
             int posInt = (int)pos;
@@ -7845,13 +7846,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 else
                 {
                     // Use captured groups from execResult for GetSubstitution-like replacement
-                    var capGroups = new List<string>();
+                    var capGroups = new List<JsValue>();
                     int nCaps = (int)LengthOfArrayLikeAsDouble(erObj, execResult);
                     for (int g = 1; g < nCaps; g++)
                     {
-                        if (TryGetPropertyValue(erObj, execResult, g.ToString(System.Globalization.CultureInfo.InvariantCulture), out var cap) && cap.Tag != JsValueTag.Undefined)
-                            capGroups.Add(ToStringValue(cap));
-                        else capGroups.Add("");
+                        if (TryGetPropertyValue(erObj, execResult, g.ToString(System.Globalization.CultureInfo.InvariantCulture), out var cap))
+                            capGroups.Add(cap.Tag == JsValueTag.Undefined ? JsValue.Undefined : JsValue.FromString(ToStringValue(cap)));
+                        else capGroups.Add(JsValue.Undefined);
                     }
                     var namedCaptures = JsValue.Undefined;
                     if (TryGetPropertyValue(erObj, execResult, "groups", out var groups))
@@ -7886,7 +7887,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 
     /// <summary>Simplified GetSubstitution for the spec-based @@replace path.</summary>
-    private string GetSubstitutionSpec(string input, string matched, int position, List<string> captures, JsValue namedCaptures, string replacement)
+    private string GetSubstitutionSpec(string input, string matched, int position, List<JsValue> captures, JsValue namedCaptures, string replacement)
     {
         var sb = new System.Text.StringBuilder();
         for (var i = 0; i < replacement.Length; i++)
@@ -7923,6 +7924,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         if (c >= '0' && c <= '9')
                         {
                             var first = c - '0';
+                            if (i + 2 < replacement.Length &&
+                                replacement[i + 2] >= '0' &&
+                                replacement[i + 2] <= '9')
+                            {
+                                var second = replacement[i + 2] - '0';
+                                var twoDigit = first * 10 + second;
+                                if (twoDigit != 0 && twoDigit <= captures.Count)
+                                {
+                                    AppendCaptureSubstitution(sb, captures[twoDigit - 1]);
+                                    i += 2;
+                                    break;
+                                }
+                            }
+
                             if (first == 0)
                             {
                                 sb.Append('$');
@@ -7931,23 +7946,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                 break;
                             }
 
-                            if (i + 2 < replacement.Length &&
-                                replacement[i + 2] >= '0' &&
-                                replacement[i + 2] <= '9')
-                            {
-                                var second = replacement[i + 2] - '0';
-                                var twoDigit = first * 10 + second;
-                                if (twoDigit <= captures.Count)
-                                {
-                                    sb.Append(captures[twoDigit - 1]);
-                                    i += 2;
-                                    break;
-                                }
-                            }
-
                             if (first <= captures.Count)
                             {
-                                sb.Append(captures[first - 1]);
+                                AppendCaptureSubstitution(sb, captures[first - 1]);
                                 i++;
                             }
                             else
@@ -7964,6 +7965,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             else sb.Append(replacement[i]);
         }
         return sb.ToString();
+    }
+
+    private void AppendCaptureSubstitution(System.Text.StringBuilder sb, JsValue capture)
+    {
+        if (capture.Tag != JsValueTag.Undefined)
+        {
+            sb.Append(ToStringValue(capture));
+        }
     }
 
     // ECMA-262 22.2.5.11 RegExp.prototype [ @@split ] ( string, limit )

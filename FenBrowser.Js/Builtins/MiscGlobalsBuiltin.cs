@@ -13,7 +13,7 @@ public sealed class MiscGlobalsBuiltin : IBuiltinModule
     {
         var heap = context.Heap;
 
-        var bindings = new List<BuiltinBinding>(5);
+        var bindings = new List<BuiltinBinding>(8);
 
         // eval
         var evalFn = new NativeFunctionObject("eval", (_, args) => context.Eval(args), length: 1);
@@ -33,6 +33,11 @@ public sealed class MiscGlobalsBuiltin : IBuiltinModule
         var qmHandle = heap.AllocateObject(qmFn, AllocationSite.Current());
         heap.PushRoot(qmHandle);
         bindings.Add(BuiltinBinding.NonEnumerable("queueMicrotask", JsValue.FromObject(qmHandle)));
+
+        var printFn = new NativeFunctionObject("print", (_, _) => JsValue.Undefined, length: 0);
+        var printHandle = heap.AllocateObject(printFn, AllocationSite.Current());
+        heap.PushRoot(printHandle);
+        bindings.Add(BuiltinBinding.NonEnumerable("print", JsValue.FromObject(printHandle)));
 
         // WeakRef, FinalizationRegistry, structuredClone — materialize from interpreter
         bindings.Add(BuiltinBinding.NonEnumerable("WeakRef", JsValue.FromObject(context.MaterializeWeakRefConstructor())));
