@@ -7452,27 +7452,52 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var global = flags.Contains('g', StringComparison.Ordinal);
         var sticky = flags.Contains('y', StringComparison.Ordinal);
 
-        var lastIndex = 0;
-        if (TryGetPropertyValue((JsObject)regexp, thisValue, "lastIndex", out var liVal) &&
-            liVal.Tag == JsValueTag.Number)
+        var lastIndexNumber = 0d;
+        if (TryGetPropertyValue((JsObject)regexp, thisValue, "lastIndex", out var liVal))
         {
-            var d = liVal.AsNumber();
-            if (d >= 0 && d <= input.Length && double.IsFinite(d))
-                lastIndex = (int)d;
+            lastIndexNumber = ToLengthNumber(liVal);
         }
 
-        if (!global && !sticky) lastIndex = 0;
-        if (lastIndex < 0) lastIndex = 0;
-        if (lastIndex > input.Length) lastIndex = input.Length;
+        var lastIndex = global || sticky ? lastIndexNumber : 0d;
+        if ((global || sticky) && lastIndex > input.Length)
+        {
+            if (!((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(0)))
+            {
+                throw new JsThrownException(CreateTypeError("RegExp.prototype.exec could not reset lastIndex."));
+            }
 
-        var match = new RegexVM(regexp.NativeProgram).Execute(input, lastIndex);
+            return JsValue.Null;
+        }
+
+        var startIndex = lastIndex >= int.MaxValue ? input.Length + 1 : (int)lastIndex;
+        var match = new RegexVM(regexp.NativeProgram).Execute(input, startIndex);
         if (!match.Success || (sticky && match.Index != lastIndex))
         {
-            _ = ((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(0));
+            if ((global || sticky) && !((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(0)))
+            {
+                throw new JsThrownException(CreateTypeError("RegExp.prototype.exec could not reset lastIndex."));
+            }
+
             return JsValue.Null;
         }
 
         return CreateRegExpExecResultFromNative(regexp, input, flags, global, sticky, match);
+    }
+
+    private double ToLengthNumber(JsValue value)
+    {
+        var number = ToNumber(value);
+        if (double.IsNaN(number) || number <= 0)
+        {
+            return 0;
+        }
+
+        if (double.IsPositiveInfinity(number))
+        {
+            return double.PositiveInfinity;
+        }
+
+        return Math.Min(Math.Floor(number), 9007199254740991d);
     }
 
     private JsValue CreateRegExpExecResultFromNative(RegExpObject regexp, string input, string flags, bool global, bool sticky, RegexMatchResult match)
@@ -7548,7 +7573,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         _ = result.DefineOwnProperty("length", new JsPropertyDescriptor(JsValue.FromNumber(nCaptures), Writable: true, Enumerable: false, Configurable: false));
         if (global || sticky)
-            _ = ((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(match.Index + match.Length));
+        {
+            if (!((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(match.Index + match.Length)))
+            {
+                throw new JsThrownException(CreateTypeError("RegExp.prototype.exec could not update lastIndex."));
+            }
+        }
         return JsValue.FromObject(_heap.AllocateObject(result, AllocationSite.Current()));
     }
 

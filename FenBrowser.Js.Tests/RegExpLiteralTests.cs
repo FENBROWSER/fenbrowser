@@ -241,6 +241,25 @@ public sealed class RegExpLiteralTests
     }
 
     [Fact]
+    public void RegExpExecCoercesAndResetsLastIndexPerSpec()
+    {
+        var result = Run(@"var reads = 0;
+            var counter = { valueOf: function () { reads++; return 0; } };
+            var plain = /./;
+            plain.lastIndex = counter;
+            var plainMatch = plain.exec('abc');
+            var global = /a/g;
+            global.lastIndex = { valueOf: function () { reads++; return 42; } };
+            var globalMiss = global.exec('abc');
+            plainMatch[0] === 'a' &&
+            plain.lastIndex === counter &&
+            globalMiss === null &&
+            global.lastIndex === 0 &&
+            reads === 2;");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void RegexLiteralRejectsReversedCharacterClassRange()
     {
         Assert.Throws<JsParserException>(() => Run(@"/^[z-a]$/;"));
