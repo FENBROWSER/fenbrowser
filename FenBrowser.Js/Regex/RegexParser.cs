@@ -1599,6 +1599,11 @@ public static class RegexParser
                 throw new RegexSyntaxError("Unterminated quantifier", numStart);
 
             Expect('}');
+            if (max < min)
+            {
+                throw new RegexSyntaxError("Quantifier maximum is less than minimum", numStart);
+            }
+
             return (min, max);
         }
 
