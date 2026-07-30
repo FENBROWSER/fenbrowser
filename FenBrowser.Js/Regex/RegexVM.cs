@@ -137,10 +137,12 @@ public sealed class RegexVM
                         break;
 
                     case RegexOpCode.UnicodeProp:
-                        matched = cp < _cpLen &&
-                                  MatchUnicodeProperty(_codePoints[cp], ins.B, (ins.A & 1) != 0, (ins.A & 2) != 0);
+                        var stringPropertyLength = MatchUnicodeStringPropertyLength(cp, ins.B);
+                        matched = stringPropertyLength > 0 ||
+                                  (cp < _cpLen &&
+                                   MatchUnicodeProperty(_codePoints[cp], ins.B, (ins.A & 1) != 0, (ins.A & 2) != 0));
                         if (ins.C == 1) { matched = !matched; }
-                        if (matched) { if (ins.C == 0) cp++; pc++; }
+                        if (matched) { if (ins.C == 0) cp += stringPropertyLength > 0 ? stringPropertyLength : 1; pc++; }
                         else { pc = -1; }
                         break;
 
@@ -475,6 +477,168 @@ public sealed class RegexVM
         return false;
     }
 
+    private int MatchUnicodeStringPropertyLength(int cp, int propIndex)
+    {
+        var bodies = _program.UnicodePropertyBodies;
+        if (bodies is null || propIndex < 0 || propIndex >= bodies.Length || cp >= _cpLen)
+        {
+            return 0;
+        }
+
+        return bodies[propIndex] switch
+        {
+            "Basic_Emoji" => MatchBasicEmojiLength(cp),
+            "Emoji_Keycap_Sequence" => MatchEmojiKeycapSequenceLength(cp),
+            "RGI_Emoji_Flag_Sequence" => MatchEmojiFlagSequenceLength(cp),
+            "RGI_Emoji_Modifier_Sequence" => MatchEmojiModifierSequenceLength(cp),
+            "RGI_Emoji_Tag_Sequence" => MatchEmojiTagSequenceLength(cp),
+            "RGI_Emoji_ZWJ_Sequence" => MatchEmojiZwjSequenceLength(cp),
+            "RGI_Emoji" => MatchRgiEmojiLength(cp),
+            _ => 0
+        };
+    }
+
+    private int MatchRgiEmojiLength(int cp)
+    {
+        var best = MatchEmojiTagSequenceLength(cp);
+        best = Math.Max(best, MatchEmojiZwjSequenceLength(cp));
+        best = Math.Max(best, MatchEmojiFlagSequenceLength(cp));
+        best = Math.Max(best, MatchEmojiKeycapSequenceLength(cp));
+        best = Math.Max(best, MatchEmojiModifierSequenceLength(cp));
+        best = Math.Max(best, MatchBasicEmojiLength(cp));
+        return best;
+    }
+
+    private int MatchBasicEmojiLength(int cp)
+    {
+        if (cp >= _cpLen || !IsEmojiCodePoint(_codePoints[cp]))
+        {
+            return 0;
+        }
+
+        if (IsEmojiPresentationCodePoint(_codePoints[cp]))
+        {
+            return 1;
+        }
+
+        return cp + 1 < _cpLen && _codePoints[cp + 1] == 0xFE0F ? 2 : 0;
+    }
+
+    private int MatchEmojiKeycapSequenceLength(int cp)
+    {
+        if (cp + 2 >= _cpLen || !IsKeycapBase(_codePoints[cp]))
+        {
+            return 0;
+        }
+
+        return _codePoints[cp + 1] == 0xFE0F && _codePoints[cp + 2] == 0x20E3 ? 3 : 0;
+    }
+
+    private int MatchEmojiFlagSequenceLength(int cp)
+        => cp + 1 < _cpLen && IsRegionalIndicator(_codePoints[cp]) && IsRegionalIndicator(_codePoints[cp + 1])
+            ? 2
+            : 0;
+
+    private int MatchEmojiModifierSequenceLength(int cp)
+    {
+        if (cp + 1 < _cpLen && IsEmojiModifierBase(_codePoints[cp]) && IsEmojiModifier(_codePoints[cp + 1]))
+        {
+            return 2;
+        }
+
+        return cp + 2 < _cpLen &&
+               IsEmojiModifierBase(_codePoints[cp]) &&
+               _codePoints[cp + 1] == 0xFE0F &&
+               IsEmojiModifier(_codePoints[cp + 2])
+            ? 3
+            : 0;
+    }
+
+    private int MatchEmojiTagSequenceLength(int cp)
+    {
+        if (cp >= _cpLen || _codePoints[cp] != 0x1F3F4)
+        {
+            return 0;
+        }
+
+        var cursor = cp + 1;
+        var tagCount = 0;
+        while (cursor < _cpLen && _codePoints[cursor] is >= 0xE0020 and <= 0xE007E)
+        {
+            tagCount++;
+            cursor++;
+        }
+
+        return tagCount > 0 && cursor < _cpLen && _codePoints[cursor] == 0xE007F
+            ? cursor - cp + 1
+            : 0;
+    }
+
+    private int MatchEmojiZwjSequenceLength(int cp)
+    {
+        var first = MatchEmojiZwjAtomLength(cp);
+        if (first == 0)
+        {
+            return 0;
+        }
+
+        var cursor = cp + first;
+        var segments = 1;
+        while (cursor < _cpLen && _codePoints[cursor] == 0x200D)
+        {
+            var next = MatchEmojiZwjAtomLength(cursor + 1);
+            if (next == 0)
+            {
+                break;
+            }
+
+            cursor += 1 + next;
+            segments++;
+        }
+
+        return segments > 1 ? cursor - cp : 0;
+    }
+
+    private int MatchEmojiZwjAtomLength(int cp)
+    {
+        if (cp >= _cpLen || IsEmojiModifier(_codePoints[cp]))
+        {
+            return 0;
+        }
+
+        var basic = MatchBasicEmojiLength(cp);
+        if (basic > 0)
+        {
+            var afterBasic = cp + basic;
+            return afterBasic < _cpLen && IsEmojiModifier(_codePoints[afterBasic]) ? basic + 1 : basic;
+        }
+
+        if (cp < _cpLen && IsEmojiCodePoint(_codePoints[cp]) && !IsEmojiModifier(_codePoints[cp]))
+        {
+            return cp + 1 < _cpLen && IsEmojiModifier(_codePoints[cp + 1]) ? 2 : 1;
+        }
+
+        return 0;
+    }
+
+    private static bool IsKeycapBase(int cp)
+        => cp is '#' or '*' or >= '0' and <= '9';
+
+    private static bool IsRegionalIndicator(int cp)
+        => cp is >= 0x1F1E6 and <= 0x1F1FF;
+
+    private static bool IsEmojiModifier(int cp)
+        => cp is >= 0x1F3FB and <= 0x1F3FF;
+
+    private static bool IsEmojiCodePoint(int cp)
+        => UnicodePropertyEscapeData.IsInRanges(cp, UnicodePropertyEscapeData.ResolveRanges("Emoji"));
+
+    private static bool IsEmojiPresentationCodePoint(int cp)
+        => UnicodePropertyEscapeData.IsInRanges(cp, UnicodePropertyEscapeData.ResolveRanges("Emoji_Presentation"));
+
+    private static bool IsEmojiModifierBase(int cp)
+        => UnicodePropertyEscapeData.IsInRanges(cp, UnicodePropertyEscapeData.ResolveRanges("Emoji_Modifier_Base"));
+
     private static int ToCaseVariant(int cp, bool toUpper)
     {
         try
@@ -775,10 +939,12 @@ public sealed class RegexVM
                         else { pc = -1; }
                         break;
                     case RegexOpCode.UnicodeProp:
-                        matched = cp < _cpLen &&
-                                  MatchUnicodeProperty(_codePoints[cp], ins.B, (ins.A & 1) != 0, (ins.A & 2) != 0);
+                        var stringPropertyLength = MatchUnicodeStringPropertyLength(cp, ins.B);
+                        matched = stringPropertyLength > 0 ||
+                                  (cp < _cpLen &&
+                                   MatchUnicodeProperty(_codePoints[cp], ins.B, (ins.A & 1) != 0, (ins.A & 2) != 0));
                         if (ins.C == 1) { matched = !matched; }
-                        if (matched) { if (ins.C == 0) cp++; pc++; }
+                        if (matched) { if (ins.C == 0) cp += stringPropertyLength > 0 ? stringPropertyLength : 1; pc++; }
                         else { pc = -1; }
                         break;
                     case RegexOpCode.Dot:
