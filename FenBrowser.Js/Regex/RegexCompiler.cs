@@ -372,6 +372,12 @@ public static class RegexCompiler
             var body = q.Body;
             var isBounded = q.Max != int.MaxValue;
 
+            if (q.Min == int.MaxValue)
+            {
+                Emit(RegexOpCode.CharRange, 1, 0);
+                return;
+            }
+
             if (q.Min == 0 && q.Max == int.MaxValue)
             {
                 // A*  — greedy, A*? — lazy

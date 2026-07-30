@@ -1554,7 +1554,7 @@ public static class RegexParser
             while (!AtEnd && IsDecimalDigit(Peek))
                 Advance();
 
-            if (_pos == numStart || _pos - numStart > 9)
+            if (_pos == numStart)
             {
                 // Not a valid quantifier — treat { as literal
                 // Backtrack: the caller handles this.
@@ -1564,7 +1564,7 @@ public static class RegexParser
             }
 
             var num1Str = _pattern[numStart.._pos];
-            var min = int.Parse(num1Str, System.Globalization.CultureInfo.InvariantCulture);
+            var min = ParseQuantifierInteger(num1Str);
 
             if (AtEnd)
                 throw new RegexSyntaxError("Unterminated quantifier", numStart - 1);
@@ -1593,7 +1593,10 @@ public static class RegexParser
             while (!AtEnd && IsDecimalDigit(Peek))
                 Advance();
 
-            var max = int.Parse(_pattern[numStart.._pos], System.Globalization.CultureInfo.InvariantCulture);
+            if (_pos == numStart)
+                throw new RegexSyntaxError("Invalid quantifier", numStart);
+
+            var max = ParseQuantifierInteger(_pattern[numStart.._pos]);
 
             if (AtEnd || Peek != '}')
                 throw new RegexSyntaxError("Unterminated quantifier", numStart);
@@ -1608,6 +1611,14 @@ public static class RegexParser
         }
 
         // ─── Helpers ───────────────────────────────────────────
+
+        private static int ParseQuantifierInteger(string digits)
+        {
+            return int.TryParse(digits, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var value)
+                ? value
+                : int.MaxValue;
+        }
 
         private static bool IsDecimalDigit(char c) => c is >= '0' and <= '9';
         private static bool IsHexDigit(char c) => c is (>= '0' and <= '9') or (>= 'a' and <= 'f') or (>= 'A' and <= 'F');
