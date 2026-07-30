@@ -336,6 +336,55 @@ public sealed class RegExpLiteralTests
     }
 
     [Fact]
+    public void RegExpSymbolSplitUsesGenericExecLastIndexProtocol()
+    {
+        var result = Run(@"var obj = { constructor: function() {} };
+            var fakeRe = {
+              set lastIndex(_) {},
+              get lastIndex() { return { valueOf: function() { return 2.9; } }; },
+              exec: function() { return []; }
+            };
+            obj.constructor[Symbol.species] = function() { return fakeRe; };
+            var coerced = RegExp.prototype[Symbol.split].call(obj, 'abcd');
+
+            var threwEmpty = false;
+            obj.constructor[Symbol.species] = function() {
+              return { exec: function() { throw new Error('empty'); } };
+            };
+            try { RegExp.prototype[Symbol.split].call(obj, ''); } catch (e) { threwEmpty = e.message === 'empty'; }
+
+            var resultLengthObj = { constructor: function() {} };
+            var resultFake = {
+              exec: function() {
+                resultFake.lastIndex = 1;
+                return { length: { valueOf: function() { return 2.9; } }, 0: 'foo', 1: 'bar', 2: 'baz' };
+              }
+            };
+            resultLengthObj.constructor[Symbol.species] = function() { return resultFake; };
+            var resultLength = RegExp.prototype[Symbol.split].call(resultLengthObj, 'a');
+
+            var re = /a/;
+            RegExp.prototype.exec = function() {
+              this.lastIndex = 100;
+              return { length: 0, index: 0 };
+            };
+            var clamped = re[Symbol.split]('foo');
+
+            coerced.length === 2 &&
+            coerced[0] === '' &&
+            coerced[1] === 'cd' &&
+            threwEmpty &&
+            resultLength.length === 3 &&
+            resultLength[0] === '' &&
+            resultLength[1] === 'bar' &&
+            resultLength[2] === '' &&
+            clamped.length === 2 &&
+            clamped[0] === '' &&
+            clamped[1] === '';");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void RegexLiteralRejectsReversedCharacterClassRange()
     {
         Assert.Throws<JsParserException>(() => Run(@"/^[z-a]$/;"));

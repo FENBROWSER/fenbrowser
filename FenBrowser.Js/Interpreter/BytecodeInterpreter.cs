@@ -280,6 +280,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private ObjectHandle? _datePrototypeHandle;
     private ObjectHandle? _regexpConstructorHandle;
     private ObjectHandle? _regexpPrototypeHandle;
+    private ObjectHandle? _regexpPrototypeExecHandle;
     private ObjectHandle? _jsonObjectHandle;
     private ObjectHandle? _symbolConstructorHandle;
     private ObjectHandle? _setConstructorHandle;
@@ -7094,7 +7095,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // during InstallGlobalObjectProperties, before any bytecode executes.
         _regexpPrototypeHandle ??= prototypeHandle;
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "test", RegExpPrototypeTest, length: 1);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "exec", RegExpPrototypeExec, length: 1);
+        var execHandle = DefineNativePrototypeMethod(prototypeHandle, prototype, "exec", RegExpPrototypeExec, length: 1);
+        _regexpPrototypeExecHandle ??= execHandle;
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", RegExpPrototypeToString);
         // Annex B B.2.4.1 RegExp.prototype.compile(pattern, flags) � mutate
         // this instance to act like a freshly constructed RegExp. Audit �4.1.
@@ -7875,15 +7877,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         if (!TryGetPropertyValue(rxObj, receiver, "exec", out var exec) ||
             exec.Tag != JsValueTag.Object ||
-            _regexpPrototypeHandle is not { } regexpPrototypeHandle)
+            _regexpPrototypeExecHandle is not { } regexpPrototypeExecHandle)
         {
             return false;
         }
 
-        var regexpPrototype = _heap.GetObject(regexpPrototypeHandle);
-        return regexpPrototype.TryGetOwnProperty("exec", out var builtinExec) &&
-               builtinExec.Value.Tag == JsValueTag.Object &&
-               exec.AsObjectHandle() == builtinExec.Value.AsObjectHandle();
+        return exec.AsObjectHandle() == regexpPrototypeExecHandle;
     }
 
     /// <summary>Simplified GetSubstitution for the spec-based @@replace path.</summary>
@@ -7995,7 +7994,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // Fast path for real RegExp objects.
         if (splitter.Tag == JsValueTag.Object &&
-            _heap.GetObject(splitter.AsObjectHandle()) is RegExpObject splitRx)
+            _heap.GetObject(splitter.AsObjectHandle()) is RegExpObject splitRx &&
+            IsBuiltinRegExpExec(_heap.GetObject(splitter.AsObjectHandle()), splitter))
         {
             // Coerce flags for observable side effects (getter can throw).
             // The .NET Regex path below accesses flags via the compiled pattern;
@@ -8039,7 +8039,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // Fallback: species construction per spec steps 4, 7.
         // Build splitter = Construct(SpeciesConstructor(rx, %RegExp%), « rx, flags »).
         if (splitter.Tag == JsValueTag.Object &&
-            _heap.GetObject(splitter.AsObjectHandle()) is RegExpObject)
+            _heap.GetObject(splitter.AsObjectHandle()) is RegExpObject &&
+            IsBuiltinRegExpExec(_heap.GetObject(splitter.AsObjectHandle()), splitter))
         {
             // Species produced a real RegExp — delegate to the fast path.
             var newArgs = new JsValue[args.Count];
@@ -8049,21 +8050,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // Generic fallback: exec loop using the species-constructed splitter.
         // Implements ECMA-262 21.2.5.11 steps 17–28.
+        if (input.Length == 0)
+        {
+            var emptyMatch = RegExpExec(splitter, input);
+            var emptyParts = emptyMatch.Tag == JsValueTag.Null
+                ? new[] { JsValue.FromString(input) }
+                : Array.Empty<JsValue>();
+            return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(emptyParts), AllocationSite.Current()));
+        }
+
         var resultParts = new List<JsValue>();
         int pGen = 0;
         int qGen = 0;
         while (qGen < input.Length)
         {
             // 24.a: Set(splitter, "lastIndex", q, true)
-            SetPropertyValue(splitter.AsObjectHandle(), _heap.GetObject(splitter.AsObjectHandle()), "lastIndex", JsValue.FromNumber(qGen), splitter);
+            if (!SetRegExpLastIndex(splitter, JsValue.FromNumber(qGen)))
+            {
+                throw new JsThrownException(CreateTypeError("Cannot set RegExp splitter lastIndex."));
+            }
             // 24.c: Let z be ? RegExpExec(splitter, S)
             var execResult = RegExpExec(splitter, input);
             if (execResult.Tag == JsValueTag.Null) { qGen++; continue; }
             // 24.f: z is not null
             // 24.f.i: Let e be ? ToLength(? Get(splitter, "lastIndex"))
             var lastIndexVal = GetReceiverProperty(splitter, "lastIndex");
-            var eDouble = ToIntegerOrInfinity(lastIndexVal);
-            int eGen = eDouble <= 0 ? 0 : eDouble >= 9007199254740991.0 ? input.Length : (int)eDouble;
+            var eDouble = ToLengthNumber(lastIndexVal);
+            int eGen = eDouble >= input.Length ? input.Length : (int)eDouble;
             // 24.f.ii was already checked (exception would propagate)
             // 24.f.iii: If e = p, set q = q + 1 (advance past empty match)
             if (eGen == pGen) { qGen++; continue; }
@@ -8072,16 +8085,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (eGen < pGen) eGen = pGen;
             if (eGen > input.Length) eGen = input.Length;
             // Add substring from p to q
-            if (qGen > pGen)
-            {
-                resultParts.Add(JsValue.FromString(input.Substring(pGen, qGen - pGen)));
-                if (resultParts.Count >= limit) break;
-            }
+            resultParts.Add(JsValue.FromString(input.Substring(pGen, qGen - pGen)));
+            if (resultParts.Count >= limit) break;
             // Add capture groups from exec result
             var erObj = _heap.GetObject(execResult.AsObjectHandle());
             if (TryGetPropertyValue(erObj, execResult, "length", out var lenVal))
             {
-                int capLen = (int)ToUint32(ToNumber(lenVal));
+                int capLen = (int)Math.Min(ToLengthNumber(lenVal), int.MaxValue);
                 for (int i = 1; i < capLen; i++)
                 {
                     var capVal = GetReceiverProperty(execResult, i.ToString());
