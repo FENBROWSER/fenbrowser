@@ -438,6 +438,11 @@ public static class RegexCompiler
             // Greedy A? : Split L_body, L_skip ; L_body: body ; L_skip:
             // Lazy A?? : Split L_skip, L_body ; L_body: body ; L_skip:
             EmitResetGroupsForQuantifierBody(body);
+            if (IsAlwaysZeroWidthAtom(body))
+            {
+                return;
+            }
+
             var splitPos = Emit(RegexOpCode.Split, 0, 0);
             var bodyStart = CurrentPos;
             EmitAtom(body);
@@ -463,6 +468,12 @@ public static class RegexCompiler
             var optionalCount = max - min;
             for (int i = 0; i < optionalCount; i++)
             {
+                if (IsAlwaysZeroWidthAtom(body))
+                {
+                    EmitResetGroupsForQuantifierBody(body);
+                    continue;
+                }
+
                 var splitPos = Emit(RegexOpCode.Split, 0, 0);
                 var bodyStart = CurrentPos;
                 EmitResetGroupsForQuantifierBody(body);
@@ -497,6 +508,35 @@ public static class RegexCompiler
             {
                 Emit(RegexOpCode.ResetGroup, groupNumber);
             }
+        }
+
+        private static bool IsAlwaysZeroWidthAtom(AtomNode body)
+        {
+            return body switch
+            {
+                AssertionNode => true,
+                GroupNode group => IsAlwaysZeroWidthDisjunction(group.Body),
+                ModifierGroupNode group => IsAlwaysZeroWidthDisjunction(group.Body),
+                _ => false
+            };
+        }
+
+        private static bool IsAlwaysZeroWidthDisjunction(DisjunctionNode disjunction)
+        {
+            return disjunction.Alternatives.Count > 0 &&
+                   disjunction.Alternatives.All(alt => alt.Terms.All(IsAlwaysZeroWidthTerm));
+        }
+
+        private static bool IsAlwaysZeroWidthTerm(TermNode term)
+        {
+            return term switch
+            {
+                AssertionNode => true,
+                QuantifierNode quantifier => quantifier.Min == 0 || IsAlwaysZeroWidthAtom(quantifier.Body),
+                GroupNode group => IsAlwaysZeroWidthDisjunction(group.Body),
+                ModifierGroupNode group => IsAlwaysZeroWidthDisjunction(group.Body),
+                _ => false
+            };
         }
 
         private void EmitAtom(AtomNode atom)
