@@ -1494,6 +1494,19 @@ public sealed class Test262Runner
                      enumerable: false,
                      configurable: true
                    });
+                   ['dotAll','flags','global','hasIndices','ignoreCase','multiline','source','sticky','unicode','unicodeSets'].forEach(function (name) {
+                     var desc = Object.getOwnPropertyDescriptor(RegExp.prototype, name);
+                     if (!desc || typeof desc.get !== 'function') { return; }
+                     Object.defineProperty(realmRegExpPrototype, name, {
+                       get: function () {
+                         if (this === realmRegExpPrototype) { return undefined; }
+                         if (Object.getPrototypeOf(this) !== realmRegExpPrototype) { throw new TypeError(); }
+                         return desc.get.call(this);
+                       },
+                       enumerable: desc.enumerable,
+                       configurable: desc.configurable
+                     });
+                   });
                    var realmRegExp = markRealmIntrinsic(function RegExp(p, f) {
                      var value = new globalThis.RegExp(p, f);
                      Object.setPrototypeOf(value, realmRegExpPrototype);
