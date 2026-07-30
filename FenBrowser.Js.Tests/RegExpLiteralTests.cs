@@ -214,6 +214,7 @@ public sealed class RegExpLiteralTests
             var impossible = 'abcdef'.match(/(?<=$abc)def/);
             var boundary = 'ab cdef'.match(/(?<=\B)\w{3}/);
             var nested = 'abcdef'.match(/(?<=a(?=([^a]{2})d)\w{3})\w\w/);
+            var outsideRef = 'foo'.match(/^(f)oo(?<=^\1o+)$/);
             fixed[1] === 'c' &&
             fixed.groups.a === 'c' &&
             greedy.groups.a === 'a' &&
@@ -222,7 +223,9 @@ public sealed class RegExpLiteralTests
             impossible === null &&
             boundary[0] === 'def' &&
             nested[0] === 'ef' &&
-            nested[1] === 'bc';");
+            nested[1] === 'bc' &&
+            outsideRef[0] === 'foo' &&
+            outsideRef[1] === 'f';");
         Assert.True(result.AsBoolean());
     }
 

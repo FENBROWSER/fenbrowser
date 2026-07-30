@@ -677,7 +677,7 @@ public sealed class RegexVM
         {
             PC = startPc,
             CP = startCp,
-            Captures = AllocateCaptures(captures.Length),
+            Captures = (int[])captures.Clone(),
             OwnsCaptures = true
         };
         subStack.Push(initialState);
