@@ -696,9 +696,14 @@ public static class RegExpCompiler
             {
                 if (ch == ']')
                 {
+                    var classContent = pattern[(classStart + 1)..i];
+                    if (ContainsInvalidCharacterClassRange(classContent))
+                    {
+                        throw new RegexSyntaxError("Invalid character class range in regular expression.");
+                    }
+
                     if (flags.Unicode && !flags.UnicodeSets)
                     {
-                        var classContent = pattern[(classStart + 1)..i];
                         if (ContainsUnicodeInvalidClassRange(classContent))
                         {
                             throw new RegexSyntaxError("Invalid character class range in Unicode regular expression.");
@@ -706,7 +711,6 @@ public static class RegExpCompiler
                     }
                     else if (flags.UnicodeSets)
                     {
-                        var classContent = pattern[(classStart + 1)..i];
                         if (ContainsUnicodeSetsBreakingChangeLiteral(classContent))
                         {
                             throw new RegexSyntaxError("Invalid UnicodeSets character class syntax.");
@@ -1218,6 +1222,135 @@ public static class RegExpCompiler
                    content,
                    @".-\\[pP]\{[^}]+\}",
                    RegexOptions.CultureInvariant);
+    }
+
+    private static bool ContainsInvalidCharacterClassRange(string content)
+    {
+        var pos = 0;
+        if (pos < content.Length && content[pos] == '^')
+        {
+            pos++;
+        }
+
+        if (!TryReadClassRangeAtom(content, ref pos, out var previous))
+        {
+            return false;
+        }
+
+        while (pos < content.Length)
+        {
+            if (content[pos] != '-')
+            {
+                if (!TryReadClassRangeAtom(content, ref pos, out previous))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (pos == 0 || pos + 1 >= content.Length)
+            {
+                pos++;
+                continue;
+            }
+
+            pos++;
+            var nextPos = pos;
+            if (!TryReadClassRangeAtom(content, ref nextPos, out var next))
+            {
+                previous = null;
+                pos = nextPos;
+                continue;
+            }
+
+            if (previous.HasValue && next.HasValue && previous.Value > next.Value)
+            {
+                return true;
+            }
+
+            previous = next;
+            pos = nextPos;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadClassRangeAtom(string content, ref int pos, out int? codePoint)
+    {
+        codePoint = null;
+        if (pos >= content.Length)
+        {
+            return false;
+        }
+
+        var ch = content[pos++];
+        if (ch != '\\')
+        {
+            codePoint = ch;
+            return true;
+        }
+
+        if (pos >= content.Length)
+        {
+            return false;
+        }
+
+        var escaped = content[pos++];
+        switch (escaped)
+        {
+            case 'd':
+            case 'D':
+            case 's':
+            case 'S':
+            case 'w':
+            case 'W':
+                return true;
+            case 'f':
+                codePoint = '\f';
+                return true;
+            case 'n':
+                codePoint = '\n';
+                return true;
+            case 'r':
+                codePoint = '\r';
+                return true;
+            case 't':
+                codePoint = '\t';
+                return true;
+            case 'v':
+                codePoint = '\v';
+                return true;
+            case 'c':
+                if (pos < content.Length && char.IsLetter(content[pos]))
+                {
+                    codePoint = content[pos++] % 32;
+                }
+                return true;
+            case 'x':
+                if (pos + 1 < content.Length &&
+                    IsHexDigit(content[pos]) &&
+                    IsHexDigit(content[pos + 1]))
+                {
+                    codePoint = Convert.ToInt32(content.Substring(pos, 2), 16);
+                    pos += 2;
+                }
+                return true;
+            case 'u':
+                if (pos + 3 < content.Length &&
+                    IsHexDigit(content[pos]) &&
+                    IsHexDigit(content[pos + 1]) &&
+                    IsHexDigit(content[pos + 2]) &&
+                    IsHexDigit(content[pos + 3]))
+                {
+                    codePoint = Convert.ToInt32(content.Substring(pos, 4), 16);
+                    pos += 4;
+                }
+                return true;
+            default:
+                codePoint = escaped;
+                return true;
+        }
     }
 
     private static bool ContainsUnicodeSetsBreakingChangeLiteral(string content)

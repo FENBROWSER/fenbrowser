@@ -1,5 +1,6 @@
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Parser;
 using FenBrowser.Js.Regex;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
@@ -128,6 +129,18 @@ public sealed class RegExpLiteralTests
             (r.lastIndex = 0, r.test(String.fromCharCode(0x22))) &&
             (r.lastIndex = 0, !r.test('A'));");
         Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void RegExpConstructorRejectsReversedCharacterClassRange()
+    {
+        Assert.Throws<JsThrownException>(() => Run(@"new RegExp('^[z-a]$');"));
+    }
+
+    [Fact]
+    public void RegexLiteralRejectsReversedCharacterClassRange()
+    {
+        Assert.Throws<JsParserException>(() => Run(@"/^[z-a]$/;"));
     }
 
     [Fact]
