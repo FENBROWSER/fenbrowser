@@ -563,9 +563,13 @@ public sealed class RegexVM
             return pc + 1; // invalid — skip
 
         // Execute the body in a sub-match at the current position
-        var endCp = ExecuteSubMatch(bodyStartPc, cp, captures);
+        var endCp = ExecuteSubMatch(bodyStartPc, cp, captures, out var lookaheadCaptures);
         var bodyMatch = endCp >= 0;
         var assertionPassed = isNegative ? !bodyMatch : bodyMatch;
+        if (assertionPassed && !isNegative && lookaheadCaptures is not null)
+        {
+            CopySubmatchCaptures(lookaheadCaptures, captures);
+        }
 
         return assertionPassed ? pc + 1 : -1;
     }
@@ -582,9 +586,14 @@ public sealed class RegexVM
         var searchLimit = Math.Min(targetCp, 4096); // ECMA-262 has no explicit limit; 4096 is generous
         for (int startCp = targetCp; startCp >= targetCp - searchLimit && startCp >= 0; startCp--)
         {
-            var endCp = ExecuteSubMatch(bodyStartPc, startCp, captures);
-            if (endCp == targetCp)
+            var endCp = ExecuteSubMatch(bodyStartPc, startCp, captures, out var lookbehindCaptures, targetCp);
+            if (endCp >= 0)
             {
+                if (!isNegative && lookbehindCaptures is not null)
+                {
+                    CopySubmatchCaptures(lookbehindCaptures, captures);
+                }
+
                 // Body matched and ended exactly at targetCp
                 return !isNegative; // positive succeeds, negative fails
             }
@@ -598,8 +607,9 @@ public sealed class RegexVM
     /// Execute a sub-program (for lookaround bodies). Returns the ending code point
     /// if the sub-match succeeds, or -1 if it fails.
     /// </summary>
-    private int ExecuteSubMatch(int startPc, int startCp, int[] captures)
+    private int ExecuteSubMatch(int startPc, int startCp, int[] captures, out int[]? matchedCaptures, int? requiredEndCp = null)
     {
+        matchedCaptures = null;
         // Execute a sub-program using its own backtracking stack.
         var subStack = new Stack<ThreadState>(16);
         var initialState = new ThreadState
@@ -672,7 +682,13 @@ public sealed class RegexVM
                         pc += ins.A;                               // path 1 continues inline
                         break;
                     case RegexOpCode.Accept:
-                        return cp; // success — return ending code point
+                        if (requiredEndCp.HasValue && cp != requiredEndCp.Value)
+                        {
+                            goto subBacktrack;
+                        }
+
+                        matchedCaptures = caps;
+                        return cp; // success - return ending code point
                     case RegexOpCode.Bol:
                     case RegexOpCode.Eol:
                         matched = cp == startCp;
@@ -717,6 +733,22 @@ public sealed class RegexVM
     }
 
     // ─── Result construction ──────────────────────────────
+
+    private static void CopySubmatchCaptures(int[] source, int[] destination)
+    {
+        const int firstCaptureSlot = 2;
+        if (source.Length <= firstCaptureSlot || destination.Length <= firstCaptureSlot)
+        {
+            return;
+        }
+
+        Array.Copy(
+            source,
+            firstCaptureSlot,
+            destination,
+            firstCaptureSlot,
+            Math.Min(source.Length, destination.Length) - firstCaptureSlot);
+    }
 
     private RegexMatchResult BuildResult(bool success, int[] captures)
     {
