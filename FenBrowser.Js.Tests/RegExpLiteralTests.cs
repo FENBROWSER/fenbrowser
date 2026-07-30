@@ -139,6 +139,44 @@ public sealed class RegExpLiteralTests
     }
 
     [Fact]
+    public void NativeRegexMatchesNamedBackreferenceInLegacyModeWhenPatternHasNamedCaptures()
+    {
+        var compiled = RegExpCompiler.Compile(@"(?<a>.)(?<b>.)(?<c>.)\k<c>\k<b>\k<a>", "d");
+        var match = new RegexVM(compiled.Program).Execute("abccba");
+
+        Assert.True(match.Success, string.Join("\n", compiled.Program.Instructions.Select((ins, i) => $"{i}: {ins.OpCode} A={ins.A} B={ins.B} C={ins.C}")));
+        Assert.Equal("abccba", match.GetGroup(0));
+        Assert.Equal("a", match.GetGroup(1));
+        Assert.Equal("b", match.GetGroup(2));
+        Assert.Equal("c", match.GetGroup(3));
+    }
+
+    [Fact]
+    public void RegexLiteralReturnsNamedBackreferenceIndicesInLegacyMode()
+    {
+        var result = Run(@"var r = /(?<a>.)(?<b>.)(?<c>.)\k<c>\k<b>\k<a>/d.exec('abccba');
+            r !== null &&
+            r.groups.a === 'a' &&
+            r.groups.b === 'b' &&
+            r.groups.c === 'c' &&
+            r.indices.groups.a[0] === 0 &&
+            r.indices.groups.a[1] === 1 &&
+            r.indices.groups.b[0] === 1 &&
+            r.indices.groups.b[1] === 2 &&
+            r.indices.groups.c[0] === 2 &&
+            r.indices.groups.c[1] === 3;");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void RegexLiteralCanonicalizesEscapedUnicodeGroupNames()
+    {
+        var result = Run(@"var r = /(?<\u{03C0}>a)/du.exec('bab');
+            r.indices.groups.π[0] === 1 && r.indices.groups.π[1] === 2;");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void RegexLiteralRejectsReversedCharacterClassRange()
     {
         Assert.Throws<JsParserException>(() => Run(@"/^[z-a]$/;"));

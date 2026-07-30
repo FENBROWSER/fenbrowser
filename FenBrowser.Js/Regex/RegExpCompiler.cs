@@ -248,9 +248,28 @@ public static class RegExpCompiler
         var rewritten = new StringBuilder(pattern.Length + 8);
         var hasNamedCapture = HasNamedCapture(pattern);
         var inClass = false;
+        var inGroupName = false;
         for (var i = 0; i < pattern.Length; i++)
         {
             var ch = pattern[i];
+            if (inGroupName)
+            {
+                rewritten.Append(ch);
+                if (ch == '\\' && i + 1 < pattern.Length)
+                {
+                    rewritten.Append(pattern[i + 1]);
+                    i++;
+                    continue;
+                }
+
+                if (ch == '>')
+                {
+                    inGroupName = false;
+                }
+
+                continue;
+            }
+
             if (ch == '[')
             {
                 inClass = true;
@@ -273,6 +292,19 @@ public static class RegExpCompiler
                 continue;
             }
 
+            if (!inClass &&
+                ch == '(' &&
+                i + 2 < pattern.Length &&
+                pattern[i + 1] == '?' &&
+                pattern[i + 2] == '<' &&
+                (i + 3 >= pattern.Length || pattern[i + 3] is not ('=' or '!')))
+            {
+                rewritten.Append("(?<");
+                i += 2;
+                inGroupName = true;
+                continue;
+            }
+
             if (ch != '\\' || i + 1 >= pattern.Length)
             {
                 rewritten.Append(ch);
@@ -280,6 +312,14 @@ public static class RegExpCompiler
             }
 
             var escape = pattern[i + 1];
+            if (!inClass && escape == 'k' && hasNamedCapture && i + 2 < pattern.Length && pattern[i + 2] == '<')
+            {
+                rewritten.Append(@"\k");
+                i++;
+                inGroupName = true;
+                continue;
+            }
+
             if (escape == 'c')
             {
                 var hasOperand = i + 2 < pattern.Length;

@@ -33,6 +33,7 @@ public static class RegexParser
     {
         private readonly string _pattern;
         private readonly RegexFlags _flags;
+        private readonly bool _hasNamedCaptureSyntax;
         private int _pos;
         internal int _captureCount;
         private int _groupCount; // also counts non-capturing for group numbering
@@ -46,6 +47,7 @@ public static class RegexParser
         {
             _pattern = pattern;
             _flags = flags;
+            _hasNamedCaptureSyntax = ContainsNamedCaptureSyntax(pattern);
             _pos = 0;
             _captureCount = 0;
             _groupCount = 0;
@@ -299,7 +301,7 @@ public static class RegexParser
 
             // Named backreference: \k<name> — only in Unicode mode (u/v flag).
             // In non-Unicode mode, \k is an IdentityEscape (literal 'k').
-            if (ch == 'k' && Peek1 == '<' && IsUnicode)
+            if (ch == 'k' && Peek1 == '<' && (IsUnicode || _hasNamedCaptureSyntax))
             {
                 return ParseNamedBackReference();
             }
@@ -1059,15 +1061,16 @@ public static class RegexParser
         private string ParseGroupName()
         {
             var start = _pos;
-            while (!AtEnd && TryConsumeGroupNameCodePoint())
+            var builder = new StringBuilder();
+            while (!AtEnd && TryConsumeGroupNameCodePoint(out var codePoint))
             {
-                // TryConsumeGroupNameCodePoint advances _pos on success
+                AppendCodePoint(builder, codePoint);
             }
 
             if (_pos == start)
                 throw new RegexSyntaxError("Empty group name", _pos);
 
-            return _pattern[start.._pos];
+            return builder.ToString();
         }
 
         /// <summary>
@@ -1075,14 +1078,19 @@ public static class RegexParser
         /// code point, advance _pos and return true. Handles both BMP and
         /// supplementary-plane characters via surrogate pairs.
         /// </summary>
-        private bool TryConsumeGroupNameCodePoint()
+        private bool TryConsumeGroupNameCodePoint(out int codePoint)
         {
+            codePoint = 0;
             if (AtEnd) return false;
             var ch = Peek;
-            int codePoint;
             int advance;
 
-            if (char.IsHighSurrogate(ch) && _pos + 1 < _pattern.Length && char.IsLowSurrogate(_pattern[_pos + 1]))
+            if (ch == '\\' && Peek1 == 'u' && TryReadUnicodeEscape(_pos, out var escapedCodePoint, out var escapedLength))
+            {
+                codePoint = escapedCodePoint;
+                advance = escapedLength;
+            }
+            else if (char.IsHighSurrogate(ch) && _pos + 1 < _pattern.Length && char.IsLowSurrogate(_pattern[_pos + 1]))
             {
                 codePoint = char.ConvertToUtf32(ch, _pattern[_pos + 1]);
                 advance = 2;
@@ -1120,6 +1128,142 @@ public static class RegexParser
             catch
             {
                 // Invalid code point
+            }
+
+            return false;
+        }
+
+        private bool TryReadUnicodeEscape(int start, out int codePoint, out int length)
+        {
+            codePoint = 0;
+            length = 0;
+
+            if (start + 1 >= _pattern.Length || _pattern[start] != '\\' || _pattern[start + 1] != 'u')
+            {
+                return false;
+            }
+
+            if (start + 2 < _pattern.Length && _pattern[start + 2] == '{')
+            {
+                var pos = start + 3;
+                var value = 0;
+                var digitCount = 0;
+                while (pos < _pattern.Length && _pattern[pos] != '}')
+                {
+                    if (!TryHexValue(_pattern[pos], out var digit))
+                    {
+                        return false;
+                    }
+
+                    value = checked((value * 16) + digit);
+                    digitCount++;
+                    if (value > 0x10FFFF)
+                    {
+                        return false;
+                    }
+
+                    pos++;
+                }
+
+                if (pos >= _pattern.Length || _pattern[pos] != '}' || digitCount == 0)
+                {
+                    return false;
+                }
+
+                codePoint = value;
+                length = pos - start + 1;
+                return true;
+            }
+
+            if (start + 5 >= _pattern.Length)
+            {
+                return false;
+            }
+
+            var bmp = 0;
+            for (var i = start + 2; i < start + 6; i++)
+            {
+                if (!TryHexValue(_pattern[i], out var digit))
+                {
+                    return false;
+                }
+
+                bmp = (bmp * 16) + digit;
+            }
+
+            codePoint = bmp;
+            length = 6;
+            return true;
+        }
+
+        private static bool TryHexValue(char ch, out int value)
+        {
+            if (ch is >= '0' and <= '9')
+            {
+                value = ch - '0';
+                return true;
+            }
+
+            if (ch is >= 'A' and <= 'F')
+            {
+                value = ch - 'A' + 10;
+                return true;
+            }
+
+            if (ch is >= 'a' and <= 'f')
+            {
+                value = ch - 'a' + 10;
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        private static void AppendCodePoint(StringBuilder builder, int codePoint)
+        {
+            if (codePoint <= 0xFFFF)
+            {
+                builder.Append((char)codePoint);
+                return;
+            }
+
+            builder.Append(char.ConvertFromUtf32(codePoint));
+        }
+
+        private static bool ContainsNamedCaptureSyntax(string pattern)
+        {
+            var inClass = false;
+            for (var i = 0; i < pattern.Length; i++)
+            {
+                var ch = pattern[i];
+                if (ch == '\\')
+                {
+                    i++;
+                    continue;
+                }
+
+                if (ch == '[')
+                {
+                    inClass = true;
+                    continue;
+                }
+
+                if (ch == ']' && inClass)
+                {
+                    inClass = false;
+                    continue;
+                }
+
+                if (!inClass &&
+                    ch == '(' &&
+                    i + 2 < pattern.Length &&
+                    pattern[i + 1] == '?' &&
+                    pattern[i + 2] == '<' &&
+                    (i + 3 >= pattern.Length || pattern[i + 3] is not ('=' or '!')))
+                {
+                    return true;
+                }
             }
 
             return false;
