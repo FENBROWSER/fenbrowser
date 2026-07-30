@@ -644,7 +644,8 @@ public sealed class RegexVM
         // For typical fixed-width lookbehinds, we find the match quickly.
         // Limit search to avoid pathological performance.
         var searchLimit = Math.Min(targetCp, 4096); // ECMA-262 has no explicit limit; 4096 is generous
-        for (int startCp = targetCp; startCp >= targetCp - searchLimit && startCp >= 0; startCp--)
+        var minStartCp = Math.Max(0, targetCp - searchLimit);
+        for (int startCp = minStartCp; startCp <= targetCp; startCp++)
         {
             var endCp = ExecuteSubMatch(bodyStartPc, startCp, captures, out var lookbehindCaptures, targetCp);
             if (endCp >= 0)
@@ -760,7 +761,10 @@ public sealed class RegexVM
                             caps = (int[])caps.Clone();
                             ownsCaps = true;
                         }
-                        caps[ins.A] = _charOffsets[cp];
+                        if (!requiredEndCp.HasValue || caps[ins.A] < 0)
+                        {
+                            caps[ins.A] = _charOffsets[cp];
+                        }
                         pc++;
                         break;
                     case RegexOpCode.ResetGroup:
@@ -824,12 +828,15 @@ public sealed class RegexVM
             return;
         }
 
-        Array.Copy(
-            source,
-            firstCaptureSlot,
-            destination,
-            firstCaptureSlot,
-            Math.Min(source.Length, destination.Length) - firstCaptureSlot);
+        var limit = Math.Min(source.Length, destination.Length);
+        for (var slot = firstCaptureSlot; slot + 1 < limit; slot += 2)
+        {
+            if (source[slot] >= 0 && source[slot + 1] >= 0)
+            {
+                destination[slot] = source[slot];
+                destination[slot + 1] = source[slot + 1];
+            }
+        }
     }
 
     private RegexMatchResult BuildResult(bool success, int[] captures)

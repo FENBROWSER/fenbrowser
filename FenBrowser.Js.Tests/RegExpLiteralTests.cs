@@ -206,6 +206,20 @@ public sealed class RegExpLiteralTests
     }
 
     [Fact]
+    public void RegexLiteralPreservesLookbehindCaptureSemantics()
+    {
+        var result = Run(@"var fixed = 'abcdef'.match(/(?<=(?<a>\w){3})f/u);
+            var greedy = 'abcdef'.match(/(?<=(?<a>\w)+)f/u);
+            var empty = 'abcdef'.match(/(?<a>(?<=\w{3}))f/u);
+            fixed[1] === 'c' &&
+            fixed.groups.a === 'c' &&
+            greedy.groups.a === 'a' &&
+            empty[1] === '' &&
+            empty.groups.a === '';");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void RegexLiteralRejectsReversedCharacterClassRange()
     {
         Assert.Throws<JsParserException>(() => Run(@"/^[z-a]$/;"));
