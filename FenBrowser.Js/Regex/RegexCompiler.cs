@@ -901,7 +901,7 @@ public static class RegexCompiler
                 return;
             }
 
-            if (_flags.UnicodeSets && cc.Items.Any(i => i is ClassNestedSet))
+            if (_flags.UnicodeSets && cc.Items.Any(i => i is ClassNestedSet) && !cc.Items.Any(IsStringPropertyClassItem))
             {
                 var resolved = ResolveClassItemsToCodePoints(cc.Items);
                 if (cc.Negated)
@@ -990,6 +990,20 @@ public static class RegexCompiler
                     case ClassUnicodeProperty cup:
                         emitters.Add(() => EmitUnicodeProp(new UnicodePropertyNode(cup.Property, cup.Value, cup.Negated)));
                         break;
+                    case ClassNestedSet nested:
+                    {
+                        var nestedSet = ResolveClassItemsToCodePoints(nested.Items);
+                        if (nested.Negated)
+                        {
+                            var all = new HashSet<int>();
+                            for (var cp = 0; cp <= 0x10FFFF; cp++) all.Add(cp);
+                            all.ExceptWith(nestedSet);
+                            nestedSet = all;
+                        }
+
+                        emitters.Add(() => EmitResolvedCodePointSet(nestedSet));
+                        break;
+                    }
                 }
             }
 
@@ -1233,6 +1247,27 @@ public static class RegexCompiler
                 // Save end position
                 Emit(RegexOpCode.Save, n * 2 + 1);
             }
+        }
+
+        private static bool IsStringPropertyClassItem(ClassItem item)
+        {
+            return item switch
+            {
+                ClassUnicodeProperty cup => IsStringPropertyBody(cup.Value is not null ? $"{cup.Property}={cup.Value}" : cup.Property),
+                ClassNestedSet nested => nested.Items.Any(IsStringPropertyClassItem),
+                _ => false
+            };
+        }
+
+        private static bool IsStringPropertyBody(string body)
+        {
+            return body is "Basic_Emoji" or
+                "Emoji_Keycap_Sequence" or
+                "RGI_Emoji_Modifier_Sequence" or
+                "RGI_Emoji_Flag_Sequence" or
+                "RGI_Emoji_Tag_Sequence" or
+                "RGI_Emoji_ZWJ_Sequence" or
+                "RGI_Emoji";
         }
 
         private int EmitDisjunctionReverse(DisjunctionNode disjunction)
