@@ -171,8 +171,11 @@ public sealed class RegExpLiteralTests
     [Fact]
     public void RegexLiteralCanonicalizesEscapedUnicodeGroupNames()
     {
-        var result = Run(@"var r = /(?<\u{03C0}>a)/du.exec('bab');
-            r.indices.groups.π[0] === 1 && r.indices.groups.π[1] === 2;");
+        var result = Run(@"var pi = /(?<\u{03C0}>a)/du.exec('bab');
+            var brown = /(?<\ud835\udcd1\ud835\udcfb\ud835\udcf8\ud835\udd00\ud835\udcf7>brown)/u.exec('brown');
+            pi.indices.groups.π[0] === 1 &&
+            pi.indices.groups.π[1] === 2 &&
+            brown.groups.𝓑𝓻𝓸𝔀𝓷 === 'brown';");
         Assert.True(result.AsBoolean());
     }
 

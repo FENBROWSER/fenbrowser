@@ -1191,8 +1191,41 @@ public static class RegexParser
                 bmp = (bmp * 16) + digit;
             }
 
+            if (char.IsHighSurrogate((char)bmp) &&
+                start + 11 < _pattern.Length &&
+                _pattern[start + 6] == '\\' &&
+                _pattern[start + 7] == 'u' &&
+                TryReadFourDigitUnicodeEscape(start + 8, out var low) &&
+                char.IsLowSurrogate((char)low))
+            {
+                codePoint = char.ConvertToUtf32((char)bmp, (char)low);
+                length = 12;
+                return true;
+            }
+
             codePoint = bmp;
             length = 6;
+            return true;
+        }
+
+        private bool TryReadFourDigitUnicodeEscape(int start, out int codePoint)
+        {
+            codePoint = 0;
+            if (start + 3 >= _pattern.Length)
+            {
+                return false;
+            }
+
+            for (var i = start; i < start + 4; i++)
+            {
+                if (!TryHexValue(_pattern[i], out var digit))
+                {
+                    return false;
+                }
+
+                codePoint = (codePoint * 16) + digit;
+            }
+
             return true;
         }
 
