@@ -617,7 +617,7 @@ public static class RegExpCompiler
                 if (ch == ']')
                 {
                     var classContent = pattern[(classStart + 1)..i];
-                    if (ContainsInvalidCharacterClassRange(classContent))
+                    if (!flags.UnicodeSets && ContainsInvalidCharacterClassRange(classContent))
                     {
                         throw new RegexSyntaxError("Invalid character class range in regular expression.");
                     }

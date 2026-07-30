@@ -751,6 +751,7 @@ public static class RegexParser
                     'c' => new ClassEscape(ParseControlCharInClass()),
                     'x' => new ClassEscape(ParseHexDigits(2, "hex")),
                     'u' => new ClassEscape(ParseUnicodeInClass()),
+                    'q' when IsUnicodeSets => ParseClassStringSet(),
                     'p' or 'P' => ParseUnicodePropertyInClass(esc),
                     '-' => new ClassLiteralChar('-'), // escaped dash is literal
                     _ => new ClassLiteralChar(esc) // identity escape
@@ -761,6 +762,70 @@ public static class RegexParser
 
             Advance();
             return TryCombineClassSurrogatePair(new ClassLiteralChar(ch));
+        }
+
+        private ClassItem ParseClassStringSet()
+        {
+            Expect('{');
+            var alternatives = new List<int[]>();
+            var current = new List<int>();
+            while (!AtEnd)
+            {
+                if (Peek == '}')
+                {
+                    Advance();
+                    alternatives.Add(current.ToArray());
+                    return new ClassStringSet(alternatives.ToArray());
+                }
+
+                if (Peek == '|')
+                {
+                    Advance();
+                    alternatives.Add(current.ToArray());
+                    current.Clear();
+                    continue;
+                }
+
+                current.Add(ParseClassStringSetCodePoint());
+            }
+
+            throw new RegexSyntaxError("Unterminated class string literal", _pos);
+        }
+
+        private int ParseClassStringSetCodePoint()
+        {
+            if (Peek != '\\')
+            {
+                var ch = Peek;
+                Advance();
+                if (char.IsHighSurrogate(ch) && !AtEnd && char.IsLowSurrogate(Peek))
+                {
+                    var low = Peek;
+                    Advance();
+                    return char.ConvertToUtf32(ch, low);
+                }
+
+                return ch;
+            }
+
+            Advance();
+            if (AtEnd)
+                throw new RegexSyntaxError("Unexpected end of class string literal escape", _pos);
+
+            var esc = Peek;
+            Advance();
+            return esc switch
+            {
+                't' => '\t',
+                'n' => '\n',
+                'v' => '\v',
+                'f' => '\f',
+                'r' => '\r',
+                '0' => 0,
+                'x' => ParseHexDigits(2, "hex"),
+                'u' => ParseUnicodeInClass(),
+                _ => esc
+            };
         }
 
         private int ParseControlCharInClass()

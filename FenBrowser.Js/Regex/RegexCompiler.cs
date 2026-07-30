@@ -901,7 +901,7 @@ public static class RegexCompiler
                 return;
             }
 
-            if (_flags.UnicodeSets && cc.Items.Any(i => i is ClassNestedSet) && !cc.Items.Any(IsStringPropertyClassItem))
+            if (_flags.UnicodeSets && cc.Items.Any(i => i is ClassNestedSet) && !cc.Items.Any(IsStringValuedClassItem))
             {
                 var resolved = ResolveClassItemsToCodePoints(cc.Items);
                 if (cc.Negated)
@@ -1004,6 +1004,13 @@ public static class RegexCompiler
                         emitters.Add(() => EmitResolvedCodePointSet(nestedSet));
                         break;
                     }
+                    case ClassStringSet strings:
+                        foreach (var alternative in strings.Alternatives)
+                        {
+                            var captured = alternative;
+                            emitters.Add(() => EmitCodePointSequence(captured));
+                        }
+                        break;
                 }
             }
 
@@ -1014,37 +1021,7 @@ public static class RegexCompiler
                 return;
             }
 
-            if (emitters.Count == 1)
-            {
-                emitters[0]();
-                return;
-            }
-
-            var splitPositions = new List<int>();
-            for (int i = 0; i < emitters.Count - 1; i++)
-            {
-                splitPositions.Add(ReserveSplit());
-            }
-
-            var altStarts = new int[emitters.Count];
-            var altJumps = new int[emitters.Count];
-            for (int i = 0; i < emitters.Count; i++)
-            {
-                altStarts[i] = CurrentPos;
-                emitters[i]();
-                if (i < emitters.Count - 1)
-                {
-                    altJumps[i] = ReserveJump();
-                }
-            }
-
-            var endPos = CurrentPos;
-            for (int i = 0; i < emitters.Count - 1; i++)
-            {
-                var nextPos = i + 1 < splitPositions.Count ? splitPositions[i + 1] : altStarts[i + 1];
-                PatchSplit(splitPositions[i], altStarts[i], nextPos);
-                PatchJump(altJumps[i], endPos);
-            }
+            EmitAlternation(emitters);
         }
 
         // v-flag set operations: resolve both sides to code-point sets,
@@ -1070,24 +1047,31 @@ public static class RegexCompiler
             // Resolve both sides to sorted unique code-point lists.
             var leftCps = ResolveClassItemsToCodePoints(leftItems);
             var rightCps = ResolveClassItemsToCodePoints(rightItems);
+            var leftStrings = ResolveClassItemsToStringAlternatives(leftItems);
+            var rightStrings = ResolveClassItemsToStringAlternatives(rightItems);
             // Compute the set operation result.
             HashSet<int> result;
+            HashSet<int[]> resultStrings;
             switch (opKind)
             {
                 case 0: // Intersection: left ∩ right
                     result = new HashSet<int>(leftCps);
                     result.IntersectWith(rightCps);
+                    resultStrings = IntersectStringAlternatives(leftStrings, rightStrings);
                     break;
                 case 1: // Difference: left \ right
                     result = new HashSet<int>(leftCps);
                     result.ExceptWith(rightCps);
+                    resultStrings = ExceptStringAlternatives(leftStrings, rightStrings);
                     break;
                 case 2: // SymmetricDifference: (left ∪ right) \ (left ∩ right)
                     result = new HashSet<int>(leftCps);
                     result.SymmetricExceptWith(rightCps);
+                    resultStrings = SymmetricExceptStringAlternatives(leftStrings, rightStrings);
                     break;
                 default:
                     result = new HashSet<int>(leftCps);
+                    resultStrings = leftStrings;
                     break;
             }
             if (cc.Negated)
@@ -1098,8 +1082,27 @@ public static class RegexCompiler
                 for (int cp = 0; cp <= 0x10FFFF; cp++) allCps.Add(cp);
                 allCps.ExceptWith(result);
                 result = allCps;
+                resultStrings.Clear();
             }
-            EmitResolvedCodePointSet(result);
+            EmitResolvedClassMembers(result, resultStrings);
+        }
+
+        private void EmitResolvedClassMembers(HashSet<int> codePoints, HashSet<int[]> strings)
+        {
+            var emitters = new List<Action>();
+            foreach (var alternative in strings.OrderByDescending(s => s.Length).ThenBy(s => string.Join(",", s), StringComparer.Ordinal))
+            {
+                var captured = alternative;
+                emitters.Add(() => EmitCodePointSequence(captured));
+            }
+
+            if (codePoints.Count > 0)
+            {
+                var captured = new HashSet<int>(codePoints);
+                emitters.Add(() => EmitResolvedCodePointSet(captured));
+            }
+
+            EmitAlternation(emitters);
         }
 
         private void EmitResolvedCodePointSet(HashSet<int> result)
@@ -1146,6 +1149,60 @@ public static class RegexCompiler
             }
         }
 
+        private void EmitAlternation(List<Action> emitters)
+        {
+            if (emitters.Count == 0)
+            {
+                Emit(RegexOpCode.CharRange, 1, 0);
+                return;
+            }
+
+            if (emitters.Count == 1)
+            {
+                emitters[0]();
+                return;
+            }
+
+            var splitPositions = new List<int>();
+            for (int i = 0; i < emitters.Count - 1; i++)
+            {
+                splitPositions.Add(ReserveSplit());
+            }
+
+            var altStarts = new int[emitters.Count];
+            var altJumps = new int[emitters.Count];
+            for (int i = 0; i < emitters.Count; i++)
+            {
+                altStarts[i] = CurrentPos;
+                emitters[i]();
+                if (i < emitters.Count - 1)
+                {
+                    altJumps[i] = ReserveJump();
+                }
+            }
+
+            var endPos = CurrentPos;
+            for (int i = 0; i < emitters.Count - 1; i++)
+            {
+                var nextPos = i + 1 < splitPositions.Count ? splitPositions[i + 1] : altStarts[i + 1];
+                PatchSplit(splitPositions[i], altStarts[i], nextPos);
+                PatchJump(altJumps[i], endPos);
+            }
+        }
+
+        private void EmitCodePointSequence(int[] codePoints)
+        {
+            if (codePoints.Length == 0)
+            {
+                return;
+            }
+
+            foreach (var codePoint in codePoints)
+            {
+                EmitChar(codePoint);
+            }
+        }
+
         // Resolve a list of ClassItems to the set of code points they match.
         private static HashSet<int> ResolveClassItemsToCodePoints(List<ClassItem> items)
         {
@@ -1173,10 +1230,129 @@ public static class RegexCompiler
                         cps.UnionWith(nestedCps);
                         break;
                     }
+                    case ClassStringSet strings:
+                        foreach (var alternative in strings.Alternatives)
+                        {
+                            if (alternative.Length == 1)
+                            {
+                                cps.Add(alternative[0]);
+                            }
+                        }
+                        break;
                     // String literals and other items are ignored for now.
                 }
             }
             return cps;
+        }
+
+        private static HashSet<int[]> ResolveClassItemsToStringAlternatives(List<ClassItem> items)
+        {
+            var strings = new HashSet<int[]>(IntArrayComparer.Instance);
+            foreach (var item in items)
+            {
+                switch (item)
+                {
+                    case ClassUnicodeProperty cup:
+                        AddUnicodePropertyStringAlternatives(strings, cup);
+                        break;
+                    case ClassNestedSet nested:
+                    {
+                        var nestedStrings = ResolveClassItemsToStringAlternatives(nested.Items);
+                        if (!nested.Negated)
+                        {
+                            strings.UnionWith(nestedStrings);
+                        }
+                        break;
+                    }
+                    case ClassStringSet set:
+                        foreach (var alternative in set.Alternatives)
+                        {
+                            if (alternative.Length > 1)
+                            {
+                                strings.Add(alternative);
+                            }
+                        }
+                        break;
+                }
+            }
+
+            return strings;
+        }
+
+        private static HashSet<int[]> IntersectStringAlternatives(HashSet<int[]> left, HashSet<int[]> right)
+        {
+            var result = new HashSet<int[]>(left, IntArrayComparer.Instance);
+            result.IntersectWith(right);
+            return result;
+        }
+
+        private static HashSet<int[]> ExceptStringAlternatives(HashSet<int[]> left, HashSet<int[]> right)
+        {
+            var result = new HashSet<int[]>(left, IntArrayComparer.Instance);
+            result.ExceptWith(right);
+            return result;
+        }
+
+        private static HashSet<int[]> SymmetricExceptStringAlternatives(HashSet<int[]> left, HashSet<int[]> right)
+        {
+            var result = new HashSet<int[]>(left, IntArrayComparer.Instance);
+            result.SymmetricExceptWith(right);
+            return result;
+        }
+
+        private static void AddUnicodePropertyStringAlternatives(HashSet<int[]> strings, ClassUnicodeProperty cup)
+        {
+            var body = cup.Value is not null ? $"{cup.Property}={cup.Value}" : cup.Property;
+            if (cup.Negated || body != "Emoji_Keycap_Sequence")
+            {
+                return;
+            }
+
+            strings.Add(new[] { '#', 0xFE0F, 0x20E3 });
+            strings.Add(new[] { '*', 0xFE0F, 0x20E3 });
+            for (var cp = '0'; cp <= '9'; cp++)
+            {
+                strings.Add(new[] { cp, 0xFE0F, 0x20E3 });
+            }
+        }
+
+        private sealed class IntArrayComparer : IEqualityComparer<int[]>
+        {
+            public static readonly IntArrayComparer Instance = new();
+
+            public bool Equals(int[]? x, int[]? y)
+            {
+                if (ReferenceEquals(x, y))
+                {
+                    return true;
+                }
+
+                if (x is null || y is null || x.Length != y.Length)
+                {
+                    return false;
+                }
+
+                for (var i = 0; i < x.Length; i++)
+                {
+                    if (x[i] != y[i])
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            public int GetHashCode(int[] obj)
+            {
+                var hash = new HashCode();
+                foreach (var value in obj)
+                {
+                    hash.Add(value);
+                }
+
+                return hash.ToHashCode();
+            }
         }
 
         private static void AddClassEscapeCps(HashSet<int> cps, char kind)
@@ -1249,12 +1425,13 @@ public static class RegexCompiler
             }
         }
 
-        private static bool IsStringPropertyClassItem(ClassItem item)
+        private static bool IsStringValuedClassItem(ClassItem item)
         {
             return item switch
             {
                 ClassUnicodeProperty cup => IsStringPropertyBody(cup.Value is not null ? $"{cup.Property}={cup.Value}" : cup.Property),
-                ClassNestedSet nested => nested.Items.Any(IsStringPropertyClassItem),
+                ClassStringSet => true,
+                ClassNestedSet nested => nested.Items.Any(IsStringValuedClassItem),
                 _ => false
             };
         }

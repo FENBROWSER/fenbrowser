@@ -310,6 +310,17 @@ public sealed class ClassNestedSet : ClassItem
     }
 }
 
+/// <summary>String alternatives from a /v class-set \q{...} operand.</summary>
+public sealed class ClassStringSet : ClassItem
+{
+    public readonly int[][] Alternatives;
+
+    public ClassStringSet(int[][] alternatives)
+    {
+        Alternatives = alternatives;
+    }
+}
+
 // Marker item for v-flag set operations in character classes.
 // Placed by the parser between left-hand and right-hand ClassItem lists.
 // OpKind: 0=Intersection (&&), 1=Difference (--), 2=SymmetricDifference (~~).
