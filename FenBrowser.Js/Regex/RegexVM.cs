@@ -415,6 +415,8 @@ public sealed class RegexVM
         // Unicode case folding only with /u or /v flag
         if (!_program.Flags.Unicode && !_program.Flags.UnicodeSets)
             return false;
+        if (EcmaSimpleCaseFold(cp) == EcmaSimpleCaseFold(target))
+            return true;
         // Full Unicode simple case folding via Rune
         try
         {
@@ -426,6 +428,17 @@ public sealed class RegexVM
         {
             return false;
         }
+    }
+
+    private static int EcmaSimpleCaseFold(int cp)
+    {
+        return cp switch
+        {
+            0x0390 or 0x1FD3 => 0x0390,
+            0x03B0 or 0x1FE3 => 0x03B0,
+            0xFB05 or 0xFB06 => 0xFB05,
+            _ => cp
+        };
     }
 
     private static bool IsSpaceChar(int cp)
