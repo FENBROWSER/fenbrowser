@@ -338,7 +338,14 @@ public static class RegexCompiler
 
             var skipBodyJump = Emit(RegexOpCode.Jump, 0);
             var bodyStart = CurrentPos;
-            EmitDisjunction(assertion.Body);
+            if (isLookbehind)
+            {
+                EmitDisjunctionReverse(assertion.Body);
+            }
+            else
+            {
+                EmitDisjunction(assertion.Body);
+            }
             // Emit Accept so sub-match knows where the body ends
             Emit(RegexOpCode.Accept);
             var assertionPos = CurrentPos;
@@ -551,6 +558,240 @@ public static class RegexCompiler
 
             EmitDisjunction(mg.Body);
             (_ignoreCase, _multiline, _dotAll) = (savedIgnoreCase, savedMultiline, savedDotAll);
+        }
+
+        private void EmitAtomReverse(AtomNode atom)
+        {
+            switch (atom)
+            {
+                case LiteralCharNode lit:
+                    Emit(RegexOpCode.ReverseChar, lit.Value, b: IgnoreCase ? 1 : 0);
+                    break;
+                case DotNode:
+                    Emit(RegexOpCode.ReverseDot, DotAll ? 1 : 0);
+                    break;
+                case CharacterEscapeNode esc:
+                    Emit(RegexOpCode.ReverseChar, esc.CodePoint, b: IgnoreCase ? 1 : 0);
+                    break;
+                case ClassEscapeNode ce:
+                    EmitClassEscapeReverse(ce.Kind);
+                    break;
+                case UnicodePropertyNode up:
+                    EmitUnicodePropReverse(up);
+                    break;
+                case BackReferenceNode br:
+                    if (!_flags.Unicode && !_flags.UnicodeSets && br.GroupNumber > _captureCount)
+                    {
+                        Emit(RegexOpCode.ReverseChar, br.GroupNumber, b: IgnoreCase ? 1 : 0);
+                    }
+                    else
+                    {
+                        Emit(RegexOpCode.ReverseBackRef, br.GroupNumber, IgnoreCase ? 1 : 0);
+                    }
+                    break;
+                case NamedBackReferenceNode nbr:
+                    if (!_namedGroupMap.TryGetValue(nbr.Name, out var groupNumbers))
+                    {
+                        throw new RegexSyntaxError($"Unknown named capture group '{nbr.Name}'.");
+                    }
+
+                    if (groupNumbers.Count == 1)
+                    {
+                        Emit(RegexOpCode.ReverseBackRef, groupNumbers[0], IgnoreCase ? 1 : 0);
+                    }
+                    else
+                    {
+                        Emit(RegexOpCode.ReverseNamedBackRef, GetNamedBackReferenceNameIndex(nbr.Name), IgnoreCase ? 1 : 0);
+                    }
+                    break;
+                case CharacterClassNode cc:
+                    EmitCharacterClassReverse(cc);
+                    break;
+                case GroupNode g:
+                    EmitGroupReverse(g);
+                    break;
+                case ModifierGroupNode mg:
+                    EmitModifierGroupReverse(mg);
+                    break;
+                case AssertionNode assertion:
+                    EmitAssertion(assertion);
+                    break;
+            }
+        }
+
+        private void EmitModifierGroupReverse(ModifierGroupNode mg)
+        {
+            var (savedIgnoreCase, savedMultiline, savedDotAll) = (_ignoreCase, _multiline, _dotAll);
+            foreach (var f in mg.AddFlags)
+            {
+                if (f == 'i') _ignoreCase = true;
+                else if (f == 'm') _multiline = true;
+                else if (f == 's') _dotAll = true;
+            }
+
+            foreach (var f in mg.RemoveFlags)
+            {
+                if (f == 'i') _ignoreCase = false;
+                else if (f == 'm') _multiline = false;
+                else if (f == 's') _dotAll = false;
+            }
+
+            EmitDisjunctionReverse(mg.Body);
+            (_ignoreCase, _multiline, _dotAll) = (savedIgnoreCase, savedMultiline, savedDotAll);
+        }
+
+        private void EmitClassEscapeReverse(char kind)
+        {
+            var classKind = kind switch
+            {
+                'd' => CharClassKind.Digit,
+                'D' => CharClassKind.NotDigit,
+                'w' => CharClassKind.Word,
+                'W' => CharClassKind.NotWord,
+                's' => CharClassKind.Space,
+                'S' => CharClassKind.NotSpace,
+                _ => throw new InvalidOperationException($"Unknown class escape: {kind}")
+            };
+            Emit(RegexOpCode.ReverseCharClass, (int)classKind, b: WordFoldOperand);
+        }
+
+        private void EmitUnicodePropReverse(UnicodePropertyNode up)
+        {
+            var body = up.Value is not null
+                ? up.Property + "=" + up.Value
+                : up.Property;
+            var index = _unicodePropertyBodies.Count;
+            _unicodePropertyBodies.Add(body);
+            var opA = (up.Negated ? 1 : 0) | (IgnoreCase ? 2 : 0);
+            Emit(RegexOpCode.ReverseUnicodeProp, opA, index, 0);
+        }
+
+        private void EmitGroupReverse(GroupNode group)
+        {
+            if (group.Kind == GroupKind.Capturing || group.Kind == GroupKind.NamedCapturing)
+            {
+                var n = group.GroupNumber;
+                if (group.Kind == GroupKind.NamedCapturing && group.Name is not null)
+                {
+                    AddNamedGroup(group.Name, n);
+                }
+
+                Emit(RegexOpCode.Save, n * 2 + 1);
+            }
+
+            EmitDisjunctionReverse(group.Body);
+
+            if (group.Kind == GroupKind.Capturing || group.Kind == GroupKind.NamedCapturing)
+            {
+                Emit(RegexOpCode.Save, group.GroupNumber * 2);
+            }
+        }
+
+        private void EmitCharacterClassReverse(CharacterClassNode cc)
+        {
+            if (cc.Negated)
+            {
+                foreach (var item in cc.Items)
+                {
+                    switch (item)
+                    {
+                        case ClassLiteralChar lc:
+                            Emit(RegexOpCode.ReverseChar, lc.Value, b: IgnoreCase ? 1 : 0, c: 1);
+                            break;
+                        case ClassRange cr:
+                            Emit(RegexOpCode.ReverseCharRange, cr.Start, cr.End, c: 1);
+                            if (IgnoreCase && CaseFoldedRange(cr.Start, cr.End) is { } folded)
+                            {
+                                Emit(RegexOpCode.ReverseCharRange, folded.Start, folded.End, c: 1);
+                            }
+                            break;
+                        case ClassEscape ce:
+                            Emit(RegexOpCode.ReverseChar, ce.CodePoint, b: IgnoreCase ? 1 : 0, c: 1);
+                            break;
+                        case ClassClassEscape cce:
+                            var classKind = cce.Kind switch
+                            {
+                                'd' => CharClassKind.Digit,
+                                'D' => CharClassKind.NotDigit,
+                                'w' => CharClassKind.Word,
+                                'W' => CharClassKind.NotWord,
+                                's' => CharClassKind.Space,
+                                'S' => CharClassKind.NotSpace,
+                                _ => throw new InvalidOperationException($"Unknown class escape: {cce.Kind}")
+                            };
+                            Emit(RegexOpCode.ReverseCharClass, (int)classKind, b: WordFoldOperand, c: 1);
+                            break;
+                    }
+                }
+
+                Emit(RegexOpCode.ReverseDot, 1);
+                return;
+            }
+
+            var emitters = new List<Action>();
+            foreach (var item in cc.Items)
+            {
+                switch (item)
+                {
+                    case ClassLiteralChar lc:
+                        emitters.Add(() => Emit(RegexOpCode.ReverseChar, lc.Value, b: IgnoreCase ? 1 : 0));
+                        break;
+                    case ClassRange cr:
+                        emitters.Add(() => Emit(RegexOpCode.ReverseCharRange, cr.Start, cr.End));
+                        if (IgnoreCase && CaseFoldedRange(cr.Start, cr.End) is { } folded)
+                        {
+                            emitters.Add(() => Emit(RegexOpCode.ReverseCharRange, folded.Start, folded.End));
+                        }
+                        break;
+                    case ClassEscape ce:
+                        emitters.Add(() => Emit(RegexOpCode.ReverseChar, ce.CodePoint, b: IgnoreCase ? 1 : 0));
+                        break;
+                    case ClassClassEscape cce:
+                        emitters.Add(() => EmitClassEscapeReverse(cce.Kind));
+                        break;
+                    case ClassUnicodeProperty cup:
+                        emitters.Add(() => EmitUnicodePropReverse(new UnicodePropertyNode(cup.Property, cup.Value, cup.Negated)));
+                        break;
+                }
+            }
+
+            if (emitters.Count == 0)
+            {
+                Emit(RegexOpCode.ReverseCharRange, 1, 0);
+                return;
+            }
+
+            if (emitters.Count == 1)
+            {
+                emitters[0]();
+                return;
+            }
+
+            var splitPositions = new List<int>();
+            for (int i = 0; i < emitters.Count - 1; i++)
+            {
+                splitPositions.Add(ReserveSplit());
+            }
+
+            var altStarts = new int[emitters.Count];
+            var altJumps = new int[emitters.Count];
+            for (int i = 0; i < emitters.Count; i++)
+            {
+                altStarts[i] = CurrentPos;
+                emitters[i]();
+                if (i < emitters.Count - 1)
+                {
+                    altJumps[i] = ReserveJump();
+                }
+            }
+
+            var endPos = CurrentPos;
+            for (int i = 0; i < emitters.Count - 1; i++)
+            {
+                var nextPos = i + 1 < splitPositions.Count ? splitPositions[i + 1] : altStarts[i + 1];
+                PatchSplit(splitPositions[i], altStarts[i], nextPos);
+                PatchJump(altJumps[i], endPos);
+            }
         }
 
         private void EmitChar(int codePoint)
@@ -943,6 +1184,167 @@ public static class RegexCompiler
                 // Save end position
                 Emit(RegexOpCode.Save, n * 2 + 1);
             }
+        }
+
+        private int EmitDisjunctionReverse(DisjunctionNode disjunction)
+        {
+            if (disjunction.Alternatives.Count == 1)
+            {
+                return EmitAlternativeReverse(disjunction.Alternatives[0]);
+            }
+
+            var altCount = disjunction.Alternatives.Count;
+            var altStarts = new int[altCount];
+            var altJumps = new int[altCount];
+            var splitPositions = new List<int>();
+            for (int a = 0; a < altCount - 1; a++)
+            {
+                splitPositions.Add(ReserveSplit());
+            }
+
+            var groupsToReset = CollectCaptureGroups(disjunction);
+            for (int a = 0; a < altCount; a++)
+            {
+                altStarts[a] = CurrentPos;
+                foreach (var groupNumber in groupsToReset)
+                {
+                    Emit(RegexOpCode.ResetGroup, groupNumber);
+                }
+
+                EmitAlternativeReverse(disjunction.Alternatives[a]);
+                if (a < altCount - 1)
+                {
+                    altJumps[a] = ReserveJump();
+                }
+            }
+
+            var endPos = CurrentPos;
+            for (int a = 0; a < altCount - 1; a++)
+            {
+                var nextPos = a + 1 < splitPositions.Count ? splitPositions[a + 1] : altStarts[a + 1];
+                PatchSplit(splitPositions[a], altStarts[a], nextPos);
+            }
+
+            for (int a = 0; a < altCount - 1; a++)
+            {
+                PatchJump(altJumps[a], endPos);
+            }
+
+            return splitPositions.Count > 0 ? splitPositions[0] : altStarts[0];
+        }
+
+        private int EmitAlternativeReverse(AlternativeNode alt)
+        {
+            var start = CurrentPos;
+            for (var i = alt.Terms.Count - 1; i >= 0; i--)
+            {
+                EmitTermReverse(alt.Terms[i]);
+            }
+
+            return start;
+        }
+
+        private void EmitTermReverse(TermNode term)
+        {
+            switch (term)
+            {
+                case AssertionNode assertion:
+                    EmitAssertion(assertion);
+                    break;
+                case QuantifierNode quantifier:
+                    EmitQuantifierReverse(quantifier);
+                    break;
+                case AtomNode atom:
+                    EmitAtomReverse(atom);
+                    break;
+            }
+        }
+
+        private void EmitQuantifierReverse(QuantifierNode q)
+        {
+            var body = q.Body;
+            var isBounded = q.Max != int.MaxValue;
+
+            if (q.Min == 0 && q.Max == int.MaxValue)
+            {
+                EmitStarReverse(body, q.Greedy);
+            }
+            else if (q.Min == 1 && q.Max == int.MaxValue)
+            {
+                EmitPlusReverse(body, q.Greedy);
+            }
+            else if (q.Min == 0 && q.Max == 1)
+            {
+                EmitOptionalReverse(body, q.Greedy);
+            }
+            else if (isBounded)
+            {
+                for (int i = 0; i < q.Min; i++)
+                {
+                    EmitAtomReverse(body);
+                }
+
+                var optionalCount = q.Max - q.Min;
+                for (int i = 0; i < optionalCount; i++)
+                {
+                    var splitPos = Emit(RegexOpCode.Split, 0, 0);
+                    var bodyStart = CurrentPos;
+                    EmitAtomReverse(body);
+                    var skipPos = CurrentPos;
+                    if (q.Greedy)
+                        PatchSplit(splitPos, bodyStart, skipPos);
+                    else
+                        PatchSplit(splitPos, skipPos, bodyStart);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < q.Min; i++)
+                {
+                    EmitAtomReverse(body);
+                }
+
+                EmitStarReverse(body, q.Greedy);
+            }
+        }
+
+        private void EmitStarReverse(AtomNode body, bool greedy)
+        {
+            var loopPos = CurrentPos;
+            var splitPos = Emit(RegexOpCode.Split, 0, 0);
+            var bodyStart = CurrentPos;
+            EmitAtomReverse(body);
+            var jumpPos = Emit(RegexOpCode.Jump, 0);
+            PatchJump(jumpPos, loopPos);
+            var skipPos = CurrentPos;
+            if (greedy)
+                PatchSplit(splitPos, bodyStart, skipPos);
+            else
+                PatchSplit(splitPos, skipPos, bodyStart);
+        }
+
+        private void EmitPlusReverse(AtomNode body, bool greedy)
+        {
+            var bodyStart = CurrentPos;
+            EmitAtomReverse(body);
+            var splitPos = Emit(RegexOpCode.Split, 0, 0);
+            var skipPos = CurrentPos;
+            if (greedy)
+                PatchSplit(splitPos, bodyStart, skipPos);
+            else
+                PatchSplit(splitPos, skipPos, bodyStart);
+        }
+
+        private void EmitOptionalReverse(AtomNode body, bool greedy)
+        {
+            var splitPos = Emit(RegexOpCode.Split, 0, 0);
+            var bodyStart = CurrentPos;
+            EmitAtomReverse(body);
+            var skipPos = CurrentPos;
+            if (greedy)
+                PatchSplit(splitPos, bodyStart, skipPos);
+            else
+                PatchSplit(splitPos, skipPos, bodyStart);
         }
 
         private void AddNamedGroup(string name, int groupNumber)

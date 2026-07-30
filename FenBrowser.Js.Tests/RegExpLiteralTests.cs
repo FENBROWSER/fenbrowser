@@ -215,6 +215,9 @@ public sealed class RegExpLiteralTests
             var boundary = 'ab cdef'.match(/(?<=\B)\w{3}/);
             var nested = 'abcdef'.match(/(?<=a(?=([^a]{2})d)\w{3})\w\w/);
             var outsideRef = 'foo'.match(/^(f)oo(?<=^\1o+)$/);
+            var alternation = 'xabcd'.match(/.*(?<=(..|...|....))(.*)/);
+            var insideRef = 'ababc'.match(/(?<=\1(\w+))c/);
+            var mutual = /(?<=a(.\2)b(\1)).{4}/.exec('aabcacbc');
             fixed[1] === 'c' &&
             fixed.groups.a === 'c' &&
             greedy.groups.a === 'a' &&
@@ -225,7 +228,15 @@ public sealed class RegExpLiteralTests
             nested[0] === 'ef' &&
             nested[1] === 'bc' &&
             outsideRef[0] === 'foo' &&
-            outsideRef[1] === 'f';");
+            outsideRef[1] === 'f' &&
+            alternation[0] === 'xabcd' &&
+            alternation[1] === 'cd' &&
+            alternation[2] === '' &&
+            insideRef[0] === 'c' &&
+            insideRef[1] === 'ab' &&
+            mutual[0] === 'cacb' &&
+            mutual[1] === 'a' &&
+            mutual[2] === '';");
         Assert.True(result.AsBoolean());
     }
 

@@ -609,6 +609,71 @@ public sealed class RegexVM
         return 0;
     }
 
+    private int TryMatchBackRefBeforeChar(int charPos, int[] captures, int groupNum, bool ignoreCase, out int charLength)
+    {
+        charLength = 0;
+        var slot = groupNum * 2;
+        if (slot + 1 >= captures.Length)
+        {
+            return -1;
+        }
+
+        var start = captures[slot];
+        var end = captures[slot + 1];
+        if (start < 0 || end < 0)
+        {
+            return 0;
+        }
+
+        charLength = end - start;
+        var matchStart = charPos - charLength;
+        if (matchStart < 0)
+        {
+            return -1;
+        }
+
+        var capturedText = _input.Substring(start, charLength);
+        var targetText = _input.Substring(matchStart, charLength);
+        var matches = ignoreCase
+            ? string.Equals(capturedText, targetText, StringComparison.OrdinalIgnoreCase)
+            : string.Equals(capturedText, targetText, StringComparison.Ordinal);
+
+        return matches ? 0 : -1;
+    }
+
+    private int TryMatchNamedBackRefBeforeChar(int charPos, int[] captures, int nameIndex, bool ignoreCase, out int charLength)
+    {
+        charLength = 0;
+        var names = _program.NamedBackReferenceNames;
+        if (names is null || nameIndex < 0 || nameIndex >= names.Length)
+        {
+            return -1;
+        }
+
+        if (_program.NamedGroupMap is null || !_program.NamedGroupMap.TryGetValue(names[nameIndex], out var groupNumbers))
+        {
+            return -1;
+        }
+
+        foreach (var groupNumber in groupNumbers)
+        {
+            var slot = groupNumber * 2;
+            if (slot + 1 >= captures.Length)
+            {
+                continue;
+            }
+
+            if (captures[slot] < 0 || captures[slot + 1] < 0)
+            {
+                continue;
+            }
+
+            return TryMatchBackRefBeforeChar(charPos, captures, groupNumber, ignoreCase, out charLength);
+        }
+
+        return 0;
+    }
+
     // ─── Lookaround ───────────────────────────────────────
 
     private int HandleLookaround(Stack<ThreadState> stack, int cp, int[] captures,
@@ -640,28 +705,14 @@ public sealed class RegexVM
     /// </summary>
     private bool TryLookbehind(int bodyStartPc, int targetCp, int[] captures, bool isNegative)
     {
-        // Try each starting position from targetCp backwards.
-        // For typical fixed-width lookbehinds, we find the match quickly.
-        // Limit search to avoid pathological performance.
-        var searchLimit = Math.Min(targetCp, 4096); // ECMA-262 has no explicit limit; 4096 is generous
-        var minStartCp = Math.Max(0, targetCp - searchLimit);
-        for (int startCp = minStartCp; startCp <= targetCp; startCp++)
+        var endCp = ExecuteSubMatch(bodyStartPc, targetCp, captures, out var lookbehindCaptures);
+        var matched = endCp >= 0;
+        if (matched && !isNegative && lookbehindCaptures is not null)
         {
-            var endCp = ExecuteSubMatch(bodyStartPc, startCp, captures, out var lookbehindCaptures, targetCp);
-            if (endCp >= 0)
-            {
-                if (!isNegative && lookbehindCaptures is not null)
-                {
-                    CopySubmatchCaptures(lookbehindCaptures, captures);
-                }
-
-                // Body matched and ended exactly at targetCp
-                return !isNegative; // positive succeeds, negative fails
-            }
+            CopySubmatchCaptures(lookbehindCaptures, captures);
         }
 
-        // No match ending at targetCp found
-        return isNegative; // positive fails, negative succeeds
+        return isNegative ? !matched : matched;
     }
 
     /// <summary>
@@ -733,6 +784,38 @@ public sealed class RegexVM
                     case RegexOpCode.Dot:
                         matched = cp < _cpLen && MatchDot(_codePoints[cp], ins.A == 1);
                         if (matched) { cp++; pc++; } else { pc = -1; }
+                        break;
+                    case RegexOpCode.ReverseChar:
+                        if (ins.B == 1)
+                            matched = cp > 0 && CaseInsensitiveEqual(_codePoints[cp - 1], ins.A);
+                        else
+                            matched = cp > 0 && _codePoints[cp - 1] == ins.A;
+                        if (ins.C == 1) { matched = !matched; }
+                        if (matched) { if (ins.C == 0) cp--; pc++; }
+                        else { pc = -1; }
+                        break;
+                    case RegexOpCode.ReverseCharRange:
+                        matched = cp > 0 && _codePoints[cp - 1] >= ins.A && _codePoints[cp - 1] <= ins.B;
+                        if (ins.C == 1) { matched = !matched; }
+                        if (matched) { if (ins.C == 0) cp--; pc++; }
+                        else { pc = -1; }
+                        break;
+                    case RegexOpCode.ReverseCharClass:
+                        matched = cp > 0 && MatchCharClass(_codePoints[cp - 1], (CharClassKind)ins.A, ins.B == 1);
+                        if (ins.C == 1) { matched = !matched; }
+                        if (matched) { if (ins.C == 0) cp--; pc++; }
+                        else { pc = -1; }
+                        break;
+                    case RegexOpCode.ReverseUnicodeProp:
+                        matched = cp > 0 &&
+                                  MatchUnicodeProperty(_codePoints[cp - 1], ins.B, (ins.A & 1) != 0, (ins.A & 2) != 0);
+                        if (ins.C == 1) { matched = !matched; }
+                        if (matched) { if (ins.C == 0) cp--; pc++; }
+                        else { pc = -1; }
+                        break;
+                    case RegexOpCode.ReverseDot:
+                        matched = cp > 0 && MatchDot(_codePoints[cp - 1], ins.A == 1);
+                        if (matched) { cp--; pc++; } else { pc = -1; }
                         break;
                     case RegexOpCode.Jump:
                         pc += ins.A;
@@ -809,6 +892,30 @@ public sealed class RegexVM
                             else
                             {
                                 cp = CharOffsetToCodePoint(charPos2 + charLen2);
+                                pc++;
+                            }
+                        }
+                        break;
+                    case RegexOpCode.ReverseBackRef:
+                        {
+                            var charPos2 = CodePointToCharOffset(cp);
+                            var result2 = TryMatchBackRefBeforeChar(charPos2, caps, ins.A, ins.B == 1, out var charLen2);
+                            if (result2 < 0) { pc = -1; }
+                            else
+                            {
+                                cp = CharOffsetToCodePoint(charPos2 - charLen2);
+                                pc++;
+                            }
+                        }
+                        break;
+                    case RegexOpCode.ReverseNamedBackRef:
+                        {
+                            var charPos2 = CodePointToCharOffset(cp);
+                            var result2 = TryMatchNamedBackRefBeforeChar(charPos2, caps, ins.A, ins.B == 1, out var charLen2);
+                            if (result2 < 0) { pc = -1; }
+                            else
+                            {
+                                cp = CharOffsetToCodePoint(charPos2 - charLen2);
                                 pc++;
                             }
                         }

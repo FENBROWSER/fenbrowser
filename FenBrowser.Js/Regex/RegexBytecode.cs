@@ -17,6 +17,13 @@ public enum RegexOpCode : byte
     CharClass,      // Match built-in class: \d \s \w. A=classKind (see CharClassKind).
     Dot,            // Match any char except line terminator. A=1 if dotAll mode.
     UnicodeProp,    // Match \p{...}. A=property table index.
+    ReverseChar,    // Match previous literal code point and move backward.
+    ReverseCharRange,
+    ReverseCharClass,
+    ReverseDot,
+    ReverseUnicodeProp,
+    ReverseBackRef,
+    ReverseNamedBackRef,
 
     // --- Control flow ---
     Jump,           // Unconditional jump. A=relative offset from next instruction.
