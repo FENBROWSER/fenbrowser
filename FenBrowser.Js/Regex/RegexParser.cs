@@ -690,7 +690,7 @@ public static class RegexParser
 
                 // Check for range: ClassAtom '-' ClassAtom
                 // In v-flag mode, '--' is NOT a range start — it's the set difference operator above.
-                if (!AtEnd && Peek == '-' && Peek1 != ']')
+                if (!AtEnd && Peek == '-' && Peek1 != ']' && !(IsUnicodeSets && Peek1 == '-'))
                 {
                     Advance(); // consume '-'
                     var endAtom = ParseClassAtom();

@@ -901,6 +901,21 @@ public static class RegexCompiler
                 return;
             }
 
+            if (_flags.UnicodeSets && cc.Items.Any(i => i is ClassNestedSet))
+            {
+                var resolved = ResolveClassItemsToCodePoints(cc.Items);
+                if (cc.Negated)
+                {
+                    var all = new HashSet<int>();
+                    for (var cp = 0; cp <= 0x10FFFF; cp++) all.Add(cp);
+                    all.ExceptWith(resolved);
+                    resolved = all;
+                }
+
+                EmitResolvedCodePointSet(resolved);
+                return;
+            }
+
             if (cc.Negated)
             {
                 // Negated class [^...]: match any char NOT in the set.
@@ -1070,14 +1085,18 @@ public static class RegexCompiler
                 allCps.ExceptWith(result);
                 result = allCps;
             }
-            // Emit the final set as a character class.
+            EmitResolvedCodePointSet(result);
+        }
+
+        private void EmitResolvedCodePointSet(HashSet<int> result)
+        {
             var sorted = result.OrderBy(cp => cp).ToList();
             if (sorted.Count == 0)
             {
                 Emit(RegexOpCode.CharRange, 1, 0); // impossible range
                 return;
             }
-            // Merge consecutive code points into ranges.
+
             var ranges = new List<(int start, int end)>();
             int rangeStart = sorted[0], rangeEnd = sorted[0];
             for (int i = 1; i < sorted.Count; i++)
