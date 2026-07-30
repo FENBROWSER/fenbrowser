@@ -1,11 +1,13 @@
 using FenBrowser.Js.Parser;
 using FenBrowser.Js.Source;
 using FenBrowser.Js.Bytecode;
+using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 using System.Collections.Concurrent;
 using System.Runtime.ExceptionServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -850,6 +852,11 @@ public sealed class Test262Runner
                             "IsHTMLDDA", (_, _) => JsValue.Null);
                         perTestInterpreter.MarkAsHtmlDda(htmlDda);
                         perTestInterpreter.RegisterGlobalValue("__fenHtmlDda", htmlDda);
+                        var buildString = perTestInterpreter.AllocateNativeFunction(
+                            "__fenBuildString",
+                            (_, buildArgs) => BuildStringForRegExpHarness((IBuiltinContext)perTestInterpreter, buildArgs),
+                            length: 1);
+                        perTestInterpreter.RegisterGlobalValue("__fenBuildString", buildString);
                         try
                         {
                             _ = perTestInterpreter.Execute(function);
@@ -1274,6 +1281,99 @@ public sealed class Test262Runner
 
         captured?.Throw();
         return true;
+    }
+
+    private static JsValue BuildStringForRegExpHarness(IBuiltinContext context, IReadOnlyList<JsValue> args)
+    {
+        if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+        {
+            return JsValue.FromString(string.Empty);
+        }
+
+        var root = args[0];
+        var sb = new StringBuilder();
+        if (TryGetObjectProperty(context, root, "loneCodePoints", out var loneCodePoints))
+        {
+            AppendCodePointArray(context, sb, loneCodePoints);
+        }
+
+        if (TryGetObjectProperty(context, root, "ranges", out var ranges))
+        {
+            var rangeCount = GetArrayLikeLength(context, ranges);
+            for (var i = 0; i < rangeCount; i++)
+            {
+                if (!TryGetObjectProperty(context, ranges, i.ToString(System.Globalization.CultureInfo.InvariantCulture), out var range))
+                {
+                    continue;
+                }
+
+                var start = GetArrayLikeNumber(context, range, "0");
+                var end = GetArrayLikeNumber(context, range, "1");
+                for (var codePoint = start; codePoint <= end; codePoint++)
+                {
+                    AppendCodePoint(sb, codePoint);
+                }
+            }
+        }
+
+        return JsValue.FromString(sb.ToString());
+    }
+
+    private static void AppendCodePointArray(IBuiltinContext context, StringBuilder sb, JsValue arrayLike)
+    {
+        var length = GetArrayLikeLength(context, arrayLike);
+        for (var i = 0; i < length; i++)
+        {
+            var codePoint = GetArrayLikeNumber(context, arrayLike, i.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            AppendCodePoint(sb, codePoint);
+        }
+    }
+
+    private static void AppendCodePoint(StringBuilder sb, int codePoint)
+    {
+        if (codePoint < 0 || codePoint > 0x10FFFF)
+        {
+            return;
+        }
+
+        if (codePoint <= 0xFFFF)
+        {
+            sb.Append((char)codePoint);
+            return;
+        }
+
+        sb.Append(char.ConvertFromUtf32(codePoint));
+    }
+
+    private static int GetArrayLikeLength(IBuiltinContext context, JsValue value)
+        => Math.Max(0, GetArrayLikeNumber(context, value, "length"));
+
+    private static int GetArrayLikeNumber(IBuiltinContext context, JsValue value, string key)
+    {
+        if (!TryGetObjectProperty(context, value, key, out var property))
+        {
+            return 0;
+        }
+
+        var number = context.ToNumber(property);
+        if (double.IsNaN(number) || number <= 0)
+        {
+            return 0;
+        }
+
+        return number >= int.MaxValue ? int.MaxValue : (int)Math.Floor(number);
+    }
+
+    private static bool TryGetObjectProperty(IBuiltinContext context, JsValue value, string key, out JsValue property)
+    {
+        property = JsValue.Undefined;
+        if (value.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var obj = context.Heap.GetObject(value.AsObjectHandle());
+        return context.TryGetPropertyValue(obj, value, key, out property);
     }
 
     private static bool RequiresRuntimeHarnessSupport(string sourceText)
@@ -1880,6 +1980,21 @@ public sealed class Test262Runner
             }
 
             snippets.Add(_includeFileCache.GetOrAdd(includePath, File.ReadAllText));
+        }
+
+        if (includes.Contains("regExpUtils.js"))
+        {
+            snippets.Add("""
+            if (typeof __fenBuildString === 'function') {
+              var __fenOriginalBuildString = buildString;
+              buildString = function(args) {
+                if (arguments.length === 1 && args !== null && typeof args === "object") {
+                  return __fenBuildString(args);
+                }
+                return __fenOriginalBuildString(args);
+              };
+            }
+            """);
         }
 
         return snippets.Count == 0 ? string.Empty : string.Join("\n", snippets);
