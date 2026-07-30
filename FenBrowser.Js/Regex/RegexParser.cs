@@ -423,28 +423,13 @@ public static class RegexParser
 
         // ─── Named Backreference ───────────────────────────────
 
-        private BackReferenceNode ParseNamedBackReference()
+        private AtomNode ParseNamedBackReference()
         {
-            // We already consumed \k
             Expect('k');
             Expect('<');
             var name = ParseGroupName();
             Expect('>');
-
-            if (!_namedGroups.TryGetValue(name, out var groupNum))
-            {
-                // Forward reference to a named group — allowed but will match empty
-                // until the group captures. We still need a group number for it.
-                // Register it now with a placeholder group number.
-                // The group's actual GroupNode will be parsed later.
-                // For now, we just record the reference name — the compiler resolves it.
-                // But we need to return a BackReferenceNode with a group number.
-                // We don't know the group number yet! Store it as a special sentinel
-                // that the compiler handles.
-                groupNum = -1; // sentinel: unresolved named backreference
-            }
-
-            return new BackReferenceNode(groupNum);
+            return new NamedBackReferenceNode(name);
         }
 
         // ─── Unicode Property Escape ───────────────────────────

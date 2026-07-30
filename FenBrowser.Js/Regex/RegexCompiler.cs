@@ -17,6 +17,7 @@ public static class RegexCompiler
     public static RegexProgram Compile(RegexPattern pattern)
     {
         var c = new CompilerState(pattern.Flags, pattern.CaptureCount);
+        c.CollectNamedGroups(pattern.Disjunction);
         var bodyStart = c.EmitDisjunction(pattern.Disjunction);
         c.Emit(RegexOpCode.Accept);
 
@@ -186,6 +187,40 @@ public static class RegexCompiler
             }
 
             return start;
+        }
+
+        internal void CollectNamedGroups(DisjunctionNode disjunction)
+        {
+            foreach (var alternative in disjunction.Alternatives)
+            {
+                foreach (var term in alternative.Terms)
+                {
+                    CollectNamedGroups(term);
+                }
+            }
+        }
+
+        private void CollectNamedGroups(TermNode term)
+        {
+            switch (term)
+            {
+                case QuantifierNode quantifier:
+                    CollectNamedGroups(quantifier.Body);
+                    break;
+                case AssertionNode assertion when assertion.Body is not null:
+                    CollectNamedGroups(assertion.Body);
+                    break;
+                case GroupNode group:
+                    if (group.Kind == GroupKind.NamedCapturing && group.Name is not null)
+                    {
+                        _namedGroupMap.TryAdd(group.Name, group.GroupNumber);
+                    }
+                    CollectNamedGroups(group.Body);
+                    break;
+                case ModifierGroupNode modifierGroup:
+                    CollectNamedGroups(modifierGroup.Body);
+                    break;
+            }
         }
 
         // ─── Term compilation ─────────────────────────────
@@ -408,6 +443,14 @@ public static class RegexCompiler
                     {
                         Emit(RegexOpCode.BackRef, br.GroupNumber, IgnoreCase ? 1 : 0);
                     }
+                    break;
+                case NamedBackReferenceNode nbr:
+                    if (!_namedGroupMap.TryGetValue(nbr.Name, out var groupNumber))
+                    {
+                        throw new RegexSyntaxError($"Unknown named capture group '{nbr.Name}'.");
+                    }
+
+                    Emit(RegexOpCode.BackRef, groupNumber, IgnoreCase ? 1 : 0);
                     break;
                 case CharacterClassNode cc:
                     EmitCharacterClass(cc);
@@ -815,6 +858,11 @@ public static class RegexCompiler
             if (group.Kind == GroupKind.Capturing || group.Kind == GroupKind.NamedCapturing)
             {
                 var n = group.GroupNumber;
+                if (group.Kind == GroupKind.NamedCapturing && group.Name is not null)
+                {
+                    _namedGroupMap.TryAdd(group.Name, n);
+                }
+
                 // Save start position
                 Emit(RegexOpCode.Save, n * 2);
             }

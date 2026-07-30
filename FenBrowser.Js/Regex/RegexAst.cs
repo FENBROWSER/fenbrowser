@@ -165,6 +165,14 @@ public sealed class BackReferenceNode : AtomNode
     public BackReferenceNode(int groupNumber) => GroupNumber = groupNumber;
 }
 
+/// <summary>A named backreference: \k&lt;name&gt;.</summary>
+[DebuggerDisplay("NamedBackRef: \\k<{Name}>")]
+public sealed class NamedBackReferenceNode : AtomNode
+{
+    public readonly string Name;
+    public NamedBackReferenceNode(string name) => Name = name;
+}
+
 /// <summary>A character class: [...] or [^...].</summary>
 [DebuggerDisplay("CharClass: {(Negated ? \"negated\" : \"normal\")}, {Items.Count} items")]
 public sealed class CharacterClassNode : AtomNode

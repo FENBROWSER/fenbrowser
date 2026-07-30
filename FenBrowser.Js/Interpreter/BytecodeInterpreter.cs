@@ -7520,7 +7520,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 _ = indices.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture),
                     new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
             }
-            _ = indices.DefineOwnProperty("groups", new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true));
+            if (match.NamedGroups is { Count: > 0 } indexNamedGroups)
+            {
+                var indexGroupsObj = new JsObject();
+                foreach (var kvp in indexNamedGroups)
+                {
+                    var startRaw = match.Captures[kvp.Value * 2];
+                    var endRaw = match.Captures[kvp.Value * 2 + 1];
+                    var pair = startRaw >= 0 && endRaw >= 0
+                        ? CreateArrayObject(new[] { JsValue.FromNumber(startRaw), JsValue.FromNumber(endRaw) })
+                        : CreateArrayObject(new[] { JsValue.Undefined, JsValue.Undefined });
+                    indexGroupsObj.DefineOwnProperty(kvp.Key,
+                        new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
+                }
+
+                _ = indices.DefineOwnProperty("groups",
+                    new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(indexGroupsObj, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
+            }
+            else
+            {
+                _ = indices.DefineOwnProperty("groups", new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true));
+            }
             _ = result.DefineOwnProperty("indices", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(indices, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
         }
 
