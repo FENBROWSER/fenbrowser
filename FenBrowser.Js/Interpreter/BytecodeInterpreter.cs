@@ -7461,7 +7461,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var lastIndex = global || sticky ? lastIndexNumber : 0d;
         if ((global || sticky) && lastIndex > input.Length)
         {
-            if (!((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(0)))
+            if (!SetRegExpLastIndex(thisValue, JsValue.FromNumber(0)))
             {
                 throw new JsThrownException(CreateTypeError("RegExp.prototype.exec could not reset lastIndex."));
             }
@@ -7473,7 +7473,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var match = new RegexVM(regexp.NativeProgram).Execute(input, startIndex);
         if (!match.Success || (sticky && match.Index != lastIndex))
         {
-            if ((global || sticky) && !((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(0)))
+            if ((global || sticky) && !SetRegExpLastIndex(JsValue.FromObject(regexp.OwnerHandle!.Value), JsValue.FromNumber(0)))
             {
                 throw new JsThrownException(CreateTypeError("RegExp.prototype.exec could not reset lastIndex."));
             }
@@ -7574,7 +7574,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = result.DefineOwnProperty("length", new JsPropertyDescriptor(JsValue.FromNumber(nCaptures), Writable: true, Enumerable: false, Configurable: false));
         if (global || sticky)
         {
-            if (!((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(match.Index + match.Length)))
+            if (!SetRegExpLastIndex(JsValue.FromObject(regexp.OwnerHandle!.Value), JsValue.FromNumber(match.Index + match.Length)))
             {
                 throw new JsThrownException(CreateTypeError("RegExp.prototype.exec could not update lastIndex."));
             }
@@ -7699,7 +7699,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (!global)
             return RegExpExec(thisValue, input);
         var fullUnicode = flagsText.Contains('u') || flagsText.Contains('v');
-        if (!rxObj.SetProperty("lastIndex", JsValue.FromNumber(0)))
+        if (!SetRegExpLastIndex(thisValue, JsValue.FromNumber(0)))
         {
             throw new JsThrownException(CreateTypeError("Cannot set RegExp lastIndex."));
         }
@@ -7725,7 +7725,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     thisIndex = ToLengthNumber(liVal);
                 }
                 var nextIndex = AdvanceStringIndexNumber(input, thisIndex, fullUnicode);
-                if (!rxObj.SetProperty("lastIndex", JsValue.FromNumber(nextIndex)))
+                if (!SetRegExpLastIndex(thisValue, JsValue.FromNumber(nextIndex)))
                 {
                     throw new JsThrownException(CreateTypeError("Cannot set RegExp lastIndex."));
                 }
@@ -7740,6 +7740,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return ToStringValue(flagsValue);
     }
 
+    [MayExecuteJs]
+    private bool SetRegExpLastIndex(JsValue receiver, JsValue value)
+    {
+        return SetPropertyOnReceiverBuiltin(receiver, "lastIndex", value, throwOnFailure: false);
+    }
+
     // ECMA-262 22.2.5.11 RegExp.prototype [ @@search ] ( string )
     private JsValue RegExpPrototypeSymbolSearch(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
@@ -7749,14 +7755,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
         var previousLastIndex = JsValue.FromNumber(0);
         TryGetPropertyValue(rxObj, thisValue, "lastIndex", out previousLastIndex);
-        if (!(previousLastIndex.Tag == JsValueTag.Number && previousLastIndex.AsNumber() == 0))
-            _ = rxObj.SetProperty("lastIndex", JsValue.FromNumber(0));
+        if (!SameValue(previousLastIndex, JsValue.FromNumber(0)) &&
+            !SetRegExpLastIndex(thisValue, JsValue.FromNumber(0)))
+        {
+            throw new JsThrownException(CreateTypeError("Cannot set RegExp lastIndex."));
+        }
         var result = RegExpExec(thisValue, input);
         var currentLastIndex = JsValue.FromNumber(0);
         TryGetPropertyValue(rxObj, thisValue, "lastIndex", out currentLastIndex);
-        if (!(currentLastIndex.Tag == JsValueTag.Number && previousLastIndex.Tag == JsValueTag.Number &&
-              currentLastIndex.AsNumber() == previousLastIndex.AsNumber()))
-            _ = rxObj.SetProperty("lastIndex", previousLastIndex);
+        if (!SameValue(currentLastIndex, previousLastIndex) &&
+            !SetRegExpLastIndex(thisValue, previousLastIndex))
+        {
+            throw new JsThrownException(CreateTypeError("Cannot restore RegExp lastIndex."));
+        }
         if (result.Tag == JsValueTag.Null)
             return JsValue.FromNumber(-1);
         var resultObj = _heap.GetObject(result.AsObjectHandle());
@@ -7778,7 +7789,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var flagsText = GetRegExpFlagsString(rxObj, thisValue);
         var replaceGlobal = flagsText.Contains('g');
         var fullUnicode = flagsText.Contains('u') || flagsText.Contains('v');
-        if (replaceGlobal && !rxObj.SetProperty("lastIndex", JsValue.FromNumber(0)))
+        if (replaceGlobal && !SetRegExpLastIndex(thisValue, JsValue.FromNumber(0)))
             throw new JsThrownException(CreateTypeError("Cannot set RegExp lastIndex."));
         var execResults = new List<JsValue>();
         while (true)
@@ -7795,7 +7806,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 {
                     ti = ToLengthNumber(li);
                 }
-                if (!rxObj.SetProperty("lastIndex", JsValue.FromNumber(AdvanceStringIndexNumber(input, ti, fullUnicode))))
+                if (!SetRegExpLastIndex(thisValue, JsValue.FromNumber(AdvanceStringIndexNumber(input, ti, fullUnicode))))
                     throw new JsThrownException(CreateTypeError("Cannot set RegExp lastIndex."));
             }
         }

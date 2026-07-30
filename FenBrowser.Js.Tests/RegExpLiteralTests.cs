@@ -277,6 +277,34 @@ public sealed class RegExpLiteralTests
     }
 
     [Fact]
+    public void RegExpSymbolSearchRestoresLastIndexThroughSetters()
+    {
+        var result = Run(@"function E() {}
+            var latestValue = 86;
+            var callCount = 0;
+            var fakeRe = {
+              get lastIndex() { return latestValue; },
+              set lastIndex(_) { latestValue = _; },
+              exec: function() { callCount++; latestValue = null; return null; }
+            };
+            RegExp.prototype[Symbol.search].call(fakeRe);
+
+            var threwOriginal = false;
+            var poisoned = {
+              get lastIndex() { return undefined; },
+              set lastIndex(_) { throw new E(); }
+            };
+            try {
+              RegExp.prototype[Symbol.search].call(poisoned);
+            } catch (e) {
+              threwOriginal = e instanceof E;
+            }
+
+            callCount === 1 && latestValue === 86 && threwOriginal;");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void RegexLiteralRejectsReversedCharacterClassRange()
     {
         Assert.Throws<JsParserException>(() => Run(@"/^[z-a]$/;"));
