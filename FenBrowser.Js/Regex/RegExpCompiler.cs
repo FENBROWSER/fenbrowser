@@ -1250,6 +1250,9 @@ public static class RegExpCompiler
             case 'v':
                 codePoint = '\v';
                 return true;
+            case 'b':
+                codePoint = '\b';
+                return true;
             case 'c':
                 if (pos < content.Length && char.IsLetter(content[pos]))
                 {

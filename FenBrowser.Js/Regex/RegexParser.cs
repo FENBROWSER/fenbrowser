@@ -371,6 +371,18 @@ public static class RegexParser
             return ch is '^' or '$' or '\\' or '.' or '*' or '+' or '?' or '(' or ')' or '[' or ']' or '{' or '}' or '|' or '/';
         }
 
+        private static bool IsValidIdentityEscapeInUnicodeClass(char ch)
+        {
+            return IsValidIdentityEscapeInUnicode(ch) || ch == '-';
+        }
+
+        private static bool IsKnownClassEscape(char ch)
+        {
+            return ch is 'd' or 'D' or 's' or 'S' or 'w' or 'W'
+                or 't' or 'n' or 'v' or 'f' or 'r' or '0' or 'b'
+                or 'c' or 'x' or 'u' or 'p' or 'P' or 'q';
+        }
+
         // ─── Decimal Escape / Backreference ────────────────────
 
         private AtomNode ParseDecimalEscape()
@@ -737,6 +749,16 @@ public static class RegexParser
 
                 var esc = Peek;
                 Advance();
+
+                if (IsUnicode && esc == '0' && !AtEnd && IsDecimalDigit(Peek))
+                {
+                    throw new RegexSyntaxError("Invalid legacy octal escape in Unicode regular expression", _pos - 1);
+                }
+
+                if (IsUnicode && !IsKnownClassEscape(esc) && !IsValidIdentityEscapeInUnicodeClass(esc))
+                {
+                    throw new RegexSyntaxError($"Invalid identity escape '\\{esc}' in Unicode character class", _pos - 1);
+                }
 
                 var item = esc switch
                 {
