@@ -29,10 +29,10 @@ def keyfor(path):
 
 
 def main():
-    cat = collections.defaultdict(collections.Counter)
-    seen = collections.Counter()
-    dupes = []
+    latest = {}
+    dupes = collections.Counter()
     for f in glob.glob(BATCHED + "/b_*.json"):
+        mtime = os.path.getmtime(f)
         try:
             d = json.load(open(f, encoding="utf-8-sig"))
         except Exception:
@@ -45,20 +45,29 @@ def main():
                 p = "test/language/expressions/class/dstr/" + os.path.basename(p)
             elif "_dstr_tmp/statements_" in p:
                 p = "test/language/statements/class/dstr/" + os.path.basename(p)
-            k = keyfor(p)
-            st = (t.get("status") or "").lower()
-            cat[k]["total"] += 1
-            if st in ("pass", "passed", "ok"):
-                cat[k]["pass"] += 1
-            # Duplicate detection
-            tag = f"{f}:{p}"
-            seen[tag] += 1
-            if seen[tag] == 2:
-                dupes.append(tag)
+            if p in latest:
+                dupes[p] += 1
+                if mtime <= latest[p][0]:
+                    continue
+            latest[p] = (mtime, t)
+
+    cat = collections.defaultdict(collections.Counter)
+    for _, t in latest.values():
+        p = t.get("path", "")
+        if "_dstr_tmp/expressions_" in p:
+            p = "test/language/expressions/class/dstr/" + os.path.basename(p)
+        elif "_dstr_tmp/statements_" in p:
+            p = "test/language/statements/class/dstr/" + os.path.basename(p)
+        k = keyfor(p)
+        st = (t.get("status") or "").lower()
+        cat[k]["total"] += 1
+        if st in ("pass", "passed", "ok"):
+            cat[k]["pass"] += 1
+
     if dupes:
-        print(f"WARNING: {len(dupes)} duplicate test path(s) found across batches:")
-        for d in dupes[:10]:
-            print(f"  {d}")
+        print(f"WARNING: {len(dupes)} duplicate test path(s) found across batches; newest result kept:")
+        for p in list(dupes)[:10]:
+            print(f"  {p}")
 
     rows = []
     for k, c in cat.items():

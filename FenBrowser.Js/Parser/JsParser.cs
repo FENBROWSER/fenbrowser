@@ -4974,6 +4974,11 @@ public sealed class JsParser
             var ch = _source.Text[cursor];
             if (escaped)
             {
+                if (ch is '\r' or '\n' or '\u2028' or '\u2029')
+                {
+                    break;
+                }
+
                 escaped = false;
                 cursor++;
                 continue;

@@ -501,10 +501,9 @@ public static class RegExpCompiler
                     // in all modes (Unicode and non-Unicode). ECMA-262 22.2.2.1.
                     if (i + 2 >= pattern.Length || pattern[i + 2] != '<')
                     {
-                        // \k not followed by '<'
-                        if (flags.Unicode || flags.UnicodeSets)
+                        if (flags.Unicode || flags.UnicodeSets || hasNamedCaptureSyntax)
                             throw new RegexSyntaxError("Invalid named backreference.");
-                        // Non-Unicode: \k is IdentityEscape, consume 'k' only
+
                         i += 1;
                         continue;
                     }
@@ -1208,6 +1207,15 @@ public static class RegExpCompiler
         var ch = content[pos++];
         if (ch != '\\')
         {
+            if (char.IsHighSurrogate(ch) &&
+                pos < content.Length &&
+                char.IsLowSurrogate(content[pos]))
+            {
+                codePoint = char.ConvertToUtf32(ch, content[pos]);
+                pos++;
+                return true;
+            }
+
             codePoint = ch;
             return true;
         }

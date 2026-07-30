@@ -301,8 +301,11 @@ public static class RegexParser
 
             // Named backreference: \k<name> — only in Unicode mode (u/v flag).
             // In non-Unicode mode, \k is an IdentityEscape (literal 'k').
-            if (ch == 'k' && Peek1 == '<' && (IsUnicode || _hasNamedCaptureSyntax))
+            if (ch == 'k' && (IsUnicode || _hasNamedCaptureSyntax))
             {
+                if (Peek1 != '<')
+                    throw new RegexSyntaxError("Invalid named backreference", _pos - 1);
+
                 return ParseNamedBackReference();
             }
 
@@ -380,6 +383,11 @@ public static class RegexParser
             if (!int.TryParse(digits, System.Globalization.NumberStyles.None,
                     System.Globalization.CultureInfo.InvariantCulture, out var value))
                 throw new RegexSyntaxError("Invalid decimal escape", start);
+
+            if (digits == "0")
+            {
+                return new CharacterEscapeNode(0);
+            }
 
             // \0 followed by a decimal digit is an octal escape (Annex B non-Unicode)
             // or a syntax error (Unicode mode)
