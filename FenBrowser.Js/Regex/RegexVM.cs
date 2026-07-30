@@ -95,11 +95,18 @@ public sealed class RegexVM
             var cp = state.CP;
             var captures = state.Captures;
             var ownsCaptures = state.OwnsCaptures;
+            var visitedInlineStates = new HashSet<(int PC, int CP, int CapturesHash)>();
 
             while (true)
             {
                 if (pc >= _program.Instructions.Length)
                     break; // reached end → no accept → backtrack
+
+                if (!visitedInlineStates.Add((pc, cp, CaptureStateHash(captures))))
+                {
+                    pc = -1;
+                    break;
+                }
 
                 var ins = _program.Instructions[pc];
                 bool matched;
@@ -371,6 +378,17 @@ public sealed class RegexVM
     }
 
     // ─── Character matching ───────────────────────────────
+
+    private static int CaptureStateHash(int[] captures)
+    {
+        var hash = new HashCode();
+        foreach (var capture in captures)
+        {
+            hash.Add(capture);
+        }
+
+        return hash.ToHashCode();
+    }
 
     private static bool MatchDot(int cp, bool dotAll)
     {
