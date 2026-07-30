@@ -6,7 +6,7 @@ namespace FenBrowser.Js.Regex;
 public readonly record struct CompiledRegExp(
     string Pattern,
     string NormalizedFlags,
-    System.Text.RegularExpressions.Regex Regex,
+    RegexProgram Program,
     RegexFlags Flags,
     IReadOnlyDictionary<string, string> NamedGroupMap);
 
@@ -19,114 +19,13 @@ public static class RegExpCompiler
         var parsedFlags = RegexFlags.Parse(flags.AsSpan());
         ValidatePatternEarlyErrors(pattern, parsedFlags);
         var normalizedFlags = parsedFlags.ToJsFlagsString();
-
-        var options = RegexOptions.CultureInvariant;
-        if (!parsedFlags.DotAll && !parsedFlags.Unicode && !parsedFlags.UnicodeSets && !parsedFlags.IgnoreCase)
-        {
-            options |= RegexOptions.ECMAScript;
-        }
-
-        if (parsedFlags.IgnoreCase)
-        {
-            options |= RegexOptions.IgnoreCase;
-        }
-
-        if (parsedFlags.Multiline)
-        {
-            options |= RegexOptions.Multiline;
-        }
-
-        if (parsedFlags.DotAll)
-        {
-            options |= RegexOptions.Singleline;
-        }
-
         var namedGroupMap = new Dictionary<string, string>(StringComparer.Ordinal);
-
-        // UnicodeSets (v-flag) uses set operations (--, &&, ~~), \q{...} string literals,
-        // and property-of-strings escapes that .NET does not support. Use the native engine.
-        if (parsedFlags.UnicodeSets)
-        {
-            var neutralRegex = new System.Text.RegularExpressions.Regex("(?:)", options, CompileTimeout);
-            return new CompiledRegExp(pattern, normalizedFlags, neutralRegex, parsedFlags, namedGroupMap);
-        }
-
-        var executionPattern = RewriteAnnexBNonUnicodePattern(pattern, parsedFlags);
-        var dotNetPattern = RewriteEcmaCharacterClassEscapes(executionPattern);
-        dotNetPattern = RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMap);
-        if (parsedFlags.Unicode || parsedFlags.UnicodeSets)
-        {
-            dotNetPattern = RewriteUnicodeCodePointEscapes(dotNetPattern);
-            dotNetPattern = RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
-        }
-        dotNetPattern = RewriteForwardBackreferences(dotNetPattern);
-        try
-        {
-            var regex = new System.Text.RegularExpressions.Regex(dotNetPattern, options, CompileTimeout);
-            return new CompiledRegExp(pattern, normalizedFlags, regex, parsedFlags, namedGroupMap);
-        }
-        catch (Exception ex)
-        {
-            if (TryCompileRangeNormalizedDotNetRegex(dotNetPattern, options, CompileTimeout, ex, out var rangeNormalizedRegex))
-            {
-                return new CompiledRegExp(pattern, normalizedFlags, rangeNormalizedRegex, parsedFlags, namedGroupMap);
-            }
-
-            // If pattern contains Unicode property escapes that .NET doesn't recognize,
-            // create a neutral regex and let the native VM handle property matching.
-            if (ShouldUseNeutralDotNetFallback(pattern, dotNetPattern, ex))
-            {
-                var neutralRegex = new System.Text.RegularExpressions.Regex("(?:)", options, CompileTimeout);
-                return new CompiledRegExp(pattern, normalizedFlags, neutralRegex, parsedFlags, namedGroupMap);
-            }
-
-            if (ex is RegexSyntaxError) throw;
-            throw new RegexSyntaxError(ex.Message);
-        }
-    }
-
-    internal static bool ShouldUseNeutralDotNetFallback(string pattern, string dotNetPattern, Exception ex)
-    {
-        if (ContainsUnicodePropertyEscape(pattern))
-        {
-            return true;
-        }
-
-        return ex is ArgumentException &&
-               ex.Message.Contains("range in reverse order", StringComparison.OrdinalIgnoreCase) &&
-               dotNetPattern.Contains('-', StringComparison.Ordinal);
-    }
-
-    internal static bool TryCompileRangeNormalizedDotNetRegex(
-        string dotNetPattern,
-        RegexOptions options,
-        TimeSpan timeout,
-        Exception originalException,
-        out System.Text.RegularExpressions.Regex regex)
-    {
-        regex = null!;
-        if (originalException is not ArgumentException ||
-            !originalException.Message.Contains("range in reverse order", StringComparison.OrdinalIgnoreCase) ||
-            !dotNetPattern.Contains('-', StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        var normalized = RewriteCharacterClassHexEscapesForDotNet(dotNetPattern);
-        if (string.Equals(normalized, dotNetPattern, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        try
-        {
-            regex = new System.Text.RegularExpressions.Regex(normalized, options, timeout);
-            return true;
-        }
-        catch (ArgumentException)
-        {
-            return false;
-        }
+        return new CompiledRegExp(
+            pattern,
+            normalizedFlags,
+            CompileNative(pattern, normalizedFlags),
+            parsedFlags,
+            namedGroupMap);
     }
 
     private static string RewriteCharacterClassHexEscapesForDotNet(string pattern)
@@ -272,29 +171,12 @@ public static class RegExpCompiler
         }
     }
 
-    public static RegexProgram? CompileNative(string pattern, string flags)
+    public static RegexProgram CompileNative(string pattern, string flags)
     {
         // The native VM does not yet implement lookbehind capture/backtracking
         // semantics completely. The BCL matcher does, so keep this syntax on
         // the compatibility path until the native implementation is complete.
-        if (pattern.Contains("(?<=", StringComparison.Ordinal) ||
-            pattern.Contains("(?<!", StringComparison.Ordinal))
-        {
-            return null;
-        }
-
         var nativeFlags = RegexFlags.Parse(flags.AsSpan());
-        if (!nativeFlags.Unicode && !nativeFlags.UnicodeSets)
-        {
-            for (var index = 0; index + 1 < pattern.Length; index++)
-            {
-                if (pattern[index] == '\\' && pattern[index + 1] is >= '1' and <= '9')
-                {
-                    return null;
-                }
-            }
-        }
-
         RegexPattern ast;
         try
         {
@@ -302,12 +184,11 @@ public static class RegExpCompiler
         }
         catch (RegexSyntaxError)
         {
-            // Our regex parser can't handle this pattern — fall back to .NET/BclRegex.
-            return null;
+            throw;
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            return null;
+            throw new RegexSyntaxError($"Native RegExp parser failed: {ex.Message}");
         }
 
         try
@@ -323,9 +204,9 @@ public static class RegExpCompiler
             // Don't fall back to .NET; propagate so the caller surfaces SyntaxError.
             throw;
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            return null;
+            throw new RegexSyntaxError($"Native RegExp compiler failed: {ex.Message}");
         }
     }
 

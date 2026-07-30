@@ -240,14 +240,17 @@ public static class RegexCompiler
             var isNegative = assertion.Kind is AssertionKind.NegativeLookahead or AssertionKind.NegativeLookbehind;
             var isLookbehind = assertion.Kind is AssertionKind.Lookbehind or AssertionKind.NegativeLookbehind;
 
+            var skipBodyJump = Emit(RegexOpCode.Jump, 0);
             var bodyStart = CurrentPos;
             EmitDisjunction(assertion.Body);
             // Emit Accept so sub-match knows where the body ends
             Emit(RegexOpCode.Accept);
+            var assertionPos = CurrentPos;
+            PatchJump(skipBodyJump, assertionPos);
 
             // Store offset back to the body start, for the VM to use as a jump target.
             // The offset includes the Accept so the sub-match can reach it.
-            var bodyOffset = bodyStart - CurrentPos;
+            var bodyOffset = bodyStart - assertionPos;
 
             if (isLookbehind)
             {
@@ -397,7 +400,14 @@ public static class RegexCompiler
                     EmitUnicodeProp(up);
                     break;
                 case BackReferenceNode br:
-                    Emit(RegexOpCode.BackRef, br.GroupNumber, IgnoreCase ? 1 : 0);
+                    if (!_flags.Unicode && !_flags.UnicodeSets && br.GroupNumber > _captureCount)
+                    {
+                        EmitChar(br.GroupNumber);
+                    }
+                    else
+                    {
+                        Emit(RegexOpCode.BackRef, br.GroupNumber, IgnoreCase ? 1 : 0);
+                    }
                     break;
                 case CharacterClassNode cc:
                     EmitCharacterClass(cc);

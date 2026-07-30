@@ -4833,6 +4833,12 @@ ull and reject non-object/non-null iew init values instead of always forcing wi
   - The exact root cause behind the lingering `Array.fromAsync` helper failure was not `Array.fromAsync` itself: regexp literals created through bytecode constants could inherit `Object.prototype` instead of `RegExp.prototype`, so `ASCII_IDENTIFIER.test(...)` inside `temporalHelpers.js` failed with `undefined is not a function`.
   - With regexp literals re-linked at constant load time, the exact Test262 repro `built-ins/Array/fromAsync/asyncitems-arraylike-promise.js` now passes, and the sibling `asyncitems-asynciterator-sync.js` / `asyncitems-asynciterator-exists.js` rechecks also pass on the same engine build.
 
+## 2.121.1 Native-Only ECMAScript RegExp Execution
+
+- `RegExpObject` now stores only the FenBrowser native `RegexProgram`; the previous `.NET Regex` payload and BCL fallback construction path were removed from RegExp literals, constructor calls, `compile()`, `exec()`, `test()`, `String.prototype.match`, split, replace, and matchAll routing.
+- Native RegExp execution materializes captures, named groups, indices, and `lastIndex` from `RegexVM` result data instead of translating from `.NET Match` objects.
+- The native parser/compiler owns Annex B literal brace handling, unresolved non-Unicode decimal escapes, and zero-width lookaround code generation so focused RegExp behavior remains covered without fallback execution.
+
 ## 2.122 Builtin Metadata Hardening: Array Constructor And Static Methods (2026-03-09)
 
 - `FenBrowser.FenEngine/Core/FenRuntime.cs`

@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+using FenBrowser.Js.Regex;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Objects;
@@ -775,18 +775,14 @@ public sealed class StringBuiltin : IBuiltinModule
         if (regexp.Tag == JsValueTag.Object &&
             ctx.Heap.GetObject(regexp.AsObjectHandle()) is RegExpObject regExpObject)
         {
-            return BuildMatchResultArray(ctx, s, regExpObject.Regex.Match(s));
+            return BuildMatchResultArray(ctx, s, new RegexVM(regExpObject.NativeProgram).Execute(s));
         }
 
         var pattern = (args.Count == 0 || regexp.Tag == JsValueTag.Undefined)
             ? string.Empty
             : ToStringForRegExpPattern(ctx, regexp);
-        // Cap backtracking: an arbitrary user pattern run through the BCL engine can
-        // backtrack catastrophically and wedge the thread. The per-test timeout
-        // abandons (does not kill) the worker thread, so an unbounded native regex
-        // is exactly what blocks the whole suite. A 250 ms match timeout matches the
-        // compiled-RegExp path and turns a hang into a catchable failure.
-        var match = BclRegex.Match(s, pattern, RegexOptions.None, TimeSpan.FromMilliseconds(250));
+        var compiled = RegExpCompiler.Compile(pattern, string.Empty);
+        var match = new RegexVM(compiled.Program).Execute(s);
         return BuildMatchResultArray(ctx, s, match);
     }
 
@@ -939,18 +935,18 @@ public sealed class StringBuiltin : IBuiltinModule
                ctx.Heap.GetObject(value.AsObjectHandle()) is JsFunctionObject or NativeFunctionObject or BoundFunctionObject;
     }
 
-    private static JsValue BuildMatchResultArray(IBuiltinContext ctx, string input, Match match)
+    private static JsValue BuildMatchResultArray(IBuiltinContext ctx, string input, RegexMatchResult match)
     {
         if (!match.Success)
         {
             return JsValue.Null;
         }
 
-        var values = new List<JsValue>(match.Groups.Count);
-        for (var i = 0; i < match.Groups.Count; i++)
+        var values = new List<JsValue>(match.GroupCount);
+        for (var i = 0; i < match.GroupCount; i++)
         {
-            var group = match.Groups[i];
-            values.Add(group.Success ? JsValue.FromString(group.Value) : JsValue.Undefined);
+            var group = match.GetGroup(i);
+            values.Add(group is not null ? JsValue.FromString(group) : JsValue.Undefined);
         }
 
         var result = new ArrayObject();

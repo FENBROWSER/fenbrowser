@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.RegularExpressions;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Objects;
@@ -222,109 +221,17 @@ public sealed class RegExpBuiltin : IBuiltinModule
             throw new JsThrownException(ctx.CreateSyntaxError("Invalid RegExp flags."));
         }
 
-        var hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
-        var hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
-        var hasV = normalizedFlags.Contains('v', StringComparison.Ordinal);
-        var options = (hasS || hasU || hasV)
-            ? RegexOptions.CultureInvariant
-            : RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
-        if (normalizedFlags.Contains('i', StringComparison.Ordinal))
-        {
-            options |= RegexOptions.IgnoreCase;
-        }
-
-        if (normalizedFlags.Contains('m', StringComparison.Ordinal))
-        {
-            options |= RegexOptions.Multiline;
-        }
-
-        if (hasS)
-        {
-            options |= RegexOptions.Singleline;
-        }
-
-        // ECMA-262 22.2.3.1: validate the pattern before creating the object.
+        Regex.CompiledRegExp compiled;
         try
         {
-            var parsedFlags = Regex.RegexFlags.Parse(normalizedFlags.AsSpan());
-            Regex.RegExpCompiler.ValidatePatternEarlyErrors(pattern, parsedFlags);
+            compiled = Regex.RegExpCompiler.Compile(pattern, normalizedFlags);
         }
         catch (Regex.RegexSyntaxError ex)
         {
             throw new JsThrownException(ctx.CreateSyntaxError(ex.Message));
         }
 
-        var executionPattern = Regex.RegExpCompiler.RewriteAnnexBNonUnicodePattern(
-            pattern, Regex.RegexFlags.Parse(normalizedFlags.AsSpan()));
-        var dotNetPattern = RewriteEcmaCharacterClassEscapes(executionPattern);
-        var namedGroupMap = new Dictionary<string, string>(StringComparer.Ordinal);
-        dotNetPattern = Regex.RegExpCompiler.RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMap);
-        if (hasU || hasV)
-        {
-            dotNetPattern = Regex.RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
-            dotNetPattern = Regex.RegExpCompiler.RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
-        }
-        dotNetPattern = Regex.RegExpCompiler.RewriteForwardBackreferences(dotNetPattern);
-
-        BclRegex regex;
-        // UnicodeSets (v-flag): set operations (--, &&, ~~), \q{...}, and
-        // property-of-strings escapes are unsupported by .NET. Use neutral.
-        if (hasV)
-        {
-            regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
-        }
-        else
-        {
-            try
-            {
-                regex = new BclRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
-            }
-            catch (ArgumentException ex)
-            {
-                // .NET rejects some valid ECMAScript constructs (e.g. property names
-                // it doesn't know after the \p{} rewrite). When the pattern uses
-                // property escapes, fall back to a neutral BCL regex and let the
-                // native program do the matching, mirroring RegExpCompiler.Compile.
-                if (Regex.RegExpCompiler.TryCompileRangeNormalizedDotNetRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250), ex, out var rangeNormalizedRegex))
-                {
-                    regex = rangeNormalizedRegex;
-                }
-                else if (Regex.RegExpCompiler.ShouldUseNeutralDotNetFallback(pattern, dotNetPattern, ex))
-                {
-                    regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
-                }
-                else
-                {
-                    throw new JsThrownException(ctx.CreateSyntaxError(ex.Message));
-                }
-            }
-        }
-
-        RegexProgram? nativeProgram;
-        try
-        {
-            nativeProgram = Regex.RegExpCompiler.CompileNative(pattern, normalizedFlags);
-        }
-        catch (Regex.RegexSyntaxError ex)
-        {
-            throw new JsThrownException(ctx.CreateSyntaxError(ex.Message));
-        }
-
-        // Build reverse map: alias → original name for translating
-        // .NET group names back to ECMAScript names during exec.
-        Dictionary<string, string>? reverseMap = null;
-        if (namedGroupMap.Count > 0)
-        {
-            reverseMap = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var kvp in namedGroupMap)
-                reverseMap[kvp.Value] = kvp.Key;
-        }
-
-        var obj = new RegExpObject(pattern, normalizedFlags, regex, nativeProgram)
-        {
-            NamedGroupAliases = namedGroupMap.Count > 0 ? namedGroupMap : null,
-            NamedGroupReverseMap = reverseMap
-        };
+        var obj = new RegExpObject(pattern, compiled.NormalizedFlags, compiled.Program);
         obj.SetPrototype(protoHandle);
         // source/flags and the individual flag booleans are accessor properties on
         // %RegExp.prototype% (installed by the interpreter's InstallRegExpFlagAccessors);

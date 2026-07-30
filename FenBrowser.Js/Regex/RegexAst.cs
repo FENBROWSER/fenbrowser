@@ -90,7 +90,7 @@ public enum AssertionKind
 }
 
 /// <summary>Assertion :: ^ | $ | \b | \B | (?= Disjunction ) | (?! Disjunction ) | (?<= Disjunction ) | (?<! Disjunction ).</summary>
-public sealed class AssertionNode : TermNode
+public sealed class AssertionNode : AtomNode
 {
     public readonly AssertionKind Kind;
     public readonly DisjunctionNode? Body; // null for ^ $ \b \B; present for lookahead/lookbehind

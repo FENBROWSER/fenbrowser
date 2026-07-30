@@ -116,9 +116,10 @@ public sealed class RegExpLiteralTests
     {
         const string pattern = @"[\x00- \x22\x27-\x29\x3c\x3e\\\x7b\x7d\x7f\x85\xa0\u2028\u2029\uff01\uff03\uff04\uff06-\uff0c\uff0f\uff1a\uff1b\uff1d\uff1f\uff20\uff3b\uff3d]";
         var compiled = RegExpCompiler.Compile(pattern, "g");
-        Assert.True(compiled.Regex.IsMatch(" "), compiled.Regex.ToString());
-        Assert.True(compiled.Regex.IsMatch("\""), compiled.Regex.ToString());
-        Assert.False(compiled.Regex.IsMatch("A"), compiled.Regex.ToString());
+        var vm = new RegexVM(compiled.Program);
+        Assert.True(vm.Execute(" ").Success);
+        Assert.True(vm.Execute("\"").Success);
+        Assert.False(vm.Execute("A").Success);
     }
 
     [Fact]

@@ -14,7 +14,6 @@ using System.Linq;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using FenBrowser.Js.Regex;
 
 namespace FenBrowser.Js.Interpreter;
@@ -5961,9 +5960,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         const string flags = "";
         var regexp = new RegExpObject(pattern, flags, () =>
         {
-            var compiled = RegExpCompiler.Compile(pattern, flags);
-            var native = RegExpCompiler.CompileNative(pattern, flags);
-            return (compiled.Regex, native);
+            return RegExpCompiler.Compile(pattern, flags).Program;
         });
         regexp.SetPrototype(_regexpPrototypeHandle ?? GetGlobalPrototype("RegExp"));
         _ = regexp.DefineOwnProperty(
@@ -7297,80 +7294,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var pattern = rawText.Substring(1, lastSlash - 1);
         var flags = lastSlash + 1 < rawText.Length ? rawText.Substring(lastSlash + 1) : string.Empty;
         var normalizedFlags = NormalizeRegExpFlags(flags);
-        var hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
-        var hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
-        var hasV = normalizedFlags.Contains('v', StringComparison.Ordinal);
-        var options = (hasS || hasU || hasV)
-            ? RegexOptions.CultureInvariant
-            : RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
-        if (normalizedFlags.Contains('i', StringComparison.Ordinal)) options |= RegexOptions.IgnoreCase;
-        if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
-        if (hasS) options |= RegexOptions.Singleline;
-        var executionPattern = RegExpCompiler.RewriteAnnexBNonUnicodePattern(
-            pattern, RegexFlags.Parse(normalizedFlags.AsSpan()));
-        var dotNetPattern = RewriteEcmaCharacterClassEscapes(executionPattern);
-        var namedGroupMapLiteral = new Dictionary<string, string>(StringComparer.Ordinal);
-        dotNetPattern = RegExpCompiler.RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMapLiteral);
-        if (hasU || hasV)
-        {
-            dotNetPattern = RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
-        }
-        dotNetPattern = RegExpCompiler.RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
-        dotNetPattern = RegExpCompiler.RewriteForwardBackreferences(dotNetPattern);
-
-        BclRegex regex;
-        // UnicodeSets (v-flag): set operations, \q{...}, property-of-strings
-        // are unsupported by .NET. Use neutral BCL regex, native engine handles matching.
-        if (hasV)
-        {
-            regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
-        }
-        else
-        {
-            try
-            {
-                regex = new BclRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
-            }
-            catch (ArgumentException ex)
-            {
-                if (RegExpCompiler.TryCompileRangeNormalizedDotNetRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250), ex, out var rangeNormalizedRegex))
-                {
-                    regex = rangeNormalizedRegex;
-                }
-                else if (RegExpCompiler.ShouldUseNeutralDotNetFallback(pattern, dotNetPattern, ex))
-                {
-                    regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
-                }
-                else
-                {
-                    throw new JsThrownException(CreateSyntaxError(ex.Message));
-                }
-            }
-        }
-
-        RegexProgram? nativeProgram;
+        RegexProgram nativeProgram;
         try
         {
-            nativeProgram = RegExpCompiler.CompileNative(pattern, normalizedFlags);
+            nativeProgram = RegExpCompiler.Compile(pattern, normalizedFlags).Program;
         }
         catch (RegexSyntaxError ex)
         {
             throw new JsThrownException(CreateSyntaxError(ex.Message));
         }
 
-        Dictionary<string, string>? reverseMapLiteral = null;
-        if (namedGroupMapLiteral.Count > 0)
-        {
-            reverseMapLiteral = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var kvp in namedGroupMapLiteral)
-                reverseMapLiteral[kvp.Value] = kvp.Key;
-        }
-
-        var obj = new RegExpObject(pattern, normalizedFlags, regex, nativeProgram)
-        {
-            NamedGroupAliases = namedGroupMapLiteral.Count > 0 ? namedGroupMapLiteral : null,
-            NamedGroupReverseMap = reverseMapLiteral
-        };
+        var obj = new RegExpObject(pattern, normalizedFlags, nativeProgram);
         // Use the prototype cached from the builtin during
         // InstallPrototypeMethodsOnRegExpPrototype, or resolve from global.
         obj.SetPrototype(_regexpPrototypeHandle ?? GetGlobalPrototype("RegExp"));
@@ -7483,95 +7417,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateSyntaxError(ex.Message));
         }
 
-        // ECMA-262 22.2.4 flags → RegexOptions mapping.
-        // ECMAScript mode is the default; dotAll (s) conflicts with it and
-        // Unicode (u) restricts \w/\d to ASCII in ECMAScript mode, so both
-        // remove the ECMAScript option to get fuller Unicode behaviour.
-        bool hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
-        bool hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
-        bool hasV = normalizedFlags.Contains('v', StringComparison.Ordinal);
-        var options = (hasS || hasU || hasV)
-            ? RegexOptions.CultureInvariant
-            : RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
-        if (normalizedFlags.Contains('i', StringComparison.Ordinal))
-        {
-            options |= RegexOptions.IgnoreCase;
-        }
-
-        if (normalizedFlags.Contains('m', StringComparison.Ordinal))
-        {
-            options |= RegexOptions.Multiline;
-        }
-
-        if (hasS) options |= RegexOptions.Singleline;
-        var executionPattern = RegExpCompiler.RewriteAnnexBNonUnicodePattern(
-            pattern, RegexFlags.Parse(normalizedFlags.AsSpan()));
-        var dotNetPattern = RewriteEcmaCharacterClassEscapes(executionPattern);
-        // Rewrite \cX control escapes — .NET doesn't support them.
-        // Replace each \cX with the literal control character \xHH per B.1.4.
-        dotNetPattern = RegExpCompiler.RewriteControlEscapesForDotNet(dotNetPattern);
-        var namedGroupMapCreate = new Dictionary<string, string>(StringComparer.Ordinal);
-        dotNetPattern = RegExpCompiler.RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMapCreate);
-        if (hasU || hasV)
-        {
-            dotNetPattern = RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
-        }
-        dotNetPattern = RegExpCompiler.RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
-        dotNetPattern = RegExpCompiler.RewriteForwardBackreferences(dotNetPattern);
-
-        BclRegex regex;
-        // UnicodeSets (v-flag): set operations, \q{...}, property-of-strings
-        // are unsupported by .NET. Use neutral BCL regex, native engine handles matching.
-        if (hasV)
-        {
-            regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
-        }
-        else
-        {
-            try
-            {
-                regex = new BclRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
-            }
-            catch (ArgumentException ex)
-            {
-                if (RegExpCompiler.TryCompileRangeNormalizedDotNetRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250), ex, out var rangeNormalizedRegex))
-                {
-                    regex = rangeNormalizedRegex;
-                }
-                else if (RegExpCompiler.ShouldUseNeutralDotNetFallback(pattern, dotNetPattern, ex))
-                {
-                    regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
-                }
-                else
-                {
-                    throw new JsThrownException(CreateSyntaxError(ex.Message));
-                }
-            }
-        }
-
-        RegexProgram? nativeProgram;
+        RegexProgram nativeProgram;
         try
         {
-            nativeProgram = RegExpCompiler.CompileNative(pattern, normalizedFlags);
+            nativeProgram = RegExpCompiler.Compile(pattern, normalizedFlags).Program;
         }
         catch (RegexSyntaxError ex)
         {
             throw new JsThrownException(CreateSyntaxError(ex.Message));
         }
 
-        Dictionary<string, string>? reverseMapCreate = null;
-        if (namedGroupMapCreate.Count > 0)
-        {
-            reverseMapCreate = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var kvp in namedGroupMapCreate)
-                reverseMapCreate[kvp.Value] = kvp.Key;
-        }
-
-        var obj = new RegExpObject(pattern, normalizedFlags, regex, nativeProgram)
-        {
-            NamedGroupAliases = namedGroupMapCreate.Count > 0 ? namedGroupMapCreate : null,
-            NamedGroupReverseMap = reverseMapCreate
-        };
+        var obj = new RegExpObject(pattern, normalizedFlags, nativeProgram);
         obj.SetPrototype(GetGlobalPrototype("RegExp"));
         // source/flags and the flag booleans live on %RegExp.prototype% as accessors
         // (InstallRegExpFlagAccessors); lastIndex is the only own data property (22.2.7.1).
@@ -7583,17 +7439,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue RegExpPrototypeTest(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var regexp = RegExpThisValue(thisValue);
-        var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
-        if (regexp.NativeProgram is { } nativeProgram &&
-            !regexp.Flags.Contains('g', StringComparison.Ordinal) &&
-            !regexp.Flags.Contains('y', StringComparison.Ordinal))
-        {
-            var nativeMatch = new RegexVM(nativeProgram).Execute(input);
-            return JsValue.FromBoolean(nativeMatch.Success);
-        }
-
-        return JsValue.FromBoolean(regexp.Regex.IsMatch(input));
+        var result = RegExpPrototypeExec(thisValue, args);
+        return JsValue.FromBoolean(result.Tag != JsValueTag.Null);
     }
 
     // ECMA-262 22.2.5.2 RegExp.prototype.exec(string).
@@ -7618,127 +7465,69 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (lastIndex < 0) lastIndex = 0;
         if (lastIndex > input.Length) lastIndex = input.Length;
 
-        var match = lastIndex <= input.Length
-            ? regexp.Regex.Match(input, lastIndex)
-            : System.Text.RegularExpressions.Match.Empty;
-
-        if (!match.Success)
+        var match = new RegexVM(regexp.NativeProgram).Execute(input, lastIndex);
+        if (!match.Success || (sticky && match.Index != lastIndex))
         {
             _ = ((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(0));
             return JsValue.Null;
         }
 
-        if (sticky && match.Index != lastIndex)
-        {
-            _ = ((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(0));
-            return JsValue.Null;
-        }
+        return CreateRegExpExecResultFromNative(regexp, input, flags, global, sticky, match);
+    }
 
+    private JsValue CreateRegExpExecResultFromNative(RegExpObject regexp, string input, string flags, bool global, bool sticky, RegexMatchResult match)
+    {
         var result = CreateArrayObject(Array.Empty<JsValue>());
         _ = result.DefineOwnProperty("0",
-            new JsPropertyDescriptor(JsValue.FromString(match.Value), Writable: true, Enumerable: true, Configurable: true));
+            new JsPropertyDescriptor(JsValue.FromString(match.GetGroup(0) ?? string.Empty), Writable: true, Enumerable: true, Configurable: true));
 
-        var nCaptures = match.Groups.Count;
+        var nCaptures = match.GroupCount;
         for (var i = 1; i < nCaptures; i++)
         {
-            var group = match.Groups[i];
-            var val = group.Success ? JsValue.FromString(group.Value) : JsValue.Undefined;
-            _ = result.DefineOwnProperty(
-                i.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
+            var value = match.GetGroup(i) is { } group ? JsValue.FromString(group) : JsValue.Undefined;
+            _ = result.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
         }
 
-        _ = result.DefineOwnProperty("index",
-            new JsPropertyDescriptor(JsValue.FromNumber(match.Index), Writable: true, Enumerable: true, Configurable: true));
-        _ = result.DefineOwnProperty("input",
-            new JsPropertyDescriptor(JsValue.FromString(input), Writable: true, Enumerable: true, Configurable: true));
+        _ = result.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(match.Index), Writable: true, Enumerable: true, Configurable: true));
+        _ = result.DefineOwnProperty("input", new JsPropertyDescriptor(JsValue.FromString(input), Writable: true, Enumerable: true, Configurable: true));
 
-        // ECMA-262 §22.2.5.2 — build "groups" object from named capture groups
-        var groupsObj = new JsObject();
-        var groupNames = regexp.Regex.GetGroupNames();
-        var hasNamedGroups = false;
-        var reverseMap = regexp.NamedGroupReverseMap;
-        foreach (var name in groupNames)
+        if (match.NamedGroups is { Count: > 0 } namedGroups)
         {
-            if (int.TryParse(name, System.Globalization.NumberStyles.Integer,
-                    System.Globalization.CultureInfo.InvariantCulture, out _)) continue;
-            hasNamedGroups = true;
-            var group = match.Groups[name];
-            var gval = group.Success ? JsValue.FromString(group.Value) : JsValue.Undefined;
-            // Translate .NET alias back to ECMAScript group name (e.g., "g1" → "$" or "π").
-            var ecmaName = reverseMap is not null && reverseMap.TryGetValue(name, out var mapped) ? mapped : name;
-            groupsObj.DefineOwnProperty(ecmaName,
-                new JsPropertyDescriptor(gval, Writable: true, Enumerable: true, Configurable: true));
-        }
-        // ECMA-262: groups is undefined when there are no named groups
-        if (hasNamedGroups)
-        {
-            var gh = _heap.AllocateObject(groupsObj, AllocationSite.Current());
-            _ = result.DefineOwnProperty("groups",
-                new JsPropertyDescriptor(JsValue.FromObject(gh), Writable: true, Enumerable: true, Configurable: true));
+            var groupsObj = new JsObject();
+            foreach (var kvp in namedGroups)
+            {
+                var value = match.GetGroup(kvp.Value) is { } group ? JsValue.FromString(group) : JsValue.Undefined;
+                groupsObj.DefineOwnProperty(kvp.Key, new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+            }
+            _ = result.DefineOwnProperty("groups", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(groupsObj, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
         }
         else
         {
-            _ = result.DefineOwnProperty("groups",
-                new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true));
+            _ = result.DefineOwnProperty("groups", new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true));
         }
 
-        // ECMA-262 §22.2.5.2 — hasIndices (d flag): build "indices" array
-        var dFlag = flags.Contains('d', StringComparison.Ordinal);
-        if (dFlag)
+        if (flags.Contains('d', StringComparison.Ordinal))
         {
             var indices = CreateArrayObject(Array.Empty<JsValue>());
             for (var i = 0; i < nCaptures; i++)
             {
-                var grp = match.Groups[i];
-                var start = grp.Success ? JsValue.FromNumber(grp.Index) : JsValue.Undefined;
-                var end = grp.Success ? JsValue.FromNumber(grp.Index + grp.Length) : JsValue.Undefined;
-                var pair = CreateArrayObject(new[] { start, end });
-                var pairH = _heap.AllocateObject(pair, AllocationSite.Current());
-                _ = indices.DefineOwnProperty(
-                    i.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    new JsPropertyDescriptor(JsValue.FromObject(pairH), Writable: true, Enumerable: true, Configurable: true));
+                var startRaw = match.Captures[i * 2];
+                var endRaw = match.Captures[i * 2 + 1];
+                var pair = startRaw >= 0 && endRaw >= 0
+                    ? CreateArrayObject(new[] { JsValue.FromNumber(startRaw), JsValue.FromNumber(endRaw) })
+                    : CreateArrayObject(new[] { JsValue.Undefined, JsValue.Undefined });
+                _ = indices.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
             }
-            // indices.groups for named groups
-            if (hasNamedGroups)
-            {
-                var igObj = new JsObject();
-                foreach (var name in groupNames)
-                {
-                    if (int.TryParse(name, System.Globalization.NumberStyles.Integer,
-                            System.Globalization.CultureInfo.InvariantCulture, out _)) continue;
-                    var grp = match.Groups[name];
-                    var start = grp.Success ? JsValue.FromNumber(grp.Index) : JsValue.Undefined;
-                    var end = grp.Success ? JsValue.FromNumber(grp.Index + grp.Length) : JsValue.Undefined;
-                    var pair = CreateArrayObject(new[] { start, end });
-                    var pairH = _heap.AllocateObject(pair, AllocationSite.Current());
-                    // Translate .NET alias back to ECMAScript group name.
-                    var ecmaName = reverseMap is not null && reverseMap.TryGetValue(name, out var mapped) ? mapped : name;
-                    igObj.DefineOwnProperty(ecmaName,
-                        new JsPropertyDescriptor(JsValue.FromObject(pairH), Writable: true, Enumerable: true, Configurable: true));
-                }
-                var igH = _heap.AllocateObject(igObj, AllocationSite.Current());
-                _ = indices.DefineOwnProperty("groups",
-                    new JsPropertyDescriptor(JsValue.FromObject(igH), Writable: true, Enumerable: true, Configurable: true));
-            }
-            else
-            {
-                _ = indices.DefineOwnProperty("groups",
-                    new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true));
-            }
-            var indicesH = _heap.AllocateObject(indices, AllocationSite.Current());
-            _ = result.DefineOwnProperty("indices",
-                new JsPropertyDescriptor(JsValue.FromObject(indicesH), Writable: true, Enumerable: true, Configurable: true));
+            _ = indices.DefineOwnProperty("groups", new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true));
+            _ = result.DefineOwnProperty("indices", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(indices, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
         }
 
-        _ = result.DefineOwnProperty("length",
-            new JsPropertyDescriptor(JsValue.FromNumber(nCaptures), Writable: true, Enumerable: false, Configurable: false));
-
+        _ = result.DefineOwnProperty("length", new JsPropertyDescriptor(JsValue.FromNumber(nCaptures), Writable: true, Enumerable: false, Configurable: false));
         if (global || sticky)
             _ = ((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(match.Index + match.Length));
-
-        var resultHandle = _heap.AllocateObject(result, AllocationSite.Current());
-        return JsValue.FromObject(resultHandle);
+        return JsValue.FromObject(_heap.AllocateObject(result, AllocationSite.Current()));
     }
 
     private JsValue RegExpPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -7791,82 +7580,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateSyntaxError(ex.Message));
         }
 
-        var hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
-        var hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
-        var hasV = normalizedFlags.Contains('v', StringComparison.Ordinal);
-        var options = (hasS || hasU || hasV)
-            ? RegexOptions.CultureInvariant
-            : RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
-        if (normalizedFlags.Contains('i', StringComparison.Ordinal)) options |= RegexOptions.IgnoreCase;
-        if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
-        if (hasS) options |= RegexOptions.Singleline;
-        var executionPattern = RegExpCompiler.RewriteAnnexBNonUnicodePattern(
-            newPattern, RegexFlags.Parse(normalizedFlags.AsSpan()));
-        var dotNetPattern = RewriteEcmaCharacterClassEscapes(executionPattern);
-        dotNetPattern = RegExpCompiler.RewriteControlEscapesForDotNet(dotNetPattern);
-        var namedGroupMapCompile = new Dictionary<string, string>(StringComparer.Ordinal);
-        dotNetPattern = RegExpCompiler.RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMapCompile);
-        if (hasU || hasV)
-        {
-            dotNetPattern = RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
-            dotNetPattern = RegExpCompiler.RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
-        }
-        dotNetPattern = RegExpCompiler.RewriteForwardBackreferences(dotNetPattern);
-
-        BclRegex regex;
-        if (hasV)
-        {
-            regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
-        }
-        else try
-        {
-            regex = new BclRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
-        }
-        catch (ArgumentException ex)
-        {
-            // .NET rejects some valid ECMAScript constructs (e.g. property names
-            // it doesn't know after the \p{} rewrite). When the pattern uses
-            // property escapes, fall back to a neutral BCL regex and let the
-            // native program do the matching, mirroring RegExpCompiler.Compile.
-            if (RegExpCompiler.TryCompileRangeNormalizedDotNetRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250), ex, out var rangeNormalizedRegex))
-            {
-                regex = rangeNormalizedRegex;
-            }
-            else if (RegExpCompiler.ShouldUseNeutralDotNetFallback(newPattern, dotNetPattern, ex))
-            {
-                regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
-            }
-            else
-            {
-                throw new JsThrownException(CreateSyntaxError(ex.Message));
-            }
-        }
-
-        RegexProgram? nativeProgram;
+        RegexProgram nativeProgram;
         try
         {
-            nativeProgram = RegExpCompiler.CompileNative(newPattern, normalizedFlags);
+            nativeProgram = RegExpCompiler.Compile(newPattern, normalizedFlags).Program;
         }
         catch (RegexSyntaxError ex)
         {
             throw new JsThrownException(CreateSyntaxError(ex.Message));
         }
 
-        target.Recompile(newPattern, normalizedFlags, regex, nativeProgram);
-        // Also update the named group alias maps on the target.
-        if (namedGroupMapCompile.Count > 0)
-        {
-            target.NamedGroupAliases = namedGroupMapCompile;
-            var reverse = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var kvp in namedGroupMapCompile)
-                reverse[kvp.Value] = kvp.Key;
-            target.NamedGroupReverseMap = reverse;
-        }
-        else
-        {
-            target.NamedGroupAliases = null;
-            target.NamedGroupReverseMap = null;
-        }
+        target.Recompile(newPattern, normalizedFlags, nativeProgram);
         // source/flags/flag-booleans are prototype accessors that read target.Flags
         // (just updated by Recompile). compile only needs to reset lastIndex to 0.
         if (!target.SetProperty("lastIndex", JsValue.FromNumber(0)))
@@ -7951,89 +7675,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var rxObj = _heap.GetObject(thisValue.AsObjectHandle());
         var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
         var replacement = args.Count > 1 ? args[1] : JsValue.Undefined;
-
-        // Fast path for real RegExp objects that haven't had global overridden.
-        if (rxObj is RegExpObject fastRx &&
-            !rxObj.TryGetOwnProperty("global", out _) &&
-            IsBuiltinRegExpExec(rxObj, thisValue))
-        {
-            var global = fastRx.Flags.Contains('g', StringComparison.Ordinal);
-            if (replacement.Tag == JsValueTag.Object && IsCallable(replacement))
-            {
-                if (!global)
-                {
-                    var match = fastRx.Regex.Match(input);
-                    if (!match.Success) return JsValue.FromString(input);
-                    var replacementArgs = CreateRegExpReplacementFunctionArgs(input, match, fastRx);
-                    var replacementResult = CallFunction(replacement, replacementArgs, JsValue.Undefined);
-                    return JsValue.FromString(
-                        input.Substring(0, match.Index) +
-                        ToStringValue(replacementResult) +
-                        input.Substring(match.Index + match.Length));
-                }
-
-                var result = new System.Text.StringBuilder();
-                var cursor = 0;
-                while (cursor <= input.Length)
-                {
-                    var match = fastRx.Regex.Match(input, cursor);
-                    if (!match.Success) break;
-
-                    result.Append(input.AsSpan(cursor, match.Index - cursor));
-                    var replacementArgs = CreateRegExpReplacementFunctionArgs(input, match, fastRx);
-                    var replacementResult = CallFunction(replacement, replacementArgs, JsValue.Undefined);
-                    result.Append(ToStringValue(replacementResult));
-
-                    cursor = match.Index + match.Length;
-                    if (match.Length == 0)
-                    {
-                        if (cursor >= input.Length) break;
-                        result.Append(input[cursor]);
-                        cursor++;
-                    }
-                }
-                if (cursor < input.Length) result.Append(input.AsSpan(cursor));
-                return JsValue.FromString(result.ToString());
-            }
-            var replStr = ToStringValue(replacement);
-            if (!global)
-            {
-                // Non-global: simple single-match replacement via .NET.
-                var match = fastRx.Regex.Match(input);
-                if (!match.Success) return JsValue.FromString(input);
-                return JsValue.FromString(input.Substring(0, match.Index) + GetSubstitution(input, match, replStr, fastRx) + input.Substring(match.Index + match.Length));
-            }
-            // Global regex with string replacement. Use .NET's Replace for efficiency
-            // but guard against empty-match infinite loops.
-            else
-            {
-                // .NET Regex.Replace with empty pattern hangs — use manual iteration.
-                var result = new System.Text.StringBuilder();
-                int cursor = 0;
-                while (cursor <= input.Length)
-                {
-                    var m = fastRx.Regex.Match(input, cursor);
-                    if (!m.Success) break;
-                    result.Append(input.AsSpan(cursor, m.Index - cursor));
-                    if (m.Length == 0)
-                    {
-                        // Empty match: insert replacement, then the character at cursor.
-                        result.Append(GetSubstitution(input, m, replStr, fastRx));
-                        cursor = m.Index;
-                        if (cursor < input.Length)
-                            result.Append(input[cursor]);
-                        cursor++;
-                    }
-                    else
-                    {
-                        result.Append(GetSubstitution(input, m, replStr, fastRx));
-                        cursor = m.Index + m.Length;
-                    }
-                }
-                if (cursor < input.Length) result.Append(input.AsSpan(cursor));
-                return JsValue.FromString(result.ToString());
-            }
-        }
 
         // Spec path via RegExpExec.
         bool replaceGlobal = false;
@@ -8189,125 +7830,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return sb.ToString();
     }
 
-    /// <summary>ECMA-262 §22.2.5.9 GetSubstitution.</summary>
-    private IReadOnlyList<JsValue> CreateRegExpReplacementFunctionArgs(string input, System.Text.RegularExpressions.Match match, RegExpObject regexp)
-    {
-        var args = new List<JsValue>(match.Groups.Count + 3)
-        {
-            JsValue.FromString(match.Value)
-        };
-
-        for (var i = 1; i < match.Groups.Count; i++)
-        {
-            var group = match.Groups[i];
-            args.Add(group.Success ? JsValue.FromString(group.Value) : JsValue.Undefined);
-        }
-
-        args.Add(JsValue.FromNumber(match.Index));
-        args.Add(JsValue.FromString(input));
-
-        var groupNames = regexp.Regex.GetGroupNames();
-        var groupsObj = new JsObject();
-        var hasNamedGroups = false;
-        var reverseMap = regexp.NamedGroupReverseMap;
-        foreach (var name in groupNames)
-        {
-            if (int.TryParse(name, System.Globalization.NumberStyles.Integer,
-                    System.Globalization.CultureInfo.InvariantCulture, out _)) continue;
-
-            hasNamedGroups = true;
-            var group = match.Groups[name];
-            var ecmaName = reverseMap is not null && reverseMap.TryGetValue(name, out var mapped) ? mapped : name;
-            _ = groupsObj.DefineOwnProperty(ecmaName,
-                new JsPropertyDescriptor(group.Success ? JsValue.FromString(group.Value) : JsValue.Undefined,
-                    Writable: true, Enumerable: true, Configurable: true));
-        }
-
-        if (hasNamedGroups)
-            args.Add(JsValue.FromObject(_heap.AllocateObject(groupsObj, AllocationSite.Current())));
-
-        return args;
-    }
-
-    private string GetSubstitution(string input, System.Text.RegularExpressions.Match match, string replacement, RegExpObject regexp)
-    {
-        var sb = new System.Text.StringBuilder();
-        for (var i = 0; i < replacement.Length; i++)
-        {
-            if (replacement[i] == '$' && i + 1 < replacement.Length)
-            {
-                var c = replacement[i + 1];
-                switch (c)
-                {
-                    case '$':
-                        sb.Append('$'); i++; break;
-                    case '&':
-                        sb.Append(match.Value); i++; break;
-                    case '`':
-                        sb.Append(input.AsSpan(0, match.Index)); i++; break;
-                    case '\'':
-                        sb.Append(input.AsSpan(match.Index + match.Length)); i++; break;
-                    case '<':
-                        // $<name> — named capture group. Translate ECMAScript group
-                        // name to .NET alias via the regex's forward alias map.
-                        var endBracket = replacement.IndexOf('>', i + 2);
-                        if (endBracket >= 0)
-                        {
-                            var name = replacement.Substring(i + 2, endBracket - i - 2);
-                            var dotNetName = regexp.NamedGroupAliases is { } aliases && aliases.TryGetValue(name, out var alias) ? alias : name;
-                            var namedGroup = match.Groups[dotNetName];
-                            sb.Append(namedGroup.Success ? namedGroup.Value : "");
-                            i = endBracket;
-                        }
-                        else
-                        {
-                            sb.Append('$'); sb.Append('<');
-                            i++;
-                        }
-                        break;
-                    default:
-                        if (c >= '0' && c <= '9')
-                        {
-                            // $n or $nn — numbered capture group
-                            var numStr = c.ToString();
-                            var j = i + 2;
-                            while (j < replacement.Length && replacement[j] >= '0' && replacement[j] <= '9')
-                            {
-                                numStr += replacement[j];
-                                j++;
-                            }
-                            if (int.TryParse(numStr, System.Globalization.NumberStyles.Integer,
-                                    System.Globalization.CultureInfo.InvariantCulture, out var groupNum) &&
-                                groupNum < match.Groups.Count)
-                            {
-                                var capGroup = match.Groups[groupNum];
-                                sb.Append(capGroup.Success ? capGroup.Value : "");
-                                i += numStr.Length;
-                            }
-                            else
-                            {
-                                sb.Append('$');
-                                i++;
-                            }
-                        }
-                        else
-                        {
-                            sb.Append('$');
-                            i++;
-                            sb.Append(c);
-                        }
-                        break;
-                }
-            }
-            else
-            {
-                sb.Append(replacement[i]);
-            }
-        }
-        return sb.ToString();
-    }
-
-    // ECMA-262 §22.2.5.11 RegExp.prototype [ @@split ] ( string, limit )
+    // ECMA-262 22.2.5.11 RegExp.prototype [ @@split ] ( string, limit )
     private JsValue RegExpPrototypeSymbolSplit(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         if (thisValue.Tag != JsValueTag.Object)
@@ -8334,7 +7857,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // reading 'flags' here triggers the spec's Get(rx, "flags") step.
             if (input.Length == 0)
             {
-                var m = splitRx.Regex.Match(input);
+                var m = new RegexVM(splitRx.NativeProgram).Execute(input);
                 if (m.Success)
                     return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current()));
                 return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(new[] { JsValue.FromString(input) }), AllocationSite.Current()));
@@ -8346,7 +7869,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var q = 0;
             while (q < size)
             {
-                var m = splitRx.Regex.Match(input, q);
+                var m = new RegexVM(splitRx.NativeProgram).Execute(input, q);
                 if (!m.Success || m.Index != q) { q++; continue; }
                 var e = Math.Min(m.Index + m.Length, size);
                 if (e == p) { q++; continue; }
@@ -8354,10 +7877,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     parts.Add(JsValue.FromString(input.Substring(p, q - p)));
                 if (parts.Count >= limit)
                     return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
-                for (var i = 1; i < m.Groups.Count; i++)
+                for (var i = 1; i < m.GroupCount; i++)
                 {
-                    var g = m.Groups[i];
-                    parts.Add(g.Success ? JsValue.FromString(g.Value) : JsValue.Undefined);
+                    var g = m.GetGroup(i);
+                    parts.Add(g is not null ? JsValue.FromString(g) : JsValue.Undefined);
                     if (parts.Count >= limit)
                         return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
                 }
@@ -8444,34 +7967,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var flagsStr = flagsValue.Tag == JsValueTag.Undefined ? "" : ToStringValue(flagsValue);
         var matcher = ConstructFunction(species, new[] { thisValue, JsValue.FromString(flagsStr) });
 
-        // If the constructed matcher is our own RegExp, use the fast .NET Regex path.
-        if (matcher.Tag == JsValueTag.Object &&
-            _heap.GetObject(matcher.AsObjectHandle()) is RegExpObject matchAllRx)
-        {
-            var results = new List<JsValue>();
-            foreach (Match match in matchAllRx.Regex.Matches(input))
-            {
-                var record = CreateArrayObject(Array.Empty<JsValue>());
-                _ = record.DefineOwnProperty("0", new JsPropertyDescriptor(JsValue.FromString(match.Value), Writable: true, Enumerable: true, Configurable: true));
-                for (var i = 1; i < match.Groups.Count; i++)
-                { var g = match.Groups[i]; var v = g.Success ? JsValue.FromString(g.Value) : JsValue.Undefined; _ = record.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture), new JsPropertyDescriptor(v, Writable: true, Enumerable: true, Configurable: true)); }
-                var mgroupsObj = new JsObject(); var mHasNamed = false;
-                var mRevMap = matchAllRx.NamedGroupReverseMap;
-                foreach (var mName in matchAllRx.Regex.GetGroupNames())
-                { if (int.TryParse(mName, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _)) continue; mHasNamed = true; var mGrp = match.Groups[mName]; var mEcmaName = mRevMap is not null && mRevMap.TryGetValue(mName, out var mMapped) ? mMapped : mName; mgroupsObj.DefineOwnProperty(mEcmaName, new JsPropertyDescriptor(mGrp.Success ? JsValue.FromString(mGrp.Value) : JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true)); }
-                if (mHasNamed) _ = record.DefineOwnProperty("groups", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(mgroupsObj, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
-                else _ = record.DefineOwnProperty("groups", new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true));
-                _ = record.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(match.Index), Writable: true, Enumerable: true, Configurable: true));
-                _ = record.DefineOwnProperty("input", new JsPropertyDescriptor(JsValue.FromString(input), Writable: true, Enumerable: true, Configurable: true));
-                _ = record.DefineOwnProperty("length", new JsPropertyDescriptor(JsValue.FromNumber(match.Groups.Count), Writable: true, Enumerable: false, Configurable: false));
-                results.Add(JsValue.FromObject(_heap.AllocateObject(record, AllocationSite.Current())));
-            }
-            var iter = new RegExpStringIteratorObject(results);
-            iter.SetPrototype(EnsureRegExpStringIteratorPrototype());
-            return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
-        }
-
-        // Non-RegExp matcher: iterate via RegExpExec.
+        // Iterate via RegExpExec.
         {
             var results = new List<JsValue>();
             while (true)
@@ -17884,7 +17380,7 @@ fallbackArraySpecies:
             }
             case RegExpObject r:
             {
-                var cloneObj = new RegExpObject(r.Pattern, r.Flags, r.Regex, r.NativeProgram);
+                var cloneObj = new RegExpObject(r.Pattern, r.Flags, r.NativeProgram);
                 cloneObj.SetPrototype(EnsureRegExpPrototype());
                 var h = _heap.AllocateObject(cloneObj, AllocationSite.Current());
                 memo[sourceHandle] = h;

@@ -244,6 +244,12 @@ public static class RegexParser
             }
 
             // PatternCharacter — any source character that is not syntax
+            if (!IsUnicode && (ch == '}' || (ch == '{' && !IsValidBraceQuantifierAt(_pos))))
+            {
+                Advance();
+                return new LiteralCharNode(ch);
+            }
+
             if (IsSyntaxCharacter(ch))
             {
                 throw new RegexSyntaxError($"Unexpected character '{ch}'", _pos);
@@ -1013,11 +1019,32 @@ public static class RegexParser
                 return new GroupNode(GroupKind.NonCapturing, body, 0);
             }
 
+            if (marker == '=' || marker == '!')
+            {
+                Advance();
+                var body = ParseDisjunction();
+                Expect(')');
+                return new AssertionNode(
+                    marker == '=' ? AssertionKind.Lookahead : AssertionKind.NegativeLookahead,
+                    body);
+            }
+
             // Named capturing: (?<name> ... )
             if (marker == '<')
             {
                 Advance();
-                if (AtEnd || (Peek == '=' || Peek == '!'))
+                if (!AtEnd && (Peek == '=' || Peek == '!'))
+                {
+                    var isNegative = Peek == '!';
+                    Advance();
+                    var lookbehindBody = ParseDisjunction();
+                    Expect(')');
+                    return new AssertionNode(
+                        isNegative ? AssertionKind.NegativeLookbehind : AssertionKind.Lookbehind,
+                        lookbehindBody);
+                }
+
+                if (AtEnd)
                 {
                     throw new RegexSyntaxError("Invalid group name", _pos);
                 }
@@ -1187,7 +1214,33 @@ public static class RegexParser
         private bool IsQuantifierStart()
         {
             var ch = Peek;
-            return ch == '*' || ch == '+' || ch == '?' || ch == '{';
+            return ch == '*' || ch == '+' || ch == '?' || (ch == '{' && IsValidBraceQuantifierAt(_pos));
+        }
+
+        private bool IsValidBraceQuantifierAt(int position)
+        {
+            if (position >= _pattern.Length || _pattern[position] != '{')
+                return false;
+
+            var cursor = position + 1;
+            var digitsStart = cursor;
+            while (cursor < _pattern.Length && IsDecimalDigit(_pattern[cursor]))
+                cursor++;
+
+            if (cursor == digitsStart)
+                return false;
+
+            if (cursor < _pattern.Length && _pattern[cursor] == '}')
+                return true;
+
+            if (cursor >= _pattern.Length || _pattern[cursor] != ',')
+                return false;
+
+            cursor++;
+            while (cursor < _pattern.Length && IsDecimalDigit(_pattern[cursor]))
+                cursor++;
+
+            return cursor < _pattern.Length && _pattern[cursor] == '}';
         }
 
         private QuantifierNode ParseQuantifier(AtomNode body)
