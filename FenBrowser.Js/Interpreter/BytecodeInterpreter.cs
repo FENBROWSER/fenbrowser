@@ -8133,35 +8133,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var global = flagsStr.Contains('g', StringComparison.Ordinal);
         var fullUnicode = flagsStr.Contains('u', StringComparison.Ordinal) || flagsStr.Contains('v', StringComparison.Ordinal);
 
-        // Iterate via RegExpExec.
-        {
-            var results = new List<JsValue>();
-            while (true)
-            {
-                var execResult = RegExpExec(matcher, input);
-                if (execResult.Tag == JsValueTag.Null) break;
-                results.Add(execResult);
-                if (!global) break;
-                var resultObj = _heap.GetObject(execResult.AsObjectHandle());
-                var matched = string.Empty;
-                if (TryGetPropertyValue(resultObj, execResult, "0", out var matchValue))
-                {
-                    matched = ToStringValue(matchValue);
-                }
-                if (matched.Length == 0)
-                {
-                    var thisIndex = ToLengthNumber(GetReceiverProperty(matcher, "lastIndex"));
-                    var nextIndex = AdvanceStringIndexNumber(input, thisIndex, fullUnicode);
-                    if (!SetRegExpLastIndex(matcher, JsValue.FromNumber(nextIndex)))
-                    {
-                        throw new JsThrownException(CreateTypeError("Cannot set RegExp matcher lastIndex."));
-                    }
-                }
-            }
-            var iter = new RegExpStringIteratorObject(results);
-            iter.SetPrototype(EnsureRegExpStringIteratorPrototype());
-            return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
-        }
+        var iter = new RegExpStringIteratorObject(matcher, input, global, fullUnicode);
+        iter.SetPrototype(EnsureRegExpStringIteratorPrototype());
+        return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
     }
 
     private ObjectHandle? _regExpStringIteratorProtoHandle;
@@ -8178,23 +8152,71 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (thisValue.Tag != JsValueTag.Object ||
                 _heap.GetObject(thisValue.AsObjectHandle()) is not RegExpStringIteratorObject ri)
                 throw new JsThrownException(CreateTypeError("RegExpStringIterator.prototype.next called on incompatible receiver."));
-            if (ri.Index >= ri.Results.Count)
+            if (ri.Done)
                 return BuildIteratorResult(JsValue.Undefined, done: true);
-            return BuildIteratorResult(ri.Results[ri.Index++], done: false);
+
+            var match = RegExpExec(ri.IteratingRegExp, ri.IteratedString);
+            if (match.Tag == JsValueTag.Null)
+            {
+                ri.Done = true;
+                return BuildIteratorResult(JsValue.Undefined, done: true);
+            }
+
+            if (!ri.Global)
+            {
+                ri.Done = true;
+            }
+            else
+            {
+                var matchString = ToStringValue(GetReceiverProperty(match, "0"));
+                if (matchString.Length == 0)
+                {
+                    var thisIndex = ToLengthNumber(GetReceiverProperty(ri.IteratingRegExp, "lastIndex"));
+                    var nextIndex = AdvanceStringIndexNumber(ri.IteratedString, thisIndex, ri.FullUnicode);
+                    if (!SetRegExpLastIndex(ri.IteratingRegExp, JsValue.FromNumber(nextIndex)))
+                    {
+                        throw new JsThrownException(CreateTypeError("Cannot set RegExp matcher lastIndex."));
+                    }
+                }
+            }
+
+            return BuildIteratorResult(match, done: false);
         }, length: 0);
         var nextH = _heap.AllocateObject(next, AllocationSite.Current());
         proto.DefineOwnProperty("next", new JsPropertyDescriptor(JsValue.FromObject(nextH), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(ph, nextH);
+        proto.DefineOwnSymbolProperty(GetWellKnownSymbolId("toStringTag"),
+            new JsPropertyDescriptor(JsValue.FromString("RegExp String Iterator"), Writable: false, Enumerable: false, Configurable: true));
         _regExpStringIteratorProtoHandle = ph;
         return ph;
     }
 
-    /// <summary>ECMA-262 §22.2.5.10.1 RegExpStringIterator — holds pre-computed match results.</summary>
+    /// <summary>ECMA-262 §22.2.5.10.1 RegExpStringIterator state.</summary>
     private sealed class RegExpStringIteratorObject : JsObject
     {
-        public readonly List<JsValue> Results;
-        public int Index;
-        public RegExpStringIteratorObject(List<JsValue> results) { Results = results; Index = 0; }
+        public readonly JsValue IteratingRegExp;
+        public readonly string IteratedString;
+        public readonly bool Global;
+        public readonly bool FullUnicode;
+        public bool Done;
+
+        public RegExpStringIteratorObject(JsValue iteratingRegExp, string iteratedString, bool global, bool fullUnicode)
+        {
+            IteratingRegExp = iteratingRegExp;
+            IteratedString = iteratedString;
+            Global = global;
+            FullUnicode = fullUnicode;
+            Done = false;
+        }
+
+        public override void Trace(IHeapTracer tracer)
+        {
+            base.Trace(tracer);
+            if (IteratingRegExp.Tag == JsValueTag.Object)
+            {
+                tracer.Trace(IteratingRegExp.AsObjectHandle());
+            }
+        }
     }
 
     private RegExpObject RegExpThisValue(JsValue thisValue)
