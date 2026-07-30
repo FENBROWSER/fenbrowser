@@ -297,6 +297,19 @@ public sealed class ClassUnicodeProperty : ClassItem
     }
 }
 
+/// <summary>A nested character class used as a class-set operand in /v mode.</summary>
+public sealed class ClassNestedSet : ClassItem
+{
+    public readonly List<ClassItem> Items;
+    public readonly bool Negated;
+
+    public ClassNestedSet(List<ClassItem> items, bool negated)
+    {
+        Items = items;
+        Negated = negated;
+    }
+}
+
 // Marker item for v-flag set operations in character classes.
 // Placed by the parser between left-hand and right-hand ClassItem lists.
 // OpKind: 0=Intersection (&&), 1=Difference (--), 2=SymmetricDifference (~~).

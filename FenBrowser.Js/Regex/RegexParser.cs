@@ -723,6 +723,12 @@ public static class RegexParser
 
             var ch = Peek;
 
+            if (IsUnicodeSets && ch == '[')
+            {
+                var nested = ParseCharacterClass();
+                return new ClassNestedSet(nested.Items, nested.Negated);
+            }
+
             if (ch == '\\')
             {
                 Advance();

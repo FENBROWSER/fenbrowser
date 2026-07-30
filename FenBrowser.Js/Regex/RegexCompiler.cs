@@ -1126,6 +1126,20 @@ public static class RegexCompiler
                     case ClassEscape ce: cps.Add(ce.CodePoint); break;
                     case ClassClassEscape cce: AddClassEscapeCps(cps, cce.Kind); break;
                     case ClassUnicodeProperty cup: AddUnicodePropertyCps(cps, cup); break;
+                    case ClassNestedSet nested:
+                    {
+                        var nestedCps = ResolveClassItemsToCodePoints(nested.Items);
+                        if (nested.Negated)
+                        {
+                            var all = new HashSet<int>();
+                            for (var cp = 0; cp <= 0x10FFFF; cp++) all.Add(cp);
+                            all.ExceptWith(nestedCps);
+                            nestedCps = all;
+                        }
+
+                        cps.UnionWith(nestedCps);
+                        break;
+                    }
                     // String literals and other items are ignored for now.
                 }
             }
