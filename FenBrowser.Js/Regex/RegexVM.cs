@@ -758,6 +758,14 @@ public sealed class RegexVM
                         matched = cp >= _cpLen || (ins.A == 1 && IsLineEnd(cp));
                         if (matched) pc++; else { pc = -1; }
                         break;
+                    case RegexOpCode.WordBoundary:
+                        matched = IsWordBoundary(cp, ins.A == 1);
+                        if (matched) pc++; else { pc = -1; }
+                        break;
+                    case RegexOpCode.NonWordBoundary:
+                        matched = !IsWordBoundary(cp, ins.A == 1);
+                        if (matched) pc++; else { pc = -1; }
+                        break;
                     case RegexOpCode.Save:
                         if (!ownsCaps)
                         {
@@ -803,6 +811,24 @@ public sealed class RegexVM
                                 cp = CharOffsetToCodePoint(charPos2 + charLen2);
                                 pc++;
                             }
+                        }
+                        break;
+                    case RegexOpCode.Lookahead:
+                    case RegexOpCode.NegLookahead:
+                        {
+                            var resultPc = HandleLookaround(subStack, cp, caps, ins, pc);
+                            if (resultPc < 0) { pc = -1; }
+                            else pc = resultPc;
+                        }
+                        break;
+                    case RegexOpCode.Lookbehind:
+                    case RegexOpCode.NegLookbehind:
+                        {
+                            var isNegBehind = ins.OpCode == RegexOpCode.NegLookbehind;
+                            var bodyStartPc = pc + ins.A;
+                            var behindResult = TryLookbehind(bodyStartPc, cp, caps, isNegBehind);
+                            if (behindResult) pc++;
+                            else { pc = -1; }
                         }
                         break;
                     default:

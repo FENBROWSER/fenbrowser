@@ -212,12 +212,17 @@ public sealed class RegExpLiteralTests
             var greedy = 'abcdef'.match(/(?<=(?<a>\w)+)f/u);
             var empty = 'abcdef'.match(/(?<a>(?<=\w{3}))f/u);
             var impossible = 'abcdef'.match(/(?<=$abc)def/);
+            var boundary = 'ab cdef'.match(/(?<=\B)\w{3}/);
+            var nested = 'abcdef'.match(/(?<=a(?=([^a]{2})d)\w{3})\w\w/);
             fixed[1] === 'c' &&
             fixed.groups.a === 'c' &&
             greedy.groups.a === 'a' &&
             empty[1] === '' &&
             empty.groups.a === '' &&
-            impossible === null;");
+            impossible === null &&
+            boundary[0] === 'def' &&
+            nested[0] === 'ef' &&
+            nested[1] === 'bc';");
         Assert.True(result.AsBoolean());
     }
 
