@@ -27,8 +27,11 @@ public static class RegexCompiler
         var program = new RegexProgram(
             c._instructions.ToArray(),
             pattern.CaptureCount,
-            c._namedGroupMap.Count > 0 ? new Dictionary<string, int>(c._namedGroupMap) : null,
-            pattern.Flags)
+            c._namedGroupMap.Count > 0
+                ? c._namedGroupMap.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.ToArray(), StringComparer.Ordinal)
+                : null,
+            pattern.Flags,
+            c._namedBackReferenceNames.Count > 0 ? c._namedBackReferenceNames.ToArray() : null)
         {
             UnicodePropertyBodies = c._unicodePropertyBodies.Count > 0
                 ? c._unicodePropertyBodies.ToArray()
@@ -43,7 +46,9 @@ public static class RegexCompiler
         private readonly RegexFlags _flags;
         private readonly int _captureCount;
         internal readonly List<RegexInstruction> _instructions = new();
-        internal readonly Dictionary<string, int> _namedGroupMap = new(StringComparer.Ordinal);
+        internal readonly Dictionary<string, List<int>> _namedGroupMap = new(StringComparer.Ordinal);
+        internal readonly List<string> _namedBackReferenceNames = new();
+        private readonly Dictionary<string, int> _namedBackReferenceNameIndices = new(StringComparer.Ordinal);
         internal readonly List<string> _unicodePropertyBodies = new();
 
         // Pending jumps that need address resolution (position → target label)
@@ -150,9 +155,14 @@ public static class RegexCompiler
             }
 
             // Compile each alternative
+            var groupsToReset = CollectCaptureGroups(disjunction);
             for (int a = 0; a < altCount; a++)
             {
                 altStarts[a] = CurrentPos;
+                foreach (var groupNumber in groupsToReset)
+                {
+                    Emit(RegexOpCode.ResetGroup, groupNumber);
+                }
                 EmitAlternative(disjunction.Alternatives[a]);
                 if (a < altCount - 1)
                 {
@@ -176,6 +186,57 @@ public static class RegexCompiler
             }
 
             return splitPositions.Count > 0 ? splitPositions[0] : altStarts[0];
+        }
+
+        private static int[] CollectCaptureGroups(DisjunctionNode disjunction)
+        {
+            var groups = new SortedSet<int>();
+            foreach (var alternative in disjunction.Alternatives)
+            {
+                CollectCaptureGroups(alternative, groups);
+            }
+
+            return groups.ToArray();
+        }
+
+        private static void CollectCaptureGroups(AlternativeNode alternative, SortedSet<int> groups)
+        {
+            foreach (var term in alternative.Terms)
+            {
+                CollectCaptureGroups(term, groups);
+            }
+        }
+
+        private static void CollectCaptureGroups(DisjunctionNode disjunction, SortedSet<int> groups)
+        {
+            foreach (var alternative in disjunction.Alternatives)
+            {
+                CollectCaptureGroups(alternative, groups);
+            }
+        }
+
+        private static void CollectCaptureGroups(TermNode term, SortedSet<int> groups)
+        {
+            switch (term)
+            {
+                case GroupNode group:
+                    if (group.Kind is GroupKind.Capturing or GroupKind.NamedCapturing)
+                    {
+                        groups.Add(group.GroupNumber);
+                    }
+
+                    CollectCaptureGroups(group.Body, groups);
+                    break;
+                case QuantifierNode quantifier:
+                    CollectCaptureGroups(quantifier.Body, groups);
+                    break;
+                case AssertionNode assertion when assertion.Body is not null:
+                    CollectCaptureGroups(assertion.Body, groups);
+                    break;
+                case ModifierGroupNode modifierGroup:
+                    CollectCaptureGroups(modifierGroup.Body, groups);
+                    break;
+            }
         }
 
         private int EmitAlternative(AlternativeNode alt)
@@ -213,7 +274,7 @@ public static class RegexCompiler
                 case GroupNode group:
                     if (group.Kind == GroupKind.NamedCapturing && group.Name is not null)
                     {
-                        _namedGroupMap.TryAdd(group.Name, group.GroupNumber);
+                        AddNamedGroup(group.Name, group.GroupNumber);
                     }
                     CollectNamedGroups(group.Body);
                     break;
@@ -445,12 +506,19 @@ public static class RegexCompiler
                     }
                     break;
                 case NamedBackReferenceNode nbr:
-                    if (!_namedGroupMap.TryGetValue(nbr.Name, out var groupNumber))
+                    if (!_namedGroupMap.TryGetValue(nbr.Name, out var groupNumbers))
                     {
                         throw new RegexSyntaxError($"Unknown named capture group '{nbr.Name}'.");
                     }
 
-                    Emit(RegexOpCode.BackRef, groupNumber, IgnoreCase ? 1 : 0);
+                    if (groupNumbers.Count == 1)
+                    {
+                        Emit(RegexOpCode.BackRef, groupNumbers[0], IgnoreCase ? 1 : 0);
+                    }
+                    else
+                    {
+                        Emit(RegexOpCode.NamedBackRef, GetNamedBackReferenceNameIndex(nbr.Name), IgnoreCase ? 1 : 0);
+                    }
                     break;
                 case CharacterClassNode cc:
                     EmitCharacterClass(cc);
@@ -860,7 +928,7 @@ public static class RegexCompiler
                 var n = group.GroupNumber;
                 if (group.Kind == GroupKind.NamedCapturing && group.Name is not null)
                 {
-                    _namedGroupMap.TryAdd(group.Name, n);
+                    AddNamedGroup(group.Name, n);
                 }
 
                 // Save start position
@@ -875,6 +943,33 @@ public static class RegexCompiler
                 // Save end position
                 Emit(RegexOpCode.Save, n * 2 + 1);
             }
+        }
+
+        private void AddNamedGroup(string name, int groupNumber)
+        {
+            if (!_namedGroupMap.TryGetValue(name, out var groupNumbers))
+            {
+                groupNumbers = new List<int>();
+                _namedGroupMap[name] = groupNumbers;
+            }
+
+            if (!groupNumbers.Contains(groupNumber))
+            {
+                groupNumbers.Add(groupNumber);
+            }
+        }
+
+        private int GetNamedBackReferenceNameIndex(string name)
+        {
+            if (_namedBackReferenceNameIndices.TryGetValue(name, out var index))
+            {
+                return index;
+            }
+
+            index = _namedBackReferenceNames.Count;
+            _namedBackReferenceNames.Add(name);
+            _namedBackReferenceNameIndices[name] = index;
+            return index;
         }
     }
 }

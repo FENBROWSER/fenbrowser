@@ -28,7 +28,7 @@ public sealed class RegexMatchResult
     public int GroupCount => Captures.Length / 2;
 
     /// <summary>Named group mapping (name → group number), or null.</summary>
-    public IReadOnlyDictionary<string, int>? NamedGroups { get; }
+    public IReadOnlyDictionary<string, int[]>? NamedGroups { get; }
 
     /// <summary>Match index information for the /d flag (indices array).</summary>
     public RegexMatchResult? Indices { get; internal set; }
@@ -39,7 +39,7 @@ public sealed class RegexMatchResult
         int length,
         string input,
         int[] captures,
-        IReadOnlyDictionary<string, int>? namedGroups = null)
+        IReadOnlyDictionary<string, int[]>? namedGroups = null)
     {
         Success = success;
         Index = index;

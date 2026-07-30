@@ -180,6 +180,32 @@ public sealed class RegExpLiteralTests
     }
 
     [Fact]
+    public void RegexLiteralResolvesDuplicateNamedCapturesByParticipatingGroup()
+    {
+        var result = Run(@"var alt = /(?<x>a)|(?<x>b)/.exec('bab');
+            var backref = /(?:(?<x>a)|(?<x>b))\k<x>/.exec('bb');
+            var repeated = /(?:(?:(?<x>a)|(?<x>b))\k<x>){2}/.exec('aabb');
+            var stale = /^(?:(?<a>x)|(?<a>y)|z){2}\k<a>$/.exec('xzx');
+            var indices = '..ba'.match(/(?<x>a)|(?<x>b)/d).indices;
+            alt[0] === 'b' &&
+            alt[1] === undefined &&
+            alt[2] === 'b' &&
+            alt.groups.x === 'b' &&
+            backref[0] === 'bb' &&
+            backref[1] === undefined &&
+            backref[2] === 'b' &&
+            backref.groups.x === 'b' &&
+            repeated[0] === 'aabb' &&
+            repeated[1] === undefined &&
+            repeated[2] === 'b' &&
+            repeated.groups.x === 'b' &&
+            stale === null &&
+            indices.groups.x[0] === 2 &&
+            indices.groups.x[1] === 3;");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void RegexLiteralRejectsReversedCharacterClassRange()
     {
         Assert.Throws<JsParserException>(() => Run(@"/^[z-a]$/;"));

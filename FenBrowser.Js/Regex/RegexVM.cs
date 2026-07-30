@@ -197,6 +197,17 @@ public sealed class RegexVM
                         pc++;
                         break;
 
+                    case RegexOpCode.ResetGroup:
+                        if (!ownsCaptures)
+                        {
+                            captures = (int[])captures.Clone();
+                            ownsCaptures = true;
+                        }
+                        captures[ins.A * 2] = -1;
+                        captures[ins.A * 2 + 1] = -1;
+                        pc++;
+                        break;
+
                     case RegexOpCode.BackRef:
                         {
                             // captures[] store char offsets; cp is a code point index.
@@ -207,6 +218,19 @@ public sealed class RegexVM
                             else
                             {
                                 var charLen = GetBackRefLength(captures, ins.A);
+                                cp = CharOffsetToCodePoint(charPos + charLen);
+                                pc++;
+                            }
+                        }
+                        break;
+
+                    case RegexOpCode.NamedBackRef:
+                        {
+                            var charPos = CodePointToCharOffset(cp);
+                            var result = TryMatchNamedBackRefAtChar(charPos, captures, ins.A, ins.B == 1, out var charLen);
+                            if (result < 0) { pc = -1; }
+                            else
+                            {
                                 cp = CharOffsetToCodePoint(charPos + charLen);
                                 pc++;
                             }
@@ -549,6 +573,42 @@ public sealed class RegexVM
         return end - start;
     }
 
+    private int TryMatchNamedBackRefAtChar(int charPos, int[] captures, int nameIndex, bool ignoreCase, out int charLength)
+    {
+        charLength = 0;
+        var names = _program.NamedBackReferenceNames;
+        if (names is null || nameIndex < 0 || nameIndex >= names.Length)
+        {
+            return -1;
+        }
+
+        if (_program.NamedGroupMap is null || !_program.NamedGroupMap.TryGetValue(names[nameIndex], out var groupNumbers))
+        {
+            return -1;
+        }
+
+        foreach (var groupNumber in groupNumbers)
+        {
+            var slot = groupNumber * 2;
+            if (slot + 1 >= captures.Length)
+            {
+                continue;
+            }
+
+            var start = captures[slot];
+            var end = captures[slot + 1];
+            if (start < 0 || end < 0)
+            {
+                continue;
+            }
+
+            charLength = end - start;
+            return TryMatchBackRefAtChar(charPos, captures, groupNumber, ignoreCase);
+        }
+
+        return 0;
+    }
+
     // ─── Lookaround ───────────────────────────────────────
 
     private int HandleLookaround(Stack<ThreadState> stack, int cp, int[] captures,
@@ -703,6 +763,16 @@ public sealed class RegexVM
                         caps[ins.A] = _charOffsets[cp];
                         pc++;
                         break;
+                    case RegexOpCode.ResetGroup:
+                        if (!ownsCaps)
+                        {
+                            caps = (int[])caps.Clone();
+                            ownsCaps = true;
+                        }
+                        caps[ins.A * 2] = -1;
+                        caps[ins.A * 2 + 1] = -1;
+                        pc++;
+                        break;
                     case RegexOpCode.BackRef:
                         {
                             var charPos2 = CodePointToCharOffset(cp);
@@ -711,6 +781,18 @@ public sealed class RegexVM
                             else
                             {
                                 var charLen2 = GetBackRefLength(caps, ins.A);
+                                cp = CharOffsetToCodePoint(charPos2 + charLen2);
+                                pc++;
+                            }
+                        }
+                        break;
+                    case RegexOpCode.NamedBackRef:
+                        {
+                            var charPos2 = CodePointToCharOffset(cp);
+                            var result2 = TryMatchNamedBackRefAtChar(charPos2, caps, ins.A, ins.B == 1, out var charLen2);
+                            if (result2 < 0) { pc = -1; }
+                            else
+                            {
                                 cp = CharOffsetToCodePoint(charPos2 + charLen2);
                                 pc++;
                             }

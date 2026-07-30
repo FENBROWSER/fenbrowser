@@ -7497,7 +7497,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var groupsObj = new JsObject();
             foreach (var kvp in namedGroups)
             {
-                var value = match.GetGroup(kvp.Value) is { } group ? JsValue.FromString(group) : JsValue.Undefined;
+                var value = GetNamedCaptureValue(match, kvp.Value);
                 groupsObj.DefineOwnProperty(kvp.Key, new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
             }
             _ = result.DefineOwnProperty("groups", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(groupsObj, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
@@ -7514,24 +7514,26 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 var startRaw = match.Captures[i * 2];
                 var endRaw = match.Captures[i * 2 + 1];
-                var pair = startRaw >= 0 && endRaw >= 0
-                    ? CreateArrayObject(new[] { JsValue.FromNumber(startRaw), JsValue.FromNumber(endRaw) })
-                    : CreateArrayObject(new[] { JsValue.Undefined, JsValue.Undefined });
+                var indexValue = JsValue.Undefined;
+                if (startRaw >= 0 && endRaw >= 0)
+                {
+                    var pair = CreateArrayObject(new[] { JsValue.FromNumber(startRaw), JsValue.FromNumber(endRaw) });
+                    indexValue = JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current()));
+                }
+
                 _ = indices.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
+                    new JsPropertyDescriptor(indexValue, Writable: true, Enumerable: true, Configurable: true));
             }
+            _ = indices.DefineOwnProperty("length", new JsPropertyDescriptor(JsValue.FromNumber(nCaptures), Writable: true, Enumerable: false, Configurable: false));
             if (match.NamedGroups is { Count: > 0 } indexNamedGroups)
             {
                 var indexGroupsObj = new JsObject();
                 foreach (var kvp in indexNamedGroups)
                 {
-                    var startRaw = match.Captures[kvp.Value * 2];
-                    var endRaw = match.Captures[kvp.Value * 2 + 1];
-                    var pair = startRaw >= 0 && endRaw >= 0
-                        ? CreateArrayObject(new[] { JsValue.FromNumber(startRaw), JsValue.FromNumber(endRaw) })
-                        : CreateArrayObject(new[] { JsValue.Undefined, JsValue.Undefined });
+                    var indexValue = GetNamedCaptureIndexValue(match, kvp.Value);
+
                     indexGroupsObj.DefineOwnProperty(kvp.Key,
-                        new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
+                        new JsPropertyDescriptor(indexValue, Writable: true, Enumerable: true, Configurable: true));
                 }
 
                 _ = indices.DefineOwnProperty("groups",
@@ -7548,6 +7550,41 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (global || sticky)
             _ = ((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(match.Index + match.Length));
         return JsValue.FromObject(_heap.AllocateObject(result, AllocationSite.Current()));
+    }
+
+    private JsValue GetNamedCaptureValue(RegexMatchResult match, int[] groupNumbers)
+    {
+        foreach (var groupNumber in groupNumbers)
+        {
+            if (match.GetGroup(groupNumber) is { } group)
+            {
+                return JsValue.FromString(group);
+            }
+        }
+
+        return JsValue.Undefined;
+    }
+
+    private JsValue GetNamedCaptureIndexValue(RegexMatchResult match, int[] groupNumbers)
+    {
+        foreach (var groupNumber in groupNumbers)
+        {
+            var slot = groupNumber * 2;
+            if (slot + 1 >= match.Captures.Length)
+            {
+                continue;
+            }
+
+            var startRaw = match.Captures[slot];
+            var endRaw = match.Captures[slot + 1];
+            if (startRaw >= 0 && endRaw >= 0)
+            {
+                var pair = CreateArrayObject(new[] { JsValue.FromNumber(startRaw), JsValue.FromNumber(endRaw) });
+                return JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current()));
+            }
+        }
+
+        return JsValue.Undefined;
     }
 
     private JsValue RegExpPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)

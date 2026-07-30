@@ -67,7 +67,8 @@ public sealed class RegexProgram
 {
     public RegexInstruction[] Instructions { get; }
     public int CaptureCount { get; }
-    public Dictionary<string, int>? NamedGroupMap { get; }
+    public Dictionary<string, int[]>? NamedGroupMap { get; }
+    public string[]? NamedBackReferenceNames { get; }
     public RegexFlags Flags { get; }
 
     // Unicode property table: maps property indices to lookup data.
@@ -92,12 +93,14 @@ public sealed class RegexProgram
     public RegexProgram(
         RegexInstruction[] instructions,
         int captureCount,
-        Dictionary<string, int>? namedGroupMap,
-        RegexFlags flags)
+        Dictionary<string, int[]>? namedGroupMap,
+        RegexFlags flags,
+        string[]? namedBackReferenceNames = null)
     {
         Instructions = instructions;
         CaptureCount = captureCount;
         NamedGroupMap = namedGroupMap;
         Flags = flags;
+        NamedBackReferenceNames = namedBackReferenceNames;
     }
 }
