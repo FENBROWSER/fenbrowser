@@ -1499,6 +1499,12 @@ public sealed class Test262Runner
                      Object.setPrototypeOf(value, realmRegExpPrototype);
                      return value;
                    }, "RegExp", realmRegExpPrototype);
+                   Object.defineProperty(realmRegExp, "escape", {
+                     value: RegExp.escape,
+                     writable: true,
+                     enumerable: false,
+                     configurable: true
+                   });
                    var realmGlobal = {
                      Array: realmArray,
                      Boolean: markRealmIntrinsic(function Boolean(value) {
