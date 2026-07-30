@@ -751,8 +751,11 @@ public sealed class RegexVM
                         matchedCaptures = caps;
                         return cp; // success - return ending code point
                     case RegexOpCode.Bol:
+                        matched = cp == 0 || (ins.A == 1 && IsLineStart(cp));
+                        if (matched) pc++; else { pc = -1; }
+                        break;
                     case RegexOpCode.Eol:
-                        matched = cp == startCp;
+                        matched = cp >= _cpLen || (ins.A == 1 && IsLineEnd(cp));
                         if (matched) pc++; else { pc = -1; }
                         break;
                     case RegexOpCode.Save:

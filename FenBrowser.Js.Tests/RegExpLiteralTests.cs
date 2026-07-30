@@ -211,11 +211,13 @@ public sealed class RegExpLiteralTests
         var result = Run(@"var fixed = 'abcdef'.match(/(?<=(?<a>\w){3})f/u);
             var greedy = 'abcdef'.match(/(?<=(?<a>\w)+)f/u);
             var empty = 'abcdef'.match(/(?<a>(?<=\w{3}))f/u);
+            var impossible = 'abcdef'.match(/(?<=$abc)def/);
             fixed[1] === 'c' &&
             fixed.groups.a === 'c' &&
             greedy.groups.a === 'a' &&
             empty[1] === '' &&
-            empty.groups.a === '';");
+            empty.groups.a === '' &&
+            impossible === null;");
         Assert.True(result.AsBoolean());
     }
 
