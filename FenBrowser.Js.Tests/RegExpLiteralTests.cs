@@ -421,6 +421,22 @@ public sealed class RegExpLiteralTests
     }
 
     [Fact]
+    public void RegExpExecHandlesDeepStringConcatAndRepeatedCaptureClearing()
+    {
+        var concat = string.Join(" + ", Enumerable.Repeat("'x'", 180));
+        var result = Run(@"var s = " + concat + @";
+            var m = /(z)((a+)?(b+)?(c))*/.exec('zaacbbbcac');
+            s.length === 180 &&
+            m[0] === 'zaacbbbcac' &&
+            m[1] === 'z' &&
+            m[2] === 'ac' &&
+            m[3] === 'a' &&
+            m[4] === undefined &&
+            m[5] === 'c';");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void RegexLiteralRejectsReversedCharacterClassRange()
     {
         Assert.Throws<JsParserException>(() => Run(@"/^[z-a]$/;"));

@@ -293,7 +293,7 @@ public sealed partial class BytecodeInterpreter
                 bcFn.JitDelegate = JitCompiler.TryCompile(bcFn);
             }
 #endif
-            return ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn);
+            return ExecuteInternal(fn.Function, args, thisValue, ResolveFunctionOuterEnvironment(fn), callee: fn);
         }
 
         if (obj is NativeFunctionObject native)
@@ -739,9 +739,23 @@ public sealed partial class BytecodeInterpreter
         _pendingNewTarget = newTarget.Tag == JsValueTag.Undefined
             ? JsValue.Undefined
             : newTarget;
-        var result = ExecuteInternal(callee.Function, args, defaultInstance, callee.OuterEnvironment, callee: callee);
+        var result = ExecuteInternal(callee.Function, args, defaultInstance, ResolveFunctionOuterEnvironment(callee), callee: callee);
         ApplyDefaultHostObjectPrototypeIfUnset(result, newTarget);
         return IsConstructorReturnObject(result) ? result : defaultInstance;
+    }
+
+    private EnvironmentRecord? ResolveFunctionOuterEnvironment(JsFunctionObject function)
+    {
+        if (function.OwnerHandle is { } handle &&
+            TryGetPropertyValue(function, JsValue.FromObject(handle), "__realmGlobal__", out var realmGlobal) &&
+            realmGlobal.Tag == JsValueTag.Object)
+        {
+            return new GlobalEnvironmentRecord(
+                CreateBindingAdapter(realmGlobal.AsObjectHandle()),
+                realmGlobal);
+        }
+
+        return function.OuterEnvironment;
     }
 
     private static bool IsConstructorReturnObject(JsValue value)

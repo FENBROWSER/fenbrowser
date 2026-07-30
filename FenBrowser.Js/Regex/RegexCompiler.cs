@@ -405,6 +405,7 @@ public static class RegexCompiler
             var loopPos = CurrentPos;
             var splitPos = Emit(RegexOpCode.Split, 0, 0);
             var bodyStart = CurrentPos;
+            EmitResetGroupsForQuantifierBody(body);
             EmitAtom(body);
             var jumpPos = Emit(RegexOpCode.Jump, 0);
             PatchJump(jumpPos, loopPos);
@@ -421,6 +422,7 @@ public static class RegexCompiler
             // Greedy A+ : body ; Split L_body, L_skip ; L_skip:
             // Lazy A+? : body ; Split L_skip, L_body ; L_skip:
             var bodyStart = CurrentPos;
+            EmitResetGroupsForQuantifierBody(body);
             EmitAtom(body);
             var splitPos = Emit(RegexOpCode.Split, 0, 0);
             var skipPos = CurrentPos;
@@ -435,6 +437,7 @@ public static class RegexCompiler
         {
             // Greedy A? : Split L_body, L_skip ; L_body: body ; L_skip:
             // Lazy A?? : Split L_skip, L_body ; L_body: body ; L_skip:
+            EmitResetGroupsForQuantifierBody(body);
             var splitPos = Emit(RegexOpCode.Split, 0, 0);
             var bodyStart = CurrentPos;
             EmitAtom(body);
@@ -452,6 +455,7 @@ public static class RegexCompiler
             // First emit mandatory repetitions (min times):
             for (int i = 0; i < min; i++)
             {
+                EmitResetGroupsForQuantifierBody(body);
                 EmitAtom(body);
             }
 
@@ -461,6 +465,7 @@ public static class RegexCompiler
             {
                 var splitPos = Emit(RegexOpCode.Split, 0, 0);
                 var bodyStart = CurrentPos;
+                EmitResetGroupsForQuantifierBody(body);
                 EmitAtom(body);
                 var skipPos = CurrentPos;
                 if (greedy)
@@ -475,6 +480,7 @@ public static class RegexCompiler
             // {n,}: emit n mandatory then * for the rest
             for (int i = 0; i < min; i++)
             {
+                EmitResetGroupsForQuantifierBody(body);
                 EmitAtom(body);
             }
 
@@ -482,6 +488,16 @@ public static class RegexCompiler
         }
 
         // ─── Atom compilation ──────────────────────────────
+
+        private void EmitResetGroupsForQuantifierBody(AtomNode body)
+        {
+            var groups = new SortedSet<int>();
+            CollectCaptureGroups(body, groups);
+            foreach (var groupNumber in groups)
+            {
+                Emit(RegexOpCode.ResetGroup, groupNumber);
+            }
+        }
 
         private void EmitAtom(AtomNode atom)
         {

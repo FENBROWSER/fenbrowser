@@ -2956,6 +2956,37 @@ public sealed class BytecodeCompiler
         }
     }
 
+    private bool TryCompileLeftAssociativePlusChain(BinaryExpressionNode root, out int resultReg)
+    {
+        var operands = new List<ExpressionNode>();
+        ExpressionNode current = root;
+        while (current is BinaryExpressionNode { Operator: "+" } binary)
+        {
+            operands.Add(binary.Right);
+            current = binary.Left;
+        }
+
+        if (operands.Count < 16)
+        {
+            resultReg = -1;
+            return false;
+        }
+
+        operands.Add(current);
+        operands.Reverse();
+        var accReg = CompileExpression(operands[0]);
+        for (var i = 1; i < operands.Count; i++)
+        {
+            var rightReg = CompileExpression(operands[i]);
+            var dest = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.Add, dest, accReg, rightReg));
+            accReg = dest;
+        }
+
+        resultReg = accReg;
+        return true;
+    }
+
     private int CompileExpressionCore(ExpressionNode expr)
     {
         switch (expr)
@@ -4159,6 +4190,11 @@ public sealed class BytecodeCompiler
 
                     PatchJump(jumpIfNotUndef, _instructions.Count);
                     return nullishDest;
+                }
+
+                if (bin.Operator == "+" && TryCompileLeftAssociativePlusChain(bin, out var plusChainReg))
+                {
+                    return plusChainReg;
                 }
 
                 var leftReg = CompileExpression(bin.Left);
