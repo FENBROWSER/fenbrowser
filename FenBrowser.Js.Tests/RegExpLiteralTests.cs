@@ -385,6 +385,42 @@ public sealed class RegExpLiteralTests
     }
 
     [Fact]
+    public void RegExpSymbolMatchAllCachesLastIndexAndOriginalGlobalFlag()
+    {
+        var result = Run(@"var regexp = /\d/u;
+            var callCount = 0;
+            regexp.constructor = {
+              [Symbol.species]: function() {
+                callCount++;
+                return /\w/g;
+              }
+            };
+            var iter = regexp[Symbol.matchAll]('a*b');
+            var first = iter.next();
+            var second = iter.next();
+
+            var cached = /./g;
+            cached.lastIndex = { valueOf: function() { return 2; } };
+            var cachedIter = cached[Symbol.matchAll]('abcd');
+            cached.lastIndex = 0;
+            var cachedFirst = cachedIter.next();
+
+            var threw = false;
+            var poisoned = /./;
+            poisoned.lastIndex = { valueOf: function() { throw new Error('lastIndex'); } };
+            try { poisoned[Symbol.matchAll](''); } catch (e) { threw = e.message === 'lastIndex'; }
+
+            callCount === 1 &&
+            first.value[0] === 'a' &&
+            first.value.index === 0 &&
+            second.done === true &&
+            cachedFirst.value[0] === 'c' &&
+            cachedFirst.value.index === 2 &&
+            threw;");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void RegexLiteralRejectsReversedCharacterClassRange()
     {
         Assert.Throws<JsParserException>(() => Run(@"/^[z-a]$/;"));

@@ -8121,6 +8121,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var flagsValue = GetReceiverProperty(thisValue, "flags");
         var flagsStr = flagsValue.Tag == JsValueTag.Undefined ? "" : ToStringValue(flagsValue);
         var matcher = ConstructFunction(species, new[] { thisValue, JsValue.FromString(flagsStr) });
+        if (_heap.GetObject(thisValue.AsObjectHandle()) is RegExpObject)
+        {
+            var lastIndex = ToLengthNumber(GetReceiverProperty(thisValue, "lastIndex"));
+            if (!SetRegExpLastIndex(matcher, JsValue.FromNumber(lastIndex)))
+            {
+                throw new JsThrownException(CreateTypeError("Cannot set RegExp matcher lastIndex."));
+            }
+        }
+
+        var global = flagsStr.Contains('g', StringComparison.Ordinal);
+        var fullUnicode = flagsStr.Contains('u', StringComparison.Ordinal) || flagsStr.Contains('v', StringComparison.Ordinal);
 
         // Iterate via RegExpExec.
         {
@@ -8130,6 +8141,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var execResult = RegExpExec(matcher, input);
                 if (execResult.Tag == JsValueTag.Null) break;
                 results.Add(execResult);
+                if (!global) break;
+                var resultObj = _heap.GetObject(execResult.AsObjectHandle());
+                var matched = string.Empty;
+                if (TryGetPropertyValue(resultObj, execResult, "0", out var matchValue))
+                {
+                    matched = ToStringValue(matchValue);
+                }
+                if (matched.Length == 0)
+                {
+                    var thisIndex = ToLengthNumber(GetReceiverProperty(matcher, "lastIndex"));
+                    var nextIndex = AdvanceStringIndexNumber(input, thisIndex, fullUnicode);
+                    if (!SetRegExpLastIndex(matcher, JsValue.FromNumber(nextIndex)))
+                    {
+                        throw new JsThrownException(CreateTypeError("Cannot set RegExp matcher lastIndex."));
+                    }
+                }
             }
             var iter = new RegExpStringIteratorObject(results);
             iter.SetPrototype(EnsureRegExpStringIteratorPrototype());
