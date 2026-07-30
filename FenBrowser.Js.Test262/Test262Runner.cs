@@ -1808,6 +1808,7 @@ public sealed class Test262Runner
         "dateConstants.js",
         "byteConversionValues.js",
         "compareArray.js",
+        "compareIterator.js",
         "decimalToHexString.js",
         "detachArrayBuffer.js",
         "iteratorZipUtils.js",
