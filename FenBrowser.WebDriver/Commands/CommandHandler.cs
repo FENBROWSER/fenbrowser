@@ -517,6 +517,11 @@ namespace FenBrowser.WebDriver.Commands
 
             ValidateCookieJson(cookieEl);
             var cookie = JsonSerializer.Deserialize<WdCookie>(cookieEl.GetRawText()) ?? new WdCookie();
+            if (!cookieEl.TryGetProperty("sameSite", out _))
+            {
+                cookie.SameSite = null;
+            }
+
             if (string.IsNullOrWhiteSpace(cookie.Name))
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Cookie name is required");

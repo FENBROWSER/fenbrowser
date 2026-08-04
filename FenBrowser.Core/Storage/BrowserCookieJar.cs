@@ -320,7 +320,7 @@ namespace FenBrowser.Core.Storage
             bool partitioned = false;
             bool domainAttributeSpecified = false;
             DateTimeOffset? expires = null;
-            CookieSameSite sameSite = CookieSameSite.Lax;
+            CookieSameSite sameSite = CookieSameSite.Unspecified;
 
             for (int i = 1; i < segments.Length; i++)
             {
@@ -453,7 +453,7 @@ namespace FenBrowser.Core.Storage
             }
 
             int index = requestPath.LastIndexOf('/');
-            return index <= 0 ? "/" : requestPath[..(index + 1)];
+            return index <= 0 ? "/" : requestPath[..index];
         }
 
         private static bool DomainMatches(string host, string cookieDomain)

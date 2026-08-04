@@ -939,7 +939,7 @@ namespace FenBrowser.Host.WebDriver
                 Secure = cookie?.Secure ?? false,
                 HttpOnly = cookie?.HttpOnly ?? false,
                 Expiry = cookie?.Expiry,
-                SameSite = cookie?.SameSite ?? "Lax"
+                SameSite = cookie?.SameSite
             };
         }
 
@@ -954,7 +954,7 @@ namespace FenBrowser.Host.WebDriver
                 Secure = cookie?.Secure ?? false,
                 HttpOnly = cookie?.HttpOnly ?? false,
                 Expiry = cookie?.Expiry,
-                SameSite = cookie?.SameSite ?? "Lax"
+                SameSite = cookie?.SameSite
             };
         }
 

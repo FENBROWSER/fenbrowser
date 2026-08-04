@@ -59,6 +59,21 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public void DocumentCookie_DefaultPathAndUnspecifiedSameSiteMatchWebDriverConversion()
+        {
+            var jar = new BrowserCookieJar();
+            var documentUri = new Uri("https://web-platform.test/common/blank.html");
+
+            jar.SetDocumentCookie(documentUri, "foo=bar", documentUri);
+
+            var cookie = Assert.Single(jar.SnapshotCookies(documentUri, documentUri, includeHttpOnly: true));
+            Assert.Equal("foo", cookie.Name);
+            Assert.Equal("bar", cookie.Value);
+            Assert.Equal("/common", cookie.Path);
+            Assert.Equal(CookieSameSite.Unspecified, cookie.SameSite);
+        }
+
+        [Fact]
         public void ResourceManagers_UseInjectedBrowsingSessionJar()
         {
             var sharedJar = new BrowserCookieJar();

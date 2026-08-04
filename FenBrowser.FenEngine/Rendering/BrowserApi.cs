@@ -8031,6 +8031,7 @@ pre {{
             {
                 CookieSameSite.Strict => "Strict",
                 CookieSameSite.None => "None",
+                CookieSameSite.Unspecified => "None",
                 _ => "Lax"
             };
         }
