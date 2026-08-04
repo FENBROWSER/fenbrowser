@@ -126,7 +126,9 @@ namespace FenBrowser.FenEngine.Layout
             int explicitColCount, 
             int explicitRowCount,
             string autoFlow,
-            Dictionary<string, NamedArea> areas) // "row", "column", "row dense", "column dense"
+            Dictionary<string, NamedArea> areas,
+            IReadOnlyDictionary<string, int>? columnLineNames = null,
+            IReadOnlyDictionary<string, int>? rowLineNames = null) // "row", "column", "row dense", "column dense"
         {
             var positions = new Dictionary<Node, GridItemPosition>();
             var map = new GridOccupancyMap();
@@ -169,7 +171,7 @@ namespace FenBrowser.FenEngine.Layout
             foreach (var item in items)
             {
                 var style = styles.TryGetValue(item, out var s) ? s : null;
-                var rawPos = DetermineGridPosition(style, item, areas);
+                var rawPos = DetermineGridPosition(style, item, areas, columnLineNames, rowLineNames);
                 
                 // If fully explicit
                 if (rawPos.HasExplicitCol && rawPos.HasExplicitRow)
@@ -211,7 +213,7 @@ namespace FenBrowser.FenEngine.Layout
                         // Explicit Row, Auto Column
                         int r = rawPos.RowStart;
                         pos.RowStart = r;
-                        pos.RowEnd = r + rawPos.RowSpan;
+                        pos.RowEnd = rawPos.RowEnd ?? (r + rawPos.RowSpan);
 
                         // Reset cursor col if we can't continue on same row naturally
                         // Actually, for "explicit row" items, we should start at 1?
@@ -241,7 +243,7 @@ namespace FenBrowser.FenEngine.Layout
                         // Explicit Col, Auto Row (Automatic placement but fixed column)
                         int c = rawPos.ColStart;
                         pos.ColumnStart = c;
-                        pos.ColumnEnd = c + rawPos.ColSpan;
+                        pos.ColumnEnd = rawPos.ColEnd ?? (c + rawPos.ColSpan);
 
                         int r = isDense ? 1 : cursorRow; // Start search from cursor row
                         while (true)
@@ -302,7 +304,7 @@ namespace FenBrowser.FenEngine.Layout
                         // Explicit Column, Auto Row
                         int c = rawPos.ColStart;
                         pos.ColumnStart = c;
-                        pos.ColumnEnd = c + rawPos.ColSpan;
+                        pos.ColumnEnd = rawPos.ColEnd ?? (c + rawPos.ColSpan);
                         
                         int r = 1;
                         while(true)
@@ -325,7 +327,7 @@ namespace FenBrowser.FenEngine.Layout
                         // Explicit Row, Auto Col
                         int r = rawPos.RowStart;
                         pos.RowStart = r;
-                        pos.RowEnd = r + rawPos.RowSpan;
+                        pos.RowEnd = rawPos.RowEnd ?? (r + rawPos.RowSpan);
 
                         int c = isDense ? 1 : cursorCol;
                         while(true)
@@ -393,7 +395,12 @@ namespace FenBrowser.FenEngine.Layout
             public Node Node;
         }
 
-        private static RawGridPosition DetermineGridPosition(CssComputed style, Node node, Dictionary<string, NamedArea> areas)
+        private static RawGridPosition DetermineGridPosition(
+            CssComputed style,
+            Node node,
+            Dictionary<string, NamedArea> areas,
+            IReadOnlyDictionary<string, int>? columnLineNames,
+            IReadOnlyDictionary<string, int>? rowLineNames)
         {
             style ??= new CssComputed();
             var p = new RawGridPosition { Node = node, RowSpan = 1, ColSpan = 1 };
@@ -435,20 +442,51 @@ namespace FenBrowser.FenEngine.Layout
 
             // 3. Fallback to specific properties
             // Row
-            if (int.TryParse(style.GridRowStart, out int rsProp)) { p.RowStart = rsProp; p.HasExplicitRow = true; }
+            if (TryResolveGridLine(style.GridRowStart, rowLineNames, preferStart: true, out int rsNamed)) { p.RowStart = rsNamed; p.HasExplicitRow = true; }
+            else if (int.TryParse(style.GridRowStart, out int rsProp)) { p.RowStart = rsProp; p.HasExplicitRow = true; }
             else p.RowStart = 1;
 
-            if (int.TryParse(style.GridRowEnd, out int reProp)) { p.RowEnd = reProp; }
+            if (TryResolveGridLine(style.GridRowEnd, rowLineNames, preferStart: false, out int reNamed)) { p.RowEnd = reNamed; }
+            else if (int.TryParse(style.GridRowEnd, out int reProp)) { p.RowEnd = reProp; }
             else if (TryParseSpan(style.GridRowEnd, out int rspan)) { p.RowSpan = rspan; }
+            else if (p.HasExplicitRow && TryResolveGridLine(style.GridRowStart, rowLineNames, preferStart: false, out int reFromStart)) { p.RowEnd = reFromStart; }
             
             // Col
-            if (int.TryParse(style.GridColumnStart, out int csProp)) { p.ColStart = csProp; p.HasExplicitCol = true; }
+            if (TryResolveGridLine(style.GridColumnStart, columnLineNames, preferStart: true, out int csNamed)) { p.ColStart = csNamed; p.HasExplicitCol = true; }
+            else if (int.TryParse(style.GridColumnStart, out int csProp)) { p.ColStart = csProp; p.HasExplicitCol = true; }
             else p.ColStart = 1;
 
-            if (int.TryParse(style.GridColumnEnd, out int ceProp)) { p.ColEnd = ceProp; }
+            if (TryResolveGridLine(style.GridColumnEnd, columnLineNames, preferStart: false, out int ceNamed)) { p.ColEnd = ceNamed; }
+            else if (int.TryParse(style.GridColumnEnd, out int ceProp)) { p.ColEnd = ceProp; }
             else if (TryParseSpan(style.GridColumnEnd, out int cspan)) { p.ColSpan = cspan; }
+            else if (p.HasExplicitCol && TryResolveGridLine(style.GridColumnStart, columnLineNames, preferStart: false, out int ceFromStart)) { p.ColEnd = ceFromStart; }
             
             return p;
+        }
+
+        private static bool TryResolveGridLine(
+            string? value,
+            IReadOnlyDictionary<string, int>? lineNames,
+            bool preferStart,
+            out int line)
+        {
+            line = 0;
+            if (string.IsNullOrWhiteSpace(value) || lineNames == null || lineNames.Count == 0)
+            {
+                return false;
+            }
+
+            var name = value.Trim();
+            if (lineNames.TryGetValue(name, out line))
+            {
+                return true;
+            }
+
+            var suffixed = name.EndsWith("-start", StringComparison.OrdinalIgnoreCase) ||
+                           name.EndsWith("-end", StringComparison.OrdinalIgnoreCase)
+                ? name
+                : name + (preferStart ? "-start" : "-end");
+            return lineNames.TryGetValue(suffixed, out line);
         }
 
         private static bool TryParseSpan(string val, out int span)
@@ -539,6 +577,8 @@ namespace FenBrowser.FenEngine.Layout
             // Parse grid template
             var columnTracks = ParseTracks(style.GridTemplateColumns, availableSize.Width, (float)(style.ColumnGap ?? style.Gap ?? 0));
             var rowTracks = ParseTracks(style.GridTemplateRows, availableSize.Height, (float)(style.RowGap ?? style.Gap ?? 0));
+            var columnLineNames = ParseTrackLineNames(style.GridTemplateColumns, availableSize.Width, (float)(style.ColumnGap ?? style.Gap ?? 0));
+            var rowLineNames = ParseTrackLineNames(style.GridTemplateRows, availableSize.Height, (float)(style.RowGap ?? style.Gap ?? 0));
             
             // Parse areas (Phase 3)
             var areas = ParseGridTemplateAreas(style.GridTemplateAreas);
@@ -567,7 +607,7 @@ namespace FenBrowser.FenEngine.Layout
             string autoFlow = style.GridAutoFlow?.ToLowerInvariant() ?? "row";
             
             // Compute Layout
-            var placement = ComputePlacements(items, styles, columnTracks.Count, rowTracks.Count, autoFlow, areas);
+            var placement = ComputePlacements(items, styles, columnTracks.Count, rowTracks.Count, autoFlow, areas, columnLineNames, rowLineNames);
             var positions = placement.Positions;
             int usedColCount = positions.Count > 0 ? positions.Values.Max(p => p.ColumnEnd - 1) : 0;
             int usedRowCount = positions.Count > 0 ? positions.Values.Max(p => p.RowEnd - 1) : 0;
@@ -652,6 +692,8 @@ namespace FenBrowser.FenEngine.Layout
             // Parse grid template
             var columnTracks = ParseTracks(style.GridTemplateColumns, bounds.Width, columnGap);
             var rowTracks = ParseTracks(style.GridTemplateRows, bounds.Height, rowGap);
+            var columnLineNames = ParseTrackLineNames(style.GridTemplateColumns, bounds.Width, columnGap);
+            var rowLineNames = ParseTrackLineNames(style.GridTemplateRows, bounds.Height, rowGap);
 
             int columnTracksOriginalCount = columnTracks.Count;
             int rowTracksOriginalCount = rowTracks.Count;
@@ -672,7 +714,7 @@ namespace FenBrowser.FenEngine.Layout
             string autoFlow = style.GridAutoFlow?.ToLowerInvariant() ?? "row";
             
             // Compute Layout
-            var placement = ComputePlacements(items, styles, columnTracks.Count, rowTracks.Count, autoFlow, areas);
+            var placement = ComputePlacements(items, styles, columnTracks.Count, rowTracks.Count, autoFlow, areas, columnLineNames, rowLineNames);
             var positions = placement.Positions;
             int usedColCount = positions.Count > 0 ? positions.Values.Max(p => p.ColumnEnd - 1) : 0;
             int usedRowCount = positions.Count > 0 ? positions.Values.Max(p => p.RowEnd - 1) : 0;
@@ -851,9 +893,12 @@ namespace FenBrowser.FenEngine.Layout
                 if (needsIntrinsicW || needsIntrinsicH)
                 {
                     var intrinsic = measureNode(item, new SKSize(float.PositiveInfinity, float.PositiveInfinity), depth + 1);
-                    if (needsIntrinsicW && intrinsic.MaxChildWidth > 0)
+                    float intrinsicWidth = intrinsic.MaxContentWidth > 0
+                        ? intrinsic.MaxContentWidth
+                        : intrinsic.MaxChildWidth;
+                    if (needsIntrinsicW && intrinsicWidth > 0)
                     {
-                        itemW = Math.Min(trackW, intrinsic.MaxChildWidth);
+                        itemW = Math.Min(trackW, intrinsicWidth);
                     }
 
                     if (needsIntrinsicH && intrinsic.ContentHeight > 0)
@@ -1048,6 +1093,14 @@ namespace FenBrowser.FenEngine.Layout
             if (float.IsNaN(availableSpace) || float.IsInfinity(availableSpace) || availableSpace <= 0)
             {
                 return;
+            }
+
+            foreach (var track in tracks)
+            {
+                if (track.MaxLimit.IsPx && !track.MaxLimit.IsFlex && track.BaseSize < track.MaxLimit.Value)
+                {
+                    track.BaseSize = Math.Max(track.BaseSize, track.MaxLimit.Value);
+                }
             }
 
             float usedSpace = tracks

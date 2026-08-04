@@ -33,11 +33,22 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             CollectNodeMappings(container, nodeToBox, styles);
             styles[containerElement] = containerStyle;
 
+            var outOfFlow = container.Children
+                .Where(child => child != null &&
+                                child.ComputedStyle?.Display?.Contains("none", StringComparison.OrdinalIgnoreCase) != true &&
+                                child.IsOutOfFlow)
+                .ToList();
+
             // Grid formatting should follow the laid-out box tree children that survived
             // visibility/display filtering, not raw DOM children.
             var childrenSource = new List<Node>(container.Children.Count);
             foreach (var child in container.Children)
             {
+                if (child == null || child.IsOutOfFlow)
+                {
+                    continue;
+                }
+
                 var itemNode = child.SourceNode ?? FindFirstSourceNode(child);
                 if (itemNode == null)
                 {
@@ -116,12 +127,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     float outerWidth = Math.Max(0f, childBox.Geometry.MarginBox.Width);
                     float minContentWidth = ResolveMinContentWidth(childBox, state.ViewportWidth, outerWidth);
+                    float maxContentWidth = ResolveMaxContentWidth(childBox, state.ViewportWidth, outerWidth);
 
                     var metrics = new LayoutMetrics
                     {
                         MaxChildWidth = outerWidth,
                         MinContentWidth = minContentWidth,
-                        MaxContentWidth = outerWidth,
+                        MaxContentWidth = maxContentWidth,
                         ContentHeight = Math.Max(0f, childBox.Geometry.MarginBox.Height),
                         ActualHeight = Math.Max(0f, childBox.Geometry.MarginBox.Height),
                         Baseline = baseline
@@ -219,6 +231,33 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             computedContentHeight = ApplyHeightConstraints(containerStyle, computedContentHeight, state);
 
             LayoutBoxOps.ComputeBoxModelFromContent(container, container.Geometry.ContentBox.Width, computedContentHeight);
+
+            foreach (var child in outOfFlow)
+            {
+                var context = FormattingContext.Resolve(child);
+                var intrinsicState = state.Clone();
+                intrinsicState.AvailableSize = new SKSize(float.PositiveInfinity, float.PositiveInfinity);
+                intrinsicState.ContainingBlockWidth = container.Geometry.ContentBox.Width;
+                intrinsicState.ContainingBlockHeight = container.Geometry.ContentBox.Height;
+                context.Layout(child, intrinsicState);
+
+                LayoutPositioningLogic.ResolvePositionedBox(child, container, container.Geometry, state);
+
+                float resolvedWidth = Math.Max(0f, child.Geometry.ContentBox.Width);
+                float resolvedHeight = Math.Max(0f, child.Geometry.ContentBox.Height);
+                var resolvedState = state.Clone();
+                resolvedState.AvailableSize = new SKSize(resolvedWidth, resolvedHeight);
+                resolvedState.ContainingBlockWidth = resolvedWidth;
+                resolvedState.ContainingBlockHeight = resolvedHeight;
+                context.Layout(child, resolvedState);
+
+                LayoutPositioningLogic.ResolvePositionedBox(
+                    child,
+                    container,
+                    container.Geometry,
+                    state,
+                    collapsePositioningMarginsInFinalGeometry: true);
+            }
         }
 
         private static LayoutMetrics BuildMetricsFromCurrentGeometry(LayoutBox box)
@@ -368,6 +407,71 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
         }
 
+        private static float ResolveMaxContentWidth(LayoutBox box, float viewportWidth, float measuredOuterWidth)
+        {
+            if (box?.Geometry == null)
+            {
+                return 0f;
+            }
+
+            if (box.ComputedStyle?.Width.HasValue == true)
+            {
+                return Math.Max(0f, measuredOuterWidth);
+            }
+
+            if (box.SourceNode is Text text)
+            {
+                var metrics = TextLayoutComputer.ComputeTextLayout(
+                    text,
+                    box.ComputedStyle ?? new CssComputed(),
+                    new SKSize(float.PositiveInfinity, float.PositiveInfinity),
+                    viewportWidth).Metrics;
+                return Math.Max(0f, metrics.MaxContentWidth);
+            }
+
+            var inFlowChildren = box.Children
+                .Where(child => child != null &&
+                                !child.IsOutOfFlow &&
+                                child.ComputedStyle?.Display?.Contains("none", StringComparison.OrdinalIgnoreCase) != true &&
+                                (child.SourceNode is not Text childText || !string.IsNullOrWhiteSpace(childText.Data)))
+                .ToList();
+            if (inFlowChildren.Count == 0)
+            {
+                return Math.Max(0f, measuredOuterWidth);
+            }
+
+            string display = box.ComputedStyle?.Display?.Trim().ToLowerInvariant() ?? string.Empty;
+            string direction = box.ComputedStyle?.FlexDirection?.Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(direction) &&
+                box.ComputedStyle?.Map != null &&
+                box.ComputedStyle.Map.TryGetValue("flex-direction", out var rawDirection))
+            {
+                direction = rawDirection?.Trim().ToLowerInvariant();
+            }
+
+            bool isRowFlex = (display == "flex" || display == "inline-flex") &&
+                             (string.IsNullOrEmpty(direction) || direction.Contains("row", StringComparison.Ordinal));
+            float descendantWidth = isRowFlex
+                ? inFlowChildren.Sum(child => ResolveMaxContentWidth(child, viewportWidth, child.Geometry.MarginBox.Width))
+                : inFlowChildren.Max(child => ResolveMaxContentWidth(child, viewportWidth, child.Geometry.MarginBox.Width));
+
+            if (isRowFlex && inFlowChildren.Count > 1)
+            {
+                double gap = box.ComputedStyle?.ColumnGap ?? box.ComputedStyle?.Gap ?? 0;
+                descendantWidth += Math.Max(0f, (float)gap) * (inFlowChildren.Count - 1);
+            }
+
+            float horizontalChrome =
+                (float)box.Geometry.Padding.Left +
+                (float)box.Geometry.Padding.Right +
+                (float)box.Geometry.Border.Left +
+                (float)box.Geometry.Border.Right +
+                (float)box.Geometry.Margin.Left +
+                (float)box.Geometry.Margin.Right;
+
+            return Math.Max(Math.Max(0f, measuredOuterWidth), descendantWidth + horizontalChrome);
+        }
+
         private static Node FindFirstSourceNode(LayoutBox box)
         {
             foreach (var child in box.Children)
@@ -398,6 +502,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float maxBottom = 0f;
             foreach (var child in container.Children)
             {
+                if (child == null || child.IsOutOfFlow)
+                {
+                    continue;
+                }
+
                 maxBottom = Math.Max(maxBottom, child.Geometry.MarginBox.Bottom - contentTop);
             }
 

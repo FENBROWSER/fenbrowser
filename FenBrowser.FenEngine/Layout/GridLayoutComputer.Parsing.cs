@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 
 namespace FenBrowser.FenEngine.Layout
 {
@@ -11,10 +12,7 @@ namespace FenBrowser.FenEngine.Layout
             var tracks = new List<GridTrack>();
             if (string.IsNullOrWhiteSpace(template)) return tracks;
             
-            // Normalize spaces around parenthesis
-            template = template.Replace("(", " ( ").Replace(")", " ) ").Replace(",", " , ");
-            
-            var tokens = template.Split(new[] { ' ', '\n', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            var tokens = TokenizeTrackTemplate(template);
             int index = 0;
 
             while (index < tokens.Length)
@@ -40,10 +38,45 @@ namespace FenBrowser.FenEngine.Layout
             return tracks;
         }
 
+        private static Dictionary<string, int> ParseTrackLineNames(string template, float containerSize, float gap)
+        {
+            var lineNames = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(template)) return lineNames;
+
+            var tokens = TokenizeTrackTemplate(template);
+            int index = 0;
+            int line = 1;
+            var parsedTracks = new List<GridTrack>();
+
+            while (index < tokens.Length)
+            {
+                if (TryConsumeLineNameGroup(tokens, ref index, name =>
+                    lineNames.TryAdd(name, line)))
+                {
+                    continue;
+                }
+
+                int before = parsedTracks.Count;
+                ParseTrackDefinition(tokens, ref index, parsedTracks, containerSize, gap);
+                int added = parsedTracks.Count - before;
+                if (added > 0)
+                {
+                    line += added;
+                }
+            }
+
+            return lineNames;
+        }
+
         private static void ParseTrackDefinition(string[] tokens, ref int index, List<GridTrack> tracks, float containerSize, float gap)
         {
             if (index >= tokens.Length) return;
             string t = tokens[index];
+
+            if (TryConsumeLineNameGroup(tokens, ref index, _ => { }))
+            {
+                return;
+            }
 
             if (t == "," || t == ")")
             {
@@ -105,9 +138,9 @@ namespace FenBrowser.FenEngine.Layout
             {
                 index++; // consume minmax
                 Consume(tokens, ref index, "(");
-                var min = ParseSimpleSize(tokens[index++]);
+                var min = ParseSimpleSize(tokens[index++], containerSize);
                 Consume(tokens, ref index, ",");
-                var max = ParseSimpleSize(tokens[index++]);
+                var max = ParseSimpleSize(tokens[index++], containerSize);
                 Consume(tokens, ref index, ")");
                 
                 tracks.Add(new GridTrack { MinLimit = min, MaxLimit = max });
@@ -116,7 +149,7 @@ namespace FenBrowser.FenEngine.Layout
             {
                 index++; // consume fit-content
                 Consume(tokens, ref index, "(");
-                var limit = ParseSimpleSize(tokens[index++]);
+                var limit = ParseSimpleSize(tokens[index++], containerSize);
                 Consume(tokens, ref index, ")");
                 
                 // fit-content(limit) is effectively min(max-content, max(auto, limit))
@@ -138,7 +171,7 @@ namespace FenBrowser.FenEngine.Layout
             else
             {
                 // Single simple track
-                var size = ParseSimpleSize(tokens[index++]);
+                var size = ParseSimpleSize(tokens[index++], containerSize);
                 
                 var track = new GridTrack();
                 if (size.IsPx || size.IsPercent)
@@ -244,12 +277,24 @@ namespace FenBrowser.FenEngine.Layout
             }
         }
 
-        private static GridTrackSize ParseSimpleSize(string val)
+        private static GridTrackSize ParseSimpleSize(string val, float containerSize)
         {
             val = val.Trim().ToLowerInvariant();
             if (val == "0") return GridTrackSize.FromPx(0);
             if (val == "min-content") return GridTrackSize.MinContent;
             if (val == "max-content") return GridTrackSize.MaxContent;
+
+            if (val.StartsWith("calc(", StringComparison.Ordinal) ||
+                val.StartsWith("min(", StringComparison.Ordinal) ||
+                val.StartsWith("max(", StringComparison.Ordinal) ||
+                val.StartsWith("clamp(", StringComparison.Ordinal))
+            {
+                float resolved = LayoutHelper.EvaluateCssExpression(val, containerSize, containerSize, containerSize);
+                if (resolved >= 0f && !float.IsNaN(resolved) && !float.IsInfinity(resolved))
+                {
+                    return GridTrackSize.FromPx(resolved);
+                }
+            }
             
             if (val.EndsWith("fr"))
             {
@@ -261,12 +306,136 @@ namespace FenBrowser.FenEngine.Layout
                  float.TryParse(val.Replace("px", ""), out float px);
                  return GridTrackSize.FromPx(px);
             }
+            if (val.EndsWith("rem"))
+            {
+                 float.TryParse(val.Replace("rem", ""), out float rem);
+                 return GridTrackSize.FromPx(rem * 16f);
+            }
             if (val.EndsWith("%"))
             {
                  float.TryParse(val.Replace("%", ""), out float pct);
                  return GridTrackSize.FromPercent(pct);
             }
             return GridTrackSize.Auto;
+        }
+
+        private static string[] TokenizeTrackTemplate(string template)
+        {
+            var protectedExpressions = new Dictionary<string, string>(StringComparer.Ordinal);
+            var protectedTemplate = new StringBuilder(template.Length);
+
+            for (int index = 0; index < template.Length;)
+            {
+                if (TryReadCssMathFunction(template, index, out int endIndex))
+                {
+                    string placeholder = $"__fen_grid_math_{protectedExpressions.Count}__";
+                    protectedExpressions[placeholder] = template.Substring(index, endIndex - index + 1);
+                    protectedTemplate.Append(placeholder);
+                    index = endIndex + 1;
+                    continue;
+                }
+
+                protectedTemplate.Append(template[index++]);
+            }
+
+            string normalized = protectedTemplate.ToString()
+                .Replace("(", " ( ")
+                .Replace(")", " ) ")
+                .Replace(",", " , ");
+            var tokens = normalized.Split(new[] { ' ', '\n', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int index = 0; index < tokens.Length; index++)
+            {
+                if (protectedExpressions.TryGetValue(tokens[index], out string expression))
+                {
+                    tokens[index] = expression;
+                }
+            }
+
+            return tokens;
+        }
+
+        private static bool TryReadCssMathFunction(string text, int startIndex, out int endIndex)
+        {
+            endIndex = -1;
+            if (startIndex > 0)
+            {
+                char previous = text[startIndex - 1];
+                if (char.IsLetterOrDigit(previous) || previous == '-' || previous == '_')
+                {
+                    return false;
+                }
+            }
+
+            string functionName = null;
+            foreach (string candidate in new[] { "calc", "min", "max", "clamp" })
+            {
+                if (text.AsSpan(startIndex).StartsWith(candidate + "(", StringComparison.OrdinalIgnoreCase))
+                {
+                    functionName = candidate;
+                    break;
+                }
+            }
+
+            if (functionName == null)
+            {
+                return false;
+            }
+
+            int depth = 0;
+            for (int index = startIndex + functionName.Length; index < text.Length; index++)
+            {
+                if (text[index] == '(')
+                {
+                    depth++;
+                }
+                else if (text[index] == ')')
+                {
+                    depth--;
+                    if (depth == 0)
+                    {
+                        endIndex = index;
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TryConsumeLineNameGroup(string[] tokens, ref int index, Action<string> onName)
+        {
+            if (index >= tokens.Length || !tokens[index].StartsWith("[", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            while (index < tokens.Length)
+            {
+                var token = tokens[index++];
+                var name = token.Trim();
+                if (name.StartsWith("[", StringComparison.Ordinal))
+                {
+                    name = name[1..];
+                }
+
+                bool closes = name.EndsWith("]", StringComparison.Ordinal);
+                if (closes)
+                {
+                    name = name[..^1];
+                }
+
+                if (!string.IsNullOrWhiteSpace(name))
+                {
+                    onName(name.Trim());
+                }
+
+                if (closes)
+                {
+                    break;
+                }
+            }
+
+            return true;
         }
 
         private static void Consume(string[] tokens, ref int index, string expected)

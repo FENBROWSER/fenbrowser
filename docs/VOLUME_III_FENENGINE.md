@@ -10518,3 +10518,14 @@ Verification:
 - Upstream `IndexedDB/idbobjectstore_createIndex.any.html` changes from
   whole-test `TIMEOUT` with three timed-out subtests to `OK`: all 21 subtests
   terminate, 14 pass, and seven remain ordinary assertion failures.
+
+## 2.399 MDN Shadow DOM, Intrinsic Grid, And Custom-Property Rendering (2026-08-01)
+
+- Declarative shadow-DOM activation now matches `template` case-insensitively and moves every child node, including text, into the attached shadow root. Box-tree traversal composes assigned slot nodes and retains fallback content when assignment is empty.
+- Grid item alignment now uses recursively measured max-content width for block wrappers and row flex containers. Centered navigation content therefore receives its intrinsic width instead of collapsing to a single child width.
+- CSS custom-property resolution preserves the guaranteed-invalid state through nested `var()` references. An outer fallback is selected when an intermediate custom property resolves to `initial`, rather than accepting the intermediate property's trailing tokens as a valid color.
+
+Verification:
+
+- The focused MDN regression slice passes `13/13` across declarative shadow DOM, slot composition, grid max-content sizing, and custom-property fallback.
+- Exact URL bundle `logs/real-site/developer.mozilla.org/20260801T075921Z` completes with `5/5` scripts, 73 network requests, zero failed requests, zero navigation failures, and zero exceptions. Its screenshot shows separated navigation labels, laid-out hero content, and visible featured-card text.

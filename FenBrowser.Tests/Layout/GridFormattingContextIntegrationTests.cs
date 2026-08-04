@@ -295,6 +295,176 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(1192f, sidebarBox.Geometry.MarginBox.Right, 1);
         }
 
+        [Fact]
+        public void GridFormattingContext_CenteredFlexItem_UsesItsMaxContentWidth()
+        {
+            var root = new Element("nav");
+            var logo = new Element("div");
+            var menuWrapper = new Element("div");
+            var menu = new Element("nav");
+            var search = new Element("button");
+            var actions = new Element("div");
+            root.AppendChild(logo);
+            root.AppendChild(menuWrapper);
+            root.AppendChild(search);
+            root.AppendChild(actions);
+            menuWrapper.AppendChild(menu);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed
+                {
+                    Display = "grid",
+                    Width = 1248,
+                    GridTemplateColumns = "min-content 1fr min-content min-content",
+                    JustifyItems = "center"
+                },
+                [logo] = new CssComputed { Display = "block", Width = 83, Height = 24 },
+                [menuWrapper] = new CssComputed { Display = "block" },
+                [menu] = new CssComputed { Display = "flex", FlexDirection = "row", Height = 36 },
+                [search] = new CssComputed { Display = "block", Width = 80, Height = 32 },
+                [actions] = new CssComputed { Display = "block", Width = 120, Height = 32 }
+            };
+
+            foreach (var labelText in new[] { "HTML", "CSS", "JavaScript", "Web APIs", "All", "Learn", "Tools" })
+            {
+                var tab = new Element("div");
+                var button = new Element("button");
+                var label = new Element("span");
+                label.AppendChild(new Text(labelText));
+                button.AppendChild(label);
+                tab.AppendChild(button);
+                menu.AppendChild(tab);
+
+                styles[tab] = new CssComputed { Display = "block" };
+                styles[button] = new CssComputed
+                {
+                    Display = "flex",
+                    FlexDirection = "row",
+                    Padding = new Thickness(11.2, 8, 11.2, 8)
+                };
+                styles[label] = new CssComputed { Display = "inline", FontSize = 16, LineHeight = 1 };
+            }
+
+            var rootBox = LayoutRoot(root, styles, 1248, 100);
+            var menuBox = FindBox(rootBox, menu);
+
+            Assert.NotNull(menuBox);
+            Assert.True(menuBox.Geometry.MarginBox.Width >= 400f,
+                $"Expected centered flex menu to keep its max-content width, got {menuBox.Geometry.MarginBox.Width}.");
+
+            for (var index = 1; index < menuBox.Children.Count; index++)
+            {
+                Assert.True(
+                    menuBox.Children[index].Geometry.MarginBox.Left >= menuBox.Children[index - 1].Geometry.MarginBox.Right - 0.5f,
+                    $"Expected flex tabs not to overlap at index {index}.");
+            }
+        }
+
+        [Fact]
+        public void GridFormattingContext_NamedContentLineUsesRemTrack()
+        {
+            var root = new Element("main");
+            var content = new Element("section");
+            root.AppendChild(content);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed
+                {
+                    Display = "grid",
+                    Width = 1280,
+                    GridTemplateColumns = "[extended-full-start] max(1rem,calc(50vw - 720px + 1rem)) [full-start] 1fr [content-start] minmax(0,48rem) [content-end] 1fr [full-end] max(1rem,calc(50vw - 720px + 1rem)) [extended-full-end]"
+                },
+                [content] = new CssComputed
+                {
+                    Display = "block",
+                    GridColumnStart = "content",
+                    Height = 40
+                }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 1280, 200);
+            var contentBox = FindBox(rootBox, content);
+
+            Assert.NotNull(contentBox);
+            Assert.Equal(256f, contentBox.Geometry.MarginBox.Left, 1);
+            Assert.Equal(768f, contentBox.Geometry.MarginBox.Width, 1);
+        }
+
+        [Fact]
+        public void GridFormattingContext_NamedContentLineCanSpanToExtendedEnd()
+        {
+            var root = new Element("main");
+            var content = new Element("section");
+            root.AppendChild(content);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed
+                {
+                    Display = "grid",
+                    Width = 1280,
+                    GridTemplateColumns = "[extended-full-start] 16px [full-start] 1fr [content-start] minmax(0,48rem) [content-end] 1fr [full-end] 16px [extended-full-end]"
+                },
+                [content] = new CssComputed
+                {
+                    Display = "block",
+                    GridColumnStart = "content",
+                    GridColumnEnd = "extended-full-end",
+                    Height = 40
+                }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 1280, 200);
+            var contentBox = FindBox(rootBox, content);
+
+            Assert.NotNull(contentBox);
+            Assert.Equal(256f, contentBox.Geometry.MarginBox.Left, 1);
+            Assert.Equal(1024f, contentBox.Geometry.MarginBox.Width, 1);
+        }
+
+        [Fact]
+        public void GridFormattingContext_AutoWidthNestedGridUsesContainingBlock()
+        {
+            var page = new Element("div");
+            var grid = new Element("main");
+            var content = new Element("section");
+            page.AppendChild(grid);
+            grid.AppendChild(content);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [page] = new CssComputed
+                {
+                    Display = "block",
+                    Width = 1280
+                },
+                [grid] = new CssComputed
+                {
+                    Display = "grid",
+                    GridTemplateColumns = "[extended-full-start] 16px [full-start] 1fr [content-start] minmax(0,48rem) [content-end] 1fr [full-end] 16px [extended-full-end]"
+                },
+                [content] = new CssComputed
+                {
+                    Display = "block",
+                    GridColumnStart = "content",
+                    GridColumnEnd = "extended-full-end",
+                    Height = 40
+                }
+            };
+
+            var rootBox = LayoutRoot(page, styles, 1280, 200);
+            var gridBox = FindBox(rootBox, grid);
+            var contentBox = FindBox(rootBox, content);
+
+            Assert.NotNull(gridBox);
+            Assert.NotNull(contentBox);
+            Assert.Equal(1280f, gridBox.Geometry.MarginBox.Width, 1);
+            Assert.Equal(256f, contentBox.Geometry.MarginBox.Left, 1);
+            Assert.Equal(1024f, contentBox.Geometry.MarginBox.Width, 1);
+        }
+
         private static LayoutBox LayoutRoot(Element root, Dictionary<Node, CssComputed> styles, float width, float height)
         {
             var builder = new BoxTreeBuilder(styles);
