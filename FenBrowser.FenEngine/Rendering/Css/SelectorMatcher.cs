@@ -748,23 +748,23 @@ namespace FenBrowser.FenEngine.Rendering.Css
             if (combinator == ' ') // Descendant
             {
                 // Phase 2.1: Ancestor Bloom Filter Optimization
-                if (CanFastReject(element, chain, index - 1))
+                if (element.GetRootNode() is not ShadowRoot && CanFastReject(element, chain, index - 1))
                 {
                     return false;
                 }
 
-                var ancestor = element.ParentElement; // Using ParentElement
+                var ancestor = GetSelectorParent(element);
                 while (ancestor != null)
                 {
                     if (MatchesChainRecursive(ancestor, chain, index - 1, depth + 1))
                         return true;
-                    ancestor = ancestor.ParentElement;
+                    ancestor = GetSelectorParent(ancestor);
                 }
                 return false;
             }
             else if (combinator == '>') // Child
             {
-                return MatchesChainRecursive(element.ParentElement, chain, index - 1, depth + 1);
+                return MatchesChainRecursive(GetSelectorParent(element), chain, index - 1, depth + 1);
             }
             else if (combinator == '+') // Adjacent Sibling
             {
@@ -1048,6 +1048,16 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
 
             return false;
+        }
+
+        private static Element GetSelectorParent(Element element)
+        {
+            if (element?.ParentElement != null)
+            {
+                return element.ParentElement;
+            }
+
+            return element?.ParentNode is ShadowRoot shadowRoot ? shadowRoot.Host : null;
         }
 
         private static bool IsFirstChild(Element el)

@@ -7,6 +7,17 @@ namespace FenBrowser.Tests.Core;
 public sealed class SvgSkiaRendererTests
 {
     [Fact]
+    public void DefaultLimits_AllowNormalComplexInlineArtworkBudget()
+    {
+        var limits = SvgRenderLimits.Default;
+
+        Assert.Equal(250, limits.MaxRenderTimeMs);
+        Assert.Equal(32, limits.MaxRecursionDepth);
+        Assert.Equal(10, limits.MaxFilterCount);
+        Assert.False(limits.AllowExternalReferences);
+    }
+
+    [Fact]
     public void ViewBoxOnlyIconRendersVisiblePixelsOnColdUse()
     {
         var renderer = new SvgSkiaRenderer();

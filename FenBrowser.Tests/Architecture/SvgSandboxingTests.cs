@@ -19,7 +19,7 @@ namespace FenBrowser.Tests.Architecture
             // Assert
             Assert.Equal(32, limits.MaxRecursionDepth);
             Assert.Equal(10, limits.MaxFilterCount);
-            Assert.Equal(100, limits.MaxRenderTimeMs);
+            Assert.Equal(250, limits.MaxRenderTimeMs);
             Assert.False(limits.AllowExternalReferences);
         }
         

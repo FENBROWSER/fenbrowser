@@ -1475,6 +1475,22 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void HostFunctionalSelector_CrossesShadowBoundaryForDescendantCombinator()
+        {
+            var host = new Element("mdn-dropdown");
+            var shadow = host.AttachShadow(new ShadowRootInit { Mode = ShadowRootMode.Open });
+            var slot = new Element("slot");
+            slot.SetAttribute("name", "dropdown");
+            shadow.AppendChild(slot);
+
+            const string selector = ":host(:not([loaded],:focus-within)) slot[name=dropdown]";
+            Assert.True(SelectorMatcher.Matches(slot, selector));
+
+            host.SetAttribute("loaded", string.Empty);
+            Assert.False(SelectorMatcher.Matches(slot, selector));
+        }
+
+        [Fact]
         public void ActiveViewTransitionPseudoClass_MatchesWhenTransitionMarkedActive()
         {
             var doc = Parse(@"

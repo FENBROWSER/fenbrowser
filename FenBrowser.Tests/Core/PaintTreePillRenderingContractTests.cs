@@ -333,6 +333,75 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public async System.Threading.Tasks.Task InlineSvgChildClassFill_RasterizesComputedPresentationColor()
+        {
+            ImageLoader.ClearCache();
+
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+  <style>
+    body { margin: 0; }
+    svg { display: block; width: 80px; height: 24px; }
+    .logo__letter { fill: #a4cefe; }
+    .logo__text { fill: #ffffff; }
+  </style>
+</head>
+<body>
+  <svg id='logo' viewBox='0 0 80 24' fill='none'>
+    <path class='logo__letter' d='M0 0h32v24H0z'></path>
+    <path class='logo__text' d='M48 0h32v24H48z'></path>
+  </svg>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var styles = await CssLoader.ComputeAsync(root, new Uri("https://test.local"), null);
+            var computer = new LayoutEngineComputer(styles, 160, 80);
+            computer.Measure(doc, new SKSize(160, 80));
+            computer.Arrange(doc, new SKRect(0, 0, 160, 80));
+
+            var boxes = new ConcurrentDictionary<Node, BoxModel>(computer.GetAllBoxes());
+            var tree = NewPaintTreeBuilder.Build(doc, new Dictionary<Node, BoxModel>(boxes), styles, 160, 80, null);
+            var logo = doc.GetElementById("logo");
+            var image = Flatten(tree.Roots)
+                .OfType<ImagePaintNode>()
+                .FirstOrDefault(n => ReferenceEquals(n.SourceNode, logo));
+
+            Assert.NotNull(image);
+            Assert.NotNull(image.Bitmap);
+
+            int bluePixels = 0;
+            int whitePixels = 0;
+            for (int y = 0; y < image.Bitmap.Height; y++)
+            {
+                for (int x = 0; x < image.Bitmap.Width; x++)
+                {
+                    var color = image.Bitmap.GetPixel(x, y);
+                    if (color.Alpha == 0)
+                    {
+                        continue;
+                    }
+
+                    if (color.Blue > 220 && color.Green > 170 && color.Red > 120 && color.Red < 210)
+                    {
+                        bluePixels++;
+                    }
+                    if (color.Red > 240 && color.Green > 240 && color.Blue > 240)
+                    {
+                        whitePixels++;
+                    }
+                }
+            }
+
+            Assert.True(bluePixels > 100, $"Expected computed blue child fill pixels, got {bluePixels}.");
+            Assert.True(whitePixels > 100, $"Expected computed white child fill pixels, got {whitePixels}.");
+        }
+
+        [Fact]
         public async System.Threading.Tasks.Task PseudoElements_WithLayoutBoxes_DoNotEmitFallbackPaintText()
         {
             const string html = @"

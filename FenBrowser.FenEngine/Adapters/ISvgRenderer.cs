@@ -84,7 +84,7 @@ namespace FenBrowser.FenEngine.Adapters
         
         /// <summary>
         /// Maximum render time in milliseconds.
-        /// Default: 100ms
+        /// Default: 250ms
         /// </summary>
         public int MaxRenderTimeMs { get; set; }
         
@@ -107,7 +107,7 @@ namespace FenBrowser.FenEngine.Adapters
         {
             MaxRecursionDepth = 32,
             MaxFilterCount = 10,
-            MaxRenderTimeMs = 100,
+            MaxRenderTimeMs = 250,
             MaxElementCount = 50000,
             AllowExternalReferences = false
         };

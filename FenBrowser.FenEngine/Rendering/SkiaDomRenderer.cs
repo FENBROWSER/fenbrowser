@@ -34,6 +34,7 @@ namespace FenBrowser.FenEngine.Rendering
         private const double MaxAdaptiveLayoutDeadlineMs = 25000d;
 
         internal int DebugScreenshotRequestCount { get; private set; }
+        internal double? LayoutDeadlineBudgetOverrideMs { get; set; }
 
         private readonly SkiaRenderer _renderer = new SkiaRenderer();
         private readonly Dictionary<Node, BoxModel> _boxes = new Dictionary<Node, BoxModel>();
@@ -1329,6 +1330,61 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
             }
+            catch (FenBrowser.Core.Deadlines.DeadlineExceededException ex)
+            {
+                RenderPipeline.Reset();
+                LastFrameWatchdogTriggered = true;
+                LastFrameWatchdogReason = ex.Message;
+                LastFrameWatchdogAction = hasBaseFrame
+                    ? RenderFrameWatchdogAction.PreservedPreviousFrame
+                    : RenderFrameWatchdogAction.ScheduledFollowup;
+                rasterMode = hasBaseFrame
+                    ? RenderFrameRasterMode.PreservedBaseFrame
+                    : RenderFrameRasterMode.None;
+
+                EngineLogCompat.Warn(
+                    $"[SkiaDomRenderer] Layout deadline exceeded; preserving current frame instead of painting a render error: {ex.Message}",
+                    LogCategory.Performance);
+
+                if (!hasBaseFrame)
+                {
+                    _lastPaintTree = null;
+                    _lastDamageRegions = Array.Empty<SKRect>();
+                    LastFrameUsedDamageRasterization = false;
+                    LastDamageAreaRatio = 0f;
+                    LastRetainedTileRasterization = default;
+                    _retainedTileRasterizer.Invalidate();
+                    _paintStabilityController.Reset();
+                    _boxes.Clear();
+                    CurrentOverlays.Clear();
+                    canvas.Clear(SKColors.White);
+                }
+
+                LastFrameTelemetry = CreateTelemetry(
+                    baseUrl,
+                    requestedBy,
+                    invalidationReason,
+                    rasterMode,
+                    layoutUpdated,
+                    rebuiltPaintTree,
+                    hasBaseFrame,
+                    _lastDomNodeCount,
+                    _boxes.Count,
+                    _lastPaintTree?.NodeCount ?? 0,
+                    CurrentOverlays.Count,
+                    _lastDamageRegions?.Count ?? 0,
+                    _lastCompositedLayers?.Count ?? 0,
+                    LastPromotedLayerCount,
+                    LastFrameUsedIncrementalLayout,
+                    LastFrameIncrementalLayoutRootCount,
+                    layoutStageWatchdog.Elapsed.TotalMilliseconds,
+                    paintStageWatchdog.Elapsed.TotalMilliseconds,
+                    rasterStageWatchdog.Elapsed.TotalMilliseconds,
+                    layoutAllocatedBytes,
+                    paintAllocatedBytes,
+                    rasterAllocatedBytes,
+                    frameWatchdog.Elapsed.TotalMilliseconds);
+            }
             catch (Exception ex)
             {
                 RenderPipeline.Reset();
@@ -1469,12 +1525,13 @@ namespace FenBrowser.FenEngine.Rendering
             return DefaultLayoutDeadlineMs;
         }
 
-        private static FenBrowser.Core.Deadlines.FrameDeadline CreateLayoutDeadline(
+        private FenBrowser.Core.Deadlines.FrameDeadline CreateLayoutDeadline(
             string contextName,
             int domNodeCount = 0,
             bool fullDocumentLayout = false)
         {
-            var budgetMs = ResolveLayoutDeadlineBudgetMs(domNodeCount, fullDocumentLayout);
+            var budgetMs = LayoutDeadlineBudgetOverrideMs ??
+                ResolveLayoutDeadlineBudgetMs(domNodeCount, fullDocumentLayout);
             if (budgetMs <= 0d)
             {
                 return null;
