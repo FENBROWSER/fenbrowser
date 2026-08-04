@@ -16,19 +16,30 @@ namespace FenBrowser.Js.Interpreter;
 // a host-loaded module namespace still fail at the assertion phase.
 public sealed partial class BytecodeInterpreter
 {
-    internal JsValue HandleDynamicImport(JsValue specifier, JsValue options)
+    public Func<string, string?, JsValue>? DynamicImportResolver { get; set; }
+
+    internal JsValue HandleDynamicImport(JsValue specifier, JsValue options, EnvironmentRecord environment)
     {
         // Touch the specifier through ToString to surface user-defined toString
         // side effects, per ECMA-262 13.3.10.1 step 5. We catch the throw and
         // let it propagate via the returned Promise rejection.
+        string specifierText;
         try
         {
-            _ = ToStringValue(specifier);
+            specifierText = ToStringValue(specifier);
             ProcessDynamicImportOptions(options);
+            if (DynamicImportResolver is { } resolver)
+            {
+                return BuildResolvedPromise(resolver(specifierText, FindImportMetaUrl(environment)));
+            }
         }
         catch (JsThrownException ex)
         {
             return BuildRejectedPromise(ex.Value);
+        }
+        catch (Exception ex)
+        {
+            return BuildRejectedPromise(CreateTypeError(ex.Message));
         }
 
         // Return a resolved Promise with an empty module namespace exotic object.
@@ -39,6 +50,19 @@ public sealed partial class BytecodeInterpreter
         var ns = new ModuleNamespaceObject(new Dictionary<string, JsValue>());
         var nsHandle = _heap.AllocateObject(ns, AllocationSite.Current());
         return BuildResolvedPromise(JsValue.FromObject(nsHandle));
+    }
+
+    private static string? FindImportMetaUrl(EnvironmentRecord environment)
+    {
+        for (var current = environment; current is not null; current = current.OuterEnv)
+        {
+            if (current is ModuleEnvironmentRecord moduleEnvironment)
+            {
+                return moduleEnvironment.ImportMetaUrl;
+            }
+        }
+
+        return null;
     }
 
     internal JsValue HandleImportMeta(EnvironmentRecord environment)

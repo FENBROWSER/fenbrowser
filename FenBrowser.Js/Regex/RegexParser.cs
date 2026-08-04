@@ -246,7 +246,7 @@ public static class RegexParser
             }
 
             // PatternCharacter — any source character that is not syntax
-            if (!IsUnicode && (ch == '}' || (ch == '{' && !IsValidBraceQuantifierAt(_pos))))
+            if (!IsUnicode && (ch == ']' || ch == '}' || (ch == '{' && !IsValidBraceQuantifierAt(_pos))))
             {
                 Advance();
                 return new LiteralCharNode(ch);

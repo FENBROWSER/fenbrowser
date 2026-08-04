@@ -54,6 +54,7 @@ public sealed class ModuleEvaluator
         ArgumentNullException.ThrowIfNull(interpreter);
         _interpreter = interpreter;
         _hostSourceResolver = hostSourceResolver;
+        _interpreter.DynamicImportResolver = EvaluateDynamicImport;
     }
 
     // Pre-seed the source for a module specifier. Hosts that fetch over HTTP
@@ -255,6 +256,13 @@ public sealed class ModuleEvaluator
         }
 
         return inProgress.Exports;
+    }
+
+    private JsValue EvaluateDynamicImport(string specifier, string? referrer)
+    {
+        var resolvedSpecifier = ResolveModuleSpecifier(specifier, referrer);
+        _ = Evaluate(resolvedSpecifier, referrer);
+        return BuildNamespaceObject(_evaluated[resolvedSpecifier]);
     }
 
     private static string ResolveModuleSpecifier(string specifier, string? referrer)

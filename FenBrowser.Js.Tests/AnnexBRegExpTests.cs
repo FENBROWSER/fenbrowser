@@ -65,6 +65,15 @@ public sealed class AnnexBRegExpTests
     }
 
     [Fact]
+    public void NonUnicodeBareClassCloseIsLiteralForWebCompat()
+    {
+        Assert.True(Run(@"
+            var value = /\s*] */y;
+            value.test(']  ');
+        ").AsBoolean());
+    }
+
+    [Fact]
     public void NonUnicodeKIsIdentityEscapeWithoutNamedCaptures()
     {
         Assert.Equal(511, Run(@"
@@ -115,6 +124,22 @@ public sealed class AnnexBRegExpTests
         Assert.Equal(@"\\N", Run(@"
             String('\\N').replace(/[-\[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
         ").AsString());
+    }
+
+    [Fact]
+    public void ReplacementTokenEscapesMdnSearchHighlightSyntax()
+    {
+        Assert.Equal(@"a\+b\[c\]", Run(@"
+            'a+b[c]'.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+        ").AsString());
+    }
+
+    [Fact]
+    public void RegexLiteralAllowsEscapedSlashInPattern()
+    {
+        Assert.True(Run(@"
+            /\/api\/v1/.test('/api/v1/users');
+        ").AsBoolean());
     }
 
     [Fact]

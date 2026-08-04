@@ -36,8 +36,8 @@ public sealed class RegExpBuiltin : IBuiltinModule
         var constructor = new NativeFunctionObject(
             "RegExp",
             (_, args) => BuildRegExpCall(capturedCtx, capturedProto, constructorHandle, args),
-            args => BuildRegExpConstruct(capturedCtx, capturedProto, args),
-            length: 2);
+            length: 2,
+            constructWithNewTarget: (args, newTarget) => BuildRegExpConstruct(capturedCtx, capturedProto, args, newTarget));
         var functionConstructorHandle = context.MaterializeFunctionConstructor();
         var functionConstructor = heap.GetObject(functionConstructorHandle);
         if (context.TryGetPropertyValue(functionConstructor, JsValue.FromObject(functionConstructorHandle), "prototype", out var functionPrototypeValue) &&
@@ -196,11 +196,12 @@ public sealed class RegExpBuiltin : IBuiltinModule
     private static JsValue BuildRegExpConstruct(
         IBuiltinContext ctx,
         ObjectHandle protoHandle,
-        IReadOnlyList<JsValue> args)
+        IReadOnlyList<JsValue> args,
+        JsValue newTarget)
     {
         var patternArg = args.Count > 0 ? args[0] : JsValue.Undefined;
         var flagsArg = args.Count > 1 ? args[1] : JsValue.Undefined;
-        return BuildRegExpObject(ctx, protoHandle, patternArg, flagsArg);
+        return BuildRegExpObject(ctx, ResolveConstructorPrototype(ctx, newTarget, protoHandle), patternArg, flagsArg);
     }
 
     private static JsValue BuildRegExpObject(
@@ -238,6 +239,59 @@ public sealed class RegExpBuiltin : IBuiltinModule
         // only lastIndex is an own data property of the instance (ECMA-262 22.2.7.1).
         obj.DefineOwnProperty("lastIndex", new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
         return JsValue.FromObject(ctx.Heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
+    private static ObjectHandle ResolveConstructorPrototype(IBuiltinContext ctx, JsValue newTarget, ObjectHandle defaultPrototypeHandle)
+    {
+        if (newTarget.Tag != JsValueTag.Object)
+        {
+            return defaultPrototypeHandle;
+        }
+
+        var newTargetObject = ctx.Heap.GetObject(newTarget.AsObjectHandle());
+        if (ctx.TryGetPropertyValue(newTargetObject, newTarget, "prototype", out var prototypeValue) &&
+            prototypeValue.Tag == JsValueTag.Object)
+        {
+            return prototypeValue.AsObjectHandle();
+        }
+
+        if (TryGetRealmRegExpPrototype(ctx, newTargetObject, newTarget, out var realmPrototypeHandle))
+        {
+            return realmPrototypeHandle;
+        }
+
+        return defaultPrototypeHandle;
+    }
+
+    private static bool TryGetRealmRegExpPrototype(
+        IBuiltinContext ctx,
+        JsObject newTargetObject,
+        JsValue newTarget,
+        out ObjectHandle prototypeHandle)
+    {
+        prototypeHandle = default;
+        if (!ctx.TryGetPropertyValue(newTargetObject, newTarget, "__realmGlobal__", out var realmGlobal) ||
+            realmGlobal.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var realmGlobalObject = ctx.Heap.GetObject(realmGlobal.AsObjectHandle());
+        if (!ctx.TryGetPropertyValue(realmGlobalObject, realmGlobal, "RegExp", out var realmRegExp) ||
+            realmRegExp.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var realmRegExpObject = ctx.Heap.GetObject(realmRegExp.AsObjectHandle());
+        if (!ctx.TryGetPropertyValue(realmRegExpObject, realmRegExp, "prototype", out var prototypeValue) ||
+            prototypeValue.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        prototypeHandle = prototypeValue.AsObjectHandle();
+        return true;
     }
 
     private static bool ShouldReturnPatternOnCall(IBuiltinContext ctx, JsValue patternArg, ObjectHandle constructorHandle)

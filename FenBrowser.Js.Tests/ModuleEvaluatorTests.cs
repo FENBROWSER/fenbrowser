@@ -169,6 +169,35 @@ public sealed class ModuleEvaluatorTests
     }
 
     [Fact]
+    public void DynamicImportUsesHostResolverAndReturnsChunkNamespace()
+    {
+        const string entryUrl = "https://example.test/static/client/runtime.js";
+        const string chunkUrl = "https://example.test/static/client/1234.chunk.js";
+        var interpreter = new BytecodeInterpreter();
+        var fetched = new System.Collections.Generic.List<string>();
+        var evaluator = new ModuleEvaluator(interpreter, hostSourceResolver: specifier =>
+        {
+            fetched.Add(specifier);
+            return specifier == chunkUrl
+                ? "export const __rspack_esm_ids = [1234]; export const __webpack_modules__ = { 5() { return 5; } };"
+                : null;
+        });
+        evaluator.RegisterSource(
+            entryUrl,
+            """
+            import("./1234.chunk.js").then(module => {
+                globalThis.chunkLength = module.__rspack_esm_ids.length;
+            });
+            """);
+
+        _ = evaluator.Evaluate(entryUrl);
+
+        Assert.True(interpreter.TryReadGlobalValue("chunkLength", out var value));
+        Assert.Equal(1d, value.AsNumber());
+        Assert.Contains(chunkUrl, fetched);
+    }
+
+    [Fact]
     public void NamespaceImportExposesExportedConstArray()
     {
         var (_, evaluator) = Setup();
