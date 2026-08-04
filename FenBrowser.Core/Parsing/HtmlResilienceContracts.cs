@@ -12,6 +12,7 @@ namespace FenBrowser.Core.Parsing
         None,
         InputSizeLimitExceeded,
         TokenEmissionLimitExceeded,
+        AttributeLimitExceeded,
         OpenElementsDepthLimitExceeded,
         MalformedInput,
         Exception

@@ -170,6 +170,7 @@ namespace FenBrowser.Tests.Core
                 {
                     MaxHtmlInputChars = 1,
                     MaxHtmlTokenEmissions = 1,
+                    MaxHtmlAttributesPerElement = 1,
                     MaxOpenElementsDepth = 1,
                     MaxRedirectHops = 0,
                     MaxTextBodyBytes = 1,
@@ -184,6 +185,7 @@ namespace FenBrowser.Tests.Core
 
             Assert.True(settings.Resilience.MaxHtmlInputChars >= 16_384);
             Assert.True(settings.Resilience.MaxHtmlTokenEmissions >= 10_000);
+            Assert.True(settings.Resilience.MaxHtmlAttributesPerElement >= 16);
             Assert.True(settings.Resilience.MaxOpenElementsDepth >= 64);
             Assert.True(settings.Resilience.MaxRedirectHops >= 1);
             Assert.Equal(ResilienceSettings.DefaultMaxTextBodyBytes, settings.Resilience.MaxTextBodyBytes);

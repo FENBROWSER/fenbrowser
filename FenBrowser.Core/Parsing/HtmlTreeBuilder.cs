@@ -75,6 +75,7 @@ namespace FenBrowser.Core.Parsing
         public Action<Document, HtmlParseCheckpoint> ParseDocumentCheckpointCallback { get; set; }
         public int MaxTokenizerEmissions { get; set; } = 2_000_000;
         public int MaxInputLengthChars { get; set; } = 8_000_000;
+        public int MaxAttributesPerTag { get; set; } = 4096;
         public int MaxOpenElementsDepth { get; set; } = 4096;
         public HtmlParsingOutcome LastParsingOutcome { get; private set; } = new HtmlParsingOutcome();
         private bool _openElementsDepthLimitLogged;
@@ -138,6 +139,7 @@ namespace FenBrowser.Core.Parsing
 
                 _tokenizer.MaxTokenEmissions = MaxTokenizerEmissions;
                 _tokenizer.MaxInputLengthChars = MaxInputLengthChars;
+                _tokenizer.MaxAttributesPerTag = MaxAttributesPerTag;
 
                 if (pipelineContext != null)
                 {
@@ -342,6 +344,11 @@ namespace FenBrowser.Core.Parsing
             if (MaxOpenElementsDepth <= 0 || MaxOpenElementsDepth == 4096)
             {
                 MaxOpenElementsDepth = resilience.MaxOpenElementsDepth;
+            }
+
+            if (MaxAttributesPerTag <= 0 || MaxAttributesPerTag == 4096)
+            {
+                MaxAttributesPerTag = resilience.MaxHtmlAttributesPerElement;
             }
         }
         private void ProcessTokenBatch(
@@ -1134,6 +1141,14 @@ namespace FenBrowser.Core.Parsing
                 if (st.TagName == "xmp" || st.TagName == "iframe" || st.TagName == "noembed" || st.TagName == "noscript")
                 {
                     InsertGenericRawTextElement(st);
+                    return true;
+                }
+
+                if (st.TagName == "plaintext")
+                {
+                    if (HasOpenParagraphElement()) ClosePElement();
+                    InsertHtmlElement(st);
+                    _tokenizer.SetState(HtmlTokenizer.TokenizerState.PlainText);
                     return true;
                 }
 

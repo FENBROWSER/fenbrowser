@@ -1737,3 +1737,113 @@ Verification:
 
 - Red: `Classifier_RecognizesCheckedInStringifierAndPartialInterfaceMembers` classified `Location.toString` as `UNCLASSIFIED`.
 - Green: the classifier and active host-path reductions pass; Core Release builds with zero warnings and zero errors.
+
+### 1.84 Shadow-Tree Slot Assignment Access (2026-08-01)
+
+- `ShadowRoot.GetAssignedNodesForSlot` is exposed to the engine so box-tree construction can consume the DOM's existing named and default slot-assignment result.
+- Assignment semantics remain owned by Core; FenEngine only selects assigned nodes, or the slot's fallback children when no nodes are assigned.
+
+Verification:
+
+- `DeclarativeShadowDomRegressionTests` exercises declarative template activation, preservation of text nodes, and named-slot composition through the active test project.
+
+### 1.85 HTML Attribute-Flood Resource Bounds (2026-08-01)
+
+- `HtmlTokenizer` now bounds each tag to `MaxAttributesPerTag` syntactic attribute occurrences (default `4096`). Once the limit is reached, the tokenizer continues the state machine to the end of the tag but does not retain overflow names or values.
+- Retained attributes are indexed by case-insensitive name during tokenization. Duplicate detection and value assignment are therefore near-linear across a tag instead of repeatedly scanning the complete attribute list.
+- `ParserSecurityPolicy.HtmlMaxAttributesPerElement` and `ResilienceSettings.MaxHtmlAttributesPerElement` carry the limit through canonical parser entrypoints. Overflow produces a usable degraded document with `HtmlParsingReasonCode.AttributeLimitExceeded` rather than aborting the document or silently presenting a successful outcome.
+
+Verification:
+
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --verbosity:minimal`: pass with zero warnings and zero errors.
+- Focused parser/policy slice: pass (`120/120`). `HtmlTokenizerAttributeFloodTests` passes (`4/4`) in 10 consecutive fresh Release test processes; a 16,000-attribute input capped at 128 retained attributes allocated 26,752 bytes, and the parser-level test preserved a usable document while propagating the degraded outcome.
+
+### 1.86 Batched HTML Data-State NUL Recovery (2026-08-01)
+
+- The Data-state batching path now stops before U+0000 and emits that code unit as an independent recovery token. This preserves the tree builder's existing in-body rule that ignores a NUL token while retaining adjacent text; a batched token such as `"a\0b"` can no longer insert U+0000 into DOM text.
+- The regression mirrors local WPT `html/syntax/parsing/zero.html` at revision `88152b842c3f60c2a5f95e0106ded4a375f710b0`, where body input `a\u0000b` produces `ab`.
+- `HtmlParserAdversarialStressTests` also verifies DOM ownership, parent/sibling links, and acyclic reachability across malformed recovery, 20,000 source nesting levels under a configured depth cap, unpaired UTF-16 code units, and 500 deterministic mutation cases.
+
+Verification:
+
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --verbosity:minimal`: pass with zero warnings and zero errors.
+- Focused parser/policy slice: pass (`129/129`). The combined attribute and parser adversarial set passes (`13/13`) in 10 consecutive fresh Release test processes.
+
+### 1.87 HTML Attribute-Value NUL and Named-Reference Recovery (2026-08-01)
+
+- Double-quoted, single-quoted, and unquoted attribute-value batching now stops before U+0000. The tokenizer consumes each NUL, enters the existing parse-error recovery path, and appends one U+FFFD replacement character without retaining values for ignored duplicate or overflow attributes.
+- Named character references may omit their semicolon only for the 106 case-sensitive legacy names present without `;` in local WPT `html/syntax/parsing/named-character-references-data.js`. The existing attribute-context guard still keeps a semicolonless legacy prefix literal when the next code point is ASCII alphanumeric or `=`.
+- The NUL/reference regressions mirror local WPT `html/syntax/parsing/zero.html` at revision `88152b842c3f60c2a5f95e0106ded4a375f710b0`, including `&auml\0;` becoming `\u00E4\uFFFD;` and semicolon-required `&notin\0;` remaining literal before NUL replacement.
+
+Verification:
+
+- Red: all three direct attribute-value NUL quoting modes retained U+0000; all six local-WPT named-reference cases failed, and `&notin\0;` incorrectly decoded to `\u2209\0;`.
+- Green: the adversarial parser and character-reference slice passes (`35/35`), and the broader parser/security-policy slice passes (`144/144`).
+- `HtmlParserAdversarialStressTests` plus `HtmlTokenizerAttributeFloodTests` pass (`28/28`) in 10 consecutive fresh Release test processes (`280/280` total). The Core Release build succeeds with zero warnings and zero errors.
+- An ordinal comparison against the local WPT data reports 106 semicolon-optional names in both sets, with zero missing and zero extra.
+
+### 1.88 Linear HTML Comment Recovery (2026-08-01)
+
+- `HtmlTokenizer` now accumulates standard and bogus comment data in one tokenizer-owned `StringBuilder` and materializes `CommentToken.Data` once at emission. Every creation path clears the buffer, including pooled tokens, so consecutive comments cannot inherit prior data.
+- `Comment` and `BogusComment` replace each U+0000 with U+FFFD. Bogus-comment transitions from tag-open and end-tag-open reconsume the triggering code point, preserving the leading `?` in processing-instruction-like input such as `<?target data>`.
+- The correctness cases mirror local WPT `html/syntax/parsing/zero.html` and `html/syntax/parsing/resources/processing-instructions.dat` at revision `88152b842c3f60c2a5f95e0106ded4a375f710b0`.
+
+Verification:
+
+- Red: `<!-\0>` and `<!--a\0b-->` retained U+0000, `<?target data>` dropped its leading `?`, and a 12,000-character comment allocated 144,313,112 bytes through repeated immutable-string concatenation.
+- Green: the same 12,000-character comment preserves all data while allocating 87,120 bytes, a 99.94% reduction and 1,656.49x lower allocation, under a committed 1,000,000-byte ceiling.
+- The expanded parser/html5lib/security-policy/token-pool slice passes (`162/162`). `HtmlParserAdversarialStressTests` plus `HtmlTokenizerAttributeFloodTests` pass (`44/44`) in 10 consecutive fresh Release test processes (`440/440` total).
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --verbosity:minimal`: pass with zero warnings and zero errors. The unit-test workflow produced no new files under `logs/`.
+
+### 1.89 Text-Like Tokenizer State NUL and Plaintext Recovery (2026-08-01)
+
+- RCDATA, RAWTEXT, script data, all escaped/double-escaped script data states, and plaintext now consume each U+0000 and emit U+FFFD. RAWTEXT, script-data, and plaintext batching stops before NUL so replacement cannot be bypassed inside a multi-character token.
+- `PlainText` is now an implemented EOF-terminated tokenizer state. The in-body `<plaintext>` start-tag path closes an open paragraph, inserts the element, and uses the existing immediate tree-builder feedback mechanism to switch states before consuming following input; apparent end tags and markup therefore remain literal text.
+- Script escaped less-than-sign recovery now emits `<` before reconsuming the following letter in double-escape-start. The previous pending-character order changed `<script` into `s<cript`.
+- Plaintext and script transition expectations are grounded in local WPT `html/syntax/parsing-html-fragments/tokenizer-modes-001.html` at revision `88152b842c3f60c2a5f95e0106ded4a375f710b0`.
+
+Verification:
+
+- Red: nine implemented text-like states emitted raw NUL, textarea/style/script DOM text retained raw NUL, `<plaintext>` parsed descendant markup, and direct `PlainText` tokenization entered a non-advancing EOF loop that exceeded 124 seconds. The double-escaped script probe serialized `<script` as `s<cript`.
+- Green: `HtmlTokenizerTextStateRecoveryTests` passes (`18/18`) in 96 ms, including NUL boundaries, real end-tag continuation, escaped and double-escaped scripts, literal plaintext markup, and paragraph closure.
+- The expanded parser/html5lib/security-policy/token-pool slice passes (`180/180`). All parser adversarial, text-state, and attribute-flood tests pass (`62/62`) in 10 consecutive fresh Release test processes (`620/620` total).
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --verbosity=minimal`: pass with zero warnings and zero errors. The unit-test workflow produced no new files under `logs/`.
+
+### 1.90 HTML Tag and Attribute Name NUL Recovery (2026-08-01)
+
+- Tag-name and attribute-name batching now stops before U+0000. The owning state consumes each NUL and appends U+FFFD to the active normalized name buffer, preserving ASCII case folding and the existing pooled-token path.
+- Duplicate-attribute lookup runs on the final replacement-normalized, case-insensitive name. Inputs such as `A\0B` and `a\uFFFDb` therefore identify the same attribute and retain only the first value.
+- Start and end tags use the same normalization, so malformed custom-element-like names still match and close without exposing U+0000 through DOM tag names.
+
+Verification:
+
+- Red: all 10 focused cases failed. Raw U+0000 survived in tag and attribute names, pooled and non-pooled tokens agreed on the wrong value, the normalized duplicate remained as two attributes, and the DOM exposed `<x\0y>` rather than `<x\uFFFDy>`.
+- Green: `HtmlTokenizerNameNullRecoveryTests` passes (`10/10`), covering interior/end/consecutive NULs, attribute-name start, token pooling, case-folded duplicate collapse, matching end tags, sibling ownership, and parser continuation.
+- The expanded parser/html5lib/security-policy/token-pool slice passes (`190/190`). All parser adversarial, text-state, name-state, and attribute-flood tests pass (`72/72`) in 10 consecutive fresh Release test processes (`720/720` total).
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --verbosity=minimal`: pass with zero warnings and zero errors. No matching name-NUL fixture was found in the local WPT HTML syntax tree, so no remote or inferred conformance result is claimed.
+
+### 1.91 Defensive HTML Doctype Recovery (2026-08-01)
+
+- Doctype names now accumulate in a tokenizer-owned `StringBuilder` and materialize once when the token is emitted. Pooled and non-pooled tokens share one initialization/finalization path, and every doctype emission returns the tokenizer to `Data` before clearing active state.
+- Quoted PUBLIC and SYSTEM identifiers now close only on their matching quote. Embedded `>` remains identifier data, each U+0000 becomes U+FFFD, and EOF preserves normalized partial data while setting `ForceQuirks`.
+- `BeforeDoctypeName` and `DoctypeName` test `IsEof()` before treating `Peek()`'s NUL sentinel as input. This prevents non-advancing U+FFFD appends at EOF.
+
+Verification:
+
+- Red: 8 of the initial 11 cases failed. PUBLIC/SYSTEM identifiers retained NUL, embedded `>` truncated identifiers, and a 12,000-character doctype name allocated 144,313,224 bytes. The expanded EOF matrix then reproduced `OutOfMemoryException` in both before-name and name states, plus a post-emission `NullReferenceException` for unterminated identifiers.
+- Green: `HtmlTokenizerDoctypeRecoveryTests` passes (`25/25`) in 58 ms. The 12,000-character name allocates 87,368 bytes, a 99.94% reduction and 1,651.79x lower allocation, under a committed 1,000,000-byte ceiling.
+- The expanded parser/html5lib/security-policy/token-pool slice passes (`215/215`). All five parser hardening classes pass (`97/97`) in 10 consecutive fresh Release test processes (`970/970` total), including every former OOM and stale-state path.
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --verbosity:minimal`: pass with zero warnings and zero errors. Local WPT `html/syntax/parsing/resources/doctype01.dat` was inspected; the exact NUL/OOM adversarial cases are project regressions, not claimed as a remote conformance run.
+
+### 1.92 HTML Comment EOF Finalization (2026-08-01)
+
+- `EmitCurrentComment` now owns the transition back to `Data` before it clears the active comment token and tokenizer-owned buffer. This gives normal, abrupt, and EOF comment emission one finalization contract, matching doctype emission.
+- Standard and bogus comments terminated by EOF emit exactly one `CommentToken` followed by `EofToken`. Empty `<!--` input materializes empty comment data, and a reset token pool cannot leak data from a previously unterminated comment.
+- Local WPT `html/syntax/parsing/resources/comments01.dat` at revision `88152b842c3f60c2a5f95e0106ded4a375f710b0` confirms EOF recovery and preservation of a leading `?` for processing-instruction-like bogus comments.
+
+Verification:
+
+- Red: `<!--unterminated`, `<!bogus`, `<?target`, and `</$name` each emitted their comment but retained the comment state. The next token request re-entered `EmitCurrentComment` after `_currentComment` had been cleared and threw `NullReferenceException` at `HtmlTokenizer.cs:2506` (`0/4`).
+- Green: the standard, bogus, empty-boundary, and pooled-reuse EOF matrix passes (`6/6`); the full `HtmlParserAdversarialStressTests` class passes (`46/46`).
+- The cumulative Core parsing, html5lib, browser-settings, parser-policy, and token-pool-allocation slice passes (`228/228`). All five parser hardening classes pass (`103/103`) in 10 consecutive fresh Release test processes (`1,030/1,030` total).
+- `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --verbosity:minimal`: pass with zero warnings and zero errors.

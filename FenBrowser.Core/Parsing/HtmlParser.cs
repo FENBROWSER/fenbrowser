@@ -183,6 +183,7 @@ namespace FenBrowser.Core.Parsing
                 var builder = new HtmlTreeBuilder(parseInput)
                 {
                     MaxTokenizerEmissions = policy.HtmlMaxTokenEmissions,
+                    MaxAttributesPerTag = policy.HtmlMaxAttributesPerElement,
                     MaxOpenElementsDepth = policy.HtmlMaxOpenElementsDepth
                 };
 

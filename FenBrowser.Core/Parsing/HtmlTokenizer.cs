@@ -29,13 +29,21 @@ namespace FenBrowser.Core.Parsing
         // Current buffers
         private StringBuilder _buffer = new StringBuilder();
         private readonly StringBuilder _tagNameBuffer = new StringBuilder();
+        private readonly StringBuilder _commentBuffer = new StringBuilder();
+        private readonly StringBuilder _doctypeNameBuffer = new StringBuilder();
+        private readonly StringBuilder _doctypeIdentifierBuffer = new StringBuilder();
         private TagToken _currentTag;
         private CommentToken _currentComment;
         private DoctypeToken _currentDoctype;
+        private bool _doctypeNameStarted;
         
-        private string _lastAttrName;
         private StringBuilder _attrValueBuffer = new StringBuilder();
         private bool _skipCurrentAttributeValue;
+        private Dictionary<string, int> _currentAttributeIndices;
+        private int _currentAttributeIndex = -1;
+        private int _currentTagAttributeCount;
+        private bool _discardCurrentAttribute;
+        private bool _attributeLimitReached;
         
         private TokenizerState _returnState;
         private uint _charRefValue;
@@ -141,6 +149,24 @@ namespace FenBrowser.Core.Parsing
             ["yuml"] = "\u00FF"
         };
 
+        // Only these legacy named references may omit the trailing semicolon.
+        private static readonly HashSet<string> LegacyNamedReferencesWithoutSemicolon = new(StringComparer.Ordinal)
+        {
+            "AElig", "AMP", "Aacute", "Acirc", "Agrave", "Aring", "Atilde", "Auml",
+            "COPY", "Ccedil", "ETH", "Eacute", "Ecirc", "Egrave", "Euml", "GT",
+            "Iacute", "Icirc", "Igrave", "Iuml", "LT", "Ntilde", "Oacute", "Ocirc",
+            "Ograve", "Oslash", "Otilde", "Ouml", "QUOT", "REG", "THORN", "Uacute",
+            "Ucirc", "Ugrave", "Uuml", "Yacute", "aacute", "acirc", "acute", "aelig",
+            "agrave", "amp", "aring", "atilde", "auml", "brvbar", "ccedil", "cedil",
+            "cent", "copy", "curren", "deg", "divide", "eacute", "ecirc", "egrave",
+            "eth", "euml", "frac12", "frac14", "frac34", "gt", "iacute", "icirc",
+            "iexcl", "igrave", "iquest", "iuml", "laquo", "lt", "macr", "micro",
+            "middot", "nbsp", "not", "ntilde", "oacute", "ocirc", "ograve", "ordf",
+            "ordm", "oslash", "otilde", "ouml", "para", "plusmn", "pound", "quot",
+            "raquo", "reg", "sect", "shy", "sup1", "sup2", "sup3", "szlig", "thorn",
+            "times", "uacute", "ucirc", "ugrave", "uml", "uuml", "yacute", "yen", "yuml"
+        };
+
         private static readonly Dictionary<int, int> NumericCharacterReferenceReplacements = new()
         {
             [0x80] = 0x20AC,
@@ -191,6 +217,7 @@ namespace FenBrowser.Core.Parsing
         /// </summary>
         public int MaxTokenEmissions { get; set; } = 2_000_000;
         public int MaxInputLengthChars { get; set; } = 8_000_000;
+        public int MaxAttributesPerTag { get; set; } = 4096;
         public HtmlParsingReasonCode LastReasonCode { get; private set; } = HtmlParsingReasonCode.None;
         public string LastReasonDetail { get; private set; }
 
@@ -297,6 +324,7 @@ namespace FenBrowser.Core.Parsing
         {
             LastReasonCode = HtmlParsingReasonCode.None;
             LastReasonDetail = null;
+            _attributeLimitReached = false;
 
             if (!_inputSizeLimitReached &&
                 MaxInputLengthChars > 0 &&
@@ -375,6 +403,12 @@ namespace FenBrowser.Core.Parsing
                         {
                             return new EofToken();
                         }
+                        else if (c == '\0')
+                        {
+                            Consume();
+                            EmitError("Unexpected Null Character In Data");
+                            return EmitCharacter('\0');
+                        }
                         else
                         {
                             // Batch run of regular text up to the next '<', '&', or EOF.
@@ -385,11 +419,11 @@ namespace FenBrowser.Core.Parsing
                             while (p < len)
                             {
                                 char ch = _input[p];
-                                if (ch == '<' || ch == '&') break;
+                                if (ch == '<' || ch == '&' || ch == '\0') break;
                                 p++;
                             }
                             AdvanceTo(p);
-                            return new CharacterToken(_input.Substring(runStart, p - runStart));
+                            return EmitCharacter(_input.Substring(runStart, p - runStart));
                         }
                         break;
 
@@ -521,9 +555,9 @@ namespace FenBrowser.Core.Parsing
                         else if (c == '?')
                         {
                             // Bogus comment (<?... >)
-                             Consume();
-                            _currentComment = _pool != null ? _pool.RentComment() : new CommentToken();
+                            BeginCurrentComment();
                             SwitchTo(TokenizerState.BogusComment);
+                            continue;
                         }
                         else
                         {
@@ -549,9 +583,13 @@ namespace FenBrowser.Core.Parsing
                             SwitchTo(TokenizerState.CharacterReference);
                             continue;
                         }
-                        else if (c == '\0' && IsEof())
+                        else if (IsEof())
                         {
                             return new EofToken();
+                        }
+                        else if (c == '\0')
+                        {
+                            return ConsumeUnexpectedNullAndEmitReplacementCharacter();
                         }
                         else
                         {
@@ -665,9 +703,13 @@ namespace FenBrowser.Core.Parsing
                             Consume();
                             SwitchTo(TokenizerState.RawTextLessThanSign);
                         }
-                        else if (c == '\0' && IsEof())
+                        else if (IsEof())
                         {
                             return new EofToken();
+                        }
+                        else if (c == '\0')
+                        {
+                            return ConsumeUnexpectedNullAndEmitReplacementCharacter();
                         }
                         else
                         {
@@ -678,13 +720,34 @@ namespace FenBrowser.Core.Parsing
                             while (p < len)
                             {
                                 char ch = _input[p];
-                                if (ch == '<') break;
+                                if (ch == '<' || ch == '\0') break;
                                 p++;
                             }
                             AdvanceTo(p);
-                            return new CharacterToken(_input.Substring(runStart, p - runStart));
+                            return EmitCharacter(_input.Substring(runStart, p - runStart));
                         }
                         break;
+
+                    case TokenizerState.PlainText:
+                        if (IsEof())
+                        {
+                            return new EofToken();
+                        }
+                        else if (c == '\0')
+                        {
+                            return ConsumeUnexpectedNullAndEmitReplacementCharacter();
+                        }
+                        else
+                        {
+                            int runStart = _position;
+                            int runEnd = _position;
+                            while (runEnd < _length && _input[runEnd] != '\0')
+                            {
+                                runEnd++;
+                            }
+                            AdvanceTo(runEnd);
+                            return EmitCharacter(_input.Substring(runStart, runEnd - runStart));
+                        }
                         
                     case TokenizerState.RawTextLessThanSign:
                         if (c == '/')
@@ -780,9 +843,13 @@ namespace FenBrowser.Core.Parsing
                             Consume();
                             SwitchTo(TokenizerState.ScriptDataLessThanSign);
                         }
-                        else if (c == '\0' && IsEof())
+                        else if (IsEof())
                         {
                             return new EofToken();
+                        }
+                        else if (c == '\0')
+                        {
+                            return ConsumeUnexpectedNullAndEmitReplacementCharacter();
                         }
                         else
                         {
@@ -794,13 +861,13 @@ namespace FenBrowser.Core.Parsing
                             while (p < len)
                             {
                                 char ch = _input[p];
-                                if (ch == '<') break;
+                                if (ch == '<' || ch == '\0') break;
                                 p++;
                             }
                             AdvanceTo(p);
                             // Emit the whole run as a single token. CharacterToken supports
                             // multi-char Data; tree builder handles it via AppendToText.
-                            return new CharacterToken(_input.Substring(runStart, p - runStart));
+                            return EmitCharacter(_input.Substring(runStart, p - runStart));
                         }
                         break;
 
@@ -955,10 +1022,14 @@ namespace FenBrowser.Core.Parsing
                             Consume();
                             SwitchTo(TokenizerState.ScriptDataEscapedLessThanSign);
                         }
-                        else if (c == '\0' && IsEof())
+                        else if (IsEof())
                         {
                             EmitError("eof-in-script-html-comment-like-text");
                             return new EofToken();
+                        }
+                        else if (c == '\0')
+                        {
+                            return ConsumeUnexpectedNullAndEmitReplacementCharacter();
                         }
                         else
                         {
@@ -982,10 +1053,15 @@ namespace FenBrowser.Core.Parsing
                             Consume();
                             SwitchTo(TokenizerState.ScriptDataEscapedLessThanSign);
                         }
-                        else if (c == '\0' && IsEof())
+                        else if (IsEof())
                         {
                             EmitError("eof-in-script-html-comment-like-text");
                             return new EofToken();
+                        }
+                        else if (c == '\0')
+                        {
+                            SwitchTo(TokenizerState.ScriptDataEscaped);
+                            return ConsumeUnexpectedNullAndEmitReplacementCharacter();
                         }
                         else
                         {
@@ -1016,10 +1092,15 @@ namespace FenBrowser.Core.Parsing
                             SwitchTo(TokenizerState.ScriptData);
                             return EmitCharacter('>');
                         }
-                        else if (c == '\0' && IsEof())
+                        else if (IsEof())
                         {
                             EmitError("eof-in-script-html-comment-like-text");
                             return new EofToken();
+                        }
+                        else if (c == '\0')
+                        {
+                            SwitchTo(TokenizerState.ScriptDataEscaped);
+                            return ConsumeUnexpectedNullAndEmitReplacementCharacter();
                         }
                         else
                         {
@@ -1042,9 +1123,9 @@ namespace FenBrowser.Core.Parsing
                         else if (char.IsLetter(c))
                         {
                             _scriptEscapeBuffer.Clear();
-                            // Don't consume â€” reconsume in double escape start
-                            _pendingChars.Enqueue('<');
+                            // Emit '<' first, then reconsume the letter in double escape start.
                             SwitchTo(TokenizerState.ScriptDataDoubleEscapeStart);
+                            return EmitCharacter('<');
                         }
                         else
                         {
@@ -1125,7 +1206,7 @@ namespace FenBrowser.Core.Parsing
                         else if (char.IsLetter(c))
                         {
                             Consume();
-                            _scriptEscapeBuffer.Append(char.ToLowerInvariant(c));
+                            _scriptEscapeBuffer.Append(ToLowerInvariantFast(c));
                             return EmitCharacter(c);
                         }
                         else
@@ -1151,10 +1232,14 @@ namespace FenBrowser.Core.Parsing
                             SwitchTo(TokenizerState.ScriptDataDoubleEscapedLessThanSign);
                             return EmitCharacter('<');
                         }
-                        else if (c == '\0' && IsEof())
+                        else if (IsEof())
                         {
                             EmitError("eof-in-script-html-comment-like-text");
                             return new EofToken();
+                        }
+                        else if (c == '\0')
+                        {
+                            return ConsumeUnexpectedNullAndEmitReplacementCharacter();
                         }
                         else
                         {
@@ -1179,10 +1264,15 @@ namespace FenBrowser.Core.Parsing
                             SwitchTo(TokenizerState.ScriptDataDoubleEscapedLessThanSign);
                             return EmitCharacter('<');
                         }
-                        else if (c == '\0' && IsEof())
+                        else if (IsEof())
                         {
                             EmitError("eof-in-script-html-comment-like-text");
                             return new EofToken();
+                        }
+                        else if (c == '\0')
+                        {
+                            SwitchTo(TokenizerState.ScriptDataDoubleEscaped);
+                            return ConsumeUnexpectedNullAndEmitReplacementCharacter();
                         }
                         else
                         {
@@ -1213,10 +1303,15 @@ namespace FenBrowser.Core.Parsing
                             SwitchTo(TokenizerState.ScriptData);
                             return EmitCharacter('>');
                         }
-                        else if (c == '\0' && IsEof())
+                        else if (IsEof())
                         {
                             EmitError("eof-in-script-html-comment-like-text");
                             return new EofToken();
+                        }
+                        else if (c == '\0')
+                        {
+                            SwitchTo(TokenizerState.ScriptDataDoubleEscaped);
+                            return ConsumeUnexpectedNullAndEmitReplacementCharacter();
                         }
                         else
                         {
@@ -1260,7 +1355,7 @@ namespace FenBrowser.Core.Parsing
                         else if (char.IsLetter(c))
                         {
                             Consume();
-                            _scriptEscapeBuffer.Append(char.ToLowerInvariant(c));
+                            _scriptEscapeBuffer.Append(ToLowerInvariantFast(c));
                             return EmitCharacter(c);
                         }
                         else
@@ -1291,17 +1386,22 @@ namespace FenBrowser.Core.Parsing
                         else
                         {
                             // Bogus comment
-                            Consume();
-                            _currentComment = _pool != null ? _pool.RentComment() : new CommentToken();
-                            _currentComment.Data += c;
+                            BeginCurrentComment();
                             SwitchTo(TokenizerState.BogusComment);
+                            continue;
                         }
                         break;
 
                     case TokenizerState.TagName:
                         if (char.IsWhiteSpace(c))
                         {
-                            Consume();
+                            int whitespaceEnd = _position + 1;
+                            while (whitespaceEnd < _length &&
+                                   char.IsWhiteSpace(_input[whitespaceEnd]))
+                            {
+                                whitespaceEnd++;
+                            }
+                            AdvanceTo(whitespaceEnd);
                             SwitchTo(TokenizerState.BeforeAttributeName);
                         }
                         else if (c == '/')
@@ -1320,17 +1420,44 @@ namespace FenBrowser.Core.Parsing
                              EmitError("Eof In Tag");
                              return new EofToken();
                         }
-                        else
+                        else if (c == '\0')
                         {
                             Consume();
-                            AppendCurrentTagName(c);
+                            EmitError("Unexpected Null Character In Tag Name");
+                            AppendCurrentTagName('\uFFFD');
+                        }
+                        else
+                        {
+                            int runEnd = _position;
+                            while (runEnd < _length)
+                            {
+                                char current = _input[runEnd];
+                                if (char.IsWhiteSpace(current) ||
+                                    current == '/' ||
+                                    current == '>' ||
+                                    current == '\0')
+                                {
+                                    break;
+                                }
+
+                                AppendCurrentTagName(current);
+                                runEnd++;
+                            }
+
+                            AdvanceNonWhitespaceRunTo(runEnd);
                         }
                         break;
 
                     case TokenizerState.BeforeAttributeName:
                         if (char.IsWhiteSpace(c))
                         {
-                            Consume(); // Ignore
+                            int whitespaceEnd = _position + 1;
+                            while (whitespaceEnd < _length &&
+                                   char.IsWhiteSpace(_input[whitespaceEnd]))
+                            {
+                                whitespaceEnd++;
+                            }
+                            AdvanceTo(whitespaceEnd);
                         }
                         else if (c == '/')
                         {
@@ -1350,8 +1477,7 @@ namespace FenBrowser.Core.Parsing
                         else
                         {
                             SwitchTo(TokenizerState.AttributeName);
-                            _buffer.Clear();
-                            _skipCurrentAttributeValue = false;
+                            PrepareForAttributeName();
                         }
                         break;
 
@@ -1359,16 +1485,7 @@ namespace FenBrowser.Core.Parsing
                         if (char.IsWhiteSpace(c) || c == '/' || c == '>' || IsEof())
                         {
                             // End of attribute name
-                            _lastAttrName = _buffer.ToString();
-                            if (_currentTag.Attributes.Find(a => string.Equals(a.Name, _lastAttrName, StringComparison.OrdinalIgnoreCase)) == null)
-                            {
-                                 _currentTag.AddAttribute(_lastAttrName, "");
-                                 _skipCurrentAttributeValue = false;
-                            }
-                            else
-                            {
-                                 _skipCurrentAttributeValue = true;
-                            }
+                            FinalizeAttributeName();
                             
                             _buffer.Clear();
                             if (c == '=') // Should prevent this case here if strict? No spec says check whitespace first.
@@ -1382,31 +1499,55 @@ namespace FenBrowser.Core.Parsing
                         else if (c == '=')
                         {
                             Consume();
-                            _lastAttrName = _buffer.ToString();
-                             // Create attribute if not exists
-                             if (_currentTag.Attributes.Find(a => string.Equals(a.Name, _lastAttrName, StringComparison.OrdinalIgnoreCase)) == null)
-                            {
-                                 _currentTag.AddAttribute(_lastAttrName, "");
-                                 _skipCurrentAttributeValue = false;
-                            }
-                            else
-                            {
-                                 _skipCurrentAttributeValue = true;
-                            }
+                            FinalizeAttributeName();
                              _buffer.Clear();
                             SwitchTo(TokenizerState.BeforeAttributeValue);
                         }
+                        else if (c == '\0')
+                        {
+                            Consume();
+                            EmitError("Unexpected Null Character In Attribute Name");
+                            if (!_discardCurrentAttribute)
+                            {
+                                _buffer.Append('\uFFFD');
+                            }
+                        }
                         else
                         {
-                             Consume();
-                             _buffer.Append(char.ToLowerInvariant(c));
+                             int runEnd = _position;
+                             while (runEnd < _length)
+                             {
+                                 char current = _input[runEnd];
+                                 if (char.IsWhiteSpace(current) ||
+                                     current == '/' ||
+                                     current == '>' ||
+                                     current == '=' ||
+                                     current == '\0')
+                                 {
+                                     break;
+                                 }
+
+                                 if (!_discardCurrentAttribute)
+                                 {
+                                     _buffer.Append(ToLowerInvariantFast(current));
+                                 }
+                                 runEnd++;
+                             }
+
+                             AdvanceNonWhitespaceRunTo(runEnd);
                         }
                         break;
 
                     case TokenizerState.AfterAttributeName:
                         if (char.IsWhiteSpace(c))
                         {
-                            Consume();
+                            int whitespaceEnd = _position + 1;
+                            while (whitespaceEnd < _length &&
+                                   char.IsWhiteSpace(_input[whitespaceEnd]))
+                            {
+                                whitespaceEnd++;
+                            }
+                            AdvanceTo(whitespaceEnd);
                         }
                         else if (c == '/')
                         {
@@ -1432,7 +1573,7 @@ namespace FenBrowser.Core.Parsing
                         {
                             // New attribute
                             SwitchTo(TokenizerState.AttributeName);
-                            _buffer.Clear();
+                            PrepareForAttributeName();
                             // Reconsume c
                             continue;
                         }
@@ -1441,7 +1582,13 @@ namespace FenBrowser.Core.Parsing
                     case TokenizerState.BeforeAttributeValue:
                         if (char.IsWhiteSpace(c))
                         {
-                            Consume();
+                            int whitespaceEnd = _position + 1;
+                            while (whitespaceEnd < _length &&
+                                   char.IsWhiteSpace(_input[whitespaceEnd]))
+                            {
+                                whitespaceEnd++;
+                            }
+                            AdvanceTo(whitespaceEnd);
                         }
                         else if (c == '"')
                         {
@@ -1490,10 +1637,27 @@ namespace FenBrowser.Core.Parsing
                              EmitError("Eof in Attribute Value");
                              return new EofToken();
                         }
-                        else
+                        else if (c == '\0')
                         {
                             Consume();
-                            _attrValueBuffer.Append(c);
+                            AppendAttributeValueReplacementCharacter();
+                        }
+                        else
+                        {
+                            int runEnd = _position;
+                            while (runEnd < _length &&
+                                   _input[runEnd] != '&' &&
+                                   _input[runEnd] != '"' &&
+                                   _input[runEnd] != '\0')
+                            {
+                                runEnd++;
+                            }
+
+                            if (!_skipCurrentAttributeValue)
+                            {
+                                _attrValueBuffer.Append(_input, _position, runEnd - _position);
+                            }
+                            AdvanceTo(runEnd);
                         }
                         break;
 
@@ -1517,10 +1681,27 @@ namespace FenBrowser.Core.Parsing
                              EmitError("Eof in Attribute Value");
                              return new EofToken();
                         }
-                        else
+                        else if (c == '\0')
                         {
                             Consume();
-                            _attrValueBuffer.Append(c);
+                            AppendAttributeValueReplacementCharacter();
+                        }
+                        else
+                        {
+                            int runEnd = _position;
+                            while (runEnd < _length &&
+                                   _input[runEnd] != '&' &&
+                                   _input[runEnd] != '\'' &&
+                                   _input[runEnd] != '\0')
+                            {
+                                runEnd++;
+                            }
+
+                            if (!_skipCurrentAttributeValue)
+                            {
+                                _attrValueBuffer.Append(_input, _position, runEnd - _position);
+                            }
+                            AdvanceTo(runEnd);
                         }
                         break;
 
@@ -1551,10 +1732,32 @@ namespace FenBrowser.Core.Parsing
                             SetAttributeValue();
                             return new EofToken();
                         }
-                        else
+                        else if (c == '\0')
                         {
                             Consume();
-                            _attrValueBuffer.Append(c);
+                            AppendAttributeValueReplacementCharacter();
+                        }
+                        else
+                        {
+                            int runEnd = _position;
+                            while (runEnd < _length)
+                            {
+                                char current = _input[runEnd];
+                                if (current == '&' ||
+                                    current == '>' ||
+                                    current == '\0' ||
+                                    char.IsWhiteSpace(current))
+                                {
+                                    break;
+                                }
+                                runEnd++;
+                            }
+
+                            if (!_skipCurrentAttributeValue)
+                            {
+                                _attrValueBuffer.Append(_input, _position, runEnd - _position);
+                            }
+                            AdvanceNonWhitespaceRunTo(runEnd);
                         }
                         break;
 
@@ -1611,7 +1814,7 @@ namespace FenBrowser.Core.Parsing
                         if (Matches("--"))
                         {
                             Consume(2);
-                            _currentComment = _pool != null ? _pool.RentComment() : new CommentToken();
+                            BeginCurrentComment();
                             SwitchTo(TokenizerState.CommentStart);
                         }
                         else if (Matches("DOCTYPE", ignoreCase: true))
@@ -1623,7 +1826,7 @@ namespace FenBrowser.Core.Parsing
                         {
                             EmitError("Invalid Markup Declaration");
                             SwitchTo(TokenizerState.BogusComment);
-                            _currentComment = new CommentToken();
+                            BeginCurrentComment();
                         }
                         break;
                         
@@ -1662,7 +1865,7 @@ namespace FenBrowser.Core.Parsing
                         }
                         else
                         {
-                            _currentComment.Data += '-';
+                            _commentBuffer.Append('-');
                             SwitchTo(TokenizerState.Comment);
                             continue;
                         }
@@ -1677,7 +1880,7 @@ namespace FenBrowser.Core.Parsing
                         else if (c == '<')
                         {
                             Consume();
-                            _currentComment.Data += c;
+                            _commentBuffer.Append(c);
                             SwitchTo(TokenizerState.CommentLessThanSign);
                         }
                         else if (IsEof())
@@ -1685,10 +1888,16 @@ namespace FenBrowser.Core.Parsing
                             EmitError("Eof In Comment");
                             return EmitCurrentComment();
                         }
+                        else if (c == '\0')
+                        {
+                            Consume();
+                            EmitError("Unexpected Null Character In Comment");
+                            _commentBuffer.Append('\uFFFD');
+                        }
                         else
                         {
                             Consume();
-                            _currentComment.Data += c;
+                            _commentBuffer.Append(c);
                         }
                         break;
                         
@@ -1705,7 +1914,7 @@ namespace FenBrowser.Core.Parsing
                         }
                         else
                         {
-                            _currentComment.Data += '-';
+                            _commentBuffer.Append('-');
                             SwitchTo(TokenizerState.Comment);
                             continue;
                         }
@@ -1726,7 +1935,7 @@ namespace FenBrowser.Core.Parsing
                         else if (c == '-')
                         {
                             Consume();
-                            _currentComment.Data += '-';
+                            _commentBuffer.Append('-');
                         }
                         else if (IsEof())
                         {
@@ -1735,7 +1944,7 @@ namespace FenBrowser.Core.Parsing
                         }
                         else
                         {
-                            _currentComment.Data += "--";
+                            _commentBuffer.Append("--");
                             SwitchTo(TokenizerState.Comment);
                             continue;
                         }
@@ -1745,13 +1954,13 @@ namespace FenBrowser.Core.Parsing
                         if (c == '!')
                         {
                             Consume();
-                            _currentComment.Data += '!';
+                            _commentBuffer.Append('!');
                             SwitchTo(TokenizerState.CommentLessThanSignBang);
                         }
                         else if (c == '<')
                         {
                             Consume();
-                            _currentComment.Data += '<';
+                            _commentBuffer.Append('<');
                         }
                         else
                         {
@@ -1764,7 +1973,7 @@ namespace FenBrowser.Core.Parsing
                         if (c == '-')
                         {
                             Consume();
-                            _currentComment.Data += '-';
+                            _commentBuffer.Append('-');
                             SwitchTo(TokenizerState.CommentLessThanSignBangDash);
                         }
                         else
@@ -1778,7 +1987,7 @@ namespace FenBrowser.Core.Parsing
                         if (c == '-')
                         {
                             Consume();
-                            _currentComment.Data += '-';
+                            _commentBuffer.Append('-');
                             SwitchTo(TokenizerState.CommentLessThanSignBangDashDash);
                         }
                         else
@@ -1796,7 +2005,7 @@ namespace FenBrowser.Core.Parsing
                         if (c == '-')
                         {
                             Consume();
-                            _currentComment.Data += "--!";
+                            _commentBuffer.Append("--!");
                             SwitchTo(TokenizerState.CommentEndDash);
                         }
                         else if (c == '>')
@@ -1812,7 +2021,7 @@ namespace FenBrowser.Core.Parsing
                         }
                         else
                         {
-                            _currentComment.Data += "--!";
+                            _commentBuffer.Append("--!");
                             SwitchTo(TokenizerState.Comment);
                             continue;
                         }
@@ -1829,10 +2038,16 @@ namespace FenBrowser.Core.Parsing
                         {
                             return EmitCurrentComment();
                         }
+                        else if (c == '\0')
+                        {
+                            Consume();
+                            EmitError("Unexpected Null Character In Comment");
+                            _commentBuffer.Append('\uFFFD');
+                        }
                         else
                         {
                             Consume();
-                            _currentComment.Data += c;
+                            _commentBuffer.Append(c);
                         }
                         break;
 
@@ -1845,7 +2060,7 @@ namespace FenBrowser.Core.Parsing
                         else if (IsEof())
                         {
                              EmitError("Eof In Doctype");
-                             _currentDoctype = _pool != null ? _pool.RentDoctype() : new DoctypeToken();
+                             BeginCurrentDoctype();
                              _currentDoctype.ForceQuirks = true;
                              return EmitCurrentDoctype();
                         }
@@ -1861,19 +2076,11 @@ namespace FenBrowser.Core.Parsing
                         {
                             Consume();
                         }
-                        else if (c == '\0')
-                        {
-                             EmitError("Unexpected Null Character In Doctype");
-                             _currentDoctype = _pool != null ? _pool.RentDoctype() : new DoctypeToken();
-                             _currentDoctype.Name = "\uFFFD";
-                             Consume();
-                             SwitchTo(TokenizerState.DoctypeName);
-                        }
                         else if (c == '>')
                         {
                              Consume();
                              EmitError("Missing Doctype Name");
-                             _currentDoctype = _pool != null ? _pool.RentDoctype() : new DoctypeToken();
+                             BeginCurrentDoctype();
                              _currentDoctype.ForceQuirks = true;
                              SwitchTo(TokenizerState.Data);
                              return EmitCurrentDoctype();
@@ -1881,15 +2088,22 @@ namespace FenBrowser.Core.Parsing
                         else if (IsEof())
                         {
                              EmitError("Eof In Doctype");
-                             _currentDoctype = _pool != null ? _pool.RentDoctype() : new DoctypeToken();
+                             BeginCurrentDoctype();
                              _currentDoctype.ForceQuirks = true;
                              return EmitCurrentDoctype();
                         }
+                        else if (c == '\0')
+                        {
+                             EmitError("Unexpected Null Character In Doctype");
+                             BeginCurrentDoctype();
+                             AppendCurrentDoctypeName('\uFFFD');
+                             Consume();
+                             SwitchTo(TokenizerState.DoctypeName);
+                        }
                         else
                         {
-                            _currentDoctype = _pool != null ? _pool.RentDoctype() : new DoctypeToken();
-                            _currentDoctype.Name = "";
-                            _currentDoctype.Name += char.ToLowerInvariant(c);
+                            BeginCurrentDoctype();
+                            AppendCurrentDoctypeName(ToLowerInvariantFast(c));
                             Consume();
                             SwitchTo(TokenizerState.DoctypeName);
                         }
@@ -1900,12 +2114,6 @@ namespace FenBrowser.Core.Parsing
                         {
                             Consume();
                             SwitchTo(TokenizerState.AfterDoctypeName);
-                        }
-                        else if (c == '\0')
-                        {
-                            Consume();
-                            EmitError("Unexpected Null Character In Doctype Name");
-                            _currentDoctype.Name += '\uFFFD';
                         }
                         else if (c == '>')
                         {
@@ -1919,10 +2127,16 @@ namespace FenBrowser.Core.Parsing
                              _currentDoctype.ForceQuirks = true;
                              return EmitCurrentDoctype();
                         }
+                        else if (c == '\0')
+                        {
+                            Consume();
+                            EmitError("Unexpected Null Character In Doctype Name");
+                            AppendCurrentDoctypeName('\uFFFD');
+                        }
                         else
                         {
                             Consume();
-                            _currentDoctype.Name += char.ToLowerInvariant(c);
+                            AppendCurrentDoctypeName(ToLowerInvariantFast(c));
                         }
                         break;
                         
@@ -1969,30 +2183,16 @@ namespace FenBrowser.Core.Parsing
                             }
 
                             Consume(); // opening quote
-                            var publicStart = _position;
-                            while (!IsEof() && Peek() != publicQuote && Peek() != '>')
-                            {
-                                Consume();
-                            }
-
-                            _currentDoctype.PublicIdentifier = _input.Substring(publicStart, _position - publicStart);
-                            if (IsEof())
+                            bool publicIdentifierClosed = TryConsumeQuotedDoctypeIdentifier(
+                                publicQuote,
+                                out string publicIdentifier);
+                            _currentDoctype.PublicIdentifier = publicIdentifier;
+                            if (!publicIdentifierClosed)
                             {
                                 EmitError("Eof In Doctype Public Identifier");
                                 _currentDoctype.ForceQuirks = true;
                                 return EmitCurrentDoctype();
                             }
-
-                            if (Peek() == '>')
-                            {
-                                EmitError("Abrupt Doctype Public Identifier");
-                                _currentDoctype.ForceQuirks = true;
-                                Consume();
-                                SwitchTo(TokenizerState.Data);
-                                return EmitCurrentDoctype();
-                            }
-
-                            Consume(); // closing quote
                             while (!IsEof() && char.IsWhiteSpace(Peek()))
                             {
                                 Consume();
@@ -2016,30 +2216,16 @@ namespace FenBrowser.Core.Parsing
                             if (systemQuote == '"' || systemQuote == '\'')
                             {
                                 Consume(); // opening quote
-                                var systemStart = _position;
-                                while (!IsEof() && Peek() != systemQuote && Peek() != '>')
-                                {
-                                    Consume();
-                                }
-
-                                _currentDoctype.SystemIdentifier = _input.Substring(systemStart, _position - systemStart);
-                                if (IsEof())
+                                bool systemIdentifierClosed = TryConsumeQuotedDoctypeIdentifier(
+                                    systemQuote,
+                                    out string systemIdentifier);
+                                _currentDoctype.SystemIdentifier = systemIdentifier;
+                                if (!systemIdentifierClosed)
                                 {
                                     EmitError("Eof In Doctype System Identifier");
                                     _currentDoctype.ForceQuirks = true;
                                     return EmitCurrentDoctype();
                                 }
-
-                                if (Peek() == '>')
-                                {
-                                    EmitError("Abrupt Doctype System Identifier");
-                                    _currentDoctype.ForceQuirks = true;
-                                    Consume();
-                                    SwitchTo(TokenizerState.Data);
-                                    return EmitCurrentDoctype();
-                                }
-
-                                Consume(); // closing quote
                                 while (!IsEof() && char.IsWhiteSpace(Peek()))
                                 {
                                     Consume();
@@ -2089,30 +2275,16 @@ namespace FenBrowser.Core.Parsing
                             }
 
                             Consume(); // opening quote
-                            var systemStart = _position;
-                            while (!IsEof() && Peek() != systemQuote && Peek() != '>')
-                            {
-                                Consume();
-                            }
-
-                            _currentDoctype.SystemIdentifier = _input.Substring(systemStart, _position - systemStart);
-                            if (IsEof())
+                            bool systemIdentifierClosed = TryConsumeQuotedDoctypeIdentifier(
+                                systemQuote,
+                                out string systemIdentifier);
+                            _currentDoctype.SystemIdentifier = systemIdentifier;
+                            if (!systemIdentifierClosed)
                             {
                                 EmitError("Eof In Doctype System Identifier");
                                 _currentDoctype.ForceQuirks = true;
                                 return EmitCurrentDoctype();
                             }
-
-                            if (Peek() == '>')
-                            {
-                                EmitError("Abrupt Doctype System Identifier");
-                                _currentDoctype.ForceQuirks = true;
-                                Consume();
-                                SwitchTo(TokenizerState.Data);
-                                return EmitCurrentDoctype();
-                            }
-
-                            Consume(); // closing quote
                             while (!IsEof() && char.IsWhiteSpace(Peek()))
                             {
                                 Consume();
@@ -2227,6 +2399,19 @@ namespace FenBrowser.Core.Parsing
             _position = target;
         }
 
+        private void AdvanceNonWhitespaceRunTo(int newPosition)
+        {
+            var target = Math.Min(newPosition, _length);
+            if (target <= _position)
+            {
+                return;
+            }
+
+            _column += target - _position;
+            _position = target;
+            _previousConsumedWasCarriageReturn = false;
+        }
+
         private static void SetTokenSourceLocation(HtmlToken token, int offset, int line, int column)
         {
             if (token == null)
@@ -2251,11 +2436,20 @@ namespace FenBrowser.Core.Parsing
             return _pool != null ? _pool.RentCharacter(c) : new CharacterToken(c);
         }
 
+        private HtmlToken EmitCharacter(string value)
+        {
+            return _pool != null ? _pool.RentCharacter(value) : new CharacterToken(value);
+        }
+
         private TagToken EmitCurrentTag()
         {
             var tag = _currentTag;
             tag.TagName = _tagNameBuffer.ToString();
             _currentTag = null;
+            _currentAttributeIndices?.Clear();
+            _currentAttributeIndex = -1;
+            _currentTagAttributeCount = 0;
+            _discardCurrentAttribute = false;
             return tag;
         }
 
@@ -2263,11 +2457,16 @@ namespace FenBrowser.Core.Parsing
         {
             _currentTag = tag;
             _tagNameBuffer.Clear();
+            _currentAttributeIndices?.Clear();
+            _currentAttributeIndex = -1;
+            _currentTagAttributeCount = 0;
+            _discardCurrentAttribute = false;
+            _skipCurrentAttributeValue = false;
         }
 
         private void AppendCurrentTagName(char c)
         {
-            _tagNameBuffer.Append(char.ToLowerInvariant(c));
+            _tagNameBuffer.Append(ToLowerInvariantFast(c));
         }
 
         private bool CurrentTagNameEquals(string expected)
@@ -2295,18 +2494,83 @@ namespace FenBrowser.Core.Parsing
                 _pendingChars.Enqueue(_tagNameBuffer[index]);
             }
         }
+
+        private void BeginCurrentComment()
+        {
+            _currentComment = _pool != null ? _pool.RentComment() : new CommentToken();
+            _commentBuffer.Clear();
+        }
         
         private CommentToken EmitCurrentComment()
         {
             var c = _currentComment;
+            SwitchTo(TokenizerState.Data);
+            c.Data = _commentBuffer.ToString();
             _currentComment = null;
+            _commentBuffer.Clear();
             return c;
+        }
+
+        private HtmlToken ConsumeUnexpectedNullAndEmitReplacementCharacter()
+        {
+            Consume();
+            EmitError("Unexpected Null Character In Text State");
+            return EmitCharacter('\uFFFD');
+        }
+
+        private void BeginCurrentDoctype()
+        {
+            _currentDoctype = _pool != null ? _pool.RentDoctype() : new DoctypeToken();
+            _doctypeNameBuffer.Clear();
+            _doctypeNameStarted = false;
+        }
+
+        private void AppendCurrentDoctypeName(char character)
+        {
+            _doctypeNameStarted = true;
+            _doctypeNameBuffer.Append(character);
+        }
+
+        private bool TryConsumeQuotedDoctypeIdentifier(char quote, out string identifier)
+        {
+            _doctypeIdentifierBuffer.Clear();
+            while (!IsEof())
+            {
+                char current = Peek();
+                if (current == quote)
+                {
+                    Consume();
+                    identifier = _doctypeIdentifierBuffer.ToString();
+                    return true;
+                }
+
+                Consume();
+                if (current == '\0')
+                {
+                    EmitError("Unexpected Null Character In Doctype Identifier");
+                    _doctypeIdentifierBuffer.Append('\uFFFD');
+                }
+                else
+                {
+                    _doctypeIdentifierBuffer.Append(current);
+                }
+            }
+
+            identifier = _doctypeIdentifierBuffer.ToString();
+            return false;
         }
         
         private DoctypeToken EmitCurrentDoctype()
         {
             var d = _currentDoctype;
+            if (_doctypeNameStarted)
+            {
+                d.Name = _doctypeNameBuffer.ToString();
+            }
+            SwitchTo(TokenizerState.Data);
             _currentDoctype = null;
+            _doctypeNameBuffer.Clear();
+            _doctypeNameStarted = false;
             return d;
         }
 
@@ -2319,30 +2583,95 @@ namespace FenBrowser.Core.Parsing
                 char c2 = s[i];
                 if (ignoreCase)
                 {
-                    c1 = char.ToLowerInvariant(c1);
-                    c2 = char.ToLowerInvariant(c2);
+                    c1 = ToLowerInvariantFast(c1);
+                    c2 = ToLowerInvariantFast(c2);
                 }
                 if (c1 != c2) return false;
             }
             return true;
         }
+
+        private static char ToLowerInvariantFast(char value)
+        {
+            return value is >= 'A' and <= 'Z'
+                ? (char)(value + ('a' - 'A'))
+                : value <= '\x7f'
+                    ? value
+                    : char.ToLowerInvariant(value);
+        }
         
         private void SetAttributeValue()
         {
-            if (_skipCurrentAttributeValue)
+            if (_skipCurrentAttributeValue ||
+                _currentTag == null ||
+                _currentAttributeIndex < 0 ||
+                _currentAttributeIndex >= _currentTag.Attributes.Count)
             {
                 return;
             }
 
-            if (_currentTag != null && !string.IsNullOrEmpty(_lastAttrName))
+            _currentTag.Attributes[_currentAttributeIndex].Value = _attrValueBuffer.ToString();
+        }
+
+        private void AppendAttributeValueReplacementCharacter()
+        {
+            EmitError("Unexpected Null Character In Attribute Value");
+            if (!_skipCurrentAttributeValue)
             {
-                var attrIndex = _currentTag.Attributes.FindIndex(
-                    a => string.Equals(a.Name, _lastAttrName, StringComparison.OrdinalIgnoreCase));
-                if (attrIndex >= 0)
-                {
-                    _currentTag.Attributes[attrIndex].Value = _attrValueBuffer.ToString();
-                }
+                _attrValueBuffer.Append('\uFFFD');
             }
+        }
+
+        private void PrepareForAttributeName()
+        {
+            _buffer.Clear();
+            _currentAttributeIndex = -1;
+            _discardCurrentAttribute = MaxAttributesPerTag > 0 &&
+                _currentTagAttributeCount >= MaxAttributesPerTag;
+            _currentTagAttributeCount++;
+            _skipCurrentAttributeValue = _discardCurrentAttribute;
+
+            if (_discardCurrentAttribute)
+            {
+                MarkAttributeLimitExceeded();
+            }
+        }
+
+        private void FinalizeAttributeName()
+        {
+            if (_discardCurrentAttribute || _currentTag == null)
+            {
+                _currentAttributeIndex = -1;
+                _skipCurrentAttributeValue = true;
+                return;
+            }
+
+            string attributeName = _buffer.ToString();
+            _currentAttributeIndices ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (_currentAttributeIndices.TryGetValue(attributeName, out int existingIndex))
+            {
+                _currentAttributeIndex = existingIndex;
+                _skipCurrentAttributeValue = true;
+                return;
+            }
+
+            _currentAttributeIndex = _currentTag.HasAttributes ? _currentTag.Attributes.Count : 0;
+            _currentTag.AddAttribute(attributeName, "");
+            _currentAttributeIndices.Add(attributeName, _currentAttributeIndex);
+            _skipCurrentAttributeValue = false;
+        }
+
+        private void MarkAttributeLimitExceeded()
+        {
+            if (_attributeLimitReached)
+            {
+                return;
+            }
+
+            _attributeLimitReached = true;
+            LastReasonCode = HtmlParsingReasonCode.AttributeLimitExceeded;
+            LastReasonDetail = $"Tag attribute limit reached ({MaxAttributesPerTag}). Ignoring overflow attributes.";
+            EmitError(LastReasonDetail);
         }
 
         private bool IsHexDigit(char c)
@@ -2374,13 +2703,17 @@ namespace FenBrowser.Core.Parsing
             for (int candidateLength = nameLength; candidateLength >= 1; candidateLength--)
             {
                 var name = _input.Substring(start, candidateLength);
-                if (!TryResolveNamedCharacterReference(name, out value))
+                int end = start + candidateLength;
+                bool hasSemicolon = end < _length && _input[end] == ';';
+                if (!hasSemicolon && !LegacyNamedReferencesWithoutSemicolon.Contains(name))
                 {
                     continue;
                 }
 
-                int end = start + candidateLength;
-                bool hasSemicolon = end < _length && _input[end] == ';';
+                if (!TryResolveNamedCharacterReference(name, out value))
+                {
+                    continue;
+                }
 
                 if (!hasSemicolon && _charRefInAttributeValue)
                 {
@@ -2466,7 +2799,10 @@ namespace FenBrowser.Core.Parsing
         {
             if (_charRefInAttributeValue)
             {
-                _attrValueBuffer.Append(resolved);
+                if (!_skipCurrentAttributeValue)
+                {
+                    _attrValueBuffer.Append(resolved);
+                }
                 _charRefInAttributeValue = false;
                 return null;
             }

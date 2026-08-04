@@ -8,6 +8,7 @@ namespace FenBrowser.Core.Parsing
     {
         private static readonly ParserSecurityPolicy DefaultInstance = new ParserSecurityPolicy();
         private int _htmlMaxTokenEmissions = 2_000_000;
+        private int _htmlMaxAttributesPerElement = 4096;
         private int _htmlMaxOpenElementsDepth = 4096;
         private int _cssMaxRules = 200_000;
         private int _cssMaxDeclarationsPerBlock = 8192;
@@ -24,6 +25,12 @@ namespace FenBrowser.Core.Parsing
         {
             get => _htmlMaxOpenElementsDepth;
             set => _htmlMaxOpenElementsDepth = NormalizeLimit(value, 4096);
+        }
+
+        public int HtmlMaxAttributesPerElement
+        {
+            get => _htmlMaxAttributesPerElement;
+            set => _htmlMaxAttributesPerElement = NormalizeLimit(value, 4096);
         }
 
         public int CssMaxRules
@@ -43,6 +50,7 @@ namespace FenBrowser.Core.Parsing
             return new ParserSecurityPolicy
             {
                 HtmlMaxTokenEmissions = HtmlMaxTokenEmissions,
+                HtmlMaxAttributesPerElement = HtmlMaxAttributesPerElement,
                 HtmlMaxOpenElementsDepth = HtmlMaxOpenElementsDepth,
                 CssMaxRules = CssMaxRules,
                 CssMaxDeclarationsPerBlock = CssMaxDeclarationsPerBlock
@@ -51,7 +59,7 @@ namespace FenBrowser.Core.Parsing
 
         public override string ToString()
         {
-            return $"HTML(tokens={HtmlMaxTokenEmissions}, openElements={HtmlMaxOpenElementsDepth}), CSS(rules={CssMaxRules}, declarations={CssMaxDeclarationsPerBlock})";
+            return $"HTML(tokens={HtmlMaxTokenEmissions}, attributesPerElement={HtmlMaxAttributesPerElement}, openElements={HtmlMaxOpenElementsDepth}), CSS(rules={CssMaxRules}, declarations={CssMaxDeclarationsPerBlock})";
         }
 
         private static int NormalizeLimit(int value, int fallback)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -170,6 +171,7 @@ namespace FenBrowser.Core
 
         public int MaxHtmlInputChars { get; set; } = 8_000_000;
         public int MaxHtmlTokenEmissions { get; set; } = 2_000_000;
+        public int MaxHtmlAttributesPerElement { get; set; } = 4096;
         public int MaxOpenElementsDepth { get; set; } = 4096;
         public int MaxRedirectHops { get; set; } = 5;
         public int MaxTextBodyBytes { get; set; } = DefaultMaxTextBodyBytes;
@@ -184,6 +186,9 @@ namespace FenBrowser.Core
 
             if (MaxHtmlTokenEmissions < 10_000)
                 MaxHtmlTokenEmissions = 2_000_000;
+
+            if (MaxHtmlAttributesPerElement < 16)
+                MaxHtmlAttributesPerElement = 4096;
 
             if (MaxOpenElementsDepth < 64)
                 MaxOpenElementsDepth = 4096;
@@ -537,6 +542,9 @@ namespace FenBrowser.Core
             if (Resilience.MaxHtmlTokenEmissions < 10_000)
                 throw new InvalidOperationException($"MaxHtmlTokenEmissions must be >= 10000. Actual: {Resilience.MaxHtmlTokenEmissions}");
 
+            if (Resilience.MaxHtmlAttributesPerElement < 16)
+                throw new InvalidOperationException($"MaxHtmlAttributesPerElement must be >= 16. Actual: {Resilience.MaxHtmlAttributesPerElement}");
+
             if (Resilience.MaxOpenElementsDepth < 64)
                 throw new InvalidOperationException($"MaxOpenElementsDepth must be >= 64. Actual: {Resilience.MaxOpenElementsDepth}");
 
@@ -579,7 +587,7 @@ namespace FenBrowser.Core
             }
             catch (Exception ex)
             {
-                EngineLogCompat.Error($"[Settings] Failed to save: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
+                Trace.WriteLine($"[Settings] Failed to save: {ex.Message}");
             }
         }
 
@@ -598,7 +606,7 @@ namespace FenBrowser.Core
             }
             catch (Exception ex)
             {
-                EngineLogCompat.Error($"[Settings] Failed to load: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
+                Trace.WriteLine($"[Settings] Failed to load: {ex.Message}");
             }
 
             var fallback = new BrowserSettings();
