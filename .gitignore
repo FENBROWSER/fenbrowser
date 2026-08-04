@@ -28,6 +28,7 @@ bld/
 # Test and debug files
 *.txt
 *.html
+!tools/html-tokenizer-bench/corpus/benchmark-seed.html
 *.js
 !FenBrowser.Js/
 *.ps1
@@ -40,6 +41,7 @@ bld/
 !scripts/run_stage_recovery_baseline.ps1
 !scripts/run-wpt-category-sweep.ps1
 !scripts/run-wpt-shards.ps1
+!scripts/run-html-tokenizer-language-bench.ps1
 *.py
 !scripts/test262_dashboard.py
 !scripts/wpt_report.py
@@ -63,6 +65,7 @@ test262/
 wpt/
 html5lib-tests/
 Results/
+tools/html-tokenizer-bench/rust/target/
 .config/
 .agents/
 

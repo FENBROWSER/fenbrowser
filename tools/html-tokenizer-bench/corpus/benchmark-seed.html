@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>FenBrowser &amp; language benchmark</title>
+</head>
+<body class="benchmark-page" data-mode="steady">
+  <!-- deterministic tokenizer workload -->
+  <main id="content">
+    <article class="card primary" data-index="17" aria-label="Tokenizer &amp; parser">
+      <h1>Cross-language HTML tokenizer</h1>
+      <p title="ordinary attribute value">Text before <strong>strong content</strong> and text after.</p>
+      <input type="text" name="query" value="fenbrowser" disabled>
+      <img src="/assets/pixel.png" alt="one &amp; two"/>
+    </article>
+    <section class="items">
+      <div class="item" data-key="alpha">Alpha &lt; Beta</div>
+      <div class="item" data-key="bravo">Bravo &gt; Alpha</div>
+      <div class="item" data-key="charlie"><span>Nested value</span></div>
+      <ASIDE DATA-ROLE=note data-code='&#65;'>ASCII numeric reference: &#66;</ASIDE>
+    </section>
+    <script>const message = "tokenizer"; const total = 17 + 25;</script>
+    <style>.card { color: red; margin: 1px; }</style>
+    <p>Recovery text with &unknown; and an invalid opener <1.</p>
+  </main>
+  <footer data-build="release">Measured output</footer>
+</body>
+</html>
