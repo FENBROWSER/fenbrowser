@@ -1480,6 +1480,16 @@ Verification:
 
 - Red result: `OutOfOrderResponseChunk_IsRejected` accepted chunk indices `1, 0` and threw no exception. The fixed network coordinator class passes `10/10`; the adjacent network/renderer process slice passes `56/56`, both with zero failures or skips.
 
+### 6.73 Tab-Chrome Mutation Synchronization (2026-07-26)
+
+- `TabBarWidget` now performs tab-widget add, remove, and active-state mutation under the shared Widget tree write lock. Compositor painting already holds the matching read lock, so WebDriver-driven tab lifecycle activity can no longer modify the private tab list during `TabBarWidget.Paint`.
+- Tab lifecycle remains UI-thread-owned; this change only closes the existing UI/compositor synchronization gap and does not alter tab creation, activation, ordering, or close policy.
+
+Verification:
+
+- `dotnet build FenBrowser.Host\FenBrowser.Host.csproj -c Release -v minimal /nodeReuse:false`: pass with zero errors.
+- A 20-process `FileAPI/` WPT rerun completed all `113/113` started files and contained zero `Collection was modified`, `InvalidOperationException`, or unhandled TabBar process signatures. The category remains red for separate FileAPI timeouts, assertion failures, and connection-reset crash classifications.
+
 ### 6.74 Native Content-Frame Lifetime (2026-07-27)
 
 - `BrowserIntegration` no longer treats an atomic `ContentSnapshot` reference

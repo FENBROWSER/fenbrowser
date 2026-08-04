@@ -114,35 +114,44 @@ public class TabBarWidget : Widget
     
     private void OnTabAdded(BrowserTab tab)
     {
-        var widget = new TabWidget(tab);
-        widget.Clicked += w => TabActivated?.Invoke(w.Tab);
-        widget.CloseClicked += w => TabCloseRequested?.Invoke(w.Tab);
-        _tabWidgets.Add(widget);
-        AddChild(widget);
-        InvalidateLayout();
-        Invalidate();
+        WithTreeWriteLock(() =>
+        {
+            var widget = new TabWidget(tab);
+            widget.Clicked += w => TabActivated?.Invoke(w.Tab);
+            widget.CloseClicked += w => TabCloseRequested?.Invoke(w.Tab);
+            _tabWidgets.Add(widget);
+            AddChild(widget);
+            InvalidateLayout();
+            Invalidate();
+        });
     }
     
     private void OnTabRemoved(BrowserTab tab)
     {
-        var widget = _tabWidgets.Find(w => w.Tab == tab);
-        if (widget != null)
+        WithTreeWriteLock(() =>
         {
-            widget.Detach();
-            _tabWidgets.Remove(widget);
-            Children.Remove(widget);
-            InvalidateLayout();
-            Invalidate();
-        }
+            var widget = _tabWidgets.Find(w => w.Tab == tab);
+            if (widget != null)
+            {
+                widget.Detach();
+                _tabWidgets.Remove(widget);
+                RemoveChild(widget);
+                InvalidateLayout();
+                Invalidate();
+            }
+        });
     }
     
     private void OnActiveTabChanged(BrowserTab tab)
     {
-        foreach (var widget in _tabWidgets)
+        WithTreeWriteLock(() =>
         {
-            widget.IsActive = widget.Tab == tab;
-        }
-        Invalidate();
+            foreach (var widget in _tabWidgets)
+            {
+                widget.IsActive = widget.Tab == tab;
+            }
+            Invalidate();
+        });
     }
     
     protected override SKSize OnMeasure(SKSize availableSpace)

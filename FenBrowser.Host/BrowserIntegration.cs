@@ -1020,13 +1020,11 @@ public class BrowserIntegration : IDisposable
         _pendingInvalidationReasons |= reason;
         _pendingInvalidationSource = MergeInvalidationSource(_pendingInvalidationSource, source);
 
-        // Phase 4: use the accumulator to gate wake signalling. Add() returns true
-        // only on the no-pending→pending transition — avoids spurious wake events
-        // when a frame is already pending.
-        if (_frameRequestAccumulator.Add(reason, source))
-        {
-            _wakeEvent.Set();
-        }
+        // A settled frame can arrive while the previous request is still pending
+        // because early navigation frames may be skipped until DOM/styles are ready.
+        // Wake the render loop for every request and keep the accumulator for reasons.
+        _ = _frameRequestAccumulator.Add(reason, source);
+        _wakeEvent.Set();
         _needsRepaint = true;
 
         if (notifyUi)
