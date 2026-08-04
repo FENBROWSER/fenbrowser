@@ -3025,6 +3025,52 @@ public void Dispose()
 
                 /// Render HTML into a XAML element using the managed engine pipeline.
         /// </summary>
+        private static void ActivateDeclarativeShadowRoots(Node dom)
+        {
+            if (dom == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var templates = dom.Descendants().OfType<Element>()
+                    .Where(n => string.Equals(n.TagName, "template", StringComparison.OrdinalIgnoreCase) &&
+                                n.HasAttribute("shadowrootmode"))
+                    .ToList();
+                foreach (var template in templates)
+                {
+                    var parent = template.ParentElement;
+                    var mode = template.GetAttribute("shadowrootmode")?.Trim();
+                    if (parent == null || (mode != "open" && mode != "closed"))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        var shadow = parent.AttachShadow(new ShadowRootInit
+                        {
+                            Mode = mode == "open" ? ShadowRootMode.Open : ShadowRootMode.Closed
+                        });
+                        foreach (var child in template.ChildNodes.ToList())
+                        {
+                            shadow.AppendChild(child);
+                        }
+                        template.Remove();
+                    }
+                    catch (Exception dsdEx)
+                    {
+                        EngineLogCompat.Warn($"[DSD] Failed to attach shadow root: {dsdEx.Message}", LogCategory.Rendering);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Warn($"[CustomHtmlEngine] Declarative shadow DOM processing failed: {ex.Message}", LogCategory.Rendering);
+            }
+        }
+
         public async Task<object> RenderAsync(
             string html,
             Uri baseUri,
@@ -3214,6 +3260,8 @@ public void Dispose()
                     BeginAwaitingPostScriptSnapshot(renderGeneration);
                 }
 
+                ActivateDeclarativeShadowRoots(dom);
+
                 // 2. Helper: Load CSS
                 await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, renderGeneration);
                 if (!IsCurrentRenderGeneration(renderGeneration))
@@ -3264,43 +3312,6 @@ public void Dispose()
                 {
                     EngineLogCompat.Warn($"[Security] Failed to parse CSP meta: {cspEx.Message}", LogCategory.Rendering);
                 }
-
-                // 3. Declarative Shadow DOM
-                try
-                {
-                    var templates = dom.Descendants().OfType<Element>().Where(n => n.TagName == "template" && n.HasAttribute("shadowrootmode")).ToList();
-                    foreach (var template in templates)
-                    {
-                        var parent = template.ParentElement;
-                        if (parent != null)
-                        {
-                            var mode = template.GetAttribute("shadowrootmode");
-                            if (mode == "open" || mode == "closed")
-                            {
-                                try
-                                {
-                                    var shadow = parent.AttachShadow(new ShadowRootInit { Mode = mode == "open" ? ShadowRootMode.Open : ShadowRootMode.Closed });
-                                    // Move children from template to shadow root
-                                    var children = template.Children?.ToList();
-                                    if (children != null)
-                                    {
-                                        foreach (var child in children)
-                                        {
-                                            shadow.AppendChild(child);
-                                        }
-                                    }
-                                    // Remove the template element itself
-                                    template.Remove();
-                                }
-                                catch (Exception dsdEx)
-                                {
-                                    EngineLogCompat.Warn($"[DSD] Failed to attach shadow root: {dsdEx.Message}", LogCategory.Rendering);
-                                }
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] Declarative shadow DOM processing failed: {ex.Message}", LogCategory.Rendering); }
 
                 // HTML spec Â§4.12.1: When scripting is enabled, <noscript> must not render.
                 // Remove noscript elements entirely when JS is on to prevent their raw HTML-encoded

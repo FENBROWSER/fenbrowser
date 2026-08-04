@@ -147,27 +147,37 @@ namespace FenBrowser.FenEngine.Rendering
             FenBrowser.Core.Deadlines.FrameDeadline deadline,
             Element docRoot)
         {
-            var children = subtreeRoot.ChildNodes;
-            if (children.Length == 0) return;
-
             var stack = new Stack<Element>();
-            // Push children right-to-left so left child is processed first.
-            for (int i = children.Length - 1; i >= 0; i--)
-            {
-                if (children[i] is Element childEl)
-                    stack.Push(childEl);
-            }
+            PushChildElements(subtreeRoot, stack);
 
             while (stack.Count > 0)
             {
                 var n = stack.Pop();
                 ComputeSingleNode(n, engine, result, log, deadline, docRoot);
+                PushChildElements(n, stack);
+            }
+        }
 
-                var nodeChildren = n.ChildNodes;
-                for (int i = nodeChildren.Length - 1; i >= 0; i--)
+        private static void PushChildElements(Element parent, Stack<Element> stack)
+        {
+            var shadowChildren = parent.ShadowRoot?.ChildNodes;
+            if (shadowChildren != null)
+            {
+                for (int i = shadowChildren.Length - 1; i >= 0; i--)
                 {
-                    if (nodeChildren[i] is Element childEl)
+                    if (shadowChildren[i] is Element childEl)
+                    {
                         stack.Push(childEl);
+                    }
+                }
+            }
+
+            var children = parent.ChildNodes;
+            for (int i = children.Length - 1; i >= 0; i--)
+            {
+                if (children[i] is Element childEl)
+                {
+                    stack.Push(childEl);
                 }
             }
         }
@@ -184,9 +194,15 @@ namespace FenBrowser.FenEngine.Rendering
             if (n.IsText()) return;
 
             CssComputed parentCss = null;
-            if (n.ParentElement != null)
+            var cascadeParent = n.ParentElement;
+            if (cascadeParent == null && n.ParentNode is ShadowRoot shadowRoot)
             {
-                result.TryGetValue(n.ParentElement, out parentCss);
+                cascadeParent = shadowRoot.Host;
+            }
+
+            if (cascadeParent != null)
+            {
+                result.TryGetValue(cascadeParent, out parentCss);
             }
 
             try

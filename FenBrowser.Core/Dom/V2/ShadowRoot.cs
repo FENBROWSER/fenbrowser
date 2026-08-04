@@ -123,7 +123,7 @@ namespace FenBrowser.Core.Dom.V2
                 : null;
         }
 
-        internal IReadOnlyList<Node> GetAssignedNodesForSlot(Element slot)
+        public IReadOnlyList<Node> GetAssignedNodesForSlot(Element slot)
         {
             if (slot == null)
             {

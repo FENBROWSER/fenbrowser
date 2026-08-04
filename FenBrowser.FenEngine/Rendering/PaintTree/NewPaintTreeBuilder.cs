@@ -56,6 +56,28 @@ namespace FenBrowser.FenEngine.Rendering
 
         private readonly Interaction.ScrollManager _scrollManager;
 
+        private static readonly string[] SvgPresentationProperties =
+        {
+            "fill",
+            "fill-opacity",
+            "stroke",
+            "stroke-width",
+            "stroke-linecap",
+            "stroke-linejoin",
+            "stroke-miterlimit",
+            "stroke-dasharray",
+            "stroke-dashoffset",
+            "stroke-opacity",
+            "opacity",
+            "color",
+            "font-family",
+            "font-size",
+            "font-style",
+            "font-weight",
+            "letter-spacing",
+            "text-anchor"
+        };
+
         private static bool IsOverflowClipMode(string overflow)
         {
             return string.Equals(overflow, "hidden", StringComparison.OrdinalIgnoreCase) ||
@@ -1516,11 +1538,21 @@ namespace FenBrowser.FenEngine.Rendering
                 BuildRecursive(style.Before.PseudoElementInstance, context, depth + 1, escapeContext, ancestorVisibilityHidden);
             }
 
-            for (var child = node?.FirstChild; child != null;)
+            if (node is Element composedElement)
             {
-                var nextSibling = child.NextSibling;
-                BuildRecursive(child, context, depth + 1, escapeContext, ancestorVisibilityHidden);
-                child = nextSibling;
+                foreach (var child in GetComposedPaintChildren(composedElement))
+                {
+                    BuildRecursive(child, context, depth + 1, escapeContext, ancestorVisibilityHidden);
+                }
+            }
+            else
+            {
+                for (var child = node?.FirstChild; child != null;)
+                {
+                    var nextSibling = child.NextSibling;
+                    BuildRecursive(child, context, depth + 1, escapeContext, ancestorVisibilityHidden);
+                    child = nextSibling;
+                }
             }
 
             // 2. ::after
@@ -1529,7 +1561,24 @@ namespace FenBrowser.FenEngine.Rendering
                 BuildRecursive(style.After.PseudoElementInstance, context, depth + 1, escapeContext, ancestorVisibilityHidden);
             }
         }
-        
+
+        private static IEnumerable<Node> GetComposedPaintChildren(Element element)
+        {
+            if (string.Equals(element.TagName, "SLOT", StringComparison.OrdinalIgnoreCase) &&
+                element.GetRootNode() is ShadowRoot shadowRoot)
+            {
+                var assignedNodes = shadowRoot.GetAssignedNodesForSlot(element);
+                return assignedNodes.Count > 0 ? assignedNodes : element.ChildNodes;
+            }
+
+            if (element.ShadowRoot != null)
+            {
+                return element.ShadowRoot.ChildNodes;
+            }
+
+            return element.ChildNodes;
+        }
+
         /// <summary>
         /// Builds concrete paint nodes for an element.
         /// </summary>
@@ -3269,7 +3318,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // UA Defaults
-            if (widths == null || widths.All(w => w <= 0))
+            if ((widths == null || widths.All(w => w <= 0)) && !HasComputedBorderDeclaration(style?.Map))
             {
                  if (node is Element e)
                  {
@@ -3308,6 +3357,34 @@ namespace FenBrowser.FenEngine.Rendering
                 IsFocused = isFocused,
                 IsHovered = isHovered
             };
+        }
+
+        private static bool HasComputedBorderDeclaration(IReadOnlyDictionary<string, string> map)
+        {
+            if (map == null)
+            {
+                return false;
+            }
+
+            foreach (var property in map.Keys)
+            {
+                if (string.Equals(property, "border", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(property, "border-width", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(property, "border-style", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(property, "border-top", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(property, "border-right", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(property, "border-bottom", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(property, "border-left", StringComparison.OrdinalIgnoreCase) ||
+                    property.EndsWith("-width", StringComparison.OrdinalIgnoreCase) &&
+                    property.StartsWith("border-", StringComparison.OrdinalIgnoreCase) ||
+                    property.EndsWith("-style", StringComparison.OrdinalIgnoreCase) &&
+                    property.StartsWith("border-", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private List<BoxShadowPaintNode> BuildBoxShadowNodes(Node node, SKRect bounds, CssComputed style, Layout.BoxModel box)
@@ -3981,8 +4058,9 @@ namespace FenBrowser.FenEngine.Rendering
             }
             else if (tag == "SVG" || tag.EndsWith(":SVG", StringComparison.Ordinal))
             {
-                // Internal method to re-render SVG with color resolution
-                string svgContent = elem.ToHtml(); // Basic capture
+                // Rasterizers do not participate in the document CSS cascade. Serialize a
+                // detached clone with computed SVG presentation properties on every element.
+                string svgContent = SerializeInlineSvgWithComputedPresentation(elem);
                 
                 // Resolve CSS variables in SVG content
                 if (style != null && style.CustomProperties != null && style.CustomProperties.Count > 0 && svgContent.Contains("var("))
@@ -4093,6 +4171,92 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             return null;
+        }
+
+        private string SerializeInlineSvgWithComputedPresentation(Element svgElement)
+        {
+            if (svgElement?.CloneNode(true) is not Element clone)
+            {
+                return svgElement?.ToHtml() ?? string.Empty;
+            }
+
+            ApplySvgComputedPresentation(svgElement, clone);
+            return clone.ToHtml();
+        }
+
+        private void ApplySvgComputedPresentation(Element source, Element clone)
+        {
+            if (source == null || clone == null)
+            {
+                return;
+            }
+
+            CssComputed computed = null;
+            if (!_styles.TryGetValue(source, out computed))
+            {
+                computed = source.GetComputedStyle();
+            }
+
+            if (computed != null)
+            {
+                var declarations = new List<string>();
+                foreach (string propertyName in SvgPresentationProperties)
+                {
+                    string value = ResolveSvgPresentationProperty(computed, propertyName);
+                    if (string.IsNullOrWhiteSpace(value))
+                    {
+                        continue;
+                    }
+
+                    value = ResolveSvgCurrentColor(value, computed);
+                    declarations.Add($"{propertyName}: {value}");
+                }
+
+                if (declarations.Count > 0)
+                {
+                    string existing = clone.GetAttribute("style")?.Trim();
+                    if (!string.IsNullOrEmpty(existing) && !existing.EndsWith(";", StringComparison.Ordinal))
+                    {
+                        existing += ";";
+                    }
+
+                    string projected = string.Join("; ", declarations) + ";";
+                    clone.SetAttributeUnsafe(
+                        "style",
+                        string.IsNullOrEmpty(existing) ? projected : existing + " " + projected);
+                }
+            }
+
+            Node sourceChild = source.FirstChild;
+            Node cloneChild = clone.FirstChild;
+            while (sourceChild != null && cloneChild != null)
+            {
+                if (sourceChild is Element sourceElement && cloneChild is Element cloneElement)
+                {
+                    ApplySvgComputedPresentation(sourceElement, cloneElement);
+                }
+
+                sourceChild = sourceChild.NextSibling;
+                cloneChild = cloneChild.NextSibling;
+            }
+        }
+
+        private static string ResolveSvgCurrentColor(string value, CssComputed style)
+        {
+            if (string.IsNullOrWhiteSpace(value) ||
+                value.IndexOf("currentColor", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return value;
+            }
+
+            var color = style?.ForegroundColor ?? SKColors.Empty;
+            if (color == SKColors.Empty || color.Alpha == 0)
+            {
+                return value;
+            }
+
+            string hexColor = $"#{color.Red:X2}{color.Green:X2}{color.Blue:X2}";
+            return Regex.Replace(value, "currentColor", hexColor, RegexOptions.IgnoreCase);
         }
 
         private SKBitmap RenderSvgToCachedBitmap(string svgContent, int width, int height)

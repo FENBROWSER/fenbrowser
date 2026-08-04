@@ -722,6 +722,19 @@ return computed;
         
         private void TryMatchRule(Element element, CssStyleRule styleRule, List<MatchedDeclaration> results, string pseudoElement)
         {
+            var elementShadowRoot = element.GetRootNode() as ShadowRoot;
+            if (styleRule.ShadowScopeRoot != null)
+            {
+                if (!ReferenceEquals(styleRule.ShadowScopeRoot, elementShadowRoot))
+                {
+                    return;
+                }
+            }
+            else if (elementShadowRoot != null && styleRule.Origin != CssOrigin.UserAgent)
+            {
+                return;
+            }
+
             // 1. Check Scope if applicable
             int scopeProximity = 0;
             if (!string.IsNullOrEmpty(styleRule.ScopeSelector))

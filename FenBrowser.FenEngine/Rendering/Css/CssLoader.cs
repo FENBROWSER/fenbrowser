@@ -86,7 +86,8 @@ namespace FenBrowser.FenEngine.Rendering
             double? ViewportWidth,
             double? ViewportHeight,
             int SourceOrder,
-            NewCss.CssOrigin Origin);
+            NewCss.CssOrigin Origin,
+            int ShadowScopeIdentity);
 
         // -------------------------------------------------------------------------
         // CSS PERFORMANCE CACHES
@@ -202,7 +203,8 @@ namespace FenBrowser.FenEngine.Rendering
             double? viewportWidth,
             double? viewportHeight,
             int sourceOrder = 0,
-            NewCss.CssOrigin origin = NewCss.CssOrigin.Author)
+            NewCss.CssOrigin origin = NewCss.CssOrigin.Author,
+            ShadowRoot shadowScopeRoot = null)
         {
             return new ParsedRuleCacheKey(
                 css ?? string.Empty,
@@ -210,7 +212,8 @@ namespace FenBrowser.FenEngine.Rendering
                 viewportWidth,
                 viewportHeight,
                 sourceOrder,
-                origin);
+                origin,
+                shadowScopeRoot == null ? 0 : RuntimeHelpers.GetHashCode(shadowScopeRoot));
         }
         // -------------------------------------------------------------------------
 
@@ -323,13 +326,26 @@ namespace FenBrowser.FenEngine.Rendering
                          viewportWidth,
                          viewportHeight,
                          source.SourceOrder,
-                         MapToNewCssOrigin(source.Origin));
+                         MapToNewCssOrigin(source.Origin),
+                         source.ShadowScopeRoot);
                      lock (_parsedRulesCache)
                      {
                          if (!_parsedRulesCache.TryGetValue(parseCacheKey, out rules))
                          {
                              rules = ParseRules(source.CssText, source.SourceOrder, source.BaseUri, viewportWidth, viewportHeight, null, MapToNewCssOrigin(source.Origin));
                              _parsedRulesCache[parseCacheKey] = rules;
+                         }
+                     }
+
+                     ApplyShadowScope(rules, source.ShadowScopeRoot);
+
+                     // Shadow-scoped rules retain their owning ShadowRoot. They belong to
+                     // this document's StyleSet and must not remain in the process-wide cache.
+                     if (source.ShadowScopeRoot != null)
+                     {
+                         lock (_parsedRulesCache)
+                         {
+                             _parsedRulesCache.Remove(parseCacheKey);
                          }
                      }
 
@@ -835,7 +851,7 @@ namespace FenBrowser.FenEngine.Rendering
             // 1) Pre-scan inline <style> dedupe keys used by MediaWiki link placeholders.
             const int MAX_INLINE_CSS_SIZE = 300_000; // 300KB per inline style
             var deduplicatedInlineStyles = new Dictionary<string, string>(StringComparer.Ordinal);
-            var stylesheetNodes = root.Descendants().OfType<Element>()
+            var stylesheetNodes = EnumerateElementsIncludingShadowTrees(root)
                 .Where(n => !n.IsText() &&
                     (string.Equals(n.TagName, "style", StringComparison.OrdinalIgnoreCase) ||
                      string.Equals(n.TagName, "link", StringComparison.OrdinalIgnoreCase)))
@@ -909,7 +925,8 @@ namespace FenBrowser.FenEngine.Rendering
                             Origin = CssOrigin.Inline,
                             SourceOrder = sourceIndex,
                             SequenceOrder = sourceIndex,
-                            BaseUri = baseUri
+                            BaseUri = baseUri,
+                            ShadowScopeRoot = node.GetRootNode() as ShadowRoot
                         });
                         sourceIndex++;
                     }
@@ -944,7 +961,8 @@ namespace FenBrowser.FenEngine.Rendering
                                 Origin = CssOrigin.Inline,
                                 SourceOrder = sourceIndex,
                                 SequenceOrder = sourceIndex,
-                                BaseUri = baseUri
+                                BaseUri = baseUri,
+                                ShadowScopeRoot = link.GetRootNode() as ShadowRoot
                             });
                             sourceIndex++;
                         }
@@ -1004,6 +1022,7 @@ namespace FenBrowser.FenEngine.Rendering
                 DebugLog(@"css_debug_v2.txt", $"[LINK] QUEUE: {abs}\r\n");
 
                 var order = sourceIndex++;
+                var shadowScopeRoot = link.GetRootNode() as ShadowRoot;
                 var t = RunDetachedAsync(async () =>
                 {
                     await gate.WaitAsync().ConfigureAwait(false);
@@ -1029,7 +1048,8 @@ namespace FenBrowser.FenEngine.Rendering
                                     Origin = CssOrigin.External,
                                     SourceOrder = order,
                                     SequenceOrder = order,
-                                    BaseUri = abs
+                                    BaseUri = abs,
+                                    ShadowScopeRoot = shadowScopeRoot
                                 });
                             }
                         }
@@ -1118,7 +1138,8 @@ namespace FenBrowser.FenEngine.Rendering
                             viewportWidth,
                             viewportHeight,
                             blob.SourceOrder,
-                            MapToNewCssOrigin(blob.Origin));
+                            MapToNewCssOrigin(blob.Origin),
+                            blob.ShadowScopeRoot);
                         lock (_parsedRulesCache)
                         {
                             if (_parsedRulesCache.TryGetValue(parseCacheKey, out parsed))
@@ -1175,6 +1196,14 @@ namespace FenBrowser.FenEngine.Rendering
                         
                         if (parsed != null && !parseStageToken.IsCancellationRequested)
                         {
+                            ApplyShadowScope(parsed, blob.ShadowScopeRoot);
+                            if (blob.ShadowScopeRoot != null)
+                            {
+                                lock (_parsedRulesCache)
+                                {
+                                    _parsedRulesCache.Remove(parseCacheKey);
+                                }
+                            }
                             var sheet = new NewCss.CssStylesheet();
                             sheet.Rules.AddRange(parsed);
                             lock (styleSet) 
@@ -1391,6 +1420,7 @@ namespace FenBrowser.FenEngine.Rendering
                         viewportHeight,
                         log,
                         MapToNewCssOrigin(source.Origin));
+                    ApplyShadowScope(parsed, source.ShadowScopeRoot);
                     var sheet = new NewCss.CssStylesheet();
                     sheet.Rules.AddRange(parsed);
                     styleSet.AddSheet(sheet, MapToNewCssOrigin(source.Origin), source.SourceOrder);
@@ -1418,10 +1448,77 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        private static IEnumerable<Element> EnumerateElementsIncludingShadowTrees(Element root)
+        {
+            if (root == null)
+            {
+                yield break;
+            }
+
+            var stack = new Stack<Element>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var element = stack.Pop();
+                yield return element;
+
+                var children = element.ChildNodes;
+                for (int i = children.Length - 1; i >= 0; i--)
+                {
+                    if (children[i] is Element childElement)
+                    {
+                        stack.Push(childElement);
+                    }
+                }
+
+                var shadowChildren = element.ShadowRoot?.ChildNodes;
+                if (shadowChildren == null)
+                {
+                    continue;
+                }
+
+                for (int i = shadowChildren.Length - 1; i >= 0; i--)
+                {
+                    if (shadowChildren[i] is Element childElement)
+                    {
+                        stack.Push(childElement);
+                    }
+                }
+            }
+        }
+
+        private static void ApplyShadowScope(IEnumerable<NewCss.CssRule> rules, ShadowRoot shadowScopeRoot)
+        {
+            if (rules == null)
+            {
+                return;
+            }
+
+            foreach (var rule in rules)
+            {
+                rule.ShadowScopeRoot = shadowScopeRoot;
+                switch (rule)
+                {
+                    case NewCss.CssStyleRule styleRule:
+                        ApplyShadowScope(styleRule.NestedRules, shadowScopeRoot);
+                        break;
+                    case NewCss.CssMediaRule mediaRule:
+                        ApplyShadowScope(mediaRule.Rules, shadowScopeRoot);
+                        break;
+                    case NewCss.CssLayerRule layerRule:
+                        ApplyShadowScope(layerRule.Rules, shadowScopeRoot);
+                        break;
+                    case NewCss.CssScopeRule scopeRule:
+                        ApplyShadowScope(scopeRule.Rules, shadowScopeRoot);
+                        break;
+                }
+            }
+        }
+
         private static string BuildStylesheetFingerprint(Element root)
         {
             var builder = new StringBuilder();
-            foreach (var element in root.DescendantsAndSelf())
+            foreach (var element in EnumerateElementsIncludingShadowTrees(root))
             {
                 bool isStyle = string.Equals(element.TagName, "style", StringComparison.OrdinalIgnoreCase);
                 bool isLink = string.Equals(element.TagName, "link", StringComparison.OrdinalIgnoreCase);
@@ -1680,6 +1777,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Deterministic expansion order across authored sheets and @import recursion.
             public long SequenceOrder;
             public Uri BaseUri;
+            public ShadowRoot ShadowScopeRoot;
         }
 
         public class CssRule
@@ -1837,7 +1935,8 @@ namespace FenBrowser.FenEngine.Rendering
                         Origin = CssOrigin.Imported,
                         SourceOrder = source.SourceOrder,
                         SequenceOrder = source.SequenceOrder,
-                        BaseUri = abs
+                        BaseUri = abs,
+                        ShadowScopeRoot = source.ShadowScopeRoot
                     },
                     fetchExternal,
                     seenUrls,
@@ -1856,7 +1955,8 @@ namespace FenBrowser.FenEngine.Rendering
                 Origin = source.Origin,
                 SourceOrder = source.SourceOrder,
                 SequenceOrder = source.SequenceOrder,
-                BaseUri = source.BaseUri
+                BaseUri = source.BaseUri,
+                ShadowScopeRoot = source.ShadowScopeRoot
             });
         }
 
@@ -4083,7 +4183,9 @@ private static double? ExtractPx(string text, string prop)
                         // computed-value time. For inherited properties this means the value
                         // is inherited from the parent; for non-inherited it uses the initial value.
                         bool originalHadVar = kv.Value.Value != null && kv.Value.Value.Contains("var(");
-                        bool valIsEffectivelyEmpty = val == null || (originalHadVar && val.Length == 0);
+                        bool valIsEffectivelyEmpty = val == null ||
+                                                     string.Equals(val, GuaranteedInvalidCustomPropertyValue, StringComparison.Ordinal) ||
+                                                     (originalHadVar && val.Length == 0);
 
                         if (!valIsEffectivelyEmpty)
                         {
@@ -4098,7 +4200,18 @@ private static double? ExtractPx(string text, string prop)
                             {
                                 css.Map[kv.Key] = inheritedVal;
                             }
-                            // For non-inherited properties, leave unset (use initial)
+                            else
+                            {
+                                // Invalid at computed-value time resolves to the property's
+                                // initial value for non-inherited properties. Preserve that
+                                // computed value in the map so later stages do not mistake it
+                                // for an absent declaration and apply legacy control defaults.
+                                var initialValue = CssComputed.GetInitialValue(kv.Key);
+                                if (initialValue != null)
+                                {
+                                    css.Map[kv.Key] = initialValue;
+                                }
+                            }
                         }
                         else
                         {
@@ -6839,6 +6952,10 @@ private static double? ExtractPx(string text, string prop)
 
                 var inner = value.Substring(argsStart, i - argsStart);
                 var resolved = EvaluateVarExpression(inner, current, rawCurrent, seen);
+                if (string.Equals(resolved, GuaranteedInvalidCustomPropertyValue, StringComparison.Ordinal))
+                {
+                    return GuaranteedInvalidCustomPropertyValue;
+                }
                 sb.Append(resolved);
                 idx = i + 1;
             }
@@ -6850,6 +6967,7 @@ private static double? ExtractPx(string text, string prop)
         /// Maximum recursion depth for CSS var() resolution to prevent infinite loops.
         /// </summary>
         private const int MaxCssVarRecursionDepth = 10;
+        private const string GuaranteedInvalidCustomPropertyValue = "\0fen-css-guaranteed-invalid";
 
         /// <summary>
         /// Resolves a CSS var() expression by looking up the variable value and applying fallbacks.
@@ -6967,8 +7085,9 @@ private static double? ExtractPx(string text, string prop)
             // If found and valid, return it
             if (found && resolved != null)
             {
-                // Special case: if resolved value is "initial" or "inherit", handle appropriately
-                if (resolved.Equals("initial", StringComparison.OrdinalIgnoreCase))
+                // The initial value of a custom property is the guaranteed-invalid value.
+                if (string.Equals(resolved, GuaranteedInvalidCustomPropertyValue, StringComparison.Ordinal) ||
+                    resolved.Equals("initial", StringComparison.OrdinalIgnoreCase))
                 {
                     return ResolveFallback(fallback, current, rawCurrent, seen);
                 }
@@ -6982,7 +7101,7 @@ private static double? ExtractPx(string text, string prop)
 
         private static string ResolveFallback(string fallback, CssComputed current, Dictionary<string, string> rawCurrent, HashSet<string> seen)
         {
-            if (string.IsNullOrEmpty(fallback)) return string.Empty;
+            if (string.IsNullOrEmpty(fallback)) return GuaranteedInvalidCustomPropertyValue;
             return ResolveCustomPropertyReferences(fallback, current, rawCurrent, seen);
         }
 

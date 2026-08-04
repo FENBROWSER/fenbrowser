@@ -31,6 +31,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
         public string ScopeSelector { get; set; }
         public FenBrowser.Core.Dom.V2.Element ScopeRoot { get; set; }
         public int ScopeProximity { get; set; } // Number of generations between scope root and matched element
+
+        // Author rules declared inside a shadow tree only participate in that
+        // tree's cascade. Document author rules do not cross the shadow boundary.
+        public FenBrowser.Core.Dom.V2.ShadowRoot ShadowScopeRoot { get; set; }
     }
 
     public class CssStyleRule : CssRule
