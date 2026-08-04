@@ -111,6 +111,47 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void OverflowHiddenBlock_WithInlineText_StillWrapsItsContents()
+        {
+            var root = new Element("div");
+            var summary = new Element("p");
+            var text = new Text("Learn how CSS custom properties make repeated values easier to maintain across a site.");
+
+            summary.AppendChild(text);
+            root.AppendChild(summary);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 322, Height = 120 },
+                [summary] = new CssComputed
+                {
+                    Display = "block",
+                    Overflow = "hidden",
+                    Width = 322,
+                    MinHeightExpression = "calc(3em * 1.2)",
+                    MaxHeightExpression = "calc(3em * 1.2)",
+                    FontSize = 12.8,
+                    LineHeight = 15.36,
+                    FontFamilyName = "Arial"
+                }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 322, 120);
+            var summaryBox = FindBox(rootBox, summary);
+            var textBoxes = new List<TextLayoutBox>();
+            CollectTextBoxes(rootBox, textBoxes);
+            var textBox = FindTextBox(textBoxes, text);
+
+            Assert.NotNull(summaryBox);
+            Assert.NotNull(textBox);
+            Assert.Equal(46.08f, summaryBox!.Geometry.ContentBox.Height, 2);
+            Assert.True(textBox!.Geometry.Lines.Count >= 2, $"Expected wrapped summary text, got {textBox.Geometry.Lines.Count} line(s).");
+            Assert.All(textBox.Geometry.Lines, line =>
+                Assert.True(line.Origin.X + line.Width <= summaryBox.Geometry.ContentBox.Width + 1f,
+                    $"Expected line '{line.Text}' to fit within {summaryBox.Geometry.ContentBox.Width}px, got {line.Origin.X + line.Width}px."));
+        }
+
+        [Fact]
         public void ColumnFlexCenteredBlock_WithMaxWidth_WrapsInlineTextInsideCap()
         {
             var root = new Element("div");

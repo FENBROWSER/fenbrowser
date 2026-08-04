@@ -560,5 +560,35 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(0f, wrapperGeometry.Height, 0.1f);
         }
 
+        [Fact]
+        public void EmptyBlockSvg_UsesIntrinsicWidthAndHeightAttributes()
+        {
+            var document = new Document();
+            var html = new Element("HTML");
+            var body = new Element("BODY");
+            var svg = new Element("SVG");
+
+            document.AppendChild(html);
+            html.AppendChild(body);
+            body.AppendChild(svg);
+            svg.SetAttribute("width", "83");
+            svg.SetAttribute("height", "24");
+            svg.SetAttribute("viewBox", "0 0 83 24");
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [html] = new CssComputed { Display = "block", Width = 800, Height = 600 },
+                [body] = new CssComputed { Display = "block", Width = 800, Height = 600 },
+                [svg] = new CssComputed { Display = "block" }
+            };
+
+            var engine = new LayoutEngine(styles, 800, 600);
+            var result = engine.ComputeLayout(document, 0, 0, 800, availableHeight: 600);
+
+            Assert.True(result.ElementRects.TryGetValue(svg, out var svgGeometry));
+            Assert.Equal(83f, svgGeometry.Width, 0.5f);
+            Assert.Equal(24f, svgGeometry.Height, 0.5f);
+        }
+
     }
 }

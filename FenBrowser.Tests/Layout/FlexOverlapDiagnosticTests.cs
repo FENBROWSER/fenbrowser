@@ -552,6 +552,61 @@ namespace FenBrowser.Tests.Layout
                 $"inline-flex should shrink to content (~110px), got {ifBox.Geometry.ContentBox.Width}");
         }
 
+        [Fact]
+        public void InlineFlex_CustomElement_IgnoresHiddenPanelTextAndLaysOutButtonLabel()
+        {
+            var outer = new Element("div");
+            var menu = new Element("nav");
+            var tab = new Element("div");
+            var dropdown = new Element("mdn-dropdown");
+            var shadowRoot = dropdown.AttachShadow(new ShadowRootInit { Mode = ShadowRootMode.Open });
+            var slot = new Element("slot");
+            shadowRoot.AppendChild(slot);
+            var template = new Element("template");
+            template.AppendChild(new Text("shadow template content"));
+            var button = new Element("button");
+            var label = new Element("span");
+            label.AppendChild(new Text("HTML"));
+            button.AppendChild(label);
+            var hiddenPanel = new Element("div");
+            hiddenPanel.AppendChild(new Text(new string('x', 1000)));
+            dropdown.AppendChild(template);
+            dropdown.AppendChild(button);
+            dropdown.AppendChild(hiddenPanel);
+            tab.AppendChild(dropdown);
+            menu.AppendChild(tab);
+            outer.AppendChild(menu);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [outer] = new CssComputed { Display = "block", Width = 1200, Height = 50 },
+                [menu] = new CssComputed { Display = "flex", Width = 300, Height = 36 },
+                [tab] = new CssComputed { Display = "block" },
+                [dropdown] = new CssComputed { Display = "inline-flex", FlexDirection = "row" },
+                [slot] = new CssComputed { Display = "contents" },
+                [template] = new CssComputed { Display = "none" },
+                [button] = new CssComputed
+                {
+                    Display = "flex",
+                    FlexDirection = "row",
+                    Padding = new Thickness(8, 11.2, 8, 11.2)
+                },
+                [label] = new CssComputed { Display = "inline", FontSize = 16, LineHeight = 1 },
+                [hiddenPanel] = new CssComputed { Display = "none" }
+            };
+
+            var rootBox = LayoutRoot(outer, styles);
+            var tabBox = FindBox(rootBox, tab);
+            var dropdownBox = FindBox(rootBox, dropdown);
+            var buttonBox = FindBox(rootBox, button);
+            var labelBox = FindBox(rootBox, label);
+
+            Assert.InRange(dropdownBox.Geometry.MarginBox.Width, 40f, 150f);
+            Assert.True(dropdownBox.Geometry.MarginBox.Width <= tabBox.Geometry.ContentBox.Width + 0.5f);
+            Assert.True(buttonBox.Geometry.MarginBox.Width > 0f);
+            Assert.True(labelBox.Geometry.MarginBox.Width > 0f);
+        }
+
         // ======================== GAP TESTS ========================
 
         [Fact]

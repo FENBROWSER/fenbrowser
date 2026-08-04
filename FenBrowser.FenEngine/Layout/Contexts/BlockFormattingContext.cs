@@ -657,7 +657,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         blockBox.ComputedStyle.HeightExpression,
                         parentHeight,
                         state.ViewportWidth,
-                        state.ViewportHeight);
+                        state.ViewportHeight,
+                        (float)(blockBox.ComputedStyle.FontSize ?? 16d));
                 }
             }
 
@@ -689,7 +690,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 if (resolvedContentHeight < 0) resolvedContentHeight = 0;
             }
 
-            if (!explicitHeight.HasValue && !HasNonEmptyInFlowChild(blockBox))
+            bool isAtomicReplacedBox = blockBox.SourceNode is Element atomicElement &&
+                                       ReplacedElementSizing.ShouldTreatAsAtomicReplacedElement(atomicElement);
+            if (!explicitHeight.HasValue && !isAtomicReplacedBox && !HasNonEmptyInFlowChild(blockBox))
             {
                 resolvedContentHeight = 0f;
             }
@@ -717,7 +720,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         blockBox.ComputedStyle.MinHeightExpression,
                         parentHeight,
                         state.ViewportWidth,
-                        state.ViewportHeight);
+                        state.ViewportHeight,
+                        (float)(blockBox.ComputedStyle.FontSize ?? 16d));
                 }
 
                 if (blockBox.ComputedStyle.MaxHeight.HasValue)
@@ -737,7 +741,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         blockBox.ComputedStyle.MaxHeightExpression,
                         parentHeight,
                         state.ViewportWidth,
-                        state.ViewportHeight);
+                        state.ViewportHeight,
+                        (float)(blockBox.ComputedStyle.FontSize ?? 16d));
                 }
 
                 // Keep auto-height clamping in the same basis as the auto-height accumulator
@@ -965,7 +970,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     parentWidth = state.ContainingBlockWidth > 0f ? state.ContainingBlockWidth : state.ViewportWidth;
                 }
 
-                minWidth = LayoutHelper.EvaluateCssExpression(style.MinWidthExpression, parentWidth, state.ViewportWidth, state.ViewportHeight);
+                minWidth = LayoutHelper.EvaluateCssExpression(
+                    style.MinWidthExpression,
+                    parentWidth,
+                    state.ViewportWidth,
+                    state.ViewportHeight,
+                    (float)(style.FontSize ?? 16d));
                 return minWidth > 0f;
             }
 
@@ -1418,7 +1428,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         style.WidthExpression,
                         available,
                         state.ViewportWidth,
-                        state.ViewportHeight);
+                        state.ViewportHeight,
+                        (float)(style.FontSize ?? 16d));
                 }
 
                 if (width.HasValue && isBorderBox)
@@ -1445,7 +1456,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         style.MaxWidthExpression,
                         available,
                         state.ViewportWidth,
-                        state.ViewportHeight);
+                        state.ViewportHeight,
+                        (float)(style.FontSize ?? 16d));
                 }
 
                 if (maxWidth.HasValue && isBorderBox)
@@ -1471,7 +1483,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         style.MinWidthExpression,
                         available,
                         state.ViewportWidth,
-                        state.ViewportHeight);
+                        state.ViewportHeight,
+                        (float)(style.FontSize ?? 16d));
                 }
 
                 if (isBorderBox)
@@ -1602,7 +1615,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     style.HeightExpression,
                     parentHeight,
                     state.ViewportWidth,
-                    state.ViewportHeight);
+                    state.ViewportHeight,
+                    (float)(style.FontSize ?? 16d));
             }
 
             if (!height.HasValue || !float.IsFinite(height.Value) || height.Value <= 0f)

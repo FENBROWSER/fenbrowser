@@ -42,19 +42,24 @@ namespace FenBrowser.Tests.Core
             var policy = new ParserSecurityPolicy
             {
                 HtmlMaxTokenEmissions = 0,
+                HtmlMaxAttributesPerElement = 0,
                 HtmlMaxOpenElementsDepth = -1,
                 CssMaxRules = 0,
                 CssMaxDeclarationsPerBlock = -10
             };
 
             Assert.Equal(2_000_000, policy.HtmlMaxTokenEmissions);
+            Assert.Equal(4096, policy.HtmlMaxAttributesPerElement);
             Assert.Equal(4096, policy.HtmlMaxOpenElementsDepth);
             Assert.Equal(200_000, policy.CssMaxRules);
             Assert.Equal(8192, policy.CssMaxDeclarationsPerBlock);
 
             var clone = policy.Clone();
+            clone.HtmlMaxAttributesPerElement = 128;
             clone.CssMaxRules = 4;
 
+            Assert.Equal(4096, policy.HtmlMaxAttributesPerElement);
+            Assert.Equal(128, clone.HtmlMaxAttributesPerElement);
             Assert.Equal(200_000, policy.CssMaxRules);
             Assert.Equal(4, clone.CssMaxRules);
         }

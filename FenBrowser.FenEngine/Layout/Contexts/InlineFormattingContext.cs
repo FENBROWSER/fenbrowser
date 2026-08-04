@@ -1969,30 +1969,31 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             float cbWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
             float cbHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
+            float fontSize = (float)(style.FontSize > 0 ? style.FontSize : 16.0);
 
             float minW = 0f;
             if (style.MinWidth.HasValue) minW = (float)style.MinWidth.Value;
             else if (style.MinWidthPercent.HasValue) minW = (float)(style.MinWidthPercent.Value / 100.0 * cbWidth);
             else if (!string.IsNullOrEmpty(style.MinWidthExpression))
-                minW = LayoutHelper.EvaluateCssExpression(style.MinWidthExpression, cbWidth, state.ViewportWidth, state.ViewportHeight);
+                minW = LayoutHelper.EvaluateCssExpression(style.MinWidthExpression, cbWidth, state.ViewportWidth, state.ViewportHeight, fontSize);
 
             float maxW = float.PositiveInfinity;
             if (style.MaxWidth.HasValue) maxW = (float)style.MaxWidth.Value;
             else if (style.MaxWidthPercent.HasValue) maxW = (float)(style.MaxWidthPercent.Value / 100.0 * cbWidth);
             else if (!string.IsNullOrEmpty(style.MaxWidthExpression))
-                maxW = LayoutHelper.EvaluateCssExpression(style.MaxWidthExpression, cbWidth, state.ViewportWidth, state.ViewportHeight);
+                maxW = LayoutHelper.EvaluateCssExpression(style.MaxWidthExpression, cbWidth, state.ViewportWidth, state.ViewportHeight, fontSize);
 
             float minH = 0f;
             if (style.MinHeight.HasValue) minH = (float)style.MinHeight.Value;
             else if (style.MinHeightPercent.HasValue) minH = (float)(style.MinHeightPercent.Value / 100.0 * cbHeight);
             else if (!string.IsNullOrEmpty(style.MinHeightExpression))
-                minH = LayoutHelper.EvaluateCssExpression(style.MinHeightExpression, cbHeight, state.ViewportWidth, state.ViewportHeight);
+                minH = LayoutHelper.EvaluateCssExpression(style.MinHeightExpression, cbHeight, state.ViewportWidth, state.ViewportHeight, fontSize);
 
             float maxH = float.PositiveInfinity;
             if (style.MaxHeight.HasValue) maxH = (float)style.MaxHeight.Value;
             else if (style.MaxHeightPercent.HasValue) maxH = (float)(style.MaxHeightPercent.Value / 100.0 * cbHeight);
             else if (!string.IsNullOrEmpty(style.MaxHeightExpression))
-                maxH = LayoutHelper.EvaluateCssExpression(style.MaxHeightExpression, cbHeight, state.ViewportWidth, state.ViewportHeight);
+                maxH = LayoutHelper.EvaluateCssExpression(style.MaxHeightExpression, cbHeight, state.ViewportWidth, state.ViewportHeight, fontSize);
 
             if (string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
             {
@@ -2048,7 +2049,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     style.HeightExpression,
                     basis,
                     state.ViewportWidth,
-                    state.ViewportHeight);
+                    state.ViewportHeight,
+                    (float)(style.FontSize > 0 ? style.FontSize : 16.0));
             }
             else
             {

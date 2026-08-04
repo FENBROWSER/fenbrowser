@@ -224,7 +224,12 @@ namespace FenBrowser.FenEngine.Layout
                    tag == "TEMPLATE";
         }
 
-        public static float EvaluateCssExpression(string expression, float parentSize, float viewportWidth = 0, float viewportHeight = 0)
+        public static float EvaluateCssExpression(
+            string expression,
+            float parentSize,
+            float viewportWidth = 0,
+            float viewportHeight = 0,
+            float fontSize = 16f)
         {
             if (string.IsNullOrEmpty(expression)) return -1;
             expression = expression.Trim().ToLowerInvariant();
@@ -243,7 +248,7 @@ namespace FenBrowser.FenEngine.Layout
                 if (start > -1 && end > start)
                 {
                     var inner = expression.Substring(start + 1, end - start - 1).Trim();
-                    float limit = EvaluateCssExpression(inner, parentSize, viewportWidth, viewportHeight);
+                    float limit = EvaluateCssExpression(inner, parentSize, viewportWidth, viewportHeight, fontSize);
                     if (limit < 0)
                     {
                         return Math.Max(0, parentSize);
@@ -292,7 +297,7 @@ namespace FenBrowser.FenEngine.Layout
                         float minValue = float.PositiveInfinity;
                         foreach (var arg in args)
                         {
-                            float parsed = EvaluateCssExpression(arg, parentSize, viewportWidth, viewportHeight);
+                            float parsed = EvaluateCssExpression(arg, parentSize, viewportWidth, viewportHeight, fontSize);
                             if (parsed < 0) continue;
                             if (parsed < minValue) minValue = parsed;
                         }
@@ -303,7 +308,7 @@ namespace FenBrowser.FenEngine.Layout
                         float maxValue = float.NegativeInfinity;
                         foreach (var arg in args)
                         {
-                            float parsed = EvaluateCssExpression(arg, parentSize, viewportWidth, viewportHeight);
+                            float parsed = EvaluateCssExpression(arg, parentSize, viewportWidth, viewportHeight, fontSize);
                             if (parsed < 0) continue;
                             if (parsed > maxValue) maxValue = parsed;
                         }
@@ -311,9 +316,9 @@ namespace FenBrowser.FenEngine.Layout
                     }
                     else if (expression.StartsWith("clamp(") && args.Count == 3)
                     {
-                        float min = EvaluateCssExpression(args[0], parentSize, viewportWidth, viewportHeight);
-                        float preferred = EvaluateCssExpression(args[1], parentSize, viewportWidth, viewportHeight);
-                        float max = EvaluateCssExpression(args[2], parentSize, viewportWidth, viewportHeight);
+                        float min = EvaluateCssExpression(args[0], parentSize, viewportWidth, viewportHeight, fontSize);
+                        float preferred = EvaluateCssExpression(args[1], parentSize, viewportWidth, viewportHeight, fontSize);
+                        float max = EvaluateCssExpression(args[2], parentSize, viewportWidth, viewportHeight, fontSize);
                         if (min >= 0 && preferred >= 0 && max >= 0)
                         {
                             return Math.Max(min, Math.Min(preferred, max));
@@ -332,53 +337,65 @@ namespace FenBrowser.FenEngine.Layout
                 {
                     string inner = expression.Substring(start + 1, end - start - 1);
                     
-                    // Very simple parser for "A op B"
-                    // Supports: 100% - 20px, 50vh - 10px
-                    // Does NOT support complex nesting yet
-                    
                     var parts = TokenizeCalcExpression(inner);
-                    
-                    // Simple accumulation
-                    // ex: 100% - 20px
-                    // stack: [val]
-                    // op: -
-                    
-                    float currentVal = 0;
-                    string currentOp = "+";
-                    
-                    bool first = true;
-                    
-                    for (int i=0; i<parts.Count; i++)
+
+                    if (parts.Count == 0 || !TryEvaluateCalcOperand(
+                            parts[0], parentSize, viewportWidth, viewportHeight, fontSize, out float firstValue))
                     {
-                        string p = parts[i].Trim();
-                        if (p == "+" || p == "-" || p == "*" || p == "/")
+                        return -1f;
+                    }
+
+                    // Collapse multiplication/division first, then addition/subtraction.
+                    // CSS calc() follows normal arithmetic precedence; evaluating left-to-right
+                    // turns expressions such as 100% - 2px * 2 into (100% - 2px) * 2.
+                    var values = new List<float> { firstValue };
+                    var additiveOperators = new List<string>();
+
+                    for (int i = 1; i < parts.Count; i += 2)
+                    {
+                        if (i + 1 >= parts.Count)
                         {
-                            currentOp = p;
+                            return -1f;
+                        }
+
+                        string op = parts[i].Trim();
+                        if (op != "+" && op != "-" && op != "*" && op != "/")
+                        {
+                            return -1f;
+                        }
+
+                        if (!TryEvaluateCalcOperand(
+                                parts[i + 1], parentSize, viewportWidth, viewportHeight, fontSize, out float operand))
+                        {
+                            return -1f;
+                        }
+
+                        if (op == "*" || op == "/")
+                        {
+                            if (op == "/" && Math.Abs(operand) <= float.Epsilon)
+                            {
+                                return -1f;
+                            }
+
+                            int last = values.Count - 1;
+                            values[last] = op == "*" ? values[last] * operand : values[last] / operand;
                         }
                         else
                         {
-                            float calcVal = EvaluateCssExpression(p, parentSize, viewportWidth, viewportHeight);
-                            if (calcVal != -1)
-                            {
-                                if (first) 
-                                {
-                                    currentVal = calcVal;
-                                    first = false;
-                                }
-                                else
-                                {
-                                    switch (currentOp)
-                                    {
-                                        case "+": currentVal += calcVal; break;
-                                        case "-": currentVal -= calcVal; break;
-                                        case "*": currentVal *= calcVal; break;
-                                        case "/": if (calcVal != 0) currentVal /= calcVal; break;
-                                    }
-                                }
-                            }
+                            additiveOperators.Add(op);
+                            values.Add(operand);
                         }
                     }
-                    return currentVal;
+
+                    float result = values[0];
+                    for (int i = 0; i < additiveOperators.Count; i++)
+                    {
+                        result = additiveOperators[i] == "+"
+                            ? result + values[i + 1]
+                            : result - values[i + 1];
+                    }
+
+                    return float.IsFinite(result) ? result : -1f;
                 }
                 return -1; 
             }
@@ -386,6 +403,14 @@ namespace FenBrowser.FenEngine.Layout
             if (expression.EndsWith("px"))
             {
                  if (float.TryParse(expression.Replace("px", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out float px)) return px;
+            }
+            if (expression.EndsWith("rem"))
+            {
+                 if (float.TryParse(expression.Replace("rem", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out float rem)) return rem * 16f;
+            }
+            if (expression.EndsWith("em"))
+            {
+                 if (float.TryParse(expression.Replace("em", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out float em)) return em * fontSize;
             }
             if (expression.EndsWith("%"))
             {
@@ -402,6 +427,28 @@ namespace FenBrowser.FenEngine.Layout
              if (float.TryParse(expression, NumberStyles.Float, CultureInfo.InvariantCulture, out float val)) return val;
 
             return -1;
+        }
+
+        private static bool TryEvaluateCalcOperand(
+            string operand,
+            float parentSize,
+            float viewportWidth,
+            float viewportHeight,
+            float fontSize,
+            out float value)
+        {
+            value = EvaluateCssExpression(operand, parentSize, viewportWidth, viewportHeight, fontSize);
+            if (value != -1f)
+            {
+                return true;
+            }
+
+            // -1 is both the public failure sentinel and a valid unitless operand.
+            return float.TryParse(
+                operand?.Trim(),
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out value);
         }
 
         private static List<string> TokenizeCalcExpression(string expression)

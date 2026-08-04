@@ -121,16 +121,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
                 }
 
-                // BlockBox with block-level children → BFC.
-                // Leaf BlockBoxes go to IFC unless they establish an independent
-                // formatting context via overflow, contain, or replaced-element status.
+                // The context selected here lays out the box's children. A block may
+                // establish a BFC externally (for example via overflow:hidden) while
+                // still establishing an IFC for inline children.
                 if (HasBlockLevelChild(blockBox))
                     return BlockFormattingContext.Instance;
 
-                // A leaf block box that establishes its own formatting context
-                // (overflow != visible, contain: layout/paint, or replaced element)
-                // must use BFC. Otherwise, it contains only inline text → IFC.
-                if (EstablishesIndependentBlockContext(box))
+                // Atomic replaced boxes do not lay out their contents as inline text.
+                if (IsAtomicReplacedBox(box))
                     return BlockFormattingContext.Instance;
 
                 return InlineFormattingContext.Instance;
@@ -167,36 +165,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return false;
         }
 
-        /// <summary>
-        /// Returns true when the box establishes an independent block formatting
-        /// context via CSS properties (not HTML tag identity). Covers:
-        ///   - overflow: hidden | auto | scroll | clip
-        ///   - contain: layout | paint | strict | content
-        ///   - Replaced elements with intrinsic dimensions
-        /// </summary>
-        private static bool EstablishesIndependentBlockContext(LayoutBox box)
+        private static bool IsAtomicReplacedBox(LayoutBox box)
         {
-            if (box?.ComputedStyle == null)
-                return false;
-
-            // overflow != visible establishes a new BFC (CSS 2.1 §9.4.1 / CSS Overflow 3 §3.3)
-            string overflow = (box.ComputedStyle.Overflow ?? "visible").Trim().ToLowerInvariant();
-            if (overflow != "visible")
-                return true;
-
-            // CSS Containment Level 1: contain:layout and contain:paint each establish
-            // an independent formatting context.
-            string contain = (box.ComputedStyle.Contain ?? string.Empty).Trim().ToLowerInvariant();
-            if (!string.IsNullOrEmpty(contain) && contain != "none")
-            {
-                if (contain == "strict" || contain == "content")
-                    return true;
-                if (contain.Contains("layout") || contain.Contains("paint"))
-                    return true;
-            }
-
-            // Replaced elements (img, video, input, etc.) have intrinsic dimensions
-            // and must not participate in inline line construction.
             if (box.SourceNode is FenBrowser.Core.Dom.V2.Element element &&
                 FenBrowser.FenEngine.Layout.ReplacedElementSizing.ShouldTreatAsAtomicReplacedElement(element))
             {

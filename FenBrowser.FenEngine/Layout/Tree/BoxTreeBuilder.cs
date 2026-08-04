@@ -277,6 +277,12 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     // text fallback payload nodes.
                     return element.ChildNodes.OfType<Node>().Where(static n => n is Element);
                 }
+
+                if (tag == "SLOT" && element.GetRootNode() is ShadowRoot shadowRoot)
+                {
+                    var assignedNodes = shadowRoot.GetAssignedNodesForSlot(element);
+                    return assignedNodes.Count > 0 ? assignedNodes : element.ChildNodes;
+                }
             }
 
             if (element != null && ReplacedElementSizing.ShouldTreatAsAtomicReplacedElement(element))
@@ -284,7 +290,10 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 return Array.Empty<Node>();
             }
 
-            if (element.ShadowRoot != null) return element.ShadowRoot.ChildNodes;
+            if (element.ShadowRoot != null)
+            {
+                return element.ShadowRoot.ChildNodes;
+            }
             return element.ChildNodes;
         }
 
@@ -618,7 +627,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
         private bool HasNoRenderableCustomElementContent(Element element)
         {
-            foreach (var child in element.ChildNodes)
+            foreach (var child in GetChildren(element))
             {
                 if (child is Text text)
                 {
