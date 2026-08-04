@@ -340,6 +340,24 @@ Standard xUnit tests covering internal components:
 3.  **WPT/Test262** runners verify that the change adheres to the spec and doesn't regress existing features.
 4.  **Acid2** verifies visual integrity.
 
+### 3.3 Cross-Language HTML Tokenizer Benchmark
+
+- `tools/html-tokenizer-bench/` owns the standalone C#, Rust, and C++ tokenizer
+  comparison. The C# executable benchmarks both the production
+  `FenBrowser.Core.Parsing.HtmlTokenizer` and a common-state control matching
+  the Rust/C++ benchmark algorithm. The common-state implementations are not
+  production tokenizer replacements.
+- Run `.\scripts\run-html-tokenizer-language-bench.ps1` from the repository
+  root. Generated corpora, binaries, and the machine-readable
+  `summary.json` are written under `Results/html-tokenizer-bench/`.
+- Timing is accepted only after all four benchmark modes produce the same token
+  count and normalized checksum for the shared ASCII corpus. Compilation,
+  corpus generation, file loading, and report serialization remain outside
+  the timed region.
+- Results measure median steady-state tokenizer throughput for the controlled
+  corpus. They do not establish full WHATWG conformance, FFI cost, or an
+  end-to-end browser performance improvement.
+
 ---
 
 ## 4. Comprehensive Source Encyclopedia
@@ -4336,7 +4354,6 @@ Verification:
 - Focused tooling regression `WptToolRunnerRawLogTests.ProcessTimeout_ScalesWithSelectedTestCount`: pass (`1/1`, zero failed/skipped).
 - Release build of `FenBrowser.Tooling`: pass (zero errors).
 - Combined wdspec directory slice `/webdriver/tests/classic/new_window`: pass (`4/4`, zero unexpected test or subtest failures) in `Results/wpt/wdspec_new_window_dir_after_scaled_timeout`; previous run wrote an incomplete timeout summary after `3/4` files in `Results/wpt/wdspec_new_window_dir_after_stream_drain`, and earlier runs orphan-stalled before writing a summary.
-
 
 ## 6.189 WebDriver Window Context Prompt Isolation (2026-07-29)
 

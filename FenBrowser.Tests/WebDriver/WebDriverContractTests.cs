@@ -651,6 +651,28 @@ namespace FenBrowser.Tests.WebDriver
         }
 
         [Fact]
+        public async Task AddCookie_DoesNotSynthesizeSameSiteWhenOmitted()
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities());
+            session.WindowHandles.Add("window-1");
+            session.CurrentWindowHandle = "window-1";
+            var browser = new ScriptStubBrowserDriver();
+            browser.SetCurrentUrl("https://web-platform.test/common/blank.html");
+            var handler = new CommandHandler(manager)
+            {
+                Browser = browser
+            };
+            var router = new CommandRouter();
+            var match = router.Match("POST", $"/session/{session.Id}/cookie");
+
+            await handler.ExecuteAsync(match, """{"cookie":{"name":"hello","value":"world","path":"/common/blank.html"}}""");
+
+            var cookie = Assert.Single(browser.AddedCookies);
+            Assert.Null(cookie.SameSite);
+        }
+
+        [Fact]
         public async Task NewWindow_RejectsNullCommandParameters()
         {
             var manager = new SessionManager();
