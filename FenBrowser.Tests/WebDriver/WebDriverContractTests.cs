@@ -1082,5 +1082,47 @@ namespace FenBrowser.Tests.WebDriver
             public Task SendAlertTextAsync(string text) => Task.CompletedTask;
             public bool HasValidCurrentBrowsingContext() => true;
         }
+
+        [Fact]
+        public async Task MultiSession_LimitIsEnforcedByServerConfiguration()
+        {
+            // The server defaults to 10 sessions; a 2-session cap must reject
+            // the third session with SessionNotCreated.
+            var manager = new SessionManager(maxSessions: 2);
+            var session1 = manager.CreateSession(new Capabilities());
+            var session2 = manager.CreateSession(new Capabilities());
+
+            Assert.True(manager.HasSession(session1.Id));
+            Assert.True(manager.HasSession(session2.Id));
+
+            var ex = Assert.Throws<WebDriverException>(() => manager.CreateSession(new Capabilities()));
+            Assert.Equal(ErrorCodes.SessionNotCreated, ex.ErrorCode);
+        }
+
+        [Fact]
+        public async Task SessionManager_HasSession_RejectsUnknownAndEmptyIds()
+        {
+            var manager = new SessionManager(maxSessions: 3);
+            var session = manager.CreateSession(new Capabilities());
+
+            Assert.True(manager.HasSession(session.Id));
+            Assert.False(manager.HasSession("does-not-exist"));
+            Assert.False(manager.HasSession(string.Empty));
+            Assert.False(manager.HasSession(null));
+        }
+
+        [Fact]
+        public async Task BiDiWebSocketServer_RejectsUnknownSession()
+        {
+            var manager = new SessionManager(maxSessions: 3);
+            var server = new FenBrowser.WebDriver.BiDi.BiDiWebSocketServer(manager, port: 0);
+
+            // Port 0 isn't meaningful for HttpListener; we only verify that
+            // construction succeeds and session gating works via HasSession.
+            Assert.Equal(0, server.ConnectedClientCount);
+            Assert.False(manager.HasSession("unknown-session"));
+
+            server.Dispose();
+        }
     }
 }

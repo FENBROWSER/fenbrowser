@@ -49,13 +49,18 @@ namespace FenBrowser.WebDriver
         
         public event Action<string> OnLog;
         
-        public WebDriverServer(int port = 4444, IBiDiTransportBootstrap biDiBootstrap = null)
+        public WebDriverServer(int port = 4444, IBiDiTransportBootstrap biDiBootstrap = null, int maxSessions = 10)
         {
             _port = port;
             _listener = new HttpListener();
             _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
             
-            _sessionManager = new SessionManager(maxSessions: 1);
+            if (maxSessions < 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maxSessions), "maxSessions must be at least 1.");
+            }
+
+            _sessionManager = new SessionManager(maxSessions: maxSessions);
             _router = new CommandRouter();
             _handler = new CommandHandler(_sessionManager);
             _commandQueue = new WebDriverCommandQueue();
@@ -82,7 +87,10 @@ namespace FenBrowser.WebDriver
             
             _listener.Start();
             Log($"WebDriver server started on port {_port}");
-            _biDiBootstrap.Register(new BiDiBootstrapContext(_port));
+            _biDiBootstrap.Register(new BiDiBootstrapContext(_port)
+            {
+                SessionManager = _sessionManager
+            });
             
             _listenerTask = Task.Run(ListenAsync);
         }
