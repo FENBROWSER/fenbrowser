@@ -150,6 +150,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             void ArrangeNode(Node node, SKRect rect, int depth)
             {
+                ArrangeNodeCore(node, rect, depth, null);
+            }
+
+            void ArrangeNodeWithSubgrid(Node node, SKRect rect, int depth, GridSubgridContext subgridContext)
+            {
+                ArrangeNodeCore(node, rect, depth, subgridContext);
+            }
+
+            void ArrangeNodeCore(Node node, SKRect rect, int depth, GridSubgridContext subgridContext)
+            {
                 if (!nodeToBox.TryGetValue(node, out var childBox))
                 {
                     return;
@@ -174,6 +184,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     state.ViewportWidth,
                     state.ViewportHeight,
                     state.Deadline);
+                childState.SubgridContext = subgridContext;
 
                 LayoutBoxOps.PositionSubtree(childBox, absoluteLeft, absoluteTop, childState);
                 FormattingContext.Resolve(childBox).Layout(childBox, childState);
@@ -215,7 +226,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 styles,
                 0,
                 MeasureNode,
-                childrenSource);
+                childrenSource,
+                state.SubgridContext);
 
             GridLayoutComputer.Arrange(
                 containerElement,
@@ -225,7 +237,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 0,
                 ArrangeNode,
                 MeasureNode,
-                childrenSource);
+                childrenSource,
+                state.SubgridContext,
+                ArrangeNodeWithSubgrid);
 
             float computedContentHeight = Math.Max(metrics.ContentHeight, ComputeChildrenBottom(container));
             computedContentHeight = ApplyHeightConstraints(containerStyle, computedContentHeight, state);

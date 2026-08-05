@@ -48,11 +48,30 @@ namespace FenBrowser.FenEngine.Layout
             int line = 1;
             var parsedTracks = new List<GridTrack>();
 
+            bool isSubgridTemplate = IsSubgridTemplate(template);
+            bool consumedSubgridKeyword = false;
+
             while (index < tokens.Length)
             {
+                // For `subgrid [a] [b]`, each line-name group after the keyword
+                // names the next line (subgrid axes define no local tracks).
+                if (isSubgridTemplate && (consumedSubgridKeyword || !tokens[index].StartsWith("[", StringComparison.Ordinal)))
+                {
+                    if (tokens[index].Equals("subgrid", StringComparison.OrdinalIgnoreCase))
+                    {
+                        index++;
+                        consumedSubgridKeyword = true;
+                        continue;
+                    }
+                }
+
                 if (TryConsumeLineNameGroup(tokens, ref index, name =>
                     lineNames.TryAdd(name, line)))
                 {
+                    if (isSubgridTemplate && consumedSubgridKeyword)
+                    {
+                        line++;
+                    }
                     continue;
                 }
 
@@ -75,6 +94,14 @@ namespace FenBrowser.FenEngine.Layout
 
             if (TryConsumeLineNameGroup(tokens, ref index, _ => { }))
             {
+                return;
+            }
+
+            // `subgrid` is a keyword (not a track size): a subgrid axis inherits
+            // the parent grid's tracks, so no local track is created here.
+            if (t.Equals("subgrid", StringComparison.OrdinalIgnoreCase))
+            {
+                index++;
                 return;
             }
 
@@ -441,6 +468,79 @@ namespace FenBrowser.FenEngine.Layout
         private static void Consume(string[] tokens, ref int index, string expected)
         {
              if (index < tokens.Length && tokens[index] == expected) index++;
+        }
+
+        /// <summary>
+        /// True when a track template is (or begins with) the <c>subgrid</c>
+        /// keyword, meaning the axis inherits the parent grid's tracks.
+        /// </summary>
+        private static bool IsSubgridTemplate(string template)
+        {
+            if (string.IsNullOrWhiteSpace(template))
+            {
+                return false;
+            }
+
+            var trimmed = template.TrimStart();
+            if (!trimmed.StartsWith("subgrid", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return trimmed.Length == 7 ||
+                   !char.IsLetterOrDigit(trimmed[7]) && trimmed[7] != '-' && trimmed[7] != '_';
+        }
+
+        /// <summary>
+        /// Builds fixed-size tracks from inherited parent line positions.
+        /// Each track spans one line delta, so gaps are already baked in.
+        /// </summary>
+        private static List<GridTrack> BuildSubgridTracks(float[] lines)
+        {
+            var tracks = new List<GridTrack>(lines.Length - 1);
+            for (int i = 0; i < lines.Length - 1; i++)
+            {
+                float size = Math.Max(0f, lines[i + 1] - lines[i]);
+                var px = GridTrackSize.FromPx(size);
+                tracks.Add(new GridTrack
+                {
+                    MinLimit = px,
+                    MaxLimit = px,
+                    BaseSize = size,
+                    GrowthLimit = size
+                });
+            }
+            return tracks;
+        }
+
+        /// <summary>
+        /// Merges the subgrid's own line names (parsed from its template) with the
+        /// parent's line names that fall inside the spanned range. Own names win.
+        /// </summary>
+        private static Dictionary<string, int> MergeSubgridLineNames(
+            Dictionary<string, int> own,
+            Dictionary<string, int> inherited)
+        {
+            if (inherited == null || inherited.Count == 0)
+            {
+                return own;
+            }
+
+            var merged = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in own)
+            {
+                merged[pair.Key] = pair.Value;
+            }
+
+            foreach (var pair in inherited)
+            {
+                if (!merged.ContainsKey(pair.Key))
+                {
+                    merged[pair.Key] = pair.Value;
+                }
+            }
+
+            return merged;
         }
     }
 }

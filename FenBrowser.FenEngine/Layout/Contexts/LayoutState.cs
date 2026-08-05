@@ -76,6 +76,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// </summary>
         public FenBrowser.FenEngine.Layout.Tree.LayoutBox ScrollContainer;
 
+        /// <summary>
+        /// Resolved parent grid geometry for a subgrid item, carried from the
+        /// parent grid's arrange pass into the child grid's own measure/arrange
+        /// so its tracks inherit the parent's lines. Null for non-subgrid boxes.
+        /// </summary>
+        public GridSubgridContext SubgridContext;
+
         public LayoutState(SKSize available, float cbWidth, float cbHeight, float vpWidth, float vpHeight, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             AvailableSize = available;

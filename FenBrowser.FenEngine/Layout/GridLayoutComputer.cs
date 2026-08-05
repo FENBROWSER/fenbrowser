@@ -566,7 +566,8 @@ namespace FenBrowser.FenEngine.Layout
             IReadOnlyDictionary<Node, CssComputed> styles,
             int depth,
             Func<Node, SKSize, int, LayoutMetrics> measureNode,
-            IEnumerable<Node> childrenSource = null)
+            IEnumerable<Node> childrenSource = null,
+            GridSubgridContext subgridContext = null)
         {
             if (container == null || container.ChildNodes == null)
                 return new LayoutMetrics();
@@ -574,11 +575,22 @@ namespace FenBrowser.FenEngine.Layout
             var style = styles.TryGetValue(container, out var s) ? s : null;
             if (style == null) return new LayoutMetrics();
 
+            bool columnsSubgrid = subgridContext?.SubgridColumns == true && subgridContext.HasColumnLines;
+            bool rowsSubgrid = subgridContext?.SubgridRows == true && subgridContext.HasRowLines;
+
             // Parse grid template
-            var columnTracks = ParseTracks(style.GridTemplateColumns, availableSize.Width, (float)(style.ColumnGap ?? style.Gap ?? 0));
-            var rowTracks = ParseTracks(style.GridTemplateRows, availableSize.Height, (float)(style.RowGap ?? style.Gap ?? 0));
-            var columnLineNames = ParseTrackLineNames(style.GridTemplateColumns, availableSize.Width, (float)(style.ColumnGap ?? style.Gap ?? 0));
-            var rowLineNames = ParseTrackLineNames(style.GridTemplateRows, availableSize.Height, (float)(style.RowGap ?? style.Gap ?? 0));
+            var columnTracks = columnsSubgrid
+                ? BuildSubgridTracks(subgridContext.ColumnLines)
+                : ParseTracks(style.GridTemplateColumns, availableSize.Width, (float)(style.ColumnGap ?? style.Gap ?? 0));
+            var rowTracks = rowsSubgrid
+                ? BuildSubgridTracks(subgridContext.RowLines)
+                : ParseTracks(style.GridTemplateRows, availableSize.Height, (float)(style.RowGap ?? style.Gap ?? 0));
+            var columnLineNames = columnsSubgrid
+                ? MergeSubgridLineNames(ParseTrackLineNames(style.GridTemplateColumns, availableSize.Width, (float)(style.ColumnGap ?? style.Gap ?? 0)), subgridContext.InheritedLineNames)
+                : ParseTrackLineNames(style.GridTemplateColumns, availableSize.Width, (float)(style.ColumnGap ?? style.Gap ?? 0));
+            var rowLineNames = rowsSubgrid
+                ? MergeSubgridLineNames(ParseTrackLineNames(style.GridTemplateRows, availableSize.Height, (float)(style.RowGap ?? style.Gap ?? 0)), subgridContext.InheritedLineNames)
+                : ParseTrackLineNames(style.GridTemplateRows, availableSize.Height, (float)(style.RowGap ?? style.Gap ?? 0));
             
             // Parse areas (Phase 3)
             var areas = ParseGridTemplateAreas(style.GridTemplateAreas);
@@ -631,27 +643,45 @@ namespace FenBrowser.FenEngine.Layout
             }
 
             // Resolve intrinsic sizes for columns (Auto, MinContent, MaxContent, FitContent)
-            // This sets BaseSize based on content
-            MeasureTracksIntrinsic(columnTracks, items, positions, styles, true, depth, measureNode);
-            MeasureTracksIntrinsic(rowTracks, items, positions, styles, false, depth, measureNode);
-            
-            // Resolve flexible tracks (fr units)
-            ResolveFlexibleTracks(columnTracks, availableSize.Width, columnGap);
-            
-            // Measure rows
-            MeasureAutoRowHeights(rowTracks, columnTracks, items, positions, styles, columnGap, depth, measureNode);
-            if (HasDefiniteBlockSize(style, availableSize.Height))
+            // This sets BaseSize based on content. Subgrid tracks are already
+            // resolved by the parent grid and must not be re-measured.
+            if (!columnsSubgrid)
             {
-                ResolveFlexibleTracks(rowTracks, availableSize.Height, rowGap);
+                MeasureTracksIntrinsic(columnTracks, items, positions, styles, true, depth, measureNode);
             }
 
-            // Calculate total dimensions
-            float totalWidth = columnTracks.Sum(t => t.BaseSize) + Math.Max(0, columnTracks.Count - 1) * columnGap;
-            float totalHeight = rowTracks.Sum(t => t.BaseSize) + Math.Max(0, rowTracks.Count - 1) * rowGap;
+            if (!rowsSubgrid)
+            {
+                MeasureTracksIntrinsic(rowTracks, items, positions, styles, false, depth, measureNode);
+            }
+            
+            // Resolve flexible tracks (fr units)
+            if (!columnsSubgrid)
+            {
+                ResolveFlexibleTracks(columnTracks, availableSize.Width, columnGap);
+            }
+            
+            // Measure rows
+            if (!rowsSubgrid)
+            {
+                MeasureAutoRowHeights(rowTracks, columnTracks, items, positions, styles, columnGap, depth, measureNode);
+                if (HasDefiniteBlockSize(style, availableSize.Height))
+                {
+                    ResolveFlexibleTracks(rowTracks, availableSize.Height, rowGap);
+                }
+            }
+
+            // Calculate total dimensions. Subgrid tracks are fixed and their
+            // line deltas already include the parent grid's gaps, so no gap
+            // term is added for subgrid axes.
+            float effectiveColumnGapTotal = columnsSubgrid ? 0f : columnGap;
+            float effectiveRowGapTotal = rowsSubgrid ? 0f : rowGap;
+            float totalWidth = columnTracks.Sum(t => t.BaseSize) + Math.Max(0, columnTracks.Count - 1) * effectiveColumnGapTotal;
+            float totalHeight = rowTracks.Sum(t => t.BaseSize) + Math.Max(0, rowTracks.Count - 1) * effectiveRowGapTotal;
 
             // Calculate Intrinsic Dimensions
-            float minIntrinsicWidth = columnTracks.Sum(t => t.BaseSize) + Math.Max(0, columnTracks.Count - 1) * columnGap;
-            float maxIntrinsicWidth = columnTracks.Sum(t => float.IsInfinity(t.GrowthLimit) ? t.BaseSize : t.GrowthLimit) + Math.Max(0, columnTracks.Count - 1) * columnGap;
+            float minIntrinsicWidth = columnTracks.Sum(t => t.BaseSize) + Math.Max(0, columnTracks.Count - 1) * effectiveColumnGapTotal;
+            float maxIntrinsicWidth = columnTracks.Sum(t => float.IsInfinity(t.GrowthLimit) ? t.BaseSize : t.GrowthLimit) + Math.Max(0, columnTracks.Count - 1) * effectiveColumnGapTotal;
 
             System.Diagnostics.Debug.WriteLine($"[CSS-GRID] Measured: {columnTracks.Count}x{rowTracks.Count}, size={totalWidth}x{totalHeight}");
 
@@ -676,12 +706,17 @@ namespace FenBrowser.FenEngine.Layout
             int depth,
             Action<Node, SKRect, int> arrangeChild,
             Func<Node, SKSize, int, LayoutMetrics> measureNode,
-            IEnumerable<Node> childrenSource = null)
+            IEnumerable<Node> childrenSource = null,
+            GridSubgridContext subgridContext = null,
+            Action<Node, SKRect, int, GridSubgridContext> arrangeChildWithContext = null)
         {
             if (container == null || container.ChildNodes == null) return;
 
             var style = styles.TryGetValue(container, out var s) ? s : null;
             if (style == null) return;
+
+            bool columnsSubgrid = subgridContext?.SubgridColumns == true && subgridContext.HasColumnLines;
+            bool rowsSubgrid = subgridContext?.SubgridRows == true && subgridContext.HasRowLines;
 
             // Parse areas (Phase 3)
             var areas = ParseGridTemplateAreas(style.GridTemplateAreas);
@@ -690,10 +725,18 @@ namespace FenBrowser.FenEngine.Layout
             float rowGap = (float)(style.RowGap ?? style.Gap ?? 0);
 
             // Parse grid template
-            var columnTracks = ParseTracks(style.GridTemplateColumns, bounds.Width, columnGap);
-            var rowTracks = ParseTracks(style.GridTemplateRows, bounds.Height, rowGap);
-            var columnLineNames = ParseTrackLineNames(style.GridTemplateColumns, bounds.Width, columnGap);
-            var rowLineNames = ParseTrackLineNames(style.GridTemplateRows, bounds.Height, rowGap);
+            var columnTracks = columnsSubgrid
+                ? BuildSubgridTracks(subgridContext.ColumnLines)
+                : ParseTracks(style.GridTemplateColumns, bounds.Width, columnGap);
+            var rowTracks = rowsSubgrid
+                ? BuildSubgridTracks(subgridContext.RowLines)
+                : ParseTracks(style.GridTemplateRows, bounds.Height, rowGap);
+            var columnLineNames = columnsSubgrid
+                ? MergeSubgridLineNames(ParseTrackLineNames(style.GridTemplateColumns, bounds.Width, columnGap), subgridContext.InheritedLineNames)
+                : ParseTrackLineNames(style.GridTemplateColumns, bounds.Width, columnGap);
+            var rowLineNames = rowsSubgrid
+                ? MergeSubgridLineNames(ParseTrackLineNames(style.GridTemplateRows, bounds.Height, rowGap), subgridContext.InheritedLineNames)
+                : ParseTrackLineNames(style.GridTemplateRows, bounds.Height, rowGap);
 
             int columnTracksOriginalCount = columnTracks.Count;
             int rowTracksOriginalCount = rowTracks.Count;
@@ -741,36 +784,51 @@ namespace FenBrowser.FenEngine.Layout
             }
 
             // Resolve intrinsic sizes for columns (Auto, MinContent, MaxContent, FitContent)
-            // This sets BaseSize based on content
-            MeasureTracksIntrinsic(columnTracks, items, positions, styles, true, depth, measureNode);
-            MeasureTracksIntrinsic(rowTracks, items, positions, styles, false, depth, measureNode);
+            // This sets BaseSize based on content. Subgrid axes are fixed by the
+            // parent grid's resolved lines and are never re-measured here.
+            if (!columnsSubgrid)
+            {
+                MeasureTracksIntrinsic(columnTracks, items, positions, styles, true, depth, measureNode);
+            }
+
+            if (!rowsSubgrid)
+            {
+                MeasureTracksIntrinsic(rowTracks, items, positions, styles, false, depth, measureNode);
+            }
 
             // Resolve column flex tracks BEFORE measuring row heights so items are
             // measured at their correct column widths (matching the Measure pass).
-            ResolveFlexibleTracks(columnTracks, bounds.Width, columnGap);
+            if (!columnsSubgrid)
+            {
+                ResolveFlexibleTracks(columnTracks, bounds.Width, columnGap);
+            }
 
             // Ensure arrange pass uses the same content-derived auto-row sizing
             // as measure pass before flex/stretch resolution.
-            MeasureAutoRowHeights(rowTracks, columnTracks, items, positions, styles, columnGap, depth, measureNode);
+            if (!rowsSubgrid)
+            {
+                MeasureAutoRowHeights(rowTracks, columnTracks, items, positions, styles, columnGap, depth, measureNode);
+            }
 
             // Resolve row Track Sizes (only when block size is definite)
-            if (HasDefiniteBlockSize(style, bounds.Height))
+            if (!rowsSubgrid && HasDefiniteBlockSize(style, bounds.Height))
             {
                 ResolveFlexibleTracks(rowTracks, bounds.Height, rowGap);
             }
 
             // Compute effective gaps for justify/align content
-            float effectiveColumnGap = columnGap;
-            float effectiveRowGap = rowGap;
+            float effectiveColumnGap = columnsSubgrid ? 0f : columnGap;
+            float effectiveRowGap = rowsSubgrid ? 0f : rowGap;
             float contentXOffset = 0;
             float contentYOffset = 0;
 
             // Base totals with original gaps
-            float baseGridWidth = columnTracks.Sum(t => t.BaseSize) + Math.Max(0, columnTracks.Count - 1) * columnGap;
-            float baseGridHeight = rowTracks.Sum(t => t.BaseSize) + Math.Max(0, rowTracks.Count - 1) * rowGap;
+            float baseGridWidth = columnTracks.Sum(t => t.BaseSize) + Math.Max(0, columnTracks.Count - 1) * effectiveColumnGap;
+            float baseGridHeight = rowTracks.Sum(t => t.BaseSize) + Math.Max(0, rowTracks.Count - 1) * effectiveRowGap;
 
-            // JustifyContent (Horizontal Track Alignment)
-            if (!string.IsNullOrEmpty(style.JustifyContent) && columnTracks.Count > 0)
+            // JustifyContent (Horizontal Track Alignment). Not applicable to a
+            // subgrid axis: its lines are inherited from the parent grid.
+            if (!columnsSubgrid && !string.IsNullOrEmpty(style.JustifyContent) && columnTracks.Count > 0)
             {
                 string jc = style.JustifyContent.ToLowerInvariant();
                 float freeW = bounds.Width - baseGridWidth;
@@ -791,8 +849,9 @@ namespace FenBrowser.FenEngine.Layout
                 }
             }
 
-            // AlignContent (Vertical Track Alignment)
-            if (!string.IsNullOrEmpty(style.AlignContent) && rowTracks.Count > 0)
+            // AlignContent (Vertical Track Alignment). Not applicable to a
+            // subgrid axis: its lines are inherited from the parent grid.
+            if (!rowsSubgrid && !string.IsNullOrEmpty(style.AlignContent) && rowTracks.Count > 0)
             {
                 string ac = style.AlignContent.ToLowerInvariant();
                 float freeH = bounds.Height - baseGridHeight;
@@ -813,24 +872,41 @@ namespace FenBrowser.FenEngine.Layout
                 }
             }
 
-            // Compute Start Positions using effective gaps
-            float[] colStarts = new float[columnTracks.Count + 1];
-            float cx = contentXOffset;
-            for (int i = 0; i < columnTracks.Count; i++)
+            // Compute Start Positions using effective gaps. Subgrid axes reuse
+            // the parent grid's resolved line positions verbatim.
+            float[] colStarts;
+            if (columnsSubgrid)
             {
-                colStarts[i] = cx;
-                cx += columnTracks[i].BaseSize + effectiveColumnGap;
+                colStarts = subgridContext.ColumnLines;
             }
-            colStarts[columnTracks.Count] = cx;
+            else
+            {
+                colStarts = new float[columnTracks.Count + 1];
+                float cx = contentXOffset;
+                for (int i = 0; i < columnTracks.Count; i++)
+                {
+                    colStarts[i] = cx;
+                    cx += columnTracks[i].BaseSize + effectiveColumnGap;
+                }
+                colStarts[columnTracks.Count] = cx;
+            }
 
-            float[] rowStarts = new float[rowTracks.Count + 1];
-            float cy = contentYOffset;
-            for (int i = 0; i < rowTracks.Count; i++)
+            float[] rowStarts;
+            if (rowsSubgrid)
             {
-                rowStarts[i] = cy;
-                cy += rowTracks[i].BaseSize + effectiveRowGap;
+                rowStarts = subgridContext.RowLines;
             }
-            rowStarts[rowTracks.Count] = cy;
+            else
+            {
+                rowStarts = new float[rowTracks.Count + 1];
+                float cy = contentYOffset;
+                for (int i = 0; i < rowTracks.Count; i++)
+                {
+                    rowStarts[i] = cy;
+                    cy += rowTracks[i].BaseSize + effectiveRowGap;
+                }
+                rowStarts[rowTracks.Count] = cy;
+            }
 
             // Arrange Item
             var baselinePlans = new List<GridBaselineAlignmentPlan>();
@@ -863,8 +939,10 @@ namespace FenBrowser.FenEngine.Layout
                 // If we end exactly at c2, we occupy cols c1..c2-1.
                 // Starts[c2] is (Base[c2-1] + Gap[c2-1]) + Starts[c2-1].
                 // So the delta includes the gap AFTER the last track. Use subtract logic to get "cell content width" (excluding final gap).
-                if (c2 > c1) trackW -= columnGap;
-                if (r2 > r1) trackH -= rowGap;
+                // Subgrid axes inherit the parent's lines wholesale, so their
+                // line deltas already include every gap; no subtraction applies.
+                if (!columnsSubgrid && c2 > c1) trackW -= columnGap;
+                if (!rowsSubgrid && r2 > r1) trackH -= rowGap;
                 
                 if (trackW < 0) trackW = 0;
                 if (trackH < 0) trackH = 0;
@@ -920,7 +998,23 @@ namespace FenBrowser.FenEngine.Layout
                 else if (align == "end" || align == "bottom" || align == "flex-end") cellY += (trackH - itemH);
 
                 var itemRect = new SKRect(cellX, cellY, cellX + itemW, cellY + itemH);
-                arrangeChild(item, itemRect, depth + 1);
+
+                if (arrangeChildWithContext != null)
+                {
+                    var itemSubgrid = TryBuildSubgridContext(item, itemStyle, colStarts, rowStarts, c1, c2, r1, r2, itemRect, columnLineNames, rowLineNames);
+                    if (itemSubgrid != null)
+                    {
+                        arrangeChildWithContext(item, itemRect, depth + 1, itemSubgrid);
+                    }
+                    else
+                    {
+                        arrangeChild(item, itemRect, depth + 1);
+                    }
+                }
+                else
+                {
+                    arrangeChild(item, itemRect, depth + 1);
+                }
 
                 if (alignBaseline)
                 {
@@ -1083,6 +1177,120 @@ namespace FenBrowser.FenEngine.Layout
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Builds the subgrid context for a grid item whose template declares
+        /// <c>subgrid</c> on one or both axes. The child grid inherits the
+        /// parent's resolved line positions for the tracks the item spans,
+        /// expressed relative to the item's content-box origin so the child's
+        /// own <c>colStarts/rowStarts</c> match the parent's lines exactly.
+        /// </summary>
+        private static GridSubgridContext TryBuildSubgridContext(
+            Node item,
+            CssComputed itemStyle,
+            float[] colStarts,
+            float[] rowStarts,
+            int c1,
+            int c2,
+            int r1,
+            int r2,
+            SKRect itemRect,
+            Dictionary<string, int> parentColumnLineNames,
+            Dictionary<string, int> parentRowLineNames)
+        {
+            bool columnsSubgrid = IsSubgridTemplate(itemStyle?.GridTemplateColumns);
+            bool rowsSubgrid = IsSubgridTemplate(itemStyle?.GridTemplateRows);
+            if (!columnsSubgrid && !rowsSubgrid)
+            {
+                return null;
+            }
+
+            // Subgrid only applies to a grid container; a non-grid item with a
+            // subgrid template keeps its regular block layout.
+            string display = itemStyle?.Display;
+            bool isGridContainer = !string.IsNullOrWhiteSpace(display) &&
+                                   display.Contains("grid", StringComparison.OrdinalIgnoreCase);
+            if (!isGridContainer)
+            {
+                return null;
+            }
+
+            var context = new GridSubgridContext
+            {
+                SubgridColumns = columnsSubgrid,
+                SubgridRows = rowsSubgrid
+            };
+
+            // The item's content box origin sits inside the cell at the item's
+            // border+padding+margin chrome, so parent lines are shifted by the
+            // chrome to land on the child's content-box coordinates.
+            var margin = itemStyle?.Margin ?? default;
+            var border = itemStyle?.BorderThickness ?? default;
+            var padding = itemStyle?.Padding ?? default;
+            float chromeLeft = (float)(margin.Left + border.Left + padding.Left);
+            float chromeTop = (float)(margin.Top + border.Top + padding.Top);
+
+            if (columnsSubgrid)
+            {
+                int span = Math.Max(1, c2 - c1);
+                var lines = new float[span + 1];
+                for (int i = 0; i <= span; i++)
+                {
+                    int lineIndex = Math.Min(c1 + i, colStarts.Length - 1);
+                    lines[i] = colStarts[lineIndex] - itemRect.Left - chromeLeft;
+                }
+                context.ColumnLines = lines;
+
+                // Inherit parent line names that fall inside the spanned range,
+                // remapped to child-local 1-based line numbers.
+                var inherited = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                if (parentColumnLineNames != null)
+                {
+                    foreach (var name in parentColumnLineNames)
+                    {
+                        if (name.Value > c1 && name.Value <= c1 + span + 1)
+                        {
+                            inherited[name.Key] = name.Value - c1;
+                        }
+                    }
+                }
+                context.InheritedLineNames = inherited;
+            }
+
+            if (rowsSubgrid)
+            {
+                int span = Math.Max(1, r2 - r1);
+                var lines = new float[span + 1];
+                for (int i = 0; i <= span; i++)
+                {
+                    int lineIndex = Math.Min(r1 + i, rowStarts.Length - 1);
+                    lines[i] = rowStarts[lineIndex] - itemRect.Top - chromeTop;
+                }
+                context.RowLines = lines;
+
+                var inherited = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                if (parentRowLineNames != null)
+                {
+                    foreach (var name in parentRowLineNames)
+                    {
+                        if (name.Value > r1 && name.Value <= r1 + span + 1)
+                        {
+                            inherited[name.Key] = name.Value - r1;
+                        }
+                    }
+                }
+                context.InheritedLineNames = context.InheritedLineNames ?? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var name in inherited)
+                {
+                    if (!context.InheritedLineNames.ContainsKey(name.Key))
+                    {
+                        context.InheritedLineNames[name.Key] = name.Value;
+                    }
+                }
+            }
+
+            return context;
         }
 
 
