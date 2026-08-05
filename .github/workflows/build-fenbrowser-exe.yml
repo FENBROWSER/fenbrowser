@@ -146,6 +146,36 @@ jobs:
           path: TestResults/
           if-no-files-found: ignore
 
+  fuzz-suite:
+    name: Fuzz suite (blocking on PR)
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK from global.json
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
+
+      - name: Build fuzz surface
+        run: dotnet build FenBrowser.Js.Fuzz/FenBrowser.Js.Fuzz.csproj -c Release --nologo
+
+      - name: Run JS engine fuzz suite
+        run: dotnet test FenBrowser.Js.Fuzz/FenBrowser.Js.Fuzz.csproj -c Release --no-build --logger trx --results-directory TestResults --verbosity minimal
+
+      - name: Upload fuzz test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-test-results
+          path: TestResults/
+          if-no-files-found: ignore
+
   package-windows:
     name: Publish Windows Artifact (tag or manual)
     needs: quality-gate
