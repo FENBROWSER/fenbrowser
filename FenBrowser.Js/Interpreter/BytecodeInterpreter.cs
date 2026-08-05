@@ -95,6 +95,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var raw = field.GetValue(this);
             if (raw is ObjectHandle handle)
             {
+                // Skip default(ObjectHandle) — fields that have not been
+                // assigned yet would otherwise trace an invalid (0,0) handle.
+                if (handle.Index == 0 && handle.Generation == 0)
+                {
+                    continue;
+                }
+
                 tracer.Trace(handle);
             }
         }
@@ -252,6 +259,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // structured reaction state - but they drain interleaved FIFO within the same
     // checkpoint so ordering matches HTML's "perform a microtask checkpoint".
     private readonly Queue<JsValue> _pendingMicrotasks = new();
+
+    // FinalizationRegistry cleanup jobs. Per ECMA-262 26.2, cleanup callbacks
+    // run as jobs at agent level; FenJS drains them as part of the unified
+    // microtask checkpoint so registry callbacks observe the same ordering
+    // guarantees as queueMicrotask / promise reactions. Each job carries the
+    // registry's cleanup callback plus the held values of collected targets.
+    private readonly Queue<(JsValue Callback, List<JsValue> HeldValues)> _finalizationCleanupJobs = new();
 
     // ECMA-262 9.5 Promise Job Queue. Populated by PerformPromiseThen and the
     // resolving functions; drained by RunMicrotaskCheckpoint at the end of every
@@ -835,8 +849,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             CheckExecutionBudgetAtTaskBoundary();
         }
 
-        while (_pendingMicrotasks.Count > 0 || _jobQueue.Count > 0)
+        while (_pendingMicrotasks.Count > 0 || _jobQueue.Count > 0 || _finalizationCleanupJobs.Count > 0)
         {
+            // FinalizationRegistry cleanup callbacks run first so collected
+            // values are observable before queueMicrotask/promise reactions
+            // scheduled in the same checkpoint.
+            while (_finalizationCleanupJobs.Count > 0)
+            {
+                CheckCheckpointBudget();
+                var (callback, heldValues) = _finalizationCleanupJobs.Dequeue();
+                foreach (var held in heldValues)
+                {
+                    // Skip held values that were themselves collected in the
+                    // same GC pass - invoking with a dead handle would surface
+                    // a JsEngineFatalException instead of the spec's "ignore".
+                    if (held.Tag == JsValueTag.Object &&
+                        !_heap.IsLiveObjectHandle(held.AsObjectHandle()))
+                    {
+                        continue;
+                    }
+
+                    _ = CallFunction(callback, new[] { held }, JsValue.Undefined);
+                }
+            }
+
             // Drain queueMicrotask first so an early host callback that resolves a
             // promise gets its triggered reactions into the JobQueue before we
             // start running jobs - keeping HTML's tail-call ordering intact.
@@ -17366,8 +17402,9 @@ fallbackArraySpecies:
     private sealed class WeakRefObject : JsObject
     {
         // Target may be an Object or a (non-registered) Symbol — both can be held weakly.
+        // Mutable: the GC nulls this out (sets to Undefined) when the target is collected.
+        public JsValue Target;
         public WeakRefObject(JsValue target) { Target = target; }
-        public JsValue Target { get; }
     }
 
     // ECMA-262 26.1 WeakRef(target). The engine has no incremental GC tier that
@@ -17402,7 +17439,23 @@ fallbackArraySpecies:
                 var wr = new WeakRefObject(target);
                 wr.SetPrototype(prototypeHandle);
                 var handle = _heap.AllocateObject(wr, AllocationSite.Current());
-                if (target.Tag == JsValueTag.Object) _heap.WriteBarrier(handle, target.AsObjectHandle());
+
+                // Register a weak edge: the target does not keep itself alive
+                // through the WeakRef, and when it is collected the WeakRef's
+                // Target is cleared so deref() returns undefined.
+                if (target.Tag == JsValueTag.Object)
+                {
+                    var targetHandle = target.AsObjectHandle();
+                    var ownerIndex = handle.Index;
+                    _heap.RegisterWeakTarget(ownerIndex, targetHandle, () =>
+                    {
+                        var cell = _heap.GetCellForIndexForTest(ownerIndex);
+                        if (cell?.Payload is WeakRefObject weakRef)
+                        {
+                            weakRef.Target = JsValue.Undefined;
+                        }
+                    });
+                }
                 return JsValue.FromObject(handle);
             },
             length: 1);
@@ -17435,10 +17488,29 @@ fallbackArraySpecies:
     private sealed class FinalizationRegistryObject : JsObject
     {
         // Target may be an Object or a (non-registered) Symbol.
-        public sealed record Entry(JsValue Target, JsValue HeldValue, JsValue UnregisterToken);
+        public sealed class Entry
+        {
+            public Entry(JsValue target, JsValue heldValue, JsValue unregisterToken)
+            {
+                Target = target;
+                HeldValue = heldValue;
+                UnregisterToken = unregisterToken;
+            }
+
+            public JsValue Target { get; }
+            public JsValue HeldValue { get; }
+            public JsValue UnregisterToken { get; }
+            public bool Collected { get; set; }
+        }
         public ObjectHandle Callback { get; }
         public List<Entry> Entries { get; } = new();
+        public Action<Entry>? CleanupEnqueuer { get; set; }
         public FinalizationRegistryObject(ObjectHandle callback) { Callback = callback; }
+
+        public void EnqueueCleanup(Entry entry)
+        {
+            CleanupEnqueuer?.Invoke(entry);
+        }
     }
 
     // ECMA-262 26.2 FinalizationRegistry(cleanupCallback). The engine has no
@@ -17473,6 +17545,7 @@ fallbackArraySpecies:
                 }
                 var cbHandle = args[0].AsObjectHandle();
                 var reg = new FinalizationRegistryObject(cbHandle);
+                reg.CleanupEnqueuer = entry => EnqueueFinalizationCleanup(cbHandle, entry);
                 reg.SetPrototype(prototypeHandle);
                 var handle = _heap.AllocateObject(reg, AllocationSite.Current());
                 _heap.WriteBarrier(handle, cbHandle);
@@ -17512,7 +17585,27 @@ fallbackArraySpecies:
                 throw new JsThrownException(CreateTypeError(
                     "FinalizationRegistry.prototype.register: unregisterToken must be an object or non-registered symbol."));
             }
-            reg.Entries.Add(new FinalizationRegistryObject.Entry(target, held, token));
+            var entry = new FinalizationRegistryObject.Entry(target, held, token);
+            reg.Entries.Add(entry);
+
+            // Register a weak edge on the target: when the GC collects it,
+            // the registry entry is marked collected and a cleanup job is
+            // enqueued for the next microtask checkpoint.
+            if (target.Tag == JsValueTag.Object)
+            {
+                var targetHandle = target.AsObjectHandle();
+                var regHandle = thisValue.AsObjectHandle();
+                var regIndex = regHandle.Index;
+                _heap.RegisterWeakTarget(regIndex, targetHandle, () =>
+                {
+                    var cell = _heap.GetCellForIndexForTest(regIndex);
+                    if (cell?.Payload is FinalizationRegistryObject targetReg &&
+                        targetReg.Entries.Remove(entry))
+                    {
+                        targetReg.EnqueueCleanup(entry);
+                    }
+                });
+            }
             return JsValue.Undefined;
         }, length: 2);
 
@@ -19496,6 +19589,26 @@ fallbackArraySpecies:
         }
         throw new JsThrownException(CreateTypeError(
             "FinalizationRegistry method called on non-FinalizationRegistry receiver."));
+    }
+
+    // Queues a FinalizationRegistry cleanup job carrying the collected target's
+    // held value. Called from the GC's weak-target callback path.
+    private void EnqueueFinalizationCleanup(ObjectHandle callbackHandle, FinalizationRegistryObject.Entry entry)
+    {
+        if (entry == null || entry.Collected)
+        {
+            return;
+        }
+
+        entry.Collected = true;
+
+        // The held value may itself have died in the same collection; only
+        // enqueue it when it is still live at checkpoint time is not possible
+        // to know here, so we enqueue the value and let the checkpoint's
+        // CallFunction guard against dead handles.
+        _finalizationCleanupJobs.Enqueue((
+            JsValue.FromObject(callbackHandle),
+            new List<JsValue> { entry.HeldValue }));
     }
 
     private ObjectHandle EnsureNativeErrorConstructor(

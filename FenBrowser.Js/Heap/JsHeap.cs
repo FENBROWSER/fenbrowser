@@ -21,6 +21,20 @@ public sealed class JsHeap
     private int _lastMinorMarked;
     private int _lastMinorSwept;
     private int _lastMinorPromoted;
+    // Weak-target registry: a WeakRef or FinalizationRegistry entry holds a
+    // handle to a target that must NOT keep the target alive. The target handle
+    // is only an index+generation pair; nothing here marks it. When the target
+    // cell dies in a collection, the registered callback fires so the owner can
+    // null its reference (WeakRef) or enqueue a cleanup job (FinalizationRegistry).
+    private readonly List<WeakTargetRecord> _weakTargets = new();
+    private int _weakTargetCallbacksFired;
+
+    private sealed class WeakTargetRecord
+    {
+        public int OwnerIndex;
+        public ObjectHandle Target;
+        public Action? OnCollected;
+    }
     // Tier 4 #22 remembered set: Old → Young edges discovered via
     // WriteBarrier. Indexed by Old cell index for dedup. Cleared and
     // rebuilt on each major collection; entries become stale (filtered
@@ -350,6 +364,10 @@ public sealed class JsHeap
         PruneStaleRememberedSetEntries();
         _currentMarkMinorMode = false;
 
+        // Weak targets whose Young cell died must fire even in a minor
+        // collection (e.g. a WeakRef to a nursery-allocated object).
+        FireCollectedWeakTargets();
+
         if (_verifyHeapAfterGc) _verifier.Verify(this);
     }
 
@@ -463,9 +481,83 @@ public sealed class JsHeap
         // simpler to clear and let WriteBarrier repopulate.
         _rememberedSet.Clear();
 
+        FireCollectedWeakTargets();
+
         if (_verifyHeapAfterGc)
         {
             _verifier.Verify(this);
+        }
+    }
+
+    /// <summary>
+    /// Registers a weak target: <paramref name="target"/> is observable by
+    /// <paramref name="ownerIndex"/> but does NOT keep the target alive.
+    /// When the target is collected, <paramref name="onCollected"/> fires.
+    /// </summary>
+    public void RegisterWeakTarget(int ownerIndex, ObjectHandle target, Action onCollected)
+    {
+        if (ownerIndex < 0 || (uint)ownerIndex >= (uint)_cells.Count)
+        {
+            return;
+        }
+
+        if (onCollected == null)
+        {
+            throw new ArgumentNullException(nameof(onCollected));
+        }
+
+        _weakTargets.Add(new WeakTargetRecord
+        {
+            OwnerIndex = ownerIndex,
+            Target = target,
+            OnCollected = onCollected
+        });
+    }
+
+    /// <summary>
+    /// Removes a previously registered weak target for an owner.
+    /// </summary>
+    public void UnregisterWeakTargets(int ownerIndex)
+    {
+        _weakTargets.RemoveAll(r => r.OwnerIndex == ownerIndex);
+    }
+
+    /// <summary>
+    /// Number of weak-target callbacks fired since startup (diagnostics).
+    /// </summary>
+    public int WeakTargetCallbacksFired => Volatile.Read(ref _weakTargetCallbacksFired);
+
+    private void FireCollectedWeakTargets()
+    {
+        for (var i = _weakTargets.Count - 1; i >= 0; i--)
+        {
+            var record = _weakTargets[i];
+            bool targetDead = !IsLiveObject(record.Target);
+            bool ownerDead = (uint)record.OwnerIndex >= (uint)_cells.Count ||
+                             _cells[record.OwnerIndex] is null;
+
+            if (ownerDead)
+            {
+                // Owner gone; the weak edge is meaningless.
+                _weakTargets.RemoveAt(i);
+                continue;
+            }
+
+            if (!targetDead)
+            {
+                continue;
+            }
+
+            _weakTargets.RemoveAt(i);
+            Interlocked.Increment(ref _weakTargetCallbacksFired);
+            try
+            {
+                record.OnCollected?.Invoke();
+            }
+            catch
+            {
+                // A misbehaving owner callback must never break collection.
+            }
         }
     }
 
@@ -517,6 +609,16 @@ public sealed class JsHeap
 
         var cell = _cells[handle.Index];
         return cell is not null && cell.Generation == handle.Generation && cell.Kind == HeapCellKind.Object;
+    }
+
+    /// <summary>
+    /// Non-throwing liveness check for an object handle. Used by
+    /// FinalizationRegistry cleanup draining to skip held values that were
+    /// collected in the same pass.
+    /// </summary>
+    public bool IsLiveObjectHandle(ObjectHandle handle)
+    {
+        return IsLiveObject(handle);
     }
 
     // Tier 4 #22: the minor-mode tracer needs to propagate through nested
@@ -604,6 +706,21 @@ public sealed class JsHeap
 
     public IReadOnlyList<HeapCell?> GetCellsSnapshotForTest() => _cells;
     public int GetGenerationForCellIndexForTest(int index) => _generations[index];
+
+    /// <summary>
+    /// Returns the live cell payload at an index, or null when the cell is free.
+    /// Used by weak-target callbacks that must reach their owner object's payload
+    /// after a collection has completed.
+    /// </summary>
+    public HeapCell? GetCellForIndexForTest(int index)
+    {
+        if ((uint)index >= (uint)_cells.Count)
+        {
+            return null;
+        }
+
+        return _cells[index];
+    }
     public IReadOnlyList<int> GetGenerationsSnapshotForTest() => _generations;
     public IReadOnlyList<bool> GetFreeFlagsSnapshotForTest() => _isFree;
     public IReadOnlyList<int> GetFreeListSnapshotForTest() => _freeList.ToArray();
