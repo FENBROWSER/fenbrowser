@@ -4338,6 +4338,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private void InstallFenJsBrowserUiApis(Uri baseUri)
     {
         var secureContextLiteral = IsPotentiallyTrustworthyOrigin(baseUri) ? "true" : "false";
+        var crossOriginIsolatedLiteral = IsCrossOriginIsolatedContext(baseUri) ? "true" : "false";
         EvaluateWithFenJsRaw(
             """
             (function () {
@@ -5325,6 +5326,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             """ +
             "globalThis.isSecureContext = " + secureContextLiteral + ";" +
             "globalThis.window.isSecureContext = globalThis.isSecureContext;" +
+            "globalThis.crossOriginIsolated = " + crossOriginIsolatedLiteral + ";" +
+            "globalThis.window.crossOriginIsolated = globalThis.crossOriginIsolated;" +
             // Diagnostic error overlay — surfaces unhandled JS errors visibly on the page
             // so we can see what's failing without opening DevTools. Remove once stable.
             "(function(){" +
@@ -5371,6 +5374,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(uri.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(uri.Host, "::1", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Cross-origin isolation state for the current document. This gates
+    // SharedArrayBuffer, Atomics.wait, and measureUserAgentSpecificMemory.
+    // The state is captured from the most recent navigation's COOP/COEP
+    // response headers; absent explicit headers the default is not isolated.
+    private bool IsCrossOriginIsolatedContext(Uri baseUri)
+    {
+        var isolation = FenBrowser.Core.Security.CrossOriginIsolationState.Current;
+        if (isolation != null)
+        {
+            return isolation.IsCrossOriginIsolated;
+        }
+
+        // Fallback: local documents (file:, localhost) are treated as isolated
+        // for development parity, matching the "potentially trustworthy origin"
+        // carve-out that browsers apply to isSecureContext.
+        return IsPotentiallyTrustworthyOrigin(baseUri);
     }
 
     // W3C High Resolution Time / Performance Timeline. SPA frameworks (React, and

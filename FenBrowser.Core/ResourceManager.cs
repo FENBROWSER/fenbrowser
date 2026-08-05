@@ -99,6 +99,11 @@ namespace FenBrowser.Core
         /// </summary>
         public string XFrameAllowFromUri { get; set; }
         public ReferrerPolicyDirective ReferrerPolicy { get; set; } = ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
+
+        /// <summary>Parsed Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy from the response headers.</summary>
+        public CrossOriginIsolationPolicy CrossOriginIsolation { get; set; } = new();
+        /// <summary>Parsed Cross-Origin-Resource-Policy header value from the response headers.</summary>
+        public string CrossOriginResourcePolicy { get; set; }
     }
 
     public sealed class ResourceManager
@@ -1620,6 +1625,27 @@ public Uri LastTextResponseUri { get; private set; }
                 var referrerPolicy = ParseReferrerPolicy(resp);
                 AdoptResponseReferrerPolicy(resp, context);
 
+                // Parse COOP/COEP headers for cross-origin isolation state.
+                var crossOriginIsolation = new CrossOriginIsolationPolicy();
+                if (resp.Headers.TryGetValues("Cross-Origin-Opener-Policy", out var coopValues))
+                {
+                    crossOriginIsolation.ParseCoopHeader(string.Join(",", coopValues));
+                }
+                if (resp.Headers.TryGetValues("Cross-Origin-Embedder-Policy", out var coepValues))
+                {
+                    crossOriginIsolation.ParseCoepHeader(string.Join(",", coepValues));
+                }
+                string corpHeader = string.Empty;
+                if (resp.Headers.TryGetValues("Cross-Origin-Resource-Policy", out var corpValues))
+                {
+                    corpHeader = string.Join(",", corpValues);
+                }
+
+                if (IsTopLevelDocumentRequest(secFetchDest) && crossOriginIsolation.RequiresCorp)
+                {
+                    crossOriginIsolation.LogState(finalUri);
+                }
+
                 if (string.Equals(secFetchDest, "iframe", StringComparison.OrdinalIgnoreCase) &&
                     !IsFrameEmbeddingAllowed(xFramePolicy, xFrameAllowFrom, refererOriginal, finalUri))
                 {
@@ -1680,6 +1706,8 @@ public Uri LastTextResponseUri { get; private set; }
                     XFrameOptions = xFramePolicy,
                     XFrameAllowFromUri = xFrameAllowFrom,
                     ReferrerPolicy = referrerPolicy,
+                    CrossOriginIsolation = crossOriginIsolation,
+                    CrossOriginResourcePolicy = corpHeader,
                     DurationMs = (long)(DateTimeOffset.UtcNow - _startFetch).TotalMilliseconds
                 };
             }

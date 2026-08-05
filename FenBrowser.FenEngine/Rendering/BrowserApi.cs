@@ -1459,6 +1459,18 @@ namespace FenBrowser.FenEngine.Rendering
                 if (CurrentXFrameOptions != FenBrowser.Core.XFrameOptionsPolicy.None)
                     Console.WriteLine($"[XFO] X-Frame-Options: {CurrentXFrameOptions}{(result.XFrameAllowFromUri != null ? " " + result.XFrameAllowFromUri : "")}");
 
+                // Publish COOP/COEP-derived cross-origin isolation state for this document.
+                // The scripting layer reads this to expose crossOriginIsolated and to gate
+                // SharedArrayBuffer / Atomics.wait availability.
+                if (result.CrossOriginIsolation != null)
+                {
+                    FenBrowser.Core.Security.CrossOriginIsolationState.Set(result.CrossOriginIsolation);
+                }
+                else
+                {
+                    FenBrowser.Core.Security.CrossOriginIsolationState.Reset();
+                }
+
                 string htmlToRender = result.Content;
                 Uri uri = result.FinalUri ?? new Uri("about:blank");
 
