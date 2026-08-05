@@ -65,28 +65,28 @@ namespace FenBrowser.Core.Security
         /// Returns true if no CSP policy is active or the source is allowed.
         /// </summary>
         public static bool IsScriptAllowedByCsp(CspPolicy csp, Uri scriptUri, Uri documentOrigin,
-            bool isInline = false, bool isEval = false, string nonce = null)
+            bool isInline = false, bool isEval = false, string nonce = null, string elementHash = null, string elementTrustedType = null)
         {
             if (csp == null) return true;
-            return csp.IsAllowed("script-src", scriptUri, nonce, documentOrigin, isInline, isEval);
+            return csp.IsAllowed("script-src", scriptUri, nonce, documentOrigin, isInline, isEval, elementHash, elementTrustedType);
         }
 
         /// <summary>
         /// Check if eval() / new Function() is allowed by CSP.
         /// </summary>
-        public static bool IsEvalAllowedByCsp(CspPolicy csp, Uri documentOrigin)
+        public static bool IsEvalAllowedByCsp(CspPolicy csp, Uri documentOrigin, string elementTrustedType = null)
         {
             if (csp == null) return true;
-            return csp.IsAllowed("script-src", url: null, origin: documentOrigin, isEval: true);
+            return csp.IsAllowed("script-src", url: null, nonce: null, origin: documentOrigin, isEval: true, elementTrustedType: elementTrustedType);
         }
 
         /// <summary>
         /// Check if an inline script/event handler is allowed by CSP.
         /// </summary>
-        public static bool IsInlineScriptAllowedByCsp(CspPolicy csp, Uri documentOrigin, string nonce = null)
+        public static bool IsInlineScriptAllowedByCsp(CspPolicy csp, Uri documentOrigin, string nonce = null, string elementHash = null, string elementTrustedType = null)
         {
             if (csp == null) return true;
-            return csp.IsAllowed("script-src", url: null, nonce: nonce, origin: documentOrigin, isInline: true);
+            return csp.IsAllowed("script-src", url: null, nonce: nonce, origin: documentOrigin, isInline: true, elementHash: elementHash, elementTrustedType: elementTrustedType);
         }
 
         /// <summary>

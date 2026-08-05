@@ -5,12 +5,75 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace FenBrowser.Core.Security
 {
+    /// <summary>
+    /// CSP directive names as defined in CSP Level 3.
+    /// </summary>
+    public static class CspDirectiveNames
+    {
+        public const string DefaultSrc = "default-src";
+        public const string ScriptSrc = "script-src";
+        public const string ScriptSrcElem = "script-src-elem";
+        public const string ScriptSrcAttr = "script-src-attr";
+        public const string StyleSrc = "style-src";
+        public const string StyleSrcElem = "style-src-elem";
+        public const string StyleSrcAttr = "style-src-attr";
+        public const string ImgSrc = "img-src";
+        public const string ConnectSrc = "connect-src";
+        public const string FontSrc = "font-src";
+        public const string ObjectSrc = "object-src";
+        public const string MediaSrc = "media-src";
+        public const string FrameSrc = "frame-src";
+        public const string ChildSrc = "child-src";
+        public const string WorkerSrc = "worker-src";
+        public const string ManifestSrc = "manifest-src";
+        public const string PrefetchSrc = "prefetch-src";
+        public const string BaseUri = "base-uri";
+        public const string FormAction = "form-action";
+        public const string FrameAncestors = "frame-ancestors";
+        public const string NavigateTo = "navigate-to";
+        public const string Sandbox = "sandbox";
+        public const string ReportUri = "report-uri";
+        public const string ReportTo = "report-to";
+        public const string TrustedTypes = "trusted-types";
+        public const string RequireTrustedTypesFor = "require-trusted-types-for";
+        public const string UpgradeInsecureRequests = "upgrade-insecure-requests";
+        public const string BlockAllMixedContent = "block-all-mixed-content";
+        public const string RequireSriFor = "require-sri-for";
+        
+        /// <summary>
+        /// All directive names that use source-list syntax.
+        /// </summary>
+        public static readonly HashSet<string> SourceListDirectives = new(StringComparer.OrdinalIgnoreCase)
+        {
+            DefaultSrc, ScriptSrc, ScriptSrcElem, ScriptSrcAttr,
+            StyleSrc, StyleSrcElem, StyleSrcAttr,
+            ImgSrc, ConnectSrc, FontSrc, ObjectSrc, MediaSrc,
+            FrameSrc, ChildSrc, WorkerSrc, ManifestSrc, PrefetchSrc
+        };
+        
+        /// <summary>
+        /// Directives that do NOT fall back to default-src.
+        /// </summary>
+        public static readonly HashSet<string> NoFallbackDirectives = new(StringComparer.OrdinalIgnoreCase)
+        {
+            BaseUri, FormAction, FrameAncestors, Sandbox, ReportUri, ReportTo,
+            TrustedTypes, RequireTrustedTypesFor, UpgradeInsecureRequests,
+            BlockAllMixedContent, RequireSriFor, NavigateTo
+        };
+    }
     public class CspPolicy
     {
         public Dictionary<string, CspDirective> Directives { get; } = new Dictionary<string, CspDirective>(StringComparer.OrdinalIgnoreCase);
+        
+        /// <summary>
+        /// The original CSP header value, stored for inspection (e.g., upgrade-insecure-requests check).
+        /// </summary>
+        public string HeaderValue { get; private set; }
 
         /// <summary>
         /// Check if a resource URL is allowed by the policy.
@@ -31,15 +94,15 @@ namespace FenBrowser.Core.Security
         /// <summary>
         /// Check if a resource is allowed, optionally validating a nonce.
         /// </summary>
-        public bool IsAllowed(string directiveName, Uri url, string nonce, bool isInline = false, bool isEval = false)
+        public bool IsAllowed(string directiveName, Uri url, string nonce, bool isInline = false, bool isEval = false, string elementHash = null, string elementTrustedType = null)
         {
-            return IsAllowed(directiveName, url, nonce, origin: null, isInline: isInline, isEval: isEval);
+            return IsAllowed(directiveName, url, nonce, origin: null, isInline: isInline, isEval: isEval, elementHash: elementHash, elementTrustedType: elementTrustedType);
         }
 
         /// <summary>
         /// Check if a resource is allowed with explicit nonce and origin context.
         /// </summary>
-        public bool IsAllowed(string directiveName, Uri url, string nonce, Uri origin, bool isInline = false, bool isEval = false)
+        public bool IsAllowed(string directiveName, Uri url, string nonce, Uri origin, bool isInline = false, bool isEval = false, string elementHash = null, string elementTrustedType = null)
         {
             // If no policy, everything allowed
             if (Directives.Count == 0) return true;
@@ -65,12 +128,15 @@ namespace FenBrowser.Core.Security
 
             if (directive == null) return true; 
 
-            return directive.IsAllowed(url, nonce, isInline, isEval, origin);
+            return directive.IsAllowed(url, nonce, isInline, isEval, origin, elementHash, elementTrustedType);
         }
 
         public static CspPolicy Parse(string headerValue)
         {
-            var policy = new CspPolicy();
+            var policy = new CspPolicy
+            {
+                HeaderValue = headerValue
+            };
             if (string.IsNullOrWhiteSpace(headerValue)) return policy;
 
             var parts = headerValue.Split(';', StringSplitOptions.RemoveEmptyEntries);
@@ -92,6 +158,29 @@ namespace FenBrowser.Core.Security
             }
             return policy;
         }
+
+        /// <summary>
+        /// Checks if the policy contains the upgrade-insecure-requests directive.
+        /// </summary>
+        public bool HasUpgradeInsecureRequests()
+        {
+            if (string.IsNullOrWhiteSpace(HeaderValue)) return false;
+            
+            var directives = HeaderValue.Split(';', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var dir in directives)
+            {
+                var trimmed = dir.Trim();
+                if (trimmed.Equals("upgrade-insecure-requests", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+                if (trimmed.StartsWith("upgrade-insecure-requests", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     public class CspDirective
@@ -99,6 +188,12 @@ namespace FenBrowser.Core.Security
         public string Name { get; }
         public HashSet<string> Sources { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         public HashSet<string> Nonces { get; } = new HashSet<string>(StringComparer.Ordinal); // Case-sensitive nonces
+        public HashSet<string> Hashes { get; } = new HashSet<string>(StringComparer.Ordinal); // Case-sensitive hashes (sha256-...)
+        public bool HasStrictDynamic { get; private set; }
+        public bool HasReportSample { get; private set; }
+        public HashSet<string> TrustedTypes { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        public string ReportUri { get; private set; }
+        public string ReportTo { get; private set; }
 
         public CspDirective(string name, string[] sources)
         {
@@ -110,16 +205,100 @@ namespace FenBrowser.Core.Security
                     // Extract nonce value: 'nonce-abc' -> abc
                     var val = s.Substring(7, s.Length - 8);
                     Nonces.Add(val);
+                    Sources.Add(s);
                 }
-                Sources.Add(s);
+                else if (s.StartsWith("'sha256-", StringComparison.OrdinalIgnoreCase) && s.EndsWith("'"))
+                {
+                    // Extract hash value: 'sha256-abc' -> sha256-abc
+                    var val = s.Substring(1, s.Length - 2);
+                    Hashes.Add(val);
+                    Sources.Add(s);
+                }
+                else if (s.StartsWith("'sha384-", StringComparison.OrdinalIgnoreCase) && s.EndsWith("'"))
+                {
+                    var val = s.Substring(1, s.Length - 2);
+                    Hashes.Add(val);
+                    Sources.Add(s);
+                }
+                else if (s.StartsWith("'sha512-", StringComparison.OrdinalIgnoreCase) && s.EndsWith("'"))
+                {
+                    var val = s.Substring(1, s.Length - 2);
+                    Hashes.Add(val);
+                    Sources.Add(s);
+                }
+                else if (string.Equals(s, "'strict-dynamic'", StringComparison.OrdinalIgnoreCase))
+                {
+                    HasStrictDynamic = true;
+                    Sources.Add(s);
+                }
+                else if (string.Equals(s, "'report-sample'", StringComparison.OrdinalIgnoreCase))
+                {
+                    HasReportSample = true;
+                    Sources.Add(s);
+                }
+                else if (s.StartsWith("'trusted-types", StringComparison.OrdinalIgnoreCase) && s.EndsWith("'"))
+                {
+                    // 'trusted-types policyName'
+                    var val = s.Substring(14, s.Length - 15);
+                    TrustedTypes.Add(val);
+                    Sources.Add(s);
+                }
+                else if (s.StartsWith("report-uri", StringComparison.OrdinalIgnoreCase))
+                {
+                    ReportUri = ExtractReportUri(s);
+                    Sources.Add(s);
+                }
+                else if (s.StartsWith("report-to", StringComparison.OrdinalIgnoreCase))
+                {
+                    ReportTo = ExtractReportTo(s);
+                    Sources.Add(s);
+                }
+                else
+                {
+                    Sources.Add(s);
+                }
             }
         }
 
-        public bool IsAllowed(Uri url, string nonce, bool isInline = false, bool isEval = false, Uri origin = null)
+        private static string ExtractReportUri(string s)
+        {
+            // report-uri <url> or report-uri(<url>)
+            var start = s.IndexOf(' ', StringComparison.Ordinal);
+            if (start >= 0)
+            {
+                var val = s.Substring(start + 1).Trim();
+                if (val.StartsWith("(", StringComparison.Ordinal) && val.EndsWith(")", StringComparison.Ordinal))
+                {
+                    return val.Substring(1, val.Length - 2);
+                }
+                return val;
+            }
+            return null;
+        }
+
+        private static string ExtractReportTo(string s)
+        {
+            // report-to <groupname>
+            var start = s.IndexOf(' ', StringComparison.Ordinal);
+            if (start >= 0)
+            {
+                return s.Substring(start + 1).Trim();
+            }
+            return null;
+        }
+
+        public bool IsAllowed(Uri url, string nonce, bool isInline = false, bool isEval = false, Uri origin = null, string elementHash = null, string elementTrustedType = null)
         {
             if (Sources.Contains("'none'")) return false;
 
-            // 1. Nonce Check (Overrides inline checks if present)
+            // 1. Hash Check (for inline scripts/styles)
+            // If element has a hash attribute (integrity) that matches a hash in the policy, allow it
+            if (!string.IsNullOrEmpty(elementHash))
+            {
+                if (Hashes.Contains(elementHash)) return true;
+            }
+
+            // 2. Nonce Check (Overrides inline checks if present)
             if (!string.IsNullOrEmpty(nonce))
             {
                 if (Nonces.Contains(nonce)) return true;
@@ -131,17 +310,22 @@ namespace FenBrowser.Core.Security
                 // Actually, CSP allows if ANY source matches.
             }
 
-            // 2. Inline Check
+            // 3. Inline Check
             if (isInline) 
             {
+                // Hash-source check for inline content
+                if (!string.IsNullOrEmpty(elementHash) && Hashes.Contains(elementHash)) return true;
+
+                // Trusted-types check for inline scripts
+                if (!string.IsNullOrEmpty(elementTrustedType) && TrustedTypes.Contains(elementTrustedType)) return true;
+
                 // If 'unsafe-inline' is present, it's allowed UNLESS a nonce/hash is present in the policy (in modern CSP).
                 // "If a directive contains a nonce-source or hash-source... 'unsafe-inline' is ignored."
-                // For simplicity, we'll implement strict check: if we have nonces, we ignore unsafe-inline.
-                bool hasNonces = Nonces.Count > 0;
-                if (!hasNonces && Sources.Contains("'unsafe-inline'")) return true;
+                bool hasNoncesOrHashes = Nonces.Count > 0 || Hashes.Count > 0;
+                if (!hasNoncesOrHashes && Sources.Contains("'unsafe-inline'")) return true;
                 
-                // If we have nonces, we only allow if the nonce matched above.
-                if (hasNonces) return !string.IsNullOrEmpty(nonce) && Nonces.Contains(nonce);
+                // If we have nonces/hashes, we only allow if the nonce/hash matched above.
+                if (hasNoncesOrHashes) return false;
 
                 return false;
             }
@@ -149,8 +333,20 @@ namespace FenBrowser.Core.Security
             // 3. Eval Check
             if (isEval) return Sources.Contains("'unsafe-eval'");
             
+            // Trusted-types check for eval (createPolicy)
+            if (isEval && !string.IsNullOrEmpty(elementTrustedType) && TrustedTypes.Contains(elementTrustedType)) return true;
+            
             // 4. URL Check
             if (url == null) return false; 
+
+            // strict-dynamic: if present, allow scripts loaded by trusted scripts
+            // This is a simplified implementation - full strict-dynamic requires tracking script provenance
+            if (HasStrictDynamic)
+            {
+                // In strict-dynamic mode, scripts loaded by trusted scripts are allowed
+                // For now, we'll just log that strict-dynamic is active
+                // Full implementation would track script chain provenance
+            }
 
             if (Sources.Contains("*") || (url.Scheme == "data" && Sources.Contains("data:")) || (url.Scheme == "blob" && Sources.Contains("blob:"))) return true;
 

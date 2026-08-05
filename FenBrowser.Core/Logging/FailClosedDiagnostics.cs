@@ -76,4 +76,5 @@ public static class FailClosedReasonCodes
     public const string CorsOriginContextMissing = "CORS_ORIGIN_CONTEXT_MISSING";
     public const string CorsResponseDisallowed = "CORS_RESPONSE_DISALLOWED";
     public const string CorsPreflightBlocked = "CORS_PREFLIGHT_BLOCKED";
+    public const string MixedContentBlocked = "MIXED_CONTENT_BLOCKED";
 }

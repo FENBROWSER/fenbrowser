@@ -2300,7 +2300,47 @@ namespace FenBrowser.Core
                             ["requestMethod"] = request.Method.Method,
                             ["requestUri"] = requestUrl
                         });
-                    throw new HttpRequestException($"Blocked by Content Security Policy (connect-src): {request.RequestUri}");
+throw new HttpRequestException($"Blocked by Content Security Policy (connect-src): {request.RequestUri}");
+                }
+            }
+
+            // Mixed Content Check
+            if (policy != null)
+            {
+                var topLevelUri = context.TopLevelDocumentUri ?? context.FrameDocumentUri ?? context.InitiatorUri;
+                if (topLevelUri != null)
+                {
+                    var fetchDest = GetHeaderValue(request.Headers, "Sec-Fetch-Dest") ?? "empty";
+                    var isUpgradeInsecureRequests = policy?.HasUpgradeInsecureRequests() ?? false;
+                    var mixedContentDecision = MixedContentChecker.CheckMixedContent(
+                        request.RequestUri,
+                        topLevelUri,
+                        fetchDest,
+                        isUpgradeInsecureRequestsEnabled: isUpgradeInsecureRequests);
+
+                    if (mixedContentDecision.IsBlocked)
+                    {
+                        FailClosedDiagnostics.LogDenied(
+                            capabilityId: "SECURITY-MIXED-CONTENT-01",
+                            stage: "fetch.mixed-content",
+                            reasonCode: FailClosedReasonCodes.MixedContentBlocked,
+                            message: $"[MixedContent] {mixedContentDecision.Reason}",
+                            subsystem: LogSubsystem.Security,
+                            context: logContext,
+                            fields: new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                            {
+                                ["requestType"] = GetHeaderValue(request.Headers, "Sec-Fetch-Dest") ?? "empty",
+                                ["requestUri"] = requestUrl,
+                                ["pageUri"] = topLevelUri.AbsoluteUri
+                            });
+                        throw new HttpRequestException($"Blocked by Mixed Content Policy: {mixedContentDecision.Reason}");
+                    }
+                    else if (mixedContentDecision.IsUpgraded)
+                    {
+                        // Upgrade the request to HTTPS
+                        request.RequestUri = mixedContentDecision.UpgradedUrl;
+                        EngineLogCompat.Info($"[MixedContent] Upgraded insecure request to HTTPS: {mixedContentDecision.UpgradedUrl}", LogCategory.Security);
+                    }
                 }
             }
 
