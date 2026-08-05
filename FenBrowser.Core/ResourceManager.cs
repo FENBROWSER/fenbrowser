@@ -111,10 +111,32 @@ namespace FenBrowser.Core
 
         public sealed class ImgEntry { public byte[] Buffer; public string ContentType; }
         private readonly FenBrowser.Core.Cache.ShardedCache<ImgEntry> _imgCache = new FenBrowser.Core.Cache.ShardedCache<ImgEntry>(64);
-
-        public Uri LastTextResponseUri { get; private set; }
+public Uri LastTextResponseUri { get; private set; }
         public ReferrerPolicyDirective ActiveReferrerPolicy { get; private set; } = ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
 
+        /// <summary>
+        /// Parses a Referrer-Policy header value into a ReferrerPolicyDirective.
+        /// </summary>
+        public static ReferrerPolicyDirective ParseReferrerPolicy(string headerValue)
+        {
+            if (string.IsNullOrWhiteSpace(headerValue))
+            {
+                return ReferrerPolicyDirective.StrictOriginWhenCrossOrigin; // Default per spec
+            }
+
+            var policies = headerValue.Split(',', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var policy in policies)
+            {
+                var trimmed = policy.Trim();
+                if (Enum.TryParse<ReferrerPolicyDirective>(trimmed, true, out var parsed))
+                {
+                    return parsed;
+                }
+            }
+
+            // If no valid policy found, default to strict-origin-when-cross-origin
+            return ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
+        }
 
 
         private readonly string _cacheRoot;
