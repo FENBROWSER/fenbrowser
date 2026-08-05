@@ -38,6 +38,7 @@
     <ProjectReference Include="..\FenBrowser.DevTools\FenBrowser.DevTools.csproj" />
     <ProjectReference Include="..\FenBrowser.Host\FenBrowser.Host.csproj" />
     <ProjectReference Include="..\FenBrowser.Tooling\FenBrowser.Tooling.csproj" />
+    <ProjectReference Include="..\FenBrowser.Wasm\FenBrowser.Wasm.csproj" />
   </ItemGroup>
 
   <!-- Legacy-engine-dependent tests excluded pending FenJS migration -->

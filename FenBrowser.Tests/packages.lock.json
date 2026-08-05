@@ -331,6 +331,11 @@
         "resolved": "3.4.0",
         "contentHash": "Iy22JopynbOJ32vA0lBhFEzGi65GQJBuJHYBYRBpydrDpNoTiHnjIXfA65Gu+8qsOr/ZEoIF8r9aHCgAXuO6DA=="
       },
+      "Wasmtime": {
+        "type": "Transitive",
+        "resolved": "44.0.0",
+        "contentHash": "Mo93hPzT2wzxQlntv0yqWChspMCp9KlT4rTYseriz/WZ1wKjRCE5WBwrN2ljBeqBitKINPMwupN4Ar1jnaS7Vw=="
+      },
       "xunit.abstractions": {
         "type": "Transitive",
         "resolved": "2.0.3",
@@ -386,6 +391,12 @@
           "SkiaSharp": "[4.148.0, )"
         }
       },
+      "fenbrowser.dependencyinjection": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Core": "[1.0.0, )"
+        }
+      },
       "fenbrowser.devtools": {
         "type": "Project",
         "dependencies": {
@@ -410,6 +421,7 @@
         "type": "Project",
         "dependencies": {
           "FenBrowser.Core": "[1.0.0, )",
+          "FenBrowser.DependencyInjection": "[1.0.0, )",
           "FenBrowser.DevTools": "[1.0.0, )",
           "FenBrowser.FenEngine": "[1.0.0, )",
           "FenBrowser.WebDriver": "[1.0.0, )",
@@ -438,6 +450,13 @@
           "FenBrowser.FenEngine": "[1.0.0, )",
           "FenBrowser.Host": "[0.1.0-alpha, )",
           "FenBrowser.WebDriver": "[1.0.0, )"
+        }
+      },
+      "fenbrowser.wasm": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Core": "[1.0.0, )",
+          "Wasmtime": "[44.0.0, )"
         }
       },
       "fenbrowser.webdriver": {

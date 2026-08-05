@@ -31,6 +31,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Js.Tests", "FenB
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Js.Fuzz", "FenBrowser.Js.Fuzz\FenBrowser.Js.Fuzz.csproj", "{359DB3CC-FA50-4DCE-A031-A347346E7B0A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Wasm", "FenBrowser.Wasm\FenBrowser.Wasm.csproj", "{AC67C084-6AC1-4B1B-A41F-90C859470A0A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -209,6 +211,18 @@ Global
 		{359DB3CC-FA50-4DCE-A031-A347346E7B0A}.Release|x64.Build.0 = Release|Any CPU
 		{359DB3CC-FA50-4DCE-A031-A347346E7B0A}.Release|x86.ActiveCfg = Release|Any CPU
 		{359DB3CC-FA50-4DCE-A031-A347346E7B0A}.Release|x86.Build.0 = Release|Any CPU
+		{AC67C084-6AC1-4B1B-A41F-90C859470A0A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AC67C084-6AC1-4B1B-A41F-90C859470A0A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AC67C084-6AC1-4B1B-A41F-90C859470A0A}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{AC67C084-6AC1-4B1B-A41F-90C859470A0A}.Debug|x64.Build.0 = Debug|Any CPU
+		{AC67C084-6AC1-4B1B-A41F-90C859470A0A}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{AC67C084-6AC1-4B1B-A41F-90C859470A0A}.Debug|x86.Build.0 = Debug|Any CPU
+		{AC67C084-6AC1-4B1B-A41F-90C859470A0A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AC67C084-6AC1-4B1B-A41F-90C859470A0A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AC67C084-6AC1-4B1B-A41F-90C859470A0A}.Release|x64.ActiveCfg = Release|Any CPU
+		{AC67C084-6AC1-4B1B-A41F-90C859470A0A}.Release|x64.Build.0 = Release|Any CPU
+		{AC67C084-6AC1-4B1B-A41F-90C859470A0A}.Release|x86.ActiveCfg = Release|Any CPU
+		{AC67C084-6AC1-4B1B-A41F-90C859470A0A}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

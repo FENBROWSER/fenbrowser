@@ -280,6 +280,12 @@
           "SkiaSharp": "[4.148.0, )"
         }
       },
+      "fenbrowser.dependencyinjection": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Core": "[1.0.0, )"
+        }
+      },
       "fenbrowser.devtools": {
         "type": "Project",
         "dependencies": {
@@ -304,6 +310,7 @@
         "type": "Project",
         "dependencies": {
           "FenBrowser.Core": "[1.0.0, )",
+          "FenBrowser.DependencyInjection": "[1.0.0, )",
           "FenBrowser.DevTools": "[1.0.0, )",
           "FenBrowser.FenEngine": "[1.0.0, )",
           "FenBrowser.WebDriver": "[1.0.0, )",
