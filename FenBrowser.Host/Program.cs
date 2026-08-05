@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using FenBrowser.Core;
+using FenBrowser.Core.Cache;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Css;
 using System.Linq;
@@ -19,6 +20,10 @@ using System.Collections.Generic;
 using System.Net.Http;
 using FenBrowser.Core.Network;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Adapters;
+using FenBrowser.FenEngine.Typography;
+using SkiaSharp;
+using SkiaSharp.HarfBuzz;
 
 namespace FenBrowser.Host
 {
@@ -1296,6 +1301,17 @@ namespace FenBrowser.Host
                         continue;
                     }
 
+                    // Utility process: Font service operations
+                    if (expectedKind == TargetProcessKind.Utility)
+                    {
+                        await HandleFontMetricsRequest(writer, envelope).ConfigureAwait(false);
+                        await HandleFontMeasureWidthRequest(writer, envelope).ConfigureAwait(false);
+                        await HandleFontShapeTextRequest(writer, envelope).ConfigureAwait(false);
+                        await HandleFontResolveTypefaceRequest(writer, envelope).ConfigureAwait(false);
+                        await HandleImageDecodeRequest(writer, envelope).ConfigureAwait(false);
+                        await HandleSvgDecodeRequest(writer, envelope).ConfigureAwait(false);
+                    }
+
                     if (targetMessageType == TargetIpcMessageType.Shutdown)
                     {
                         running = false;
@@ -1514,6 +1530,408 @@ namespace FenBrowser.Host
             catch
             {
             }
+        }
+
+        // Utility process: Font service handlers
+        private static Task HandleFontMetricsRequest(StreamWriter writer, TargetIpcEnvelope envelope)
+        {
+            if (envelope.Type != TargetIpcMessageType.FontGetMetrics.ToString())
+                return Task.CompletedTask;
+
+            try
+            {
+                var payload = TargetIpc.DeserializePayload<FontGetMetricsPayload>(envelope);
+                if (payload == null)
+                {
+                    SendErrorResponse(writer, envelope.RequestId, TargetIpcMessageType.FontGetMetricsResponse, "Invalid payload");
+                    return Task.CompletedTask;
+                }
+
+                var fontService = GetOrCreateFontService();
+                var metrics = fontService.GetMetrics(payload.FontFamily, payload.FontSize, payload.FontWeight, payload.CssLineHeight);
+
+                var response = new FontGetMetricsResponsePayload
+                {
+                    Success = true,
+                    Ascent = metrics.Ascent,
+                    Descent = metrics.Descent,
+                    LineGap = metrics.Leading,
+                    LineHeight = metrics.LineHeight,
+                    XHeight = metrics.XHeight,
+                    CapHeight = metrics.EmSize
+                };
+
+                SendTargetEnvelope(writer, new TargetIpcEnvelope
+                {
+                    Type = TargetIpcMessageType.FontGetMetricsResponse.ToString(),
+                    RequestId = envelope.RequestId,
+                    Payload = TargetIpc.SerializePayload(response)
+                });
+            }
+            catch (Exception ex)
+            {
+                SendErrorResponse(writer, envelope.RequestId, TargetIpcMessageType.FontGetMetricsResponse, ex.Message);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private static Task HandleFontMeasureWidthRequest(StreamWriter writer, TargetIpcEnvelope envelope)
+        {
+            if (envelope.Type != TargetIpcMessageType.FontMeasureWidth.ToString())
+                return Task.CompletedTask;
+
+            try
+            {
+                var payload = TargetIpc.DeserializePayload<FontMeasureWidthPayload>(envelope);
+                if (payload == null)
+                {
+                    SendErrorResponse(writer, envelope.RequestId, TargetIpcMessageType.FontMeasureWidthResponse, "Invalid payload");
+                    return Task.CompletedTask;
+                }
+
+                var fontService = GetOrCreateFontService();
+                var width = fontService.MeasureTextWidth(payload.Text, payload.FontFamily, payload.FontSize, payload.FontWeight);
+
+                var response = new FontMeasureWidthResponsePayload
+                {
+                    Success = true,
+                    Width = width
+                };
+
+                SendTargetEnvelope(writer, new TargetIpcEnvelope
+                {
+                    Type = TargetIpcMessageType.FontMeasureWidthResponse.ToString(),
+                    RequestId = envelope.RequestId,
+                    Payload = TargetIpc.SerializePayload(response)
+                });
+            }
+            catch (Exception ex)
+            {
+                SendErrorResponse(writer, envelope.RequestId, TargetIpcMessageType.FontMeasureWidthResponse, ex.Message);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private static Task HandleFontShapeTextRequest(StreamWriter writer, TargetIpcEnvelope envelope)
+        {
+            if (envelope.Type != TargetIpcMessageType.FontShapeText.ToString())
+                return Task.CompletedTask;
+
+            try
+            {
+                var payload = TargetIpc.DeserializePayload<FontShapeTextPayload>(envelope);
+                if (payload == null)
+                {
+                    SendErrorResponse(writer, envelope.RequestId, TargetIpcMessageType.FontShapeTextResponse, "Invalid payload");
+                    return Task.CompletedTask;
+                }
+
+                var fontService = GetOrCreateFontService();
+                var glyphRun = fontService.ShapeText(payload.Text, payload.FontFamily, payload.FontSize, payload.FontWeight);
+
+                var glyphData = new PositionedGlyphData[glyphRun.Glyphs.Length];
+                for (int i = 0; i < glyphRun.Glyphs.Length; i++)
+                {
+                    glyphData[i] = new PositionedGlyphData
+                    {
+                        GlyphId = glyphRun.Glyphs[i].GlyphId,
+                        X = glyphRun.Glyphs[i].X,
+                        Y = glyphRun.Glyphs[i].Y,
+                        AdvanceX = glyphRun.Glyphs[i].AdvanceX
+                    };
+                }
+
+                var metricsData = new NormalizedFontMetricsData
+                {
+                    Ascent = glyphRun.Metrics.Ascent,
+                    Descent = glyphRun.Metrics.Descent,
+                    LineGap = glyphRun.Metrics.Leading,
+                    LineHeight = glyphRun.Metrics.LineHeight,
+                    XHeight = glyphRun.Metrics.XHeight,
+                    CapHeight = glyphRun.Metrics.EmSize
+                };
+
+                var response = new FontShapeTextResponsePayload
+                {
+                    Success = true,
+                    Glyphs = glyphData,
+                    Width = glyphRun.Width,
+                    FontSize = glyphRun.FontSize,
+                    Metrics = metricsData,
+                    SourceText = glyphRun.SourceText
+                };
+
+                SendTargetEnvelope(writer, new TargetIpcEnvelope
+                {
+                    Type = TargetIpcMessageType.FontShapeTextResponse.ToString(),
+                    RequestId = envelope.RequestId,
+                    Payload = TargetIpc.SerializePayload(response)
+                });
+            }
+            catch (Exception ex)
+            {
+                SendErrorResponse(writer, envelope.RequestId, TargetIpcMessageType.FontShapeTextResponse, ex.Message);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private static Task HandleFontResolveTypefaceRequest(StreamWriter writer, TargetIpcEnvelope envelope)
+        {
+            if (envelope.Type != TargetIpcMessageType.FontResolveTypeface.ToString())
+                return Task.CompletedTask;
+
+            try
+            {
+                var payload = TargetIpc.DeserializePayload<FontResolveTypefacePayload>(envelope);
+                if (payload == null)
+                {
+                    SendErrorResponse(writer, envelope.RequestId, TargetIpcMessageType.FontResolveTypefaceResponse, "Invalid payload");
+                    return Task.CompletedTask;
+                }
+
+                var fontService = GetOrCreateFontService();
+                var style = (SKFontStyleSlant)payload.FontStyle;
+var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeight, style);
+
+                int fontWeightValue = 400;
+                int fontStyleValue = 0;
+                int fontWidthValue = 5;
+
+                if (typeface != null)
+                {
+                    fontWeightValue = (int)typeface.FontWeight;
+                    fontStyleValue = (int)typeface.FontStyle.Slant;
+                    fontWidthValue = (int)typeface.FontWidth;
+                }
+
+                var response = new FontResolveTypefaceResponsePayload
+                {
+                    Success = true,
+                    FamilyName = typeface?.FamilyName ?? string.Empty,
+                    FontWeight = fontWeightValue,
+                    FontStyle = fontStyleValue,
+                    FontWidth = fontWidthValue
+                };
+
+                SendTargetEnvelope(writer, new TargetIpcEnvelope
+                {
+                    Type = TargetIpcMessageType.FontResolveTypefaceResponse.ToString(),
+                    RequestId = envelope.RequestId,
+                    Payload = TargetIpc.SerializePayload(response)
+                });
+            }
+            catch (Exception ex)
+            {
+                SendErrorResponse(writer, envelope.RequestId, TargetIpcMessageType.FontResolveTypefaceResponse, ex.Message);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private static Task HandleImageDecodeRequest(StreamWriter writer, TargetIpcEnvelope envelope)
+        {
+            if (envelope.Type != TargetIpcMessageType.ImageDecode.ToString())
+                return Task.CompletedTask;
+
+            try
+            {
+                var payload = TargetIpc.DeserializePayload<ImageDecodePayload>(envelope);
+                if (payload == null || payload.Data == null)
+                {
+                    SendErrorResponse(writer, envelope.RequestId, TargetIpcMessageType.ImageDecodeResponse, "Invalid payload or empty data");
+                    return Task.CompletedTask;
+                }
+
+                var bitmap = DecodeImage(payload.Data, payload.TargetWidth, payload.TargetHeight, payload.Url);
+
+                byte[] bitmapBytes = null;
+                int width = 0, height = 0;
+                if (bitmap != null && !bitmap.IsNull)
+                {
+                    width = bitmap.Width;
+                    height = bitmap.Height;
+                    using var image = SKImage.FromBitmap(bitmap);
+                    using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+                    bitmapBytes = data?.ToArray() ?? Array.Empty<byte>();
+                    bitmap.Dispose();
+                }
+
+                var response = new ImageDecodeResponsePayload
+                {
+                    Success = bitmapBytes != null && bitmapBytes.Length > 0,
+                    ErrorMessage = bitmapBytes == null || bitmapBytes.Length == 0 ? "Decode returned no bitmap" : null,
+                    BitmapBytes = bitmapBytes ?? Array.Empty<byte>(),
+                    Width = width,
+                    Height = height,
+                    Format = "png"
+                };
+
+                SendTargetEnvelope(writer, new TargetIpcEnvelope
+                {
+                    Type = TargetIpcMessageType.ImageDecodeResponse.ToString(),
+                    RequestId = envelope.RequestId,
+                    Payload = TargetIpc.SerializePayload(response)
+                });
+            }
+            catch (Exception ex)
+            {
+                SendErrorResponse(writer, envelope.RequestId, TargetIpcMessageType.ImageDecodeResponse, ex.Message);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private static Task HandleSvgDecodeRequest(StreamWriter writer, TargetIpcEnvelope envelope)
+        {
+            if (envelope.Type != TargetIpcMessageType.SvgDecode.ToString())
+                return Task.CompletedTask;
+
+            try
+            {
+                var payload = TargetIpc.DeserializePayload<SvgDecodePayload>(envelope);
+                if (payload == null || string.IsNullOrWhiteSpace(payload.SvgContent))
+                {
+                    SendErrorResponse(writer, envelope.RequestId, TargetIpcMessageType.SvgDecodeResponse, "Invalid payload or empty SVG content");
+                    return Task.CompletedTask;
+                }
+
+                var svgRenderer = new SvgSkiaRenderer();
+                var limits = new SvgRenderLimits
+                {
+                    MaxElementCount = payload.Limits?.MaxElementCount ?? 10000,
+                    MaxFilterCount = payload.Limits?.MaxFilterCount ?? 100,
+                    MaxRecursionDepth = payload.Limits?.MaxRecursionDepth ?? 100,
+                    MaxRenderTimeMs = payload.Limits?.MaxRenderTimeMs ?? 5000,
+                    AllowExternalReferences = payload.Limits?.AllowExternalReferences ?? false
+                };
+
+                var result = svgRenderer.Render(payload.SvgContent, limits);
+
+                byte[] bitmapBytes = null;
+                int width = 0, height = 0;
+                if (result.Success && result.Bitmap != null && !result.Bitmap.IsNull)
+                {
+                    width = result.Bitmap.Width;
+                    height = result.Bitmap.Height;
+                    using var image = SKImage.FromBitmap(result.Bitmap);
+                    using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+                    bitmapBytes = data?.ToArray() ?? Array.Empty<byte>();
+                    result.Bitmap.Dispose();
+                }
+
+                var response = new SvgDecodeResponsePayload
+                {
+                    Success = bitmapBytes != null && bitmapBytes.Length > 0,
+                    ErrorMessage = bitmapBytes == null || bitmapBytes.Length == 0 ? result.ErrorMessage : null,
+                    BitmapBytes = bitmapBytes ?? Array.Empty<byte>(),
+                    Width = width,
+                    Height = height
+                };
+
+                SendTargetEnvelope(writer, new TargetIpcEnvelope
+                {
+                    Type = TargetIpcMessageType.SvgDecodeResponse.ToString(),
+                    RequestId = envelope.RequestId,
+                    Payload = TargetIpc.SerializePayload(response)
+                });
+            }
+            catch (Exception ex)
+            {
+                SendErrorResponse(writer, envelope.RequestId, TargetIpcMessageType.SvgDecodeResponse, ex.Message);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private static SkiaFontService _fontService;
+        private static readonly object _fontServiceLock = new();
+
+        private static SkiaFontService GetOrCreateFontService()
+        {
+            if (_fontService != null)
+                return _fontService;
+
+            lock (_fontServiceLock)
+            {
+                if (_fontService == null)
+                {
+                    _fontService = new SkiaFontService();
+                }
+                return _fontService;
+            }
+        }
+
+        private static SKBitmap DecodeImage(byte[] data, int? targetWidth, int? targetHeight, string url)
+        {
+            if (data == null || data.Length == 0)
+                return null;
+
+            try
+            {
+                // Check for SVG
+                if (!string.IsNullOrWhiteSpace(url) && 
+                    (url.EndsWith(".svg", StringComparison.OrdinalIgnoreCase) || 
+                     url.StartsWith("data:image/svg+xml", StringComparison.OrdinalIgnoreCase)))
+                {
+                    string svgContent = System.Text.Encoding.UTF8.GetString(data);
+                    var svgRenderer = new SvgSkiaRenderer();
+                    var result = svgRenderer.Render(svgContent);
+                    return result.Bitmap;
+                }
+
+                // Decode raster image
+                var bitmap = SKBitmap.Decode(data);
+                if (bitmap == null)
+                {
+                    // Fallback
+                    using var skData = SKData.CreateCopy(data);
+                    if (skData != null && !skData.IsEmpty)
+                    {
+                        using var image = SKImage.FromEncodedData(skData);
+                        if (image != null)
+                        {
+                            bitmap = SKBitmap.FromImage(image);
+                        }
+                    }
+                }
+
+                if (bitmap != null && (targetWidth.HasValue || targetHeight.HasValue))
+                {
+                    int srcW = bitmap.Width;
+                    int srcH = bitmap.Height;
+                    int dstW = targetWidth ?? srcW;
+                    int dstH = targetHeight ?? srcH;
+
+                    if (dstW != srcW || dstH != srcH)
+                    {
+                        var info = new SKImageInfo(dstW, dstH, SKColorType.Bgra8888, SKAlphaType.Premul);
+                        using var resized = new SKBitmap(info);
+                        using var canvas = new SKCanvas(resized);
+                        canvas.DrawBitmap(bitmap, new SKRect(0, 0, dstW, dstH));
+                        bitmap.Dispose();
+                        bitmap = resized;
+                    }
+                }
+
+                return bitmap;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void SendErrorResponse(StreamWriter writer, string requestId, TargetIpcMessageType responseType, string errorMessage)
+        {
+            SendTargetEnvelope(writer, new TargetIpcEnvelope
+            {
+                Type = responseType.ToString(),
+                RequestId = requestId,
+                Payload = TargetIpc.SerializePayload(new { Success = false, ErrorMessage = errorMessage })
+            });
         }
 
         private static void SendTargetEnvelope(StreamWriter writer, TargetIpcEnvelope envelope)

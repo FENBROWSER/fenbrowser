@@ -29,7 +29,21 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         Ping,
         Pong,
         Shutdown,
-        Error
+        Error,
+        // Font service operations
+        FontGetMetrics,
+        FontGetMetricsResponse,
+        FontMeasureWidth,
+        FontMeasureWidthResponse,
+        FontShapeText,
+        FontShapeTextResponse,
+        FontResolveTypeface,
+        FontResolveTypefaceResponse,
+        // Image/SVG decoding operations
+        ImageDecode,
+        ImageDecodeResponse,
+        SvgDecode,
+        SvgDecodeResponse
     }
 
     public sealed class TargetIpcEnvelope
@@ -66,6 +80,140 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
     {
         public long FrameSequence { get; set; }
         public long AcknowledgedAtUnixMs { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    }
+
+    // Font service payloads
+    public sealed class FontGetMetricsPayload
+    {
+        public string FontFamily { get; set; }
+        public float FontSize { get; set; }
+        public int FontWeight { get; set; } = 400;
+        public float? CssLineHeight { get; set; }
+    }
+
+    public sealed class FontGetMetricsResponsePayload
+    {
+        public bool Success { get; set; }
+        public string ErrorMessage { get; set; }
+        public float Ascent { get; set; }
+        public float Descent { get; set; }
+        public float LineGap { get; set; }
+        public float LineHeight { get; set; }
+        public float XHeight { get; set; }
+        public float CapHeight { get; set; }
+    }
+
+    public sealed class FontMeasureWidthPayload
+    {
+        public string Text { get; set; }
+        public string FontFamily { get; set; }
+        public float FontSize { get; set; }
+        public int FontWeight { get; set; } = 400;
+    }
+
+    public sealed class FontMeasureWidthResponsePayload
+    {
+        public bool Success { get; set; }
+        public string ErrorMessage { get; set; }
+        public float Width { get; set; }
+    }
+
+    public sealed class FontShapeTextPayload
+    {
+        public string Text { get; set; }
+        public string FontFamily { get; set; }
+        public float FontSize { get; set; }
+        public int FontWeight { get; set; } = 400;
+    }
+
+    public sealed class FontShapeTextResponsePayload
+    {
+        public bool Success { get; set; }
+        public string ErrorMessage { get; set; }
+        public PositionedGlyphData[] Glyphs { get; set; }
+        public float Width { get; set; }
+        public float FontSize { get; set; }
+        public NormalizedFontMetricsData Metrics { get; set; }
+        public string SourceText { get; set; }
+    }
+
+    public sealed class FontResolveTypefacePayload
+    {
+        public string FontFamily { get; set; }
+        public int FontWeight { get; set; } = 400;
+        public int FontStyle { get; set; } = 0; // SKFontStyleSlant enum value
+    }
+
+    public sealed class FontResolveTypefaceResponsePayload
+    {
+        public bool Success { get; set; }
+        public string ErrorMessage { get; set; }
+        public string FamilyName { get; set; }
+        public int FontWeight { get; set; }
+        public int FontStyle { get; set; }
+        public int FontWidth { get; set; }
+    }
+
+    // Image/SVG decoding payloads
+    public sealed class ImageDecodePayload
+    {
+        public byte[] Data { get; set; }
+        public int? TargetWidth { get; set; }
+        public int? TargetHeight { get; set; }
+        public string Url { get; set; } // For format detection
+    }
+
+    public sealed class ImageDecodeResponsePayload
+    {
+        public bool Success { get; set; }
+        public string ErrorMessage { get; set; }
+        public byte[] BitmapBytes { get; set; } // BGRA pixels
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public string Format { get; set; }
+    }
+
+    public sealed class SvgDecodePayload
+    {
+        public string SvgContent { get; set; }
+        public SvgRenderLimitsData Limits { get; set; }
+    }
+
+    public sealed class SvgDecodeResponsePayload
+    {
+        public bool Success { get; set; }
+        public string ErrorMessage { get; set; }
+        public byte[] BitmapBytes { get; set; }
+        public int Width { get; set; }
+        public int Height { get; set; }
+    }
+
+    // Serializable data structures (Skia types don't serialize well)
+    public sealed class PositionedGlyphData
+    {
+        public ushort GlyphId { get; set; }
+        public float X { get; set; }
+        public float Y { get; set; }
+        public float AdvanceX { get; set; }
+    }
+
+    public sealed class NormalizedFontMetricsData
+    {
+        public float Ascent { get; set; }
+        public float Descent { get; set; }
+        public float LineGap { get; set; }
+        public float LineHeight { get; set; }
+        public float XHeight { get; set; }
+        public float CapHeight { get; set; }
+    }
+
+    public sealed class SvgRenderLimitsData
+    {
+        public int MaxElementCount { get; set; } = 10000;
+        public int MaxFilterCount { get; set; } = 100;
+        public int MaxRecursionDepth { get; set; } = 100;
+        public int MaxRenderTimeMs { get; set; } = 5000;
+        public bool AllowExternalReferences { get; set; } = false;
     }
 
     internal static class TargetIpc
@@ -195,7 +343,13 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                    messageType == TargetIpcMessageType.LogBatch ||
                    messageType == TargetIpcMessageType.CompositorFrameAck ||
                    messageType == TargetIpcMessageType.Pong ||
-                   messageType == TargetIpcMessageType.Error;
+                   messageType == TargetIpcMessageType.Error ||
+                   messageType == TargetIpcMessageType.FontGetMetricsResponse ||
+                   messageType == TargetIpcMessageType.FontMeasureWidthResponse ||
+                   messageType == TargetIpcMessageType.FontShapeTextResponse ||
+                   messageType == TargetIpcMessageType.FontResolveTypefaceResponse ||
+                   messageType == TargetIpcMessageType.ImageDecodeResponse ||
+                   messageType == TargetIpcMessageType.SvgDecodeResponse;
         }
     }
 
@@ -435,7 +589,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
             }
         }
 
-        private void Send(TargetIpcEnvelope envelope)
+        public void Send(TargetIpcEnvelope envelope)
         {
             if (envelope == null)
             {
