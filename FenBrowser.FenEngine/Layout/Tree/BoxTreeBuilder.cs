@@ -415,6 +415,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 "BR" or "CITE" or "CODE" or "DATA" or "DEL" or "DFN" or "EM" or
                 "I" or "INS" or "KBD" or "LABEL" or "MAP" or "MARK" or
                 "METER" or "OUTPUT" or "PICTURE" or "PROGRESS" or "Q" or "RUBY" or
+                "RT" or "RB" or "RP" or "RTC" or
                 "S" or "SAMP" or "SMALL" or "SPAN" or "STRONG" or "SUB" or "SUP" or
                 "TIME" or "TT" or "U" or "VAR" or "WBR" => "inline",
 

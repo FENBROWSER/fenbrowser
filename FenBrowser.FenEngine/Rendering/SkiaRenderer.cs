@@ -985,7 +985,7 @@ namespace FenBrowser.FenEngine.Rendering
                      FenBrowser.Core.EngineLogCompat.Debug($"[SKIA-RENDERER-DRAW] '{txt}' at {node.TextOrigin} Color={node.Color} Alpha={node.Color.Alpha} Glyphs={node.Glyphs?.Count ?? 0}");
             }
 
-            bool isVertical = node.WritingMode == "vertical-rl";
+            bool isVertical = node.WritingMode == "vertical-rl" || node.WritingMode == "vertical-lr";
             bool pushedVerticalTransform = false;
 
             if (isVertical)

@@ -1652,8 +1652,13 @@ namespace FenBrowser.FenEngine.Rendering
             // 3. Content (text or image)
             if (node is Text textNode)
             {
-                var textNodes = BuildTextNode(textNode, box, style, isFocused, isHovered);
-                if (textNodes != null) nodes.AddRange(textNodes);
+                // Ruby annotation (RT) text is rendered by the ruby handler above
+                // the base run; skip it here so it does not double-paint inline.
+                if (!IsRubyAnnotationText(textNode))
+                {
+                    var textNodes = BuildTextNode(textNode, box, style, isFocused, isHovered);
+                    if (textNodes != null) nodes.AddRange(textNodes);
+                }
             }
             else if (node is Element elem)
             {
@@ -5329,81 +5334,115 @@ namespace FenBrowser.FenEngine.Rendering
         private List<TextPaintNode> BuildRubyTextNode(Element elem, Layout.BoxModel box, CssComputed style)
         {
             var nodes = new List<TextPaintNode>();
-            if (box == null) return nodes;
-            
-            // Get ruby text data from layout
-            // The ruby element stores its layout info in the box's Lines property
-            // Format: "RT:rtText|BASE:baseText|RT_SIZE:size|BASE_SIZE:size|RT_HEIGHT:height"
-            
-            if (box.Lines == null || box.Lines.Count == 0) return nodes;
-            
-            foreach (var line in box.Lines)
-            {
-                if (string.IsNullOrEmpty(line.Text)) continue;
-                
-                // Parse the ruby metadata
-                var parts = line.Text.Split('|');
-                string rtText = "", baseText = "";
-                float rtFontSize = 12f, baseFontSize = 24f, rtHeight = 14f;
-                
-                foreach (var part in parts)
-                {
-                    if (part.StartsWith("RT:")) rtText = part.Substring(3);
-                    else if (part.StartsWith("BASE:")) baseText = part.Substring(5);
-                    else if (part.StartsWith("RT_SIZE:")) float.TryParse(part.Substring(8), out rtFontSize);
-                    else if (part.StartsWith("BASE_SIZE:")) float.TryParse(part.Substring(10), out baseFontSize);
-                    else if (part.StartsWith("RT_HEIGHT:")) float.TryParse(part.Substring(10), out rtHeight);
-                }
-                
-                var typeface = Layout.TextLayoutHelper.ResolveTypeface(style?.FontFamilyName ?? "sans-serif", baseText + rtText, style?.FontWeight ?? 400, SkiaSharp.SKFontStyleSlant.Upright);
-                SKColor color = style?.ForegroundColor ?? SKColors.Black;
-                
-                float containerWidth = box.ContentBox.Width;
-                
-                using var rtFont = new SKFont(typeface, rtFontSize);
-                using var baseFont = new SKFont(typeface, baseFontSize);
+            if (box == null || elem.ChildNodes == null) return nodes;
 
-                float rtWidth = rtFont.MeasureText(rtText);
-                float baseWidth = baseFont.MeasureText(baseText);
-                
-                // RT text node (above)
-                if (!string.IsNullOrEmpty(rtText))
+            // Ruby annotation support: the <ruby> element groups a base run with
+            // <rt> annotation text rendered above it at a smaller size (the UA
+            // default is half the base font size). Everything is read from the
+            // DOM — no synthetic layout metadata is involved. The base run is
+            // painted by the normal text pipeline; this handler renders only the
+            // annotation above the ruby box.
+            string annotationText = "";
+            float baseFontSize = (float)(style?.FontSize ?? 16);
+            float rtFontSize = Math.Max(8f, baseFontSize * 0.5f);
+
+            foreach (var child in elem.ChildNodes)
+            {
+                if (child is Element rtElement &&
+                    string.Equals(rtElement.TagName, "RT", StringComparison.OrdinalIgnoreCase))
                 {
-                    float rtX = box.ContentBox.Left + (containerWidth - rtWidth) / 2;
-                    float rtY = box.ContentBox.Top + rtFontSize; // Baseline
-                    
-                    nodes.Add(new TextPaintNode
-                    {
-                        Bounds = new SKRect(rtX, box.ContentBox.Top, rtX + rtWidth, box.ContentBox.Top + rtHeight),
-                        SourceNode = elem,
-                        Color = color,
-                        FontSize = rtFontSize,
-                        Typeface = typeface,
-                        TextOrigin = new SKPoint(rtX, rtY),
-                        FallbackText = rtText
-                    });
-                }
-                
-                // Base text node (below RT)
-                if (!string.IsNullOrEmpty(baseText))
-                {
-                    float baseX = box.ContentBox.Left + (containerWidth - baseWidth) / 2;
-                    float baseY = box.ContentBox.Top + rtHeight + baseFontSize; // Below RT
-                    
-                    nodes.Add(new TextPaintNode
-                    {
-                        Bounds = new SKRect(baseX, box.ContentBox.Top + rtHeight, baseX + baseWidth, box.ContentBox.Bottom),
-                        SourceNode = elem,
-                        Color = color,
-                        FontSize = baseFontSize,
-                        Typeface = typeface,
-                        TextOrigin = new SKPoint(baseX, baseY),
-                        FallbackText = baseText
-                    });
+                    annotationText += CollectRubyText(rtElement);
                 }
             }
-            
+
+            annotationText = annotationText.Trim();
+            if (string.IsNullOrEmpty(annotationText))
+            {
+                return nodes;
+            }
+
+            var typeface = Layout.TextLayoutHelper.ResolveTypeface(
+                style?.FontFamilyName ?? "sans-serif",
+                annotationText,
+                style?.FontWeight ?? 400,
+                SkiaSharp.SKFontStyleSlant.Upright);
+            SKColor color = style?.ForegroundColor ?? SKColors.Black;
+
+            float containerWidth = Math.Max(0f, box.ContentBox.Width);
+            float boxLeft = box.ContentBox.Left;
+
+            using var rtFont = new SkiaSharp.SKFont(typeface, rtFontSize);
+            float rtWidth = rtFont.MeasureText(annotationText);
+            float rtAscent = rtFont.Metrics.Ascent;
+            float rtHeight = rtAscent + rtFont.Metrics.Descent;
+            if (rtHeight <= 0f) rtHeight = rtFontSize;
+
+            // Centered above the base run.
+            float rtX = boxLeft + (containerWidth - rtWidth) / 2f;
+            float rtTop = box.ContentBox.Top - rtHeight;
+
+            nodes.Add(new TextPaintNode
+            {
+                Bounds = new SKRect(rtX, rtTop, rtX + rtWidth, rtTop + rtHeight),
+                SourceNode = elem,
+                Color = color,
+                FontSize = rtFontSize,
+                Typeface = typeface,
+                TextOrigin = new SKPoint(rtX, rtTop + rtAscent),
+                FallbackText = annotationText
+            });
+
             return nodes;
+        }
+
+        private static string CollectRubyText(Element element)
+        {
+            if (element?.ChildNodes == null)
+            {
+                return string.Empty;
+            }
+
+            var sb = new System.Text.StringBuilder();
+            foreach (var child in element.ChildNodes)
+            {
+                if (child is Text textNode)
+                {
+                    sb.Append(textNode.Data);
+                }
+                else if (child is Element childElement)
+                {
+                    sb.Append(CollectRubyText(childElement));
+                }
+            }
+            return sb.ToString();
+        }
+
+        private static bool IsRubyAnnotationText(Text textNode)
+        {
+            if (textNode?.ParentElement == null)
+            {
+                return false;
+            }
+
+            // Walks up: any RT/RTC ancestor inside a RUBY marks annotation text.
+            var ancestor = textNode.ParentElement;
+            while (ancestor != null)
+            {
+                string tag = ancestor.TagName?.ToUpperInvariant() ?? string.Empty;
+                if (tag == "RUBY")
+                {
+                    return false;
+                }
+
+                if (tag == "RT" || tag == "RTC")
+                {
+                    return true;
+                }
+
+                ancestor = ancestor.ParentElement;
+            }
+
+            return false;
         }
         
         private static SKPoint[] ExtractBorderRadius(Layout.BoxModel box, CssComputed style)

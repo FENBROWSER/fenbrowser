@@ -122,6 +122,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return;
             }
 
+            // Vertical writing mode (writing-mode: vertical-rl / vertical-lr):
+            // text flows top-to-bottom in columns that advance right-to-left (rl)
+            // or left-to-right (lr). Text-only containers take a dedicated
+            // vertical layout path; mixed content falls back to horizontal flow.
+            if (IsVerticalWritingMode(box.ComputedStyle?.WritingMode) &&
+                TryLayoutVerticalTextContent(box, state))
+            {
+                return;
+            }
+
             bool widthUnconstrained = float.IsInfinity(state.AvailableSize.Width) || float.IsNaN(state.AvailableSize.Width);
             bool hasExplicitWidth =
                 box.ComputedStyle?.Width.HasValue == true ||
@@ -219,6 +229,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 if (child is TextLayoutBox textBox)
                 {
+                    // Ruby annotation (RT) text is painted by the ruby handler
+                    // above the base run; it must not consume inline space here.
+                    if (IsRubyAnnotationTextNode(textBox))
+                    {
+                        ResetTextBoxGeometry(textBox);
+                        continue;
+                    }
+
                     string rawText = (textBox.SourceNode as Text)?.Data ?? "";
                     string wsMode = (textBox.ComputedStyle?.WhiteSpace ?? box.ComputedStyle?.WhiteSpace ?? "normal").Trim().ToLowerInvariant();
                     bool wsPreservesNewlines = wsMode == "pre" || wsMode == "pre-wrap" || wsMode == "pre-line";
@@ -462,6 +480,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
                 else
                 {
+                    // Ruby annotation (RT/RTC) wrappers are painted above the base
+                    // run by the ruby handler; they consume no inline space and
+                    // must not be measured or placed as atomic inlines.
+                    if (child.SourceNode is Element annotationElement &&
+                        IsRubyAnnotationElement(annotationElement))
+                    {
+                        ResetInlineSubtreeGeometry(child);
+                        continue;
+                    }
+
                     // Atomic Inline (inline-block, images, inputs, etc.)
                     nonTextChildren.Add(child);
                     SKSize childSize = MeasureInlineChild(child, state);
@@ -1210,11 +1238,277 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                    string.Equals(value?.Trim(), keyword, StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool IsVerticalWritingMode(string writingMode)
+        {
+            return writingMode == "vertical-rl" || writingMode == "vertical-lr";
+        }
+
+        /// <summary>
+        /// Lays out a text-only inline container in a vertical writing mode.
+        /// Text flows top-to-bottom in columns; columns advance right-to-left
+        /// (vertical-rl) or left-to-right (vertical-lr). A column wraps when its
+        /// character run would exceed the available height. Each column is a
+        /// single ComputedTextLine (the paint path rotates the run 90 degrees).
+        /// Returns false when the container has content the vertical path does
+        /// not handle, so the caller falls back to horizontal flow.
+        /// </summary>
+        private bool TryLayoutVerticalTextContent(LayoutBox box, LayoutState state)
+        {
+            if (box?.Geometry == null || box.ComputedStyle == null)
+            {
+                return false;
+            }
+
+            // Only text (and plain inline wrappers) are handled here. Atomic
+            // inlines, floats, and out-of-flow boxes fall back to the
+            // horizontal path.
+            foreach (var child in box.Children)
+            {
+                if (child == null || child.IsOutOfFlow)
+                {
+                    continue;
+                }
+
+                if (child is TextLayoutBox)
+                {
+                    continue;
+                }
+
+                string display = child.ComputedStyle?.Display?.ToLowerInvariant() ?? "inline";
+                if (display != "inline" && display != "contents")
+                {
+                    return false;
+                }
+            }
+
+            var info = GetStyleFontInfo(box.ComputedStyle);
+            float columnWidth = info.LineHeight;
+            float maxColumnHeight = ResolveVerticalColumnHeight(box, state);
+
+            string writingMode = box.ComputedStyle.WritingMode;
+            bool rightToLeft = writingMode == "vertical-rl";
+
+            // Each column accumulates characters; a column is emitted when the
+            // next character would exceed the available height. All text in a
+            // column becomes one line so the renderer can rotate it as a run.
+            var columns = new List<string>();
+            var currentColumn = new System.Text.StringBuilder();
+            float currentColumnWidth = 0f;
+
+            foreach (var child in box.Children)
+            {
+                if (child is not TextLayoutBox textBox)
+                {
+                    continue;
+                }
+
+                string text = (textBox.SourceNode as Text)?.Data ?? string.Empty;
+                text = CollapseWhitespace(text);
+                if (text.Length == 0)
+                {
+                    ResetTextBoxGeometry(textBox);
+                    continue;
+                }
+
+                foreach (char ch in text)
+                {
+                    if (char.IsWhiteSpace(ch) && ch != ' ')
+                    {
+                        continue;
+                    }
+
+                    float chWidth = MeasureString(ch.ToString(), box.ComputedStyle).Width;
+                    if (currentColumn.Length > 0 && currentColumnWidth + chWidth > maxColumnHeight)
+                    {
+                        columns.Add(currentColumn.ToString());
+                        currentColumn.Clear();
+                        currentColumnWidth = 0f;
+                    }
+
+                    currentColumn.Append(ch);
+                    currentColumnWidth += chWidth;
+                }
+            }
+
+            if (currentColumn.Length > 0)
+            {
+                columns.Add(currentColumn.ToString());
+            }
+
+            if (columns.Count == 0)
+            {
+                return false;
+            }
+
+            float contentWidth = Math.Max(1f, columns.Count * columnWidth);
+            float contentHeight = maxColumnHeight;
+
+            box.Geometry.ContentBox = new SKRect(
+                box.Geometry.ContentBox.Left,
+                box.Geometry.ContentBox.Top,
+                box.Geometry.ContentBox.Left + contentWidth,
+                box.Geometry.ContentBox.Top + contentHeight);
+
+            // Place each column as one line of one text box. All text in this
+            // container shares one TextLayoutBox geometry whose lines carry the
+            // per-column origins.
+            TextLayoutBox firstTextBox = box.Children.OfType<TextLayoutBox>().FirstOrDefault();
+            foreach (var textBox in box.Children.OfType<TextLayoutBox>())
+            {
+                ResetTextBoxGeometry(textBox);
+            }
+
+            if (firstTextBox == null)
+            {
+                return false;
+            }
+
+            if (firstTextBox.Geometry == null)
+            {
+                firstTextBox.Geometry = new BoxModel();
+            }
+
+            var lines = new List<ComputedTextLine>(columns.Count);
+            for (int i = 0; i < columns.Count; i++)
+            {
+                float columnX = rightToLeft
+                    ? contentWidth - (i + 1) * columnWidth
+                    : i * columnWidth;
+
+                lines.Add(new ComputedTextLine
+                {
+                    Text = columns[i],
+                    Origin = new SKPoint(columnX, 0f),
+                    Width = columnWidth,
+                    Height = info.LineHeight,
+                    Baseline = info.Baseline
+                });
+            }
+
+            firstTextBox.Geometry.Lines = lines;
+            firstTextBox.Geometry.ContentBox = new SKRect(0f, 0f, contentWidth, contentHeight);
+            firstTextBox.Geometry.Padding = new Thickness();
+            firstTextBox.Geometry.Border = new Thickness();
+            firstTextBox.Geometry.Margin = new Thickness();
+            LayoutBoxOps.SyncBoxes(firstTextBox.Geometry);
+            LayoutBoxOps.PositionSubtree(firstTextBox, 0f, 0f, state);
+
+            firstTextBox.Geometry.LineHeight = info.LineHeight;
+            firstTextBox.Geometry.Baseline = info.Baseline;
+            firstTextBox.Geometry.Ascent = info.Baseline;
+            firstTextBox.Geometry.Descent = Math.Max(0f, info.LineHeight - info.Baseline);
+
+            box.Geometry.LineHeight = info.LineHeight;
+            box.Geometry.Baseline = info.Baseline;
+            box.Geometry.Ascent = info.Baseline;
+            box.Geometry.Descent = info.Descent;
+            LayoutBoxOps.SyncBoxes(box.Geometry);
+
+            return true;
+        }
+
+        private static float ResolveVerticalColumnHeight(LayoutBox box, LayoutState state)
+        {
+            float height = state.AvailableSize.Height;
+            if (float.IsNaN(height) || float.IsInfinity(height) || height <= 0f)
+            {
+                height = state.ViewportHeight;
+            }
+
+            if (float.IsNaN(height) || float.IsInfinity(height) || height <= 0f)
+            {
+                height = box.Geometry?.ContentBox.Height ?? 600f;
+            }
+
+            return Math.Max(1f, height);
+        }
+
+        private static bool IsRubyAnnotationTextNode(TextLayoutBox textBox)
+        {
+            if (textBox?.SourceNode is not Text textNode ||
+                textNode.ParentElement == null)
+            {
+                return false;
+            }
+
+            // RT/RTC inside a RUBY marks annotation text: painted above the base
+            // by the ruby handler, excluded from inline flow.
+            var ancestor = textNode.ParentElement;
+            while (ancestor != null)
+            {
+                string tag = ancestor.TagName?.ToUpperInvariant() ?? string.Empty;
+                if (tag == "RUBY")
+                {
+                    return false;
+                }
+
+                if (tag == "RT" || tag == "RTC")
+                {
+                    return true;
+                }
+
+                ancestor = ancestor.ParentElement;
+            }
+
+            return false;
+        }
+
+        private static bool IsRubyAnnotationElement(Element element)
+        {
+            // True for an RT/RTC element nested (directly or transitively)
+            // inside a RUBY element.
+            var ancestor = element.ParentElement;
+            while (ancestor != null)
+            {
+                string tag = ancestor.TagName?.ToUpperInvariant() ?? string.Empty;
+                if (tag == "RUBY")
+                {
+                    return false;
+                }
+
+                if (tag == "RT" || tag == "RTC")
+                {
+                    return true;
+                }
+
+                ancestor = ancestor.ParentElement;
+            }
+
+            return false;
+        }
+
+        private static void ResetInlineSubtreeGeometry(LayoutBox box)
+        {
+            if (box == null)
+            {
+                return;
+            }
+
+            box.Geometry = new BoxModel();
+            box.Geometry.Padding = new Thickness();
+            box.Geometry.Border = new Thickness();
+            box.Geometry.Margin = new Thickness();
+            box.Geometry.Lines = new List<ComputedTextLine>();
+            LayoutBoxOps.SyncBoxes(box.Geometry);
+
+            foreach (var child in box.Children)
+            {
+                ResetInlineSubtreeGeometry(child);
+            }
+        }
         private void LayoutLeafTextBox(TextLayoutBox textBox, LayoutState state)
         {
             if (textBox.Geometry == null)
             {
                 textBox.Geometry = new BoxModel();
+            }
+
+            // Ruby annotation (RT) text is rendered by the ruby handler above
+            // the base run; it never occupies inline space on its own.
+            if (IsRubyAnnotationTextNode(textBox))
+            {
+                ResetTextBoxGeometry(textBox);
+                return;
             }
 
             string text = NormalizeIsolatedText(textBox.TextContent);
