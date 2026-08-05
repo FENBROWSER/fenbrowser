@@ -2180,29 +2180,17 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static bool HasLayoutContainment(string contain, IReadOnlyDictionary<string, string> map)
         {
+            // Delegate to the shared evaluator so strict/content expansion and
+            // future containment kinds stay in one place.
+            var style = new CssComputed { Contain = contain };
             if (string.IsNullOrWhiteSpace(contain) && map != null)
             {
-                map.TryGetValue("contain", out contain);
+                map.TryGetValue("contain", out var mappedContain);
+                style.Contain = mappedContain;
             }
 
-            if (string.IsNullOrWhiteSpace(contain))
-            {
-                return false;
-            }
-
-            var tokens = contain.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
-            for (var i = 0; i < tokens.Length; i++)
-            {
-                var token = tokens[i].Trim().ToLowerInvariant();
-                if (token == "layout" || token == "content" || token == "strict")
-                {
-                    return true;
-                }
-            }
-
-            return false;
+            return Layout.ContainmentEvaluator.HasLayoutContainment(style);
         }
-
         private void RemoveBoxesForSubtree(Node root)
         {
             if (root == null)

@@ -95,6 +95,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             if (display == "flow-root")
                 return BlockFormattingContext.Instance;
 
+            // Layout containment establishes an independent formatting context:
+            // descendants cannot affect layout outside the element. Applies to
+            // any block-level box regardless of its children's display type.
+            if (box is BlockBox &&
+                ContainmentEvaluator.HasLayoutContainment(box.ComputedStyle))
+            {
+                return BlockFormattingContext.Instance;
+            }
+
             // Inline-block / table-cell: block containers that may establish
             // either BFC or IFC depending on their children.
             if (display == "inline-block" || display == "table-cell")

@@ -742,8 +742,12 @@ namespace FenBrowser.FenEngine.Rendering
                 if (string.IsNullOrEmpty(overflowX)) overflowX = overflow;
                 if (string.IsNullOrEmpty(overflowY)) overflowY = overflow;
 
-                bool clipX = IsOverflowClipMode(overflowX) || IsOverflowScrollMode(overflowX);
-                bool clipY = IsOverflowClipMode(overflowY) || IsOverflowScrollMode(overflowY);
+                // Paint containment (contain: paint / strict / content) clips the
+                // element's contents to its border box, exactly like overflow:hidden
+                // on both axes. It combines with any declared overflow clipping.
+                bool paintContained = ContainmentEvaluator.HasPaintContainment(style);
+                bool clipX = IsOverflowClipMode(overflowX) || IsOverflowScrollMode(overflowX) || paintContained;
+                bool clipY = IsOverflowClipMode(overflowY) || IsOverflowScrollMode(overflowY) || paintContained;
                 bool isClipped = AllowsOverflowClipping(node, style, display) && (clipX || clipY);
 
                 if (isClipped)

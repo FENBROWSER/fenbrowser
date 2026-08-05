@@ -496,6 +496,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             float intrinsicContentHeight = maxBottom;
 
+            // Size containment (contain: size / block-size): the element's auto
+            // height is resolved without its contents. The content still lays
+            // out (overflow is visible) but contributes nothing to the box size.
+            if (ContainmentEvaluator.HasBlockSizeContainment(blockBox.ComputedStyle) &&
+                blockBox.ComputedStyle?.Height.HasValue != true &&
+                blockBox.ComputedStyle?.HeightPercent.HasValue != true &&
+                string.IsNullOrEmpty(blockBox.ComputedStyle?.HeightExpression))
+            {
+                intrinsicContentHeight = 0f;
+            }
+
             bool isFloatingBox =
                 string.Equals(blockBox.ComputedStyle?.Float, "left", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(blockBox.ComputedStyle?.Float, "right", StringComparison.OrdinalIgnoreCase);
@@ -510,7 +521,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // pill widens to the parent block instead of wrapping text.
             bool isInlineAtomicInner = blockAutoWidth &&
                 blockBox is FenBrowser.FenEngine.Layout.Tree.InlineBox;
-            if (blockAutoWidth && (float.IsInfinity(state.AvailableSize.Width) || isFloatingBox || isInlineAtomicInner))
+
+            // Size containment (contain: size / inline-size): auto width is
+            // resolved without contents (shrink-to-fit collapses to zero).
+            bool inlineSizeContained =
+                blockAutoWidth &&
+                ContainmentEvaluator.HasInlineSizeContainment(blockBox.ComputedStyle);
+
+            if (blockAutoWidth && (float.IsInfinity(state.AvailableSize.Width) || isFloatingBox || isInlineAtomicInner || inlineSizeContained))
             {
                 float previousWidth = blockBox.Geometry.ContentBox.Width;
                 float previousBottom = blockBox.Geometry.ContentBox.Bottom;
@@ -521,6 +539,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     if (child == null || child.IsOutOfFlow)
                     {
                         continue;
+                    }
+
+                    // Size-contained boxes measure zero regardless of contents.
+                    if (inlineSizeContained)
+                    {
+                        break;
                     }
 
                     float childWidth = MeasureShrinkToFitWidth(child);
