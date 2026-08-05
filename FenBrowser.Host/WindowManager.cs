@@ -62,6 +62,30 @@ namespace FenBrowser.Host
 
         private WindowManager() { }
 
+        /// <summary>
+        /// Initializes the window manager on top of an existing platform window
+        /// (created by IPlatformHost.CreateWindow). The app shell (GL context,
+        /// Skia surface, input, render loop) binds to that window's Silk.NET
+        /// handle instead of creating its own.
+        /// </summary>
+        public void Initialize(FenBrowser.Host.Platform.IWindow platformWindow, string initialUrl, bool isHeadless = false)
+        {
+            if (platformWindow?.SilkWindow == null)
+            {
+                throw new InvalidOperationException("WindowManager.Initialize requires a platform window with a Silk.NET handle.");
+            }
+
+            _mainThreadId = Environment.CurrentManagedThreadId;
+            _window = platformWindow.SilkWindow;
+            _logicalWidth = platformWindow.Size.X;
+            _logicalHeight = platformWindow.Size.Y;
+
+            _window.Load += Load;
+            _window.Render += Render;
+            _window.Resize += Resize;
+            _window.Closing += Close;
+        }
+
         public void Initialize(string initialUrl, bool isHeadless = false)
         {
             _mainThreadId = Environment.CurrentManagedThreadId;

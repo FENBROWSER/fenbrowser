@@ -20,9 +20,6 @@ namespace FenBrowser.Host.Platform.Windows;
 internal sealed class WindowsWindow : IWindow
 {
     private readonly Silk.NET.Windowing.IWindow _window;
-    private readonly GRContext _grContext;
-    private readonly SKSurface _surface;
-    private readonly GRBackendRenderTarget _renderTarget;
 
     private int _physicalWidth;
     private int _physicalHeight;
@@ -30,16 +27,19 @@ internal sealed class WindowsWindow : IWindow
     private int _logicalHeight;
     private float _dpiScale = 1.0f;
 
-    public WindowsWindow(Silk.NET.Windowing.IWindow window, GRContext grContext, SKSurface surface, GRBackendRenderTarget renderTarget)
+    public WindowsWindow(Silk.NET.Windowing.IWindow window)
     {
         _window = window;
-        _grContext = grContext;
-        _surface = surface;
-        _renderTarget = renderTarget;
-        SyncDimensions();
 
-        // Wire up Silk.NET events to our own events
-        _window.Load += () => OnLoad?.Invoke();
+        // Silk.NET: window state (size, framebuffer) is only valid after
+        // initialization, i.e. inside (or after) the Load callback. The window
+        // wrapper stays thin; the app shell (WindowManager) owns GL, the Skia
+        // surface, and the render loop on the same Silk window.
+        _window.Load += () =>
+        {
+            SyncDimensions();
+            OnLoad?.Invoke();
+        };
         _window.Render += delta => OnRender?.Invoke(delta);
         _window.Resize += size => OnResize?.Invoke(new Size(size.X, size.Y));
         _window.Closing += () => OnClose?.Invoke();
@@ -131,13 +131,6 @@ internal sealed class WindowsWindow : IWindow
         // The window is already initialized during creation
     }
 
-    internal void RenderFrame(double deltaTime)
-    {
-        if (_surface == null) return;
-        _surface.Canvas.Flush();
-        _grContext.Flush();
-    }
-
     internal void ResizeFrame(Vector2D<int> size)
     {
         SyncDimensions();
@@ -145,9 +138,8 @@ internal sealed class WindowsWindow : IWindow
 
     internal void DisposeNative()
     {
-        _surface?.Dispose();
-        _renderTarget?.Dispose();
-        _grContext?.Dispose();
+        // The app shell (WindowManager) owns GL, the Skia surface, and the
+        // render target; nothing to dispose here.
     }
 
     private void SyncDimensions()
@@ -171,9 +163,6 @@ internal sealed class WindowsPlatformHost : IPlatformHost
     private readonly ConcurrentQueue<Action> _mainThreadQueue = new();
     private readonly int _mainThreadId;
     private WindowsWindow? _window;
-    private GRContext? _grContext;
-    private SKSurface? _surface;
-    private GRBackendRenderTarget? _renderTarget;
 
     public WindowsPlatformHost()
     {
@@ -199,27 +188,12 @@ internal sealed class WindowsPlatformHost : IPlatformHost
 
         var window = Silk.NET.Windowing.Window.Create(silkOptions);
 
-        // Initialize graphics context
-        var gl = window.CreateOpenGLES();
-        var glInterface = GRGlInterface.Create();
+        var wrappedWindow = new WindowsWindow(window);
 
-        if (glInterface == null)
-            throw new InvalidOperationException("GPU initialization failed: GRGlInterface.Create() returned null.");
-
-        var grContext = GRContext.CreateGl(glInterface);
-        if (grContext == null)
-            throw new InvalidOperationException("GPU initialization failed: GRContext.CreateGl returned null.");
-
-        _grContext = grContext;
-
-        var wrappedWindow = new WindowsWindow(window, _grContext, _surface!, _renderTarget!);
-
-        // Wire up render loop to process main thread queue
-        window.Render += delta => {
-            ProcessMainThreadQueue();
-            wrappedWindow.RenderFrame(delta);
-        };
-        window.Resize += size => wrappedWindow.ResizeFrame(size);
+        // The app shell (WindowManager) owns the render loop, resize handling,
+        // and GL lifecycle on this same Silk window; the host only processes
+        // its main-thread queue each frame.
+        window.Render += delta => ProcessMainThreadQueue();
         window.Closing += () => wrappedWindow.DisposeNative();
 
         _window = wrappedWindow;
@@ -312,9 +286,7 @@ internal sealed class WindowsPlatformHost : IPlatformHost
 
     public void Dispose()
     {
-        _surface?.Dispose();
-        _renderTarget?.Dispose();
-        _grContext?.Dispose();
+        _window?.DisposeNative();
     }
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]

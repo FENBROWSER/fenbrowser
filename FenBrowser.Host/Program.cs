@@ -258,9 +258,14 @@ namespace FenBrowser.Host
                 var platformWindow = platformHost.CreateWindow(windowOptions);
                 platformWindow.Initialize(initialUrl);
 
+                // The app shell (GL, Skia surface, input, render loop) binds to
+                // the platform window; WindowManager exposes it to the UI layer.
+                var windowManager = WindowManager.Instance;
+                windowManager.Initialize(platformWindow, initialUrl);
+
                 // 4. Initialize Chrome Manager (UI)
                 // Hook into Window Load event to avoiding init before GL context
-                platformWindow.OnLoad += () => {
+                windowManager.OnLoad += () => {
                     ChromeManager.Instance.Initialize(initialUrl);
 
                     // DIAGNOSTIC LOGGING
