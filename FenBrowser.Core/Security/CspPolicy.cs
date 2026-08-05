@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Security
 {
@@ -44,6 +45,12 @@ namespace FenBrowser.Core.Security
         public const string UpgradeInsecureRequests = "upgrade-insecure-requests";
         public const string BlockAllMixedContent = "block-all-mixed-content";
         public const string RequireSriFor = "require-sri-for";
+        
+        /// <summary>
+        /// CSP header names.
+        /// </summary>
+        public const string HeaderName = "Content-Security-Policy";
+        public const string HeaderNameReportOnly = "Content-Security-Policy-Report-Only";
         
         /// <summary>
         /// All directive names that use source-list syntax.
@@ -433,5 +440,92 @@ namespace FenBrowser.Core.Security
                 _ => -1
             };
         }
+    }
+
+    /// <summary>
+    /// Represents a CSP policy in report-only mode.
+    /// Report-only policies do not block violations but report them to the specified endpoint.
+    /// </summary>
+    public sealed class CspPolicyReportOnly
+    {
+        public CspPolicy Policy { get; }
+        public string HeaderValue { get; }
+
+        private CspPolicyReportOnly(CspPolicy policy, string headerValue)
+        {
+            Policy = policy;
+            HeaderValue = headerValue;
+        }
+
+        /// <summary>
+        /// Parses a Content-Security-Policy-Report-Only header value.
+        /// </summary>
+        public static CspPolicyReportOnly Parse(string headerValue)
+        {
+            var policy = CspPolicy.Parse(headerValue);
+            return new CspPolicyReportOnly(policy, headerValue);
+        }
+
+        /// <summary>
+        /// Checks if a request would violate this report-only policy.
+        /// Returns true if allowed (would not violate), false if would violate.
+        /// </summary>
+        public bool WouldAllow(string directiveName, Uri url, string nonce = null, Uri origin = null, 
+            bool isInline = false, bool isEval = false, string elementHash = null, string elementTrustedType = null)
+        {
+            return Policy.IsAllowed(directiveName, url, nonce, origin, isInline, isEval, null, null);
+        }
+
+        /// <summary>
+        /// Reports a violation to the configured report endpoint.
+        /// </summary>
+        public void ReportViolation(CspViolationReport report)
+        {
+            if (Policy == null) return;
+            
+            var reportUri = GetReportUri();
+            if (string.IsNullOrEmpty(reportUri)) return;
+
+            // In a real implementation, this would send an HTTP POST to the report URI
+            // For now, we log the violation
+            EngineLogCompat.Warn($"[CSP Report-Only] Violation: {report}", FenBrowser.Core.Logging.LogCategory.Security);
+        }
+
+        private string GetReportUri()
+        {
+            // Check for report-to directive first
+            if (Policy.Directives.TryGetValue("report-to", out var reportToDirective))
+            {
+                return reportToDirective.ReportTo;
+            }
+            
+            // Fall back to report-uri
+            foreach (var directive in Policy.Directives.Values)
+            {
+                if (!string.IsNullOrEmpty(directive.ReportUri))
+                {
+                    return directive.ReportUri;
+                }
+            }
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Represents a CSP violation report.
+    /// </summary>
+    public sealed class CspViolationReport
+    {
+        public string DocumentUri { get; set; }
+        public string Referrer { get; set; }
+        public string ViolatedDirective { get; set; }
+        public string EffectiveDirective { get; set; }
+        public string OriginalPolicy { get; set; }
+        public string BlockedUri { get; set; }
+        public int LineNumber { get; set; }
+        public int ColumnNumber { get; set; }
+        public string SourceFile { get; set; }
+        public string Sample { get; set; }
+        public long TimeStamp { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     }
 }
