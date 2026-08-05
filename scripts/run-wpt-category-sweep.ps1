@@ -5,8 +5,8 @@ Resumable per-category WPT sweep for FenBrowser. Runs each top-level WPT directo
 (or a user-supplied list) as a separate process and writes per-category result bundles.
 #>
 param(
-    [string]$WptRoot = "C:\Users\udayk\Videos\wpt",
-    [string]$ResultsRoot = "C:\Users\udayk\Videos\fenbrowser-test\Results\wpt\categories",
+    [string]$WptRoot = "",
+    [string]$ResultsRoot = "",
     [int]$Processes = 1,
     [int]$TimeoutSeconds = 600,
     [int]$StallTimeoutSec = 35,
@@ -16,6 +16,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+
+# Resolve the WPT checkout (env WPT_ROOT, sibling dir, or local dir).
+. "$PSScriptRoot\resolve-paths.ps1"
+$wptRoot = Resolve-WptRoot -ExplicitRoot $WptRoot
+if (-not $ResultsRoot) { $ResultsRoot = Join-Path $repoRoot "Results\wpt\categories" }
 
 # Build once
 Write-Host "[wpt-sweep] Building FenBrowser.Tooling (Release) ..."

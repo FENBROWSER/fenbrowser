@@ -2,7 +2,15 @@
 # Apply annexB fixes to FenBrowser.Js
 set -e
 
-REPO="C:/Users/udayk/Videos/fenbrowser-test"
+# Resolve the repo root: env var wins, then script's parent's parent.
+if [ -n "${FENBROWSER_REPO:-}" ]; then
+  REPO="$FENBROWSER_REPO"
+elif [ -d "$(dirname "$0")/../FenBrowser.Js" ]; then
+  REPO="$(cd "$(dirname "$0")/.." && pwd)"
+else
+  echo "FenBrowser repo not found. Set FENBROWSER_REPO or run from scripts/ inside the repo." >&2
+  exit 2
+fi
 
 echo "=== Reverting any pre-existing changes ==="
 cd "$REPO"

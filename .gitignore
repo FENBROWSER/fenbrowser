@@ -42,6 +42,10 @@ bld/
 !scripts/run-wpt-category-sweep.ps1
 !scripts/run-wpt-shards.ps1
 !scripts/run-html-tokenizer-language-bench.ps1
+!scripts/resolve-paths.ps1
+!scripts/run-regexp-chunked.ps1
+!scripts/run_test262_tui.ps1
+!scripts/run_test262_web.ps1
 *.py
 !scripts/test262_dashboard.py
 !scripts/wpt_report.py

@@ -4,7 +4,8 @@ param(
     [string]$ResultsDir = "Results/wpt_categories",
     [switch]$Fresh = $false,
     [switch]$ListOnly = $false,
-    [int]$StallTimeoutSec = 60
+    [int]$StallTimeoutSec = 60,
+    [string]$WptRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,6 +18,10 @@ if (-not (Test-Path $toolingExe)) {
     exit 1
 }
 
+# Resolve the WPT checkout (env WPT_ROOT, sibling dir, or local dir).
+. "$PSScriptRoot\resolve-paths.ps1"
+$wptRoot = Resolve-WptRoot -ExplicitRoot $WptRoot
+
 # WPT test categories - directories under WPT root that contain test files.
 # Excludes infrastructure dirs and third_party reference data.
 $skipDirs = @(
@@ -24,8 +29,6 @@ $skipDirs = @(
     "webdriver", "_venv3", ".git", "__pycache__", "third_party",
     "fonts", "interfaces", "webgpu"  # empty dirs
 )
-
-$wptRoot = "C:\Users\udayk\Videos\wpt"
 $allCategories = Get-ChildItem -Path $wptRoot -Directory |
     Where-Object { $skipDirs -notcontains $_.Name -and -not $_.Name.StartsWith('.') } |
     Sort-Object Name

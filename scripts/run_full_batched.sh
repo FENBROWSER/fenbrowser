@@ -4,7 +4,20 @@
 set -u
 export TEST262_PROGRESS=1
 EXE="./FenBrowser.Js.Test262/bin/Release/net10.0/FenBrowser.Js.Test262.exe"
-ROOT="C:/Users/udayk/Videos/test262"
+
+# Resolve the test262 checkout: TEST262_ROOT env var wins, then a sibling
+# directory next to this repo, then a local `test262` directory.
+if [ -n "${TEST262_ROOT:-}" ]; then
+  ROOT="$TEST262_ROOT"
+elif [ -d "../test262" ]; then
+  ROOT="$(cd .. && pwd)/test262"
+elif [ -d "./test262" ]; then
+  ROOT="$(pwd)/test262"
+else
+  echo "test262 checkout not found. Set TEST262_ROOT or place it as ../test262 (sibling of this repo)." >&2
+  exit 2
+fi
+
 OUTDIR="Results/test262/batched"
 mkdir -p "$OUTDIR"
 PROG="$OUTDIR/_progress.txt"

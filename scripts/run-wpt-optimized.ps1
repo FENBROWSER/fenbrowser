@@ -3,7 +3,8 @@ param(
     [switch]$Fresh = $false,
     [int]$Processes = 6,
     [int]$TimeoutSeconds = 120,
-    [int]$StallTimeoutSec = 20
+    [int]$StallTimeoutSec = 20,
+    [string]$WptRoot = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -16,14 +17,16 @@ if (-not (Test-Path $toolingExe)) {
     exit 1
 }
 
+# Resolve the WPT checkout (env WPT_ROOT, sibling dir, or local dir).
+. "$PSScriptRoot\resolve-paths.ps1"
+$wptRoot = Resolve-WptRoot -ExplicitRoot $WptRoot
+
 # Skip non-test dirs
 $skipDirs = @(
     "tools", "resources", "common", "media", "docs", "conformance-checkers",
     "webdriver", "_venv3", ".git", "__pycache__", "third_party",
     "fonts", "interfaces", "webgpu"
 )
-
-$wptRoot = "C:\Users\udayk\Videos\wpt"
 $allCategories = Get-ChildItem -Path $wptRoot -Directory |
     Where-Object { $skipDirs -notcontains $_.Name -and -not $_.Name.StartsWith('.') } |
     Sort-Object Name

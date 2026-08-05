@@ -1,11 +1,21 @@
 param(
-    [string]$InventoryPath = "C:\Users\udayk\Downloads\html_css_spec_inventory_2026-05-01.md",
+    [string]$InventoryPath = "",
     [string]$CssLoaderPath = "FenBrowser.FenEngine/Rendering/Css/CssLoader.cs",
-    [string]$OutputPath = "Results/css_inventory_coverage_2026-05-01.json"
+    [string]$OutputPath = "Results/css_inventory_coverage.json"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# The inventory is an externally-supplied spec dump; require an explicit path
+# or a standard location rather than hardcoding a machine-specific download dir.
+if (-not $InventoryPath) {
+    if ($env:FEN_SPEC_INVENTORY) { $InventoryPath = $env:FEN_SPEC_INVENTORY }
+    else {
+        Write-Error "Spec inventory not provided. Pass -InventoryPath <file> or set FEN_SPEC_INVENTORY."
+        exit 2
+    }
+}
 
 if (-not (Test-Path -LiteralPath $InventoryPath)) {
     throw "Inventory file not found: $InventoryPath"

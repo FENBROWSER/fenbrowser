@@ -5,7 +5,7 @@
 #
 # Run from repo root:  pwsh scripts/run_full_batched.ps1
 param(
-    [string]$Test262Root = "C:\Users\udayk\Videos\test262",
+    [string]$Test262Root = "",
     [string]$Exe = ".\FenBrowser.Js.Test262\bin\Release\net10.0\FenBrowser.Js.Test262.exe",
     [string]$OutDir = "Results\test262\batched",
     # Mandatory per-test cooperative budget (--timeout-ms).
@@ -18,6 +18,10 @@ param(
     # -Fresh wipes prior batch results and reruns everything.
     [switch]$Fresh
 )
+
+# Resolve the test262 checkout (env TEST262_ROOT, sibling dir, or local dir).
+. "$PSScriptRoot\resolve-paths.ps1"
+if (-not $Test262Root) { $Test262Root = Resolve-Test262Root -ExplicitRoot $Test262Root }
 
 $env:TEST262_PROGRESS = "1"
 $ErrorActionPreference = "Stop"

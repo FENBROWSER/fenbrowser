@@ -1,13 +1,23 @@
 param(
-    [string]$InventoryPath = "C:\Users\udayk\Downloads\html_css_spec_inventory_2026-05-01.md",
+    [string]$InventoryPath = "",
     [string]$ElementCoverageTestPath = "FenBrowser.Tests/Engine/HtmlElementInterfaceCoverageTests.cs",
     [string]$AttributeCoverageTestPath = "FenBrowser.Tests/Engine/HtmlAttributeInventoryCoverageTests.cs",
     [string]$EventCoverageTestPath = "FenBrowser.Tests/Engine/HtmlEventHandlerInventoryCoverageTests.cs",
     [string]$CatalogPath = "FenBrowser.Core/Dom/V2/HtmlElementInterfaceCatalog.cs",
     [string]$FenRuntimePath = "FenBrowser.FenEngine/Core/FenRuntime.cs",
     [string]$ElementWrapperPath = "FenBrowser.FenEngine/DOM/ElementWrapper.cs",
-    [string]$OutputPath = "Results/html_inventory_coverage_2026-05-01.json"
+    [string]$OutputPath = "Results/html_inventory_coverage.json"
 )
+
+# The inventory is an externally-supplied spec dump; require an explicit path
+# or a standard location rather than hardcoding a machine-specific download dir.
+if (-not $InventoryPath) {
+    if ($env:FEN_SPEC_INVENTORY) { $InventoryPath = $env:FEN_SPEC_INVENTORY }
+    else {
+        Write-Error "Spec inventory not provided. Pass -InventoryPath <file> or set FEN_SPEC_INVENTORY."
+        exit 2
+    }
+}
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"

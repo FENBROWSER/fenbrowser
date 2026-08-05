@@ -7,7 +7,7 @@ param(
     # kill it and move to the next category. Must exceed TimeoutMs so a single
     # legitimately-slow test that self-aborts does not trip it.
     [int]$StallTimeoutSec = 35,
-    [string]$Test262Root = "C:\Users\udayk\Videos\test262",
+    [string]$Test262Root = "",
     [int]$MaxPerCategory = 100000,
     # A directory holding more than this many .js tests is split into its subdirs so
     # one wedging test only kills its own small bucket (not a 10k-test category).
@@ -17,6 +17,10 @@ param(
 
 $env:TEST262_PROGRESS = "1"
 $ErrorActionPreference = "Stop"
+
+# Resolve the test262 checkout (env TEST262_ROOT, sibling dir, or local dir).
+. "$PSScriptRoot\resolve-paths.ps1"
+$Test262Root = Resolve-Test262Root -ExplicitRoot $Test262Root
 
 $sourceRoot = (Resolve-Path $Test262Root).Path
 $testRoot = Join-Path $sourceRoot "test"
