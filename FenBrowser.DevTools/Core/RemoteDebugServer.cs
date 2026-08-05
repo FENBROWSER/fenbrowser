@@ -345,7 +345,25 @@ public class RemoteDebugServer : IDisposable
         return headers;
     }
 
-    private string BuildTokenQuery() => "?token=" + Uri.EscapeDataString(_authToken);
+    private string BuildTokenQuery()
+    {
+        // Security: do not embed the auth token in URLs by default — query
+        // strings end up in access logs, browser history, and referrer chains.
+        // CDP frontends that require the token in the target URL can opt in
+        // via FEN_REMOTE_DEBUG_TOKEN_IN_URL=1.
+        if (EmitTokenInUrls)
+        {
+            return "?token=" + Uri.EscapeDataString(_authToken);
+        }
+
+        return string.Empty;
+    }
+
+    private bool EmitTokenInUrls { get; } =
+        string.Equals(
+            Environment.GetEnvironmentVariable("FEN_REMOTE_DEBUG_TOKEN_IN_URL"),
+            "1",
+            StringComparison.OrdinalIgnoreCase);
 
     private string BuildWebSocketDebuggerUrl() => $"ws://{_advertisedHost}:{Port}/devtools/page/1{BuildTokenQuery()}";
 
