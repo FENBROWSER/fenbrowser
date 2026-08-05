@@ -565,6 +565,53 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     public event Func<string, JsPermissions, Task<bool>> PermissionRequested;
 
+    /// <summary>
+    /// Supplies the Permissions-Policy of the current document. Set by the host
+    /// (BrowserApi) after each navigation; null means no policy is in effect
+    /// (features are allowed, matching an absent header).
+    /// </summary>
+    public Func<FenBrowser.Core.Security.PermissionsPolicy> PermissionsPolicyProvider { get; set; }
+
+    /// <summary>
+    /// Evaluates the current document's Permissions-Policy for a feature.
+    /// A missing provider or absent header grants the feature (the policy
+    /// default), matching the spec's default allowlist behavior.
+    /// </summary>
+    public bool IsFeatureAllowedByPolicy(FenBrowser.Core.Security.PolicyControlledFeature feature, string origin)
+    {
+        var policy = PermissionsPolicyProvider?.Invoke();
+        if (policy == null || policy == FenBrowser.Core.Security.PermissionsPolicy.None)
+        {
+            return true;
+        }
+
+        return policy.IsFeatureAllowed(feature, origin, origin);
+    }
+
+    /// <summary>
+    /// Resolves the current document origin for Permissions-Policy checks.
+    /// Falls back to the document's URL when no explicit origin is available.
+    /// </summary>
+    private string TryResolveCurrentOrigin(Element element)
+    {
+        try
+        {
+            var document = element?.OwnerDocument ?? _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument;
+            if (document != null &&
+                !string.IsNullOrEmpty(document.DocumentURI) &&
+                Uri.TryCreate(document.DocumentURI, UriKind.Absolute, out var docUri))
+            {
+                return docUri.GetLeftPart(UriPartial.Authority);
+            }
+        }
+        catch
+        {
+            // Fall through to empty origin.
+        }
+
+        return string.Empty;
+    }
+
     public void SetHistoryBridge(IHistoryBridge bridge)
     {
         _historyBridge = bridge;
@@ -17578,12 +17625,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "webkitRequestFullscreen":
                 case "mozRequestFullScreen":
                 case "msRequestFullscreen":
-                    value = _owner.GetOrCreateHostCallable(
-                        element,
-                        property,
-                        (_, _) => _owner.CreateResolvedPromise(JsValue.Undefined),
-                        length: 0);
-                    return true;
+                    {
+                        // Permissions-Policy enforcement: requestFullscreen is a
+                        // policy-controlled feature (default allowlist 'self').
+                        // When a header policy is present and denies it, the
+                        // promise must reject (TypeError) instead of resolving.
+                        var origin = _owner.TryResolveCurrentOrigin(element);
+                        if (!_owner.IsFeatureAllowedByPolicy(FenBrowser.Core.Security.PolicyControlledFeature.Fullscreen, origin))
+                        {
+                            value = _owner.GetOrCreateHostCallable(
+                                element,
+                                property,
+                                (_, _) => _owner.CreateRejectedPromise("Permission denied by Permissions-Policy", "SecurityError"),
+                                length: 0);
+                            return true;
+                        }
+
+                        value = _owner.GetOrCreateHostCallable(
+                            element,
+                            property,
+                            (_, _) => _owner.CreateResolvedPromise(JsValue.Undefined),
+                            length: 0);
+                        return true;
+                    }
                 case "setCapture":
                     value = _owner.GetOrCreateHostCallable(
                         element,

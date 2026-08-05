@@ -680,6 +680,14 @@ namespace FenBrowser.FenEngine.Rendering
         /// SAMEORIGIN means only same-origin frames may embed it.
         /// </summary>
         public FenBrowser.Core.XFrameOptionsPolicy CurrentXFrameOptions { get; private set; }
+
+        /// <summary>
+        /// Permissions-Policy (or legacy Feature-Policy) of the current page's
+        /// HTTP response. Deny-by-default: a feature not mentioned in the
+        /// header is disabled unless the default allowlist grants it.
+        /// </summary>
+        public FenBrowser.Core.Security.PermissionsPolicy CurrentPermissionsPolicy { get; private set; } =
+            FenBrowser.Core.Security.PermissionsPolicy.None;
         public Dictionary<Node, CssComputed> ComputedStyles => _engine.LastComputedStyles;
         public CustomHtmlEngine Engine => _engine;
         public NavigationLifecycleSnapshot NavigationLifecycleState => _navigationLifecycle.GetSnapshot();
@@ -1392,6 +1400,7 @@ namespace FenBrowser.FenEngine.Rendering
                 _engine.ActivePolicy = null;
                 CurrentPolicy = null;
                 CurrentXFrameOptions = FenBrowser.Core.XFrameOptionsPolicy.None;
+                CurrentPermissionsPolicy = FenBrowser.Core.Security.PermissionsPolicy.None;
 
                 const int maxTransientNavAttempts = 2;
                 FetchResult result = null;
@@ -1458,6 +1467,15 @@ namespace FenBrowser.FenEngine.Rendering
                 CurrentXFrameOptions = result.XFrameOptions;
                 if (CurrentXFrameOptions != FenBrowser.Core.XFrameOptionsPolicy.None)
                     Console.WriteLine($"[XFO] X-Frame-Options: {CurrentXFrameOptions}{(result.XFrameAllowFromUri != null ? " " + result.XFrameAllowFromUri : "")}");
+
+                // Store the Permissions-Policy of the current page. The scripting
+                // layer gates sensitive features (fullscreen, geolocation, etc.)
+                // on this allowlist.
+                CurrentPermissionsPolicy = result.PermissionsPolicy ?? FenBrowser.Core.Security.PermissionsPolicy.None;
+                if (_engine?.ScriptEngine is FenBrowser.FenEngine.Scripting.FenJsBrowserScriptEngine jsEngine)
+                {
+                    jsEngine.PermissionsPolicyProvider = () => CurrentPermissionsPolicy;
+                }
 
                 // Publish COOP/COEP-derived cross-origin isolation state for this document.
                 // The scripting layer reads this to expose crossOriginIsolated and to gate

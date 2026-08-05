@@ -104,6 +104,9 @@ namespace FenBrowser.Core
         public CrossOriginIsolationPolicy CrossOriginIsolation { get; set; } = new();
         /// <summary>Parsed Cross-Origin-Resource-Policy header value from the response headers.</summary>
         public string CrossOriginResourcePolicy { get; set; }
+
+        /// <summary>Parsed Permissions-Policy header value from the response headers.</summary>
+        public Security.PermissionsPolicy PermissionsPolicy { get; set; } = Security.PermissionsPolicy.None;
     }
 
     public sealed class ResourceManager
@@ -1641,6 +1644,18 @@ public Uri LastTextResponseUri { get; private set; }
                     corpHeader = string.Join(",", corpValues);
                 }
 
+                // Parse Permissions-Policy header (Permissions-Policy spec) with
+                // legacy Feature-Policy fallback.
+                var permissionsPolicy = Security.PermissionsPolicy.None;
+                if (resp.Headers.TryGetValues("Permissions-Policy", out var ppValues))
+                {
+                    permissionsPolicy = Security.PermissionsPolicy.Parse(string.Join(",", ppValues));
+                }
+                else if (resp.Headers.TryGetValues("Feature-Policy", out var fpValues))
+                {
+                    permissionsPolicy = Security.PermissionsPolicy.ParseLegacyFeaturePolicy(string.Join(",", fpValues));
+                }
+
                 if (IsTopLevelDocumentRequest(secFetchDest) && crossOriginIsolation.RequiresCorp)
                 {
                     crossOriginIsolation.LogState(finalUri);
@@ -1708,6 +1723,7 @@ public Uri LastTextResponseUri { get; private set; }
                     ReferrerPolicy = referrerPolicy,
                     CrossOriginIsolation = crossOriginIsolation,
                     CrossOriginResourcePolicy = corpHeader,
+                    PermissionsPolicy = permissionsPolicy,
                     DurationMs = (long)(DateTimeOffset.UtcNow - _startFetch).TotalMilliseconds
                 };
             }
