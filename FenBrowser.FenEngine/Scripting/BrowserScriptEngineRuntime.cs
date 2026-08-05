@@ -812,6 +812,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 .Where(name => !string.IsNullOrWhiteSpace(name))
                 .Distinct(StringComparer.Ordinal)
                 .OrderBy(name => name, StringComparer.Ordinal)
+                .Select(RedactSensitiveCookieName)
                 .ToArray();
             result["names"] = names;
             result["count"] = names.Length;
@@ -822,6 +823,55 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
 
         return result;
+    }
+
+    // Cookie *names* can themselves reveal identity-bearing identifiers
+    // (e.g. "session-token", "csrf", "auth-user"). Hash names that match a
+    // sensitive pattern so the diagnostic never records a usable identifier.
+    private static string RedactSensitiveCookieName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return name ?? string.Empty;
+        }
+
+        var lower = name.ToLowerInvariant();
+        bool sensitive =
+            lower.Contains("token", StringComparison.Ordinal) ||
+            lower.Contains("session", StringComparison.Ordinal) ||
+            lower.Contains("auth", StringComparison.Ordinal) ||
+            lower.Contains("csrf", StringComparison.Ordinal) ||
+            lower.Contains("secret", StringComparison.Ordinal) ||
+            lower.Contains("key", StringComparison.Ordinal) ||
+            lower.Contains("sid", StringComparison.Ordinal) ||
+            lower.Contains("ssid", StringComparison.Ordinal) ||
+            lower.Contains("credential", StringComparison.Ordinal) ||
+            lower.Contains("password", StringComparison.Ordinal) ||
+            lower.Contains("passwd", StringComparison.Ordinal);
+
+        if (!sensitive)
+        {
+            return name;
+        }
+
+        // Stable, short FNV-1a hash so the same cookie is identifiable across
+        // captures without revealing its name.
+        return "h:" + StableHash(name);
+    }
+
+    private static string StableHash(string text)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(text ?? string.Empty);
+        unchecked
+        {
+            ulong hash = 1469598103934665603UL; // FNV-1a 64 offset basis
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                hash ^= bytes[i];
+                hash *= 1099511628211UL;
+            }
+            return hash.ToString("x12");
+        }
     }
 
     public void NotifyPopState(object state)
