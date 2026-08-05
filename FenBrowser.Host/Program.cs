@@ -24,6 +24,8 @@ using FenBrowser.FenEngine.Adapters;
 using FenBrowser.FenEngine.Typography;
 using SkiaSharp;
 using SkiaSharp.HarfBuzz;
+using FenBrowser.DependencyInjection;
+using FenBrowser.Host.Platform;
 
 namespace FenBrowser.Host
 {
@@ -235,13 +237,30 @@ namespace FenBrowser.Host
                 // 2. Engine Config
                 CssEngineConfig.CurrentEngine = CssEngineType.Custom;
 
-                // 3. Initialize Window Manager
-                var windowManager = WindowManager.Instance;
-                windowManager.Initialize(initialUrl);
+                // Initialize DI Container
+                var container = new FenBrowser.DependencyInjection.ServiceContainer();
+                container.AddCoreServices();
+
+                // Create platform host
+                var platformHost = FenBrowser.Host.Platform.PlatformHostFactory.Create();
+                platformHost.EnableHighDpiAwareness();
+
+                // 3. Initialize Window Manager via Platform Host
+                var windowOptions = new FenBrowser.Host.Platform.WindowOptions
+                {
+                    Title = "FenBrowser",
+                    Size = new FenBrowser.Host.Platform.Size(1280, 800),
+                    State = FenBrowser.Host.Platform.WindowState.Maximized,
+                    VSync = true,
+                    Border = FenBrowser.Host.Platform.WindowBorder.Hidden
+                };
+
+                var platformWindow = platformHost.CreateWindow(windowOptions);
+                platformWindow.Initialize(initialUrl);
 
                 // 4. Initialize Chrome Manager (UI)
                 // Hook into Window Load event to avoiding init before GL context
-                windowManager.OnLoad += () => {
+                platformWindow.OnLoad += () => {
                     ChromeManager.Instance.Initialize(initialUrl);
 
                     // DIAGNOSTIC LOGGING
@@ -252,7 +271,7 @@ namespace FenBrowser.Host
                 };
 
                 // 5. Run Application
-                windowManager.Run();
+                platformHost.Run();
             }
             catch (Exception ex)
             {
