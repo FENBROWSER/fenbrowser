@@ -184,7 +184,7 @@ namespace FenBrowser.FenEngine.Layout
 
         private bool IsBlockContainer(Element element)
         {
-            var style = element.ComputedStyle;
+            var style = element.GetComputedStyle();
             if (style == null && !_styles.TryGetValue(element, out style))
                 return true;
 
@@ -202,7 +202,7 @@ namespace FenBrowser.FenEngine.Layout
 
         private string GetPosition(Element element)
         {
-            var style = element.ComputedStyle;
+            var style = element.GetComputedStyle();
             if (style == null) _styles.TryGetValue(element, out style);
             if (style != null)
                 return style.Position?.ToLowerInvariant() ?? "static";
@@ -219,7 +219,7 @@ namespace FenBrowser.FenEngine.Layout
             
             while (current != null)
             {
-                var style = current.ComputedStyle;
+                var style = current.GetComputedStyle();
                 if (style == null) _styles.TryGetValue(current, out style);
                 if (style != null)
                 {

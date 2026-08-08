@@ -147,6 +147,11 @@ namespace FenBrowser.Host.ProcessIsolation
         /// </summary>
         public static FrameSharedMemory OpenForReader(int tabId, int parentPid)
         {
+            if (!OperatingSystem.IsWindows())
+            {
+                return null;
+            }
+
             var baseMmfName = MakeMmfName(tabId, parentPid);
             var baseEventName = MakeEventName(tabId, parentPid);
 

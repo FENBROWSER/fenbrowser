@@ -623,7 +623,7 @@ public sealed class BrokeredInputRoutingTests
         using var secondBitmap = new SKBitmap(viewportWidth, viewportHeight);
         using var secondCanvas = new SKCanvas(secondBitmap);
         secondCanvas.Clear(SKColors.White);
-        secondCanvas.DrawBitmap(firstBitmap, 0, -scrollY);
+        secondCanvas.DrawBitmap(firstBitmap, 0, -scrollY, SKSamplingOptions.Default);
         secondCanvas.Save();
         secondCanvas.Translate(0, -scrollY);
         RenderFrameResult secondFrame;

@@ -225,13 +225,13 @@ namespace FenBrowser.FenEngine.Rendering
 
                 result[n] = css;
                 FenBrowser.FenEngine.Layout.LayoutStyleResolver.NormalizeForLayout(css);
-                n.ComputedStyle = css;
+                n.SetComputedStyle(css);
             }
             catch (Exception)
             {
                 var recovery = new CssComputed();
                 result[n] = recovery;
-                n.ComputedStyle = recovery;
+                n.SetComputedStyle(recovery);
             }
         }
 

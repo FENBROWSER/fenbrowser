@@ -190,9 +190,9 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             PaintBackgroundAndBorder(node, bounds, phase);
             PaintContent(node, bounds, phase);
 
-            if (node.Children != null)
+            if (node.ChildNodes != null)
             {
-                foreach (var child in node.Children)
+                foreach (var child in node.ChildNodes)
                 {
                     if (!sc.IsLayerRoot(child))
                         PaintNormalFlowElement(child, sc, phase);
@@ -206,9 +206,9 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             PaintBackgroundAndBorder(node, bounds, phase);
             PaintContent(node, bounds, phase);
 
-            if (node.Children != null)
+            if (node.ChildNodes != null)
             {
-                foreach (var child in node.Children)
+                foreach (var child in node.ChildNodes)
                 {
                     if (!sc.IsLayerRoot(child))
                         PaintNormalFlowElement(child, sc, phase);

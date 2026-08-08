@@ -68,7 +68,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             // Get style: prefer node.ComputedStyle (single source of truth), fall back to dictionary
             var style = node is PseudoElement pseudoElement
                 ? pseudoElement.ComputedStyle
-                : node.ComputedStyle;
+                : node.GetComputedStyle();
             if (style == null)
                 _styles.TryGetValue(node, out style);
 

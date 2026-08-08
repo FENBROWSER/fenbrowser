@@ -812,8 +812,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                          var rrect = new SKRoundRect();
                          rrect.SetRectRadii(paddingBox, radii);
-                         clipPath = new SKPath();
-                         clipPath.AddRoundRect(rrect);
+                         clipPath = PathBuilderHelper.Build(builder => builder.AddRoundRect(rrect));
                     }
 
                     // Collect children into a temporary context and flatten them
@@ -4562,10 +4561,12 @@ namespace FenBrowser.FenEngine.Rendering
                             if (isChecked)
                             {
                                 using var checkPaint = new SKPaint { Color = checkColor, Style = SKPaintStyle.Stroke, StrokeWidth = 2, IsAntialias = true, StrokeCap = SKStrokeCap.Round };
-                                using var path = new SKPath();
-                                path.MoveTo(bounds.Left + bounds.Width * 0.2f, bounds.Top + bounds.Height * 0.5f);
-                                path.LineTo(bounds.Left + bounds.Width * 0.4f, bounds.Top + bounds.Height * 0.7f);
-                                path.LineTo(bounds.Left + bounds.Width * 0.8f, bounds.Top + bounds.Height * 0.3f);
+                                using var path = PathBuilderHelper.Build(builder =>
+                                {
+                                    builder.MoveTo(bounds.Left + bounds.Width * 0.2f, bounds.Top + bounds.Height * 0.5f);
+                                    builder.LineTo(bounds.Left + bounds.Width * 0.4f, bounds.Top + bounds.Height * 0.7f);
+                                    builder.LineTo(bounds.Left + bounds.Width * 0.8f, bounds.Top + bounds.Height * 0.3f);
+                                });
                                 canvas.DrawPath(path, checkPaint);
                             }
                         }
@@ -4745,19 +4746,23 @@ namespace FenBrowser.FenEngine.Rendering
                             using var arrowPaint = new SKPaint { Color = new SKColor(100, 100, 100), Style = SKPaintStyle.Fill, IsAntialias = true };
                             
                             // Up arrow
-                            using var upPath = new SKPath();
-                            upPath.MoveTo(arrowX + arrowWidth/2, bounds.Top + 4);
-                            upPath.LineTo(arrowX + 4, bounds.MidY - 2);
-                            upPath.LineTo(arrowX + arrowWidth - 4, bounds.MidY - 2);
-                            upPath.Close();
+                            using var upPath = PathBuilderHelper.Build(builder =>
+                            {
+                                builder.MoveTo(arrowX + arrowWidth/2, bounds.Top + 4);
+                                builder.LineTo(arrowX + 4, bounds.MidY - 2);
+                                builder.LineTo(arrowX + arrowWidth - 4, bounds.MidY - 2);
+                                builder.Close();
+                            });
                             canvas.DrawPath(upPath, arrowPaint);
                             
                             // Down arrow
-                            using var downPath = new SKPath();
-                            downPath.MoveTo(arrowX + arrowWidth/2, bounds.Bottom - 4);
-                            downPath.LineTo(arrowX + 4, bounds.MidY + 2);
-                            downPath.LineTo(arrowX + arrowWidth - 4, bounds.MidY + 2);
-                            downPath.Close();
+                            using var downPath = PathBuilderHelper.Build(builder =>
+                            {
+                                builder.MoveTo(arrowX + arrowWidth/2, bounds.Bottom - 4);
+                                builder.LineTo(arrowX + 4, bounds.MidY + 2);
+                                builder.LineTo(arrowX + arrowWidth - 4, bounds.MidY + 2);
+                                builder.Close();
+                            });
                             canvas.DrawPath(downPath, arrowPaint);
                             
                             // Separator line
@@ -4828,11 +4833,13 @@ namespace FenBrowser.FenEngine.Rendering
                     float cy = bounds.MidY;
                     
                     using var playPaint = new SKPaint { Color = new SKColor(255, 255, 255, 180), Style = SKPaintStyle.Fill, IsAntialias = true };
-                    using var path = new SKPath();
-                    path.MoveTo(cx - size * 0.4f, cy - size * 0.5f);
-                    path.LineTo(cx + size * 0.6f, cy);
-                    path.LineTo(cx - size * 0.4f, cy + size * 0.5f);
-                    path.Close();
+                    using var path = PathBuilderHelper.Build(builder =>
+                    {
+                        builder.MoveTo(cx - size * 0.4f, cy - size * 0.5f);
+                        builder.LineTo(cx + size * 0.6f, cy);
+                        builder.LineTo(cx - size * 0.4f, cy + size * 0.5f);
+                        builder.Close();
+                    });
                     canvas.DrawPath(path, playPaint);
                     
                     // Border
@@ -4962,11 +4969,13 @@ namespace FenBrowser.FenEngine.Rendering
                     float btnY = bounds.MidY;
                     
                     using var playPaint = new SKPaint { Color = new SKColor(100, 100, 100), Style = SKPaintStyle.Fill, IsAntialias = true };
-                    using var path = new SKPath();
-                    path.MoveTo(btnX, btnY - btnSize * 0.4f);
-                    path.LineTo(btnX + btnSize * 0.7f, btnY);
-                    path.LineTo(btnX, btnY + btnSize * 0.4f);
-                    path.Close();
+                    using var path = PathBuilderHelper.Build(builder =>
+                    {
+                        builder.MoveTo(btnX, btnY - btnSize * 0.4f);
+                        builder.LineTo(btnX + btnSize * 0.7f, btnY);
+                        builder.LineTo(btnX, btnY + btnSize * 0.4f);
+                        builder.Close();
+                    });
                     canvas.DrawPath(path, playPaint);
                     
                     // Progress bar track

@@ -4,6 +4,7 @@ using System.Linq;
 using SkiaSharp;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.Rendering;
 
 namespace FenBrowser.FenEngine.Rendering.WebGL
 {
@@ -840,11 +841,13 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
                     paint.Style = SKPaintStyle.Fill;
                     for (int i = 0; i + 2 < positions.Count; i += 3)
                     {
-                        using var path = new SKPath();
-                        path.MoveTo(positions[i]);
-                        path.LineTo(positions[i + 1]);
-                        path.LineTo(positions[i + 2]);
-                        path.Close();
+                        using var path = PathBuilderHelper.Build(builder =>
+                        {
+                            builder.MoveTo(positions[i].X, positions[i].Y);
+                            builder.LineTo(positions[i + 1].X, positions[i + 1].Y);
+                            builder.LineTo(positions[i + 2].X, positions[i + 2].Y);
+                            builder.Close();
+                        });
                         _canvas.DrawPath(path, paint);
                     }
                     break;
@@ -853,20 +856,22 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
                     paint.Style = SKPaintStyle.Fill;
                     for (int i = 0; i + 2 < positions.Count; i++)
                     {
-                        using var path = new SKPath();
-                        if (i % 2 == 0)
+                        using var path = PathBuilderHelper.Build(builder =>
                         {
-                            path.MoveTo(positions[i]);
-                            path.LineTo(positions[i + 1]);
-                            path.LineTo(positions[i + 2]);
-                        }
-                        else
-                        {
-                            path.MoveTo(positions[i + 1]);
-                            path.LineTo(positions[i]);
-                            path.LineTo(positions[i + 2]);
-                        }
-                        path.Close();
+                            if (i % 2 == 0)
+                            {
+                                builder.MoveTo(positions[i].X, positions[i].Y);
+                                builder.LineTo(positions[i + 1].X, positions[i + 1].Y);
+                                builder.LineTo(positions[i + 2].X, positions[i + 2].Y);
+                            }
+                            else
+                            {
+                                builder.MoveTo(positions[i + 1].X, positions[i + 1].Y);
+                                builder.LineTo(positions[i].X, positions[i].Y);
+                                builder.LineTo(positions[i + 2].X, positions[i + 2].Y);
+                            }
+                            builder.Close();
+                        });
                         _canvas.DrawPath(path, paint);
                     }
                     break;
@@ -875,11 +880,13 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
                     paint.Style = SKPaintStyle.Fill;
                     for (int i = 1; i + 1 < positions.Count; i++)
                     {
-                        using var path = new SKPath();
-                        path.MoveTo(positions[0]);
-                        path.LineTo(positions[i]);
-                        path.LineTo(positions[i + 1]);
-                        path.Close();
+                        using var path = PathBuilderHelper.Build(builder =>
+                        {
+                            builder.MoveTo(positions[0].X, positions[0].Y);
+                            builder.LineTo(positions[i].X, positions[i].Y);
+                            builder.LineTo(positions[i + 1].X, positions[i + 1].Y);
+                            builder.Close();
+                        });
                         _canvas.DrawPath(path, paint);
                     }
                     break;

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering.Css
@@ -76,9 +77,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 }
             }
 
-            var path = new SKPath();
-            path.AddCircle(cx, cy, radius);
-            return path;
+            return PathBuilderHelper.Build(path => path.AddCircle(cx, cy, radius));
         }
 
         /// <summary>
@@ -116,10 +115,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 }
             }
 
-            var path = new SKPath();
             var rect = new SKRect(cx - rx, cy - ry, cx + rx, cy + ry);
-            path.AddOval(rect);
-            return path;
+            return PathBuilderHelper.Build(path => path.AddOval(rect));
         }
 
         /// <summary>
@@ -164,12 +161,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 bounds.Bottom - bottom
             );
 
-            var path = new SKPath();
             if (borderRadius > 0)
-                path.AddRoundRect(rect, borderRadius, borderRadius);
+                return PathBuilderHelper.Build(path => path.AddRoundRect(rect, borderRadius, borderRadius));
             else
-                path.AddRect(rect);
-            return path;
+                return PathBuilderHelper.Build(path => path.AddRect(rect));
         }
 
         /// <summary>
@@ -195,14 +190,15 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             if (points.Count < 3) return null;
 
-            var path = new SKPath();
-            path.MoveTo(points[0]);
-            for (int i = 1; i < points.Count; i++)
+            return PathBuilderHelper.Build(path =>
             {
-                path.LineTo(points[i]);
-            }
-            path.Close();
-            return path;
+                path.MoveTo(points[0]);
+                for (int i = 1; i < points.Count; i++)
+                {
+                    path.LineTo(points[i]);
+                }
+                path.Close();
+            });
         }
 
         private static float ParseLength(string s, float reference, float defaultValue)

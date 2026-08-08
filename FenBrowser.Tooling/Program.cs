@@ -2795,6 +2795,7 @@ namespace FenBrowser.Tooling
             return count;
         }
 
+#pragma warning disable CS0162 // Legacy Acid2 runners are retained as source references after the engine runner was removed.
         private static async Task RunAcid2Async()
         {
             Console.WriteLine("[tooling] Acid2 runner removed with legacy engine.");
@@ -2932,6 +2933,8 @@ namespace FenBrowser.Tooling
                 return await captureTask.ConfigureAwait(false);
             }
         }
+
+#pragma warning restore CS0162
 
         private static async Task RunAcid2LayoutHtmlAsync(string[] args)
         {

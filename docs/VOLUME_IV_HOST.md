@@ -1525,3 +1525,23 @@ Verification:
 
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug -v minimal /nodeReuse:false`: passed with 0 errors (existing warnings remain).
 - The available brokered renderer acceptance test is platform-gated in this environment and was skipped; no live renderer-startup success is claimed here.
+
+### 6.76 Unix Process-Isolation Pipe Transport (2026-08-08)
+
+- The network, renderer, GPU, and utility child-process sessions retain Windows named-pipe message mode on Windows and select byte-stream mode elsewhere. Each IPC protocol is newline-delimited JSON, so its framing does not depend on Windows message-mode semantics.
+- This prevents startup from throwing `PlatformNotSupportedException` on Linux before the child sessions can connect. Authentication, capability tokens, and existing per-session lifecycle handling are unchanged.
+
+### 6.77 Unix Renderer Display Environment (2026-08-08)
+
+- Renderer child startup still clears unrelated inherited environment values, but on Unix it retains only the display bootstrap values required by WSLg and desktop display servers: `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, and `XAUTHORITY` when present.
+- This keeps the renderer's restricted environment while allowing its graphics initialization to connect to the parent session's display server.
+
+### 6.78 Linux Skia Publish Asset Selection (2026-08-08)
+
+- Linux x64 publish replaces the transitive `Topten.RichTextKit` Skia native asset with the Host's direct `SkiaSharp.NativeAssets.Linux.NoDependencies` 4.148.0 asset. This keeps the native `libSkiaSharp.so` ABI aligned with the managed SkiaSharp 4.148.0 assembly.
+- The override is limited to `linux-x64` publish output; Windows and macOS packaging is unchanged.
+
+### 6.79 Embedded Seed Image Lifetime During Damage Raster (2026-08-08)
+
+- During damage rasterization, the host `BrowserIntegration` passes ownership of the reused base-frame seed `SKImage` directly into the `ContentSnapshot` struct.
+- This prevents a race condition where the engine thread aggressively disposes the old seed image before the UI compositor thread completes its display-list presentation, which previously caused full-viewport white flashes during fast scrolling when the background was cleared.

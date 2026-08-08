@@ -950,7 +950,7 @@ namespace FenBrowser.FenEngine.Rendering
                         }
 
                         // PC-3: Tree-diff damage.
-                        var currentViewport = new SKRect(0, 0, _viewportWidth, _viewportHeight);
+                        var currentViewport = viewport;
                         var treeDiffDamage = _paintDamageTracker.ComputeDamageRegions(
                             previousPaintTree,
                             paintTree,
@@ -1014,7 +1014,7 @@ namespace FenBrowser.FenEngine.Rendering
                         // scroll-only frame preserves the base frame in-place,
                         // leaving the exposed strip blank/white.
                         float currentScrollY = GetDocumentScrollY(root);
-                        var currentViewport = new SKRect(0, 0, _viewportWidth, _viewportHeight);
+                        var currentViewport = viewport;
                         var scrollDamage = _scrollDamageComputer.ComputeScrollDamage(
                             _lastScrollY,
                             currentScrollY,

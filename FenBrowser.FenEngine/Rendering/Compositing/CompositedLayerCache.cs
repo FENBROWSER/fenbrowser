@@ -127,7 +127,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (transform.HasValue)
             {
                 var tx = transform.Value;
-                targetCanvas.Concat(ref tx);
+                targetCanvas.Concat(in tx);
             }
 
             if (opacity < 0.999f)
@@ -136,11 +136,11 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     Color = new SKColor(255, 255, 255, (byte)Math.Clamp(opacity * 255f, 0f, 255f))
                 };
-                targetCanvas.DrawImage(image, bounds.Left, bounds.Top, paint);
+                targetCanvas.DrawImage(image, bounds.Left, bounds.Top, SKSamplingOptions.Default, paint);
             }
             else
             {
-                targetCanvas.DrawImage(image, bounds.Left, bounds.Top);
+                targetCanvas.DrawImage(image, bounds.Left, bounds.Top, SKSamplingOptions.Default);
             }
 
             targetCanvas.Restore();

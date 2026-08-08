@@ -67,4 +67,10 @@
     <Exec Command="for /f &quot;tokens=*&quot; %25%25i in ('&quot;%25ProgramFiles(x86)%25\Microsoft Visual Studio\Installer\vswhere.exe&quot; -latest -find VC\Tools\MSVC\*\bin\Hostx64\x64\editbin.exe ^| findstr /v /i preview') do (&quot;%25%25i&quot; /STACK:16777216 &quot;$(ExePath)&quot; &gt;nul 2&gt;&amp;1 &amp;&amp; goto :done) %26 :done" IgnoreExitCode="true" Condition="Exists('$(ExePath)')" />
   </Target>
 
+  <Target Name="UseCurrentSkiaNativeAssetForLinuxPublish" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == 'linux-x64'">
+    <Copy
+      SourceFiles="$(NuGetPackageRoot)skiasharp.nativeassets.linux.nodependencies\4.148.0\runtimes\linux-x64\native\libSkiaSharp.so"
+      DestinationFiles="$(PublishDir)libSkiaSharp.so" />
+  </Target>
+
 </Project>

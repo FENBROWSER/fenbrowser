@@ -18,7 +18,7 @@ namespace FenBrowser.Tests.Core
             var renderer = new SkiaDomRenderer();
             var styles = new Dictionary<Node, CssComputed>();
             var root = new Element("div");
-            var child = new Element("span") { Text = "Stable Text" };
+            var child = new Element("span") { TextContent = "Stable Text" };
             root.AppendChild(child);
 
             styles[root] = new CssComputed { Display = "block", Width = 500, Height = 100 };

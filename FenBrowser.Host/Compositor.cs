@@ -93,7 +93,7 @@ public class Compositor
             if (!layoutExecuted && _frameSnapshot != null && dirtyRect.HasValue)
             {
                 // Seed from last composed frame, then repaint only dirty region.
-                offscreen.DrawImage(_frameSnapshot, new SKRect(0, 0, logicalSize.Width, logicalSize.Height));
+                offscreen.DrawImage(_frameSnapshot, new SKRect(0, 0, logicalSize.Width, logicalSize.Height), SKSamplingOptions.Default);
                 offscreen.ClipRect(dirtyRect.Value);
                 _lastDirtyRect = dirtyRect;
             }
@@ -123,7 +123,7 @@ public class Compositor
 
         if (_frameSnapshot != null)
         {
-            canvas.DrawImage(_frameSnapshot, new SKRect(0, 0, logicalSize.Width, logicalSize.Height));
+            canvas.DrawImage(_frameSnapshot, new SKRect(0, 0, logicalSize.Width, logicalSize.Height), SKSamplingOptions.Default);
         }
         else
         {
@@ -285,7 +285,7 @@ public class CompositorLayer : IDisposable
         else if (_surface != null)
         {
             var image = _surface.Snapshot();
-            canvas.DrawImage(image, Bounds.Left, Bounds.Top, paint);
+            canvas.DrawImage(image, Bounds.Left, Bounds.Top, SKSamplingOptions.Default, paint);
             image?.Dispose();
         }
     }

@@ -2897,7 +2897,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 // Walk the line's text segments in document order and truncate
                 // from the end until the remaining text + ellipsis fits.
-                float accumulatedWidth = 0f;
                 float truncateAt = availableForText;
 
                 // Group segments by TextLayoutBox for truncation

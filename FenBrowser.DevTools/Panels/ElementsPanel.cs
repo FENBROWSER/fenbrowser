@@ -832,7 +832,7 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
             {
                 using var arrowPaint = DevToolsTheme.CreateFillPaint(
                     node.Node.NodeId == _selectedNodeId ? DevToolsTheme.TextPrimary : DevToolsTheme.TextSecondary);
-                using var arrowPath = new SKPath();
+                using var arrowBuilder = new SKPathBuilder();
                 
                 float arrowSize = DevToolsTheme.TreeArrowSize;
                 float centerX = nodeX - 10;
@@ -841,18 +841,19 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                 if (node.IsExpanded)
                 {
                     // Down triangle (expanded)
-                    arrowPath.MoveTo(centerX - arrowSize/2, centerY - arrowSize/3);
-                    arrowPath.LineTo(centerX + arrowSize/2, centerY - arrowSize/3);
-                    arrowPath.LineTo(centerX, centerY + arrowSize/2);
+                    arrowBuilder.MoveTo(centerX - arrowSize/2, centerY - arrowSize/3);
+                    arrowBuilder.LineTo(centerX + arrowSize/2, centerY - arrowSize/3);
+                    arrowBuilder.LineTo(centerX, centerY + arrowSize/2);
                 }
                 else
                 {
                     // Right triangle (collapsed)
-                    arrowPath.MoveTo(centerX - arrowSize/3, centerY - arrowSize/2);
-                    arrowPath.LineTo(centerX - arrowSize/3, centerY + arrowSize/2);
-                    arrowPath.LineTo(centerX + arrowSize/2, centerY);
+                    arrowBuilder.MoveTo(centerX - arrowSize/3, centerY - arrowSize/2);
+                    arrowBuilder.LineTo(centerX - arrowSize/3, centerY + arrowSize/2);
+                    arrowBuilder.LineTo(centerX + arrowSize/2, centerY);
                 }
-                arrowPath.Close();
+                arrowBuilder.Close();
+                using var arrowPath = arrowBuilder.Detach();
                 canvas.DrawPath(arrowPath, arrowPaint);
             }
             
@@ -964,10 +965,6 @@ public class ElementsPanel : DevToolsPanelBase, IDevToolsElementSelectionPanel
                     }
 
                     continue;
-                    if (node.HasChildren)
-                        canvas.DrawText(">…</" + tagName + ">", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
-                    else
-                        canvas.DrawText(" />", x, textY, SKTextAlign.Left, punctFont, punctColorPaint);
                 }
                 else
                 {

@@ -281,27 +281,27 @@ public class TabBarWidget : Widget
 
     private SKPath CreateMinimizePath()
     {
-        var path = new SKPath();
-        path.MoveTo(0, 5);
-        path.LineTo(8, 5);
-        return path;
+        using var builder = new SKPathBuilder();
+        builder.MoveTo(0, 5);
+        builder.LineTo(8, 5);
+        return builder.Detach();
     }
 
     private SKPath CreateMaximizePath()
     {
-        var path = new SKPath();
-        path.AddRect(new SKRect(0, 0, 8, 8));
-        return path;
+        using var builder = new SKPathBuilder();
+        builder.AddRect(new SKRect(0, 0, 8, 8));
+        return builder.Detach();
     }
 
     private SKPath CreateClosePath()
     {
-        var path = new SKPath();
-        path.MoveTo(0, 0);
-        path.LineTo(8, 8);
-        path.MoveTo(8, 0);
-        path.LineTo(0, 8);
-        return path;
+        using var builder = new SKPathBuilder();
+        builder.MoveTo(0, 0);
+        builder.LineTo(8, 8);
+        builder.MoveTo(8, 0);
+        builder.LineTo(0, 8);
+        return builder.Detach();
     }
     
     // --- Drag-and-Drop Tab Reordering (10/10) ---

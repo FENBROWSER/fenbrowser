@@ -719,8 +719,8 @@ namespace FenBrowser.Tests.Core
                 string classes = current.ClassList != null
                     ? string.Join(".", current.ClassList)
                     : string.Empty;
-                string display = current.ComputedStyle?.Display ?? "(default)";
-                string position = current.ComputedStyle?.Position ?? "static";
+                string display = current.GetComputedStyle()?.Display ?? "(default)";
+                string position = current.GetComputedStyle()?.Position ?? "static";
                 nodes.Add($"{tag}#{id}.{classes}[{display}/{position}]={rect}");
             }
 
@@ -743,7 +743,7 @@ namespace FenBrowser.Tests.Core
                     ? string.Join(".", child.ClassList)
                     : string.Empty;
                 string rect = DescribeRect(layout, child);
-                string display = child.ComputedStyle?.Display ?? "(default)";
+                string display = child.GetComputedStyle()?.Display ?? "(default)";
                 children.Add($"{tag}#{id}.{classes}[{display}]={rect}");
             }
 

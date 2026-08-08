@@ -258,7 +258,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
                 using var canvas = new SKCanvas(bitmap);
                 if (scenario.PreferSteadyStateDamage)
                 {
-                    canvas.DrawBitmap(initialBitmap, 0, 0);
+                    canvas.DrawBitmap(initialBitmap, 0, 0, SKSamplingOptions.Default);
                 }
 
                 lastResult = renderer.RenderFrame(new RenderFrameRequest

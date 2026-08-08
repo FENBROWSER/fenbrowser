@@ -76,7 +76,7 @@ namespace FenBrowser.Tests.Core.Parsing
             var th = tr.Children.FirstOrDefault(c => (c as Element)?.TagName == "TH") as Element;
             
             Assert.Equal("TH", th.TagName);
-            Assert.Equal("Header", th.Text);
+            Assert.Equal("Header", th.TextContent);
         }
 
         [Fact]
@@ -92,7 +92,7 @@ namespace FenBrowser.Tests.Core.Parsing
 
             var captions = table.Children.Where(c => (c as Element)?.TagName == "CAPTION").Cast<Element>().ToList();
             Assert.Single(captions);
-            Assert.Equal("Title", captions[0].Text);
+            Assert.Equal("Title", captions[0].TextContent);
         }
         
         [Fact]

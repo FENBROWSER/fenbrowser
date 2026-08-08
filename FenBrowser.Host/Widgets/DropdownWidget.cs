@@ -120,11 +120,12 @@ public class DropdownWidget : Widget
         
         float arrowX = Bounds.Right - 20;
         float arrowY = Bounds.MidY - 3;
-        var arrowPath = new SKPath();
-        arrowPath.MoveTo(arrowX, arrowY);
-        arrowPath.LineTo(arrowX + 8, arrowY);
-        arrowPath.LineTo(arrowX + 4, arrowY + 6);
-        arrowPath.Close();
+        using var arrowBuilder = new SKPathBuilder();
+        arrowBuilder.MoveTo(arrowX, arrowY);
+        arrowBuilder.LineTo(arrowX + 8, arrowY);
+        arrowBuilder.LineTo(arrowX + 4, arrowY + 6);
+        arrowBuilder.Close();
+        using var arrowPath = arrowBuilder.Detach();
         canvas.DrawPath(arrowPath, arrowPaint);
         
         // Update animation

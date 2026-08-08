@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering.Painting
@@ -119,9 +120,9 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             {
                 _imagePainter.PaintImage(canvas, element, box, style);
             }
-            else if (element.IsText() || !string.IsNullOrEmpty(element.Text))
+            else if (element.IsText() || !string.IsNullOrEmpty(element.TextContent))
             {
-                _textPainter.PaintText(canvas, element.Text ?? "", box, style);
+                _textPainter.PaintText(canvas, element.TextContent ?? "", box, style);
             }
 
             // Restore filter layer if we used one
@@ -141,7 +142,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                         BlendMode = SKBlendMode.DstIn,
                         IsAntialias = true
                     };
-                    canvas.DrawBitmap(maskBitmap, box, maskPaint);
+                    canvas.DrawBitmap(maskBitmap, box, SKSamplingOptions.Default, maskPaint);
                 }
                 canvas.Restore();
             }
@@ -255,7 +256,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                }
             }
 
-            canvas.Concat(ref matrix);
+            canvas.Concat(in matrix);
             canvas.Translate(-ox, -oy);
         }
 
@@ -285,9 +286,8 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             var radius = (style?.BorderRadius ?? CssCornerRadius.Empty).ClampNonNegative();
             if (!radius.IsZero)
             {
-                using var path = new SKPath();
                 var r = (float)radius.TopLeft.Value;
-                path.AddRoundRect(clipRect, r, r);
+                using var path = PathBuilderHelper.Build(builder => builder.AddRoundRect(clipRect, r, r));
                 canvas.ClipPath(path);
             }
             else

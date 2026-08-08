@@ -2,6 +2,7 @@ using FenBrowser.Core.Css;
 using System;
 using System.Globalization;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering.Painting
@@ -340,25 +341,26 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         
         private void DrawWavyLine(SKCanvas canvas, float x, float y, float width, SKPaint paint)
         {
-            using var path = new SKPath();
             float waveLength = paint.StrokeWidth * 4;
             float amplitude = paint.StrokeWidth * 1.5f;
-
-            path.MoveTo(x, y);
-            
-            float currentX = x;
-            bool up = true;
-            
-            while (currentX < x + width)
+            using var path = PathBuilderHelper.Build(builder =>
             {
-                float nextX = Math.Min(currentX + waveLength / 2, x + width);
-                float controlY = up ? y - amplitude : y + amplitude;
-                
-                path.QuadTo(currentX + (nextX - currentX) / 2, controlY, nextX, y);
-                
-                currentX = nextX;
-                up = !up;
-            }
+                builder.MoveTo(x, y);
+
+                float currentX = x;
+                bool up = true;
+
+                while (currentX < x + width)
+                {
+                    float nextX = Math.Min(currentX + waveLength / 2, x + width);
+                    float controlY = up ? y - amplitude : y + amplitude;
+
+                    builder.QuadTo(currentX + (nextX - currentX) / 2, controlY, nextX, y);
+
+                    currentX = nextX;
+                    up = !up;
+                }
+            });
 
             canvas.DrawPath(path, paint);
         }

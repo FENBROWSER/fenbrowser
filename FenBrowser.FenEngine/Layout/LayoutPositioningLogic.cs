@@ -294,7 +294,7 @@ namespace FenBrowser.FenEngine.Layout
             foreach (var descendant in WalkTree(root))
             {
                 if (descendant == positionedElement) continue;
-                var css = descendant.ComputedStyle;
+                var css = descendant.GetComputedStyle();
                 if (css == null) continue;
                 string nameFromMap = null;
                 css.Map?.TryGetValue("anchor-name", out nameFromMap);
@@ -321,7 +321,7 @@ namespace FenBrowser.FenEngine.Layout
             foreach (var descendant in WalkTree(root))
             {
                 if (descendant == positionedElement) continue;
-                var css = descendant.ComputedStyle;
+                var css = descendant.GetComputedStyle();
                 if (css == null) continue;
                 string nameFromMap = null;
                 css.Map?.TryGetValue("anchor-name", out nameFromMap);

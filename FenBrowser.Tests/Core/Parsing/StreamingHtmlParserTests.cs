@@ -28,7 +28,7 @@ namespace FenBrowser.Tests.Core.Parsing
             var document = await parser.ParseAsync();
 
             Assert.NotNull(document.DocumentElement);
-            Assert.False(document.Descendants().OfType<Element>().Any(e => e.TagName.Contains("w.length", System.StringComparison.OrdinalIgnoreCase)));
+            Assert.DoesNotContain(document.Descendants().OfType<Element>(), e => e.TagName.Contains("w.length", System.StringComparison.OrdinalIgnoreCase));
 
             var title = document.Descendants().OfType<Element>().FirstOrDefault(e => string.Equals(e.TagName, "title", System.StringComparison.OrdinalIgnoreCase));
             Assert.NotNull(title);
@@ -53,7 +53,7 @@ namespace FenBrowser.Tests.Core.Parsing
             var scripts = document.Descendants().OfType<Element>().Where(e => string.Equals(e.TagName, "script", System.StringComparison.OrdinalIgnoreCase)).ToList();
             Assert.Single(scripts);
             Assert.Contains("if (a < b)", scripts[0].TextContent);
-            Assert.False(document.Descendants().OfType<Element>().Any(e => e.TagName.Contains("window.x", System.StringComparison.OrdinalIgnoreCase)));
+            Assert.DoesNotContain(document.Descendants().OfType<Element>(), e => e.TagName.Contains("window.x", System.StringComparison.OrdinalIgnoreCase));
 
             var paragraph = document.Descendants().OfType<Element>().FirstOrDefault(e => string.Equals(e.TagName, "p", System.StringComparison.OrdinalIgnoreCase));
             Assert.NotNull(paragraph);

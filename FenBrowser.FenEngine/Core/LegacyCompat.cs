@@ -485,7 +485,9 @@ namespace FenBrowser.FenEngine.DevTools
         public Action<FenBrowser.FenEngine.DevTools.Cookie> CookieSetter { get; set; }
         public Action<string, string> CookieDeleteHandler { get; set; }
         public Action CookieClearHandler { get; set; }
+#pragma warning disable CS0067 // Legacy DevTools event retained for host subscribers; request dispatch is owned by BrowserApi.
         public event Action<NetworkRequest> OnNetworkRequest;
+#pragma warning restore CS0067
         public IEnumerable<SourceFile> GetSources() => Array.Empty<SourceFile>();
     }
 }

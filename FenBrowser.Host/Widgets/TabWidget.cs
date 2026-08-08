@@ -137,7 +137,7 @@ public class TabWidget : Widget
         if (_tab.Favicon != null)
         {
             var faviconRect = new SKRect(faviconX, faviconY, faviconX + FAVICON_SIZE, faviconY + FAVICON_SIZE);
-            canvas.DrawBitmap(_tab.Favicon, faviconRect);
+            canvas.DrawBitmap(_tab.Favicon, faviconRect, SKSamplingOptions.Default);
         }
         else
         {

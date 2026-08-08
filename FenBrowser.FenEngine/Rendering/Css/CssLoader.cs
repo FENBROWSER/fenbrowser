@@ -629,15 +629,15 @@ namespace FenBrowser.FenEngine.Rendering
             // 1. CSS computed value (already resolved from parent page cascade)
             double? cssValue = null;
             bool hasDeclaredCssDimension =
-                frame.ComputedStyle?.Map?.ContainsKey(attributeName) == true;
+                    frame.GetComputedStyle()?.Map?.ContainsKey(attributeName) == true;
             if (attributeName == "width")
             {
-                if (hasDeclaredCssDimension && frame.ComputedStyle?.Width is double w && w > 0)
+                if (hasDeclaredCssDimension && frame.GetComputedStyle()?.Width is double w && w > 0)
                     cssValue = w;
             }
             else if (attributeName == "height")
             {
-                if (hasDeclaredCssDimension && frame.ComputedStyle?.Height is double h && h > 0)
+                if (hasDeclaredCssDimension && frame.GetComputedStyle()?.Height is double h && h > 0)
                     cssValue = h;
             }
 
@@ -649,8 +649,8 @@ namespace FenBrowser.FenEngine.Rendering
             // box may not exist yet, but an explicit pixel size on the containing
             // block is already a definite percentage basis.
             var percent = attributeName == "width"
-                ? frame.ComputedStyle?.WidthPercent
-                : frame.ComputedStyle?.HeightPercent;
+                    ? frame.GetComputedStyle()?.WidthPercent
+                    : frame.GetComputedStyle()?.HeightPercent;
             if (percent.HasValue &&
                 TryReadInlinePixelDimension(frame.ParentElement, attributeName, out var containingDimension))
             {
@@ -3948,9 +3948,9 @@ private static double? ExtractPx(string text, string prop)
                 // re-set by DOM mutations (class/id/style changes from JS).  On the
                 // first cascade every element is dirty; on incremental recascades
                 // only mutated elements need recomputation.
-                if (!n.StyleDirty && n.ComputedStyle != null)
+                if (!n.StyleDirty && n.GetComputedStyle() != null)
                 {
-                    result[n] = n.ComputedStyle;
+                    result[n] = n.GetComputedStyle();
                     cacheHits++;
                     continue;
                 }
@@ -3994,14 +3994,14 @@ private static double? ExtractPx(string text, string prop)
                     // CRITICAL FIX: Attach style directly to node to avoid dictionary key mismatch
                     // This ensures layout can find styles even if DOM node instances differ
                     FenBrowser.FenEngine.Layout.LayoutStyleResolver.NormalizeForLayout(css);
-                    n.ComputedStyle = css;
+                    n.SetComputedStyle(css);
                 }
                 catch (Exception resolveEx)
                 {
                     var msg = $"[CssLoader] CRASH in ResolveStyle (or pseudo) for Node <{n.TagName} id='{n.Id}'>: {resolveEx}";
                     Log(log, msg);
                     result[n] = new CssComputed(); // Recovery
-                    n.ComputedStyle = result[n];  // Also attach recovery style
+                    n.SetComputedStyle(result[n]);  // Also attach recovery style
                 }
             }
 
@@ -5929,7 +5929,7 @@ private static double? ExtractPx(string text, string prop)
             while (stack.Count > 0 && count < 50)
             {
                 var cur = stack.Pop();
-                if (cur.IsText() && cur.Text != null && (cur.Text.Contains("Guides") || cur.Text.Contains("Detect my settings")))
+                if (cur.IsText() && cur.TextContent != null && (cur.TextContent.Contains("Guides") || cur.TextContent.Contains("Detect my settings")))
                     return true;
                 
                 if (cur.Children != null)

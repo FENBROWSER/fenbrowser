@@ -64,7 +64,7 @@ namespace FenBrowser.Tests.Rendering
 
             using var secondBitmap = new SKBitmap(128, 128);
             using var secondCanvas = new SKCanvas(secondBitmap);
-            secondCanvas.DrawBitmap(firstBitmap, 0, 0);
+            secondCanvas.DrawBitmap(firstBitmap, 0, 0, SKSamplingOptions.Default);
 
             var animResult = renderer.RenderFrame(new RenderFrameRequest
             {

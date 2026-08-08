@@ -28,7 +28,6 @@ public sealed class CrossOriginIsolationPolicyTests
     [InlineData("same-site", true)]
     [InlineData("cross-origin", true)]
     [InlineData("", true)]
-    [InlineData("same-origin", true)]
     public void IsResponseEmbeddable_SameOrigin_AlwaysAllowed(string? corp, bool ignored)
     {
         _ = ignored;

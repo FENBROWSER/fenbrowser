@@ -27,7 +27,7 @@ namespace FenBrowser.Tests.Core
             // child2 share = 600 * 2/3 = 400. Final width = 100 + 400 = 500.
 
             styles[root] = new CssComputed { Display = "flex", FlexDirection = "row" };
-            root.Attr["class"] = "main-columns";
+            root.SetAttribute("class", "main-columns");
             styles[child1] = new CssComputed { Display = "block", Width = 100, FlexGrow = 1 };
             styles[child2] = new CssComputed { Display = "block", Width = 100, FlexGrow = 2 };
 

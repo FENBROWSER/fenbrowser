@@ -117,9 +117,10 @@ namespace FenBrowser.FenEngine.Layout
         private static bool SupportsCharacters(SKTypeface tf, string text)
         {
             if (string.IsNullOrEmpty(text) || tf == null) return true;
+            using var font = new SKFont(tf);
             foreach (var c in text)
             {
-                if (c > 127 && tf.GetGlyph(c) == 0) return false;
+                if (c > 127 && font.GetGlyph(c) == 0) return false;
             }
             return true;
         }

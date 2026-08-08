@@ -122,9 +122,9 @@ namespace FenBrowser.FenEngine.Rendering
             // Note: FilterQuality removed in SkiaSharp 4.x — sampling is now per-draw-call
             
             if (SourceRect.HasValue)
-                canvas.DrawBitmap(Bitmap, SourceRect.Value, DestRect, paint);
+                canvas.DrawBitmap(Bitmap, SourceRect.Value, DestRect, SKSamplingOptions.Default, paint);
             else
-                canvas.DrawBitmap(Bitmap, DestRect, paint);
+                canvas.DrawBitmap(Bitmap, DestRect, SKSamplingOptions.Default, paint);
         }
     }
 
@@ -332,8 +332,8 @@ namespace FenBrowser.FenEngine.Rendering
                 );
 
                 // Create a path that is a large outer rect minus the inset rect
-                using var shadowPath = new SKPath();
-                shadowPath.AddRect(new SKRect(Box.Left - 100, Box.Top - 100, Box.Right + 100, Box.Bottom + 100));
+                using var shadowPath = PathBuilderHelper.Build(path =>
+                    path.AddRect(new SKRect(Box.Left - 100, Box.Top - 100, Box.Right + 100, Box.Bottom + 100)));
 
                 if (BorderRadius != null && BorderRadius.Length >= 4 &&
                     (BorderRadius[0] > 0 || BorderRadius[1] > 0 || BorderRadius[2] > 0 || BorderRadius[3] > 0))
@@ -343,14 +343,12 @@ namespace FenBrowser.FenEngine.Rendering
                     for (int i = 0; i < 4; i++)
                         innerRadii[i] = new SKPoint(Math.Max(0, BorderRadius[i] - SpreadRadius), Math.Max(0, BorderRadius[i] - SpreadRadius));
                     innerRR.SetRectRadii(insetRect, innerRadii);
-                    using var innerPath = new SKPath();
-                    innerPath.AddRoundRect(innerRR);
+                    using var innerPath = PathBuilderHelper.Build(path => path.AddRoundRect(innerRR));
                     shadowPath.Op(innerPath, SKPathOp.Difference, shadowPath);
                 }
                 else
                 {
-                    using var innerPath = new SKPath();
-                    innerPath.AddRect(insetRect);
+                    using var innerPath = PathBuilderHelper.Build(path => path.AddRect(insetRect));
                     shadowPath.Op(innerPath, SKPathOp.Difference, shadowPath);
                 }
 
@@ -428,8 +426,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         public override void Execute(SKCanvas canvas)
         {
-            using var path = new SKPath();
-            path.AddRoundRect(ClipRect, RadiusX, RadiusY);
+            using var path = PathBuilderHelper.Build(builder => builder.AddRoundRect(ClipRect, RadiusX, RadiusY));
             canvas.ClipPath(path, Operation);
         }
     }
@@ -509,7 +506,7 @@ namespace FenBrowser.FenEngine.Rendering
                 (float)Math.Tan(SkewX * Math.PI / 180),
                 (float)Math.Tan(SkewY * Math.PI / 180)
             );
-            canvas.Concat(ref matrix);
+            canvas.Concat(in matrix);
         }
     }
 
@@ -523,7 +520,7 @@ namespace FenBrowser.FenEngine.Rendering
         public override void Execute(SKCanvas canvas)
         {
             var m = Matrix;
-            canvas.Concat(ref m);
+            canvas.Concat(in m);
         }
     }
 

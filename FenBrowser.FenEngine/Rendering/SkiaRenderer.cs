@@ -760,7 +760,7 @@ namespace FenBrowser.FenEngine.Rendering
                     return false;
                 }
 
-                if (element.Attr?.TryGetValue("contenteditable", out var editable) == true &&
+            if (element.GetAttribute("contenteditable") is string editable &&
                     !string.Equals(editable, "false", StringComparison.OrdinalIgnoreCase))
                 {
                     return false;
@@ -1542,11 +1542,12 @@ namespace FenBrowser.FenEngine.Rendering
         {
             // Clamp radii to geometry bounds to avoid pathological capsules/overdraw artifacts.
             var clamped = NormalizeCornerRadii(bounds, radius);
-            var path = new SKPath();
-            var rrect = new SKRoundRect();
-            rrect.SetRectRadii(bounds, clamped);
-            path.AddRoundRect(rrect);
-            return path;
+            return PathBuilderHelper.Build(builder =>
+            {
+                var rrect = new SKRoundRect();
+                rrect.SetRectRadii(bounds, clamped);
+                builder.AddRoundRect(rrect);
+            });
         }
 
         private static SKPoint[] NormalizeCornerRadii(SKRect bounds, SKPoint[] radius)

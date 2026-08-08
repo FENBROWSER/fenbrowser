@@ -156,7 +156,7 @@ namespace FenBrowser.FenEngine.Rendering
                 var tile = visibleTiles[i];
                 if (_tiles.TryGetValue(tile.Key, out var cachedTile) && cachedTile.Image != null)
                 {
-                    targetCanvas.DrawImage(cachedTile.Image, tile.Bounds.Left, tile.Bounds.Top);
+                    targetCanvas.DrawImage(cachedTile.Image, tile.Bounds.Left, tile.Bounds.Top, SKSamplingOptions.Default);
                 }
             }
 

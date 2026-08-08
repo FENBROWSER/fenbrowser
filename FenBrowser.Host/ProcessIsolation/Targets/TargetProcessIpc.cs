@@ -376,7 +376,9 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 pipeName,
                 PipeDirection.InOut,
                 maxNumberOfServerInstances: 1,
-                PipeTransmissionMode.Message,
+                OperatingSystem.IsWindows()
+                    ? PipeTransmissionMode.Message
+                    : PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         }
 

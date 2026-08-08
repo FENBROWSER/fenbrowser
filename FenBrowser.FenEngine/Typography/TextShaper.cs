@@ -257,10 +257,10 @@ namespace FenBrowser.FenEngine.Typography
             try
             {
                 var skFont = GetOrCreateFont(font);
-                var typeface = skFont.Typeface;
+                using var skFontInstance = new SKFont(skFont.Typeface);
 
-                // Check if typeface contains glyphs for all characters
-                return typeface.ContainsGlyphs(text);
+                // Check if the font contains glyphs for all characters.
+                return skFontInstance.ContainsGlyphs(text);
             }
             catch
             {

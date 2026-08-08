@@ -278,7 +278,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (tag == "input")
                 {
                     string type = null;
-                    element.Attr?.TryGetValue("type", out type);
+                    type = element.GetAttribute("type");
                     type = type?.ToLowerInvariant() ?? "text";
 
                     // Text-like inputs always show focus-visible
@@ -300,10 +300,9 @@ namespace FenBrowser.FenEngine.Rendering
                     return true;
 
                 // Elements with contenteditable always show focus ring
-                if (element.Attr?.ContainsKey("contenteditable") == true)
+                if (element.HasAttribute("contenteditable"))
                 {
-                    string editable = null;
-                    element.Attr.TryGetValue("contenteditable", out editable);
+                    string editable = element.GetAttribute("contenteditable");
                     if (editable != "false")
                         return true;
                 }
@@ -402,7 +401,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (_trackedCheckedElements.Contains(element))
                 return _checkedElements.Contains(element);
 
-            return element.Attr?.ContainsKey("checked") == true;
+            return element.HasAttribute("checked");
         }
 
         /// <summary>
@@ -411,7 +410,7 @@ namespace FenBrowser.FenEngine.Rendering
         public bool IsDisabled(Element element)
         {
             if (element == null) return false;
-            return element.Attr?.ContainsKey("disabled") == true;
+            return element.HasAttribute("disabled");
         }
         #endregion
 
@@ -565,7 +564,8 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
                 
             string id = null;
-            if (element.Attr?.TryGetValue("id", out id) == true)
+            id = element.GetAttribute("id");
+            if (id != null)
             {
                 return string.Equals(id, _targetFragment, StringComparison.OrdinalIgnoreCase);
             }
@@ -593,16 +593,16 @@ namespace FenBrowser.FenEngine.Rendering
             if (element == null || !IsFormElement(element)) return false;
             
             // Check required attribute
-            bool required = element.Attr?.ContainsKey("required") == true;
+            bool required = element.HasAttribute("required");
             
             if (element.TagName?.Equals("input", StringComparison.OrdinalIgnoreCase) == true)
             {
                 string type = null;
-                element.Attr?.TryGetValue("type", out type);
+                type = element.GetAttribute("type");
                 type = type?.ToLowerInvariant() ?? "text";
                 
                 string value = null;
-                element.Attr?.TryGetValue("value", out value);
+                value = element.GetAttribute("value");
                 
                 // Required check
                 if (required && string.IsNullOrEmpty(value))
@@ -624,7 +624,8 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 // Pattern attribute
                 string pattern = null;
-                if (element.Attr?.TryGetValue("pattern", out pattern) == true && !string.IsNullOrEmpty(pattern))
+                pattern = element.GetAttribute("pattern");
+                if (!string.IsNullOrEmpty(pattern))
                 {
                     try
                     {
@@ -639,8 +640,8 @@ namespace FenBrowser.FenEngine.Rendering
                 if (type == "number" || type == "range")
                 {
                     string minStr = null, maxStr = null;
-                    element.Attr?.TryGetValue("min", out minStr);
-                    element.Attr?.TryGetValue("max", out maxStr);
+                    minStr = element.GetAttribute("min");
+                    maxStr = element.GetAttribute("max");
                     
                     if (!string.IsNullOrEmpty(value))
                     {
@@ -761,7 +762,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (required)
                 {
                     string value = null;
-                    element.Attr?.TryGetValue("value", out value);
+                    value = element.GetAttribute("value");
                     // Check if element has any text content
                     string textContent = element.TextContent;
                     if (string.IsNullOrEmpty(value) && string.IsNullOrEmpty(textContent))
@@ -1145,7 +1146,7 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            return element.Attr?.ContainsKey("required") == true;
+            return element.HasAttribute("required");
         }
         
         /// <summary>

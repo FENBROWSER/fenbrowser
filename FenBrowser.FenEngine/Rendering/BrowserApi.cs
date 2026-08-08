@@ -1941,7 +1941,7 @@ pre {{
                     return true;
                 }
 
-                if (string.Equals(element.ComputedStyle?.Display, "none", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(element.GetComputedStyle()?.Display, "none", StringComparison.OrdinalIgnoreCase))
                 {
                     return true;
                 }
@@ -1974,7 +1974,7 @@ pre {{
             for (var current = element; current != null; current = current.ParentElement)
             {
                 if (current.HasAttribute("hidden") ||
-                    string.Equals(current.ComputedStyle?.Display, "none", StringComparison.OrdinalIgnoreCase))
+                    string.Equals(current.GetComputedStyle()?.Display, "none", StringComparison.OrdinalIgnoreCase))
                 {
                     return true;
                 }
@@ -2550,13 +2550,12 @@ pre {{
                         .Descendants()
                         .OfType<Element>()
                         .Where(x => string.Equals(x.TagName, "link", StringComparison.OrdinalIgnoreCase) &&
-                                    x.Attr != null &&
-                                    x.Attr.ContainsKey("rel"));
-                    var iconLink = links.LastOrDefault(x => x.Attr["rel"].IndexOf("icon", StringComparison.OrdinalIgnoreCase) >= 0);
+                                    x.HasAttribute("rel"));
+                    var iconLink = links.LastOrDefault(x => x.GetAttribute("rel")?.IndexOf("icon", StringComparison.OrdinalIgnoreCase) >= 0);
                     
-                    if (iconLink != null && iconLink.Attr.ContainsKey("href"))
+                    if (iconLink != null && iconLink.HasAttribute("href"))
                     {
-                        iconUrl = iconLink.Attr["href"]?.Trim();
+                        iconUrl = iconLink.GetAttribute("href")?.Trim();
                     }
                 }
                 
@@ -5493,11 +5492,8 @@ pre {{
             var el = ResolveElementInActiveContextOrThrow(elementId);
             if (el != null)
             {
-                if (el.Attr != null)
-                {
-                    if (el.Attr.ContainsKey("checked") || el.Attr.ContainsKey("selected"))
-                        return Task.FromResult(true);
-                }
+                if (el.HasAttribute("checked") || el.HasAttribute("selected"))
+                    return Task.FromResult(true);
             }
             return Task.FromResult(false);
         }
@@ -5669,7 +5665,7 @@ pre {{
             var el = ResolveElementInActiveContextOrThrow(elementId);
             if (el != null)
             {
-                if (el.Attr != null && el.Attr.ContainsKey("disabled"))
+                if (el.HasAttribute("disabled"))
                     return Task.FromResult(false);
             }
             return Task.FromResult(true);
@@ -8366,11 +8362,11 @@ pre {{
                 return id;
             }
 
-            if (element.Attr != null)
+            if (element.Attributes != null)
             {
-                foreach (var entry in element.Attr)
+                foreach (var entry in element.Attributes)
                 {
-                    if (string.Equals(entry.Key, "id", StringComparison.OrdinalIgnoreCase) &&
+                    if (string.Equals(entry.Name, "id", StringComparison.OrdinalIgnoreCase) &&
                         !string.IsNullOrWhiteSpace(entry.Value))
                     {
                         return entry.Value;

@@ -182,7 +182,7 @@ namespace FenBrowser.Host
                             var destRect = new SKRect(0, 0, size, size);
                             
                             using var paint = new SKPaint { IsAntialias = true };
-                            canvas.DrawBitmap(sourceBitmap, srcRect, destRect, paint);
+                            canvas.DrawBitmap(sourceBitmap, srcRect, destRect, SKSamplingOptions.Default, paint);
                             canvas.Flush();
                             
                             var pixels = scaledBitmap.Bytes;

@@ -218,9 +218,9 @@ namespace FenBrowser.FenEngine.Rendering.Paint
             }
 
             // Recurse Children
-            if (node.Children != null)
+            if (node.ChildNodes != null)
             {
-                foreach (var child in node.Children)
+                foreach (var child in node.ChildNodes)
                 {
                     var childNode = BuildTree(child, boxes, styles);
                     layoutNode.Children.Add(childNode);

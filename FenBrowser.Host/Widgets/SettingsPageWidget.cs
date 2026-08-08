@@ -1083,7 +1083,7 @@ public class SettingsPageWidget : Widget
                     // Draw 64x64 icon
                     var iconRect = new SKRect(contentLeft, currentY, contentLeft + 64, currentY + 64);
                     using var iconPaint = new SKPaint { IsAntialias = true };
-                    canvas.DrawBitmap(_aboutIcon, iconRect, iconPaint);
+                    canvas.DrawBitmap(_aboutIcon, iconRect, SKSamplingOptions.Default, iconPaint);
                     
                     // Indent text
                     float textX = contentLeft + 80;

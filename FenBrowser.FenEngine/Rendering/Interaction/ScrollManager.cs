@@ -672,9 +672,9 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             }
 
             // Recurse
-            if (node.Children != null)
+            if (node.ChildNodes != null)
             {
-                foreach (var child in node.Children)
+                foreach (var child in node.ChildNodes)
                 {
                     var result = FindAnchorRecursive(child, visibleRect, getBox);
                     if (result != null) return result;

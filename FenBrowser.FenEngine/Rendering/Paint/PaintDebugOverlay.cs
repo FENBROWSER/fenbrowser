@@ -92,9 +92,9 @@ namespace FenBrowser.FenEngine.Rendering.Paint
             }
 
             // Recurse children
-            if (node.Children != null)
+            if (node.ChildNodes != null)
             {
-                foreach (var child in node.Children)
+                foreach (var child in node.ChildNodes)
                 {
                     RenderNode(canvas, child, boxes, styles, showLabels);
                 }
@@ -249,9 +249,9 @@ namespace FenBrowser.FenEngine.Rendering.Paint
             }
 
             // Recurse children
-            if (node.Children != null)
+            if (node.ChildNodes != null)
             {
-                foreach (var child in node.Children)
+                foreach (var child in node.ChildNodes)
                 {
                     RenderNodeFiltered(canvas, child, boxes, styles, filter, showLabels);
                 }

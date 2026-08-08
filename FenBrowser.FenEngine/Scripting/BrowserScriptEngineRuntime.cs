@@ -563,7 +563,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     /// </summary>
     public IStorageBackend IndexedDbBackend { get; set; }
 
+#pragma warning disable CS0067 // Compatibility event is forwarded through BrowserApi; this runtime does not raise it directly.
     public event Func<string, JsPermissions, Task<bool>> PermissionRequested;
+#pragma warning restore CS0067
 
     /// <summary>
     /// Supplies the Permissions-Policy of the current document. Set by the host
@@ -9291,20 +9293,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             props["borderTopColor"] = JsValue.FromString(cs.BorderBrush.Value.ToString());
 
         // Margin/padding shorthand (from Map if not explicit)
-        if (cs.Margin != null)
-        {
-            props["marginTop"] = JsValue.FromString(cs.Margin.Top + "px");
-            props["marginRight"] = JsValue.FromString(cs.Margin.Right + "px");
-            props["marginBottom"] = JsValue.FromString(cs.Margin.Bottom + "px");
-            props["marginLeft"] = JsValue.FromString(cs.Margin.Left + "px");
-        }
-        if (cs.Padding != null)
-        {
-            props["paddingTop"] = JsValue.FromString(cs.Padding.Top + "px");
-            props["paddingRight"] = JsValue.FromString(cs.Padding.Right + "px");
-            props["paddingBottom"] = JsValue.FromString(cs.Padding.Bottom + "px");
-            props["paddingLeft"] = JsValue.FromString(cs.Padding.Left + "px");
-        }
+        props["marginTop"] = JsValue.FromString(cs.Margin.Top + "px");
+        props["marginRight"] = JsValue.FromString(cs.Margin.Right + "px");
+        props["marginBottom"] = JsValue.FromString(cs.Margin.Bottom + "px");
+        props["marginLeft"] = JsValue.FromString(cs.Margin.Left + "px");
+        props["paddingTop"] = JsValue.FromString(cs.Padding.Top + "px");
+        props["paddingRight"] = JsValue.FromString(cs.Padding.Right + "px");
+        props["paddingBottom"] = JsValue.FromString(cs.Padding.Bottom + "px");
+        props["paddingLeft"] = JsValue.FromString(cs.Padding.Left + "px");
 
         // Custom properties (CSS variables)
         if (cs.CustomProperties != null)
@@ -18824,6 +18820,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             return JsValue.Undefined;
                         },
                         length: 0);
+                    return true;
+                case "cloneNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        characterData,
+                        "cloneNode",
+                        (_, args) =>
+                        {
+                            var deep = args.Count > 0 && CoerceToHostBoolean(args[0]);
+                            return _owner.ToHostNodeOrNull(characterData.CloneNode(deep));
+                        },
+                        length: 1);
                     return true;
                 default:
                     value = JsValue.Undefined;

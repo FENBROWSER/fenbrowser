@@ -2283,7 +2283,8 @@ public class BrowserIntegration : IDisposable
                 frameOverlays,
                 viewportSize,
                 _scrollY,
-                _contentHeight));
+                _contentHeight,
+                (canReuseBaseFrame && reusableSeedImage != null && !ReferenceEquals(newSeedImage, reusableSeedImage)) ? reusableSeedImage : null));
             RecordFirstFrameAfterInput();
 
             // Seed-image management is engine-thread-only; no lock needed.
@@ -2295,7 +2296,9 @@ public class BrowserIntegration : IDisposable
             }
             else
             {
-                _currentFrameSeedImage?.Dispose();
+                // DO NOT dispose _currentFrameSeedImage here! If it was used in this frame,
+                // it is passed to ContentSnapshot and disposed when the snapshot retires.
+                // If it was not used (e.g. full raster), letting GC collect it is safe.
                 _currentFrameSeedImage = newSeedImage;
                 _currentFrameSeedCreatedUtc = newSeedImage != null ? DateTime.UtcNow : DateTime.MinValue;
             }
@@ -4055,23 +4058,29 @@ public class BrowserIntegration : IDisposable
         /// <summary>Total document content height.</summary>
         public readonly float ContentHeight;
 
+        /// <summary>Reference to the seed image used in the frame, kept alive until the frame is retired.</summary>
+        public readonly SKImage EmbeddedSeedImage;
+
         public ContentSnapshot(
             SKPicture frame,
             List<InputOverlayData> overlays,
             SKSize viewportSize,
             float committedScrollY,
-            float contentHeight)
+            float contentHeight,
+            SKImage embeddedSeedImage = null)
         {
             Frame = frame;
             Overlays = overlays ?? new List<InputOverlayData>();
             ViewportSize = viewportSize;
             CommittedScrollY = committedScrollY;
             ContentHeight = contentHeight;
+            EmbeddedSeedImage = embeddedSeedImage;
         }
 
         public void Dispose()
         {
             Frame?.Dispose();
+            EmbeddedSeedImage?.Dispose();
         }
     }
 }

@@ -223,8 +223,7 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             }
 
             using var paint = CreateBorderPaint(color, width, style);
-            using var path = new SKPath();
-            AddBorderSideLine(path, rect, side, width / 2f);
+            using var path = CreateBorderSideLine(rect, side, width / 2f);
             _canvas.DrawPath(path, paint);
         }
 
@@ -233,36 +232,37 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             float strokeWidth = Math.Max(1f, width / 3f);
             using var paint = CreateBorderPaint(color, strokeWidth, "solid");
 
-            using var outerPath = new SKPath();
-            AddBorderSideLine(outerPath, rect, side, strokeWidth / 2f);
+            using var outerPath = CreateBorderSideLine(rect, side, strokeWidth / 2f);
             _canvas.DrawPath(outerPath, paint);
 
-            using var innerPath = new SKPath();
-            AddBorderSideLine(innerPath, rect, side, width - strokeWidth / 2f);
+            using var innerPath = CreateBorderSideLine(rect, side, width - strokeWidth / 2f);
             _canvas.DrawPath(innerPath, paint);
         }
 
-        private static void AddBorderSideLine(SKPath path, SKRect rect, BorderSide side, float offset)
+        private static SKPath CreateBorderSideLine(SKRect rect, BorderSide side, float offset)
         {
-            switch (side)
+            return PathBuilderHelper.Build(path =>
             {
-                case BorderSide.Top:
-                    path.MoveTo(rect.Left, rect.Top + offset);
-                    path.LineTo(rect.Right, rect.Top + offset);
-                    break;
-                case BorderSide.Right:
-                    path.MoveTo(rect.Right - offset, rect.Top);
-                    path.LineTo(rect.Right - offset, rect.Bottom);
-                    break;
-                case BorderSide.Bottom:
-                    path.MoveTo(rect.Left, rect.Bottom - offset);
-                    path.LineTo(rect.Right, rect.Bottom - offset);
-                    break;
-                case BorderSide.Left:
-                    path.MoveTo(rect.Left + offset, rect.Top);
-                    path.LineTo(rect.Left + offset, rect.Bottom);
-                    break;
-            }
+                switch (side)
+                {
+                    case BorderSide.Top:
+                        path.MoveTo(rect.Left, rect.Top + offset);
+                        path.LineTo(rect.Right, rect.Top + offset);
+                        break;
+                    case BorderSide.Right:
+                        path.MoveTo(rect.Right - offset, rect.Top);
+                        path.LineTo(rect.Right - offset, rect.Bottom);
+                        break;
+                    case BorderSide.Bottom:
+                        path.MoveTo(rect.Left, rect.Bottom - offset);
+                        path.LineTo(rect.Right, rect.Bottom - offset);
+                        break;
+                    case BorderSide.Left:
+                        path.MoveTo(rect.Left + offset, rect.Top);
+                        path.LineTo(rect.Left + offset, rect.Bottom);
+                        break;
+                }
+            });
         }
 
         private static bool IsPaintableBorderStyle(string style)
@@ -298,11 +298,9 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 }
             }
 
-            var path = new SKPath();
             var rrect = new SKRoundRect();
             rrect.SetRectRadii(bounds, radius);
-            path.AddRoundRect(rrect);
-            return path;
+            return PathBuilderHelper.Build(path => path.AddRoundRect(rrect));
         }
 
         private static SKPaint CreateBorderPaint(SKColor color, float width, string style)
@@ -413,14 +411,14 @@ namespace FenBrowser.FenEngine.Rendering.Backends
         {
             if (image == null) return;
             using var paint = opacity < 1f ? new SKPaint { Color = new SKColor(255, 255, 255, (byte)(opacity * 255)) } : null;
-            _canvas.DrawImage(image, destRect, paint);
+            _canvas.DrawImage(image, destRect, SKSamplingOptions.Default, paint);
         }
 
         public void DrawImage(SKImage image, SKRect destRect, SKRect srcRect, float opacity = 1f)
         {
             if (image == null) return;
             using var paint = opacity < 1f ? new SKPaint { Color = new SKColor(255, 255, 255, (byte)(opacity * 255)) } : null;
-            _canvas.DrawImage(image, srcRect, destRect, paint);
+            _canvas.DrawImage(image, srcRect, destRect, SKSamplingOptions.Default, paint);
         }
 
         public void DrawPicture(SKPicture picture, SKRect destRect, float opacity = 1f)
@@ -488,7 +486,7 @@ namespace FenBrowser.FenEngine.Rendering.Backends
         public void PushTransform(SKMatrix transform)
         {
             _canvas.Save();
-            _canvas.Concat(ref transform);
+            _canvas.Concat(in transform);
         }
 
         public void PopLayer()
@@ -504,7 +502,7 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 BlendMode = SKBlendMode.DstIn,
                 IsAntialias = true
             };
-            _canvas.DrawImage(mask, bounds, paint);
+            _canvas.DrawImage(mask, bounds, SKSamplingOptions.Default, paint);
         }
 
         public void PushFilter(SKImageFilter filter)
@@ -622,8 +620,8 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 rect.Right + offsetX - spreadRadius,
                 rect.Bottom + offsetY - spreadRadius);
 
-            using var shadowPath = new SKPath();
-            shadowPath.AddRect(new SKRect(rect.Left - 200, rect.Top - 200, rect.Right + 200, rect.Bottom + 200));
+            using var shadowPath = PathBuilderHelper.Build(path =>
+                path.AddRect(new SKRect(rect.Left - 200, rect.Top - 200, rect.Right + 200, rect.Bottom + 200)));
 
             if (HasNonZeroRadius(borderRadius))
             {
@@ -632,8 +630,7 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             }
             else
             {
-                using var innerPath = new SKPath();
-                innerPath.AddRect(insetRect);
+                using var innerPath = PathBuilderHelper.Build(path => path.AddRect(insetRect));
                 shadowPath.Op(innerPath, SKPathOp.Difference, shadowPath);
             }
 

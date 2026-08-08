@@ -21,7 +21,7 @@ public class ConsolePanel : DevToolsPanelBase
     private readonly List<string> _history = new();
     private int _historyIndex = -1;
     private bool _inputFocused;
-    private bool _showBrowserLogs; // Default false: engine logs hidden by default
+    private bool _showBrowserLogs = false; // Engine logs are hidden by default.
     private readonly SemaphoreSlim _protocolEntryLock = new(1, 1);
     private int _hostVersion;
     private bool _userHasScrolledUp;

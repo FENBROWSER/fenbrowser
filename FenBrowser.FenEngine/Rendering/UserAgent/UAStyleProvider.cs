@@ -59,7 +59,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
             if (tag == "DIALOG")
             {
                 if (style == null) style = new CssComputed();
-                bool isOpen = node.Attr != null && node.Attr.ContainsKey("open");
+                bool isOpen = node.HasAttribute("open");
                 if (!isOpen)
                 {
                      style.Display = "none";
@@ -77,7 +77,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                      if (style.BorderBrushColor == null) style.BorderBrushColor = SKColors.Black;
                      if (style.ForegroundColor == null) style.ForegroundColor = SKColors.Black;
                      
-                     if (node.Attr.ContainsKey("data-top-layer") && string.Equals(node.Attr["data-top-layer"], "modal", StringComparison.OrdinalIgnoreCase))
+                     if (node.HasAttribute("data-top-layer") && string.Equals(node.GetAttribute("data-top-layer"), "modal", StringComparison.OrdinalIgnoreCase))
                      {
                          if (string.IsNullOrEmpty(style.Position)) style.Position = "fixed";
                          
@@ -312,8 +312,8 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 style.BoxSizing = "border-box";
             }
 
-            string inputType = node.Attr?.ContainsKey("type") == true 
-                ? node.Attr["type"]?.ToLowerInvariant() : "";
+            string inputType = node.HasAttribute("type")
+                ? node.GetAttribute("type")?.ToLowerInvariant() : "";
             bool isButtonType = tag == "BUTTON" || inputType == "submit" || 
                                inputType == "button" || inputType == "reset";
 

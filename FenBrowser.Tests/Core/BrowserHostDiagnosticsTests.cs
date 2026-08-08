@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
+using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Parsing;
@@ -166,7 +167,7 @@ namespace FenBrowser.Tests.Core
 
             var navigated = await browser.NavigateAsync("https://example.test/page");
             var marker = await WaitForElementAsync(browser, "frame-script-marker", element =>
-                element.ComputedStyle?.ForegroundColor == new SKColor(1, 2, 3));
+                element.GetComputedStyle()?.ForegroundColor == new SKColor(1, 2, 3));
             var engine = GetPrivateField<CustomHtmlEngine>(browser, "_engine");
             var iframe = FindFirstElement(engine.GetActiveDom(), element =>
                 string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase));
@@ -180,7 +181,7 @@ namespace FenBrowser.Tests.Core
             Assert.Same(frameDocument, frameDocument.DocumentElement.OwnerDocument);
             Assert.Equal("https://example.test/frames/frame.html", frameDocument.URL);
             Assert.NotNull(marker);
-            Assert.Equal(new SKColor(1, 2, 3), marker.ComputedStyle?.ForegroundColor);
+            Assert.Equal(new SKColor(1, 2, 3), marker.GetComputedStyle()?.ForegroundColor);
             Assert.Contains("frame script ran", marker.TextContent);
         }
 

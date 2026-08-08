@@ -296,7 +296,9 @@ namespace FenBrowser.Host.ProcessIsolation
                 PipeName,
                 PipeDirection.InOut,
                 1,
-                PipeTransmissionMode.Message,
+                OperatingSystem.IsWindows()
+                    ? PipeTransmissionMode.Message
+                    : PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
 
             // All outbound IPC is serialized through a single writer task.  A

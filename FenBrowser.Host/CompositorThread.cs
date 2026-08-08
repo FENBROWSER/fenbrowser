@@ -189,7 +189,7 @@ public sealed class CompositorThread : IDisposable
                 return false;
             }
 
-            canvas.DrawImage(_latestFrame, new SKRect(0, 0, logicalSize.Width, logicalSize.Height));
+            canvas.DrawImage(_latestFrame, new SKRect(0, 0, logicalSize.Width, logicalSize.Height), SKSamplingOptions.Default);
             return true;
         }
     }

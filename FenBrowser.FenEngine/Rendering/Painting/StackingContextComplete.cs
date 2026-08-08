@@ -269,9 +269,9 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         private void ProcessSubtree(Node parent, StackingContextV2 currentSC)
         {
-            if (parent.Children == null) return;
+            if (parent.ChildNodes == null) return;
 
-            foreach (var child in parent.Children)
+            foreach (var child in parent.ChildNodes)
             {
                 if (child is not Element element) continue;
 

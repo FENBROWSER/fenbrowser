@@ -593,7 +593,7 @@ private static string RemoveInlineDisplayNone(string inlineStyle)
                 return false;
             }
 
-            var text = WebUtility.HtmlDecode(element.Text ?? string.Empty);
+            var text = WebUtility.HtmlDecode(element.TextContent ?? string.Empty);
             if (string.IsNullOrWhiteSpace(text) || text.Length < 24)
             {
                 return false;
@@ -670,7 +670,7 @@ private static string RemoveInlineDisplayNone(string inlineStyle)
             var toRemove = new List<Element>();
             foreach (var element in domRoot.Descendants().OfType<Element>())
             {
-                var text = WebUtility.HtmlDecode(element.Text ?? string.Empty);
+            var text = WebUtility.HtmlDecode(element.TextContent ?? string.Empty);
                 if (string.IsNullOrWhiteSpace(text))
                 {
                     continue;
@@ -725,7 +725,7 @@ private static string RemoveInlineDisplayNone(string inlineStyle)
                     continue;
                 }
 
-                var scriptText = element.Text ?? string.Empty;
+            var scriptText = element.TextContent ?? string.Empty;
                 if (scriptText.IndexOf("sg_trbl", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     scriptText.IndexOf("cssId='yvlrue'", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     scriptText.IndexOf("cssId=\"yvlrue\"", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -852,7 +852,7 @@ private static string RemoveInlineDisplayNone(string inlineStyle)
             var removed = 0;
             foreach (var noscript in noscriptElements)
             {
-                var text = noscript?.Text ?? string.Empty;
+            var text = noscript?.TextContent ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(text))
                 {
                     continue;
@@ -1133,16 +1133,16 @@ public void Dispose()
                 }
 
                 // Preload/Prefetch links
-                foreach (var link in root.Descendants().OfType<Element>().Where(n => string.Equals(n.TagName, "link", StringComparison.OrdinalIgnoreCase) && n.Attr != null))
+                foreach (var link in root.Descendants().OfType<Element>().Where(n => string.Equals(n.TagName, "link", StringComparison.OrdinalIgnoreCase)))
                 {
-                    string rel;
-                    if (link.Attr.TryGetValue("rel", out rel) && (rel == "preload" || rel == "prefetch"))
+                    string rel = link.GetAttribute("rel");
+                    if (rel == "preload" || rel == "prefetch")
                     {
-                        string href;
-                        if (link.Attr.TryGetValue("href", out href))
+                        string href = link.GetAttribute("href");
+                        if (href != null)
                         {
-                            string asAttr;
-                            if (link.Attr.TryGetValue("as", out asAttr) && asAttr == "image")
+                            string asAttr = link.GetAttribute("as");
+                            if (asAttr == "image")
                             {
                                 queueLoad(href);
                             }
@@ -1159,18 +1159,18 @@ public void Dispose()
                         if (n.IsText()) continue;
                         if (n is Element el)
                         {
-                            if (string.Equals(el.TagName, "img", StringComparison.OrdinalIgnoreCase) && el.Attr != null)
+                            if (string.Equals(el.TagName, "img", StringComparison.OrdinalIgnoreCase))
                             {
-                                string src = null; el.Attr.TryGetValue("src", out src);
+                                string src = el.GetAttribute("src");
                                 if (string.IsNullOrWhiteSpace(src))
                                 {
-                                    string v; 
-                                    if (el.Attr.TryGetValue("data-src", out v)) src = v; 
-                                    else if (el.Attr.TryGetValue("data-original", out v)) src = v; 
-                                    else if (el.Attr.TryGetValue("data-lazy", out v)) src = v;
+                                    string v = el.GetAttribute("data-src");
+                                    if (!string.IsNullOrEmpty(v)) src = v;
+                                    else if (!string.IsNullOrEmpty(v = el.GetAttribute("data-original"))) src = v;
+                                    else if (!string.IsNullOrEmpty(v = el.GetAttribute("data-lazy"))) src = v;
                                 }
 
-                                string srcset = null; el.Attr.TryGetValue("srcset", out srcset);
+                                string srcset = el.GetAttribute("srcset");
                                 string chosen = null;
                                 if (!string.IsNullOrWhiteSpace(srcset)) 
                                 {
@@ -1180,10 +1180,10 @@ public void Dispose()
                                 if (string.IsNullOrWhiteSpace(chosen)) chosen = src;
                                 queueLoad(chosen);
                             }
-                            else if (el.Attr != null)
+                            else
                             {
-                                string style; 
-                                if (el.Attr.TryGetValue("style", out style) && !string.IsNullOrWhiteSpace(style))
+                                string style = el.GetAttribute("style");
+                                if (!string.IsNullOrWhiteSpace(style))
                                 {
                                     // background-image/background shorthand regex
                                     var m = System.Text.RegularExpressions.Regex.Match(style, "url\\(['\"']?(?<u>[^)\"']+)['\"']?\\)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -1787,7 +1787,7 @@ public void Dispose()
                         foreach (var kvp in LastComputedStyles)
                         {
                             if (kvp.Key != null)
-                                kvp.Key.ComputedStyle = kvp.Value;
+            kvp.Key.SetComputedStyle(kvp.Value);
                         }
                     }
 
@@ -2291,7 +2291,7 @@ public void Dispose()
                 if (LastComputedStyles != null)
                 {
                     foreach (var kvp in LastComputedStyles)
-                        if (kvp.Key != null) kvp.Key.ComputedStyle = kvp.Value;
+                        if (kvp.Key != null) kvp.Key.SetComputedStyle(kvp.Value);
                 }
 
                 // DO NOT clear dirty flags here - let the renderer see them and clear after processing.
@@ -2573,7 +2573,7 @@ public void Dispose()
                             foreach (var kvp in subtreeStyles)
                             {
                                 LastComputedStyles[kvp.Key] = kvp.Value;
-                                kvp.Key.ComputedStyle = kvp.Value;
+                                kvp.Key.SetComputedStyle(kvp.Value);
                             }
                         }
 

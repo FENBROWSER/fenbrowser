@@ -29,7 +29,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (!string.IsNullOrEmpty(viewBox))
                 {
                     var transform = CalculateViewBoxTransform(viewBox, bounds);
-                    canvas.Concat(ref transform);
+                    canvas.Concat(in transform);
                 }
                 else
                 {
@@ -172,9 +172,9 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (width <= 0 || height <= 0) return;
 
-            using (var path = new SKPath())
+            using (var path = PathBuilderHelper.Build(builder =>
+                   builder.AddRect(new SKRect(x, y, x + width, y + height))))
             {
-                path.AddRect(new SKRect(x, y, x + width, y + height));
                 PaintShape(canvas, element, path);
             }
         }
@@ -187,9 +187,8 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (r <= 0) return;
 
-            using (var path = new SKPath())
+            using (var path = PathBuilderHelper.Build(builder => builder.AddCircle(cx, cy, r)))
             {
-                path.AddCircle(cx, cy, r);
                 PaintShape(canvas, element, path);
             }
         }
@@ -203,9 +202,9 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (rx <= 0 || ry <= 0) return;
 
-            using (var path = new SKPath())
+            using (var path = PathBuilderHelper.Build(builder =>
+                   builder.AddOval(new SKRect(cx - rx, cy - ry, cx + rx, cy + ry))))
             {
-                path.AddOval(new SKRect(cx - rx, cy - ry, cx + rx, cy + ry));
                 PaintShape(canvas, element, path);
             }
         }
@@ -217,10 +216,12 @@ namespace FenBrowser.FenEngine.Rendering
             var x2 = ParseFloat(element.GetAttribute("x2"));
             var y2 = ParseFloat(element.GetAttribute("y2"));
 
-            using (var path = new SKPath())
+            using (var path = PathBuilderHelper.Build(builder =>
+                   {
+                       builder.MoveTo(x1, y1);
+                       builder.LineTo(x2, y2);
+                   }))
             {
-                path.MoveTo(x1, y1);
-                path.LineTo(x2, y2);
                 PaintShape(canvas, element, path);
             }
         }
@@ -233,21 +234,23 @@ namespace FenBrowser.FenEngine.Rendering
             var coords = points.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
             if (coords.Length < 2) return;
 
-            using (var path = new SKPath())
-            {
+            using (var path = PathBuilderHelper.Build(builder =>
+                   {
                 for (int i = 0; i < coords.Length - 1; i += 2)
                 {
                     var x = ParseFloat(coords[i]);
                     var y = ParseFloat(coords[i + 1]);
 
                     if (i == 0)
-                        path.MoveTo(x, y);
+                        builder.MoveTo(x, y);
                     else
-                        path.LineTo(x, y);
+                        builder.LineTo(x, y);
                 }
 
                 if (close)
-                    path.Close();
+                    builder.Close();
+                   }))
+            {
 
                 PaintShape(canvas, element, path);
             }

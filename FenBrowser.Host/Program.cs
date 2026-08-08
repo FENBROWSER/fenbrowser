@@ -1937,7 +1937,7 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                         var info = new SKImageInfo(dstW, dstH, SKColorType.Bgra8888, SKAlphaType.Premul);
                         using var resized = new SKBitmap(info);
                         using var canvas = new SKCanvas(resized);
-                        canvas.DrawBitmap(bitmap, new SKRect(0, 0, dstW, dstH));
+                        canvas.DrawBitmap(bitmap, new SKRect(0, 0, dstW, dstH), SKSamplingOptions.Default);
                         bitmap.Dispose();
                         bitmap = resized;
                     }

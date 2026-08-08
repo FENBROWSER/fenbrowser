@@ -68,8 +68,8 @@ namespace FenBrowser.Tests.Core.Parsing
             Assert.Equal("HTML", html.TagName);
 
             var elementChildren = html.ChildNodes.OfType<Element>().ToList();
-            Assert.Single(elementChildren.Where(e => e.TagName == "HEAD"));
-            Assert.Single(elementChildren.Where(e => e.TagName == "BODY"));
+            Assert.Single(elementChildren, e => e.TagName == "HEAD");
+            Assert.Single(elementChildren, e => e.TagName == "BODY");
         }
     }
 }

@@ -49,6 +49,34 @@ namespace FenBrowser.Tests.Scripting
         }
 
         [Fact]
+        public async Task CharacterDataCloneNode_IsAvailableToDeferredCallbacks()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var document = new HtmlParser("<html><body></body></html>", baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(
+                """
+                (function () {
+                    var text = document.createTextNode('test');
+                    var comment = document.createComment('test');
+                    return [
+                        typeof text.cloneNode,
+                        text.cloneNode(true).data,
+                        comment.cloneNode(true).data
+                    ].join('|');
+                })();
+                """);
+
+            Assert.Equal("function|test|test", result?.ToString());
+        }
+
+        [Fact]
         public async Task ReplaceChild_ReplacesElementAndDocumentFragmentChildren()
         {
             var baseUri = new Uri("https://www.youtube.com/");

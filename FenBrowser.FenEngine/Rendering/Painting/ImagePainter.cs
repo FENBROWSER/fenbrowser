@@ -28,7 +28,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         {
             // Get image source
             string src = null;
-            if (element.Attr != null && element.Attr.TryGetValue("src", out var srcAttr))
+            if (element.GetAttribute("src") is string srcAttr)
             {
                 src = srcAttr;
             }
@@ -51,7 +51,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             canvas.Save();
             canvas.ClipRect(box);
 
-            canvas.DrawBitmap(bitmap, destRect);
+            canvas.DrawBitmap(bitmap, destRect, SKSamplingOptions.Default);
 
             canvas.Restore();
         }
@@ -192,7 +192,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
 
             // Draw alt text if available
             string alt = "[Image]";
-            if (element.Attr != null && element.Attr.TryGetValue("alt", out var altText))
+            if (element.GetAttribute("alt") is string altText)
             {
                 alt = altText;
             }
