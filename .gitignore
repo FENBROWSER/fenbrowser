@@ -62,6 +62,8 @@ erro_*.log
 .agent/
 .github/instructions/
 artifacts/
+pub/
+test_skia.cs
 build.binlog
 nul
 .claude/
