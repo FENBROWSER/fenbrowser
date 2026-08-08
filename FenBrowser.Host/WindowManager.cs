@@ -295,6 +295,8 @@ namespace FenBrowser.Host
 
         private void Resize(Vector2D<int> size)
         {
+            if (size.X <= 0 || size.Y <= 0) return;
+
             SyncDimensions();
             _gl.Viewport(0, 0, (uint)_physicalWidth, (uint)_physicalHeight);
             CreateRenderTarget();

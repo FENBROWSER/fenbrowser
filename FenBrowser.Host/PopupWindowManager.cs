@@ -269,6 +269,8 @@ public sealed class PopupWindow : IDisposable
 
     private void OnResize(Silk.NET.Maths.Vector2D<int> size)
     {
+        if (size.X <= 0 || size.Y <= 0) return;
+
         _width = size.X;
         _height = size.Y;
         _renderedFrame?.Dispose();
