@@ -9,6 +9,7 @@ using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -270,6 +271,10 @@ namespace FenBrowser.Host.ProcessIsolation
         private Task _readLoop;
         private DateTime _lastFrameRequestUtc = DateTime.MinValue;
         private const int MaxPendingOutboundMessages = 128;
+        private const int OutboundQueueCapacity = 512;
+        private readonly Channel<RendererIpcEnvelope> _outbound;
+        private readonly Task _outboundLoop;
+        private int _outboundFaulted;
         private FrameSharedMemory _frameSharedMemory;
         private readonly int _parentPid = Environment.ProcessId;
 
@@ -293,6 +298,20 @@ namespace FenBrowser.Host.ProcessIsolation
                 1,
                 PipeTransmissionMode.Message,
                 PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+
+            // All outbound IPC is serialized through a single writer task.  A
+            // synchronous pipe write on the caller's thread (pointer-move
+            // dispatch and navigation both run on the UI thread) would block
+            // indefinitely once the renderer child stops draining the pipe —
+            // e.g. during a long raster pass or after a crash — hanging the
+            // whole window ("Not Responding").
+            _outbound = Channel.CreateBounded<RendererIpcEnvelope>(new BoundedChannelOptions(OutboundQueueCapacity)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+                SingleWriter = false
+            });
+            _outboundLoop = Task.Run(OutboundLoopAsync);
         }
 
         public void AttachProcess(System.Diagnostics.Process childProcess)
@@ -431,8 +450,11 @@ namespace FenBrowser.Host.ProcessIsolation
             try
             {
                 await _pipe.WaitForConnectionAsync(_cts.Token).ConfigureAwait(false);
-                _reader = new StreamReader(_pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
-                _writer = new StreamWriter(_pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
+                lock (_writeLock)
+                {
+                    _reader = new StreamReader(_pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
+                    _writer = new StreamWriter(_pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
+                }
 
                 Send(new RendererIpcEnvelope
                 {
@@ -574,22 +596,76 @@ namespace FenBrowser.Host.ProcessIsolation
                 return;
             }
 
+            // The pipe write happens on the dedicated outbound writer task;
+            // the caller (often the UI thread) never blocks on IPC I/O.
+            if (Volatile.Read(ref _outboundFaulted) != 0)
+            {
+                // Pipe is known broken (write faulted): drop instead of queueing
+                // into a dead session. The process-exit watcher handles teardown.
+                return;
+            }
+
+            if (!_outbound.Writer.TryWrite(envelope))
+            {
+                EngineLog.Write(
+                    LogSubsystem.ProcessIsolation,
+                    LogSeverity.Warn,
+                    $"[ProcessIsolation] Outbound IPC queue full for tab {TabId}; dropping message {envelope.Type}.");
+            }
+        }
+
+        /// <summary>
+        /// Single outbound writer: drains the bounded channel and performs the
+        /// actual (potentially blocking) named-pipe write.  If the renderer child
+        /// stops reading, only this task blocks; the UI thread stays responsive.
+        /// </summary>
+        private async Task OutboundLoopAsync()
+        {
             try
             {
-                lock (_writeLock)
+                await foreach (var envelope in _outbound.Reader.ReadAllAsync(_cts.Token).ConfigureAwait(false))
                 {
-                    if (!IsConnected)
+                    try
                     {
-                        BufferPendingOutbound(envelope);
-                        return;
-                    }
+                        lock (_writeLock)
+                        {
+                            if (!IsConnected)
+                            {
+                                BufferPendingOutbound(envelope);
+                                continue;
+                            }
 
-                    WriteEnvelope(envelope);
+                            WriteEnvelope(envelope);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Broken pipe / dead child. Stop writing and drop the
+                        // remaining queue; the session will be torn down by the
+                        // process-exit watcher.
+                        Volatile.Write(ref _outboundFaulted, 1);
+                        EngineLog.Write(
+                            LogSubsystem.ProcessIsolation,
+                            LogSeverity.Warn,
+                            $"[ProcessIsolation] Outbound IPC write failed for tab {TabId}; dropping queue: {ex.Message}");
+                        while (_outbound.Reader.TryRead(out _))
+                        {
+                            // Drain silently.
+                        }
+                        break;
+                    }
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutdown.
             }
             catch (Exception ex)
             {
-                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Failed to send IPC message for tab {TabId}: {ex.Message}");
+                EngineLog.Write(
+                    LogSubsystem.ProcessIsolation,
+                    LogSeverity.Warn,
+                    $"[ProcessIsolation] Outbound IPC loop terminated for tab {TabId}: {ex.Message}");
             }
         }
 
@@ -620,7 +696,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 while (_pendingOutbound.Count > 0)
                 {
                     var envelope = _pendingOutbound.Dequeue();
-                    WriteEnvelope(envelope);
+                    _outbound.Writer.TryWrite(envelope);
                 }
             }
         }
@@ -656,6 +732,7 @@ namespace FenBrowser.Host.ProcessIsolation
         {
             _cts.Cancel();
             _readyTcs.TrySetResult(false);
+            _outbound.Writer.TryComplete();
 
             TryDispose(_writer, "writer");
             TryDispose(_reader, "reader");

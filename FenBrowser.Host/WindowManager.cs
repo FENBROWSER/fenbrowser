@@ -238,7 +238,7 @@ namespace FenBrowser.Host
 
         private void InitializeSkia()
         {
-            var glInterface = GRGlInterface.Create();
+            var glInterface = GRGlInterface.CreateGles(name => _window.GLContext.TryGetProcAddress(name, out var addr) ? addr : IntPtr.Zero);
             // Use specific exception types so process-isolation crash handlers
             // and Application.Run wrappers can distinguish GPU-init failure
             // (which is recoverable by falling back to CPU raster) from generic

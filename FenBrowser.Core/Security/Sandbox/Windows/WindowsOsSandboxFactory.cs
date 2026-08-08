@@ -1,5 +1,7 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.Versioning;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Security.Sandbox.Windows;
 
@@ -23,8 +25,11 @@ namespace FenBrowser.Core.Security.Sandbox.Windows;
 ///   <item>
 ///     <term>All other kinds</term>
 ///     <description>
-///       <see cref="WindowsAppContainerSandbox"/> — AppContainer token restriction
-///       combined with a Job Object for resource limits.
+///       <see cref="WindowsAppContainerSandbox"/> when the AppContainer can
+///       actually launch child processes on this machine; otherwise a
+///       <see cref="WindowsJobObjectSandbox"/> (memory caps, CPU rate cap, UI
+///       restrictions, kill-on-close) is used so the browser still runs with
+///       process-level isolation.
 ///     </description>
 ///   </item>
 /// </list>
@@ -32,6 +37,10 @@ namespace FenBrowser.Core.Security.Sandbox.Windows;
 [SupportedOSPlatform("windows")]
 public sealed class WindowsOsSandboxFactory : IOsSandboxFactory
 {
+    private static readonly object s_appContainerProbeLock = new();
+    private static bool s_appContainerProbed;
+    private static bool s_appContainerViable;
+
     /// <inheritdoc/>
     public bool IsSandboxingSupported => true;
 
@@ -61,7 +70,62 @@ public sealed class WindowsOsSandboxFactory : IOsSandboxFactory
             return new NullSandbox(profile, suppressWarning: true);
         }
 
-        // All child process types use AppContainer + Job Object.
-        return new WindowsAppContainerSandbox(profile);
+        // AppContainer launch requires the package SID to have execute access to
+        // the target binary. On machines where CreateProcessW inside an
+        // AppContainer fails (ERROR_FILE_NOT_FOUND is how the OS hides the
+        // missing ACL), fall back to the Job Object sandbox — still real
+        // process isolation (memory cap, CPU rate cap, UI restrictions,
+        // kill-on-close) — rather than silently running unsandboxed.
+        if (AppContainerIsViable())
+        {
+            return new WindowsAppContainerSandbox(profile);
+        }
+
+        return new WindowsJobObjectSandbox(profile);
+    }
+
+    private static bool AppContainerIsViable()
+    {
+        lock (s_appContainerProbeLock)
+        {
+            if (s_appContainerProbed)
+            {
+                return s_appContainerViable;
+            }
+
+            s_appContainerProbed = true;
+            s_appContainerViable = false;
+
+            try
+            {
+                // Probe with a system binary (System32 is world-executable, so a
+                // failure here means the AppContainer path itself is broken, not
+                // the target's ACL). Use a throwaway profile so the probe never
+                // touches the real renderer profile.
+                using var sandbox = new WindowsAppContainerSandbox(OsSandboxProfile.GpuProcess);
+                var psi = new ProcessStartInfo
+                {
+                    FileName = Environment.SystemDirectory + @"\cmd.exe",
+                    Arguments = "/c exit 0",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+
+                using var probe = sandbox.SpawnProcess(psi);
+                probe.WaitForExit(3000);
+                s_appContainerViable = true;
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug,
+                    $"[SandboxFactory] AppContainer spawn probe succeeded (pid={probe.Id}).");
+            }
+            catch (Exception ex)
+            {
+                s_appContainerViable = false;
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn,
+                    $"[SandboxFactory] AppContainer is not viable on this machine; falling back to Job Object sandbox for child processes. {ex.GetType().Name}: {ex.Message}");
+            }
+
+            return s_appContainerViable;
+        }
     }
 }

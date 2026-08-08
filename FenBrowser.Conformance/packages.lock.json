@@ -321,7 +321,9 @@
           "Silk.NET.Windowing": "[2.23.0, )",
           "SkiaSharp": "[4.148.0, )",
           "SkiaSharp.HarfBuzz": "[4.148.0, )",
+          "SkiaSharp.NativeAssets.Linux.NoDependencies": "[4.148.0, )",
           "SkiaSharp.NativeAssets.Win32": "[4.148.0, )",
+          "SkiaSharp.NativeAssets.macOS": "[4.148.0, )",
           "Topten.RichTextKit": "[0.4.167, )"
         }
       },

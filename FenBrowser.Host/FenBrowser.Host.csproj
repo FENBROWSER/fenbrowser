@@ -51,8 +51,8 @@
     <PackageReference Include="SkiaSharp" Version="4.148.0" />
     <PackageReference Include="SkiaSharp.HarfBuzz" Version="4.148.0" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="4.148.0" />
-    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="4.148.0" Condition="'$(OS)' == 'Linux'" />
-    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="4.148.0" Condition="'$(OS)' == 'Unix' And '$(OS)' != 'Linux'" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.148.0" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="4.148.0" />
     <PackageReference Include="Topten.RichTextKit" Version="0.4.167" />
   </ItemGroup>
 

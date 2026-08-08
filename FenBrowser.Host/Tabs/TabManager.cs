@@ -78,6 +78,25 @@ public class TabManager
             return;
         }
 
+        // RendererCrashed can be raised from a non-UI thread (brokered child
+        // process exit watcher, startup continuation) while the widget tree
+        // write lock is held by the compositor/arrange path. Marshaling here
+        // keeps tab mutation, ActiveTabChanged (which touches the GLFW window
+        // title), and widget invalidation on the UI thread — otherwise the UI
+        // thread can deadlock waiting for the tree lock this handler's caller
+        // already holds (NotResponding / AppHang).
+        var windowManager = WindowManager.Instance;
+        if (windowManager.IsMainThreadInitialized && !windowManager.IsOnMainThread)
+        {
+            _ = windowManager.RunOnMainThread(() => OnRendererCrashedOnUiThread(tabId, reason));
+            return;
+        }
+
+        OnRendererCrashedOnUiThread(tabId, reason);
+    }
+
+    private void OnRendererCrashedOnUiThread(int tabId, string reason)
+    {
         EngineLogBridge.Warn($"[TabManager] Renderer crash for tab {tabId}: {reason}", LogCategory.ProcessIsolation);
         var tab = _tabs.FirstOrDefault(t => t.Id == tabId);
         if (tab != null)

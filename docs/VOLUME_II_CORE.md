@@ -1756,6 +1756,12 @@ Verification:
 Verification:
 
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --verbosity:minimal`: pass with zero warnings and zero errors.
+
+### 1.93 Windows AppContainer Viability Fallback (2026-08-08)
+
+- `WindowsOsSandboxFactory` probes AppContainer process creation once with a system executable before selecting the sandbox for non-broker child processes.
+- When that probe fails, the factory now selects `WindowsJobObjectSandbox` rather than allowing an AppContainer launch failure to prevent child-process startup. The fallback retains the Job Object resource limits, UI restrictions, and kill-on-close behavior, but does not claim AppContainer token isolation.
+- The probe outcome is recorded through the ProcessIsolation log subsystem for operator diagnosis.
 - Focused parser/policy slice: pass (`120/120`). `HtmlTokenizerAttributeFloodTests` passes (`4/4`) in 10 consecutive fresh Release test processes; a 16,000-attribute input capped at 128 retained attributes allocated 26,752 bytes, and the parser-level test preserved a usable document while propagating the degraded outcome.
 
 ### 1.86 Batched HTML Data-State NUL Recovery (2026-08-01)

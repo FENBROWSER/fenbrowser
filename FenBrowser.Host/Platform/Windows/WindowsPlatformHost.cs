@@ -173,18 +173,17 @@ internal sealed class WindowsPlatformHost : IPlatformHost
 
     public IWindow CreateWindow(WindowOptions options)
     {
-        var silkOptions = new Silk.NET.Windowing.WindowOptions
-        {
-            Size = new Vector2D<int>(options.Size.X, options.Size.Y),
-            VSync = options.VSync,
-            WindowState = MapWindowState(options.State),
-            WindowBorder = MapWindowBorder(options.Border),
-            TransparentFramebuffer = options.TransparentFramebuffer,
-            Title = options.Title,
-            API = options.Api != null
-                ? (GraphicsAPI)options.Api
-                : new GraphicsAPI(ContextAPI.OpenGLES, ContextProfile.Core, ContextFlags.Default, new APIVersion(3, 0))
-        };
+        var silkOptions = Silk.NET.Windowing.WindowOptions.Default;
+        silkOptions.Size = new Vector2D<int>(options.Size.X, options.Size.Y);
+        silkOptions.VSync = options.VSync;
+        silkOptions.WindowState = MapWindowState(options.State);
+        silkOptions.WindowBorder = MapWindowBorder(options.Border);
+        silkOptions.TransparentFramebuffer = options.TransparentFramebuffer;
+        silkOptions.Title = options.Title;
+        silkOptions.IsVisible = true;
+        silkOptions.API = options.Api != null
+            ? (GraphicsAPI)options.Api
+            : new GraphicsAPI(ContextAPI.OpenGLES, ContextProfile.Core, ContextFlags.Default, new APIVersion(3, 0));
 
         var window = Silk.NET.Windowing.Window.Create(silkOptions);
 

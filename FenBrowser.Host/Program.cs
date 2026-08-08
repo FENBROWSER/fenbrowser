@@ -280,7 +280,10 @@ namespace FenBrowser.Host
             }
             catch (Exception ex)
             {
-                AttachConsole(ATTACH_PARENT_PROCESS); // Ensure crash logs are visible if run from console
+                if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows))
+                {
+                    AttachConsole(ATTACH_PARENT_PROCESS); // Ensure crash logs are visible if run from console
+                }
                 Console.WriteLine($"[Host] Fatal Shutdown: {ex}");
                 EngineLog.Write(LogSubsystem.General, LogSeverity.Error, $"[Host] Fatal Shutdown: {ex}", LogMarker.Invariant);
                 TryExportCrashBundle("Host fatal shutdown", ex);

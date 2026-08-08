@@ -1513,3 +1513,15 @@ Verification:
   zero `libSkiaSharp`/`0xC0000409` exits: 249 `OK`, 3 harness `CRASH`, 1
   `TIMEOUT`, 1 `ERROR`, and 78 maintained `SKIP`. The preceding lifecycle run
   had 21 process crashes; no shard timed out or stalled.
+
+### 6.75 Cross-Platform Host Startup and Brokered IPC Responsiveness (2026-08-08)
+
+- Platform window hosts now start from Silk's default window options, explicitly make the native window visible, and retain the existing requested size, state, border, VSync, transparency, title, and graphics API. The Host carries the Linux and macOS Skia native assets directly so a restored package graph includes each supported desktop runtime.
+- `WindowManager` creates Skia's GLES interface from the active Silk context's procedure resolver. Fatal-shutdown console attachment is now Windows-only.
+- The parent side of `RendererIpc` serializes outbound named-pipe writes through one bounded writer queue. A stopped or crashed renderer can block only that writer task; UI-thread navigation and input delivery no longer wait synchronously for a pipe write. A write fault drops the remaining session queue and lets the existing process-exit path perform teardown.
+- Renderer-crash tab mutation is marshaled to the initialized Host UI thread before it changes tab/chrome state, preserving the established widget-tree locking and native-window affinity.
+
+Verification:
+
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Debug -v minimal /nodeReuse:false`: passed with 0 errors (existing warnings remain).
+- The available brokered renderer acceptance test is platform-gated in this environment and was skipped; no live renderer-startup success is claimed here.
