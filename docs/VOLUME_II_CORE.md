@@ -1757,6 +1757,16 @@ Verification:
 
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --verbosity:minimal`: pass with zero warnings and zero errors.
 
+### 1.93 Versioned Compatibility Event Envelope (2026-08-11)
+
+- `EngineLog` now normalizes every emitted engine event into the bounded `fenbrowser.compatibility-event.v1` envelope. Navigation, frame, document, realm, request, script, task, and correlation identifiers remain nullable but have stable fields in every record.
+- Existing missing-API, JavaScript/event-loop failure, DOM, input/event, network, and IPC diagnostics enter this recorder through the authoritative engine logging path. Event IDs are de-duplicated before bounded retention, including externally published child-process events.
+- WebIDL validation seams can emit `webidl.behavior-mismatch` records with expected and actual behavior without misclassifying the observation as a missing API.
+
+Verification:
+
+- Clean Core build passes with zero errors; focused compatibility-recorder tests pass (`3/3`).
+
 ### 1.93 Windows AppContainer Viability Fallback (2026-08-08)
 
 - `WindowsOsSandboxFactory` probes AppContainer process creation once with a system executable before selecting the sandbox for non-broker child processes.

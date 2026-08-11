@@ -116,6 +116,7 @@ public static class EngineLog
             _logger = BuildLogger(_options);
             _logger.EventWritten += OnEngineEvent;
             _compatibilityBufferCap = Math.Max(1000, _options.RingBufferCapacity);
+            CompatibilityEventRecorder.ConfigureCapacity(_compatibilityBufferCap);
             if (!_options.Enabled)
             {
                 ClearCompatibilityBuffer();
@@ -142,6 +143,7 @@ public static class EngineLog
             _logger = BuildLogger(_options);
             _logger.EventWritten += OnEngineEvent;
             _compatibilityBufferCap = Math.Max(1000, _options.RingBufferCapacity);
+            CompatibilityEventRecorder.ConfigureCapacity(_compatibilityBufferCap);
         }
     }
 
@@ -238,6 +240,7 @@ public static class EngineLog
         }
 
         DocumentCounters.Clear();
+        CompatibilityEventRecorder.Clear();
     }
 
     public static IReadOnlyList<EngineLogDocumentCounter> GetPerDocumentCounters(int maxCount = 100)
@@ -487,6 +490,7 @@ public static class EngineLog
 
     private static void OnEngineEvent(EngineLogEvent evt)
     {
+        CompatibilityEventRecorder.Record(evt);
         UpdatePerDocumentCounter(evt);
 
         try
