@@ -3957,6 +3957,12 @@ Verification:
 - `performance.json` is explicitly a `partial` single diagnostic sample, not a benchmark. It contains only already-captured elapsed navigation, lifecycle, layout/paint/raster, watchdog, callback, timer, and microtask values and lists unavailable metrics.
 - `DebugSiteArtifactContractTests` failed before the exporter change because `ipc.json` was absent, then passed after the fix. The test invokes the real bundle writer, validates all three schemas, and verifies that the manifest marks each file present.
 
+### Correlated Compatibility and IPC Bundle Evidence (2026-08-11)
+
+- `debug-site` now writes `compatibility_events.json` from the bounded Core compatibility recorder and derives schema-v2 `ipc.json` from the same de-duplicated records.
+- IPC capture is an active diagnostic contract even when an in-process run emits no IPC. When renderer, network, GPU, utility, or broker events are present, the artifact reports brokered mode and preserves event, correlation, tab, frame, document, realm, request, script, and task identifiers.
+- The artifact manifest treats the compatibility-event stream as required evidence. It no longer substitutes a hard-coded `NOT_STARTED` IPC record for available runtime evidence.
+
 Verification:
 
 - Discovery lists `DebugSiteArtifactContractTests.WriteBundle_AlwaysEmitsTypedSupplementalArtifactsAndManifestEntries`.

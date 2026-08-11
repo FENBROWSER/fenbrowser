@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using FenBrowser.Core.Logging;
 using FenBrowser.Tooling;
 using FenBrowser.Tests.Logging;
 
@@ -10,6 +11,7 @@ public sealed class DebugSiteArtifactContractTests
 {
     private static readonly string[] RequiredSupplementalArtifacts =
     {
+        "compatibility_events.json",
         "ipc.json",
         "sandbox_denials.json",
         "performance.json"
@@ -18,6 +20,7 @@ public sealed class DebugSiteArtifactContractTests
     [Fact]
     public void WriteBundle_AlwaysEmitsTypedSupplementalArtifactsAndManifestEntries()
     {
+        CompatibilityEventRecorder.Clear();
         var programType = typeof(Program);
         var reportType = programType.GetNestedType("DebugSiteReport", BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("DebugSiteReport test seam was not found.");
@@ -36,7 +39,22 @@ public sealed class DebugSiteArtifactContractTests
             Assert.True(File.Exists(Path.Combine(bundlePath, name)), $"Required artifact was not emitted: {name}");
         }
 
-        AssertInactiveArtifact(Path.Combine(bundlePath, "ipc.json"), "eventState", "no-events", "eventCount");
+        using (var ipc = JsonDocument.Parse(File.ReadAllText(Path.Combine(bundlePath, "ipc.json"))))
+        {
+            Assert.Equal(2, ipc.RootElement.GetProperty("schemaVersion").GetInt32());
+            Assert.Equal("IMPLEMENTED", ipc.RootElement.GetProperty("status").GetString());
+            Assert.Equal("active", ipc.RootElement.GetProperty("state").GetString());
+            Assert.Equal("compatibility-event-recorder", ipc.RootElement.GetProperty("configuration").GetString());
+            Assert.Equal("no-events", ipc.RootElement.GetProperty("eventState").GetString());
+            Assert.Equal(0, ipc.RootElement.GetProperty("eventCount").GetInt32());
+        }
+
+        using (var compatibility = JsonDocument.Parse(
+                   File.ReadAllText(Path.Combine(bundlePath, "compatibility_events.json"))))
+        {
+            Assert.Equal("fenbrowser.compatibility-events.v1", compatibility.RootElement.GetProperty("schema").GetString());
+            Assert.Equal(0, compatibility.RootElement.GetProperty("eventCount").GetInt32());
+        }
         AssertInactiveArtifact(Path.Combine(bundlePath, "sandbox_denials.json"), "denialState", "no-denials", "denialCount");
 
         using (var performance = JsonDocument.Parse(File.ReadAllText(Path.Combine(bundlePath, "performance.json"))))
@@ -54,6 +72,53 @@ public sealed class DebugSiteArtifactContractTests
                 item => string.Equals(item.GetProperty("name").GetString(), name, StringComparison.Ordinal));
             Assert.True(entry.GetProperty("exists").GetBoolean(), $"Manifest did not mark {name} present.");
         }
+    }
+
+    [Fact]
+    public void WriteBundle_ExportsCorrelatedBrokeredIpcEvidence()
+    {
+        CompatibilityEventRecorder.Clear();
+        var correlationId = Guid.NewGuid();
+        CompatibilityEventRecorder.Record(new EngineLogEvent(
+            new EngineLogHeader(
+                DateTimeOffset.UtcNow,
+                1,
+                Environment.ProcessId,
+                Environment.CurrentManagedThreadId,
+                LogSubsystem.Ipc,
+                LogSeverity.Debug,
+                LogMarker.None,
+                Guid.NewGuid(),
+                null,
+                correlationId,
+                new EngineLogContext(TabId: "9", TaskId: "task-9", Source: "renderer")),
+            new EngineLogPayload
+            {
+                MessageTemplate = "Renderer command acknowledged",
+                Fields = new Dictionary<string, object> { ["eventKind"] = "ipc.ack" }
+            }));
+
+        var programType = typeof(Program);
+        var reportType = programType.GetNestedType("DebugSiteReport", BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("DebugSiteReport test seam was not found.");
+        var report = Activator.CreateInstance(reportType, nonPublic: true)
+            ?? throw new InvalidOperationException("DebugSiteReport could not be created.");
+        SetProperty(reportType, report, "Url", "https://brokered-evidence.invalid/");
+        SetProperty(reportType, report, "FinalUrl", "https://brokered-evidence.invalid/");
+        var writeBundle = programType.GetMethod("WriteDebugSiteBundle", BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("WriteDebugSiteBundle test seam was not found.");
+        var bundlePath = (string?)writeBundle.Invoke(null, new[] { report })
+            ?? throw new InvalidOperationException("Bundle writer did not return a path.");
+
+        using var ipc = JsonDocument.Parse(File.ReadAllText(Path.Combine(bundlePath, "ipc.json")));
+        Assert.Equal("captured", ipc.RootElement.GetProperty("state").GetString());
+        Assert.Equal("brokered", ipc.RootElement.GetProperty("processMode").GetString());
+        Assert.Equal(1, ipc.RootElement.GetProperty("eventCount").GetInt32());
+        var captured = Assert.Single(ipc.RootElement.GetProperty("events").EnumerateArray());
+        Assert.Equal("ipc.ack", captured.GetProperty("kind").GetString());
+        Assert.Equal(correlationId.ToString("N"), captured.GetProperty("correlationId").GetString());
+        Assert.Equal("9", captured.GetProperty("tabId").GetString());
+        Assert.Equal("task-9", captured.GetProperty("taskId").GetString());
     }
 
     [Fact]

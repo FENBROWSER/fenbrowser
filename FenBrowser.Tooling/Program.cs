@@ -793,6 +793,12 @@ namespace FenBrowser.Tooling
             Directory.CreateDirectory(bundleDir);
 
             var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
+            var compatibilityJsonOptions = new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            };
+            var compatibilityEvents = CompatibilityEventRecorder.Snapshot();
             var exceptionSummary = BuildExceptionSummary(report);
             var firstBlocker = BuildFirstBlocker(report);
             var artifactExportFailures = new List<DebugSiteArtifactExportFailure>();
@@ -848,7 +854,16 @@ namespace FenBrowser.Tooling
                     report.EventLoop ?? new BrowserEventLoopSnapshot(),
                     jsonOptions));
             WriteText("first_blocker.json", () => JsonSerializer.Serialize(firstBlocker, jsonOptions));
-            WriteText("ipc.json", () => JsonSerializer.Serialize(BuildInactiveIpcArtifact(), jsonOptions));
+            WriteText(
+                "compatibility_events.json",
+                () => JsonSerializer.Serialize(
+                    BuildCompatibilityEventArtifact(compatibilityEvents),
+                    compatibilityJsonOptions));
+            WriteText(
+                "ipc.json",
+                () => JsonSerializer.Serialize(
+                    BuildIpcArtifact(compatibilityEvents),
+                    compatibilityJsonOptions));
             WriteText(
                 "sandbox_denials.json",
                 () => JsonSerializer.Serialize(BuildInactiveSandboxDenialsArtifact(), jsonOptions));
@@ -1025,7 +1040,8 @@ namespace FenBrowser.Tooling
             sb.AppendLine("- `interaction.json`: click, focus, text, submit, request/navigation, and bounded event evidence when interaction was requested.");
             sb.AppendLine("- `interaction_before.png` / `interaction_after.png`: correlated screenshots when interaction was requested.");
             sb.AppendLine("- `first_blocker.json`: deterministic milestone dependency and first-causal-blocker classification.");
-            sb.AppendLine("- `ipc.json`: typed IPC state; inactive with zero events for the current in-process debug-site host.");
+            sb.AppendLine("- `compatibility_events.json`: versioned, correlated engine compatibility events for this run.");
+            sb.AppendLine("- `ipc.json`: IPC events derived from the same recorder, including brokered child-process evidence when present.");
             sb.AppendLine("- `sandbox_denials.json`: typed sandbox state; inactive with zero denials when no sandbox is configured.");
             sb.AppendLine("- `performance.json`: single diagnostic sample from already-captured navigation and render-stage telemetry; not a benchmark.");
             sb.AppendLine("- `style_layout.json`: style/layout/paint counters, timing, status, and first blocker classification.");
@@ -1743,19 +1759,47 @@ namespace FenBrowser.Tooling
             };
         }
 
-        private static object BuildInactiveIpcArtifact()
+        private static object BuildCompatibilityEventArtifact(
+            IReadOnlyList<CompatibilityEventEnvelope> events)
         {
+            var captured = events ?? Array.Empty<CompatibilityEventEnvelope>();
             return new
             {
                 schemaVersion = 1,
-                status = "NOT_STARTED",
-                state = "inactive",
-                configuration = "not-configured",
-                processMode = "in-process",
-                eventState = "no-events",
-                eventCount = 0,
-                reason = "The current debug-site host runs in process; brokered IPC capture is not configured.",
-                events = Array.Empty<object>()
+                schema = "fenbrowser.compatibility-events.v1",
+                status = "IMPLEMENTED",
+                state = captured.Count > 0 ? "captured" : "active",
+                eventCount = captured.Count,
+                events = captured
+            };
+        }
+
+        private static object BuildIpcArtifact(IReadOnlyList<CompatibilityEventEnvelope> events)
+        {
+            var ipcEvents = (events ?? Array.Empty<CompatibilityEventEnvelope>())
+                .Where(item => string.Equals(item.Domain, "ipc", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            var brokered = ipcEvents.Any(item =>
+                string.Equals(item.Source, "broker", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(item.Source, "renderer", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(item.Source, "network", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(item.Source, "gpu", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(item.Source, "utility", StringComparison.OrdinalIgnoreCase));
+
+            return new
+            {
+                schemaVersion = 2,
+                schema = "fenbrowser.ipc-events.v2",
+                status = "IMPLEMENTED",
+                state = ipcEvents.Length > 0 ? "captured" : "active",
+                configuration = "compatibility-event-recorder",
+                processMode = brokered ? "brokered" : "in-process",
+                eventState = ipcEvents.Length > 0 ? "captured" : "no-events",
+                eventCount = ipcEvents.Length,
+                reason = ipcEvents.Length > 0
+                    ? "IPC evidence captured from the engine event stream."
+                    : "No IPC events were emitted in this diagnostic run.",
+                events = ipcEvents
             };
         }
 
@@ -1844,6 +1888,7 @@ namespace FenBrowser.Tooling
                 "script_loading.json",
                 "event_loop.json",
                 "first_blocker.json",
+                "compatibility_events.json",
                 "ipc.json",
                 "sandbox_denials.json",
                 "performance.json",
