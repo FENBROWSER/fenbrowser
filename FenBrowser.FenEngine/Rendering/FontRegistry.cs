@@ -253,8 +253,14 @@ namespace FenBrowser.FenEngine.Rendering
                             continue;
                         }
 
-                        Uri uri;
-                        if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out uri) && descriptor.BaseUri != null)
+                        Uri uri = null;
+                        
+                        // Handle protocol-relative URLs manually to prevent Windows interpreting them as UNC file paths
+                        if (sourceUrl.StartsWith("//") && descriptor.BaseUri != null)
+                        {
+                            Uri.TryCreate(descriptor.BaseUri, sourceUrl, out uri);
+                        }
+                        else if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out uri) && descriptor.BaseUri != null)
                         {
                             Uri.TryCreate(descriptor.BaseUri, sourceUrl, out uri);
                         }
@@ -513,25 +519,25 @@ namespace FenBrowser.FenEngine.Rendering
                 };
 
                 // Parse font-family
-                var familyMatch = Regex.Match(fontFaceBlock, @"font-family\s*:\s*([""']?)([^;""']+)\1", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
-                if (familyMatch.Success)
-                    descriptor.Family = familyMatch.Groups[2].Value.Trim();
+                string family = ExtractLastCssPropertyValue(fontFaceBlock, "font-family");
+                if (!string.IsNullOrEmpty(family))
+                {
+                    descriptor.Family = family.Trim('\'', '"', ' ');
+                }
 
                 // Parse src. Keep the last declaration so fallback lists that override
                 // an earlier legacy src (for example EOT) are honored.
-                var srcMatches = Regex.Matches(fontFaceBlock, @"src\s*:\s*([^;]+)", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
-                if (srcMatches.Count > 0)
+                string src = ExtractLastCssPropertyValue(fontFaceBlock, "src");
+                if (!string.IsNullOrEmpty(src))
                 {
-                    var lastSrc = srcMatches[srcMatches.Count - 1];
-                    descriptor.Source = lastSrc.Groups[1].Value.Trim();
-                    // We let LoadFontFaceAsync handle the url()/local() parsing details
+                    descriptor.Source = src;
                 }
 
                 // Parse font-weight
-                var weightMatch = Regex.Match(fontFaceBlock, @"font-weight\s*:\s*(\d+|normal|bold|lighter|bolder)", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
-                if (weightMatch.Success)
+                string weightVal = ExtractLastCssPropertyValue(fontFaceBlock, "font-weight");
+                if (!string.IsNullOrEmpty(weightVal))
                 {
-                    var weightVal = weightMatch.Groups[1].Value.ToLowerInvariant();
+                    weightVal = weightVal.ToLowerInvariant();
                     if (weightVal == "normal") descriptor.Weight = 400;
                     else if (weightVal == "bold") descriptor.Weight = 700;
                     else if (weightVal == "lighter") descriptor.Weight = 300;
@@ -540,10 +546,10 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 // Parse font-style
-                var styleMatch = Regex.Match(fontFaceBlock, @"font-style\s*:\s*(normal|italic|oblique)", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
-                if (styleMatch.Success)
+                string styleVal = ExtractLastCssPropertyValue(fontFaceBlock, "font-style");
+                if (!string.IsNullOrEmpty(styleVal))
                 {
-                    var styleVal = styleMatch.Groups[1].Value.ToLowerInvariant();
+                    styleVal = styleVal.ToLowerInvariant();
                     if (styleVal == "italic") descriptor.Style = SKFontStyleSlant.Italic;
                     else if (styleVal == "oblique") descriptor.Style = SKFontStyleSlant.Oblique;
                     else descriptor.Style = SKFontStyleSlant.Upright;
@@ -714,6 +720,43 @@ namespace FenBrowser.FenEngine.Rendering
             catch
             {
             }
+        }
+
+        private static string ExtractLastCssPropertyValue(string block, string propertyName)
+        {
+            string result = null;
+            int idx = 0;
+            while ((idx = block.IndexOf(propertyName, idx, StringComparison.OrdinalIgnoreCase)) >= 0)
+            {
+                if (idx > 0 && char.IsLetterOrDigit(block[idx - 1]))
+                {
+                    idx += propertyName.Length;
+                    continue;
+                }
+
+                int colonIdx = block.IndexOf(':', idx + propertyName.Length);
+                if (colonIdx >= 0)
+                {
+                    bool onlySpaces = true;
+                    for (int j = idx + propertyName.Length; j < colonIdx; j++)
+                    {
+                        if (!char.IsWhiteSpace(block[j]))
+                        {
+                            onlySpaces = false;
+                            break;
+                        }
+                    }
+
+                    if (onlySpaces)
+                    {
+                        int semiIdx = block.IndexOf(';', colonIdx);
+                        if (semiIdx < 0) semiIdx = block.Length;
+                        result = block.Substring(colonIdx + 1, semiIdx - colonIdx - 1).Trim();
+                    }
+                }
+                idx += propertyName.Length;
+            }
+            return result;
         }
     }
 }
