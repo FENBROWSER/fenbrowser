@@ -1074,8 +1074,9 @@ public Uri LastTextResponseUri { get; private set; }
                 string text = null;
                 try 
                 { 
-                    // Read raw bytes first
-                    var bytes = await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                    // Read raw bytes first with limits
+                    var maxTextBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxTextBodyBytes);
+                    var bytes = await ReadStreamingBodyBoundedAsync(resp, maxTextBodyBytes, url?.ToString(), "text_body_bytes").ConfigureAwait(false);
                     
                     // MIME Sniff if declared type is missing or generic
                     var effectiveMime = ct;
@@ -1523,9 +1524,28 @@ public Uri LastTextResponseUri { get; private set; }
 
                 byte[] bodyBytes = null;
                 var corbFetchMode = fetchMode;
+                var maxTextBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxTextBodyBytes);
                 try
                 {
-                    bodyBytes = await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                    bodyBytes = await ReadStreamingBodyBoundedAsync(resp, maxTextBodyBytes, finalUri?.ToString(), "text_body_bytes").ConfigureAwait(false);
+                }
+                catch (InvalidOperationException ex) when (ex.Message.StartsWith("LIMIT_EXCEEDED"))
+                {
+                    return new FetchResult
+                    {
+                        Status = FetchStatus.LimitExceeded,
+                        ErrorDetail = $"Response body exceeded max text body bytes ({maxTextBodyBytes}).",
+                        FinalUri = finalUri,
+                        StatusCode = (int)resp.StatusCode,
+                        ContentType = ct,
+                        Redirected = redirectChain.Count > 1,
+                        RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                        FailureReason = FetchFailureReasonCode.LimitExceeded,
+                        LimitType = "text_body_bytes",
+                        InputSizeBytes = maxTextBodyBytes,
+                        IsRetryable = false
+                    };
                 }
                 catch (Exception bodyEx)
                 {
@@ -1539,29 +1559,6 @@ public Uri LastTextResponseUri { get; private set; }
                         RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
                         FailureReason = FetchFailureReasonCode.BodyReadFailed,
                         IsRetryable = true
-                    };
-                }
-
-                var maxTextBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxTextBodyBytes);
-                if (bodyBytes.Length > maxTextBodyBytes)
-                {
-                    EngineLogCompat.Warn(
-                        $"[Network.Resilience] Text body limit exceeded for '{finalUri}' ({bodyBytes.Length} > {maxTextBodyBytes}).",
-                        LogCategory.Network);
-                    return new FetchResult
-                    {
-                        Status = FetchStatus.LimitExceeded,
-                        ErrorDetail = $"Response body exceeded max text body bytes ({maxTextBodyBytes}).",
-                        FinalUri = finalUri,
-                        StatusCode = (int)resp.StatusCode,
-                        ContentType = ct,
-                        Redirected = redirectChain.Count > 1,
-                        RedirectCount = Math.Max(0, redirectChain.Count - 1),
-                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
-                        FailureReason = FetchFailureReasonCode.LimitExceeded,
-                        LimitType = "text_body_bytes",
-                        InputSizeBytes = bodyBytes.Length,
-                        IsRetryable = false
                     };
                 }
 
@@ -1792,9 +1789,17 @@ public Uri LastTextResponseUri { get; private set; }
                 }
                 LastTextResponseUri = resp.RequestMessage != null ? resp.RequestMessage.RequestUri : url;
                 string text = null;
+                byte[] bodyBytes = null;
+                var maxBinaryBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxTextBodyBytes);
                 try
                 {
-                    text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    bodyBytes = await ReadStreamingBodyBoundedAsync(resp, maxBinaryBodyBytes, url?.ToString(), "text_body_bytes").ConfigureAwait(false);
+                    text = System.Text.Encoding.UTF8.GetString(bodyBytes);
+                }
+                catch (InvalidOperationException ex) when (ex.Message.StartsWith("LIMIT_EXCEEDED"))
+                {
+                    EngineLogCompat.Debug($"[FetchTextOptError] body limit exceeded {url}", LogCategory.Network);
+                    return null;
                 }
                 catch (Exception bodyEx)
                 {
@@ -1998,14 +2003,24 @@ public Uri LastTextResponseUri { get; private set; }
                 }
                 // NoteHsts(resp, url); // Handled by HstsHandler
 
-                var buf = await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
                 var maxImageBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxImageBodyBytes);
-                if (buf.Length > maxImageBodyBytes)
+                byte[] buf = null;
+                var cachedBuffer = await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false);
+                if (cachedBuffer != null)
                 {
-                    EngineLogCompat.Warn(
-                        $"[Network.Resilience] Dropping image '{url}' because body size {buf.Length} exceeded limit {maxImageBodyBytes}.",
-                        LogCategory.Network);
-                    return null;
+                    buf = cachedBuffer;
+                    if (buf.Length > maxImageBodyBytes) return null;
+                }
+                else
+                {
+                    try
+                    {
+                        buf = await ReadStreamingBodyBoundedAsync(resp, maxImageBodyBytes, url?.ToString(), "image_body_bytes").ConfigureAwait(false);
+                    }
+                    catch (InvalidOperationException ex) when (ex.Message.StartsWith("LIMIT_EXCEEDED"))
+                    {
+                        return null;
+                    }
                 }
                 var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
                 if (ShouldBlockCorb(
@@ -2178,12 +2193,37 @@ public Uri LastTextResponseUri { get; private set; }
                     return BinaryFailure(BinaryFetchFailureReason.HttpError, current, $"HTTP {(int)resp.StatusCode}", redirectChain, (int)resp.StatusCode, resp.Content?.Headers?.ContentType?.MediaType);
                 }
 
-                byte[] buf;
+                var maxBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxImageBodyBytes);
+                byte[] buf = null;
                 try
                 {
-                    buf = resp.IsSuccessStatusCode
-                        ? await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false)
-                        : await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                    if (resp.IsSuccessStatusCode)
+                    {
+                        var cachedBuffer = await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false);
+                        if (cachedBuffer != null)
+                        {
+                            buf = cachedBuffer;
+                            if (buf.Length > maxBodyBytes)
+                            {
+                                return BinaryFailure(BinaryFetchFailureReason.BodySizeLimitExceeded, current, $"Body size {buf.Length} exceeded limit {maxBodyBytes}", redirectChain, (int)resp.StatusCode, resp.Content?.Headers?.ContentType?.MediaType, bodySizeAllowed: false);
+                            }
+                        }
+                    }
+                    if (buf == null)
+                    {
+                        buf = await ReadStreamingBodyBoundedAsync(resp, maxBodyBytes, current?.ToString(), "binary_body_bytes").ConfigureAwait(false);
+                    }
+                }
+                catch (InvalidOperationException ex) when (ex.Message.StartsWith("LIMIT_EXCEEDED"))
+                {
+                    return BinaryFailure(
+                        BinaryFetchFailureReason.BodySizeLimitExceeded,
+                        current,
+                        $"Body exceeded limit {maxBodyBytes}",
+                        redirectChain,
+                        (int)resp.StatusCode,
+                        resp.Content?.Headers?.ContentType?.MediaType,
+                        bodySizeAllowed: false);
                 }
                 catch (Exception ex)
                 {
@@ -2194,21 +2234,6 @@ public Uri LastTextResponseUri { get; private set; }
                         redirectChain,
                         (int)resp.StatusCode,
                         resp.Content?.Headers?.ContentType?.MediaType);
-                }
-                var maxBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxImageBodyBytes);
-                if (buf.Length > maxBodyBytes)
-                {
-                    EngineLogCompat.Warn(
-                        $"[Network.Resilience] Dropping binary response '{url}' because body size {buf.Length} exceeded limit {maxBodyBytes}.",
-                        LogCategory.Network);
-                    return BinaryFailure(
-                        BinaryFetchFailureReason.BodySizeLimitExceeded,
-                        current,
-                        $"Body size {buf.Length} exceeded limit {maxBodyBytes}",
-                        redirectChain,
-                        (int)resp.StatusCode,
-                        resp.Content?.Headers?.ContentType?.MediaType,
-                        bodySizeAllowed: false);
                 }
                 var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
                 if (ShouldBlockCorb(
@@ -2686,6 +2711,24 @@ throw new HttpRequestException($"Blocked by Content Security Policy (connect-src
 
             EngineLogCompat.Debug($"[CssLoader] CSS Fetch Success: {url} Length: {result.Content?.Length ?? 0} Type: {result.ContentType}", LogCategory.Network);
             return result.Content;
+        }
+        private async Task<byte[]> ReadStreamingBodyBoundedAsync(HttpResponseMessage resp, long maxSize, string uri, string limitType)
+        {
+            if (resp.Content == null) return Array.Empty<byte>();
+            using var stream = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            var ms = new MemoryStream();
+            var buffer = new byte[81920];
+            int bytesRead;
+            while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
+            {
+                if (ms.Length + bytesRead > maxSize)
+                {
+                    EngineLogCompat.Warn($"[Network.Resilience] Body limit exceeded for '{uri}' (> {maxSize}).", LogCategory.Network);
+                    throw new InvalidOperationException($"LIMIT_EXCEEDED:{maxSize}:{ms.Length + bytesRead}");
+                }
+                ms.Write(buffer, 0, bytesRead);
+            }
+            return ms.ToArray();
         }
     }
 }

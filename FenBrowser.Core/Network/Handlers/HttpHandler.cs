@@ -56,12 +56,12 @@ namespace FenBrowser.Core.Network.Handlers
         {
             try
             {
-                return await _httpClient.SendAsync(request, ct).ConfigureAwait(false);
+                return await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
             }
             catch (HttpRequestException ex) when (ShouldRetryWithoutProxy(ex))
             {
                 var retryRequest = await CloneRequestAsync(request).ConfigureAwait(false);
-                return await _noProxyClient.SendAsync(retryRequest, ct).ConfigureAwait(false);
+                return await _noProxyClient.SendAsync(retryRequest, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
             }
         }
 

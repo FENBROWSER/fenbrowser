@@ -19,6 +19,78 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         SizeExceeded
     }
 
+    /// <summary>
+    /// A forward-only stream reading from a Channel of byte chunks.
+    /// </summary>
+    internal sealed class ChannelStream : Stream
+    {
+        private readonly System.Threading.Channels.ChannelReader<byte[]> _reader;
+        private byte[] _currentChunk;
+        private int _chunkOffset;
+
+        public ChannelStream(System.Threading.Channels.ChannelReader<byte[]> reader)
+        {
+            _reader = reader;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            while (_currentChunk == null || _chunkOffset >= _currentChunk.Length)
+            {
+                if (await _reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    if (_reader.TryRead(out var chunk))
+                    {
+                        if (chunk.Length == 0) continue;
+                        _currentChunk = chunk;
+                        _chunkOffset = 0;
+                    }
+                }
+                else
+                {
+                    return 0; // EOF
+                }
+            }
+
+            int toCopy = Math.Min(buffer.Length, _currentChunk.Length - _chunkOffset);
+            _currentChunk.AsSpan(_chunkOffset, toCopy).CopyTo(buffer.Span);
+            _chunkOffset += toCopy;
+            return toCopy;
+        }
+
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            return await ReadAsync(new Memory<byte>(buffer, offset, count), cancellationToken).ConfigureAwait(false);
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => ReadAsync(buffer, offset, count, CancellationToken.None).GetAwaiter().GetResult();
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    // ── NetworkProcessCoordinator ─────────────────────────────────────────────
+    // Broker-side coordinator that bridges ResourceManager's HttpClient calls
+    // to the sandboxed Network child process over IPC.
+    //
+    // Responsibilities:
+    //  1. Accept HttpRequestMessage from callers (ResourceManager / Fetch API).
+    //  2. Validate origin, credentials, and policy before forwarding.
+    //  3. Mint a NetworkCapabilityToken per request (origin-locked, expiring).
+    //  4. Forward via NetworkProcessSession.SendFetch().
+    //  5. Collect streaming response head + body chunks from the session events.
+    //  6. Validate the capability token on each inbound envelope.
+    //  7. Return an HttpResponseMessage to the caller.
+    //
+    // Thread-safety: all public methods are thread-safe. Pending requests are
+    // tracked in a ConcurrentDictionary keyed by requestId.
     // ── NetworkProcessCoordinator ─────────────────────────────────────────────
     // Broker-side coordinator that bridges ResourceManager's HttpClient calls
     // to the sandboxed Network child process over IPC.
@@ -51,9 +123,10 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         private readonly TaskCompletionSource<NetworkFetchResponseHeadPayload> _headTcs =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        // Accumulates base64-decoded body chunks in order.
-        private readonly List<byte[]> _bodyChunks = new();
-        private readonly SemaphoreSlim _bodyLock = new(1, 1);
+        // Streams base64-decoded body chunks in order.
+        private readonly System.Threading.Channels.Channel<byte[]> _bodyChannel = 
+            System.Threading.Channels.Channel.CreateUnbounded<byte[]>(new System.Threading.Channels.UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
+        private readonly object _bodyLock = new object();
         private long _bodyBytes;
         private int _nextChunkIndex;
         private readonly TaskCompletionSource<bool> _bodyCompleteTcs =
@@ -69,10 +142,14 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             CapabilityTokenValue = capabilityTokenValue;
             InitiatorOrigin = initiatorOrigin;
             CancellationToken = cancellationToken;
+            
+            // Link cancellation to the body stream
+            CancellationToken.Register(() => _bodyChannel.Writer.TryComplete(new OperationCanceledException(CancellationToken)));
         }
 
         public Task<NetworkFetchResponseHeadPayload> HeadTask => _headTcs.Task;
         public Task<bool> BodyCompleteTask => _bodyCompleteTcs.Task;
+        public System.Threading.Channels.ChannelReader<byte[]> BodyReader => _bodyChannel.Reader;
 
         public void SetHead(NetworkFetchResponseHeadPayload head) =>
             _headTcs.TrySetResult(head);
@@ -84,6 +161,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         {
             _headTcs.TrySetCanceled();
             _bodyCompleteTcs.TrySetCanceled();
+            _bodyChannel.Writer.TryComplete(new OperationCanceledException(CancellationToken));
         }
 
         public void SetFailed(string error)
@@ -92,60 +170,47 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             SetBodyFailed(error);
         }
 
-        public async Task<BodyChunkAppendResult> TryAppendBodyChunkAsync(
+        public Task<BodyChunkAppendResult> TryAppendBodyChunkAsync(
             byte[] chunk,
             int chunkIndex,
             int maxBodyBytes)
         {
-            await _bodyLock.WaitAsync().ConfigureAwait(false);
-            try
+            lock (_bodyLock)
             {
                 if (chunkIndex != _nextChunkIndex)
                 {
-                    return BodyChunkAppendResult.SequenceMismatch;
+                    return Task.FromResult(BodyChunkAppendResult.SequenceMismatch);
                 }
 
                 if (chunk.LongLength > maxBodyBytes - _bodyBytes)
                 {
-                    return BodyChunkAppendResult.SizeExceeded;
+                    return Task.FromResult(BodyChunkAppendResult.SizeExceeded);
                 }
 
                 if (chunk.Length > 0)
                 {
-                    _bodyChunks.Add(chunk);
+                    _bodyChannel.Writer.TryWrite(chunk);
                 }
                 _bodyBytes += chunk.LongLength;
                 _nextChunkIndex++;
-                return BodyChunkAppendResult.Accepted;
+                return Task.FromResult(BodyChunkAppendResult.Accepted);
             }
-            finally { _bodyLock.Release(); }
         }
 
-        public void SetBodyComplete() => _bodyCompleteTcs.TrySetResult(true);
-        public void SetBodyFailed(string error) =>
-            _bodyCompleteTcs.TrySetException(new HttpRequestException(error));
-
-        public async Task<byte[]> GetBodyAsync()
+        public void SetBodyComplete() 
         {
-            await _bodyLock.WaitAsync().ConfigureAwait(false);
-            try
-            {
-                if (_bodyChunks.Count == 0) return Array.Empty<byte>();
-                int total = 0;
-                foreach (var c in _bodyChunks) total += c.Length;
-                var buf = new byte[total];
-                int offset = 0;
-                foreach (var c in _bodyChunks)
-                {
-                    Buffer.BlockCopy(c, 0, buf, offset, c.Length);
-                    offset += c.Length;
-                }
-                return buf;
-            }
-            finally { _bodyLock.Release(); }
+            _bodyCompleteTcs.TrySetResult(true);
+            _bodyChannel.Writer.TryComplete();
+        }
+        
+        public void SetBodyFailed(string error)
+        {
+            var ex = new HttpRequestException(error);
+            _bodyCompleteTcs.TrySetException(ex);
+            _bodyChannel.Writer.TryComplete(ex);
         }
 
-        public void Dispose() => _bodyLock.Dispose();
+        public void Dispose() { }
     }
 
     /// <summary>
@@ -275,13 +340,15 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     }
                 }
 
-                // Wait for body completion
-                await pending.BodyCompleteTask
-                    .WaitAsync(TimeSpan.FromSeconds(60), cancellationToken)
-                    .ConfigureAwait(false);
-
-                var bodyBytes = await pending.GetBodyAsync().ConfigureAwait(false);
-                return BuildHttpResponse(head, bodyBytes);
+                // Return response with streaming body immediately after receiving HEAD
+                // We do NOT wait for BodyCompleteTask here.
+                var stream = new ChannelStream(pending.BodyReader);
+                
+                // Keep the pending request alive in the dictionary until the body finishes,
+                // but we return the stream to the caller now.
+                _ = CleanupAfterBodyCompleteAsync(pending, session, requestId);
+                
+                return BuildHttpResponse(head, stream);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -297,6 +364,25 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 EngineLogBridge.Warn($"[NetworkCoordinator] Request {requestId} timed out.", LogCategory.Network);
                 session.SendCancel(requestId);
                 throw new HttpRequestException($"Network process request timed out: {request.RequestUri}");
+            }
+            catch (Exception)
+            {
+                // In case of error before returning the stream, cleanup immediately
+                _pending.TryRemove(requestId, out _);
+                session.ReleaseCapabilityToken(requestId);
+                throw;
+            }
+        }
+
+        private async Task CleanupAfterBodyCompleteAsync(PendingNetworkRequest pending, NetworkProcessSession session, string requestId)
+        {
+            try
+            {
+                await pending.BodyCompleteTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore exceptions here; they will be observed by the stream reader
             }
             finally
             {
@@ -345,24 +431,24 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 try
                 {
                     var bytes = Convert.FromBase64String(body.BodyChunkBase64);
-                    var appendResult = pending
+                    pending
                         .TryAppendBodyChunkAsync(bytes, body.ChunkIndex, _maxBodyBytes)
-                        .GetAwaiter()
-                        .GetResult();
-                    if (appendResult != BodyChunkAppendResult.Accepted)
-                    {
-                        var sequenceMismatch = appendResult == BodyChunkAppendResult.SequenceMismatch;
-                        EngineLogBridge.Warn(
-                            sequenceMismatch
-                                ? $"[NetworkCoordinator] Body chunk sequence mismatch for request {body.RequestId}; rejecting."
-                                : $"[NetworkCoordinator] Aggregate body exceeds max size for request {body.RequestId}; rejecting.",
-                            LogCategory.Network);
-                        pending.SetBodyFailed(
-                            sequenceMismatch
-                                ? "Response body chunk sequence was invalid."
-                                : "Response body exceeded maximum allowed size.");
-                        return;
-                    }
+                        .ContinueWith(t =>
+                        {
+                            if (t.Result != BodyChunkAppendResult.Accepted)
+                            {
+                                var sequenceMismatch = t.Result == BodyChunkAppendResult.SequenceMismatch;
+                                EngineLogBridge.Warn(
+                                    sequenceMismatch
+                                        ? $"[NetworkCoordinator] Body chunk sequence mismatch for request {body.RequestId}; rejecting."
+                                        : $"[NetworkCoordinator] Aggregate body exceeds max size for request {body.RequestId}; rejecting.",
+                                    LogCategory.Network);
+                                pending.SetBodyFailed(
+                                    sequenceMismatch
+                                        ? "Response body chunk sequence was invalid."
+                                        : "Response body exceeded maximum allowed size.");
+                            }
+                        });
                 }
                 catch (FormatException ex)
                 {
@@ -448,13 +534,13 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         private static HttpResponseMessage BuildHttpResponse(
             NetworkFetchResponseHeadPayload head,
-            byte[] bodyBytes)
+            Stream bodyStream)
         {
             var response = new HttpResponseMessage((HttpStatusCode)head.StatusCode)
             {
                 ReasonPhrase = head.StatusText ?? string.Empty,
                 RequestMessage = null,
-                Content = new ByteArrayContent(bodyBytes ?? Array.Empty<byte>()),
+                Content = new StreamContent(bodyStream),
             };
 
             if (head.Headers != null)
@@ -483,4 +569,3 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         }
     }
 }
-
