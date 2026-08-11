@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -232,6 +233,7 @@ namespace FenBrowser.Host.ProcessIsolation
                    messageType == RendererIpcMessageType.MetadataChanged ||
                    messageType == RendererIpcMessageType.Error ||
                    messageType == RendererIpcMessageType.LogBatch ||
+                   messageType == RendererIpcMessageType.Ack ||
                    messageType == RendererIpcMessageType.Pong;
         }
 
@@ -259,6 +261,86 @@ namespace FenBrowser.Host.ProcessIsolation
         }
     }
 
+    internal sealed class RendererIpcAckTracker
+    {
+        private readonly object _sync = new();
+        private readonly int _capacity;
+        private readonly Dictionary<string, LinkedListNode<PendingAck>> _pending = new(StringComparer.OrdinalIgnoreCase);
+        private readonly LinkedList<PendingAck> _order = new();
+
+        public RendererIpcAckTracker(int capacity = 1024)
+        {
+            if (capacity <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(capacity));
+            }
+
+            _capacity = capacity;
+        }
+
+        public void Track(RendererIpcEnvelope envelope)
+        {
+            if (envelope == null ||
+                !Guid.TryParse(envelope.CorrelationId, out _) ||
+                !Enum.TryParse<RendererIpcMessageType>(envelope.Type, true, out var messageType) ||
+                (messageType != RendererIpcMessageType.Navigate && messageType != RendererIpcMessageType.Input))
+            {
+                return;
+            }
+
+            lock (_sync)
+            {
+                if (_pending.Remove(envelope.CorrelationId, out var existing))
+                {
+                    _order.Remove(existing);
+                }
+
+                while (_pending.Count >= _capacity)
+                {
+                    var oldest = _order.First;
+                    if (oldest == null)
+                    {
+                        break;
+                    }
+
+                    _order.RemoveFirst();
+                    _pending.Remove(oldest.Value.CorrelationId);
+                }
+
+                var pending = new PendingAck(envelope.CorrelationId, messageType, Stopwatch.GetTimestamp());
+                _pending[envelope.CorrelationId] = _order.AddLast(pending);
+            }
+        }
+
+        public bool TryAcknowledge(string correlationId, out RendererIpcMessageType messageType, out double latencyMs)
+        {
+            messageType = default;
+            latencyMs = 0;
+            if (string.IsNullOrWhiteSpace(correlationId))
+            {
+                return false;
+            }
+
+            lock (_sync)
+            {
+                if (!_pending.Remove(correlationId, out var node))
+                {
+                    return false;
+                }
+
+                _order.Remove(node);
+                messageType = node.Value.MessageType;
+                latencyMs = Stopwatch.GetElapsedTime(node.Value.StartTimestamp).TotalMilliseconds;
+                return true;
+            }
+        }
+
+        private readonly record struct PendingAck(
+            string CorrelationId,
+            RendererIpcMessageType MessageType,
+            long StartTimestamp);
+    }
+
     internal sealed class RendererChildSession : IDisposable
     {
         private readonly NamedPipeServerStream _pipe;
@@ -274,6 +356,7 @@ namespace FenBrowser.Host.ProcessIsolation
         private const int OutboundQueueCapacity = 512;
         private readonly Channel<RendererIpcEnvelope> _outbound;
         private readonly Task _outboundLoop;
+        private readonly RendererIpcAckTracker _ackTracker = new();
         private int _outboundFaulted;
         private FrameSharedMemory _frameSharedMemory;
         private readonly int _parentPid = Environment.ProcessId;
@@ -579,6 +662,44 @@ namespace FenBrowser.Host.ProcessIsolation
                         var batch = RendererIpc.DeserializePayload<EngineLogBatchPayload>(envelope);
                         ProcessIsolationLogCollector.PublishBatch(batch);
                     }
+                    else if (messageType == RendererIpcMessageType.Ack)
+                    {
+                        if (_ackTracker.TryAcknowledge(envelope.CorrelationId, out var acknowledgedType, out var latencyMs))
+                        {
+                            EngineLog.Write(
+                                LogSubsystem.Ipc,
+                                LogSeverity.Debug,
+                                "Renderer command acknowledged",
+                                context: new EngineLogContext(
+                                    TabId: TabId.ToString(),
+                                    TaskId: envelope.CorrelationId,
+                                    Source: "broker"),
+                                fields: new Dictionary<string, object>
+                                {
+                                    ["eventKind"] = "ipc.ack",
+                                    ["messageType"] = acknowledgedType.ToString(),
+                                    ["ipcCorrelationId"] = envelope.CorrelationId,
+                                    ["latencyMs"] = latencyMs
+                                });
+                        }
+                        else
+                        {
+                            EngineLog.Write(
+                                LogSubsystem.Ipc,
+                                LogSeverity.Warn,
+                                "Rejected unsolicited renderer acknowledgement",
+                                context: new EngineLogContext(
+                                    TabId: TabId.ToString(),
+                                    TaskId: envelope.CorrelationId,
+                                    Source: "broker"),
+                                fields: new Dictionary<string, object>
+                                {
+                                    ["eventKind"] = "ipc.ack.rejected",
+                                    ["ipcCorrelationId"] = envelope.CorrelationId,
+                                    ["reason"] = "unknown-correlation"
+                                });
+                        }
+                    }
                 }
             }
             catch (Exception ex)
@@ -708,6 +829,7 @@ namespace FenBrowser.Host.ProcessIsolation
             var line = RendererIpc.SerializeEnvelope(envelope);
             _writer.WriteLine(line);
             _writer.Flush();
+            _ackTracker.Track(envelope);
         }
 
         private static bool ShouldBufferWhileDisconnected(RendererIpcEnvelope envelope)
