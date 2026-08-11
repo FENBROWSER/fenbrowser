@@ -38,6 +38,13 @@ public sealed class CompatibilityEventEnvelope
     public IReadOnlyDictionary<string, object> Fields { get; init; }
 }
 
+public enum WebIdlBehaviorKind
+{
+    ReturnType,
+    Descriptor,
+    Semantics
+}
+
 public static class CompatibilityEventRecorder
 {
     private const int DefaultCapacity = 5000;
@@ -105,7 +112,7 @@ public static class CompatibilityEventRecorder
     public static void RecordWebIdlBehaviorMismatch(
         string interfaceName,
         string memberName,
-        string behavior,
+        WebIdlBehaviorKind behavior,
         object expected,
         object actual,
         in EngineLogContext context = default,
@@ -118,7 +125,13 @@ public static class CompatibilityEventRecorder
         fields["eventKind"] = "webidl.behavior-mismatch";
         fields["interfaceName"] = interfaceName ?? string.Empty;
         fields["memberName"] = memberName ?? string.Empty;
-        fields["behavior"] = behavior ?? string.Empty;
+        fields["behavior"] = behavior switch
+        {
+            WebIdlBehaviorKind.ReturnType => "return-type",
+            WebIdlBehaviorKind.Descriptor => "descriptor",
+            WebIdlBehaviorKind.Semantics => "semantics",
+            _ => throw new ArgumentOutOfRangeException(nameof(behavior))
+        };
         fields["expected"] = expected;
         fields["actual"] = actual;
 
@@ -126,7 +139,7 @@ public static class CompatibilityEventRecorder
         EngineLog.Write(
             LogSubsystem.Js,
             LogSeverity.Warn,
-            $"WebIDL behavior mismatch: {interfaceName}.{memberName} ({behavior})",
+            $"WebIDL behavior mismatch: {interfaceName}.{memberName} ({fields["behavior"]})",
             LogMarker.SpecGap,
             webIdlContext,
             fields);

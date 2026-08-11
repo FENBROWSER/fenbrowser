@@ -83,6 +83,45 @@ public sealed class CompatibilityEventRecorderTests
         Assert.Equal("dom", mutation.Domain);
     }
 
+    [Theory]
+    [InlineData(WebIdlBehaviorKind.ReturnType, "return-type")]
+    [InlineData(WebIdlBehaviorKind.Descriptor, "descriptor")]
+    [InlineData(WebIdlBehaviorKind.Semantics, "semantics")]
+    public void WebIdlBehaviorMismatch_EmitsTypedExpectedActualEvidence(
+        WebIdlBehaviorKind behavior,
+        string expectedBehavior)
+    {
+        EngineLog.Configure(new EngineLoggingOptions
+        {
+            Enabled = true,
+            GlobalMinimumSeverity = LogSeverity.Trace,
+            EnableRingBufferSink = true
+        });
+        EngineLog.ClearCompatibilityBuffer();
+
+        CompatibilityEventRecorder.RecordWebIdlBehaviorMismatch(
+            "HTMLInputElement",
+            "value",
+            behavior,
+            "string",
+            "undefined",
+            new EngineLogContext(
+                NavigationId: "nav-webidl",
+                DocumentId: "doc-webidl",
+                RealmId: "realm-webidl"));
+
+        var captured = Assert.Single(CompatibilityEventRecorder.Snapshot());
+        Assert.Equal("webidl", captured.Domain);
+        Assert.Equal("webidl.behavior-mismatch", captured.Kind);
+        Assert.Equal("compatibility-gap", captured.Outcome);
+        Assert.Equal("nav-webidl", captured.NavigationId);
+        Assert.Equal("doc-webidl", captured.DocumentId);
+        Assert.Equal("realm-webidl", captured.RealmId);
+        Assert.Equal(expectedBehavior, captured.Fields["behavior"]);
+        Assert.Equal("string", captured.Fields["expected"]);
+        Assert.Equal("undefined", captured.Fields["actual"]);
+    }
+
     private static EngineLogEvent CreateEvent(
         Guid eventId,
         LogSubsystem subsystem,

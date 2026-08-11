@@ -1761,7 +1761,7 @@ Verification:
 
 - `EngineLog` now normalizes every emitted engine event into the bounded `fenbrowser.compatibility-event.v1` envelope. Navigation, frame, document, realm, request, script, task, and correlation identifiers remain nullable but have stable fields in every record.
 - Existing missing-API, JavaScript/event-loop failure, DOM, input/event, network, and IPC diagnostics enter this recorder through the authoritative engine logging path. Event IDs are de-duplicated before bounded retention, including externally published child-process events.
-- WebIDL validation seams can emit `webidl.behavior-mismatch` records with expected and actual behavior without misclassifying the observation as a missing API.
+- WebIDL validation seams can emit `webidl.behavior-mismatch` records for return-type, descriptor, or semantic mismatches with expected and actual evidence, without misclassifying the observation as a missing API.
 
 Verification:
 
