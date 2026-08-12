@@ -259,7 +259,14 @@ namespace FenBrowser.Core.Storage
     /// </summary>
     public sealed class PartitionedKeyValueStorage
     {
-        private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, string>> _buckets = new();
+        private sealed class StorageBucket
+        {
+            public object SyncRoot { get; } = new();
+            public Dictionary<string, string> Items { get; } = new(StringComparer.Ordinal);
+            public long Bytes { get; set; }
+        }
+
+        private readonly ConcurrentDictionary<string, StorageBucket> _buckets = new(StringComparer.Ordinal);
         private readonly long _quotaBytesPerBucket;
 
         public PartitionedKeyValueStorage(long quotaBytesPerBucket = 5 * 1024 * 1024 /* 5 MB */)
@@ -267,46 +274,85 @@ namespace FenBrowser.Core.Storage
             _quotaBytesPerBucket = quotaBytesPerBucket;
         }
 
-        private ConcurrentDictionary<string, string> GetBucket(string origin, StoragePartitionKey key) =>
-            _buckets.GetOrAdd($"{origin}\0{key.ToStorageKey()}", _ => new());
+        private StorageBucket GetBucket(string origin, StoragePartitionKey key) =>
+            _buckets.GetOrAdd($"{origin}\0{key.ToStorageKey()}", _ => new StorageBucket());
 
         public string GetItem(string origin, StoragePartitionKey partitionKey, string itemKey)
         {
             var bucket = GetBucket(origin, partitionKey);
-            return bucket.TryGetValue(itemKey, out var v) ? v : null;
+            lock (bucket.SyncRoot)
+            {
+                return bucket.Items.TryGetValue(itemKey, out var value) ? value : null;
+            }
         }
 
         public bool SetItem(string origin, StoragePartitionKey partitionKey, string itemKey, string value)
         {
             var bucket = GetBucket(origin, partitionKey);
+            var normalizedValue = value ?? string.Empty;
+            var keyBytes = Encoding.UTF8.GetByteCount(itemKey ?? string.Empty);
+            var newEntryBytes = keyBytes + Encoding.UTF8.GetByteCount(normalizedValue);
 
-            // Quota check
-            long currentBytes = 0;
-            foreach (var (k, v) in bucket)
-                currentBytes += Encoding.UTF8.GetByteCount(k) + Encoding.UTF8.GetByteCount(v);
-            var addedBytes = Encoding.UTF8.GetByteCount(itemKey) + Encoding.UTF8.GetByteCount(value ?? "");
-            if (currentBytes + addedBytes > _quotaBytesPerBucket)
-                return false; // QuotaExceededError
+            lock (bucket.SyncRoot)
+            {
+                long existingEntryBytes = 0;
+                if (bucket.Items.TryGetValue(itemKey, out var existingValue))
+                {
+                    existingEntryBytes = keyBytes + Encoding.UTF8.GetByteCount(existingValue ?? string.Empty);
+                }
 
-            bucket[itemKey] = value ?? "";
-            return true;
+                var projectedBytes = bucket.Bytes - existingEntryBytes + newEntryBytes;
+                if (projectedBytes > _quotaBytesPerBucket)
+                {
+                    return false; // QuotaExceededError
+                }
+
+                bucket.Items[itemKey] = normalizedValue;
+                bucket.Bytes = projectedBytes;
+                return true;
+            }
         }
 
         public void RemoveItem(string origin, StoragePartitionKey partitionKey, string itemKey)
         {
-            GetBucket(origin, partitionKey).TryRemove(itemKey, out _);
+            var bucket = GetBucket(origin, partitionKey);
+            lock (bucket.SyncRoot)
+            {
+                if (bucket.Items.Remove(itemKey, out var removedValue))
+                {
+                    bucket.Bytes -= Encoding.UTF8.GetByteCount(itemKey ?? string.Empty) +
+                                    Encoding.UTF8.GetByteCount(removedValue ?? string.Empty);
+                }
+            }
         }
 
         public void Clear(string origin, StoragePartitionKey partitionKey)
         {
-            GetBucket(origin, partitionKey).Clear();
+            var bucket = GetBucket(origin, partitionKey);
+            lock (bucket.SyncRoot)
+            {
+                bucket.Items.Clear();
+                bucket.Bytes = 0;
+            }
         }
 
-        public IReadOnlyList<string> GetKeys(string origin, StoragePartitionKey partitionKey) =>
-            new List<string>(GetBucket(origin, partitionKey).Keys);
+        public IReadOnlyList<string> GetKeys(string origin, StoragePartitionKey partitionKey)
+        {
+            var bucket = GetBucket(origin, partitionKey);
+            lock (bucket.SyncRoot)
+            {
+                return new List<string>(bucket.Items.Keys);
+            }
+        }
 
-        public int Length(string origin, StoragePartitionKey partitionKey) =>
-            GetBucket(origin, partitionKey).Count;
+        public int Length(string origin, StoragePartitionKey partitionKey)
+        {
+            var bucket = GetBucket(origin, partitionKey);
+            lock (bucket.SyncRoot)
+            {
+                return bucket.Items.Count;
+            }
+        }
 
         public void ClearAll() => _buckets.Clear();
 
