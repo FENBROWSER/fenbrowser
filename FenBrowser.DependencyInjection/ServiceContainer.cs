@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace FenBrowser.DependencyInjection;
 
@@ -65,6 +66,7 @@ public sealed class ServiceContainer : IServiceContainer
     private readonly object _lock = new();
     private readonly ServiceContainer? _parent;
     private readonly Dictionary<Type, object?> _scopedInstances = new();
+    private bool _scopedInstancesDisposed;
 
     public ServiceContainer(ServiceContainer? parent = null)
     {
@@ -76,7 +78,11 @@ public sealed class ServiceContainer : IServiceContainer
         if (instance == null) throw new ArgumentNullException(nameof(instance));
         lock (_lock)
         {
-            _services[typeof(TService)] = new ServiceDescriptor(ServiceLifetime.Singleton, _ => instance, instance);
+            _services[typeof(TService)] = new ServiceDescriptor(
+                ServiceLifetime.Singleton,
+                _ => instance,
+                this,
+                instance);
         }
     }
 
@@ -85,7 +91,11 @@ public sealed class ServiceContainer : IServiceContainer
         if (factory == null) throw new ArgumentNullException(nameof(factory));
         lock (_lock)
         {
-            _services[typeof(TService)] = new ServiceDescriptor(ServiceLifetime.Singleton, factory, null);
+            _services[typeof(TService)] = new ServiceDescriptor(
+                ServiceLifetime.Singleton,
+                factory,
+                this,
+                null);
         }
     }
 
@@ -94,7 +104,11 @@ public sealed class ServiceContainer : IServiceContainer
         if (factory == null) throw new ArgumentNullException(nameof(factory));
         lock (_lock)
         {
-            _services[typeof(TService)] = new ServiceDescriptor(ServiceLifetime.Transient, factory, null);
+            _services[typeof(TService)] = new ServiceDescriptor(
+                ServiceLifetime.Transient,
+                factory,
+                this,
+                null);
         }
     }
 
@@ -103,7 +117,11 @@ public sealed class ServiceContainer : IServiceContainer
         if (factory == null) throw new ArgumentNullException(nameof(factory));
         lock (_lock)
         {
-            _services[typeof(TService)] = new ServiceDescriptor(ServiceLifetime.Scoped, factory, null);
+            _services[typeof(TService)] = new ServiceDescriptor(
+                ServiceLifetime.Scoped,
+                factory,
+                this,
+                null);
         }
     }
 
@@ -113,28 +131,21 @@ public sealed class ServiceContainer : IServiceContainer
         {
             return service!;
         }
+
         throw new InvalidOperationException($"Service of type {typeof(TService).Name} is not registered.");
     }
 
     public bool TryResolve<TService>(out TService? service) where TService : class
     {
-        var type = typeof(TService);
-        lock (_lock)
+        var descriptor = FindDescriptor(typeof(TService));
+        if (descriptor == null)
         {
-            if (_services.TryGetValue(type, out var descriptor))
-            {
-                service = CreateInstance<TService>(descriptor);
-                return true;
-            }
+            service = null;
+            return false;
         }
 
-        if (_parent != null)
-        {
-            return _parent.TryResolve(out service);
-        }
-
-        service = null;
-        return false;
+        service = CreateInstance<TService>(descriptor);
+        return true;
     }
 
     public IServiceScope CreateScope()
@@ -142,11 +153,24 @@ public sealed class ServiceContainer : IServiceContainer
         return new ServiceScope(this);
     }
 
+    private ServiceDescriptor? FindDescriptor(Type serviceType)
+    {
+        lock (_lock)
+        {
+            if (_services.TryGetValue(serviceType, out var descriptor))
+            {
+                return descriptor;
+            }
+        }
+
+        return _parent?.FindDescriptor(serviceType);
+    }
+
     private TService? CreateInstance<TService>(ServiceDescriptor descriptor) where TService : class
     {
         return descriptor.Lifetime switch
         {
-            ServiceLifetime.Singleton => descriptor.Instance as TService ?? descriptor.Factory(this) as TService,
+            ServiceLifetime.Singleton => descriptor.GetOrCreateSingleton() as TService,
             ServiceLifetime.Transient => descriptor.Factory(this) as TService,
             ServiceLifetime.Scoped => CreateScopedInstance<TService>(descriptor),
             _ => throw new InvalidOperationException($"Unknown service lifetime: {descriptor.Lifetime}")
@@ -157,27 +181,112 @@ public sealed class ServiceContainer : IServiceContainer
     {
         lock (_lock)
         {
+            ThrowIfScopedInstancesDisposed();
+
             if (_scopedInstances.TryGetValue(typeof(TService), out var instance))
             {
                 return (TService?)instance;
             }
-            var newInstance = descriptor.Factory(this) as TService;
-            _scopedInstances[typeof(TService)] = newInstance!;
+        }
+
+        // Factories may resolve other services. Do not execute them while holding
+        // the container lock or a dependency chain can deadlock on re-entry.
+        var newInstance = descriptor.Factory(this) as TService;
+
+        lock (_lock)
+        {
+            ThrowIfScopedInstancesDisposed();
+
+            if (_scopedInstances.TryGetValue(typeof(TService), out var existing))
+            {
+                if (!ReferenceEquals(existing, newInstance) && newInstance is IDisposable disposable)
+                {
+                    disposable.Dispose();
+                }
+
+                return (TService?)existing;
+            }
+
+            _scopedInstances[typeof(TService)] = newInstance;
             return newInstance;
+        }
+    }
+
+    private void DisposeScopedInstances()
+    {
+        object?[] instances;
+
+        lock (_lock)
+        {
+            if (_scopedInstancesDisposed)
+            {
+                return;
+            }
+
+            _scopedInstancesDisposed = true;
+            instances = _scopedInstances.Values.ToArray();
+            _scopedInstances.Clear();
+        }
+
+        // Dispose outside the lock because Dispose implementations can call back
+        // into the container or other services.
+        for (var i = instances.Length - 1; i >= 0; i--)
+        {
+            if (instances[i] is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+        }
+    }
+
+    private void ThrowIfScopedInstancesDisposed()
+    {
+        if (_scopedInstancesDisposed)
+        {
+            throw new ObjectDisposedException(nameof(ServiceContainer));
         }
     }
 
     private sealed class ServiceDescriptor
     {
+        private readonly object _singletonLock = new();
+        private object? _instance;
+        private bool _singletonCreated;
+
         public ServiceLifetime Lifetime { get; }
         public Func<IServiceContainer, object?> Factory { get; }
-        public object? Instance { get; }
+        public ServiceContainer Owner { get; }
 
-        public ServiceDescriptor(ServiceLifetime lifetime, Func<IServiceContainer, object?> factory, object? instance)
+        public ServiceDescriptor(
+            ServiceLifetime lifetime,
+            Func<IServiceContainer, object?> factory,
+            ServiceContainer owner,
+            object? instance)
         {
             Lifetime = lifetime;
             Factory = factory;
-            Instance = instance;
+            Owner = owner;
+            _instance = instance;
+            _singletonCreated = instance != null;
+        }
+
+        public object? GetOrCreateSingleton()
+        {
+            if (_singletonCreated)
+            {
+                return _instance;
+            }
+
+            lock (_singletonLock)
+            {
+                if (!_singletonCreated)
+                {
+                    _instance = Factory(Owner);
+                    _singletonCreated = true;
+                }
+
+                return _instance;
+            }
         }
     }
 
@@ -190,19 +299,26 @@ public sealed class ServiceContainer : IServiceContainer
 
     private sealed class ServiceScope : IServiceScope
     {
-        private readonly ServiceContainer _container;
+        private readonly ServiceContainer _scopedContainer;
+        private bool _disposed;
 
         public ServiceScope(ServiceContainer container)
         {
-            _container = container;
-            Services = new ServiceContainer(container);
+            _scopedContainer = new ServiceContainer(container);
+            Services = _scopedContainer;
         }
 
         public IServiceContainer Services { get; }
 
         public void Dispose()
         {
-            // Scoped instances are cleaned up when scope is disposed
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _scopedContainer.DisposeScopedInstances();
         }
     }
 }
