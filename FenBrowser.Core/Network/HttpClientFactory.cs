@@ -18,6 +18,39 @@ namespace FenBrowser.Core.Network
         private static readonly object _lock = new object();
         private static HttpClient _sharedClient;
         private static SocketsHttpHandler _sharedHandler;
+        private static Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _requestTransport;
+
+        /// <summary>
+        /// Installs a process-local request transport used by clients created after
+        /// this call. The Host uses this seam to route browser traffic through the
+        /// sandboxed network process without introducing a Core -> Host dependency.
+        /// Replacing the transport retires the shared client so callers cannot keep
+        /// acquiring a client bound to the previous security boundary.
+        /// </summary>
+        public static void ConfigureRequestTransport(
+            Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> transport)
+        {
+            if (transport == null) throw new ArgumentNullException(nameof(transport));
+
+            lock (_lock)
+            {
+                Volatile.Write(ref _requestTransport, transport);
+                DisposeSharedClientLocked();
+            }
+        }
+
+        /// <summary>
+        /// Restores direct in-process HTTP transport for subsequently created clients.
+        /// Existing shared-client references are disposed before the new mode is used.
+        /// </summary>
+        public static void ClearRequestTransport()
+        {
+            lock (_lock)
+            {
+                Volatile.Write(ref _requestTransport, null);
+                DisposeSharedClientLocked();
+            }
+        }
 
         /// <summary>
         /// Gets or creates a shared HttpClient with HTTP/2 and Brotli support.
@@ -25,15 +58,20 @@ namespace FenBrowser.Core.Network
         /// </summary>
         public static HttpClient GetSharedClient()
         {
-            if (_sharedClient != null)
-                return _sharedClient;
-
             lock (_lock)
             {
                 if (_sharedClient == null)
                 {
-                    _sharedHandler = CreateHandler();
-                    _sharedClient = CreateClient(_sharedHandler);
+                    if (Volatile.Read(ref _requestTransport) == null)
+                    {
+                        _sharedHandler = CreateHandler();
+                        _sharedClient = CreateClient(_sharedHandler);
+                    }
+                    else
+                    {
+                        _sharedHandler = null;
+                        _sharedClient = CreateClient();
+                    }
                 }
                 return _sharedClient;
             }
@@ -80,14 +118,30 @@ namespace FenBrowser.Core.Network
         }
 
         /// <summary>
-        /// Creates an HttpClient with HTTP/2 as default version.
+        /// Creates an HttpClient with HTTP/2 as default version. When the Host has
+        /// installed a broker transport, the returned client delegates requests to
+        /// that boundary instead of opening sockets in this process.
         /// </summary>
         public static HttpClient CreateClient(SocketsHttpHandler handler = null)
         {
             var config = NetworkConfiguration.Instance;
-            handler ??= CreateHandler();
+            var transport = Volatile.Read(ref _requestTransport);
+            HttpMessageHandler effectiveHandler;
 
-            var client = new HttpClient(handler)
+            if (transport != null)
+            {
+                // A caller may have prepared a direct socket handler before the Host
+                // installed the broker transport. It must not remain live as a hidden
+                // bypass path once brokered networking is authoritative.
+                handler?.Dispose();
+                effectiveHandler = new RequestTransportHandler(transport);
+            }
+            else
+            {
+                effectiveHandler = handler ?? CreateHandler();
+            }
+
+            var client = new HttpClient(effectiveHandler)
             {
                 // Use HTTP/2 by default, fall back to HTTP/1.1 if server doesn't support
                 DefaultRequestVersion = config.GetPreferredHttpVersion(),
@@ -113,7 +167,8 @@ namespace FenBrowser.Core.Network
             {
                 EngineLogCompat.Info($"[HttpClientFactory] Created client: HTTP/{config.GetPreferredHttpVersion()}, " +
                               $"Compression={config.GetDecompressionMethods()}, " +
-                              $"MaxConnections={config.MaxConnectionsPerServer}", 
+                              $"MaxConnections={config.MaxConnectionsPerServer}, " +
+                              $"Transport={(transport == null ? "direct" : "brokered")}",
                               Logging.LogCategory.Network);
             }
 
@@ -143,11 +198,16 @@ namespace FenBrowser.Core.Network
         {
             lock (_lock)
             {
-                _sharedClient?.Dispose();
-                _sharedClient = null;
-                _sharedHandler?.Dispose();
-                _sharedHandler = null;
+                DisposeSharedClientLocked();
             }
+        }
+
+        private static void DisposeSharedClientLocked()
+        {
+            _sharedClient?.Dispose();
+            _sharedClient = null;
+            _sharedHandler?.Dispose();
+            _sharedHandler = null;
         }
 
         /// <summary>
@@ -262,6 +322,24 @@ namespace FenBrowser.Core.Network
             catch
             {
                 throw;
+            }
+        }
+
+        private sealed class RequestTransportHandler : HttpMessageHandler
+        {
+            private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _transport;
+
+            public RequestTransportHandler(
+                Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> transport)
+            {
+                _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+            }
+
+            protected override Task<HttpResponseMessage> SendAsync(
+                HttpRequestMessage request,
+                CancellationToken cancellationToken)
+            {
+                return _transport(request, cancellationToken);
             }
         }
     }

@@ -1,5 +1,9 @@
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Network;
 
 namespace FenBrowser.Host.ProcessIsolation
 {
@@ -13,9 +17,9 @@ namespace FenBrowser.Host.ProcessIsolation
         private static Targets.TargetChildProcessHost _utilityHost;
 
         /// <summary>
-        /// Broker-side coordinator that routes all network I/O through the
-        /// sandboxed Network child process (with in-process fallback).
-        /// Available whenever the network child is running; null in in-process mode.
+        /// Broker-side coordinator that routes network I/O through the sandboxed
+        /// Network child process. Available whenever the network child is running;
+        /// null in explicit in-process mode or after shutdown.
         /// </summary>
         public static Network.NetworkProcessCoordinator NetworkCoordinator { get; private set; }
 
@@ -26,6 +30,19 @@ namespace FenBrowser.Host.ProcessIsolation
         {
             ShutdownAuxiliaryTargets();
             Current = coordinator;
+
+            var shouldStartAuxiliaryTargets =
+                coordinator?.UsesOutOfProcessRenderer == true &&
+                IsAuxiliaryTargetAutoStartEnabled();
+
+            // Once OOP isolation is selected, direct browser-process sockets must
+            // not become an accidental fallback while the network child starts.
+            // A successful authenticated session replaces this blocker below.
+            if (shouldStartAuxiliaryTargets)
+            {
+                HttpClientFactory.ConfigureRequestTransport(BlockNetworkRequestAsync);
+            }
+
             CoordinatorChanged?.Invoke(Current);
 
             if (coordinator?.UsesOutOfProcessRenderer == true)
@@ -46,16 +63,25 @@ namespace FenBrowser.Host.ProcessIsolation
             _networkHost = new Network.NetworkChildProcessHost();
             if (!_networkHost.TryStart())
             {
+                // Keep the fail-closed transport installed. OOP isolation was
+                // requested, so a child-start failure must not restore broker sockets.
                 _networkHost.Dispose();
                 _networkHost = null;
             }
             else
             {
-                // Wire the live session into the coordinator so all broker-side
-                // network requests flow through the sandboxed network process.
                 var coordinator = new Network.NetworkProcessCoordinator();
                 coordinator.AttachSession(_networkHost.Session);
                 NetworkCoordinator = coordinator;
+
+                // HttpClientFactory is the construction boundary used by BrowserHost
+                // and Core network services. Installing the coordinator here makes the
+                // sandboxed child authoritative for newly created browser clients.
+                HttpClientFactory.ConfigureRequestTransport(
+                    (request, cancellationToken) => coordinator.SendAsync(
+                        request,
+                        GetInitiatorOrigin(request),
+                        cancellationToken));
             }
 
             _gpuHost = new Targets.TargetChildProcessHost(Targets.TargetProcessKind.Gpu);
@@ -73,8 +99,45 @@ namespace FenBrowser.Host.ProcessIsolation
             }
         }
 
+        private static Task<HttpResponseMessage> BlockNetworkRequestAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var target = request?.RequestUri?.AbsoluteUri ?? "unknown target";
+            return Task.FromException<HttpResponseMessage>(
+                new HttpRequestException(
+                    $"Sandboxed network process is unavailable; request to {target} blocked by process-isolation policy."));
+        }
+
+        private static string GetInitiatorOrigin(HttpRequestMessage request)
+        {
+            if (request?.Headers != null &&
+                request.Headers.TryGetValues("Origin", out var origins))
+            {
+                foreach (var origin in origins)
+                {
+                    if (!string.IsNullOrWhiteSpace(origin) &&
+                        !string.Equals(origin, "null", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return origin.Trim();
+                    }
+                }
+            }
+
+            // Same-origin and top-level navigation requests often omit Origin.
+            // Fetch/CORS authorization remains in ResourceManager; the network IPC
+            // field is descriptive and must not invent a different origin policy.
+            return string.Empty;
+        }
+
         private static void ShutdownAuxiliaryTargets()
         {
+            // Restore direct transport only as part of an explicit process-isolation
+            // transition/shutdown, before disposing the coordinator captured by the
+            // broker transport delegate.
+            HttpClientFactory.ClearRequestTransport();
+
             TryDispose(_utilityHost, "utility-target-host");
             _utilityHost = null;
 
