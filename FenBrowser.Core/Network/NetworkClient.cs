@@ -136,11 +136,13 @@ namespace FenBrowser.Core.Network
             if (uri == null) return;
             
             var hostKey = GetHostKey(uri);
-            if (_activeConnections.ContainsKey(hostKey)) return; // Already connected
-            
+
             try
             {
-                // Make a lightweight HEAD request to establish connection
+                // ConnectionInfo records request history, not the lifetime of the
+                // underlying HttpClient socket pool. A host having been requested in
+                // the past is therefore not evidence that a reusable connection is
+                // still warm; always perform the explicit preconnect hint.
                 using var request = new HttpRequestMessage(HttpMethod.Head, new Uri(uri, "/"));
                 request.Headers.ConnectionClose = false;
                 
