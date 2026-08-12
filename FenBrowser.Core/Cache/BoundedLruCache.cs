@@ -100,9 +100,13 @@ namespace FenBrowser.Core.Cache
 
         public void Set(TKey key, TValue value)
         {
+            // The estimator is caller-provided code. Run it before taking the cache
+            // lock so a slow or re-entrant estimator cannot block or deadlock all
+            // cache readers and writers.
+            var approximateBytes = Math.Max(1L, _sizeEstimator(key, value));
+
             lock (_lock)
             {
-                var approximateBytes = Math.Max(1L, _sizeEstimator(key, value));
                 if (_entries.TryGetValue(key, out var existingNode))
                 {
                     _currentBytes -= existingNode.Value.ApproximateBytes;
