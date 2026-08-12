@@ -20,7 +20,8 @@ namespace FenBrowser.Core.Network
         private readonly List<INetworkHandler> _handlers;
         private readonly ConnectionPoolStats _stats;
         private readonly ConcurrentDictionary<string, ConnectionInfo> _activeConnections;
-        private readonly ConcurrentDictionary<string, SemaphoreSlim> _hostRequestSemaphores;
+        private readonly Dictionary<string, HostRequestGate> _hostRequestGates;
+        private readonly object _hostRequestGatesLock = new();
         private readonly SemaphoreSlim _connectionSemaphore;
         
         // Concurrency limits are construction-time invariants. The previous mutable
@@ -32,6 +33,19 @@ namespace FenBrowser.Core.Network
         public bool EnableConnectionReuse { get; set; } = true;
         public bool EnableKeepAlive { get; set; } = true;
         public bool LogConnectionStats { get; set; } = false;
+
+        private sealed class HostRequestGate : IDisposable
+        {
+            public HostRequestGate(int limit)
+            {
+                Semaphore = new SemaphoreSlim(limit, limit);
+            }
+
+            public SemaphoreSlim Semaphore { get; }
+            public int LeaseCount { get; set; }
+
+            public void Dispose() => Semaphore.Dispose();
+        }
 
         public NetworkClient(
             IEnumerable<INetworkHandler> handlers,
@@ -45,7 +59,7 @@ namespace FenBrowser.Core.Network
             _handlers = handlers.ToList();
             _stats = new ConnectionPoolStats();
             _activeConnections = new ConcurrentDictionary<string, ConnectionInfo>();
-            _hostRequestSemaphores = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
+            _hostRequestGates = new Dictionary<string, HostRequestGate>(StringComparer.OrdinalIgnoreCase);
             MaxConcurrentRequests = maxConcurrentRequests;
             MaxConnectionsPerHost = maxConnectionsPerHost;
             _connectionSemaphore = new SemaphoreSlim(MaxConcurrentRequests, MaxConcurrentRequests);
@@ -59,20 +73,21 @@ namespace FenBrowser.Core.Network
             var hostKey = GetHostKey(request.RequestUri);
             var globalSemaphoreAcquired = false;
             var hostSemaphoreAcquired = false;
-            SemaphoreSlim hostSemaphore = null;
+            HostRequestGate hostGate = null;
             ConnectionInfo connInfo = null;
             
             try
             {
+                // Lease the host gate before awaiting it. The lease count includes
+                // both waiters and holders, so a gate cannot be removed/disposed while
+                // another request is about to wait on it.
+                hostGate = LeaseHostRequestGate(hostKey);
+                await hostGate.Semaphore.WaitAsync(ct).ConfigureAwait(false);
+                hostSemaphoreAcquired = true;
+
                 // Acquire the per-host gate before the global gate. This prevents one
                 // hot origin from occupying every global slot while most of its own
                 // requests are merely waiting for the per-host limit.
-                hostSemaphore = _hostRequestSemaphores.GetOrAdd(
-                    hostKey,
-                    _ => new SemaphoreSlim(MaxConnectionsPerHost, MaxConnectionsPerHost));
-                await hostSemaphore.WaitAsync(ct).ConfigureAwait(false);
-                hostSemaphoreAcquired = true;
-
                 await _connectionSemaphore.WaitAsync(ct).ConfigureAwait(false);
                 globalSemaphoreAcquired = true;
                 
@@ -123,8 +138,58 @@ namespace FenBrowser.Core.Network
 
                 if (hostSemaphoreAcquired)
                 {
-                    hostSemaphore.Release();
+                    hostGate.Semaphore.Release();
                 }
+
+                if (hostGate != null)
+                {
+                    ReleaseHostRequestGate(hostKey, hostGate);
+                }
+            }
+        }
+
+        private HostRequestGate LeaseHostRequestGate(string hostKey)
+        {
+            lock (_hostRequestGatesLock)
+            {
+                if (!_hostRequestGates.TryGetValue(hostKey, out var gate))
+                {
+                    gate = new HostRequestGate(MaxConnectionsPerHost);
+                    _hostRequestGates.Add(hostKey, gate);
+                }
+
+                checked
+                {
+                    gate.LeaseCount++;
+                }
+
+                return gate;
+            }
+        }
+
+        private void ReleaseHostRequestGate(string hostKey, HostRequestGate gate)
+        {
+            var dispose = false;
+            lock (_hostRequestGatesLock)
+            {
+                if (gate.LeaseCount <= 0)
+                {
+                    throw new InvalidOperationException("Host request gate lease count underflow.");
+                }
+
+                gate.LeaseCount--;
+                if (gate.LeaseCount == 0 &&
+                    _hostRequestGates.TryGetValue(hostKey, out var current) &&
+                    ReferenceEquals(current, gate))
+                {
+                    _hostRequestGates.Remove(hostKey);
+                    dispose = true;
+                }
+            }
+
+            if (dispose)
+            {
+                gate.Dispose();
             }
         }
 
