@@ -62,13 +62,13 @@ public static class PlatformLayerFactory
 }
 
 // =============================================================================
-//  Stub implementation for unsupported platforms
+//  Unsupported-platform implementation
 // =============================================================================
 
 /// <summary>
-/// Placeholder <see cref="IPlatformLayer"/> for platforms that do not yet have a
-/// full implementation.  All operations that require platform support
-/// throw <see cref="PlatformNotSupportedException"/>.
+/// Fail-closed <see cref="IPlatformLayer"/> for platforms without an implementation.
+/// Operations that require platform isolation or shared-memory support throw instead
+/// of silently continuing without the requested security boundary.
 /// </summary>
 internal sealed class UnsupportedPlatformLayer : IPlatformLayer
 {
@@ -88,18 +88,13 @@ internal sealed class UnsupportedPlatformLayer : IPlatformLayer
     /// <inheritdoc/>
     public ISharedMemoryRegion CreateSharedMemory(string name, int sizeBytes)
     {
-        // MemoryMappedFile works on Linux/macOS too; this is a best-effort attempt
-        // without Global\ prefix (which is Windows-only).
-        throw new PlatformNotSupportedException(
-            $"CreateSharedMemory is not yet implemented for platform '{_kind}'. " +
-            "A Linux/macOS PAL implementation is planned for a future commit.");
+        throw Unsupported("CreateSharedMemory");
     }
 
     /// <inheritdoc/>
     public ISharedMemoryRegion OpenSharedMemory(string name, int sizeBytes)
     {
-        throw new PlatformNotSupportedException(
-            $"OpenSharedMemory is not yet implemented for platform '{_kind}'.");
+        throw Unsupported("OpenSharedMemory");
     }
 
     /// <inheritdoc/>
@@ -107,14 +102,13 @@ internal sealed class UnsupportedPlatformLayer : IPlatformLayer
         System.Diagnostics.ProcessStartInfo psi,
         Security.Sandbox.OsSandboxProfile profile)
     {
-        // Return PSI unmodified; no sandboxing applied.
-        return psi;
+        throw Unsupported("ApplySandbox");
     }
 
     /// <inheritdoc/>
     public void SelfRestrictToProfile(Security.Sandbox.OsSandboxProfile profile)
     {
-        // No-op on unsupported platforms.
+        throw Unsupported("SelfRestrictToProfile");
     }
 
     /// <inheritdoc/>
@@ -133,32 +127,11 @@ internal sealed class UnsupportedPlatformLayer : IPlatformLayer
     }
 
     /// <inheritdoc/>
-    /// <remarks>
-    /// Returns a <see cref="NullSandboxFactory"/> because sandboxing is not supported
-    /// on this platform.  All created sandboxes will be no-ops.
-    /// </remarks>
     public IOsSandboxFactory CreateSandboxFactory()
     {
-        return new NullSandboxFactory();
+        throw Unsupported("CreateSandboxFactory");
     }
-}
 
-// =============================================================================
-//  Null sandbox factory for unsupported platforms
-// =============================================================================
-
-/// <summary>
-/// <see cref="IOsSandboxFactory"/> stub used on platforms where no real sandboxing
-/// implementation is available.  Always returns <see cref="NullSandbox"/> instances.
-/// </summary>
-internal sealed class NullSandboxFactory : IOsSandboxFactory
-{
-    /// <inheritdoc/>
-    public bool IsSandboxingSupported => false;
-
-    /// <inheritdoc/>
-    public ISandbox Create(OsSandboxProfile profile)
-    {
-        return new NullSandbox(profile);
-    }
+    private PlatformNotSupportedException Unsupported(string operation) =>
+        new($"{operation} is unavailable on unsupported platform '{_kind}'. FenBrowser will not continue with a no-op sandbox fallback.");
 }
