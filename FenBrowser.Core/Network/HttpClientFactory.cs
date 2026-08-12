@@ -67,9 +67,9 @@ namespace FenBrowser.Core.Network
                 // Keep-alive for connection reuse
                 UseCookies = false, // We handle cookies manually for privacy
             };
-            handler.SslOptions.EnabledSslProtocols =
-                System.Security.Authentication.SslProtocols.Tls12 |
-                System.Security.Authentication.SslProtocols.Tls13;
+
+            // Leave SslOptions.EnabledSslProtocols at its default (None) so the
+            // operating system can apply current TLS policy and adopt newer TLS versions.
 
             if (BrowserSettings.Instance.UseSecureDNS)
             {
