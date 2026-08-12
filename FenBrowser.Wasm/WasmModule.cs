@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using System.Threading;
 using Wasmtime;
 
 namespace FenBrowser.Wasm;
@@ -66,6 +67,7 @@ public sealed class WasmInstance : IDisposable
     private readonly Store _store;
     private readonly Instance _instance;
     private readonly object _callLock = new();
+    private int _disposed;
 
     internal WasmInstance(WasmEngine engine, Store store, Instance instance, string name)
     {
@@ -241,6 +243,9 @@ public sealed class WasmInstance : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
         _engine.UntrackInstance();
         _store.Dispose();
     }
