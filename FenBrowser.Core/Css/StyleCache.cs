@@ -83,17 +83,16 @@ namespace FenBrowser.Core.Css
         }
 
         /// <summary>
-        /// Clears all cached styles.
-        /// Note: ConditionalWeakTable doesn't have Clear, so we create a new instance.
+        /// Clears all cached styles immediately.
         /// </summary>
         public void Clear()
         {
+            _cache.Clear();
+
             lock (_styledElementsLock)
             {
                 _styledElements.Clear();
             }
-            // ConditionalWeakTable entries are cleared when keys are GC'd
-            // For immediate clear, caller should create a new StyleCache
         }
 
         /// <summary>
