@@ -121,7 +121,7 @@ namespace FenBrowser.Core.Network
         }
 
         /// <summary>
-        /// Creates an HttpClient for private browsing (no persistent connections).
+        /// Creates an HttpClient for private browsing.
         /// </summary>
         public static HttpClient CreatePrivateClient()
         {
@@ -131,12 +131,9 @@ namespace FenBrowser.Core.Network
             handler.UseCookies = false;
             handler.Credentials = null;
             
-            var client = CreateClient(handler);
-            
-            // Shorter timeout for private mode
-            client.Timeout = TimeSpan.FromSeconds(15);
-            
-            return client;
+            // Private mode uses the same caller-owned document/resource deadlines as
+            // normal browsing. Do not add a second whole-request HttpClient timeout.
+            return CreateClient(handler);
         }
 
         /// <summary>
