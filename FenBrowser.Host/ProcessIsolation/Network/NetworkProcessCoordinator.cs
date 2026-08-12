@@ -16,7 +16,8 @@ namespace FenBrowser.Host.ProcessIsolation.Network
     {
         Accepted,
         SequenceMismatch,
-        SizeExceeded
+        SizeExceeded,
+        ChannelClosed
     }
 
     /// <summary>
@@ -124,13 +125,15 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         // Streams base64-decoded body chunks in order.
-        private readonly System.Threading.Channels.Channel<byte[]> _bodyChannel = 
+        private readonly System.Threading.Channels.Channel<byte[]> _bodyChannel =
             System.Threading.Channels.Channel.CreateUnbounded<byte[]>(new System.Threading.Channels.UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
         private readonly object _bodyLock = new object();
         private long _bodyBytes;
         private int _nextChunkIndex;
         private readonly TaskCompletionSource<bool> _bodyCompleteTcs =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly CancellationTokenRegistration _cancellationRegistration;
+        private int _disposed;
 
         public PendingNetworkRequest(
             string requestId,
@@ -142,9 +145,10 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             CapabilityTokenValue = capabilityTokenValue;
             InitiatorOrigin = initiatorOrigin;
             CancellationToken = cancellationToken;
-            
-            // Link cancellation to the body stream
-            CancellationToken.Register(() => _bodyChannel.Writer.TryComplete(new OperationCanceledException(CancellationToken)));
+
+            // Cancellation must terminate both the stream and the completion task
+            // so the coordinator can release request state even after HEAD returned.
+            _cancellationRegistration = CancellationToken.Register(SetCancelled);
         }
 
         public Task<NetworkFetchResponseHeadPayload> HeadTask => _headTcs.Task;
@@ -159,9 +163,12 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         public void SetCancelled()
         {
-            _headTcs.TrySetCanceled();
-            _bodyCompleteTcs.TrySetCanceled();
-            _bodyChannel.Writer.TryComplete(new OperationCanceledException(CancellationToken));
+            lock (_bodyLock)
+            {
+                _headTcs.TrySetCanceled(CancellationToken);
+                _bodyCompleteTcs.TrySetCanceled(CancellationToken);
+                _bodyChannel.Writer.TryComplete(new OperationCanceledException(CancellationToken));
+            }
         }
 
         public void SetFailed(string error)
@@ -170,59 +177,75 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             SetBodyFailed(error);
         }
 
-        public Task<BodyChunkAppendResult> TryAppendBodyChunkAsync(
+        public BodyChunkAppendResult TryAppendBodyChunk(
             byte[] chunk,
             int chunkIndex,
-            int maxBodyBytes)
+            int maxBodyBytes,
+            bool isComplete)
         {
             lock (_bodyLock)
             {
                 if (chunkIndex != _nextChunkIndex)
                 {
-                    return Task.FromResult(BodyChunkAppendResult.SequenceMismatch);
+                    return BodyChunkAppendResult.SequenceMismatch;
                 }
 
                 if (chunk.LongLength > maxBodyBytes - _bodyBytes)
                 {
-                    return Task.FromResult(BodyChunkAppendResult.SizeExceeded);
+                    return BodyChunkAppendResult.SizeExceeded;
                 }
 
-                if (chunk.Length > 0)
+                if (chunk.Length > 0 && !_bodyChannel.Writer.TryWrite(chunk))
                 {
-                    _bodyChannel.Writer.TryWrite(chunk);
+                    return BodyChunkAppendResult.ChannelClosed;
                 }
+
                 _bodyBytes += chunk.LongLength;
                 _nextChunkIndex++;
-                return Task.FromResult(BodyChunkAppendResult.Accepted);
+
+                // Complete only after the final chunk has been accepted and queued.
+                // Keeping append + completion under one lock prevents EOF from racing
+                // ahead of a rejected or still-pending final chunk.
+                if (isComplete)
+                {
+                    _bodyCompleteTcs.TrySetResult(true);
+                    _bodyChannel.Writer.TryComplete();
+                }
+
+                return BodyChunkAppendResult.Accepted;
             }
         }
 
-        public void SetBodyComplete() 
-        {
-            _bodyCompleteTcs.TrySetResult(true);
-            _bodyChannel.Writer.TryComplete();
-        }
-        
         public void SetBodyFailed(string error)
         {
-            var ex = new HttpRequestException(error);
-            _bodyCompleteTcs.TrySetException(ex);
-            _bodyChannel.Writer.TryComplete(ex);
+            lock (_bodyLock)
+            {
+                var ex = new HttpRequestException(error);
+                _bodyCompleteTcs.TrySetException(ex);
+                _bodyChannel.Writer.TryComplete(ex);
+            }
         }
 
-        public void Dispose() { }
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            _cancellationRegistration.Dispose();
+        }
     }
 
     /// <summary>
     /// Broker-side coordinator routing all network I/O through the sandboxed
-    /// Network child process. Falls back to in-process HttpClient when the
-    /// network process is unavailable.
+    /// Network child process. If that security boundary is unavailable, requests
+    /// fail closed instead of silently switching to in-process networking.
     /// </summary>
     public sealed class NetworkProcessCoordinator : IDisposable
     {
         private readonly ConcurrentDictionary<string, PendingNetworkRequest> _pending = new();
         private NetworkProcessSession _session;
-        private readonly HttpClient _fallbackClient;
         private volatile bool _disposed;
 
         // Maximum body size accepted from the network process (64 MB).
@@ -236,16 +259,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         internal NetworkProcessCoordinator(int maxBodyBytes)
         {
             if (maxBodyBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxBodyBytes));
-
             _maxBodyBytes = maxBodyBytes;
-            _fallbackClient = new HttpClient(new HttpClientHandler
-            {
-                AllowAutoRedirect = true,
-                MaxAutomaticRedirections = 20,
-                CheckCertificateRevocationList = false,
-                ServerCertificateCustomValidationCallback = null,
-            });
-            _fallbackClient.Timeout = TimeSpan.FromSeconds(30);
         }
 
         /// <summary>
@@ -279,8 +293,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         }
 
         /// <summary>
-        /// Send an HTTP request, routing through the network process when
-        /// available, or falling back to an in-process HttpClient.
+        /// Send an HTTP request through the sandboxed network process.
         /// </summary>
         public async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -292,10 +305,10 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             var session = _session;
             if (session == null || !session.IsConnected)
             {
-                EngineLogBridge.Debug(
-                    $"[NetworkCoordinator] Network process unavailable; using in-process fallback for {request.RequestUri}.",
-                    LogCategory.Network);
-                return await _fallbackClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                EngineLogBridge.Warn(
+                    $"[NetworkCoordinator] Sandboxed network process unavailable; blocking request to {request.RequestUri}.",
+                    LogCategory.Security);
+                throw new HttpRequestException("Sandboxed network process is unavailable; request blocked by process-isolation policy.");
             }
 
             return await SendViaNetworkProcessAsync(request, session, initiatorOrigin, cancellationToken)
@@ -314,7 +327,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             var fetchPayload = BuildFetchPayload(request, initiatorOrigin);
 
             // Register pending state before sending (avoids race with fast responses)
-            using var pending = new PendingNetworkRequest(requestId, string.Empty, initiatorOrigin, cancellationToken);
+            var pending = new PendingNetworkRequest(requestId, string.Empty, initiatorOrigin, cancellationToken);
             _pending[requestId] = pending;
 
             // Mint capability token and send
@@ -343,12 +356,12 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 // Return response with streaming body immediately after receiving HEAD
                 // We do NOT wait for BodyCompleteTask here.
                 var stream = new ChannelStream(pending.BodyReader);
-                
+
                 // Keep the pending request alive in the dictionary until the body finishes,
                 // but we return the stream to the caller now.
                 _ = CleanupAfterBodyCompleteAsync(pending, session, requestId);
-                
-                return BuildHttpResponse(head, stream);
+
+                return BuildHttpResponse(head, stream, request);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -357,12 +370,17 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     cancelledPending.SetCancelled();
                 }
                 session.SendCancel(requestId);
+                pending.Dispose();
                 throw;
             }
             catch (TimeoutException)
             {
                 EngineLogBridge.Warn($"[NetworkCoordinator] Request {requestId} timed out.", LogCategory.Network);
+                _pending.TryRemove(requestId, out _);
+                pending.SetFailed("Network process request timed out.");
                 session.SendCancel(requestId);
+                session.ReleaseCapabilityToken(requestId);
+                pending.Dispose();
                 throw new HttpRequestException($"Network process request timed out: {request.RequestUri}");
             }
             catch (Exception)
@@ -370,6 +388,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 // In case of error before returning the stream, cleanup immediately
                 _pending.TryRemove(requestId, out _);
                 session.ReleaseCapabilityToken(requestId);
+                pending.Dispose();
                 throw;
             }
         }
@@ -388,6 +407,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             {
                 _pending.TryRemove(requestId, out _);
                 session.ReleaseCapabilityToken(requestId);
+                pending.Dispose();
             }
         }
 
@@ -431,35 +451,44 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 try
                 {
                     var bytes = Convert.FromBase64String(body.BodyChunkBase64);
-                    pending
-                        .TryAppendBodyChunkAsync(bytes, body.ChunkIndex, _maxBodyBytes)
-                        .ContinueWith(t =>
+                    var appendResult = pending.TryAppendBodyChunk(
+                        bytes,
+                        body.ChunkIndex,
+                        _maxBodyBytes,
+                        body.IsComplete);
+
+                    if (appendResult != BodyChunkAppendResult.Accepted)
+                    {
+                        string error;
+                        switch (appendResult)
                         {
-                            if (t.Result != BodyChunkAppendResult.Accepted)
-                            {
-                                var sequenceMismatch = t.Result == BodyChunkAppendResult.SequenceMismatch;
+                            case BodyChunkAppendResult.SequenceMismatch:
+                                error = "Response body chunk sequence was invalid.";
                                 EngineLogBridge.Warn(
-                                    sequenceMismatch
-                                        ? $"[NetworkCoordinator] Body chunk sequence mismatch for request {body.RequestId}; rejecting."
-                                        : $"[NetworkCoordinator] Aggregate body exceeds max size for request {body.RequestId}; rejecting.",
+                                    $"[NetworkCoordinator] Body chunk sequence mismatch for request {body.RequestId}; rejecting.",
                                     LogCategory.Network);
-                                pending.SetBodyFailed(
-                                    sequenceMismatch
-                                        ? "Response body chunk sequence was invalid."
-                                        : "Response body exceeded maximum allowed size.");
-                            }
-                        });
+                                break;
+                            case BodyChunkAppendResult.SizeExceeded:
+                                error = "Response body exceeded maximum allowed size.";
+                                EngineLogBridge.Warn(
+                                    $"[NetworkCoordinator] Aggregate body exceeds max size for request {body.RequestId}; rejecting.",
+                                    LogCategory.Network);
+                                break;
+                            default:
+                                error = "Response body arrived after the body channel was closed.";
+                                EngineLogBridge.Warn(
+                                    $"[NetworkCoordinator] Body chunk arrived after stream closure for request {body.RequestId}; rejecting.",
+                                    LogCategory.Network);
+                                break;
+                        }
+
+                        pending.SetBodyFailed(error);
+                    }
                 }
                 catch (FormatException ex)
                 {
                     EngineLogBridge.Warn($"[NetworkCoordinator] Body base64 decode failed: {ex.Message}", LogCategory.Network);
                     pending.SetBodyFailed("Response body was malformed.");
-                    return;
-                }
-
-                if (body.IsComplete)
-                {
-                    pending.SetBodyComplete();
                 }
             }
         }
@@ -534,12 +563,13 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         private static HttpResponseMessage BuildHttpResponse(
             NetworkFetchResponseHeadPayload head,
-            Stream bodyStream)
+            Stream bodyStream,
+            HttpRequestMessage request)
         {
             var response = new HttpResponseMessage((HttpStatusCode)head.StatusCode)
             {
                 ReasonPhrase = head.StatusText ?? string.Empty,
-                RequestMessage = null,
+                RequestMessage = request,
                 Content = new StreamContent(bodyStream),
             };
 
@@ -563,7 +593,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             if (_disposed) return;
             _disposed = true;
             DetachSession();
-            _fallbackClient.Dispose();
             foreach (var kv in _pending) kv.Value.Dispose();
             _pending.Clear();
         }
