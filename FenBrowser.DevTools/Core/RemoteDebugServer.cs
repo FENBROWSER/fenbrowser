@@ -102,7 +102,7 @@ public class RemoteDebugServer : IDisposable
             EngineLogCompat.Info($"[RemoteDebug] TCP Server started on {endpoint.Address}:{endpoint.Port} (auth: required)", LogCategory.DevTools);
             if (_usesEphemeralAuthToken)
             {
-                EngineLogCompat.Warn($"[RemoteDebug] Generated ephemeral auth token for this session: {_authToken}", LogCategory.Security);
+                EngineLogCompat.Info("[RemoteDebug] Generated ephemeral auth token for this session; credential value is not written to logs.", LogCategory.Security);
             }
             else
             {
