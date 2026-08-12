@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Net.Security;
@@ -19,6 +20,7 @@ namespace FenBrowser.Core.Network
         private static HttpClient _sharedClient;
         private static SocketsHttpHandler _sharedHandler;
         private static Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _requestTransport;
+        private static readonly TimeSpan SecureDnsAddressStagger = TimeSpan.FromMilliseconds(250);
 
         /// <summary>
         /// Installs a process-local request transport used by clients created after
@@ -258,22 +260,105 @@ namespace FenBrowser.Core.Network
                 throw new InvalidOperationException("Missing DNS endpoint for HTTP connection.");
             }
 
-            var resolvedIp = await SecureDnsResolver.ResolveAsync(endPoint.Host, ct).ConfigureAwait(false);
-            if (resolvedIp != null)
+            var resolvedIps = await SecureDnsResolver.ResolveAllAsync(endPoint.Host, ct).ConfigureAwait(false);
+            if (resolvedIps.Count > 0)
             {
                 try
                 {
-                    return await ConnectSocketAsync(new IPEndPoint(resolvedIp, endPoint.Port), ct).ConfigureAwait(false);
+                    return await ConnectResolvedAddressesAsync(resolvedIps, endPoint.Port, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
                     EngineLogCompat.Warn(
-                        $"[SecureDNS] Direct connect via DoH-resolved IP failed for {endPoint.Host}:{endPoint.Port}: {ex.Message}. Falling back to system resolver.",
+                        $"[SecureDNS] Direct connect via DoH-resolved addresses failed for {endPoint.Host}:{endPoint.Port}: {ex.Message}. Falling back to system resolver.",
                         Logging.LogCategory.Network);
                 }
             }
 
             return await ConnectSocketAsync(endPoint, ct).ConfigureAwait(false);
+        }
+
+        private static async Task<System.IO.Stream> ConnectResolvedAddressesAsync(
+            IReadOnlyList<IPAddress> addresses,
+            int port,
+            CancellationToken ct)
+        {
+            if (addresses == null || addresses.Count == 0)
+            {
+                throw new InvalidOperationException("Secure DNS returned no addresses to connect.");
+            }
+
+            using var raceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var attempts = new List<Task<System.IO.Stream>>(addresses.Count);
+            for (var i = 0; i < addresses.Count; i++)
+            {
+                attempts.Add(ConnectResolvedAddressWithDelayAsync(
+                    addresses[i],
+                    port,
+                    i == 0 ? TimeSpan.Zero : TimeSpan.FromMilliseconds(SecureDnsAddressStagger.TotalMilliseconds * i),
+                    raceCts.Token));
+            }
+
+            Exception lastError = null;
+            while (attempts.Count > 0)
+            {
+                var completed = await Task.WhenAny(attempts).ConfigureAwait(false);
+                attempts.Remove(completed);
+                try
+                {
+                    var winner = await completed.ConfigureAwait(false);
+                    raceCts.Cancel();
+                    await DisposeCompletedConnectionAttemptsAsync(attempts).ConfigureAwait(false);
+                    return winner;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    raceCts.Cancel();
+                    await DisposeCompletedConnectionAttemptsAsync(attempts).ConfigureAwait(false);
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                }
+            }
+
+            throw lastError ?? new SocketException((int)SocketError.HostUnreachable);
+        }
+
+        private static async Task<System.IO.Stream> ConnectResolvedAddressWithDelayAsync(
+            IPAddress address,
+            int port,
+            TimeSpan delay,
+            CancellationToken ct)
+        {
+            if (delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay, ct).ConfigureAwait(false);
+            }
+
+            return await ConnectSocketAsync(new IPEndPoint(address, port), ct).ConfigureAwait(false);
+        }
+
+        private static async Task DisposeCompletedConnectionAttemptsAsync(
+            IReadOnlyList<Task<System.IO.Stream>> attempts)
+        {
+            for (var i = 0; i < attempts.Count; i++)
+            {
+                try
+                {
+                    var stream = await attempts[i].ConfigureAwait(false);
+                    stream?.Dispose();
+                }
+                catch
+                {
+                    // Losing connection attempts are expected to fail/cancel after a winner.
+                }
+            }
         }
 
         private static async Task<System.IO.Stream> ConnectSocketAsync(EndPoint endPoint, CancellationToken ct)

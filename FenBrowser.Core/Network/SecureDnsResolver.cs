@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -21,7 +22,7 @@ namespace FenBrowser.Core.Network
 
         private sealed class CacheEntry
         {
-            public IPAddress Address { get; set; }
+            public IPAddress[] Addresses { get; set; }
             public DateTimeOffset ExpiresAt { get; set; }
         }
 
@@ -32,27 +33,33 @@ namespace FenBrowser.Core.Network
 
         public static async Task<IPAddress> ResolveAsync(string host, CancellationToken ct)
         {
+            var addresses = await ResolveAllAsync(host, ct).ConfigureAwait(false);
+            return addresses.Count > 0 ? addresses[0] : null;
+        }
+
+        public static async Task<IReadOnlyList<IPAddress>> ResolveAllAsync(string host, CancellationToken ct)
+        {
             ct.ThrowIfCancellationRequested();
 
             if (string.IsNullOrWhiteSpace(host))
             {
-                return null;
+                return Array.Empty<IPAddress>();
             }
 
             if (IPAddress.TryParse(host, out var ipLiteral))
             {
-                return ipLiteral;
+                return new[] { ipLiteral };
             }
 
             if (IsLocalHost(host))
             {
-                return null;
+                return Array.Empty<IPAddress>();
             }
 
             var endpoint = GetEndpoint();
             if (string.IsNullOrWhiteSpace(endpoint))
             {
-                return null;
+                return Array.Empty<IPAddress>();
             }
 
             var normalizedHost = host.Trim().ToLowerInvariant();
@@ -61,7 +68,7 @@ namespace FenBrowser.Core.Network
             {
                 if (cached.ExpiresAt > DateTimeOffset.UtcNow)
                 {
-                    return cached.Address;
+                    return cached.Addresses;
                 }
 
                 _cache.TryRemove(cacheKey, out _);
@@ -69,25 +76,33 @@ namespace FenBrowser.Core.Network
 
             try
             {
-                var records = await QueryRecordsAsync(endpoint, normalizedHost, "A", ct).ConfigureAwait(false);
+                // Query both address families in parallel. The old A-first/AAAA-only-on-
+                // failure path structurally prevented dual-stack connection racing.
+                var ipv4Task = QueryRecordsBestEffortAsync(endpoint, normalizedHost, "A", ct);
+                var ipv6Task = QueryRecordsBestEffortAsync(endpoint, normalizedHost, "AAAA", ct);
+                await Task.WhenAll(ipv4Task, ipv6Task).ConfigureAwait(false);
+
+                var records = InterleaveAddressFamilies(ipv6Task.Result, ipv4Task.Result);
                 if (records.Count == 0)
                 {
-                    records = await QueryRecordsAsync(endpoint, normalizedHost, "AAAA", ct).ConfigureAwait(false);
+                    return Array.Empty<IPAddress>();
                 }
 
-                if (records.Count == 0)
+                var addresses = new IPAddress[records.Count];
+                var minTtl = 3600;
+                for (var i = 0; i < records.Count; i++)
                 {
-                    return null;
+                    addresses[i] = records[i].address;
+                    minTtl = Math.Min(minTtl, records[i].ttlSeconds);
                 }
 
-                var selected = records[0];
-                var ttl = Math.Max(30, Math.Min(3600, selected.ttlSeconds));
+                var ttl = Math.Max(30, Math.Min(3600, minTtl));
                 _cache[cacheKey] = new CacheEntry
                 {
-                    Address = selected.address,
+                    Addresses = addresses,
                     ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(ttl)
                 };
-                return selected.address;
+                return addresses;
             }
             catch (Exception ex)
             {
@@ -97,8 +112,58 @@ namespace FenBrowser.Core.Network
                 }
 
                 EngineLogCompat.Warn($"[SecureDNS] DoH resolution failed for '{host}': {ex.Message}", LogCategory.Network);
-                return null;
+                return Array.Empty<IPAddress>();
             }
+        }
+
+        private static async Task<List<(IPAddress address, int ttlSeconds)>> QueryRecordsBestEffortAsync(
+            string endpoint,
+            string host,
+            string type,
+            CancellationToken ct)
+        {
+            try
+            {
+                return await QueryRecordsAsync(endpoint, host, type, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // One address family failing must not discard a usable answer from
+                // the other family. The aggregate resolver still fails only when both
+                // families produce no addresses.
+                EngineLogCompat.Debug(
+                    $"[SecureDNS] DoH {type} lookup failed for '{host}': {ex.Message}",
+                    LogCategory.Network);
+                return new List<(IPAddress address, int ttlSeconds)>();
+            }
+        }
+
+        private static List<(IPAddress address, int ttlSeconds)> InterleaveAddressFamilies(
+            IReadOnlyList<(IPAddress address, int ttlSeconds)> ipv6,
+            IReadOnlyList<(IPAddress address, int ttlSeconds)> ipv4)
+        {
+            var result = new List<(IPAddress address, int ttlSeconds)>(ipv6.Count + ipv4.Count);
+            var seen = new HashSet<IPAddress>();
+            var max = Math.Max(ipv6.Count, ipv4.Count);
+
+            for (var i = 0; i < max; i++)
+            {
+                if (i < ipv6.Count && seen.Add(ipv6[i].address))
+                {
+                    result.Add(ipv6[i]);
+                }
+
+                if (i < ipv4.Count && seen.Add(ipv4[i].address))
+                {
+                    result.Add(ipv4[i]);
+                }
+            }
+
+            return result;
         }
 
         private static async Task<List<(IPAddress address, int ttlSeconds)>> QueryRecordsAsync(
@@ -156,6 +221,17 @@ namespace FenBrowser.Core.Network
 
                 var data = dataElement.GetString();
                 if (string.IsNullOrWhiteSpace(data) || !IPAddress.TryParse(data, out var ip))
+                {
+                    continue;
+                }
+
+                // Ignore an address of the wrong family if a DoH endpoint returns a
+                // mixed answer section. CNAME records are already filtered by IP parse.
+                if (string.Equals(type, "A", StringComparison.Ordinal) && ip.AddressFamily != AddressFamily.InterNetwork)
+                {
+                    continue;
+                }
+                if (string.Equals(type, "AAAA", StringComparison.Ordinal) && ip.AddressFamily != AddressFamily.InterNetworkV6)
                 {
                     continue;
                 }
