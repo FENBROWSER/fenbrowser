@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 
 namespace FenBrowser.DependencyInjection;
 
@@ -62,6 +63,7 @@ public interface IServiceScope : IDisposable
 /// </summary>
 public sealed class ServiceContainer : IServiceContainer
 {
+    private static readonly AsyncLocal<Stack<Type>?> _resolutionStack = new();
     private readonly Dictionary<Type, ServiceDescriptor> _services = new();
     private readonly object _lock = new();
     private readonly ServiceContainer? _parent;
@@ -137,13 +139,15 @@ public sealed class ServiceContainer : IServiceContainer
 
     public bool TryResolve<TService>(out TService? service) where TService : class
     {
-        var descriptor = FindDescriptor(typeof(TService));
+        var serviceType = typeof(TService);
+        var descriptor = FindDescriptor(serviceType);
         if (descriptor == null)
         {
             service = null;
             return false;
         }
 
+        using var resolution = EnterResolution(serviceType);
         service = CreateInstance<TService>(descriptor);
         return true;
     }
@@ -151,6 +155,26 @@ public sealed class ServiceContainer : IServiceContainer
     public IServiceScope CreateScope()
     {
         return new ServiceScope(this);
+    }
+
+    private static ResolutionGuard EnterResolution(Type serviceType)
+    {
+        var stack = _resolutionStack.Value;
+        if (stack == null)
+        {
+            stack = new Stack<Type>();
+            _resolutionStack.Value = stack;
+        }
+
+        if (stack.Contains(serviceType))
+        {
+            var chain = stack.Reverse().Append(serviceType).Select(t => t.Name);
+            throw new InvalidOperationException(
+                $"Circular service dependency detected: {string.Join(" -> ", chain)}");
+        }
+
+        stack.Push(serviceType);
+        return new ResolutionGuard(stack);
     }
 
     private ServiceDescriptor? FindDescriptor(Type serviceType)
@@ -244,6 +268,30 @@ public sealed class ServiceContainer : IServiceContainer
         if (_scopedInstancesDisposed)
         {
             throw new ObjectDisposedException(nameof(ServiceContainer));
+        }
+    }
+
+    private readonly struct ResolutionGuard : IDisposable
+    {
+        private readonly Stack<Type>? _stack;
+
+        public ResolutionGuard(Stack<Type> stack)
+        {
+            _stack = stack;
+        }
+
+        public void Dispose()
+        {
+            if (_stack == null || _stack.Count == 0)
+            {
+                return;
+            }
+
+            _stack.Pop();
+            if (_stack.Count == 0)
+            {
+                _resolutionStack.Value = null;
+            }
         }
     }
 
