@@ -269,7 +269,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
     {
         private readonly ConcurrentDictionary<string, PendingNetworkRequest> _pending = new();
         private NetworkProcessSession _session;
-        private volatile bool _disposed;
+        private int _disposed;
 
         // Maximum body size accepted from the network process (64 MB).
         private const int MaxBodyBytes = 64 * 1024 * 1024;
@@ -292,6 +292,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         public void AttachSession(NetworkProcessSession session)
         {
             if (session == null) throw new ArgumentNullException(nameof(session));
+            if (Volatile.Read(ref _disposed) != 0) throw new ObjectDisposedException(nameof(NetworkProcessCoordinator));
 
             // Detach old session if any
             DetachSession();
@@ -324,6 +325,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             CancellationToken cancellationToken = default)
         {
             if (request == null) throw new ArgumentNullException(nameof(request));
+            if (Volatile.Read(ref _disposed) != 0) throw new ObjectDisposedException(nameof(NetworkProcessCoordinator));
 
             var session = _session;
             if (session == null || !session.IsConnected)
@@ -352,12 +354,14 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             // Register pending state before sending (avoids race with fast responses)
             var pending = new PendingNetworkRequest(requestId, string.Empty, initiatorOrigin, cancellationToken);
             _pending[requestId] = pending;
-
-            // Mint capability token and send
-            var capToken = session.SendFetch(fetchPayload, initiatorOrigin ?? "", requestId);
+            NetworkCapabilityToken capToken = null;
 
             try
             {
+                // Mint the capability and write the request under the same cleanup
+                // scope as the pending entry. Transactional SendFetch can fail fast.
+                capToken = session.SendFetch(fetchPayload, initiatorOrigin ?? "", requestId);
+
                 // Wait for response head (status + headers)
                 var head = await pending.HeadTask
                     .WaitAsync(TimeSpan.FromSeconds(30), cancellationToken)
@@ -402,15 +406,23 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 _pending.TryRemove(requestId, out _);
                 pending.SetFailed("Network process request timed out.");
                 session.SendCancel(requestId);
-                session.ReleaseCapabilityToken(requestId);
                 pending.Dispose();
                 throw new HttpRequestException($"Network process request timed out: {request.RequestUri}");
             }
             catch (Exception)
             {
-                // In case of error before returning the stream, cleanup immediately
+                // Any failure before returning the response stream owns the whole
+                // pending request. Close the body path and stop child-side work.
                 _pending.TryRemove(requestId, out _);
-                session.ReleaseCapabilityToken(requestId);
+                pending.SetFailed("Network process request failed before the response stream was established.");
+                if (capToken != null)
+                {
+                    session.SendCancel(requestId);
+                }
+                else
+                {
+                    session.ReleaseCapabilityToken(requestId);
+                }
                 pending.Dispose();
                 throw;
             }
@@ -622,11 +634,25 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            var session = _session;
             DetachSession();
-            foreach (var kv in _pending) kv.Value.Dispose();
-            _pending.Clear();
+
+            foreach (var kv in _pending)
+            {
+                if (!_pending.TryRemove(kv.Key, out var pending))
+                {
+                    continue;
+                }
+
+                pending.SetFailed("Network process coordinator was disposed.");
+                session?.SendCancel(kv.Key);
+                pending.Dispose();
+            }
         }
     }
 }
