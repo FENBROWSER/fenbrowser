@@ -307,7 +307,7 @@ namespace FenBrowser.Core.Network.Handlers
             request.Options.Set(s_credentialsModeKey, NormalizeCredentialsMode(credentialsMode));
         }
 
-        private static string GetCredentialsMode(HttpRequestMessage request)
+        public static string GetCredentialsMode(HttpRequestMessage request)
         {
             if (request != null &&
                 request.Options.TryGetValue(s_credentialsModeKey, out var credentialsMode))

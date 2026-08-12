@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Network.Handlers;
 
 namespace FenBrowser.Host.ProcessIsolation.Network
 {
@@ -562,7 +563,24 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             DetachSession();
         }
 
-        // ── Helpers ───────────────────────────────────────────────────────────
+        // ── Helpers ────────────────────────────────────────────────────────────
+
+        private static string GetFetchMode(HttpRequestMessage request)
+        {
+            if (request != null && request.Headers.TryGetValues("Sec-Fetch-Mode", out var values))
+            {
+                foreach (var value in values)
+                {
+                    var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+                    if (normalized is "cors" or "no-cors" or "same-origin" or "navigate")
+                    {
+                        return normalized;
+                    }
+                }
+            }
+
+            return "cors";
+        }
 
         private static NetworkFetchRequestPayload BuildFetchPayload(
             HttpRequestMessage request,
@@ -601,6 +619,8 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 Method = request.Method.Method,
                 Headers = headers,
                 BodyBase64 = bodyBase64,
+                Mode = GetFetchMode(request),
+                Credentials = CorsHandler.GetCredentialsMode(request),
                 InitiatorOrigin = initiatorOrigin ?? "",
             };
         }
