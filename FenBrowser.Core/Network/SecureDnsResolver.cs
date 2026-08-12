@@ -46,24 +46,30 @@ namespace FenBrowser.Core.Network
                 return null;
             }
 
-            var cacheKey = host.Trim().ToLowerInvariant();
-            if (_cache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow)
-            {
-                return cached.Address;
-            }
-
             var endpoint = GetEndpoint();
             if (string.IsNullOrWhiteSpace(endpoint))
             {
                 return null;
             }
 
+            var normalizedHost = host.Trim().ToLowerInvariant();
+            var cacheKey = endpoint + "\n" + normalizedHost;
+            if (_cache.TryGetValue(cacheKey, out var cached))
+            {
+                if (cached.ExpiresAt > DateTimeOffset.UtcNow)
+                {
+                    return cached.Address;
+                }
+
+                _cache.TryRemove(cacheKey, out _);
+            }
+
             try
             {
-                var records = await QueryRecordsAsync(endpoint, cacheKey, "A", ct).ConfigureAwait(false);
+                var records = await QueryRecordsAsync(endpoint, normalizedHost, "A", ct).ConfigureAwait(false);
                 if (records.Count == 0)
                 {
-                    records = await QueryRecordsAsync(endpoint, cacheKey, "AAAA", ct).ConfigureAwait(false);
+                    records = await QueryRecordsAsync(endpoint, normalizedHost, "AAAA", ct).ConfigureAwait(false);
                 }
 
                 if (records.Count == 0)
@@ -179,19 +185,31 @@ namespace FenBrowser.Core.Network
 
         private static string GetEndpoint()
         {
-            var fromEnv = Environment.GetEnvironmentVariable("FEN_SECURE_DNS_ENDPOINT");
-            if (!string.IsNullOrWhiteSpace(fromEnv))
+            var configured = Environment.GetEnvironmentVariable("FEN_SECURE_DNS_ENDPOINT");
+            if (string.IsNullOrWhiteSpace(configured))
             {
-                return fromEnv.Trim();
+                configured = BrowserSettings.Instance.SecureDnsEndpoint;
             }
 
-            var fromSettings = BrowserSettings.Instance.SecureDnsEndpoint;
-            if (!string.IsNullOrWhiteSpace(fromSettings))
+            if (string.IsNullOrWhiteSpace(configured))
             {
-                return fromSettings.Trim();
+                configured = "https://cloudflare-dns.com/dns-query";
             }
 
-            return "https://cloudflare-dns.com/dns-query";
+            configured = configured.Trim();
+            if (!Uri.TryCreate(configured, UriKind.Absolute, out var endpoint) ||
+                !string.Equals(endpoint.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+                string.IsNullOrWhiteSpace(endpoint.Host) ||
+                !string.IsNullOrEmpty(endpoint.UserInfo) ||
+                !string.IsNullOrEmpty(endpoint.Fragment))
+            {
+                EngineLogCompat.Warn(
+                    "[SecureDNS] Ignoring invalid DoH endpoint. Secure DNS requires an absolute HTTPS URL without user-info or a fragment.",
+                    LogCategory.Network);
+                return null;
+            }
+
+            return endpoint.AbsoluteUri;
         }
 
         private static bool IsLocalHost(string host)
