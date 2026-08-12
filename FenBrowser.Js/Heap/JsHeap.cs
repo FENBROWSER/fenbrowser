@@ -12,7 +12,7 @@ public sealed class JsHeap
     private readonly RootSet _roots = new();
     private readonly List<IHeapRootSource> _rootSources = new();
     private readonly GcStressMode _stressMode;
-    private readonly List<(ObjectHandle Owner, ObjectHandle Child)> _writeBarrierEdges = new();
+    private readonly List<(ObjectHandle Owner, ObjectHandle Child)>? _writeBarrierEdges;
     private int _writeBarrierCount;
     private int _gcCollectionCount;
     private int _minorGcCount;
@@ -36,11 +36,12 @@ public sealed class JsHeap
         public Action? OnCollected;
     }
     // Tier 4 #22 remembered set: Old → Young edges discovered via
-    // WriteBarrier. Indexed by Old cell index for dedup. Cleared and
-    // rebuilt on each major collection; entries become stale (filtered
-    // out by IsYoung/IsLiveObject) when the Young child is collected
+    // WriteBarrier. Indexed by Old cell index; child indices use a set so
+    // repeated stores do not turn barrier deduplication into a linear scan.
+    // Cleared and rebuilt on each major collection; entries become stale
+    // (filtered out by IsYoung/IsLiveObject) when the Young child is collected
     // or promoted.
-    private readonly Dictionary<int, List<int>> _rememberedSet = new();
+    private readonly Dictionary<int, HashSet<int>> _rememberedSet = new();
     // Tier 4 #22: after this many minor collections, a surviving Young cell
     // is promoted to Old. Default mirrors common nursery survival heuristics.
     public byte PromotionThreshold { get; set; } = 2;
@@ -73,6 +74,13 @@ public sealed class JsHeap
         _stressMode = stressMode;
         _verifyHeapBeforeGc = verifyHeapBeforeGc;
         _verifyHeapAfterGc = verifyHeapAfterGc;
+
+        // Historical barrier edges are diagnostic-only. Avoid retaining every
+        // object-to-object store during normal browsing when verification is disabled.
+        if (_verifyHeapBeforeGc || _verifyHeapAfterGc)
+        {
+            _writeBarrierEdges = new List<(ObjectHandle Owner, ObjectHandle Child)>();
+        }
     }
 
     public int RootCount => _roots.Count;
@@ -95,7 +103,7 @@ public sealed class JsHeap
         get
         {
             var n = 0;
-            foreach (var list in _rememberedSet.Values) n += list.Count;
+            foreach (var set in _rememberedSet.Values) n += set.Count;
             return n;
         }
     }
@@ -259,18 +267,18 @@ public sealed class JsHeap
         var ownerCell = Validate(owner);
         var childCell = Validate(child);
         _writeBarrierCount++;
-        _writeBarrierEdges.Add((owner, child));
+        _writeBarrierEdges?.Add((owner, child));
         // Tier 4 #22: remembered-set update. Only Old → Young pointers need
         // to be remembered; Young → anything and Old → Old are already
         // covered by the normal mark traversal.
         if (ownerCell.Tier == GenerationTier.Old && childCell.Tier == GenerationTier.Young)
         {
-            if (!_rememberedSet.TryGetValue(owner.Index, out var list))
+            if (!_rememberedSet.TryGetValue(owner.Index, out var children))
             {
-                list = new List<int>();
-                _rememberedSet[owner.Index] = list;
+                children = new HashSet<int>();
+                _rememberedSet[owner.Index] = children;
             }
-            if (!list.Contains(child.Index)) list.Add(child.Index);
+            children.Add(child.Index);
         }
     }
 
@@ -405,7 +413,7 @@ public sealed class JsHeap
                 staleOwners.Add(ownerIdx);
                 continue;
             }
-            children.RemoveAll(childIdx =>
+            children.RemoveWhere(childIdx =>
                 (uint)childIdx >= (uint)_cells.Count ||
                 _cells[childIdx] is not { Tier: GenerationTier.Young });
             if (children.Count == 0) staleOwners.Add(ownerIdx);
@@ -591,6 +599,11 @@ public sealed class JsHeap
 
     private void PruneWriteBarrierEdges()
     {
+        if (_writeBarrierEdges == null)
+        {
+            return;
+        }
+
         for (var i = _writeBarrierEdges.Count - 1; i >= 0; i--)
         {
             if (!IsLiveObject(_writeBarrierEdges[i].Owner) || !IsLiveObject(_writeBarrierEdges[i].Child))
@@ -729,7 +742,10 @@ public sealed class JsHeap
     public IReadOnlyList<StringHandle> GetStringRootsSnapshotForTest() => _roots.StringSnapshot();
     public IReadOnlyList<SymbolHandle> GetSymbolRootsSnapshotForTest() => _roots.SymbolSnapshot();
 
-    public IReadOnlyList<(ObjectHandle Owner, ObjectHandle Child)> GetWriteBarrierEdgesSnapshotForTest() => _writeBarrierEdges;
+    public IReadOnlyList<(ObjectHandle Owner, ObjectHandle Child)> GetWriteBarrierEdgesSnapshotForTest() =>
+        _writeBarrierEdges is { } edges
+            ? edges
+            : Array.Empty<(ObjectHandle Owner, ObjectHandle Child)>();
 
     private void MaybeStressGc()
     {
