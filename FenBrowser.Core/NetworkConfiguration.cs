@@ -23,9 +23,9 @@ namespace FenBrowser.Core
         public bool EnableHttp2 { get; set; } = true;
 
         /// <summary>
-        /// Enable HTTP/3 (QUIC) protocol. Provides 0-RTT connection, better multiplexing.
+        /// Enable HTTP/3 (QUIC) protocol. Disabled by default until explicitly enabled.
         /// </summary>
-        public bool EnableHttp3 { get; set; } = true;
+        public bool EnableHttp3 { get; set; } = false;
 
         /// <summary>
         /// Maximum concurrent connections per server for HTTP/2 multiplexing.
