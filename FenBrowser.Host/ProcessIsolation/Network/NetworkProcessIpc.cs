@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -59,7 +60,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         public NetworkCapabilityToken(string originLock, bool allowCredentials, TimeSpan ttl)
         {
-            Value = Guid.NewGuid().ToString("N");
+            Value = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
             OriginLock = originLock;
             AllowCredentials = allowCredentials;
             ExpiresAt = DateTimeOffset.UtcNow + ttl;
@@ -336,13 +337,17 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 _writer = new StreamWriter(_pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
                 _connected = true;
 
-                // Send Hello with auth token
-                Send(new NetworkIpcEnvelope
+                // Send Hello with auth token. Readiness is not valid unless the
+                // authenticated greeting was actually written to the child.
+                if (!TrySend(new NetworkIpcEnvelope
                 {
                     Type = NetworkIpcMessageType.Hello.ToString(),
                     RequestId = Guid.NewGuid().ToString("N"),
                     CapabilityToken = AuthToken,
-                });
+                }))
+                {
+                    throw new IOException("Failed to send network-process authentication greeting.");
+                }
 
                 _readLoop = Task.Run(ReadLoopAsync);
                 EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[NetworkProcess] IPC connected on pipe '{PipeName}'.");
@@ -354,6 +359,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             }
             catch (Exception ex)
             {
+                _connected = false;
                 _readyTcs.TrySetResult(false);
                 EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] IPC connect failed: {ex.Message}");
             }
@@ -518,9 +524,19 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             string initiatorOrigin,
             string requestId)
         {
+            if (request == null)
+            {
+                throw new ArgumentNullException(nameof(request));
+            }
+
             if (!Guid.TryParse(requestId, out _))
             {
                 throw new ArgumentException("Network request ID must be a GUID.", nameof(requestId));
+            }
+
+            if (!IsConnected)
+            {
+                throw new IOException("Network process IPC is not connected.");
             }
 
             var cap = new NetworkCapabilityToken(
@@ -531,20 +547,26 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             _capTokens[cap.Value] = cap;
             _requestCapabilityTokens[requestId] = cap.Value;
 
-            Send(new NetworkIpcEnvelope
+            var envelope = new NetworkIpcEnvelope
             {
                 Type = NetworkIpcMessageType.FetchRequest.ToString(),
                 RequestId = requestId,
                 CapabilityToken = cap.Value,
                 Payload = NetworkIpc.SerializePayload(request),
-            });
+            };
+
+            if (!TrySend(envelope))
+            {
+                ReleaseCapabilityToken(requestId);
+                throw new IOException("Network process IPC write failed; fetch request was not sent.");
+            }
 
             return cap;
         }
 
         public void SendCancel(string requestId)
         {
-            Send(new NetworkIpcEnvelope
+            TrySend(new NetworkIpcEnvelope
             {
                 Type = NetworkIpcMessageType.CancelRequest.ToString(),
                 RequestId = requestId,
@@ -554,7 +576,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         public void SendShutdown()
         {
-            Send(new NetworkIpcEnvelope { Type = NetworkIpcMessageType.Shutdown.ToString() });
+            TrySend(new NetworkIpcEnvelope { Type = NetworkIpcMessageType.Shutdown.ToString() });
         }
 
         public bool ValidateCapabilityToken(string tokenValue, string requestOrigin)
@@ -572,21 +594,30 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             }
         }
 
-        private void Send(NetworkIpcEnvelope env)
+        private bool TrySend(NetworkIpcEnvelope env)
         {
-            if (env == null) return;
+            if (env == null) return false;
+
             try
             {
                 lock (_writeLock)
                 {
-                    if (!IsConnected) return;
+                    if (!IsConnected || _writer == null)
+                    {
+                        return false;
+                    }
+
                     _writer.WriteLine(NetworkIpc.Serialize(env));
                     _writer.Flush();
+                    return true;
                 }
             }
             catch (Exception ex)
             {
+                _connected = false;
                 EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] Send failed: {ex.Message}");
+                NotifyNetworkProcessCrashed("IPC write failed.");
+                return false;
             }
         }
 
