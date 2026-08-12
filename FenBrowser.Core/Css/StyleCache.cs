@@ -44,13 +44,10 @@ namespace FenBrowser.Core.Css
         {
             if (node == null) return;
 
-            // AddOrUpdate semantics
-            if (_cache.TryGetValue(node, out _))
-            {
-                // Remove and re-add (ConditionalWeakTable doesn't have update)
-                _cache.Remove(node);
-            }
-            _cache.Add(node, style);
+            // ConditionalWeakTable provides an atomic add-or-update operation.
+            // Avoid a TryGet/Remove/Add sequence: two concurrent restyles of the
+            // same node can otherwise both observe/remove and then race in Add().
+            _cache.AddOrUpdate(node, style);
         }
 
         /// <summary>
