@@ -391,11 +391,13 @@ namespace FenBrowser.Core.Storage
     public sealed class PartitionedHttpCache
     {
         private readonly ConcurrentDictionary<string, HttpCacheEntry> _cache = new(StringComparer.Ordinal);
+        private readonly object _mutationLock = new();
         private readonly long _maxBytes;
         private long _currentBytes;
 
         public PartitionedHttpCache(long maxBytes = 256 * 1024 * 1024 /* 256 MB */)
         {
+            if (maxBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxBytes));
             _maxBytes = maxBytes;
         }
 
@@ -403,58 +405,104 @@ namespace FenBrowser.Core.Storage
         {
             var key = MakeKey(partitionKey, url, varyKey);
             if (!_cache.TryGetValue(key, out var entry)) return null;
-            if (entry.IsStale(DateTimeOffset.UtcNow)) { _cache.TryRemove(key, out _); return null; }
-            return entry;
+
+            var now = DateTimeOffset.UtcNow;
+            if (!entry.IsStale(now)) return entry;
+
+            // Recheck under the mutation lock so a concurrent replacement is not
+            // removed just because the earlier snapshot was stale.
+            lock (_mutationLock)
+            {
+                if (!_cache.TryGetValue(key, out var current)) return null;
+                if (!current.IsStale(now)) return current;
+
+                if (_cache.TryRemove(key, out var removed))
+                {
+                    _currentBytes -= GetBodyBytes(removed);
+                }
+                return null;
+            }
         }
 
         public bool Put(StoragePartitionKey partitionKey, string url, HttpCacheEntry entry, string varyKey = null)
         {
             if (entry == null) throw new ArgumentNullException(nameof(entry));
-            var entryBytes = entry.Body?.Length ?? 0;
+            var entryBytes = GetBodyBytes(entry);
             if (entryBytes > _maxBytes / 4) return false; // single entry > 25% of cache cap → skip
 
-            // Evict if needed (simple LRU approximation: just prune stale entries)
-            if (_currentBytes + entryBytes > _maxBytes) EvictStale();
-
             var key = MakeKey(partitionKey, url, varyKey);
-            _cache[key] = entry with { PartitionKey = partitionKey };
-            System.Threading.Interlocked.Add(ref _currentBytes, entryBytes);
-            return true;
+            lock (_mutationLock)
+            {
+                EvictStaleLocked(DateTimeOffset.UtcNow);
+
+                var existingBytes = _cache.TryGetValue(key, out var existing)
+                    ? GetBodyBytes(existing)
+                    : 0L;
+                var projectedBytes = _currentBytes - existingBytes + entryBytes;
+                if (projectedBytes > _maxBytes)
+                {
+                    return false;
+                }
+
+                _cache[key] = entry with { PartitionKey = partitionKey };
+                _currentBytes = projectedBytes;
+                return true;
+            }
         }
 
         public void Invalidate(StoragePartitionKey partitionKey, string url)
         {
             var prefix = $"pk:{partitionKey.ToStorageKey()}:url:{url}";
-            foreach (var k in _cache.Keys)
-                if (k.StartsWith(prefix, StringComparison.Ordinal))
-                    if (_cache.TryRemove(k, out var e))
-                        System.Threading.Interlocked.Add(ref _currentBytes, -(e.Body?.Length ?? 0));
+            lock (_mutationLock)
+            {
+                foreach (var k in _cache.Keys)
+                {
+                    if (k.StartsWith(prefix, StringComparison.Ordinal) &&
+                        _cache.TryRemove(k, out var entry))
+                    {
+                        _currentBytes -= GetBodyBytes(entry);
+                    }
+                }
+            }
         }
 
         public void ClearPartition(StoragePartitionKey partitionKey)
         {
             var prefix = $"pk:{partitionKey.ToStorageKey()}:";
-            foreach (var k in _cache.Keys)
-                if (k.StartsWith(prefix, StringComparison.Ordinal))
-                    if (_cache.TryRemove(k, out var e))
-                        System.Threading.Interlocked.Add(ref _currentBytes, -(e.Body?.Length ?? 0));
+            lock (_mutationLock)
+            {
+                foreach (var k in _cache.Keys)
+                {
+                    if (k.StartsWith(prefix, StringComparison.Ordinal) &&
+                        _cache.TryRemove(k, out var entry))
+                    {
+                        _currentBytes -= GetBodyBytes(entry);
+                    }
+                }
+            }
         }
 
         public void ClearAll()
         {
-            _cache.Clear();
-            System.Threading.Interlocked.Exchange(ref _currentBytes, 0);
-        }
-
-        private void EvictStale()
-        {
-            var now = DateTimeOffset.UtcNow;
-            foreach (var (k, e) in _cache)
+            lock (_mutationLock)
             {
-                if (e.IsStale(now) && _cache.TryRemove(k, out var removed))
-                    System.Threading.Interlocked.Add(ref _currentBytes, -(removed.Body?.Length ?? 0));
+                _cache.Clear();
+                _currentBytes = 0;
             }
         }
+
+        private void EvictStaleLocked(DateTimeOffset now)
+        {
+            foreach (var (key, entry) in _cache)
+            {
+                if (entry.IsStale(now) && _cache.TryRemove(key, out var removed))
+                {
+                    _currentBytes -= GetBodyBytes(removed);
+                }
+            }
+        }
+
+        private static long GetBodyBytes(HttpCacheEntry entry) => entry?.Body?.LongLength ?? 0L;
 
         private static string MakeKey(StoragePartitionKey pk, string url, string varyKey) =>
             $"pk:{pk.ToStorageKey()}:url:{url}:{varyKey ?? ""}";
