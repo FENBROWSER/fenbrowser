@@ -340,11 +340,29 @@ namespace FenBrowser.Core.Network
         private long _totalLatencyMs;
         private readonly ConcurrentDictionary<string, HostStats> _hostStats = new();
 
-        public long TotalRequests => _totalRequests;
-        public long SuccessfulRequests => _successfulRequests;
-        public long FailedRequests => _failedRequests;
-        public double AverageLatencyMs => _totalRequests > 0 ? (double)_totalLatencyMs / _totalRequests : 0;
-        public double SuccessRate => _totalRequests > 0 ? (double)_successfulRequests / _totalRequests * 100 : 0;
+        public long TotalRequests => Interlocked.Read(ref _totalRequests);
+        public long SuccessfulRequests => Interlocked.Read(ref _successfulRequests);
+        public long FailedRequests => Interlocked.Read(ref _failedRequests);
+        public long CompletedRequests => SuccessfulRequests + FailedRequests;
+        public double AverageLatencyMs
+        {
+            get
+            {
+                var completed = CompletedRequests;
+                return completed > 0
+                    ? (double)Interlocked.Read(ref _totalLatencyMs) / completed
+                    : 0;
+            }
+        }
+        public double SuccessRate
+        {
+            get
+            {
+                var successes = SuccessfulRequests;
+                var completed = successes + FailedRequests;
+                return completed > 0 ? (double)successes / completed * 100 : 0;
+            }
+        }
 
         public void IncrementTotalRequests() => Interlocked.Increment(ref _totalRequests);
 
@@ -374,10 +392,10 @@ namespace FenBrowser.Core.Network
 
         public void Reset()
         {
-            _totalRequests = 0;
-            _successfulRequests = 0;
-            _failedRequests = 0;
-            _totalLatencyMs = 0;
+            Interlocked.Exchange(ref _totalRequests, 0);
+            Interlocked.Exchange(ref _successfulRequests, 0);
+            Interlocked.Exchange(ref _failedRequests, 0);
+            Interlocked.Exchange(ref _totalLatencyMs, 0);
             _hostStats.Clear();
         }
 
