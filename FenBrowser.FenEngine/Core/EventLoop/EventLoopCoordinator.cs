@@ -67,7 +67,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         private readonly object _animationLock = new();
         private readonly Queue<Action> _mutationObserverCallbacks = new();
         private readonly object _moLock = new object();
-        private readonly List<DelayedTaskEntry> _delayedTasks = new();
+        private readonly PriorityQueue<DelayedTaskEntry, (long DueTimeMs, long Sequence)> _delayedTasks = new();
         private readonly object _delayedTaskLock = new();
 
         private bool _layoutDirty = false;
@@ -145,7 +145,9 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
             lock (_delayedTaskLock)
             {
-                _delayedTasks.Add(delayedTask);
+                _delayedTasks.Enqueue(
+                    delayedTask,
+                    (delayedTask.DueTimeMs, delayedTask.Sequence));
             }
 
             EventLoopTrace.Write(
@@ -695,22 +697,12 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
 
             lock (_delayedTaskLock)
             {
-                if (_delayedTasks.Count == 0)
+                if (!_delayedTasks.TryPeek(out _, out var nextPriority))
                 {
                     return -1;
                 }
 
-                var now = Environment.TickCount64;
-                long nextDueTime = long.MaxValue;
-                foreach (var delayedTask in _delayedTasks)
-                {
-                    if (delayedTask.DueTimeMs < nextDueTime)
-                    {
-                        nextDueTime = delayedTask.DueTimeMs;
-                    }
-                }
-
-                var waitMs = Math.Max(0, nextDueTime - now);
+                var waitMs = Math.Max(0, nextPriority.DueTimeMs - Environment.TickCount64);
                 return (int)Math.Min(waitMs, Math.Max(0, maxWaitMs));
             }
         }
@@ -728,17 +720,11 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
 
             lock (_delayedTaskLock)
             {
-                for (int index = _delayedTasks.Count - 1; index >= 0; index--)
+                while (_delayedTasks.TryPeek(out var delayedTask, out var priority) &&
+                       priority.DueTimeMs <= now)
                 {
-                    var delayedTask = _delayedTasks[index];
-                    if (delayedTask.DueTimeMs > now)
-                    {
-                        continue;
-                    }
-
                     dueTasks ??= new List<DelayedTaskEntry>();
-                    dueTasks.Add(delayedTask);
-                    _delayedTasks.RemoveAt(index);
+                    dueTasks.Add(_delayedTasks.Dequeue());
                 }
             }
 
@@ -746,12 +732,6 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
             {
                 return;
             }
-
-            dueTasks.Sort((left, right) =>
-            {
-                var dueComparison = left.DueTimeMs.CompareTo(right.DueTimeMs);
-                return dueComparison != 0 ? dueComparison : left.Sequence.CompareTo(right.Sequence);
-            });
 
             foreach (var delayedTask in dueTasks)
             {
@@ -772,26 +752,16 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
 
         private void WaitUntilNextDelayedTaskDue()
         {
-            long waitMs = 0;
-            var now = Environment.TickCount64;
+            long waitMs;
 
             lock (_delayedTaskLock)
             {
-                if (_delayedTasks.Count == 0)
+                if (!_delayedTasks.TryPeek(out _, out var nextPriority))
                 {
                     return;
                 }
 
-                var nextDueTime = long.MaxValue;
-                foreach (var delayedTask in _delayedTasks)
-                {
-                    if (delayedTask.DueTimeMs < nextDueTime)
-                    {
-                        nextDueTime = delayedTask.DueTimeMs;
-                    }
-                }
-
-                waitMs = Math.Max(0, nextDueTime - now);
+                waitMs = Math.Max(0, nextPriority.DueTimeMs - Environment.TickCount64);
             }
 
             if (waitMs <= 0)
@@ -803,4 +773,3 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
         }
     }
 }
-
