@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text.Json;
@@ -16,6 +17,8 @@ namespace FenBrowser.Core.Network
     /// </summary>
     internal static class SecureDnsResolver
     {
+        private const int MaxDohResponseBytes = 64 * 1024;
+
         private sealed class CacheEntry
         {
             public IPAddress Address { get; set; }
@@ -109,14 +112,24 @@ namespace FenBrowser.Core.Network
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.TryAddWithoutValidation("Accept", "application/dns-json");
 
-            using var response = await _dohClient.SendAsync(request, ct).ConfigureAwait(false);
+            using var response = await _dohClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 return new List<(IPAddress address, int ttlSeconds)>();
             }
 
-            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            if (string.IsNullOrWhiteSpace(body))
+            if (response.Content.Headers.ContentLength is long declaredLength &&
+                declaredLength > MaxDohResponseBytes)
+            {
+                throw new InvalidDataException(
+                    $"DoH response exceeded the {MaxDohResponseBytes}-byte limit.");
+            }
+
+            var body = await ReadBoundedResponseAsync(response.Content, ct).ConfigureAwait(false);
+            if (body.Length == 0)
             {
                 return new List<(IPAddress address, int ttlSeconds)>();
             }
@@ -157,6 +170,34 @@ namespace FenBrowser.Core.Network
             }
 
             return result;
+        }
+
+        private static async Task<byte[]> ReadBoundedResponseAsync(
+            HttpContent content,
+            CancellationToken ct)
+        {
+            await using var stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            using var buffer = new MemoryStream(capacity: Math.Min(MaxDohResponseBytes, 4096));
+            var chunk = new byte[4096];
+
+            while (true)
+            {
+                var read = await stream.ReadAsync(chunk.AsMemory(0, chunk.Length), ct).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                if (buffer.Length + read > MaxDohResponseBytes)
+                {
+                    throw new InvalidDataException(
+                        $"DoH response exceeded the {MaxDohResponseBytes}-byte limit.");
+                }
+
+                buffer.Write(chunk, 0, read);
+            }
+
+            return buffer.ToArray();
         }
 
         private static HttpClient CreateClient()
