@@ -42,14 +42,17 @@ namespace FenBrowser.Core.Network
         {
             var sw = Stopwatch.StartNew();
             var hostKey = GetHostKey(request.RequestUri);
+            var semaphoreAcquired = false;
+            ConnectionInfo connInfo = null;
             
             try
             {
                 // Throttle concurrent requests
                 await _connectionSemaphore.WaitAsync(ct).ConfigureAwait(false);
+                semaphoreAcquired = true;
                 
-                // Track connection
-                var connInfo = _activeConnections.GetOrAdd(hostKey, _ => new ConnectionInfo(hostKey));
+                // Track connection only after this request owns a semaphore slot.
+                connInfo = _activeConnections.GetOrAdd(hostKey, _ => new ConnectionInfo(hostKey));
                 Interlocked.Increment(ref connInfo.ActiveRequests);
                 _stats.IncrementTotalRequests();
                 
@@ -82,11 +85,15 @@ namespace FenBrowser.Core.Network
             }
             finally
             {
-                _connectionSemaphore.Release();
-                
-                if (_activeConnections.TryGetValue(hostKey, out var info))
+                // Only undo resources that this request actually acquired/registered.
+                if (connInfo != null)
                 {
-                    Interlocked.Decrement(ref info.ActiveRequests);
+                    Interlocked.Decrement(ref connInfo.ActiveRequests);
+                }
+
+                if (semaphoreAcquired)
+                {
+                    _connectionSemaphore.Release();
                 }
             }
         }
