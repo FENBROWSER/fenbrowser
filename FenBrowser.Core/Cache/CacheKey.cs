@@ -52,7 +52,14 @@ namespace FenBrowser.Core.Cache
 
         private static string NormalizeUrl(string url)
         {
-            return string.IsNullOrWhiteSpace(url) ? string.Empty : url.Trim();
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return string.Empty;
+            }
+
+            var normalized = url.Trim();
+            var fragmentIndex = normalized.IndexOf('#');
+            return fragmentIndex >= 0 ? normalized[..fragmentIndex] : normalized;
         }
     }
 }
