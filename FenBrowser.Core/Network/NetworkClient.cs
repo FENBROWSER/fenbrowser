@@ -398,21 +398,65 @@ namespace FenBrowser.Core.Network
         private long _minLatencyMs = long.MaxValue;
         private long _maxLatencyMs;
 
-        public long Requests => _requests;
-        public long Successes => _successes;
-        public double AverageLatencyMs => _requests > 0 ? (double)_totalLatencyMs / _requests : 0;
-        public long MinLatencyMs => _minLatencyMs == long.MaxValue ? 0 : _minLatencyMs;
-        public long MaxLatencyMs => _maxLatencyMs;
+        public long Requests => Interlocked.Read(ref _requests);
+        public long Successes => Interlocked.Read(ref _successes);
+        public double AverageLatencyMs
+        {
+            get
+            {
+                var requests = Interlocked.Read(ref _requests);
+                return requests > 0
+                    ? (double)Interlocked.Read(ref _totalLatencyMs) / requests
+                    : 0;
+            }
+        }
+        public long MinLatencyMs
+        {
+            get
+            {
+                var min = Interlocked.Read(ref _minLatencyMs);
+                return min == long.MaxValue ? 0 : min;
+            }
+        }
+        public long MaxLatencyMs => Interlocked.Read(ref _maxLatencyMs);
 
         public void RecordRequest(long latencyMs, bool success)
         {
             Interlocked.Increment(ref _requests);
             if (success) Interlocked.Increment(ref _successes);
             Interlocked.Add(ref _totalLatencyMs, latencyMs);
-            
-            // Update min/max (not perfectly thread-safe but acceptable for stats)
-            if (latencyMs < _minLatencyMs) _minLatencyMs = latencyMs;
-            if (latencyMs > _maxLatencyMs) _maxLatencyMs = latencyMs;
+            UpdateMinimum(ref _minLatencyMs, latencyMs);
+            UpdateMaximum(ref _maxLatencyMs, latencyMs);
+        }
+
+        private static void UpdateMinimum(ref long target, long candidate)
+        {
+            var observed = Interlocked.Read(ref target);
+            while (candidate < observed)
+            {
+                var original = Interlocked.CompareExchange(ref target, candidate, observed);
+                if (original == observed)
+                {
+                    return;
+                }
+
+                observed = original;
+            }
+        }
+
+        private static void UpdateMaximum(ref long target, long candidate)
+        {
+            var observed = Interlocked.Read(ref target);
+            while (candidate > observed)
+            {
+                var original = Interlocked.CompareExchange(ref target, candidate, observed);
+                if (original == observed)
+                {
+                    return;
+                }
+
+                observed = original;
+            }
         }
     }
 
