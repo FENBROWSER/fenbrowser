@@ -169,10 +169,7 @@ public sealed class WasmInstance : IDisposable
             return null;
 
         var result = new byte[length];
-        for (int i = 0; i < length; i++)
-        {
-            result[i] = memory.ReadByte((long)offset + i);
-        }
+        memory.GetSpan(offset, length).CopyTo(result);
         return result;
     }
 
@@ -188,11 +185,7 @@ public sealed class WasmInstance : IDisposable
         if (offset < 0 || (long)offset + data.Length > memLength)
             return false;
 
-        var span = data.Span;
-        for (int i = 0; i < span.Length; i++)
-        {
-            memory.WriteByte((long)offset + i, span[i]);
-        }
+        data.Span.CopyTo(memory.GetSpan(offset, data.Length));
         return true;
     }
 
