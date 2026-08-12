@@ -59,6 +59,10 @@ namespace FenBrowser.Core.Network
                 
                 // Connection pooling for HTTP/2 multiplexing
                 MaxConnectionsPerServer = config.MaxConnectionsPerServer,
+
+                // Connection establishment has its own deadline. Higher-level fetch
+                // code owns document/resource request deadlines.
+                ConnectTimeout = TimeSpan.FromSeconds(config.ConnectionTimeoutSeconds),
                 
                 // Keep-alive for connection reuse
                 UseCookies = false, // We handle cookies manually for privacy
@@ -89,8 +93,9 @@ namespace FenBrowser.Core.Network
                 DefaultRequestVersion = config.GetPreferredHttpVersion(),
                 DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
                 
-                // Global timeout
-                Timeout = TimeSpan.FromSeconds(config.ConnectionTimeoutSeconds)
+                // Per-request/document deadlines are enforced by callers. Keeping the
+                // shared client timeout infinite avoids a second, unrelated global timer.
+                Timeout = System.Threading.Timeout.InfiniteTimeSpan
             };
 
             // Set default headers
