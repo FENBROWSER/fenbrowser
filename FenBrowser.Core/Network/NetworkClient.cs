@@ -114,10 +114,10 @@ namespace FenBrowser.Core.Network
                 using var request = new HttpRequestMessage(HttpMethod.Head, new Uri(uri, "/"));
                 request.Headers.ConnectionClose = false;
                 
-                var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(TimeSpan.FromSeconds(5));
                 
-                await SendAsync(request, cts.Token).ConfigureAwait(false);
+                using var response = await SendAsync(request, cts.Token).ConfigureAwait(false);
                 
                 LogManager.Log(LogCategory.Network, LogLevel.Debug,
                     $"[NetworkClient] Preconnected to {hostKey}");
