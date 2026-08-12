@@ -17,6 +17,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         Accepted,
         SequenceMismatch,
         SizeExceeded,
+        BufferFull,
         ChannelClosed
     }
 
@@ -115,6 +116,8 @@ namespace FenBrowser.Host.ProcessIsolation.Network
     /// </summary>
     internal sealed class PendingNetworkRequest : IDisposable
     {
+        private const int BufferedBodyChunkCapacity = 8;
+
         public string RequestId { get; }
         public string CapabilityTokenValue { get; }
         public string InitiatorOrigin { get; }
@@ -124,12 +127,14 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         private readonly TaskCompletionSource<NetworkFetchResponseHeadPayload> _headTcs =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        // Streams base64-decoded body chunks in order.
-        private readonly System.Threading.Channels.Channel<byte[]> _bodyChannel =
-            System.Threading.Channels.Channel.CreateUnbounded<byte[]>(new System.Threading.Channels.UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
+        // Keep decoded response buffering bounded. The IPC read loop remains
+        // non-blocking across requests: when a consumer falls too far behind,
+        // the request is failed and cancelled instead of retaining more chunks.
+        private readonly System.Threading.Channels.Channel<byte[]> _bodyChannel;
         private readonly object _bodyLock = new object();
         private long _bodyBytes;
         private int _nextChunkIndex;
+        private bool _bodyTerminal;
         private readonly TaskCompletionSource<bool> _bodyCompleteTcs =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly CancellationTokenRegistration _cancellationRegistration;
@@ -145,6 +150,14 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             CapabilityTokenValue = capabilityTokenValue;
             InitiatorOrigin = initiatorOrigin;
             CancellationToken = cancellationToken;
+            _bodyChannel = System.Threading.Channels.Channel.CreateBounded<byte[]>(
+                new System.Threading.Channels.BoundedChannelOptions(BufferedBodyChunkCapacity)
+                {
+                    SingleReader = true,
+                    SingleWriter = true,
+                    FullMode = System.Threading.Channels.BoundedChannelFullMode.Wait,
+                    AllowSynchronousContinuations = false
+                });
 
             // Cancellation must terminate both the stream and the completion task
             // so the coordinator can release request state even after HEAD returned.
@@ -165,6 +178,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         {
             lock (_bodyLock)
             {
+                _bodyTerminal = true;
                 _headTcs.TrySetCanceled(CancellationToken);
                 _bodyCompleteTcs.TrySetCanceled(CancellationToken);
                 _bodyChannel.Writer.TryComplete(new OperationCanceledException(CancellationToken));
@@ -185,6 +199,11 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         {
             lock (_bodyLock)
             {
+                if (_bodyTerminal)
+                {
+                    return BodyChunkAppendResult.ChannelClosed;
+                }
+
                 if (chunkIndex != _nextChunkIndex)
                 {
                     return BodyChunkAppendResult.SequenceMismatch;
@@ -195,9 +214,11 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     return BodyChunkAppendResult.SizeExceeded;
                 }
 
+                // The bounded channel uses Wait mode so TryWrite returns false
+                // when capacity is exhausted rather than dropping a response chunk.
                 if (chunk.Length > 0 && !_bodyChannel.Writer.TryWrite(chunk))
                 {
-                    return BodyChunkAppendResult.ChannelClosed;
+                    return BodyChunkAppendResult.BufferFull;
                 }
 
                 _bodyBytes += chunk.LongLength;
@@ -205,9 +226,10 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
                 // Complete only after the final chunk has been accepted and queued.
                 // Keeping append + completion under one lock prevents EOF from racing
-                // ahead of a rejected or still-pending final chunk.
+                // ahead of a rejected final chunk.
                 if (isComplete)
                 {
+                    _bodyTerminal = true;
                     _bodyCompleteTcs.TrySetResult(true);
                     _bodyChannel.Writer.TryComplete();
                 }
@@ -220,6 +242,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         {
             lock (_bodyLock)
             {
+                _bodyTerminal = true;
                 var ex = new HttpRequestException(error);
                 _bodyCompleteTcs.TrySetException(ex);
                 _bodyChannel.Writer.TryComplete(ex);
@@ -445,6 +468,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 if (body.BodyChunkBase64 == null)
                 {
                     pending.SetBodyFailed("Response body was malformed.");
+                    _session?.SendCancel(body.RequestId);
                     return;
                 }
 
@@ -474,6 +498,12 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                                     $"[NetworkCoordinator] Aggregate body exceeds max size for request {body.RequestId}; rejecting.",
                                     LogCategory.Network);
                                 break;
+                            case BodyChunkAppendResult.BufferFull:
+                                error = "Response body consumer exceeded the bounded IPC buffer.";
+                                EngineLogBridge.Warn(
+                                    $"[NetworkCoordinator] Response consumer fell behind bounded body buffer for request {body.RequestId}; cancelling.",
+                                    LogCategory.Network);
+                                break;
                             default:
                                 error = "Response body arrived after the body channel was closed.";
                                 EngineLogBridge.Warn(
@@ -483,12 +513,14 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                         }
 
                         pending.SetBodyFailed(error);
+                        _session?.SendCancel(body.RequestId);
                     }
                 }
                 catch (FormatException ex)
                 {
                     EngineLogBridge.Warn($"[NetworkCoordinator] Body base64 decode failed: {ex.Message}", LogCategory.Network);
                     pending.SetBodyFailed("Response body was malformed.");
+                    _session?.SendCancel(body.RequestId);
                 }
             }
         }
