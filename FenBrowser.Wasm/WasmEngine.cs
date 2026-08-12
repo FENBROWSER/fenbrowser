@@ -11,9 +11,14 @@ namespace FenBrowser.Wasm;
 /// </summary>
 public sealed class WasmEngine : IDisposable
 {
+    private const int EpochTickMilliseconds = 100;
+
     private readonly Engine _engine;
     private readonly WasmResourceLimits _limits;
+    private readonly Timer _epochTimer;
+    private readonly object _lifecycleLock = new();
     private int _activeInstanceCount;
+    private int _disposed;
 
     public WasmEngine(WasmResourceLimits? limits = null)
     {
@@ -34,6 +39,14 @@ public sealed class WasmEngine : IDisposable
         config.WithStaticMemoryMaximumSize(_limits.MaxMemoryBytes);
 
         _engine = new Engine(config);
+
+        // Epoch interruption only works when the embedder advances the engine epoch.
+        // Keep the cadence aligned with CreateStore's deadline calculation.
+        _epochTimer = new Timer(
+            static state => ((WasmEngine)state!).AdvanceEpoch(),
+            this,
+            EpochTickMilliseconds,
+            EpochTickMilliseconds);
     }
 
     public WasmResourceLimits Limits => _limits;
@@ -84,10 +97,25 @@ public sealed class WasmEngine : IDisposable
         // Set initial fuel budget
         store.Fuel = _limits.MaxFuelPerInstance;
 
-        // Set epoch deadline for wall-clock interruption
-        store.SetEpochDeadline((ulong)(_limits.MaxExecutionTime.TotalMilliseconds / 100.0));
+        // Epoch deadlines are relative tick counts. Clamp to at least one tick so
+        // sub-cadence execution budgets don't become an already-expired deadline.
+        var epochTicks = (ulong)Math.Max(
+            1d,
+            Math.Ceiling(_limits.MaxExecutionTime.TotalMilliseconds / EpochTickMilliseconds));
+        store.SetEpochDeadline(epochTicks);
 
         return store;
+    }
+
+    private void AdvanceEpoch()
+    {
+        lock (_lifecycleLock)
+        {
+            if (_disposed != 0)
+                return;
+
+            _engine.IncrementEpoch();
+        }
     }
 
     internal void TrackInstance()
@@ -108,7 +136,16 @@ public sealed class WasmEngine : IDisposable
 
     public void Dispose()
     {
-        _engine.Dispose();
+        lock (_lifecycleLock)
+        {
+            if (_disposed != 0)
+                return;
+
+            _disposed = 1;
+            _epochTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            _epochTimer.Dispose();
+            _engine.Dispose();
+        }
     }
 }
 
