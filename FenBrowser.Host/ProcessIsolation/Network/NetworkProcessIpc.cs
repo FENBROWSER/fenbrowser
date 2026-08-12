@@ -206,6 +206,39 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             return true;
         }
 
+        public static bool TrySerializeValidatedEnvelope(
+            NetworkIpcEnvelope envelope,
+            out string serializedEnvelope,
+            out string rejectionReason)
+        {
+            serializedEnvelope = string.Empty;
+            if (!TryValidateInboundEnvelope(envelope, out _, out rejectionReason))
+            {
+                return false;
+            }
+
+            try
+            {
+                serializedEnvelope = Serialize(envelope);
+            }
+            catch (Exception ex)
+            {
+                rejectionReason = $"serialize-failed:{ex.GetType().Name}";
+                serializedEnvelope = string.Empty;
+                return false;
+            }
+
+            if (serializedEnvelope.Length > MaxEnvelopeChars)
+            {
+                rejectionReason = "envelope-too-large";
+                serializedEnvelope = string.Empty;
+                return false;
+            }
+
+            rejectionReason = string.Empty;
+            return true;
+        }
+
         public static bool IsAllowedBrokerInboundMessageType(NetworkIpcMessageType messageType)
         {
             return messageType == NetworkIpcMessageType.Ready ||
@@ -551,6 +584,15 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         {
             if (env == null) return false;
 
+            if (!NetworkIpc.TrySerializeValidatedEnvelope(env, out var serializedEnvelope, out var rejectionReason))
+            {
+                EngineLog.Write(
+                    LogSubsystem.ProcessIsolation,
+                    LogSeverity.Warn,
+                    $"[NetworkProcess] Rejected outbound IPC envelope: {rejectionReason}.");
+                return false;
+            }
+
             try
             {
                 lock (_writeLock)
@@ -560,7 +602,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                         return false;
                     }
 
-                    _writer.WriteLine(NetworkIpc.Serialize(env));
+                    _writer.WriteLine(serializedEnvelope);
                     _writer.Flush();
                     return true;
                 }
