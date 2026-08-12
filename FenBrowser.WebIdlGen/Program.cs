@@ -43,12 +43,20 @@ if (string.IsNullOrWhiteSpace(idlDir) || string.IsNullOrWhiteSpace(outDir))
     return 1;
 }
 
+if (!IsValidNamespace(ns))
+{
+    Console.Error.WriteLine($"ERROR: Invalid C# namespace: {ns}");
+    return 1;
+}
+
 if (!Directory.Exists(idlDir))
 {
     Console.Error.WriteLine($"ERROR: IDL directory not found: {idlDir}");
     return 1;
 }
 
+idlDir = Path.GetFullPath(idlDir);
+outDir = Path.GetFullPath(outDir);
 Directory.CreateDirectory(outDir);
 
 var idlFiles = Directory
@@ -108,6 +116,24 @@ var files = generator.Generate(merged)
     .OrderBy(file => file.FileName, StringComparer.Ordinal)
     .ToList();
 
+foreach (var file in files)
+{
+    if (!IsSafeGeneratedFileName(file.FileName))
+    {
+        Console.Error.WriteLine($"ERROR: Generator produced an unsafe output filename: {file.FileName}");
+        return 1;
+    }
+}
+
+var duplicateOutput = files
+    .GroupBy(file => file.FileName, StringComparer.Ordinal)
+    .FirstOrDefault(group => group.Count() > 1);
+if (duplicateOutput != null)
+{
+    Console.Error.WriteLine($"ERROR: Generator produced duplicate output filename: {duplicateOutput.Key}");
+    return 1;
+}
+
 var expectedOutputs = new HashSet<string>(files.Select(file => file.FileName), StringComparer.Ordinal);
 var existingOutputs = Directory.GetFiles(outDir, "*.g.cs", SearchOption.TopDirectoryOnly)
     .Select(Path.GetFileName)
@@ -126,7 +152,7 @@ foreach (var file in files)
         changedFiles.Add(file.FileName);
         if (!verifyOnly)
         {
-            File.WriteAllText(path, file.SourceCode, Encoding.UTF8);
+            WriteAllTextAtomic(path, file.SourceCode);
             Console.WriteLine($"  wrote {file.FileName}");
         }
     }
@@ -165,7 +191,7 @@ if (!string.Equals(existingManifest, manifestJson, StringComparison.Ordinal))
     changedFiles.Add(Path.GetFileName(manifestPath));
     if (!verifyOnly)
     {
-        File.WriteAllText(manifestPath, manifestJson, Encoding.UTF8);
+        WriteAllTextAtomic(manifestPath, manifestJson);
         Console.WriteLine("  wrote webidl-bindings-manifest.json");
     }
 }
@@ -200,6 +226,91 @@ static string NormalizePath(string path) => path.Replace('\\', '/');
 static string ComputeSha256(string value)
 {
     return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+}
+
+static bool IsSafeGeneratedFileName(string fileName)
+{
+    if (string.IsNullOrWhiteSpace(fileName) || Path.IsPathRooted(fileName))
+    {
+        return false;
+    }
+
+    if (fileName.IndexOf('/') >= 0 || fileName.IndexOf('\\') >= 0 ||
+        fileName is "." or ".." ||
+        fileName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+    {
+        return false;
+    }
+
+    return fileName.EndsWith(".g.cs", StringComparison.Ordinal);
+}
+
+static bool IsValidNamespace(string value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return false;
+    }
+
+    return value.Split('.').All(IsValidIdentifier);
+}
+
+static bool IsValidIdentifier(string value)
+{
+    if (string.IsNullOrEmpty(value) || IsCSharpKeyword(value))
+    {
+        return false;
+    }
+
+    if (!(value[0] == '_' || char.IsLetter(value[0])))
+    {
+        return false;
+    }
+
+    for (var i = 1; i < value.Length; i++)
+    {
+        if (!(value[i] == '_' || char.IsLetterOrDigit(value[i])))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool IsCSharpKeyword(string value) => value is
+    "abstract" or "as" or "base" or "bool" or "break" or "byte" or "case" or "catch" or
+    "char" or "checked" or "class" or "const" or "continue" or "decimal" or "default" or
+    "delegate" or "do" or "double" or "else" or "enum" or "event" or "explicit" or "extern" or
+    "false" or "finally" or "fixed" or "float" or "for" or "foreach" or "goto" or "if" or "implicit" or
+    "in" or "int" or "interface" or "internal" or "is" or "lock" or "long" or "namespace" or "new" or
+    "null" or "object" or "operator" or "out" or "override" or "params" or "private" or "protected" or
+    "public" or "readonly" or "ref" or "return" or "sbyte" or "sealed" or "short" or "sizeof" or
+    "stackalloc" or "static" or "string" or "struct" or "switch" or "this" or "throw" or "true" or "try" or
+    "typeof" or "uint" or "ulong" or "unchecked" or "unsafe" or "ushort" or "using" or "virtual" or "void" or
+    "volatile" or "while";
+
+static void WriteAllTextAtomic(string path, string content)
+{
+    var directory = Path.GetDirectoryName(path);
+    if (string.IsNullOrEmpty(directory))
+    {
+        throw new InvalidOperationException($"Output path has no directory: {path}");
+    }
+
+    var tempPath = Path.Combine(directory, $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
+    try
+    {
+        File.WriteAllText(tempPath, content, Encoding.UTF8);
+        File.Move(tempPath, path, overwrite: true);
+    }
+    finally
+    {
+        if (File.Exists(tempPath))
+        {
+            File.Delete(tempPath);
+        }
+    }
 }
 
 internal sealed class WebIdlManifest
