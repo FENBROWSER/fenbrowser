@@ -1,4 +1,5 @@
 using System.Numerics;
+using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Objects;
@@ -7,8 +8,8 @@ namespace FenBrowser.Js.Objects;
 // Abstract base for the 11 concrete typed array constructors. Provides
 // typed element access via GetElement/SetElement with per-ElementType
 // conversion per the spec's RawBytesToNumeric / NumericToRawBytes tables.
-// Also overrides JsObject virtuals to implement 10.4.5 Integer-Indexed
-// Exotic Object semantics ([[DefineOwnProperty]], [[Set]], [[Delete]],
+// Also overrides JsObject virtuals to implement 10.4.5 TypedArray Exotic
+// Object semantics ([[DefineOwnProperty]], [[Set]], [[Delete]],
 // [[GetOwnProperty]], [[HasProperty]], [[OwnPropertyKeys]]).
 public abstract class TypedArrayObject : TypedArrayView
 {
@@ -20,225 +21,148 @@ public abstract class TypedArrayObject : TypedArrayView
     {
     }
 
-    // ECMA-262 7.1.21 CanonicalNumericIndexString — full implementation that handles
-    // both integer strings (e.g. "0", "42") and non-integer numeric strings (e.g.
-    // "1.1", "1e2"). Returns true and sets `numericValue` when the key is the
-    // canonical String representation of a Number; otherwise false.
-    // IntegerIndexedElementGet then checks IsInteger(numericValue): non-integer
-    // indices return undefined without touching the prototype chain.
+    // ECMA-262 7.1.21 CanonicalNumericIndexString.
+    // A string is canonical when it is "-0" or exactly equals ToString(ToNumber(key)).
+    // Keep this as the single numeric-property classifier used by the TypedArray exotic
+    // methods; canonical numeric strings that are not valid integer indices must still
+    // be intercepted rather than falling through to ordinary properties/prototypes.
     public static bool TryCanonicalNumericIndexString(string key, out double numericValue)
     {
         numericValue = 0;
         if (string.IsNullOrEmpty(key)) return false;
 
-        // "-0" is the canonical representation of negative zero.
-        if (key == "-0") { numericValue = -0.0; return true; }
-
-        // Fast path: non-negative integer strings (no '.', 'e', '-')
-        if (key[0] >= '0' && key[0] <= '9')
+        if (string.Equals(key, "-0", StringComparison.Ordinal))
         {
-            // Leading-zero strings like "00", "01" are not canonical.
-            if (key.Length > 1 && key[0] == '0') goto slowPath;
-            var intResult = 0;
-            foreach (var c in key)
-            {
-                if (c < '0' || c > '9') goto slowPath;
-                if (intResult > (int.MaxValue - (c - '0')) / 10) goto slowPath;
-                intResult = intResult * 10 + (c - '0');
-            }
-            numericValue = intResult;
+            numericValue = -0.0;
             return true;
         }
 
-    slowPath:
-        // Full canonical check: parse as Number, verify ToString(n) roundtrips.
-        if (!double.TryParse(key,
+        // ToNumber has canonical string forms for these non-finite values as well.
+        if (string.Equals(key, "NaN", StringComparison.Ordinal))
+        {
+            numericValue = double.NaN;
+            return true;
+        }
+        if (string.Equals(key, "Infinity", StringComparison.Ordinal))
+        {
+            numericValue = double.PositiveInfinity;
+            return true;
+        }
+        if (string.Equals(key, "-Infinity", StringComparison.Ordinal))
+        {
+            numericValue = double.NegativeInfinity;
+            return true;
+        }
+
+        if (!double.TryParse(
+                key,
                 System.Globalization.NumberStyles.AllowLeadingSign |
                 System.Globalization.NumberStyles.AllowDecimalPoint |
                 System.Globalization.NumberStyles.AllowExponent,
                 System.Globalization.CultureInfo.InvariantCulture,
-                out var n))
-            return false;
-
-        if (double.IsNaN(n) || double.IsInfinity(n)) return false;
-
-        // Canonical check: Number::toString(n) must equal the original key.
-        // Use the "G" format which produces the shortest round-trippable string.
-        var rt = n.ToString("G", System.Globalization.CultureInfo.InvariantCulture);
-        if (rt != key) return false;
-
-        numericValue = n;
-        return true;
-    }
-
-    // ECMA-262 7.1.21 CanonicalNumericIndexString — returns the parsed non-negative
-    // integer if `key` is the canonical String representation of an integer index,
-    // otherwise -1. Leading zeros, overflow, and non-digit chars all disable the fast
-    // integer-index path (10.4.5.x exotic-object algorithms). "-0" maps to index 0.
-    public static bool IsCanonicalNumericIndex(string key, out int index)
-    {
-        index = -1;
-        if (string.IsNullOrEmpty(key)) return false;
-        // "-0" is the canonical representation of negative zero (index 0).
-        if (key == "-0") { index = 0; return true; }
-        // Leading-zero strings like "00", "01" are not canonical.
-        if (key.Length > 1 && key[0] == '0') return false;
-        var result = 0;
-        foreach (var c in key)
+                out var parsed))
         {
-            if (c < '0' || c > '9') return false;
-            if (result > (int.MaxValue - (c - '0')) / 10) return false;
-            result = result * 10 + (c - '0');
+            return false;
         }
-        index = result;
+
+        if (!string.Equals(MathHelpers.FormatNumberForString(parsed), key, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        numericValue = parsed;
         return true;
     }
 
-    // 10.4.5.7 IsValidIntegerIndex(O, index) — true when the buffer is not detached
-    // and the index is within [0, [[ArrayLength]]).
-    private bool IsValidIntegerIndex(int index)
-        => !IsViewDetached && !IsOutOfBounds() && index >= 0 && index < Length;
+    // ECMA-262 10.4.5.16 IsValidIntegerIndex(O, index).
+    private bool IsValidIntegerIndex(double index)
+    {
+        if (IsViewDetached) return false;
+        if (double.IsNaN(index) || double.IsInfinity(index)) return false;
+        if (Math.Truncate(index) != index) return false;
+        if (index == 0d && BitConverter.DoubleToInt64Bits(index) < 0) return false;
+        if (index < 0d || IsOutOfBounds()) return false;
+        return index < Length;
+    }
 
-    // 10.4.5.3 [[DefineOwnProperty]] (P, Desc) — Integer-Indexed Exotic Object.
-    // When P is a canonical numeric index:
-    //   - Valid (not-detached, in-range): reject accessor descriptors and
-    //     configurable/enumerable/writable: false; set the element value; return true.
-    //   - Detached buffer: return false (cannot define on detached TypedArray).
-    //   - Out of bounds (index >= Length or index < 0): return false.
-    //   - Non-canonical key: fall through to OrdinaryDefineOwnProperty.
-    // Returns false when the descriptor is rejected; the caller (ObjectDefineProperty)
-    // converts the false return to a TypeError throw for Object.defineProperty.
+    // ECMA-262 10.4.5.4 [[DefineOwnProperty]] (P, Desc).
     public override bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor)
     {
-        // ECMA-262 7.1.21: CanonicalNumericIndexString("-0") returns -0.
-        // The old spec (pre-aligned) rejects this at [[DefineOwnProperty]] step 3.b.iii.
-        // We treat "-0" as canonical (index 0) but reject the define per the old spec.
-        // Note: aligned spec would return false without setting the element, but
-        // reversing the element-set causes regressions in TypedArray prototype tests.
-        if (key == "-0")
+        if (TryCanonicalNumericIndexString(key, out var numericIndex))
         {
-            if (descriptor.HasValue)
-                SetElement(0, descriptor.Value);
-            return false;
-        }
+            if (!IsValidIntegerIndex(numericIndex)) return false;
+            if (descriptor.HasConfigurable && !descriptor.Configurable) return false;
+            if (descriptor.HasEnumerable && !descriptor.Enumerable) return false;
+            if (descriptor.IsAccessor) return false;
+            if (descriptor.HasWritable && !descriptor.Writable) return false;
 
-        if (IsCanonicalNumericIndex(key, out var numericIndex))
-        {
-            // 10.4.5.3 step 3.b.i: valid integer index — validate descriptor constraints.
-            if (IsValidIntegerIndex(numericIndex))
+            if (descriptor.HasValue)
             {
-                // Reject accessor descriptors (step 3.b.i.1).
-                if (descriptor.IsAccessor) return false;
-                // Reject configurable: false, enumerable: false, writable: false
-                // (steps 3.b.i.2-4 — align-detached-buffer-semantics-with-web-reality).
-                if (descriptor.HasConfigurable && !descriptor.Configurable) return false;
-                if (descriptor.HasEnumerable && !descriptor.Enumerable) return false;
-                if (descriptor.HasWritable && !descriptor.Writable) return false;
-                // Step 3.b.i.5: if the descriptor carries a [[Value]] field, write it
-                // through IntegerIndexedElementSet (10.4.5.11).
-                if (descriptor.HasValue)
-                    SetElement(numericIndex, descriptor.Value);
-                return true;
+                SetElement((int)numericIndex, descriptor.Value);
             }
 
-            // numericIndex is canonical but the index is invalid.
-            // If the buffer is detached, return false (cannot define properties on
-            // a detached Integer-Indexed Exotic Object).
-            if (IsViewDetached) return false;
-            // If the index is out of bounds (>= Length or < 0), return false.
-            if (numericIndex < 0 || numericIndex >= Length) return false;
-
-            // Should not reach here (IsValidIntegerIndex covers all non-detached cases).
-            // If we do, perform a no-op IntegerIndexedElementSet for any Value field
-            // and return true.
-            if (descriptor.HasValue)
-                SetElement(numericIndex, descriptor.Value);
             return true;
         }
 
         return base.DefineOwnProperty(key, descriptor);
     }
 
-    // 10.4.5.5 [[Set]] (P, V, Receiver) — Integer-Indexed Exotic Object.
-    // Canonical integer-index keys route through IntegerIndexedElementSet rather than
-    // the ordinary property store. Non-canonical keys fall through to OrdinarySet.
+    // ECMA-262 10.4.5.6 [[Set]] (P, V, Receiver) for the common SameValue(O, Receiver)
+    // path represented by this virtual. TypedArraySetElement converts V before checking
+    // whether the canonical numeric index is valid, so use an invalid sentinel to retain
+    // conversion/throw side effects without creating an ordinary property.
     public override bool SetProperty(string key, JsValue value)
     {
-        if (IsCanonicalNumericIndex(key, out var numericIndex))
+        if (TryCanonicalNumericIndexString(key, out var numericIndex))
         {
-            SetElement(numericIndex, value);
+            SetElement(IsValidIntegerIndex(numericIndex) ? (int)numericIndex : -1, value);
             return true;
         }
 
         return base.SetProperty(key, value);
     }
 
-    // 10.4.5.2 [[Delete]] (P) — Integer-Indexed Exotic Object.
-    // Canonical integer indices cannot be deleted from a live (non-detached) TypedArray;
-    // detached and out-of-bounds indices return true so the operation appears to succeed.
-    // Non-canonical keys (including non-integer canonical indices like "1.1") are not
-    // TypedArray elements, so [[Delete]] always returns true for them (there is nothing
-    // to delete — per the spec, OrdinaryDelete returns true for undefined descriptors).
+    // ECMA-262 10.4.5.7 [[Delete]] (P).
     public override bool DeleteProperty(string key)
     {
-        if (IsCanonicalNumericIndex(key, out var numericIndex))
+        if (TryCanonicalNumericIndexString(key, out var numericIndex))
         {
-            if (IsViewDetached) return true;
-            if (!IsValidIntegerIndex(numericIndex)) return true;
-            // Valid integer index in a live buffer: cannot be deleted.
-            return false;
+            return !IsValidIntegerIndex(numericIndex);
         }
 
-        // Non-canonical key: delete the ordinary property if present.
-        // If the property doesn't exist (no own slot), return true per spec
-        // (OrdinaryDelete: if desc is undefined, return true).
-        if (base.DeleteProperty(key))
-            return true;
-        // Property didn't exist as an own property → delete succeeds by default.
-        return true;
+        return base.DeleteProperty(key);
     }
 
-    // 10.4.5.4 [[GetOwnProperty]] (P) — Integer-Indexed Exotic Object.
-    // For a valid canonical integer index, synthesize a data-property descriptor with
-    // the element value, writable/enumerable/configurable = true. If an ordinary own
-    // property already shadows the index, return that instead (spec step ordering).
-    // "-0" maps to canonical numeric index -0; IntegerIndexedElementGet returns undefined
-    // for -0 (10.4.5.8 step 6), so [[GetOwnProperty]] returns undefined (step 6).
+    // ECMA-262 10.4.5.2 [[GetOwnProperty]] (P). Canonical numeric strings are
+    // intercepted before OrdinaryGetOwnProperty, including invalid indices such as
+    // "-0", negatives, fractions, NaN/Infinity, and out-of-range integers.
     public override bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
     {
-        // OrdinaryGetOwnProperty has priority: a user-defined own property at this key
-        // shadows the synthetic integer-indexed descriptor.
-        if (base.TryGetOwnProperty(key, out descriptor))
-            return true;
-
-        // "-0" is a canonical numeric index but IntegerIndexedElementGet returns undefined
-        // for -0, so [[GetOwnProperty]] returns undefined per 10.4.5.4 step 6.
-        if (key == "-0")
+        if (TryCanonicalNumericIndexString(key, out var numericIndex))
         {
-            descriptor = default;
-            return false;
-        }
+            if (!IsValidIntegerIndex(numericIndex))
+            {
+                descriptor = default;
+                return false;
+            }
 
-        if (IsCanonicalNumericIndex(key, out var numericIndex) && IsValidIntegerIndex(numericIndex))
-        {
             descriptor = new JsPropertyDescriptor(
-                GetElement(numericIndex),
+                GetElement((int)numericIndex),
                 Writable: true,
                 Enumerable: true,
                 Configurable: true);
             return true;
         }
 
-        descriptor = default;
-        return false;
+        return base.TryGetOwnProperty(key, out descriptor);
     }
 
-    // 10.4.5.6 [[OwnPropertyKeys]] — Integer-Indexed Exotic Object.
+    // 10.4.5.8 [[OwnPropertyKeys]] — TypedArray Exotic Object.
     // Yields the integer index keys "0", "1", … "length-1" (in ascending order) before
     // any ordinary own properties. Subarray views also enumerate their local indices.
     public override IEnumerable<KeyValuePair<string, JsPropertyDescriptor>> EnumerateOwnProperties()
     {
-        // YIELD integer indices first (10.4.5.6 step 4).
+        // YIELD integer indices first (10.4.5.8 step 3).
         if (!IsViewDetached && !IsOutOfBounds())
         {
             for (var i = 0; i < Length; i++)
@@ -291,10 +215,9 @@ public abstract class TypedArrayObject : TypedArrayView
 
     public void SetElement(int index, JsValue value)
     {
-        // ECMA-262 23.2.4.7 IntegerIndexedElementSet: convert the value first
-        // (steps 1-2), THEN check bounds (step 3). Value conversion may trigger
-        // user code (valueOf/toString) that detaches the buffer, so the bounds
-        // check must happen after conversion.
+        // ECMA-262 10.4.5.18 TypedArraySetElement: convert the value first,
+        // THEN check bounds. Value conversion may trigger user code that detaches
+        // the buffer, so the bounds check must happen after conversion.
         switch (ElementType)
         {
             case TypedArrayElementType.Int8:
