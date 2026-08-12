@@ -20,7 +20,9 @@ namespace FenBrowser.Core.Network.Handlers
             // Use HttpClientFactory for HTTP/2 and Brotli support
             _httpClient = httpClient ?? HttpClientFactory.GetSharedClient();
 
-            // Fallback transport for misconfigured/dead system proxy scenarios.
+            // Narrow fallback transport for the known dead localhost proxy used by
+            // some development/lab environments. Other proxy failures must not
+            // silently bypass an explicitly configured proxy boundary.
             var noProxyHandler = HttpClientFactory.CreateHandler();
             noProxyHandler.UseProxy = false;
             _noProxyClient = HttpClientFactory.CreateClient(noProxyHandler);
@@ -60,7 +62,7 @@ namespace FenBrowser.Core.Network.Handlers
             }
             catch (HttpRequestException ex) when (ShouldRetryWithoutProxy(ex))
             {
-                var retryRequest = await CloneRequestAsync(request).ConfigureAwait(false);
+                using var retryRequest = await CloneRequestAsync(request).ConfigureAwait(false);
                 return await _noProxyClient.SendAsync(retryRequest, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
             }
         }
@@ -68,10 +70,7 @@ namespace FenBrowser.Core.Network.Handlers
         private static bool ShouldRetryWithoutProxy(HttpRequestException ex)
         {
             var msg = ex?.ToString() ?? string.Empty;
-            if (msg.Length == 0) return false;
-            return IsLoopbackProxyRefusal(msg) ||
-                   IsSocketAccessPermissionFailure(msg) ||
-                   IsProxyTunnelFailure(msg);
+            return msg.Length > 0 && IsLoopbackProxyRefusal(msg);
         }
 
         private static bool IsLoopbackProxyRefusal(string msg)
@@ -82,25 +81,12 @@ namespace FenBrowser.Core.Network.Handlers
                     msg.IndexOf("actively refused", System.StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
-        private static bool IsSocketAccessPermissionFailure(string msg)
-        {
-            return msg.IndexOf("forbidden by its access permissions", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   msg.IndexOf("access permissions", System.StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        private static bool IsProxyTunnelFailure(string msg)
-        {
-            return msg.IndexOf("proxy", System.StringComparison.OrdinalIgnoreCase) >= 0 &&
-                   (msg.IndexOf("connect", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    msg.IndexOf("tunnel", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    msg.IndexOf("407", System.StringComparison.OrdinalIgnoreCase) >= 0);
-        }
-
         private static async Task<HttpRequestMessage> CloneRequestAsync(HttpRequestMessage source)
         {
             var clone = new HttpRequestMessage(source.Method, source.RequestUri)
             {
-                Version = source.Version
+                Version = source.Version,
+                VersionPolicy = source.VersionPolicy
             };
 
             foreach (var header in source.Headers)
