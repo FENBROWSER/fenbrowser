@@ -34,8 +34,26 @@ public static class BytecodeCache
 
     private sealed class BypassToken : IDisposable
     {
+        private bool _disposed;
+
         public BypassToken() => _bypassDepth++;
-        public void Dispose() => _bypassDepth--;
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            if (_bypassDepth <= 0)
+            {
+                _bypassDepth = 0;
+                return;
+            }
+
+            _bypassDepth--;
+        }
     }
 
     public static bool TryGet(string sourceText, bool strictMode, out BytecodeFunction function)
