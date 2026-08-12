@@ -367,12 +367,15 @@ namespace FenBrowser.Core.Network
             }
             finally
             {
-                request.Completed = true;
+                request.Completed = success;
                 _pending.TryRemove(key, out _);
 
-                lock (_lock)
+                if (success)
                 {
-                    _completedUrls.Add(key);
+                    lock (_lock)
+                    {
+                        _completedUrls.Add(key);
+                    }
                 }
 
                 OnPrefetchComplete?.Invoke(request.Url, success);
@@ -545,6 +548,5 @@ namespace FenBrowser.Core.Network
         }
     }
 }
-
 
 
