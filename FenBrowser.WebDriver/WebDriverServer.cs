@@ -43,6 +43,7 @@ namespace FenBrowser.WebDriver
         private readonly int _port;
         private static readonly string[] AllowedCorsMethods = { "GET", "POST", "DELETE", "OPTIONS" };
         private static readonly string[] AllowedCorsHeaders = { "content-type" };
+        private const int MaxRequestBodyBytes = 16 * 1024 * 1024;
         private Task _listenerTask;
         private long _nextCommandId;
         private bool _disposed;
@@ -213,12 +214,12 @@ namespace FenBrowser.WebDriver
                     return;
                 }
                 
-                // Read request body
+                // Read request body with a hard ceiling. Content-Length can be absent
+                // for chunked requests, so the streaming loop enforces the same limit.
                 string body = null;
                 if (request.HasEntityBody)
                 {
-                    using var reader = new StreamReader(request.InputStream, Encoding.UTF8);
-                    body = await reader.ReadToEndAsync();
+                    body = await ReadRequestBodyAsync(request).ConfigureAwait(false);
                 }
                 
                 // The WebDriver remote end has one request queue. Browser and
@@ -267,6 +268,10 @@ namespace FenBrowser.WebDriver
                 
                 await SendResponseAsync(response, result);
             }
+            catch (RequestBodyTooLargeException ex)
+            {
+                await SendErrorAsync(response, ErrorCodes.InvalidArgument, ex.Message, 413);
+            }
             catch (OperationCanceledException) when (_cts.IsCancellationRequested)
             {
                 response.Abort();
@@ -285,6 +290,49 @@ namespace FenBrowser.WebDriver
                 Log($"Request error: {ex}");
                 await SendErrorAsync(response, ErrorCodes.UnknownError, ex.Message, 500);
             }
+        }
+
+        private static async Task<string> ReadRequestBodyAsync(HttpListenerRequest request)
+        {
+            if (request.ContentLength64 > MaxRequestBodyBytes)
+            {
+                throw new RequestBodyTooLargeException(
+                    $"WebDriver request body exceeds the {MaxRequestBodyBytes}-byte limit.");
+            }
+
+            var initialCapacity = request.ContentLength64 > 0
+                ? (int)Math.Min(request.ContentLength64, MaxRequestBodyBytes)
+                : 0;
+            using var bodyBuffer = initialCapacity > 0
+                ? new MemoryStream(initialCapacity)
+                : new MemoryStream();
+            var buffer = new byte[8192];
+            var totalBytes = 0;
+
+            while (true)
+            {
+                var read = await request.InputStream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    break;
+                }
+
+                if (totalBytes > MaxRequestBodyBytes - read)
+                {
+                    throw new RequestBodyTooLargeException(
+                        $"WebDriver request body exceeds the {MaxRequestBodyBytes}-byte limit.");
+                }
+
+                totalBytes += read;
+                bodyBuffer.Write(buffer, 0, read);
+            }
+
+            if (!bodyBuffer.TryGetBuffer(out var segment) || segment.Array == null)
+            {
+                return Encoding.UTF8.GetString(bodyBuffer.ToArray());
+            }
+
+            return Encoding.UTF8.GetString(segment.Array, segment.Offset, segment.Count);
         }
         
         private async Task SendResponseAsync(HttpListenerResponse response, WebDriverResponse result)
@@ -395,6 +443,14 @@ namespace FenBrowser.WebDriver
         {
             if (_disposed)
                 throw new ObjectDisposedException(nameof(WebDriverServer));
+        }
+
+        private sealed class RequestBodyTooLargeException : Exception
+        {
+            public RequestBodyTooLargeException(string message)
+                : base(message)
+            {
+            }
         }
         
         public void Dispose()
