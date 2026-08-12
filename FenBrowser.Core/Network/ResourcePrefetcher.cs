@@ -58,6 +58,7 @@ namespace FenBrowser.Core.Network
         public int Priority { get; set; }
         public DateTimeOffset QueuedAt { get; set; }
         public bool Completed { get; set; }
+        internal int Generation { get; set; }
     }
 
     /// <summary>
@@ -73,7 +74,11 @@ namespace FenBrowser.Core.Network
         private readonly HashSet<string> _preconnectedHosts;
         private readonly object _lock = new object();
         private readonly SemaphoreSlim _throttle;
-        private readonly CancellationTokenSource _cts;
+        private readonly List<CancellationTokenSource> _retiredCancellationSources = new();
+        private CancellationTokenSource _cts;
+        private int _generation;
+        private int _activeOperations;
+        private int _resourcesDisposed;
         private bool _disposed;
 
         // Configuration
@@ -135,9 +140,6 @@ namespace FenBrowser.Core.Network
 
                     await QueueHintAsync(url, hint.Value, asType, crossOrigin, mimeType);
                 }
-
-                // Start processing queue
-                _ = Task.Run(() => ProcessQueueAsync(_cts.Token));
             }
             catch (Exception ex)
             {
@@ -169,9 +171,6 @@ namespace FenBrowser.Core.Network
                 {
                     await Task.WhenAll(queueTasks).ConfigureAwait(false);
                 }
-
-                // Start processing queue
-                _ = Task.Run(() => ProcessQueueAsync(_cts.Token));
             }
             catch (Exception ex)
             {
@@ -190,9 +189,13 @@ namespace FenBrowser.Core.Network
             if (url == null) return;
 
             var key = url.AbsoluteUri;
+            PrefetchRequest request;
 
             lock (_lock)
             {
+                if (_disposed)
+                    return;
+
                 // Skip if already processed or pending
                 if (_completedUrls.Contains(key) || _pending.ContainsKey(key))
                     return;
@@ -200,28 +203,29 @@ namespace FenBrowser.Core.Network
                 // Respect queue limit
                 if (_queue.Count >= MaxQueueSize)
                     return;
+
+                request = new PrefetchRequest
+                {
+                    Url = url,
+                    Hint = hint,
+                    AsType = asType,
+                    CrossOrigin = crossOrigin,
+                    MimeType = mimeType,
+                    Priority = GetPriority(hint, asType),
+                    QueuedAt = DateTimeOffset.UtcNow,
+                    Generation = _generation
+                };
+
+                if (!_pending.TryAdd(key, request))
+                    return;
+
+                _queue.Enqueue(request);
             }
-
-            var request = new PrefetchRequest
-            {
-                Url = url,
-                Hint = hint,
-                AsType = asType,
-                CrossOrigin = crossOrigin,
-                MimeType = mimeType,
-                Priority = GetPriority(hint, asType),
-                QueuedAt = DateTimeOffset.UtcNow
-            };
-
-            _pending.TryAdd(key, request);
-            _queue.Enqueue(request);
 
             EngineLogCompat.Debug($"[ResourcePrefetcher] Queued {hint}: {url}", LogCategory.Network);
 
             // PreloadScanner calls this directly during HTML parse and never
-            // touches PrefetchFromDomAsync, so without this kick the queue
-            // would just accumulate forever. EnsureProcessing is idempotent
-            // and uses an atomic flag so we don't spawn workers per call.
+            // touches PrefetchFromDomAsync, so every enqueue owns the processing kick.
             EnsureProcessing();
 
             await Task.CompletedTask;
@@ -232,27 +236,54 @@ namespace FenBrowser.Core.Network
         private void EnsureProcessing()
         {
             if (_disposed) return;
-            if (System.Threading.Interlocked.CompareExchange(ref _processingFlag, 1, 0) != 0)
+            if (Interlocked.CompareExchange(ref _processingFlag, 1, 0) != 0)
             {
                 return;
             }
 
-            _ = Task.Run(async () =>
+            CancellationToken token;
+            int generation;
+            lock (_lock)
             {
-                try
+                if (_disposed)
                 {
-                    await ProcessQueueAsync(_cts.Token).ConfigureAwait(false);
+                    Volatile.Write(ref _processingFlag, 0);
+                    return;
                 }
-                finally
+
+                token = _cts.Token;
+                generation = _generation;
+                Interlocked.Increment(ref _activeOperations);
+            }
+
+            try
+            {
+                _ = Task.Run(async () =>
                 {
-                    System.Threading.Volatile.Write(ref _processingFlag, 0);
-                    // If new items raced in after we drained, kick again.
-                    if (!_disposed && !_queue.IsEmpty)
+                    try
                     {
-                        EnsureProcessing();
+                        await ProcessQueueAsync(token, generation).ConfigureAwait(false);
                     }
-                }
-            });
+                    finally
+                    {
+                        Volatile.Write(ref _processingFlag, 0);
+                        EndOperation();
+
+                        // If new-generation items raced in while an old worker was
+                        // cancelling, kick one worker for the current generation.
+                        if (!_disposed && !_queue.IsEmpty)
+                        {
+                            EnsureProcessing();
+                        }
+                    }
+                });
+            }
+            catch
+            {
+                Volatile.Write(ref _processingFlag, 0);
+                EndOperation();
+                throw;
+            }
         }
 
         /// <summary>
@@ -288,27 +319,52 @@ namespace FenBrowser.Core.Network
         /// <summary>
         /// Process the prefetch queue
         /// </summary>
-        private async Task ProcessQueueAsync(CancellationToken ct)
+        private async Task ProcessQueueAsync(CancellationToken ct, int generation)
         {
             while (!ct.IsCancellationRequested && _queue.TryDequeue(out var request))
             {
+                if (request.Generation != generation)
+                {
+                    if (request.Generation < generation)
+                    {
+                        RemovePendingIfOwned(request);
+                        continue;
+                    }
+
+                    // A newer generation was queued while this worker was winding
+                    // down. Put it back for the worker that owns that generation.
+                    _queue.Enqueue(request);
+                    break;
+                }
+
                 if (request.Completed) continue;
 
                 try
                 {
-                    await _throttle.WaitAsync(ct);
+                    await _throttle.WaitAsync(ct).ConfigureAwait(false);
+                    Interlocked.Increment(ref _activeOperations);
 
-                    _ = Task.Run(async () =>
+                    try
                     {
-                        try
+                        _ = Task.Run(async () =>
                         {
-                            await ExecutePrefetchAsync(request, ct);
-                        }
-                        finally
-                        {
-                            _throttle.Release();
-                        }
-                    }, ct);
+                            try
+                            {
+                                await ExecutePrefetchAsync(request, ct).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                _throttle.Release();
+                                EndOperation();
+                            }
+                        });
+                    }
+                    catch
+                    {
+                        _throttle.Release();
+                        EndOperation();
+                        throw;
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -367,19 +423,77 @@ namespace FenBrowser.Core.Network
             }
             finally
             {
-                request.Completed = success;
-                _pending.TryRemove(key, out _);
-
-                if (success)
+                bool notify;
+                lock (_lock)
                 {
-                    lock (_lock)
+                    notify = !_disposed && request.Generation == _generation;
+                    if (notify)
                     {
-                        _completedUrls.Add(key);
+                        RemovePendingIfOwnedLocked(key, request);
+                        if (success)
+                        {
+                            _completedUrls.Add(key);
+                        }
                     }
                 }
 
-                OnPrefetchComplete?.Invoke(request.Url, success);
+                request.Completed = success;
+                if (notify)
+                {
+                    OnPrefetchComplete?.Invoke(request.Url, success);
+                }
             }
+        }
+
+        private void RemovePendingIfOwned(PrefetchRequest request)
+        {
+            if (request?.Url == null)
+                return;
+
+            lock (_lock)
+            {
+                RemovePendingIfOwnedLocked(request.Url.AbsoluteUri, request);
+            }
+        }
+
+        private void RemovePendingIfOwnedLocked(string key, PrefetchRequest request)
+        {
+            if (_pending.TryGetValue(key, out var current) && ReferenceEquals(current, request))
+            {
+                _pending.TryRemove(key, out _);
+            }
+        }
+
+        private void EndOperation()
+        {
+            if (Interlocked.Decrement(ref _activeOperations) == 0 && _disposed)
+            {
+                DisposeSynchronizationResources();
+            }
+        }
+
+        private void DisposeSynchronizationResources()
+        {
+            if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0)
+            {
+                return;
+            }
+
+            List<CancellationTokenSource> cancellationSources;
+            lock (_lock)
+            {
+                cancellationSources = new List<CancellationTokenSource>(_retiredCancellationSources.Count + 1);
+                cancellationSources.AddRange(_retiredCancellationSources);
+                cancellationSources.Add(_cts);
+                _retiredCancellationSources.Clear();
+            }
+
+            foreach (var source in cancellationSources)
+            {
+                source.Dispose();
+            }
+
+            _throttle.Dispose();
         }
 
         /// <summary>
@@ -520,30 +634,67 @@ namespace FenBrowser.Core.Network
         }
 
         /// <summary>
-        /// Clear all state and cancel pending requests
+        /// Clear current hint state and start a fresh cancellation generation.
         /// </summary>
         public void Clear()
         {
-            _cts.Cancel();
-
+            CancellationTokenSource previous;
             lock (_lock)
             {
+                if (_disposed)
+                    return;
+
+                previous = _cts;
+                _retiredCancellationSources.Add(previous);
+                _cts = new CancellationTokenSource();
+                _generation++;
+
                 _completedUrls.Clear();
                 _preconnectedHosts.Clear();
+                _pending.Clear();
+                while (_queue.TryDequeue(out _)) { }
             }
 
-            _pending.Clear();
-            while (_queue.TryDequeue(out _)) { }
+            try
+            {
+                previous.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
         }
 
         public void Dispose()
         {
-            if (!_disposed)
+            List<CancellationTokenSource> cancellationSources;
+            lock (_lock)
             {
-                _cts.Cancel();
-                _cts.Dispose();
-                _throttle.Dispose();
+                if (_disposed)
+                    return;
+
                 _disposed = true;
+                cancellationSources = new List<CancellationTokenSource>(_retiredCancellationSources.Count + 1);
+                cancellationSources.AddRange(_retiredCancellationSources);
+                cancellationSources.Add(_cts);
+
+                _pending.Clear();
+                while (_queue.TryDequeue(out _)) { }
+            }
+
+            foreach (var source in cancellationSources)
+            {
+                try
+                {
+                    source.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            }
+
+            if (Volatile.Read(ref _activeOperations) == 0)
+            {
+                DisposeSynchronizationResources();
             }
         }
     }
