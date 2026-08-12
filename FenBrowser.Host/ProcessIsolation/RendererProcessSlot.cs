@@ -4,6 +4,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
@@ -291,8 +292,7 @@ namespace FenBrowser.Host.ProcessIsolation
         
         private static string CreateAuthToken()
         {
-            // Generate a secure auth token for IPC
-            return Convert.ToBase64String(Guid.NewGuid().ToByteArray());
+            return Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         }
         
         private static ISandbox CreateSandbox(IOsSandboxFactory sandboxFactory, string assignmentKey)
