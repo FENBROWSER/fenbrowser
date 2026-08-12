@@ -2,6 +2,8 @@ using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Net;
+using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -287,33 +289,89 @@ namespace FenBrowser.Core.Network
         }
 
         /// <summary>
-        /// Preconnect to a host (TCP/TLS handshake)
+        /// Preconnect to an origin using the browser's configured transport.
         /// </summary>
         public async Task PreconnectAsync(Uri url)
         {
-            if (url == null) return;
+            _ = await TryPreconnectAsync(url, CancellationToken.None).ConfigureAwait(false);
+        }
 
-            var host = url.Host;
+        private async Task<bool> TryPreconnectAsync(Uri url, CancellationToken ct)
+        {
+            if (url == null || !url.IsAbsoluteUri)
+                return false;
+            if (!string.Equals(url.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(url.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var originKey = url.GetLeftPart(UriPartial.Authority);
             lock (_lock)
             {
-                if (_preconnectedHosts.Contains(host))
-                    return;
-                _preconnectedHosts.Add(host);
+                if (_preconnectedHosts.Contains(originKey))
+                    return true;
+
+                // Reserve the origin while the warm-up is in flight. On failure the
+                // reservation is removed so a later resource hint can retry.
+                _preconnectedHosts.Add(originKey);
             }
 
+            var success = false;
             try
             {
-                // Trigger connection by making a HEAD request
-                var headUri = new Uri($"{url.Scheme}://{url.Host}");
-                // The actual connection warming happens in HttpClient's connection pool
-                EngineLogCompat.Debug($"[ResourcePrefetcher] Preconnect: {host}", LogCategory.Network);
+                var originRoot = new Uri(originKey.TrimEnd('/') + "/", UriKind.Absolute);
+                using var request = new HttpRequestMessage(HttpMethod.Head, originRoot);
+                request.Headers.ConnectionClose = false;
+
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(5));
+                using var response = await HttpClientFactory.GetSharedClient().SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    timeout.Token).ConfigureAwait(false);
+
+                // Any HTTP response proves that DNS/connect/TLS completed. Status is
+                // irrelevant for a connection warm-up.
+                success = true;
+                EngineLogCompat.Debug($"[ResourcePrefetcher] Preconnect warmed: {originKey}", LogCategory.Network);
+                return true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
-                EngineLogCompat.Debug($"[ResourcePrefetcher] Preconnect failed: {host} - {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Debug($"[ResourcePrefetcher] Preconnect failed: {originKey} - {ex.Message}", LogCategory.Network);
+                return false;
+            }
+            finally
+            {
+                if (!success)
+                {
+                    lock (_lock)
+                    {
+                        _preconnectedHosts.Remove(originKey);
+                    }
+                }
+            }
+        }
+
+        private static async Task<bool> PrefetchDnsAsync(Uri url, CancellationToken ct)
+        {
+            if (url == null || !url.IsAbsoluteUri || string.IsNullOrWhiteSpace(url.DnsSafeHost))
+                return false;
+
+            if (IPAddress.TryParse(url.DnsSafeHost, out _))
+                return true;
+
+            if (BrowserSettings.Instance.UseSecureDNS)
+            {
+                var secureAddresses = await SecureDnsResolver.ResolveAllAsync(url.DnsSafeHost, ct).ConfigureAwait(false);
+                return secureAddresses.Count > 0;
             }
 
-            await Task.CompletedTask;
+            var systemAddresses = await Dns.GetHostAddressesAsync(url.DnsSafeHost, ct).ConfigureAwait(false);
+            return systemAddresses.Length > 0;
         }
 
         /// <summary>
@@ -405,17 +463,17 @@ namespace FenBrowser.Core.Network
                         break;
 
                     case ResourceHint.Preconnect:
-                        await PreconnectAsync(request.Url);
-                        success = true;
+                        success = await TryPreconnectAsync(request.Url, ct).ConfigureAwait(false);
                         break;
 
                     case ResourceHint.DnsPrefetch:
-                        // DNS is resolved automatically by HttpClient
-                        success = true;
+                        success = await PrefetchDnsAsync(request.Url, ct).ConfigureAwait(false);
                         break;
                 }
 
-                EngineLogCompat.Debug($"[ResourcePrefetcher] Completed {request.Hint}: {request.Url}", LogCategory.Network);
+                EngineLogCompat.Debug(
+                    $"[ResourcePrefetcher] {(success ? "Completed" : "Failed")} {request.Hint}: {request.Url}",
+                    LogCategory.Network);
             }
             catch (Exception ex)
             {
@@ -699,5 +757,3 @@ namespace FenBrowser.Core.Network
         }
     }
 }
-
-
