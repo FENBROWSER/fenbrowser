@@ -92,14 +92,28 @@ public class NetworkService : INetworkService
         if (DebugConfig.LogResourceLoader)
             EngineLogCompat.Log($"[Loader] GET {uri}", LogCategory.Network);
 
-        var response = await _httpClient.SendAsync(
-            request,
-            HttpCompletionOption.ResponseHeadersRead,
-            timeoutCts.Token).ConfigureAwait(false);
+        HttpResponseMessage response = null;
+        try
+        {
+            response = await _httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                timeoutCts.Token).ConfigureAwait(false);
 
-        response.EnsureSuccessStatusCode();
-        LogResponse(response);
-        return await response.Content.ReadAsStreamAsync(timeoutCts.Token).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            LogResponse(response);
+            var stream = await response.Content.ReadAsStreamAsync(timeoutCts.Token).ConfigureAwait(false);
+
+            // The content stream is owned by HttpResponseMessage. Returning the raw
+            // stream would abandon that owner and retain response/content resources
+            // until finalization. Transfer response ownership to the returned stream.
+            return new ResponseOwnedStream(stream, response);
+        }
+        catch
+        {
+            response?.Dispose();
+            throw;
+        }
     }
 
     public async Task<string> GetStringAsync(Uri uri, CancellationToken cancellationToken = default)
@@ -159,5 +173,89 @@ public class NetworkService : INetworkService
         BrowserSettings.ApplyBrowserRequestHeaders(request);
         request.Headers.TryAddWithoutValidation("Accept-Encoding", configuration.GetAcceptEncodingHeader());
         return request;
+    }
+
+    private sealed class ResponseOwnedStream : Stream
+    {
+        private readonly Stream _inner;
+        private readonly HttpResponseMessage _response;
+        private int _disposed;
+
+        public ResponseOwnedStream(Stream inner, HttpResponseMessage response)
+        {
+            _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+            _response = response ?? throw new ArgumentNullException(nameof(response));
+        }
+
+        public override bool CanRead => _inner.CanRead;
+        public override bool CanSeek => _inner.CanSeek;
+        public override bool CanWrite => _inner.CanWrite;
+        public override long Length => _inner.Length;
+        public override long Position
+        {
+            get => _inner.Position;
+            set => _inner.Position = value;
+        }
+
+        public override void Flush() => _inner.Flush();
+        public override Task FlushAsync(CancellationToken cancellationToken) =>
+            _inner.FlushAsync(cancellationToken);
+        public override int Read(byte[] buffer, int offset, int count) =>
+            _inner.Read(buffer, offset, count);
+        public override int Read(Span<byte> buffer) => _inner.Read(buffer);
+        public override Task<int> ReadAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken) =>
+            _inner.ReadAsync(buffer, offset, count, cancellationToken);
+        public override ValueTask<int> ReadAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            _inner.ReadAsync(buffer, cancellationToken);
+        public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+        public override void SetLength(long value) => _inner.SetLength(value);
+        public override void Write(byte[] buffer, int offset, int count) =>
+            _inner.Write(buffer, offset, count);
+        public override void Write(ReadOnlySpan<byte> buffer) => _inner.Write(buffer);
+        public override Task WriteAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken) =>
+            _inner.WriteAsync(buffer, offset, count, cancellationToken);
+        public override ValueTask WriteAsync(
+            ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            _inner.WriteAsync(buffer, cancellationToken);
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                // Disposing the response disposes its HttpContent and therefore the
+                // owned content stream. Keep one authoritative owner to avoid leaks.
+                _response.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+
+        public override async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                try
+                {
+                    await _inner.DisposeAsync().ConfigureAwait(false);
+                }
+                finally
+                {
+                    _response.Dispose();
+                }
+            }
+
+            GC.SuppressFinalize(this);
+        }
     }
 }
