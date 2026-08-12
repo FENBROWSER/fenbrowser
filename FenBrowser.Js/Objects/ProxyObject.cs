@@ -46,7 +46,7 @@ public sealed class ProxyObject : JsObject
         if (IsRevoked) ThrowProxyError("Cannot perform 'set' on a revoked Proxy.");
         if (ProxySetTrap is { } setter)
             return setter(this, JsValue.FromObject(TargetHandle), key, value);
-        return base.SetProperty(key, value);
+        return GetTarget().SetProperty(key, value);
     }
 
     // ECMA-262 10.5.10 [[Delete]] — if the handler has a "deleteProperty" trap,
@@ -56,7 +56,7 @@ public sealed class ProxyObject : JsObject
         if (IsRevoked) ThrowProxyError("Cannot perform 'deleteProperty' on a revoked Proxy.");
         if (ProxyDeleteTrap is { } deleter)
             return deleter(this, key);
-        return base.DeleteProperty(key);
+        return GetTarget().DeleteProperty(key);
     }
 
     // ECMA-262 10.5.11 [[OwnPropertyKeys]] — routes through the handler's "ownKeys"
@@ -67,7 +67,15 @@ public sealed class ProxyObject : JsObject
         if (IsRevoked) ThrowProxyError("Cannot enumerate own properties on a revoked Proxy.");
         if (ProxyEnumerateTrap is { } en)
             return en(this);
-        return base.EnumerateOwnProperties();
+        return GetTarget().EnumerateOwnProperties();
+    }
+
+    private JsObject GetTarget()
+    {
+        if (OwnerHeap is { } heap)
+            return heap.GetObject(TargetHandle);
+
+        throw new InvalidOperationException("Proxy is not attached to a JavaScript heap.");
     }
 
     // Set by the interpreter during initialization. Provides access to CreateTypeError
