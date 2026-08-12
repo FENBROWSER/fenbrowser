@@ -86,10 +86,10 @@ namespace FenBrowser.Host.ProcessIsolation.Network
     // Responsibilities:
     //  1. Accept HttpRequestMessage from callers (ResourceManager / Fetch API).
     //  2. Validate origin, credentials, and policy before forwarding.
-    //  3. Mint a NetworkCapabilityToken per request (origin-locked, expiring).
+    //  3. Mint a request-bound capability token for each IPC fetch.
     //  4. Forward via NetworkProcessSession.SendFetch().
     //  5. Collect streaming response head + body chunks from the session events.
-    //  6. Validate the capability token on each inbound envelope.
+    //  6. Rely on the session to validate the exact request capability on inbound envelopes.
     //  7. Return an HttpResponseMessage to the caller.
     //
     // Thread-safety: all public methods are thread-safe. Pending requests are
@@ -101,10 +101,10 @@ namespace FenBrowser.Host.ProcessIsolation.Network
     // Responsibilities:
     //  1. Accept HttpRequestMessage from callers (ResourceManager / Fetch API).
     //  2. Validate origin, credentials, and policy before forwarding.
-    //  3. Mint a NetworkCapabilityToken per request (origin-locked, expiring).
+    //  3. Mint a request-bound capability token for each IPC fetch.
     //  4. Forward via NetworkProcessSession.SendFetch().
     //  5. Collect streaming response head + body chunks from the session events.
-    //  6. Validate the capability token on each inbound envelope.
+    //  6. Rely on the session to validate the exact request capability on inbound envelopes.
     //  7. Return an HttpResponseMessage to the caller.
     //
     // Thread-safety: all public methods are thread-safe. Pending requests are
@@ -120,8 +120,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         private const int BufferedBodyChunkCapacity = 8;
 
         public string RequestId { get; }
-        public string CapabilityTokenValue { get; }
-        public string InitiatorOrigin { get; }
         public CancellationToken CancellationToken { get; }
 
         // Signals completion of the response HEAD (status + headers).
@@ -143,13 +141,9 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         public PendingNetworkRequest(
             string requestId,
-            string capabilityTokenValue,
-            string initiatorOrigin,
             CancellationToken cancellationToken)
         {
             RequestId = requestId;
-            CapabilityTokenValue = capabilityTokenValue;
-            InitiatorOrigin = initiatorOrigin;
             CancellationToken = cancellationToken;
             _bodyChannel = System.Threading.Channels.Channel.CreateBounded<byte[]>(
                 new System.Threading.Channels.BoundedChannelOptions(BufferedBodyChunkCapacity)
@@ -353,33 +347,22 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             var fetchPayload = BuildFetchPayload(request, initiatorOrigin);
 
             // Register pending state before sending (avoids race with fast responses)
-            var pending = new PendingNetworkRequest(requestId, string.Empty, initiatorOrigin, cancellationToken);
+            var pending = new PendingNetworkRequest(requestId, cancellationToken);
             _pending[requestId] = pending;
-            NetworkCapabilityToken capToken = null;
+            var fetchSent = false;
 
             try
             {
-                // Mint the capability and write the request under the same cleanup
-                // scope as the pending entry. Transactional SendFetch can fail fast.
-                capToken = session.SendFetch(fetchPayload, initiatorOrigin ?? "", requestId);
+                // Mint the request-bound capability and write the request under
+                // the same cleanup scope as the pending entry.
+                session.SendFetch(fetchPayload, requestId);
+                fetchSent = true;
 
-                // Wait for response head (status + headers)
+                // Wait for response head (status + headers). The session has already
+                // validated the exact request capability before raising this event.
                 var head = await pending.HeadTask
                     .WaitAsync(TimeSpan.FromSeconds(30), cancellationToken)
                     .ConfigureAwait(false);
-
-                // Validate capability token on head
-                if (!string.IsNullOrEmpty(head.RequestId))
-                {
-                    if (!TryGetHttpOrigin(head.Url, out var responseOrigin) ||
-                        !capToken.IsValidFor(responseOrigin))
-                    {
-                        EngineLogBridge.Warn(
-                            $"[NetworkCoordinator] Capability token validation failed for request {requestId}.",
-                            LogCategory.Network);
-                        throw new HttpRequestException("Network process response failed capability token validation.");
-                    }
-                }
 
                 // Return response with streaming body immediately after receiving HEAD
                 // We do NOT wait for BodyCompleteTask here.
@@ -416,7 +399,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 // pending request. Close the body path and stop child-side work.
                 _pending.TryRemove(requestId, out _);
                 pending.SetFailed("Network process request failed before the response stream was established.");
-                if (capToken != null)
+                if (fetchSent)
                 {
                     session.SendCancel(requestId);
                 }
@@ -448,19 +431,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         }
 
         // ── Session event handlers ────────────────────────────────────────────
-
-        private static bool TryGetHttpOrigin(string url, out string origin)
-        {
-            origin = string.Empty;
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
-                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-            {
-                return false;
-            }
-
-            origin = uri.GetLeftPart(UriPartial.Authority);
-            return !string.IsNullOrWhiteSpace(origin);
-        }
 
         private void OnResponseHeadReceived(NetworkFetchResponseHeadPayload head)
         {

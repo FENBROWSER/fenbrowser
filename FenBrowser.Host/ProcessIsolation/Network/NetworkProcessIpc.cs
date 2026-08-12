@@ -46,37 +46,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         Error,
     }
 
-    /// <summary>
-    /// Capability token minted by the Broker for each network request.
-    /// The Network process must echo it back in responses; the Broker
-    /// validates it before forwarding the response to the renderer.
-    /// </summary>
-    public sealed class NetworkCapabilityToken
-    {
-        public string Value { get; }
-        public string OriginLock { get; }      // eTLD+1 or exact origin the fetch is allowed for
-        public bool AllowCredentials { get; }
-        public DateTimeOffset ExpiresAt { get; }
-
-        public NetworkCapabilityToken(string originLock, bool allowCredentials, TimeSpan ttl)
-        {
-            Value = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-            OriginLock = originLock;
-            AllowCredentials = allowCredentials;
-            ExpiresAt = DateTimeOffset.UtcNow + ttl;
-        }
-
-        public bool IsExpired => DateTimeOffset.UtcNow > ExpiresAt;
-
-        public bool IsValidFor(string requestOrigin)
-        {
-            if (IsExpired) return false;
-            if (string.IsNullOrEmpty(OriginLock)) return false;
-            return requestOrigin == OriginLock ||
-                   requestOrigin?.EndsWith("." + OriginLock, StringComparison.Ordinal) == true;
-        }
-    }
-
     /// <summary>Wire envelope — JSON-serialised, one line per message.</summary>
     public sealed class NetworkIpcEnvelope
     {
@@ -261,7 +230,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         private readonly CancellationTokenSource _cts = new();
         private readonly TaskCompletionSource<bool> _readyTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly ConcurrentDictionary<string, TaskCompletionSource<NetworkFetchResponseHeadPayload>> _pending = new();
-        private readonly ConcurrentDictionary<string, NetworkCapabilityToken> _capTokens = new();
         private readonly ConcurrentDictionary<string, string> _requestCapabilityTokens = new();
         private readonly object _writeLock = new();
         private StreamReader _reader;
@@ -513,15 +481,14 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         }
 
         /// <summary>
-        /// Issue a fetch request to the Network process.
-        /// Returns the capability token so the Broker can validate responses.
+        /// Issue a fetch request to the Network process. The generated capability
+        /// token is bound to this request ID and must be echoed on every response.
         /// </summary>
-        public NetworkCapabilityToken SendFetch(NetworkFetchRequestPayload request, string initiatorOrigin) =>
-            SendFetch(request, initiatorOrigin, Guid.NewGuid().ToString("N"));
+        public void SendFetch(NetworkFetchRequestPayload request) =>
+            SendFetch(request, Guid.NewGuid().ToString("N"));
 
-        internal NetworkCapabilityToken SendFetch(
+        internal void SendFetch(
             NetworkFetchRequestPayload request,
-            string initiatorOrigin,
             string requestId)
         {
             if (request == null)
@@ -539,19 +506,14 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 throw new IOException("Network process IPC is not connected.");
             }
 
-            var cap = new NetworkCapabilityToken(
-                originLock: initiatorOrigin ?? "",
-                allowCredentials: request.Credentials != "omit",
-                ttl: TimeSpan.FromMinutes(5));
-
-            _capTokens[cap.Value] = cap;
-            _requestCapabilityTokens[requestId] = cap.Value;
+            var capabilityToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+            _requestCapabilityTokens[requestId] = capabilityToken;
 
             var envelope = new NetworkIpcEnvelope
             {
                 Type = NetworkIpcMessageType.FetchRequest.ToString(),
                 RequestId = requestId,
-                CapabilityToken = cap.Value,
+                CapabilityToken = capabilityToken,
                 Payload = NetworkIpc.SerializePayload(request),
             };
 
@@ -560,8 +522,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 ReleaseCapabilityToken(requestId);
                 throw new IOException("Network process IPC write failed; fetch request was not sent.");
             }
-
-            return cap;
         }
 
         public void SendCancel(string requestId)
@@ -579,18 +539,11 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             TrySend(new NetworkIpcEnvelope { Type = NetworkIpcMessageType.Shutdown.ToString() });
         }
 
-        public bool ValidateCapabilityToken(string tokenValue, string requestOrigin)
-        {
-            if (!_capTokens.TryGetValue(tokenValue, out var token)) return false;
-            return token.IsValidFor(requestOrigin);
-        }
-
         internal void ReleaseCapabilityToken(string requestId)
         {
-            if (!string.IsNullOrWhiteSpace(requestId) &&
-                _requestCapabilityTokens.TryRemove(requestId, out var tokenValue))
+            if (!string.IsNullOrWhiteSpace(requestId))
             {
-                _capTokens.TryRemove(tokenValue, out _);
+                _requestCapabilityTokens.TryRemove(requestId, out _);
             }
         }
 
@@ -631,7 +584,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             TryDispose(_pipe, "pipe");
             TryDispose(_cts, "cts");
             _requestCapabilityTokens.Clear();
-            _capTokens.Clear();
         }
 
         private static void TryDispose(IDisposable disposable, string resourceName)
@@ -652,4 +604,3 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         }
     }
 }
-
