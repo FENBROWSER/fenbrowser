@@ -20,12 +20,10 @@ namespace FenBrowser.Core.Css
     /// </summary>
     public sealed class StyleCache
     {
-        // Use ConditionalWeakTable to allow nodes to be GC'd without manual cleanup
+        // ConditionalWeakTable is the source of truth for both cached values and
+        // weak node lifetime. A second WeakReference collection would allocate on
+        // every restyle and cannot deduplicate targets by wrapper identity.
         private readonly ConditionalWeakTable<Dom.V2.Node, CssComputed> _cache = new();
-        private readonly object _styledElementsLock = new();
-
-        // Optional: Track elements with styles for iteration
-        private readonly HashSet<WeakReference<Dom.V2.Element>> _styledElements = new();
 
         /// <summary>
         /// Gets the computed style for a node.
@@ -53,15 +51,6 @@ namespace FenBrowser.Core.Css
                 _cache.Remove(node);
             }
             _cache.Add(node, style);
-
-            // Track styled elements
-            if (node is Dom.V2.Element element)
-            {
-                lock (_styledElementsLock)
-                {
-                    _styledElements.Add(new WeakReference<Dom.V2.Element>(element));
-                }
-            }
         }
 
         /// <summary>
@@ -88,37 +77,31 @@ namespace FenBrowser.Core.Css
         public void Clear()
         {
             _cache.Clear();
-
-            lock (_styledElementsLock)
-            {
-                _styledElements.Clear();
-            }
         }
 
         /// <summary>
-        /// Gets the number of cached styles (approximate, may include GC'd entries).
+        /// Gets the current number of live cached styles.
+        /// The weak table may change during enumeration as keys are collected.
         /// </summary>
         public int Count
         {
             get
             {
-                lock (_styledElementsLock)
+                var count = 0;
+                foreach (var _ in _cache)
                 {
-                    return _styledElements.Count;
+                    count++;
                 }
+                return count;
             }
         }
 
         /// <summary>
-        /// Cleans up dead weak references.
-        /// Call periodically to free memory.
+        /// Retained for API compatibility. ConditionalWeakTable removes entries
+        /// automatically when their node keys become unreachable.
         /// </summary>
         public void Cleanup()
         {
-            lock (_styledElementsLock)
-            {
-                _styledElements.RemoveWhere(wr => !wr.TryGetTarget(out _));
-            }
         }
     }
 
