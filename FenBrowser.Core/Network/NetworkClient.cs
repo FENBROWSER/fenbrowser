@@ -20,38 +20,63 @@ namespace FenBrowser.Core.Network
         private readonly List<INetworkHandler> _handlers;
         private readonly ConnectionPoolStats _stats;
         private readonly ConcurrentDictionary<string, ConnectionInfo> _activeConnections;
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> _hostRequestSemaphores;
         private readonly SemaphoreSlim _connectionSemaphore;
         
-        // Configuration
-        public int MaxConcurrentRequests { get; set; } = 100;
-        public int MaxConnectionsPerHost { get; set; } = 10;
+        // Concurrency limits are construction-time invariants. The previous mutable
+        // properties did not resize their semaphore and therefore advertised settings
+        // that had no effect after construction.
+        public int MaxConcurrentRequests { get; }
+        public int MaxConnectionsPerHost { get; }
         public TimeSpan DefaultTimeout { get; set; } = TimeSpan.FromSeconds(30);
         public bool EnableConnectionReuse { get; set; } = true;
         public bool EnableKeepAlive { get; set; } = true;
         public bool LogConnectionStats { get; set; } = false;
 
-        public NetworkClient(IEnumerable<INetworkHandler> handlers)
+        public NetworkClient(
+            IEnumerable<INetworkHandler> handlers,
+            int maxConcurrentRequests = 100,
+            int maxConnectionsPerHost = 10)
         {
+            if (handlers == null) throw new ArgumentNullException(nameof(handlers));
+            if (maxConcurrentRequests <= 0) throw new ArgumentOutOfRangeException(nameof(maxConcurrentRequests));
+            if (maxConnectionsPerHost <= 0) throw new ArgumentOutOfRangeException(nameof(maxConnectionsPerHost));
+
             _handlers = handlers.ToList();
             _stats = new ConnectionPoolStats();
             _activeConnections = new ConcurrentDictionary<string, ConnectionInfo>();
-            _connectionSemaphore = new SemaphoreSlim(MaxConcurrentRequests);
+            _hostRequestSemaphores = new ConcurrentDictionary<string, SemaphoreSlim>(StringComparer.OrdinalIgnoreCase);
+            MaxConcurrentRequests = maxConcurrentRequests;
+            MaxConnectionsPerHost = maxConnectionsPerHost;
+            _connectionSemaphore = new SemaphoreSlim(MaxConcurrentRequests, MaxConcurrentRequests);
         }
 
         public async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
+            if (request == null) throw new ArgumentNullException(nameof(request));
+
             var sw = Stopwatch.StartNew();
             var hostKey = GetHostKey(request.RequestUri);
-            var semaphoreAcquired = false;
+            var globalSemaphoreAcquired = false;
+            var hostSemaphoreAcquired = false;
+            SemaphoreSlim hostSemaphore = null;
             ConnectionInfo connInfo = null;
             
             try
             {
-                // Throttle concurrent requests
+                // Acquire the per-host gate before the global gate. This prevents one
+                // hot origin from occupying every global slot while most of its own
+                // requests are merely waiting for the per-host limit.
+                hostSemaphore = _hostRequestSemaphores.GetOrAdd(
+                    hostKey,
+                    _ => new SemaphoreSlim(MaxConnectionsPerHost, MaxConnectionsPerHost));
+                await hostSemaphore.WaitAsync(ct).ConfigureAwait(false);
+                hostSemaphoreAcquired = true;
+
                 await _connectionSemaphore.WaitAsync(ct).ConfigureAwait(false);
-                semaphoreAcquired = true;
+                globalSemaphoreAcquired = true;
                 
-                // Track connection only after this request owns a semaphore slot.
+                // Track connection only after this request owns both concurrency slots.
                 connInfo = _activeConnections.GetOrAdd(hostKey, _ => new ConnectionInfo(hostKey));
                 Interlocked.Increment(ref connInfo.ActiveRequests);
                 _stats.IncrementTotalRequests();
@@ -70,7 +95,7 @@ namespace FenBrowser.Core.Network
                 // Update stats
                 _stats.RecordRequest(hostKey, sw.ElapsedMilliseconds, context.Response?.IsSuccessStatusCode == true);
                 connInfo.LastUsed = DateTime.UtcNow;
-                connInfo.TotalRequests++;
+                Interlocked.Increment(ref connInfo.TotalRequests);
                 
                 if (LogConnectionStats && sw.ElapsedMilliseconds > 1000)
                 {
@@ -91,9 +116,14 @@ namespace FenBrowser.Core.Network
                     Interlocked.Decrement(ref connInfo.ActiveRequests);
                 }
 
-                if (semaphoreAcquired)
+                if (globalSemaphoreAcquired)
                 {
                     _connectionSemaphore.Release();
+                }
+
+                if (hostSemaphoreAcquired)
+                {
+                    hostSemaphore.Release();
                 }
             }
         }
