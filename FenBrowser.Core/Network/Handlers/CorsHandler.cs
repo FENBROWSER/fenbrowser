@@ -14,7 +14,9 @@ namespace FenBrowser.Core.Network.Handlers
     public sealed class CorsHandler : INetworkHandler
     {
         public const string AuthorRequestHeadersOptionKey = "FenBrowser.Cors.AuthorRequestHeaders";
+        public const string CredentialsModeOptionKey = "FenBrowser.Cors.CredentialsMode";
         private static readonly HttpRequestOptionsKey<string[]> s_authorRequestHeadersKey = new HttpRequestOptionsKey<string[]>(AuthorRequestHeadersOptionKey);
+        private static readonly HttpRequestOptionsKey<string> s_credentialsModeKey = new HttpRequestOptionsKey<string>(CredentialsModeOptionKey);
 
         private static readonly HashSet<string> SafelistedMethods = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -70,36 +72,53 @@ namespace FenBrowser.Core.Network.Handlers
         };
 
         /// <summary>
-        /// Check if a cross-origin request is allowed based on CORS headers.
+        /// Check if a cross-origin request is allowed based on CORS headers and
+        /// the credentials mode stamped onto the originating request.
         /// </summary>
         public static bool IsCorsAllowed(HttpResponseMessage response, Uri requestUri, Uri originUri)
         {
+            return IsCorsAllowed(response, requestUri, originUri, GetCredentialsMode(response?.RequestMessage));
+        }
+
+        private static bool IsCorsAllowed(
+            HttpResponseMessage response,
+            Uri requestUri,
+            Uri originUri,
+            string credentialsMode)
+        {
             if (response == null || requestUri == null) return false;
-            
-            // Same-origin requests are always allowed
+
+            // Same-origin requests do not require the CORS protocol.
             if (originUri != null && IsSameOrigin(requestUri, originUri)) return true;
-            
-            // Check Access-Control-Allow-Origin header
-            if (response.Headers.TryGetValues("Access-Control-Allow-Origin", out var values))
+            if (originUri == null) return false;
+
+            if (!TryGetSingleHeaderValue(response, "Access-Control-Allow-Origin", out var allowedOrigin))
             {
-                foreach (var value in values)
-                {
-                    if (value == "*") return true;
-                    
-                    // Check if origin matches
-                    if (originUri != null)
-                    {
-                        var originString = $"{originUri.Scheme}://{originUri.Host}";
-                        if (originUri.Port != -1 && !originUri.IsDefaultPort)
-                            originString += $":{originUri.Port}";
-                        
-                        if (string.Equals(value, originString, StringComparison.OrdinalIgnoreCase))
-                            return true;
-                    }
-                }
+                return false;
             }
-            
-            return false;
+
+            bool includeCredentials = IsIncludeCredentialsMode(credentialsMode);
+            if (string.Equals(allowedOrigin, "*", StringComparison.Ordinal))
+            {
+                // Fetch: wildcard ACAO is never valid for credentials mode "include".
+                return !includeCredentials;
+            }
+
+            var serializedOrigin = SerializeOrigin(originUri);
+            if (serializedOrigin == null || !string.Equals(allowedOrigin, serializedOrigin, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (!includeCredentials)
+            {
+                return true;
+            }
+
+            // Fetch requires the byte-case-sensitive literal "true" for
+            // credentialed CORS responses.
+            return TryGetSingleHeaderValue(response, "Access-Control-Allow-Credentials", out var allowCredentials) &&
+                   string.Equals(allowCredentials, "true", StringComparison.Ordinal);
         }
 
         public static string SerializeOrigin(Uri originUri)
@@ -239,12 +258,14 @@ namespace FenBrowser.Core.Network.Handlers
                 return false;
             }
 
-            if (!IsCorsAllowed(response, request.RequestUri, originUri))
+            var credentialsMode = GetCredentialsMode(request);
+            if (!IsCorsAllowed(response, request.RequestUri, originUri, credentialsMode))
             {
                 return false;
             }
 
-            if (!HeaderAllowsToken(response, "Access-Control-Allow-Methods", request.Method.Method))
+            bool wildcardAllowed = !IsIncludeCredentialsMode(credentialsMode);
+            if (!HeaderAllowsToken(response, "Access-Control-Allow-Methods", request.Method.Method, wildcardAllowed))
             {
                 return false;
             }
@@ -255,25 +276,61 @@ namespace FenBrowser.Core.Network.Handlers
                 return true;
             }
 
-            return requestedHeaders.All(header => HeaderAllowsToken(response, "Access-Control-Allow-Headers", header));
+            return requestedHeaders.All(header =>
+                HeaderAllowsToken(response, "Access-Control-Allow-Headers", header, wildcardAllowed));
         }
 
         /// <summary>Check if two URIs have the same origin</summary>
         public static bool IsSameOrigin(Uri a, Uri b)
         {
             if (a == null || b == null) return false;
-            
+
             if (!string.Equals(a.Scheme, b.Scheme, StringComparison.OrdinalIgnoreCase))
                 return false;
-            
+
             if (!string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase))
                 return false;
-            
+
             int portA = a.Port == -1 ? GetDefaultPort(a.Scheme) : a.Port;
             int portB = b.Port == -1 ? GetDefaultPort(b.Scheme) : b.Port;
-            
+
             return portA == portB;
         }
+
+        public static void SetCredentialsMode(HttpRequestMessage request, string credentialsMode)
+        {
+            if (request == null)
+            {
+                return;
+            }
+
+            request.Options.Set(s_credentialsModeKey, NormalizeCredentialsMode(credentialsMode));
+        }
+
+        private static string GetCredentialsMode(HttpRequestMessage request)
+        {
+            if (request != null &&
+                request.Options.TryGetValue(s_credentialsModeKey, out var credentialsMode))
+            {
+                return NormalizeCredentialsMode(credentialsMode);
+            }
+
+            return "same-origin";
+        }
+
+        private static string NormalizeCredentialsMode(string credentialsMode)
+        {
+            var normalized = (credentialsMode ?? string.Empty).Trim().ToLowerInvariant();
+            return normalized switch
+            {
+                "omit" => "omit",
+                "include" => "include",
+                _ => "same-origin"
+            };
+        }
+
+        private static bool IsIncludeCredentialsMode(string credentialsMode) =>
+            string.Equals(credentialsMode, "include", StringComparison.Ordinal);
 
         private static int GetDefaultPort(string scheme)
         {
@@ -302,7 +359,41 @@ namespace FenBrowser.Core.Network.Handlers
             }
         }
 
-        private static bool HeaderAllowsToken(HttpResponseMessage response, string headerName, string token)
+        private static bool TryGetSingleHeaderValue(HttpResponseMessage response, string headerName, out string value)
+        {
+            value = null;
+            if (response?.Headers == null || !response.Headers.TryGetValues(headerName, out var values))
+            {
+                return false;
+            }
+
+            foreach (var rawValue in values)
+            {
+                if (string.IsNullOrWhiteSpace(rawValue))
+                {
+                    continue;
+                }
+
+                // ACAO and ACAC are single-value headers. Multiple/comma-joined
+                // values are invalid rather than an allow-list.
+                var trimmed = rawValue.Trim();
+                if (trimmed.IndexOf(',') >= 0 || value != null)
+                {
+                    value = null;
+                    return false;
+                }
+
+                value = trimmed;
+            }
+
+            return value != null;
+        }
+
+        private static bool HeaderAllowsToken(
+            HttpResponseMessage response,
+            string headerName,
+            string token,
+            bool wildcardAllowed)
         {
             if (!response.Headers.TryGetValues(headerName, out var values))
             {
@@ -319,7 +410,7 @@ namespace FenBrowser.Core.Network.Handlers
                 foreach (var part in value.Split(','))
                 {
                     var trimmed = part.Trim();
-                    if (trimmed == "*")
+                    if (trimmed == "*" && wildcardAllowed)
                     {
                         return true;
                     }
@@ -404,7 +495,7 @@ namespace FenBrowser.Core.Network.Handlers
         {
             // Let the request proceed
             await next().ConfigureAwait(false);
-            
+
             // After response, we could validate CORS here if needed
             // For now, CORS checks are done via static methods by callers
         }

@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Http;
+using FenBrowser.Core.Network.Handlers;
 
 namespace FenBrowser.Core.Network;
 
@@ -18,6 +19,11 @@ internal static class BrowserRequestHeaderPolicy
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(context);
+
+        // Preserve Fetch credentials mode on the concrete HTTP request so
+        // post-response CORS validation and preflight checks use the same
+        // request semantics even after transport returns an HttpResponseMessage.
+        CorsHandler.SetCredentialsMode(request, context.CredentialsMode);
 
         Add(request, "Accept", accept);
         BrowserSettings.ApplyBrowserRequestHeaders(request, useMobile: false);
