@@ -1,8 +1,6 @@
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
-using FenBrowser.Core;
-using FenBrowser.Core.Logging;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering.Interaction
@@ -13,14 +11,12 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
     /// </summary>
     public class ScrollbarRenderer
     {
-        // Scrollbar dimensions
         public const float ScrollbarWidth = 12f;
         public const float ScrollbarMinThumb = 30f;
         public const float ScrollbarPadding = 2f;
         public const float ScrollbarTrackRadius = 4f;
         public const float ScrollbarThumbRadius = 4f;
-        
-        // Colors (modern dark/light theme)
+
         private static readonly SKColor TrackColorLight = new SKColor(240, 240, 240, 200);
         private static readonly SKColor TrackColorDark = new SKColor(60, 60, 60, 200);
         private static readonly SKColor ThumbColorLight = new SKColor(180, 180, 180, 230);
@@ -29,15 +25,9 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         private static readonly SKColor ThumbHoverDark = new SKColor(130, 130, 130, 240);
         private static readonly SKColor ThumbActiveLight = new SKColor(120, 120, 120, 255);
         private static readonly SKColor ThumbActiveDark = new SKColor(160, 160, 160, 255);
-        
-        /// <summary>
-        /// Scrollbar theme
-        /// </summary>
+
         public enum Theme { Light, Dark }
-        
-        /// <summary>
-        /// Scrollbar state for hover/active effects
-        /// </summary>
+
         public class ScrollbarState
         {
             public bool IsHovered { get; set; }
@@ -47,80 +37,58 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             public bool IsVerticalActive { get; set; }
             public bool IsHorizontalActive { get; set; }
         }
-        
+
         private readonly ScrollManager _scrollManager;
         private Theme _theme = Theme.Light;
-        
+
         public ScrollbarRenderer(ScrollManager scrollManager)
         {
-            _scrollManager = scrollManager;
+            _scrollManager = scrollManager ?? throw new ArgumentNullException(nameof(scrollManager));
         }
-        
+
         public Theme CurrentTheme
         {
             get => _theme;
             set => _theme = value;
         }
-        
-        /// <summary>
-        /// Draw scrollbars for a scrollable element.
-        /// </summary>
+
         public void DrawScrollbars(
-            SKCanvas canvas, 
-            Element element, 
-            SKRect contentBox, 
+            SKCanvas canvas,
+            Element element,
+            SKRect contentBox,
             CssComputed style,
             ScrollbarState state = null)
         {
-            if (element == null || style == null) return;
-            
-            var overflowX = style.OverflowX?.ToLowerInvariant() ?? style.Overflow?.ToLowerInvariant() ?? "visible";
-            var overflowY = style.OverflowY?.ToLowerInvariant() ?? style.Overflow?.ToLowerInvariant() ?? "visible";
-            
+            if (canvas == null || element == null || style == null || contentBox.Width <= 0 || contentBox.Height <= 0)
+                return;
+
             var scrollState = _scrollManager.GetScrollState(element);
-            
-            bool showVertical = (overflowY == "scroll" || overflowY == "auto") && 
-                                scrollState.ContentHeight > scrollState.ViewportHeight;
-            bool showHorizontal = (overflowX == "scroll" || overflowX == "auto") && 
-                                  scrollState.ContentWidth > scrollState.ViewportWidth;
-            
-            // Force show if overflow: scroll
-            if (overflowY == "scroll") showVertical = true;
-            if (overflowX == "scroll") showHorizontal = true;
-            
+            ResolveVisibility(style, scrollState, out var showVertical, out var showHorizontal);
             state ??= new ScrollbarState();
-            
+
             if (showVertical)
-            {
                 DrawVerticalScrollbar(canvas, contentBox, scrollState, state, showHorizontal);
-            }
-            
+
             if (showHorizontal)
-            {
                 DrawHorizontalScrollbar(canvas, contentBox, scrollState, state, showVertical);
-            }
         }
-        
-        /// <summary>
-        /// Draw vertical scrollbar track and thumb.
-        /// </summary>
+
         private void DrawVerticalScrollbar(
-            SKCanvas canvas, 
-            SKRect contentBox, 
+            SKCanvas canvas,
+            SKRect contentBox,
             ScrollState scrollState,
             ScrollbarState state,
             bool hasHorizontal)
         {
-            // Calculate track rect (on right side of content box)
-            float trackHeight = contentBox.Height - (hasHorizontal ? ScrollbarWidth : 0);
+            float trackHeight = Math.Max(0f, contentBox.Height - (hasHorizontal ? ScrollbarWidth : 0));
+            if (trackHeight <= ScrollbarPadding * 2f) return;
+
             var trackRect = new SKRect(
                 contentBox.Right - ScrollbarWidth,
                 contentBox.Top,
                 contentBox.Right,
-                contentBox.Top + trackHeight
-            );
-            
-            // Draw track
+                contentBox.Top + trackHeight);
+
             using (var trackPaint = new SKPaint
             {
                 IsAntialias = true,
@@ -130,62 +98,48 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             {
                 canvas.DrawRoundRect(trackRect, ScrollbarTrackRadius, ScrollbarTrackRadius, trackPaint);
             }
-            
-            // Calculate thumb
-            float contentRatio = scrollState.ViewportHeight / scrollState.ContentHeight;
-            float thumbHeight = Math.Max(ScrollbarMinThumb, trackHeight * contentRatio);
-            float scrollRatio = scrollState.MaxScrollY > 0 
-                ? scrollState.ScrollY / scrollState.MaxScrollY 
-                : 0;
-            float thumbTop = trackRect.Top + scrollRatio * (trackHeight - thumbHeight);
-            
+
+            var thumbHeight = CalculateThumbLength(trackHeight, scrollState.ViewportHeight, scrollState.ContentHeight);
+            var scrollRatio = CalculateScrollRatio(scrollState.ScrollY, scrollState.MaxScrollY);
+            var thumbTop = trackRect.Top + scrollRatio * Math.Max(0f, trackHeight - thumbHeight);
+
             var thumbRect = new SKRect(
                 trackRect.Left + ScrollbarPadding,
                 thumbTop + ScrollbarPadding,
                 trackRect.Right - ScrollbarPadding,
-                thumbTop + thumbHeight - ScrollbarPadding
-            );
-            
-            // Draw thumb with hover/active states
-            SKColor thumbColor;
-            if (state.IsVerticalActive)
-                thumbColor = _theme == Theme.Light ? ThumbActiveLight : ThumbActiveDark;
-            else if (state.IsVerticalHovered)
-                thumbColor = _theme == Theme.Light ? ThumbHoverLight : ThumbHoverDark;
-            else
-                thumbColor = _theme == Theme.Light ? ThumbColorLight : ThumbColorDark;
-            
-            using (var thumbPaint = new SKPaint
+                thumbTop + thumbHeight - ScrollbarPadding);
+
+            var thumbColor = state.IsVerticalActive
+                ? (_theme == Theme.Light ? ThumbActiveLight : ThumbActiveDark)
+                : state.IsVerticalHovered
+                    ? (_theme == Theme.Light ? ThumbHoverLight : ThumbHoverDark)
+                    : (_theme == Theme.Light ? ThumbColorLight : ThumbColorDark);
+
+            using var thumbPaint = new SKPaint
             {
                 IsAntialias = true,
                 Color = thumbColor,
                 Style = SKPaintStyle.Fill
-            })
-            {
-                canvas.DrawRoundRect(thumbRect, ScrollbarThumbRadius, ScrollbarThumbRadius, thumbPaint);
-            }
+            };
+            canvas.DrawRoundRect(thumbRect, ScrollbarThumbRadius, ScrollbarThumbRadius, thumbPaint);
         }
-        
-        /// <summary>
-        /// Draw horizontal scrollbar track and thumb.
-        /// </summary>
+
         private void DrawHorizontalScrollbar(
-            SKCanvas canvas, 
-            SKRect contentBox, 
+            SKCanvas canvas,
+            SKRect contentBox,
             ScrollState scrollState,
             ScrollbarState state,
             bool hasVertical)
         {
-            // Calculate track rect (on bottom of content box)
-            float trackWidth = contentBox.Width - (hasVertical ? ScrollbarWidth : 0);
+            float trackWidth = Math.Max(0f, contentBox.Width - (hasVertical ? ScrollbarWidth : 0));
+            if (trackWidth <= ScrollbarPadding * 2f) return;
+
             var trackRect = new SKRect(
                 contentBox.Left,
                 contentBox.Bottom - ScrollbarWidth,
                 contentBox.Left + trackWidth,
-                contentBox.Bottom
-            );
-            
-            // Draw track
+                contentBox.Bottom);
+
             using (var trackPaint = new SKPaint
             {
                 IsAntialias = true,
@@ -195,140 +149,141 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             {
                 canvas.DrawRoundRect(trackRect, ScrollbarTrackRadius, ScrollbarTrackRadius, trackPaint);
             }
-            
-            // Calculate thumb
-            float contentRatio = scrollState.ViewportWidth / scrollState.ContentWidth;
-            float thumbWidth = Math.Max(ScrollbarMinThumb, trackWidth * contentRatio);
-            float scrollRatio = scrollState.MaxScrollX > 0 
-                ? scrollState.ScrollX / scrollState.MaxScrollX 
-                : 0;
-            float thumbLeft = trackRect.Left + scrollRatio * (trackWidth - thumbWidth);
-            
+
+            var thumbWidth = CalculateThumbLength(trackWidth, scrollState.ViewportWidth, scrollState.ContentWidth);
+            var scrollRatio = CalculateScrollRatio(scrollState.ScrollX, scrollState.MaxScrollX);
+            var thumbLeft = trackRect.Left + scrollRatio * Math.Max(0f, trackWidth - thumbWidth);
+
             var thumbRect = new SKRect(
                 thumbLeft + ScrollbarPadding,
                 trackRect.Top + ScrollbarPadding,
                 thumbLeft + thumbWidth - ScrollbarPadding,
-                trackRect.Bottom - ScrollbarPadding
-            );
-            
-            // Draw thumb with hover/active states
-            SKColor thumbColor;
-            if (state.IsHorizontalActive)
-                thumbColor = _theme == Theme.Light ? ThumbActiveLight : ThumbActiveDark;
-            else if (state.IsHorizontalHovered)
-                thumbColor = _theme == Theme.Light ? ThumbHoverLight : ThumbHoverDark;
-            else
-                thumbColor = _theme == Theme.Light ? ThumbColorLight : ThumbColorDark;
-            
-            using (var thumbPaint = new SKPaint
+                trackRect.Bottom - ScrollbarPadding);
+
+            var thumbColor = state.IsHorizontalActive
+                ? (_theme == Theme.Light ? ThumbActiveLight : ThumbActiveDark)
+                : state.IsHorizontalHovered
+                    ? (_theme == Theme.Light ? ThumbHoverLight : ThumbHoverDark)
+                    : (_theme == Theme.Light ? ThumbColorLight : ThumbColorDark);
+
+            using var thumbPaint = new SKPaint
             {
                 IsAntialias = true,
                 Color = thumbColor,
                 Style = SKPaintStyle.Fill
-            })
-            {
-                canvas.DrawRoundRect(thumbRect, ScrollbarThumbRadius, ScrollbarThumbRadius, thumbPaint);
-            }
+            };
+            canvas.DrawRoundRect(thumbRect, ScrollbarThumbRadius, ScrollbarThumbRadius, thumbPaint);
         }
-        
+
         /// <summary>
-        /// Hit test to determine if a point is over a scrollbar thumb.
-        /// Returns: 0 = not on scrollbar, 1 = vertical thumb, 2 = horizontal thumb
+        /// Hit tests the visible scrollbar tracks.
+        /// Returns: 0 = not on scrollbar, 1 = vertical, 2 = horizontal.
         /// </summary>
         public int HitTestScrollbar(
-            Element element, 
-            SKRect contentBox, 
-            CssComputed style, 
-            float x, float y)
+            Element element,
+            SKRect contentBox,
+            CssComputed style,
+            float x,
+            float y)
         {
-            if (element == null || style == null) return 0;
-            
+            if (element == null || style == null || contentBox.Width <= 0 || contentBox.Height <= 0) return 0;
+
             var scrollState = _scrollManager.GetScrollState(element);
-            
-            var overflowY = style.OverflowY?.ToLowerInvariant() ?? style.Overflow?.ToLowerInvariant() ?? "visible";
-            var overflowX = style.OverflowX?.ToLowerInvariant() ?? style.Overflow?.ToLowerInvariant() ?? "visible";
-            
-            bool hasVertical = (overflowY == "scroll" || overflowY == "auto") && 
-                               scrollState.ContentHeight > scrollState.ViewportHeight;
-            bool hasHorizontal = (overflowX == "scroll" || overflowX == "auto") && 
-                                 scrollState.ContentWidth > scrollState.ViewportWidth;
-            
-            // Check vertical scrollbar area
+            ResolveVisibility(style, scrollState, out var hasVertical, out var hasHorizontal);
+
             if (hasVertical)
             {
-                float trackHeight = contentBox.Height - (hasHorizontal ? ScrollbarWidth : 0);
+                float trackHeight = Math.Max(0f, contentBox.Height - (hasHorizontal ? ScrollbarWidth : 0));
                 var trackRect = new SKRect(
                     contentBox.Right - ScrollbarWidth,
                     contentBox.Top,
                     contentBox.Right,
-                    contentBox.Top + trackHeight
-                );
-                
-                if (trackRect.Contains(x, y))
-                    return 1;
+                    contentBox.Top + trackHeight);
+
+                if (trackRect.Contains(x, y)) return 1;
             }
-            
-            // Check horizontal scrollbar area
+
             if (hasHorizontal)
             {
-                float trackWidth = contentBox.Width - (hasVertical ? ScrollbarWidth : 0);
+                float trackWidth = Math.Max(0f, contentBox.Width - (hasVertical ? ScrollbarWidth : 0));
                 var trackRect = new SKRect(
                     contentBox.Left,
                     contentBox.Bottom - ScrollbarWidth,
                     contentBox.Left + trackWidth,
-                    contentBox.Bottom
-                );
-                
-                if (trackRect.Contains(x, y))
-                    return 2;
+                    contentBox.Bottom);
+
+                if (trackRect.Contains(x, y)) return 2;
             }
-            
+
             return 0;
         }
-        
-        /// <summary>
-        /// Handle scrollbar drag - converts a Y position to scroll position.
-        /// </summary>
+
         public void HandleVerticalDrag(Element element, SKRect contentBox, float y, bool hasHorizontal)
         {
+            if (element == null) return;
             var scrollState = _scrollManager.GetScrollState(element);
-            
-            float trackHeight = contentBox.Height - (hasHorizontal ? ScrollbarWidth : 0);
-            float contentRatio = scrollState.ViewportHeight / scrollState.ContentHeight;
-            float thumbHeight = Math.Max(ScrollbarMinThumb, trackHeight * contentRatio);
-            float draggableRange = trackHeight - thumbHeight;
-            
-            if (draggableRange <= 0) return;
-            
-            float relativeY = y - contentBox.Top - thumbHeight / 2;
-            float ratio = Math.Max(0, Math.Min(1, relativeY / draggableRange));
-            float newScrollY = ratio * scrollState.MaxScrollY;
-            
+            float trackHeight = Math.Max(0f, contentBox.Height - (hasHorizontal ? ScrollbarWidth : 0));
+            float thumbHeight = CalculateThumbLength(trackHeight, scrollState.ViewportHeight, scrollState.ContentHeight);
+            float draggableRange = Math.Max(0f, trackHeight - thumbHeight);
+            if (draggableRange <= 0f) return;
+
+            float relativeY = y - contentBox.Top - thumbHeight / 2f;
+            float ratio = Math.Clamp(relativeY / draggableRange, 0f, 1f);
+            float newScrollY = ratio * Math.Max(0f, scrollState.MaxScrollY);
             _scrollManager.SetScrollPosition(element, scrollState.ScrollX, newScrollY, fromUserInput: true);
         }
-        
-        /// <summary>
-        /// Handle horizontal scrollbar drag.
-        /// </summary>
+
         public void HandleHorizontalDrag(Element element, SKRect contentBox, float x, bool hasVertical)
         {
+            if (element == null) return;
             var scrollState = _scrollManager.GetScrollState(element);
-            
-            float trackWidth = contentBox.Width - (hasVertical ? ScrollbarWidth : 0);
-            float contentRatio = scrollState.ViewportWidth / scrollState.ContentWidth;
-            float thumbWidth = Math.Max(ScrollbarMinThumb, trackWidth * contentRatio);
-            float draggableRange = trackWidth - thumbWidth;
-            
-            if (draggableRange <= 0) return;
-            
-            float relativeX = x - contentBox.Left - thumbWidth / 2;
-            float ratio = Math.Max(0, Math.Min(1, relativeX / draggableRange));
-            float newScrollX = ratio * scrollState.MaxScrollX;
-            
+            float trackWidth = Math.Max(0f, contentBox.Width - (hasVertical ? ScrollbarWidth : 0));
+            float thumbWidth = CalculateThumbLength(trackWidth, scrollState.ViewportWidth, scrollState.ContentWidth);
+            float draggableRange = Math.Max(0f, trackWidth - thumbWidth);
+            if (draggableRange <= 0f) return;
+
+            float relativeX = x - contentBox.Left - thumbWidth / 2f;
+            float ratio = Math.Clamp(relativeX / draggableRange, 0f, 1f);
+            float newScrollX = ratio * Math.Max(0f, scrollState.MaxScrollX);
             _scrollManager.SetScrollPosition(element, newScrollX, scrollState.ScrollY, fromUserInput: true);
+        }
+
+        private static void ResolveVisibility(CssComputed style, ScrollState state, out bool vertical, out bool horizontal)
+        {
+            var overflowX = style.OverflowX?.ToLowerInvariant() ?? style.Overflow?.ToLowerInvariant() ?? "visible";
+            var overflowY = style.OverflowY?.ToLowerInvariant() ?? style.Overflow?.ToLowerInvariant() ?? "visible";
+
+            vertical = overflowY == "scroll" ||
+                       (overflowY == "auto" && state.ContentHeight > state.ViewportHeight);
+            horizontal = overflowX == "scroll" ||
+                         (overflowX == "auto" && state.ContentWidth > state.ViewportWidth);
+        }
+
+        private static float CalculateThumbLength(float trackLength, float viewportLength, float contentLength)
+        {
+            if (!float.IsFinite(trackLength) || trackLength <= 0f) return 0f;
+
+            float ratio;
+            if (!float.IsFinite(viewportLength) || !float.IsFinite(contentLength) ||
+                viewportLength <= 0f || contentLength <= 0f)
+            {
+                ratio = 1f;
+            }
+            else
+            {
+                ratio = Math.Clamp(viewportLength / contentLength, 0f, 1f);
+            }
+
+            var minimum = Math.Min(ScrollbarMinThumb, trackLength);
+            return Math.Clamp(trackLength * ratio, minimum, trackLength);
+        }
+
+        private static float CalculateScrollRatio(float scrollOffset, float maxScroll)
+        {
+            if (!float.IsFinite(scrollOffset) || !float.IsFinite(maxScroll) || maxScroll <= 0f)
+                return 0f;
+
+            return Math.Clamp(scrollOffset / maxScroll, 0f, 1f);
         }
     }
 }
-
-
-
