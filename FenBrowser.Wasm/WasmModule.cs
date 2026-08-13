@@ -12,6 +12,7 @@ public sealed class WasmModule : IDisposable
 {
     private readonly WasmEngine _engine;
     private readonly Module _module;
+    private int _disposed;
 
     internal WasmModule(WasmEngine engine, Module module, string name)
     {
@@ -27,6 +28,8 @@ public sealed class WasmModule : IDisposable
     /// </summary>
     public WasmInstance Instantiate(string? instanceName = null, Action<Linker, Store>? configureImports = null)
     {
+        ThrowIfDisposed();
+
         // Reserve admission before allocating the Store or running host import
         // configuration. This makes MaxInstances a real concurrent limit instead of
         // an advisory pre-check followed by a later atomic increment.
@@ -54,10 +57,26 @@ public sealed class WasmModule : IDisposable
     /// <summary>
     /// Gets the module exports (for inspection before instantiation).
     /// </summary>
-    public IReadOnlyList<Export> Exports => _module.Exports;
+    public IReadOnlyList<Export> Exports
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _module.Exports;
+        }
+    }
+
+    private void ThrowIfDisposed()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(WasmModule));
+    }
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
         _module.Dispose();
     }
 }
@@ -88,8 +107,13 @@ public sealed class WasmInstance : IDisposable
     /// </summary>
     public WasmExecutionResult Invoke(string functionName, params object[] args)
     {
+        if (string.IsNullOrWhiteSpace(functionName))
+            throw new ArgumentException("Function name cannot be empty.", nameof(functionName));
+
         lock (_callLock)
         {
+            ThrowIfDisposed();
+
             ulong fuelBefore = (ulong)Math.Max(0, _store.Fuel);
             var sw = System.Diagnostics.Stopwatch.StartNew();
 
@@ -110,7 +134,6 @@ public sealed class WasmInstance : IDisposable
 
                 sw.Stop();
 
-                // Check fuel exhaustion - the engine may have run out of fuel
                 if (_store.Fuel <= 0 && fuelBefore > 0)
                 {
                     return WasmExecutionResult.Fail(
@@ -129,11 +152,11 @@ public sealed class WasmInstance : IDisposable
                     fuelBefore - (ulong)Math.Max(0, _store.Fuel),
                     sw.Elapsed);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 sw.Stop();
                 return WasmExecutionResult.Fail(
-                    $"Unexpected WASM error in '{Name}.{functionName}': {ex.Message}",
+                    $"Host invocation failed in '{Name}.{functionName}'.",
                     fuelBefore - (ulong)Math.Max(0, _store.Fuel),
                     sw.Elapsed);
             }
@@ -143,38 +166,70 @@ public sealed class WasmInstance : IDisposable
     /// <summary>
     /// Gets an exported function.
     /// </summary>
-    public Function? GetFunction(string name) => _instance.GetFunction(name);
+    public Function? GetFunction(string name)
+    {
+        lock (_callLock)
+        {
+            ThrowIfDisposed();
+            return _instance.GetFunction(name);
+        }
+    }
 
     /// <summary>
     /// Gets an exported global.
     /// </summary>
-    public Global? GetGlobal(string name) => _instance.GetGlobal(name);
+    public Global? GetGlobal(string name)
+    {
+        lock (_callLock)
+        {
+            ThrowIfDisposed();
+            return _instance.GetGlobal(name);
+        }
+    }
 
     /// <summary>
     /// Gets an exported memory.
     /// </summary>
-    public Memory? GetMemory(string name) => _instance.GetMemory(name);
+    public Memory? GetMemory(string name)
+    {
+        lock (_callLock)
+        {
+            ThrowIfDisposed();
+            return _instance.GetMemory(name);
+        }
+    }
 
     /// <summary>
     /// Gets an exported table.
     /// </summary>
-    public Table? GetTable(string name) => _instance.GetTable(name);
+    public Table? GetTable(string name)
+    {
+        lock (_callLock)
+        {
+            ThrowIfDisposed();
+            return _instance.GetTable(name);
+        }
+    }
 
     /// <summary>
     /// Reads bytes from exported linear memory.
     /// </summary>
     public byte[]? ReadMemory(string memoryName, int offset, int length)
     {
-        var memory = GetMemory(memoryName);
-        if (memory == null) return null;
+        lock (_callLock)
+        {
+            ThrowIfDisposed();
+            var memory = _instance.GetMemory(memoryName);
+            if (memory == null) return null;
 
-        long memLength = memory.GetLength();
-        if (offset < 0 || length < 0 || (long)offset + length > memLength)
-            return null;
+            long memLength = memory.GetLength();
+            if (offset < 0 || length < 0 || (long)offset + length > memLength)
+                return null;
 
-        var result = new byte[length];
-        memory.GetSpan(offset, length).CopyTo(result);
-        return result;
+            var result = new byte[length];
+            memory.GetSpan(offset, length).CopyTo(result);
+            return result;
+        }
     }
 
     /// <summary>
@@ -182,15 +237,19 @@ public sealed class WasmInstance : IDisposable
     /// </summary>
     public bool WriteMemory(string memoryName, int offset, ReadOnlyMemory<byte> data)
     {
-        var memory = GetMemory(memoryName);
-        if (memory == null) return false;
+        lock (_callLock)
+        {
+            ThrowIfDisposed();
+            var memory = _instance.GetMemory(memoryName);
+            if (memory == null) return false;
 
-        long memLength = memory.GetLength();
-        if (offset < 0 || (long)offset + data.Length > memLength)
-            return false;
+            long memLength = memory.GetLength();
+            if (offset < 0 || (long)offset + data.Length > memLength)
+                return false;
 
-        data.Span.CopyTo(memory.GetSpan(offset, data.Length));
-        return true;
+            data.Span.CopyTo(memory.GetSpan(offset, data.Length));
+            return true;
+        }
     }
 
     /// <summary>
@@ -198,20 +257,34 @@ public sealed class WasmInstance : IDisposable
     /// </summary>
     public string? ReadMemoryString(string memoryName, int offset, int length)
     {
-        var memory = GetMemory(memoryName);
-        if (memory == null) return null;
+        lock (_callLock)
+        {
+            ThrowIfDisposed();
+            var memory = _instance.GetMemory(memoryName);
+            if (memory == null) return null;
 
-        long memLength = memory.GetLength();
-        if (offset < 0 || length < 0 || (long)offset + length > memLength)
-            return null;
+            long memLength = memory.GetLength();
+            if (offset < 0 || length < 0 || (long)offset + length > memLength)
+                return null;
 
-        return memory.ReadString(offset, length, Encoding.UTF8);
+            return memory.ReadString(offset, length, Encoding.UTF8);
+        }
     }
 
     /// <summary>
     /// Gets the remaining fuel for this instance's store.
     /// </summary>
-    public long RemainingFuel => _store.Fuel > long.MaxValue ? long.MaxValue : (long)_store.Fuel;
+    public long RemainingFuel
+    {
+        get
+        {
+            lock (_callLock)
+            {
+                ThrowIfDisposed();
+                return _store.Fuel > long.MaxValue ? long.MaxValue : (long)_store.Fuel;
+            }
+        }
+    }
 
     private static ValueBox[] ConvertToValueBoxes(object[] args)
     {
@@ -226,7 +299,7 @@ public sealed class WasmInstance : IDisposable
                 int v => v,
                 long v => v,
                 uint v => (long)v,
-                ulong v => (long)v,
+                ulong v => unchecked((long)v),
                 float v => v,
                 double v => v,
                 bool v => v ? 1 : 0,
@@ -238,12 +311,27 @@ public sealed class WasmInstance : IDisposable
         return result;
     }
 
+    private void ThrowIfDisposed()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(WasmInstance));
+    }
+
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
-            return;
+        lock (_callLock)
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
 
-        _engine.UntrackInstance();
-        _store.Dispose();
+            try
+            {
+                _store.Dispose();
+            }
+            finally
+            {
+                _engine.UntrackInstance();
+            }
+        }
     }
 }
