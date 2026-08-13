@@ -6,8 +6,8 @@ namespace FenBrowser.Core.Security.Sandbox
 {
     /// <summary>
     /// Centralized sandbox acquisition policy. This keeps launch behavior explicit and
-    /// prevents NullSandbox from masquerading as real enforcement when the caller has
-    /// opted into unsandboxed fallback.
+    /// prevents inactive/no-op sandboxes from masquerading as real enforcement when the
+    /// caller has not explicitly opted into unsandboxed fallback.
     /// </summary>
     public static class SandboxLaunchPolicy
     {
@@ -82,25 +82,38 @@ namespace FenBrowser.Core.Security.Sandbox
             try
             {
                 var acquired = sandboxFactory.Create(profile);
-                if (acquired is NullSandbox)
+                if (acquired == null)
                 {
-                    acquired.Dispose();
-                    if (!allowUnsandboxedFallback)
-                    {
-                        SecurityDecision.Deny(
-                            "sandbox-launch",
-                            "null-sandbox-denied",
-                            $"Refusing {surface} launch because the resolved sandbox is NullSandbox. Set {overrideEnvKey}=1 to override.",
-                            data).Log(LogCategory.ProcessIsolation);
-                        return false;
-                    }
+                    return HandleUnenforcedSandbox(
+                        surface,
+                        profile,
+                        allowUnsandboxedFallback,
+                        overrideEnvKey,
+                        data,
+                        "sandbox-factory-returned-null",
+                        "sandbox factory returned no sandbox instance",
+                        out sandbox);
+                }
 
-                    SecurityDecision.Allow(
-                        "sandbox-launch",
-                        "null-sandbox-unsandboxed",
-                        $"Launching {surface} without an OS sandbox because the resolved sandbox is NullSandbox.",
-                        data).Log(LogCategory.ProcessIsolation, LogLevel.Warn);
-                    return true;
+                if (acquired is NullSandbox || !acquired.IsActive)
+                {
+                    var reason = acquired is NullSandbox
+                        ? "the resolved sandbox is NullSandbox"
+                        : $"sandbox '{acquired.ProfileName}' is not active";
+                    var decisionCode = acquired is NullSandbox
+                        ? "null-sandbox"
+                        : "inactive-sandbox";
+
+                    acquired.Dispose();
+                    return HandleUnenforcedSandbox(
+                        surface,
+                        profile,
+                        allowUnsandboxedFallback,
+                        overrideEnvKey,
+                        data,
+                        decisionCode,
+                        reason,
+                        out sandbox);
                 }
 
                 sandbox = acquired;
@@ -108,7 +121,7 @@ namespace FenBrowser.Core.Security.Sandbox
                 SecurityDecision.Allow(
                     "sandbox-launch",
                     "sandbox-acquired",
-                    $"Acquired sandbox '{sandbox.ProfileName}' for {surface}.",
+                    $"Acquired active sandbox '{sandbox.ProfileName}' for {surface}.",
                     data).Log(LogCategory.ProcessIsolation);
                 return true;
             }
@@ -134,6 +147,37 @@ namespace FenBrowser.Core.Security.Sandbox
                     data).Log(LogCategory.ProcessIsolation, LogLevel.Warn);
                 return true;
             }
+        }
+
+        private static bool HandleUnenforcedSandbox(
+            string surface,
+            OsSandboxProfile profile,
+            bool allowUnsandboxedFallback,
+            string overrideEnvKey,
+            Dictionary<string, object> data,
+            string decisionCode,
+            string reason,
+            out ISandbox sandbox)
+        {
+            sandbox = null;
+            data["profile"] = profile?.Kind.ToString() ?? string.Empty;
+
+            if (!allowUnsandboxedFallback)
+            {
+                SecurityDecision.Deny(
+                    "sandbox-launch",
+                    decisionCode + "-denied",
+                    $"Refusing {surface} launch because {reason}. Set {overrideEnvKey}=1 to override.",
+                    data).Log(LogCategory.ProcessIsolation);
+                return false;
+            }
+
+            SecurityDecision.Allow(
+                "sandbox-launch",
+                decisionCode + "-unsandboxed",
+                $"Launching {surface} without OS sandbox enforcement because {reason}.",
+                data).Log(LogCategory.ProcessIsolation, LogLevel.Warn);
+            return true;
         }
     }
 }
