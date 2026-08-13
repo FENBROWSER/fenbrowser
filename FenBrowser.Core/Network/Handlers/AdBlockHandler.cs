@@ -12,15 +12,15 @@ namespace FenBrowser.Core.Network.Handlers
 
         public AdBlockHandler(Func<bool> isEnabled = null)
         {
-            // Basic hardcoded list for demonstration. 
-            // In a real app, this would load from a file/EasyList.
+            // Small built-in compatibility/privacy list. Domain matching is label-aware
+            // so a rule for example.com also covers sub.example.com but never
+            // notexample.com. Path-specific rules are handled separately below.
             _blockedDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
                 "doubleclick.net",
                 "googleadservices.com",
                 "googlesyndication.com",
                 "adservice.google.com",
-                "facebook.com/tr",
                 "analytics.google.com"
             };
             _isEnabled = isEnabled ?? (() => true);
@@ -28,8 +28,13 @@ namespace FenBrowser.Core.Network.Handlers
 
         public async Task HandleAsync(NetworkContext context, Func<Task> next, CancellationToken ct)
         {
-            var uri = context.Request.RequestUri;
-            if (_isEnabled() && uri != null && _blockedDomains.Contains(uri.Host))
+            if (context?.Request?.RequestUri is not { } uri || !_isEnabled())
+            {
+                await next().ConfigureAwait(false);
+                return;
+            }
+
+            if (ShouldBlock(uri))
             {
                 context.IsBlocked = true;
                 context.BlockReason = "AdBlock";
@@ -37,10 +42,40 @@ namespace FenBrowser.Core.Network.Handlers
                 {
                     ReasonPhrase = "Blocked by AdBlock"
                 };
-                return; // Short-circuit
+                return;
             }
 
-            await next();
+            await next().ConfigureAwait(false);
+        }
+
+        private bool ShouldBlock(Uri uri)
+        {
+            var host = uri.Host;
+            foreach (var blockedDomain in _blockedDomains)
+            {
+                if (HostMatches(host, blockedDomain))
+                {
+                    return true;
+                }
+            }
+
+            // The Facebook tracking-pixel endpoint is path-specific. Keeping it out of
+            // the domain set avoids the previous dead "facebook.com/tr" host rule and
+            // avoids blocking unrelated facebook.com resources.
+            return HostMatches(host, "facebook.com") &&
+                   (string.Equals(uri.AbsolutePath, "/tr", StringComparison.OrdinalIgnoreCase) ||
+                    uri.AbsolutePath.StartsWith("/tr/", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool HostMatches(string host, string blockedDomain)
+        {
+            if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(blockedDomain))
+            {
+                return false;
+            }
+
+            return string.Equals(host, blockedDomain, StringComparison.OrdinalIgnoreCase) ||
+                   host.EndsWith("." + blockedDomain, StringComparison.OrdinalIgnoreCase);
         }
     }
 }
