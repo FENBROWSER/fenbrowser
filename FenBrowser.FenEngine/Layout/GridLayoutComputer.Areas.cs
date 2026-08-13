@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
-using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.FenEngine.Layout
 {
@@ -17,55 +15,123 @@ namespace FenBrowser.FenEngine.Layout
             public int ColEnd;
         }
 
+        private sealed class AreaBounds
+        {
+            public int MinRow = int.MaxValue;
+            public int MaxRow = int.MinValue;
+            public int MinCol = int.MaxValue;
+            public int MaxCol = int.MinValue;
+            public int CellCount;
+        }
+
         private static Dictionary<string, NamedArea> ParseGridTemplateAreas(string areasDef)
         {
-            var map = new Dictionary<string, NamedArea>();
-            if (string.IsNullOrWhiteSpace(areasDef)) return map;
+            var empty = new Dictionary<string, NamedArea>(StringComparer.Ordinal);
+            if (string.IsNullOrWhiteSpace(areasDef)) return empty;
 
-            // Split into rows (strings in quotes)
+            // Each quoted string is one grid row. CSS requires every row to contain
+            // the same number of cells and every named area to form one rectangle.
             var matches = Regex.Matches(areasDef, "\"[^\"]+\"|'[^']+'");
-            if (matches.Count == 0) return map;
+            if (matches.Count == 0) return empty;
 
-            int rowIndex = 1;
+            var rows = new List<string[]>(matches.Count);
+            var expectedColumns = -1;
             foreach (Match match in matches)
             {
                 var rowString = match.Value.Trim('"', '\'');
-                var cells = rowString.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                
-                int colIndex = 1;
-                foreach (var cellName in cells)
+                var cells = rowString.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+                if (cells.Length == 0)
                 {
-                    if (cellName == ".") 
+                    return empty;
+                }
+
+                if (expectedColumns < 0)
+                {
+                    expectedColumns = cells.Length;
+                }
+                else if (cells.Length != expectedColumns)
+                {
+                    // The entire grid-template-areas value is invalid when row widths
+                    // differ. Returning no named areas is safer than fabricating tracks.
+                    return empty;
+                }
+
+                rows.Add(cells);
+            }
+
+            var boundsByName = new Dictionary<string, AreaBounds>(StringComparer.Ordinal);
+            for (var row = 0; row < rows.Count; row++)
+            {
+                for (var col = 0; col < rows[row].Length; col++)
+                {
+                    var name = rows[row][col];
+                    if (IsNullCellToken(name))
                     {
-                        colIndex++;
                         continue;
                     }
 
-                    if (!map.TryGetValue(cellName, out var area))
+                    if (!boundsByName.TryGetValue(name, out var bounds))
                     {
-                        area = new NamedArea 
-                        { 
-                            Name = cellName, 
-                            RowStart = rowIndex, 
-                            RowEnd = rowIndex + 1, 
-                            ColStart = colIndex, 
-                            ColEnd = colIndex + 1 
-                        };
-                        map[cellName] = area;
+                        bounds = new AreaBounds();
+                        boundsByName[name] = bounds;
                     }
-                    else
-                    {
-                        // Extend existing area
-                        // Assume rectangular (CSS Grid spec requires rectangular areas)
-                        area.RowEnd = Math.Max(area.RowEnd, rowIndex + 1);
-                        area.ColEnd = Math.Max(area.ColEnd, colIndex + 1);
-                    }
-                    colIndex++;
+
+                    bounds.MinRow = Math.Min(bounds.MinRow, row);
+                    bounds.MaxRow = Math.Max(bounds.MaxRow, row);
+                    bounds.MinCol = Math.Min(bounds.MinCol, col);
+                    bounds.MaxCol = Math.Max(bounds.MaxCol, col);
+                    bounds.CellCount++;
                 }
-                rowIndex++;
             }
-            return map;
+
+            var result = new Dictionary<string, NamedArea>(StringComparer.Ordinal);
+            foreach (var pair in boundsByName)
+            {
+                var name = pair.Key;
+                var bounds = pair.Value;
+                var rectangleCellCount =
+                    (bounds.MaxRow - bounds.MinRow + 1) *
+                    (bounds.MaxCol - bounds.MinCol + 1);
+
+                if (rectangleCellCount != bounds.CellCount)
+                {
+                    return empty;
+                }
+
+                // Count equality is necessary but check the rectangle explicitly as
+                // well; this keeps the invariant obvious if the parser changes later.
+                for (var row = bounds.MinRow; row <= bounds.MaxRow; row++)
+                {
+                    for (var col = bounds.MinCol; col <= bounds.MaxCol; col++)
+                    {
+                        if (!string.Equals(rows[row][col], name, StringComparison.Ordinal))
+                        {
+                            return empty;
+                        }
+                    }
+                }
+
+                result[name] = new NamedArea
+                {
+                    Name = name,
+                    RowStart = bounds.MinRow + 1,
+                    RowEnd = bounds.MaxRow + 2,
+                    ColStart = bounds.MinCol + 1,
+                    ColEnd = bounds.MaxCol + 2
+                };
+            }
+
+            return result;
+        }
+
+        private static bool IsNullCellToken(string token)
+        {
+            if (string.IsNullOrEmpty(token)) return false;
+            for (var i = 0; i < token.Length; i++)
+            {
+                if (token[i] != '.') return false;
+            }
+            return true;
         }
     }
 }
-
