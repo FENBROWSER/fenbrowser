@@ -27,22 +27,26 @@ public sealed class WasmModule : IDisposable
     /// </summary>
     public WasmInstance Instantiate(string? instanceName = null, Action<Linker, Store>? configureImports = null)
     {
-        var store = _engine.CreateStore();
-        var linker = new Linker(_engine.InnerEngine);
-
-        // WASI is not exposed by default - the host decides what the module can access.
-        configureImports?.Invoke(linker, store);
-
+        // Reserve admission before allocating the Store or running host import
+        // configuration. This makes MaxInstances a real concurrent limit instead of
+        // an advisory pre-check followed by a later atomic increment.
         _engine.TrackInstance();
+        Store? store = null;
         try
         {
+            store = _engine.CreateStore();
+            var linker = new Linker(_engine.InnerEngine);
+
+            // WASI is not exposed by default - the host decides what the module can access.
+            configureImports?.Invoke(linker, store);
+
             var instance = linker.Instantiate(store, _module);
             return new WasmInstance(_engine, store, instance, instanceName ?? Name);
         }
         catch
         {
             _engine.UntrackInstance();
-            store.Dispose();
+            store?.Dispose();
             throw;
         }
     }
