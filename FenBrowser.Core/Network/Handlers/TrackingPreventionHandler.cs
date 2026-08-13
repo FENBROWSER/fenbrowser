@@ -28,15 +28,15 @@ namespace FenBrowser.Core.Network.Handlers
             "pixel.facebook.com",
             "ad.doubleclick.net",
             "stats.g.doubleclick.net",
-            
+
             // Twitter/X
             "analytics.twitter.com",
             "ads-twitter.com",
-            
+
             // Microsoft
             "bat.bing.com",
             "clarity.ms",
-            
+
             // Other common trackers
             "scorecardresearch.com",
             "quantserve.com",
@@ -77,14 +77,16 @@ namespace FenBrowser.Core.Network.Handlers
             "ac", "co", "com", "edu", "gov", "net", "org"
         };
 
+        private static int _blockedCount;
+
         /// <summary>Whether Enhanced Tracking Prevention is enabled.</summary>
         public static bool IsEnabled { get; set; } = true;
 
         /// <summary>Count of blocked tracking requests in current session.</summary>
-        public static int BlockedCount { get; private set; }
+        public static int BlockedCount => Volatile.Read(ref _blockedCount);
 
         /// <summary>Reset the blocked count (call on new navigation).</summary>
-        public static void ResetBlockedCount() => BlockedCount = 0;
+        public static void ResetBlockedCount() => Interlocked.Exchange(ref _blockedCount, 0);
 
         /// <summary>Check if a URL should be blocked as a tracker.</summary>
         public static bool IsTracker(Uri uri, Uri pageOrigin = null)
@@ -101,7 +103,7 @@ namespace FenBrowser.Core.Network.Handlers
             if (!string.IsNullOrEmpty(host))
             {
                 if (_trackerDomains.Contains(host)) return true;
-                
+
                 foreach (var tracker in _trackerDomains)
                 {
                     if (host.EndsWith("." + tracker, StringComparison.OrdinalIgnoreCase))
@@ -233,18 +235,16 @@ namespace FenBrowser.Core.Network.Handlers
             var pageOrigin = context.Request.Headers.Referrer;
             if (IsTracker(context.Request.RequestUri, pageOrigin))
             {
-                // Block the request
-                BlockedCount++;
-                Console.WriteLine($"[ETP] Blocked: {context.Request.RequestUri.Host} ({context.Request.RequestUri.AbsolutePath})");
-                
+                Interlocked.Increment(ref _blockedCount);
+
                 context.IsBlocked = true;
                 context.BlockReason = "Blocked by Enhanced Tracking Prevention";
                 context.Response = new HttpResponseMessage(System.Net.HttpStatusCode.NoContent)
                 {
                     ReasonPhrase = "Blocked by ETP"
                 };
-                
-                return Task.CompletedTask; // Don't call next, we're blocking
+
+                return Task.CompletedTask;
             }
 
             return next();
