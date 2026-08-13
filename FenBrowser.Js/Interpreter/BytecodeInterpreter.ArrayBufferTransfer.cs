@@ -41,7 +41,8 @@ public sealed partial class BytecodeInterpreter
     private ArrayBufferObject RequireArrayBuffer(JsValue thisValue, string method)
     {
         if (thisValue.Tag != JsValueTag.Object ||
-            _heap.GetObject(thisValue.AsObjectHandle()) is not ArrayBufferObject buf)
+            _heap.GetObject(thisValue.AsObjectHandle()) is not ArrayBufferObject buf ||
+            buf.IsSharedArrayBuffer)
         {
             throw new JsThrownException(CreateTypeError($"ArrayBuffer.prototype.{method} called on a non-ArrayBuffer."));
         }
@@ -61,18 +62,27 @@ public sealed partial class BytecodeInterpreter
         var newByteLength = oldByteLength;
         if (args.Count > 0 && args[0].Tag != JsValueTag.Undefined)
         {
-            var requested = (long)ToNumber(args[0]);
-            if (requested < 0 || requested > int.MaxValue)
+            var requestedNumber = ToNumber(args[0]);
+            if (double.IsNaN(requestedNumber) ||
+                double.IsInfinity(requestedNumber) ||
+                requestedNumber < 0 ||
+                requestedNumber > int.MaxValue)
             {
                 throw new JsThrownException(CreateRangeError("Invalid ArrayBuffer transfer length."));
             }
 
+            var requested = Math.Truncate(requestedNumber);
             newByteLength = (int)requested;
         }
 
         // A plain transfer preserves resizability (maxByteLength); the
         // fixed-length variant produces a non-resizable buffer.
         var resizable = !fixedLength && source.IsResizable;
+        if (resizable && newByteLength > source.MaxByteLength)
+        {
+            throw new JsThrownException(CreateRangeError("ArrayBuffer transfer length exceeds maxByteLength."));
+        }
+
         var result = new ArrayBufferObject(newByteLength, resizable ? source.MaxByteLength : 0, resizable);
         result.SetPrototype(EnsureArrayBufferPrototype());
 
