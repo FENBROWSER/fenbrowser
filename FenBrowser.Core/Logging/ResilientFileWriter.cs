@@ -7,7 +7,7 @@ namespace FenBrowser.Core.Logging
 {
     /// <summary>
     /// Best-effort file writes for high-frequency diagnostics/logging paths.
-    /// Retries transient share/lock failures and never throws to callers.
+    /// Retries transient I/O failures and never throws to callers.
     /// </summary>
     internal static class ResilientFileWriter
     {
@@ -118,7 +118,11 @@ namespace FenBrowser.Core.Logging
 
         private static bool IsTransient(Exception ex)
         {
-            return ex is IOException || ex is UnauthorizedAccessException;
+            // UnauthorizedAccessException is normally a stable permission/path-policy
+            // failure. Retrying it on a synchronous logging path only stalls the caller
+            // and cannot make the permission change. IOException still covers transient
+            // sharing/locking failures that can succeed on a subsequent attempt.
+            return ex is IOException;
         }
 
         private static void EnsureDirectory(string filePath)
