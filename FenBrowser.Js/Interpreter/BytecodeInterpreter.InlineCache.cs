@@ -132,9 +132,14 @@ public sealed partial class BytecodeInterpreter
         switch (entry.Kind)
         {
             case CallICKind.Native:
-                if (obj is not NativeFunctionObject nfn) { entry.Megamorphic = true; return false; }
+                if (obj is not NativeFunctionObject) { entry.Megamorphic = true; return false; }
+                // Do not call NativeFunctionObject.Call directly here. CallFunction's
+                // native branch pins object-valued `this`/arguments as temporary heap
+                // roots before invoking C# code, because a native callback can allocate
+                // and trigger a minor collection while those handles exist only on the
+                // CLR stack. Bypassing that boundary caused IC-dependent stale handles.
                 entry.Hits++;
-                result = nfn.Call(thisValue, args);
+                result = CallFunction(callee, args, thisValue);
                 return true;
             case CallICKind.OrdinaryFunction:
                 if (obj is not JsFunctionObject jfn ||
