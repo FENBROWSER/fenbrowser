@@ -9,18 +9,20 @@ namespace FenBrowser.Js.Objects;
 // parent. The root shape (PropertyCount=0) is shared by all empty objects.
 //
 // Transitions are stored in a ConcurrentDictionary<key, WeakReference<Shape>>
-// so shapes whose objects have all been GC'd are themselves collectible.
+// so shapes whose objects have all been GC'd are themselves collectible. Dead
+// weak entries are removed opportunistically so their string keys do not turn
+// the process-global root transition table into an unbounded name registry.
 //
 // Name→slot lookup uses a chain map shared by every shape along a linear
 // transition chain. Appending a property extends the shared map in place
 // (O(1)); only branch points copy. A shape sharing a map of N entries owns
 // exactly the entries with slot < PropertyCount — entries past that belong to
 // deeper shapes on the chain — so lookups validate the slot against
-// PropertyCount. The previous design materialized a fresh flat map per shape
-// on first lookup, which made growing an object by N properties O(N²) (the
-// "first big array in the process takes seconds" pathology).
+// PropertyCount.
 public class Shape
 {
+    private const int TransitionPruneInterval = 64;
+
     private static readonly Shape _root = new();
     public static Shape Root => _root;
 
@@ -28,15 +30,10 @@ public class Shape
     private readonly string? _addedProperty;
     private readonly int _addedSlot;
 
-    // Exposed for enumeration and IC validation. Parent is null for the root shape.
     public Shape? Parent => _parent;
     public string AddedProperty => _addedProperty!;
     public int AddedSlot => _addedSlot;
 
-    // Shared along a linear transition chain. Tail tracks how many entries
-    // represent the chain so far; a shape may append only when its parent is
-    // the current tail (Tail == parent.PropertyCount), so every entry with
-    // slot < PropertyCount is guaranteed to belong to this shape's lineage.
     private sealed class ChainMap
     {
         public readonly ConcurrentDictionary<string, int> Map = new(StringComparer.Ordinal);
@@ -44,7 +41,8 @@ public class Shape
     }
 
     private readonly ChainMap _chain;
-    private readonly ConcurrentDictionary<string, WeakReference<Shape>> _transitions = new();
+    private readonly ConcurrentDictionary<string, WeakReference<Shape>> _transitions = new(StringComparer.Ordinal);
+    private int _transitionOperations;
 
     public int PropertyCount { get; }
 
@@ -84,26 +82,45 @@ public class Shape
     }
 
     // Returns the child shape reached by adding `property` to this shape.
-    // Fast path is lock-free via ConcurrentDictionary; slow path creates a new
-    // child shape under a simple lock.
     public Shape TransitionTo(string property)
     {
-        if (_transitions.TryGetValue(property, out var wr) && wr.TryGetTarget(out var existing))
-            return existing;
+        ArgumentNullException.ThrowIfNull(property);
+
+        if (_transitions.TryGetValue(property, out var weak))
+        {
+            if (weak.TryGetTarget(out var existing))
+            {
+                return existing;
+            }
+
+            // Weak value is dead; remove the corresponding strong key immediately.
+            _transitions.TryRemove(property, out _);
+        }
 
         lock (_transitions)
         {
-            if (_transitions.TryGetValue(property, out wr) && wr.TryGetTarget(out existing))
-                return existing;
+            if (_transitions.TryGetValue(property, out weak))
+            {
+                if (weak.TryGetTarget(out var existing))
+                {
+                    return existing;
+                }
+
+                _transitions.TryRemove(property, out _);
+            }
 
             var next = new Shape(this, property);
             _transitions[property] = new WeakReference<Shape>(next);
+
+            if (Interlocked.Increment(ref _transitionOperations) % TransitionPruneInterval == 0)
+            {
+                PruneDeadTransitions();
+            }
+
             return next;
         }
     }
 
-    // Gets the storage-array slot index for a property. Returns false if the
-    // property is absent from this shape's lineage.
     public bool TryGetSlot(string property, out int slot)
     {
         if (_chain.Map.TryGetValue(property, out slot) && slot < PropertyCount)
@@ -113,5 +130,16 @@ public class Shape
 
         slot = 0;
         return false;
+    }
+
+    private void PruneDeadTransitions()
+    {
+        foreach (var pair in _transitions)
+        {
+            if (!pair.Value.TryGetTarget(out _))
+            {
+                _transitions.TryRemove(pair.Key, out _);
+            }
+        }
     }
 }
