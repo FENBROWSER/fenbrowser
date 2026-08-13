@@ -74,9 +74,25 @@ public readonly struct JsValue
 
     public bool AsBoolean() => Tag == JsValueTag.Boolean && _payload != 0;
 
-    public int AsInt32() => checked((int)_payload);
+    public int AsInt32()
+    {
+        if (Tag != JsValueTag.Int32)
+        {
+            throw new InvalidOperationException($"Value is not an Int32 (tag={Tag}).");
+        }
 
-    public double AsNumber() => _number;
+        return checked((int)_payload);
+    }
+
+    public double AsNumber()
+    {
+        return Tag switch
+        {
+            JsValueTag.Int32 => (double)checked((int)_payload),
+            JsValueTag.Number => _number,
+            _ => throw new InvalidOperationException($"Value is not numeric (tag={Tag}).")
+        };
+    }
 
     public ObjectHandle AsObjectHandle() => ObjectHandle.FromInt64(_payload);
 
