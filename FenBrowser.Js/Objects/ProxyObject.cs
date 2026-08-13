@@ -16,6 +16,8 @@ namespace FenBrowser.Js.Objects;
 // a TypeError per ECMA-262 28.2.2.1.
 public sealed class ProxyObject : JsObject
 {
+    private readonly Func<string, JsValue>? _createTypeError;
+
     public ObjectHandle TargetHandle { get; }
     public ObjectHandle? HandlerHandle { get; private set; }
 
@@ -29,9 +31,18 @@ public sealed class ProxyObject : JsObject
     internal static Func<ProxyObject, List<System.Collections.Generic.KeyValuePair<string, JsPropertyDescriptor>>>? ProxyEnumerateTrap;
 
     public ProxyObject(ObjectHandle targetHandle, ObjectHandle handlerHandle)
+        : this(targetHandle, handlerHandle, null)
+    {
+    }
+
+    public ProxyObject(
+        ObjectHandle targetHandle,
+        ObjectHandle handlerHandle,
+        Func<string, JsValue>? createTypeError)
     {
         TargetHandle = targetHandle;
         HandlerHandle = handlerHandle;
+        _createTypeError = createTypeError;
     }
 
     public void Revoke()
@@ -78,14 +89,16 @@ public sealed class ProxyObject : JsObject
         throw new InvalidOperationException("Proxy is not attached to a JavaScript heap.");
     }
 
-    // Set by the interpreter during initialization. Provides access to CreateTypeError
-    // so Proxy methods can throw proper JS TypeError objects.
+    // Transitional fallback for proxies created by old call sites. New call sites
+    // should pass the realm/context-owned TypeError factory into the constructor.
     internal static Func<string, JsValue>? CreateTypeErrorFn;
 
-    private static void ThrowProxyError(string msg)
+    private void ThrowProxyError(string msg)
     {
-        if (CreateTypeErrorFn is { } fn)
-            throw new JsThrownException(fn(msg));
+        if (_createTypeError is { } perProxyFactory)
+            throw new JsThrownException(perProxyFactory(msg));
+        if (CreateTypeErrorFn is { } legacyFactory)
+            throw new JsThrownException(legacyFactory(msg));
         throw new NotImplementedException("Proxy trap dispatch not initialized.");
     }
 
