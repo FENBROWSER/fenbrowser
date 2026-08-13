@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.Linq;
 
 namespace FenBrowser.Js.Objects;
 
@@ -145,30 +146,21 @@ internal static class DateMath
             : "-" + Math.Abs(y).ToString("D4", CultureInfo.InvariantCulture);
     }
 
-    // ECMA-262 21.4.3.2 Date.parse semantics: ISO-8601, toString format, and the
-    // looser forms .NET understands. Returns NaN on failure. Applies TimeClip.
+    // ECMA-262 21.4.3.2 Date.parse semantics: first attempt the standard Date Time
+    // String Format, then the Date.prototype.toString format, then implementation-
+    // specific forms understood by .NET. Returns NaN on failure and applies TimeClip.
     public static double ParseDateValue(string text)
     {
-        if (text.Length >= 4 && text.All(char.IsDigit))
+        if (text == null) return double.NaN;
+
+        var isoResult = TryParseEcmaIsoDate(text);
+        if (isoResult.HasValue)
         {
-            long year = long.Parse(text, CultureInfo.InvariantCulture);
-            if (year >= 0 && year <= 9999)
-            {
-                var d = MakeDate(MakeDay(year, 0, 1), MakeTime(0, 0, 0, 0));
-                return TimeClip(d);
-            }
+            return isoResult.Value;
         }
 
-        if (text.Length > 0 && (text[0] == '+' || text[0] == '-') && text.Length >= 12)
-        {
-            var result = TryParseExtendedIsoDate(text);
-            if (result.HasValue) return result.Value;
-        }
-
-        {
-            var dtResult = TryParseDateToStringFormat(text);
-            if (dtResult.HasValue) return dtResult.Value;
-        }
+        var dtResult = TryParseDateToStringFormat(text);
+        if (dtResult.HasValue) return dtResult.Value;
 
         if (DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture,
                 DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
@@ -179,73 +171,157 @@ internal static class DateMath
         return double.NaN;
     }
 
-    private static double? TryParseExtendedIsoDate(string text)
+    /// <summary>
+    /// Parses ECMAScript's simplified ISO Date Time String Format, including the full
+    /// ±6-digit expanded-year range. Null means the input is not in this grammar and
+    /// may be considered by implementation-specific Date.parse fallbacks. NaN means a
+    /// syntactically ISO-like value was recognized but contains an out-of-bounds field.
+    /// </summary>
+    private static double? TryParseEcmaIsoDate(string text)
     {
-        if (text.Length < 13) return null;
-        var sign = text[0] == '-' ? -1 : 1;
-        int pos = 1;
-        long year = 0;
-        while (pos < text.Length && char.IsDigit(text[pos]))
+        if (string.IsNullOrEmpty(text)) return null;
+
+        var pos = 0;
+        long year;
+        var expanded = text[0] is '+' or '-';
+        if (expanded)
         {
-            year = year * 10 + (text[pos] - '0');
-            pos++;
+            var sign = text[pos++] == '-' ? -1L : 1L;
+            if (!TryReadDigits(text, ref pos, 6, out var expandedYear)) return null;
+            // Expanded years are exactly six digits. A seventh digit means this is not
+            // an ECMAScript Date Time String Format candidate.
+            if (pos < text.Length && char.IsDigit(text[pos])) return null;
+            if (sign < 0 && expandedYear == 0) return double.NaN; // -000000 is forbidden.
+            year = sign * expandedYear;
         }
-        var yearDigits = pos - 1;
-        if (yearDigits < 4) return null;
-        if (sign < 0 && year == 0) return null;
-        if (sign < 0) year = -year;
-        if (pos >= text.Length || text[pos] != '-') return null;
-        pos++;
-        if (pos + 1 >= text.Length) return null;
-        var month = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
-        pos += 2;
-        if (month < 1 || month > 12) return null;
-        if (pos >= text.Length || text[pos] != '-') return null;
-        pos++;
-        if (pos + 1 >= text.Length) return null;
-        var day = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
-        pos += 2;
-        if (day < 1 || day > 31) return null;
-        long hours = 0, minutes = 0, seconds = 0, ms = 0;
-        if (pos < text.Length && (text[pos] == 'T' || text[pos] == ' '))
+        else
+        {
+            if (!TryReadDigits(text, ref pos, 4, out var basicYear)) return null;
+            if (pos < text.Length && char.IsDigit(text[pos])) return null;
+            year = basicYear;
+        }
+
+        var month = 1;
+        var day = 1;
+        var hasMonth = false;
+        var hasDay = false;
+
+        if (pos < text.Length && text[pos] == '-')
         {
             pos++;
-            if (pos + 1 >= text.Length) return null;
-            hours = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
-            pos += 2;
-            if (hours > 24) return null;
-            if (pos < text.Length && text[pos] == ':')
+            if (!TryReadDigits(text, ref pos, 2, out var parsedMonth)) return null;
+            month = (int)parsedMonth;
+            hasMonth = true;
+            if (month is < 1 or > 12) return double.NaN;
+
+            if (pos < text.Length && text[pos] == '-')
             {
                 pos++;
-                if (pos + 1 >= text.Length) return null;
-                minutes = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
-                pos += 2;
-                if (minutes > 59) return null;
+                if (!TryReadDigits(text, ref pos, 2, out var parsedDay)) return null;
+                day = (int)parsedDay;
+                hasDay = true;
+                if (day < 1 || day > DaysInMonth(year, month)) return double.NaN;
             }
-            if (pos < text.Length && text[pos] == ':')
-            {
-                pos++;
-                if (pos + 1 >= text.Length) return null;
-                seconds = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
-                pos += 2;
-                if (seconds > 59) return null;
-            }
+        }
+
+        // Date-only forms default absent MM/DD to 01 and are UTC.
+        if (pos == text.Length)
+        {
+            var dateOnly = MakeDate(MakeDay(year, month - 1, day), MakeTime(0, 0, 0, 0));
+            return TimeClip(dateOnly);
+        }
+
+        // Date-time forms require a complete calendar date before T.
+        if (!hasMonth || !hasDay || text[pos] != 'T') return null;
+        pos++;
+
+        if (!TryReadDigits(text, ref pos, 2, out var parsedHour)) return null;
+        var hour = (int)parsedHour;
+        if (hour is < 0 or > 24) return double.NaN;
+        if (pos >= text.Length || text[pos++] != ':') return null;
+        if (!TryReadDigits(text, ref pos, 2, out var parsedMinute)) return null;
+        var minute = (int)parsedMinute;
+        if (minute > 59) return double.NaN;
+
+        var second = 0;
+        var millisecond = 0;
+        if (pos < text.Length && text[pos] == ':')
+        {
+            pos++;
+            if (!TryReadDigits(text, ref pos, 2, out var parsedSecond)) return null;
+            second = (int)parsedSecond;
+            if (second > 59) return double.NaN;
+
             if (pos < text.Length && text[pos] == '.')
             {
                 pos++;
-                var msDigits = 0;
-                ms = 0;
-                while (pos < text.Length && char.IsDigit(text[pos]) && msDigits < 3)
-                {
-                    ms = ms * 10 + (text[pos] - '0');
-                    pos++;
-                    msDigits++;
-                }
-                while (msDigits < 3) { ms *= 10; msDigits++; }
+                if (!TryReadDigits(text, ref pos, 3, out var parsedMillisecond)) return null;
+                millisecond = (int)parsedMillisecond;
             }
         }
-        var dateMs = MakeDate(MakeDay(year, month - 1, day), MakeTime(hours, minutes, seconds, ms));
-        return TimeClip(dateMs);
+
+        // 24:00 denotes the following midnight; no non-zero subcomponent is allowed.
+        if (hour == 24 && (minute != 0 || second != 0 || millisecond != 0))
+        {
+            return double.NaN;
+        }
+
+        var offsetMinutes = 0;
+        if (pos < text.Length)
+        {
+            if (text[pos] == 'Z')
+            {
+                pos++;
+            }
+            else if (text[pos] is '+' or '-')
+            {
+                var offsetSign = text[pos++] == '+' ? 1 : -1;
+                if (!TryReadDigits(text, ref pos, 2, out var parsedOffsetHour)) return null;
+                if (parsedOffsetHour > 23) return double.NaN;
+                if (pos >= text.Length || text[pos++] != ':') return null;
+                if (!TryReadDigits(text, ref pos, 2, out var parsedOffsetMinute)) return null;
+                if (parsedOffsetMinute > 59) return double.NaN;
+                offsetMinutes = offsetSign * (int)(parsedOffsetHour * 60 + parsedOffsetMinute);
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        // Trailing characters are not part of the ECMAScript Date Time String Format.
+        if (pos != text.Length) return null;
+
+        var time = MakeTime(hour, minute, second, millisecond);
+        var value = MakeDate(MakeDay(year, month - 1, day), time);
+        // LocalTZA is 0 in FenJS. Explicit +HH:mm means local wall time is ahead of
+        // UTC, so subtract the offset to obtain the UTC time value.
+        value -= offsetMinutes * MsPerMinute;
+        return TimeClip(value);
+    }
+
+    private static bool TryReadDigits(string text, ref int pos, int count, out long value)
+    {
+        value = 0;
+        if (pos < 0 || count < 0 || pos + count > text.Length) return false;
+        for (var i = 0; i < count; i++)
+        {
+            var ch = text[pos + i];
+            if (ch < '0' || ch > '9') return false;
+            value = value * 10 + (ch - '0');
+        }
+        pos += count;
+        return true;
+    }
+
+    private static int DaysInMonth(long year, int month)
+    {
+        return month switch
+        {
+            2 => IsLeap(year) ? 29 : 28,
+            4 or 6 or 9 or 11 => 30,
+            _ => 31
+        };
     }
 
     private static double? TryParseDateToStringFormat(string text)
