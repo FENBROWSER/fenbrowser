@@ -17,6 +17,16 @@ public sealed class ArrayBufferObject : JsObject
     // (e.g. new ArrayBuffer(8, { maxByteLength: 8 }) is resizable and can shrink).
     public ArrayBufferObject(int byteLength, int maxByteLength = 0, bool resizable = false)
     {
+        if (byteLength < 0)
+            throw new ArgumentOutOfRangeException(nameof(byteLength), "ArrayBuffer byte length cannot be negative.");
+
+        if (resizable && maxByteLength < byteLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxByteLength),
+                "Resizable ArrayBuffer maximum byte length cannot be smaller than its initial byte length.");
+        }
+
         _data = new byte[byteLength];
         ByteLength = byteLength;
         _isResizable = resizable;
@@ -25,6 +35,7 @@ public sealed class ArrayBufferObject : JsObject
 
     internal ArrayBufferObject(byte[] data)
     {
+        ArgumentNullException.ThrowIfNull(data);
         _data = data;
         ByteLength = data.Length;
         MaxByteLength = data.Length;
@@ -62,6 +73,9 @@ public sealed class ArrayBufferObject : JsObject
     // 25.1.5.4 DetachArrayBuffer()
     public void Detach()
     {
+        if (IsDetached)
+            return;
+
         IsDetached = true;
         _data = Array.Empty<byte>();
         ByteLength = 0;
@@ -74,8 +88,18 @@ public sealed class ArrayBufferObject : JsObject
     {
         if (IsDetached)
             throw new InvalidOperationException("ArrayBuffer is detached.");
-        if (newByteLength > MaxByteLength)
-            throw new ArgumentOutOfRangeException(nameof(newByteLength), "New byte length exceeds maximum.");
+        if (!_isResizable)
+            throw new InvalidOperationException("ArrayBuffer is not resizable.");
+        if (newByteLength < 0 || newByteLength > MaxByteLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(newByteLength),
+                "New byte length must be between zero and the buffer maximum byte length.");
+        }
+
+        if (newByteLength == ByteLength)
+            return;
+
         Array.Resize(ref _data, newByteLength);
         ByteLength = newByteLength;
     }
@@ -85,8 +109,22 @@ public sealed class ArrayBufferObject : JsObject
     {
         if (IsDetached)
             throw new InvalidOperationException("ArrayBuffer is detached.");
+        if (byteOffset < 0)
+            throw new ArgumentOutOfRangeException(nameof(byteOffset));
+        if (byteLength < 0)
+            throw new ArgumentOutOfRangeException(nameof(byteLength));
+        if ((long)byteOffset + byteLength > ByteLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(byteLength),
+                "Requested clone range exceeds the ArrayBuffer bounds.");
+        }
+
         var copy = new byte[byteLength];
-        Array.Copy(_data, byteOffset, copy, 0, byteLength);
+        if (byteLength > 0)
+        {
+            Array.Copy(_data, byteOffset, copy, 0, byteLength);
+        }
         return new ArrayBufferObject(copy);
     }
 
