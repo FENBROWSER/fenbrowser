@@ -21,11 +21,14 @@ public sealed class MiscGlobalsBuiltin : IBuiltinModule
         heap.PushRoot(evalHandle);
         bindings.Add(BuiltinBinding.NonEnumerable("eval", JsValue.FromObject(evalHandle)));
 
-        // queueMicrotask
+        // queueMicrotask(callback) takes a Web IDL VoidFunction, so the argument is
+        // accepted according to ECMAScript IsCallable rather than by checking only
+        // the two concrete function classes. Bound functions and callable proxies are
+        // function objects too and must not be rejected just because their call path
+        // is exotic.
         var qmFn = new NativeFunctionObject("queueMicrotask", (_, args) =>
         {
-            if (args.Count == 0 || args[0].Tag != JsValueTag.Object ||
-                context.Heap.GetObject(args[0].AsObjectHandle()) is not (JsFunctionObject or NativeFunctionObject))
+            if (args.Count == 0 || !IsCallable(context, args[0]))
                 throw new JsThrownException(context.CreateTypeError("queueMicrotask: argument must be callable."));
             context.EnqueueMicrotask(args[0]);
             return JsValue.Undefined;
@@ -49,5 +52,41 @@ public sealed class MiscGlobalsBuiltin : IBuiltinModule
         bindings.Add(BuiltinBinding.NonEnumerable("AsyncGeneratorFunction", JsValue.FromObject(context.MaterializeAsyncGeneratorFunctionConstructor())));
 
         return bindings;
+    }
+
+    private static bool IsCallable(IBuiltinContext context, JsValue value)
+    {
+        // Bound/proxy call targets are immutable and point to already-created
+        // objects, so the chain is normally acyclic. Keep a visited set anyway: it
+        // makes this boundary robust against a malformed host-created object graph
+        // without turning argument validation into unbounded recursion.
+        HashSet<long>? visited = null;
+
+        while (value.Tag == JsValueTag.Object)
+        {
+            var handle = value.AsObjectHandle();
+            var packedHandle = handle.ToInt64();
+            visited ??= new HashSet<long>();
+            if (!visited.Add(packedHandle))
+                return false;
+
+            var obj = context.Heap.GetObject(handle);
+            switch (obj)
+            {
+                case NativeFunctionObject:
+                case JsFunctionObject:
+                    return true;
+                case BoundFunctionObject bound:
+                    value = bound.TargetFunction;
+                    continue;
+                case ProxyObject proxy:
+                    value = JsValue.FromObject(proxy.TargetHandle);
+                    continue;
+                default:
+                    return false;
+            }
+        }
+
+        return false;
     }
 }
