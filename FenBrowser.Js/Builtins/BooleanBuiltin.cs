@@ -30,11 +30,11 @@ public sealed class BooleanBuiltin : IBuiltinModule
 
         var constructor = new NativeFunctionObject(
             "Boolean",
-            (_, args) => JsValue.FromBoolean(args.Count > 0 && IsTruthy(args[0])),
+            (_, args) => JsValue.FromBoolean(args.Count > 0 && IsTruthy(context, args[0])),
             length: 1,
             constructWithNewTarget: (args, newTarget) =>
             {
-                var obj = new BooleanObject(args.Count > 0 && IsTruthy(args[0]));
+                var obj = new BooleanObject(args.Count > 0 && IsTruthy(context, args[0]));
                 obj.SetPrototype(ResolveConstructorPrototype(context, newTarget, capturedProto));
                 return JsValue.FromObject(heap.AllocateObject(obj, AllocationSite.Current()));
             });
@@ -68,7 +68,7 @@ public sealed class BooleanBuiltin : IBuiltinModule
         throw new JsThrownException(ctx.CreateTypeError("Boolean.prototype method called on incompatible receiver."));
     }
 
-    private static bool IsTruthy(JsValue value)
+    private static bool IsTruthy(IBuiltinContext context, JsValue value)
     {
         return value.Tag switch
         {
@@ -79,7 +79,8 @@ public sealed class BooleanBuiltin : IBuiltinModule
             JsValueTag.Number => !double.IsNaN(value.AsNumber()) && value.AsNumber() != 0d,
             JsValueTag.BigInt => value.AsBigInt() != System.Numerics.BigInteger.Zero,
             JsValueTag.String => value.AsString().Length > 0,
-            _ => true // Objects (incl. Symbols) are always truthy.
+            JsValueTag.Object => !context.Heap.GetObject(value.AsObjectHandle()).IsHtmlDda,
+            _ => true // Symbols are always truthy.
         };
     }
 
