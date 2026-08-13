@@ -9,6 +9,8 @@ namespace FenBrowser.Js.Objects;
 // against the view's byte length.
 public sealed class DataViewObject : TypedArrayView
 {
+    private static readonly BigInteger TwoTo64 = BigInteger.One << 64;
+
     public override int ElementSize => 1;
 
     public DataViewObject(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false)
@@ -125,8 +127,6 @@ public sealed class DataViewObject : TypedArrayView
         return new BigInteger(v);
     }
 
-    // SetViewValue
-
     public void SetFloat64(int byteOffset, double value, bool littleEndian)
     {
         ValidateOffset(byteOffset, 8);
@@ -209,18 +209,26 @@ public sealed class DataViewObject : TypedArrayView
     public void SetBigInt64(int byteOffset, BigInteger value, bool littleEndian)
     {
         ValidateOffset(byteOffset, 8);
-        var v = (long)value;
+        var bits = WrapToUInt64(value);
         if (littleEndian != BitConverter.IsLittleEndian)
-            v = (long)BinaryPrimitives.ReverseEndianness((ulong)v);
-        BitConverter.TryWriteBytes(Buffer.Data.AsSpan(ByteOffset + byteOffset, 8), v);
+            bits = BinaryPrimitives.ReverseEndianness(bits);
+        BitConverter.TryWriteBytes(Buffer.Data.AsSpan(ByteOffset + byteOffset, 8), bits);
     }
 
     public void SetBigUint64(int byteOffset, BigInteger value, bool littleEndian)
     {
         ValidateOffset(byteOffset, 8);
-        var v = (ulong)value;
+        var bits = WrapToUInt64(value);
         if (littleEndian != BitConverter.IsLittleEndian)
-            v = BinaryPrimitives.ReverseEndianness(v);
-        BitConverter.TryWriteBytes(Buffer.Data.AsSpan(ByteOffset + byteOffset, 8), v);
+            bits = BinaryPrimitives.ReverseEndianness(bits);
+        BitConverter.TryWriteBytes(Buffer.Data.AsSpan(ByteOffset + byteOffset, 8), bits);
+    }
+
+    private static ulong WrapToUInt64(BigInteger value)
+    {
+        var wrapped = value % TwoTo64;
+        if (wrapped.Sign < 0)
+            wrapped += TwoTo64;
+        return (ulong)wrapped;
     }
 }
