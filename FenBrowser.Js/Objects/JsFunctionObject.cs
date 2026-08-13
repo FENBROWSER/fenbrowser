@@ -47,9 +47,20 @@ public sealed class JsFunctionObject : JsObject
     {
         base.Trace(tracer);
         OuterEnvironment?.Trace(tracer);
+
         if (HomeObject is { } home)
-        {
             tracer.Trace(home);
+
+        // Computed class-field keys live outside ordinary JsObject properties. Most
+        // keys are strings/symbols, but a malformed/intermediate object-valued key
+        // must still stay alive until the constructor consumes it; otherwise GC can
+        // turn LoadFieldKey into a stale object handle. Trace object payloads here so
+        // the function owns every heap reference stored in its internal slots.
+        for (var i = 0; i < ComputedFieldKeys.Count; i++)
+        {
+            var key = ComputedFieldKeys[i];
+            if (key.Tag == JsValueTag.Object)
+                tracer.Trace(key.AsObjectHandle());
         }
     }
 }
