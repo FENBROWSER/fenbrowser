@@ -64,6 +64,8 @@ public sealed class WasmModule : IDisposable
 
 /// <summary>
 /// A live WASM instance with host-defined limits.
+/// Access to Wasmtime objects stays encapsulated so callers cannot bypass the
+/// wrapper's synchronization and resource-accounting boundary.
 /// </summary>
 public sealed class WasmInstance : IDisposable
 {
@@ -88,8 +90,13 @@ public sealed class WasmInstance : IDisposable
     /// </summary>
     public WasmExecutionResult Invoke(string functionName, params object[] args)
     {
+        if (string.IsNullOrWhiteSpace(functionName))
+            throw new ArgumentException("Function name cannot be empty.", nameof(functionName));
+
         lock (_callLock)
         {
+            ThrowIfDisposed();
+
             ulong fuelBefore = (ulong)Math.Max(0, _store.Fuel);
             var sw = System.Diagnostics.Stopwatch.StartNew();
 
@@ -101,7 +108,7 @@ public sealed class WasmInstance : IDisposable
                     sw.Stop();
                     return WasmExecutionResult.Fail(
                         $"Function '{functionName}' not found in module '{Name}'.",
-                        fuelBefore - (ulong)Math.Max(0, _store.Fuel),
+                        FuelConsumedSince(fuelBefore),
                         sw.Elapsed);
                 }
 
@@ -110,71 +117,56 @@ public sealed class WasmInstance : IDisposable
 
                 sw.Stop();
 
-                // Check fuel exhaustion - the engine may have run out of fuel
                 if (_store.Fuel <= 0 && fuelBefore > 0)
                 {
                     return WasmExecutionResult.Fail(
                         $"WASM execution exceeded fuel limit in '{Name}.{functionName}'.",
-                        fuelBefore - (ulong)Math.Max(0, _store.Fuel),
+                        FuelConsumedSince(fuelBefore),
                         sw.Elapsed);
                 }
 
-                return WasmExecutionResult.Ok(result, fuelBefore - (ulong)Math.Max(0, _store.Fuel), sw.Elapsed);
+                return WasmExecutionResult.Ok(result, FuelConsumedSince(fuelBefore), sw.Elapsed);
             }
             catch (WasmtimeException ex)
             {
                 sw.Stop();
                 return WasmExecutionResult.Fail(
                     $"WASM error in '{Name}.{functionName}': {ex.Message}",
-                    fuelBefore - (ulong)Math.Max(0, _store.Fuel),
+                    FuelConsumedSince(fuelBefore),
                     sw.Elapsed);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 sw.Stop();
+                // Host exception details can contain paths, configuration values, or
+                // implementation internals. Keep those outside the guest-visible result.
                 return WasmExecutionResult.Fail(
-                    $"Unexpected WASM error in '{Name}.{functionName}': {ex.Message}",
-                    fuelBefore - (ulong)Math.Max(0, _store.Fuel),
+                    $"Host invocation failed in '{Name}.{functionName}'.",
+                    FuelConsumedSince(fuelBefore),
                     sw.Elapsed);
             }
         }
     }
 
     /// <summary>
-    /// Gets an exported function.
-    /// </summary>
-    public Function? GetFunction(string name) => _instance.GetFunction(name);
-
-    /// <summary>
-    /// Gets an exported global.
-    /// </summary>
-    public Global? GetGlobal(string name) => _instance.GetGlobal(name);
-
-    /// <summary>
-    /// Gets an exported memory.
-    /// </summary>
-    public Memory? GetMemory(string name) => _instance.GetMemory(name);
-
-    /// <summary>
-    /// Gets an exported table.
-    /// </summary>
-    public Table? GetTable(string name) => _instance.GetTable(name);
-
-    /// <summary>
     /// Reads bytes from exported linear memory.
     /// </summary>
     public byte[]? ReadMemory(string memoryName, int offset, int length)
     {
-        var memory = GetMemory(memoryName);
-        if (memory == null) return null;
+        lock (_callLock)
+        {
+            ThrowIfDisposed();
+            var memory = FindMemory(memoryName);
+            if (memory == null) return null;
 
-        long memLength = memory.GetLength();
-        if (offset < 0 || length < 0 || (long)offset + length > memLength)
-            return null;
+            long memLength = memory.GetLength();
+            if (offset < 0 || length < 0 || (long)offset + length > memLength)
+                return null;
 
-        var result = new byte[length];
-        memory.GetSpan(offset, length).CopyTo(result);
-        return result;
+            var result = new byte[length];
+            memory.GetSpan(offset, length).CopyTo(result);
+            return result;
+        }
     }
 
     /// <summary>
@@ -182,15 +174,19 @@ public sealed class WasmInstance : IDisposable
     /// </summary>
     public bool WriteMemory(string memoryName, int offset, ReadOnlyMemory<byte> data)
     {
-        var memory = GetMemory(memoryName);
-        if (memory == null) return false;
+        lock (_callLock)
+        {
+            ThrowIfDisposed();
+            var memory = FindMemory(memoryName);
+            if (memory == null) return false;
 
-        long memLength = memory.GetLength();
-        if (offset < 0 || (long)offset + data.Length > memLength)
-            return false;
+            long memLength = memory.GetLength();
+            if (offset < 0 || (long)offset + data.Length > memLength)
+                return false;
 
-        data.Span.CopyTo(memory.GetSpan(offset, data.Length));
-        return true;
+            data.Span.CopyTo(memory.GetSpan(offset, data.Length));
+            return true;
+        }
     }
 
     /// <summary>
@@ -198,20 +194,48 @@ public sealed class WasmInstance : IDisposable
     /// </summary>
     public string? ReadMemoryString(string memoryName, int offset, int length)
     {
-        var memory = GetMemory(memoryName);
-        if (memory == null) return null;
+        lock (_callLock)
+        {
+            ThrowIfDisposed();
+            var memory = FindMemory(memoryName);
+            if (memory == null) return null;
 
-        long memLength = memory.GetLength();
-        if (offset < 0 || length < 0 || (long)offset + length > memLength)
-            return null;
+            long memLength = memory.GetLength();
+            if (offset < 0 || length < 0 || (long)offset + length > memLength)
+                return null;
 
-        return memory.ReadString(offset, length, Encoding.UTF8);
+            return memory.ReadString(offset, length, Encoding.UTF8);
+        }
     }
 
     /// <summary>
     /// Gets the remaining fuel for this instance's store.
     /// </summary>
-    public long RemainingFuel => _store.Fuel > long.MaxValue ? long.MaxValue : (long)_store.Fuel;
+    public long RemainingFuel
+    {
+        get
+        {
+            lock (_callLock)
+            {
+                ThrowIfDisposed();
+                return _store.Fuel > long.MaxValue ? long.MaxValue : (long)_store.Fuel;
+            }
+        }
+    }
+
+    private Memory? FindMemory(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return null;
+        return _instance.GetMemory(name);
+    }
+
+    private long FuelConsumedSince(ulong fuelBefore)
+    {
+        var remaining = (ulong)Math.Max(0, _store.Fuel);
+        var consumed = fuelBefore >= remaining ? fuelBefore - remaining : 0UL;
+        return consumed > long.MaxValue ? long.MaxValue : (long)consumed;
+    }
 
     private static ValueBox[] ConvertToValueBoxes(object[] args)
     {
@@ -226,7 +250,7 @@ public sealed class WasmInstance : IDisposable
                 int v => v,
                 long v => v,
                 uint v => (long)v,
-                ulong v => (long)v,
+                ulong v => unchecked((long)v),
                 float v => v,
                 double v => v,
                 bool v => v ? 1 : 0,
@@ -238,12 +262,21 @@ public sealed class WasmInstance : IDisposable
         return result;
     }
 
+    private void ThrowIfDisposed()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(WasmInstance));
+    }
+
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
-            return;
+        lock (_callLock)
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
 
-        _engine.UntrackInstance();
-        _store.Dispose();
+            _store.Dispose();
+            _engine.UntrackInstance();
+        }
     }
 }
