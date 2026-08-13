@@ -1,5 +1,3 @@
-using FenBrowser.Core.Logging;
-
 namespace FenBrowser.Wasm;
 
 /// <summary>
@@ -8,8 +6,11 @@ namespace FenBrowser.Wasm;
 /// </summary>
 public sealed class WasmResourceLimits
 {
+    private const ulong MinMemoryBytes = 16UL * 1024 * 1024;
+    private const ulong MaxWasm32MemoryBytes = 4UL * 1024 * 1024 * 1024;
+
     /// <summary>Maximum memory size in bytes (default 512 MiB).</summary>
-    public ulong MaxMemoryBytes { get; set; } = 512 * 1024 * 1024;
+    public ulong MaxMemoryBytes { get; set; } = 512UL * 1024 * 1024;
 
     /// <summary>Maximum number of WASM instances (default 16 per document).</summary>
     public int MaxInstances { get; set; } = 16;
@@ -32,7 +33,12 @@ public sealed class WasmResourceLimits
     /// <summary>Validates and normalizes the limits.</summary>
     public void Normalize()
     {
-        if (MaxMemoryBytes < 16 * 1024 * 1024) MaxMemoryBytes = 16 * 1024 * 1024;
+        // WasmEngine currently configures memory64=false. A memory32 linear memory
+        // cannot address more than 4 GiB, and keeping the value within that bound also
+        // guarantees the later Store.SetLimits long conversion cannot overflow.
+        if (MaxMemoryBytes < MinMemoryBytes) MaxMemoryBytes = MinMemoryBytes;
+        if (MaxMemoryBytes > MaxWasm32MemoryBytes) MaxMemoryBytes = MaxWasm32MemoryBytes;
+
         if (MaxInstances < 1) MaxInstances = 1;
         if (MaxInstances > 256) MaxInstances = 256;
         if (MaxFuelPerInstance == 0) MaxFuelPerInstance = 100_000_000;
