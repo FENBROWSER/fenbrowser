@@ -82,7 +82,9 @@ public sealed class WasmModule : IDisposable
 }
 
 /// <summary>
-/// A live WASM instance with host-defined limits.
+/// A live WASM instance with host-defined limits. Wasmtime Store/Instance export
+/// objects are intentionally not exposed: all guest interaction stays behind this
+/// wrapper so disposal checks, serialization, and accounting cannot be bypassed.
 /// </summary>
 public sealed class WasmInstance : IDisposable
 {
@@ -164,54 +166,6 @@ public sealed class WasmInstance : IDisposable
     }
 
     /// <summary>
-    /// Gets an exported function.
-    /// </summary>
-    public Function? GetFunction(string name)
-    {
-        lock (_callLock)
-        {
-            ThrowIfDisposed();
-            return _instance.GetFunction(name);
-        }
-    }
-
-    /// <summary>
-    /// Gets an exported global.
-    /// </summary>
-    public Global? GetGlobal(string name)
-    {
-        lock (_callLock)
-        {
-            ThrowIfDisposed();
-            return _instance.GetGlobal(name);
-        }
-    }
-
-    /// <summary>
-    /// Gets an exported memory.
-    /// </summary>
-    public Memory? GetMemory(string name)
-    {
-        lock (_callLock)
-        {
-            ThrowIfDisposed();
-            return _instance.GetMemory(name);
-        }
-    }
-
-    /// <summary>
-    /// Gets an exported table.
-    /// </summary>
-    public Table? GetTable(string name)
-    {
-        lock (_callLock)
-        {
-            ThrowIfDisposed();
-            return _instance.GetTable(name);
-        }
-    }
-
-    /// <summary>
     /// Reads bytes from exported linear memory.
     /// </summary>
     public byte[]? ReadMemory(string memoryName, int offset, int length)
@@ -219,7 +173,7 @@ public sealed class WasmInstance : IDisposable
         lock (_callLock)
         {
             ThrowIfDisposed();
-            var memory = _instance.GetMemory(memoryName);
+            var memory = FindMemory(memoryName);
             if (memory == null) return null;
 
             long memLength = memory.GetLength();
@@ -240,7 +194,7 @@ public sealed class WasmInstance : IDisposable
         lock (_callLock)
         {
             ThrowIfDisposed();
-            var memory = _instance.GetMemory(memoryName);
+            var memory = FindMemory(memoryName);
             if (memory == null) return false;
 
             long memLength = memory.GetLength();
@@ -260,7 +214,7 @@ public sealed class WasmInstance : IDisposable
         lock (_callLock)
         {
             ThrowIfDisposed();
-            var memory = _instance.GetMemory(memoryName);
+            var memory = FindMemory(memoryName);
             if (memory == null) return null;
 
             long memLength = memory.GetLength();
@@ -284,6 +238,13 @@ public sealed class WasmInstance : IDisposable
                 return _store.Fuel > long.MaxValue ? long.MaxValue : (long)_store.Fuel;
             }
         }
+    }
+
+    private Memory? FindMemory(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return null;
+        return _instance.GetMemory(name);
     }
 
     private static ValueBox[] ConvertToValueBoxes(object[] args)
