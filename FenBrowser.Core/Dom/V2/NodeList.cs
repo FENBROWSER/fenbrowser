@@ -140,11 +140,15 @@ namespace FenBrowser.Core.Dom.V2
 
         public StaticNodeList(IEnumerable<Node> nodes)
         {
-            _nodes = nodes is Node[] arr ? arr : new List<Node>(nodes).ToArray();
+            ArgumentNullException.ThrowIfNull(nodes);
+            // A static NodeList is a snapshot. Never retain a caller-owned Node[];
+            // mutating that array after querySelectorAll must not mutate the result.
+            _nodes = new List<Node>(nodes).ToArray();
         }
 
         public StaticNodeList(List<Node> nodes)
         {
+            ArgumentNullException.ThrowIfNull(nodes);
             _nodes = nodes.ToArray();
         }
 
@@ -233,11 +237,14 @@ namespace FenBrowser.Core.Dom.V2
 
         public StaticHTMLCollection(IEnumerable<Element> elements)
         {
-            _elements = elements is Element[] arr ? arr : new List<Element>(elements).ToArray();
+            ArgumentNullException.ThrowIfNull(elements);
+            // Static collections are snapshots as well; do not alias caller arrays.
+            _elements = new List<Element>(elements).ToArray();
         }
 
         public StaticHTMLCollection(List<Element> elements)
         {
+            ArgumentNullException.ThrowIfNull(elements);
             _elements = elements.ToArray();
         }
 
@@ -406,6 +413,12 @@ namespace FenBrowser.Core.Dom.V2
 
         private IEnumerable<Element> MatchingElements()
         {
+            // DOM's ordered-set parser produces no class tokens for an empty or
+            // whitespace-only input. That must match no elements, not every element
+            // via a vacuous "all zero classes are present" check.
+            if (_classNames.Length == 0)
+                yield break;
+
             foreach (var node in _root.Descendants())
             {
                 if (node is Element el && HasAllClasses(el))
@@ -425,4 +438,3 @@ namespace FenBrowser.Core.Dom.V2
         }
     }
 }
-
