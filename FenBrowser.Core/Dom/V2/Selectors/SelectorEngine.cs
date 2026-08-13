@@ -73,6 +73,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         /// </summary>
         public static CompiledSelector Compile(string selectors)
         {
+            ArgumentNullException.ThrowIfNull(selectors);
             _cache ??= new Dictionary<string, CompiledSelector>(StringComparer.Ordinal);
 
             if (_cache.TryGetValue(selectors, out var cached))
@@ -100,19 +101,12 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         private static Element QueryFirstInternal(Node root, CompiledSelector selector)
         {
-            // Breadth-first traversal with bloom filter optimization
+            // Pre-order depth-first traversal in document tree order. Push siblings
+            // from last to first so the stack pops FirstChild first. Using the DOM's
+            // existing sibling links avoids allocating a temporary List<Node> for
+            // every container visited by querySelector.
             var stack = new Stack<Node>();
-
-            // Push children in reverse order
-            if (root is ContainerNode container)
-            {
-                var children = new List<Node>();
-                for (var child = container.FirstChild; child != null; child = child.NextSibling)
-                    children.Add(child);
-
-                for (int i = children.Count - 1; i >= 0; i--)
-                    stack.Push(children[i]);
-            }
+            PushChildrenReverse(root, stack);
 
             while (stack.Count > 0)
             {
@@ -120,27 +114,14 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
                 if (node is Element el)
                 {
-                    // Fast-path: bloom filter rejection
-                    if (!selector.MayMatch(el.AncestorFilter))
-                    {
-                        // Skip this subtree only if combinator requires ancestors
-                        // For now, still check children
-                    }
-
+                    // Fast-path bloom filter information is intentionally not used to
+                    // prune descendants here: a selector that cannot match this element
+                    // can still match one of its descendants.
                     if (selector.Matches(el))
                         return el;
                 }
 
-                // Push children
-                if (node is ContainerNode containerNode)
-                {
-                    var children = new List<Node>();
-                    for (var child = containerNode.FirstChild; child != null; child = child.NextSibling)
-                        children.Add(child);
-
-                    for (int i = children.Count - 1; i >= 0; i--)
-                        stack.Push(children[i]);
-                }
+                PushChildrenReverse(node, stack);
             }
 
             return null;
@@ -148,40 +129,28 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         private static void QueryAllInternal(Node root, CompiledSelector selector, List<Node> results)
         {
-            // Depth-first traversal
             var stack = new Stack<Node>();
-
-            if (root is ContainerNode container)
-            {
-                var children = new List<Node>();
-                for (var child = container.FirstChild; child != null; child = child.NextSibling)
-                    children.Add(child);
-
-                for (int i = children.Count - 1; i >= 0; i--)
-                    stack.Push(children[i]);
-            }
+            PushChildrenReverse(root, stack);
 
             while (stack.Count > 0)
             {
                 var node = stack.Pop();
 
-                if (node is Element el)
-                {
-                    if (selector.Matches(el))
-                        results.Add(el);
-                }
+                if (node is Element el && selector.Matches(el))
+                    results.Add(el);
 
-                // Push children
-                if (node is ContainerNode containerNode)
-                {
-                    var children = new List<Node>();
-                    for (var child = containerNode.FirstChild; child != null; child = child.NextSibling)
-                        children.Add(child);
-
-                    for (int i = children.Count - 1; i >= 0; i--)
-                        stack.Push(children[i]);
-                }
+                PushChildrenReverse(node, stack);
             }
+        }
+
+        private static void PushChildrenReverse(Node node, Stack<Node> stack)
+        {
+            if (node is not ContainerNode container)
+                return;
+
+            // Last -> first push yields first -> last processing with LIFO stack.
+            for (var child = container.LastChild; child != null; child = child.PreviousSibling)
+                stack.Push(child);
         }
     }
 
