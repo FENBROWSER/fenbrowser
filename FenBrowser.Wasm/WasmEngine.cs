@@ -59,6 +59,7 @@ public sealed class WasmEngine : IDisposable
     /// </summary>
     public WasmModule Compile(ReadOnlyMemory<byte> wasmBytes, string? name = null)
     {
+        ThrowIfDisposed();
         if (wasmBytes.IsEmpty)
             throw new ArgumentException("WASM bytes cannot be empty.", nameof(wasmBytes));
 
@@ -71,6 +72,7 @@ public sealed class WasmEngine : IDisposable
     /// </summary>
     public WasmModule CompileFromFile(string path)
     {
+        ThrowIfDisposed();
         if (string.IsNullOrWhiteSpace(path))
             throw new ArgumentException("Path cannot be empty.", nameof(path));
 
@@ -80,13 +82,14 @@ public sealed class WasmEngine : IDisposable
 
     internal Store CreateStore()
     {
-        if (Volatile.Read(ref _activeInstanceCount) >= _limits.MaxInstances)
-            throw new InvalidOperationException(
-                $"WASM instance limit reached ({_limits.MaxInstances}). Consider unloading modules.");
+        ThrowIfDisposed();
 
+        // Instance admission is performed atomically by TrackInstance(). Do not make
+        // a separate advisory count check here; callers reserve an instance before
+        // creating the Store so concurrent instantiation cannot race the limit.
         var store = new Store(_engine);
 
-        // Enforce resource limits at the store level
+        // Enforce resource limits at the store level.
         store.SetLimits(
             memorySize: (long)_limits.MaxMemoryBytes,
             tableElements: _limits.MaxTableElements,
@@ -94,7 +97,7 @@ public sealed class WasmEngine : IDisposable
             tables: _limits.MaxTables,
             memories: _limits.MaxMemories);
 
-        // Set initial fuel budget
+        // Set initial fuel budget.
         store.Fuel = _limits.MaxFuelPerInstance;
 
         // Epoch deadlines are relative tick counts. Clamp to at least one tick so
@@ -120,6 +123,8 @@ public sealed class WasmEngine : IDisposable
 
     internal void TrackInstance()
     {
+        ThrowIfDisposed();
+
         var count = Interlocked.Increment(ref _activeInstanceCount);
         if (count > _limits.MaxInstances)
         {
@@ -131,7 +136,18 @@ public sealed class WasmEngine : IDisposable
 
     internal void UntrackInstance()
     {
-        Interlocked.Decrement(ref _activeInstanceCount);
+        var count = Interlocked.Decrement(ref _activeInstanceCount);
+        if (count < 0)
+        {
+            Interlocked.Exchange(ref _activeInstanceCount, 0);
+            throw new InvalidOperationException("WASM instance accounting underflow.");
+        }
+    }
+
+    private void ThrowIfDisposed()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(WasmEngine));
     }
 
     public void Dispose()
