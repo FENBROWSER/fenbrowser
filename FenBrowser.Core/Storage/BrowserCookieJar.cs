@@ -15,7 +15,7 @@ namespace FenBrowser.Core.Storage
     /// <summary>
     /// Shared browser cookie jar used by both the network stack and document.cookie.
     /// Stores cookies in the partition-aware storage backend and applies SameSite,
-    /// Secure, and third-party blocking rules when cookies are read or written.
+    /// Secure, HttpOnly, and third-party blocking rules when cookies are read or written.
     /// </summary>
     public sealed class BrowserCookieJar
     {
@@ -104,6 +104,22 @@ namespace FenBrowser.Core.Storage
                     documentUri,
                     cookieString,
                     "parse-failed-or-policy-blocked",
+                    fromScript: true,
+                    topLevelDocumentUri);
+                return;
+            }
+
+            // document.cookie is a non-HTTP API. It must not overwrite or delete an
+            // existing HttpOnly cookie simply by omitting the HttpOnly attribute from
+            // the new string. Query the exact storage identity using a synthetic HTTPS
+            // probe so Secure+HttpOnly cookies are protected even when the current
+            // document itself is loaded over HTTP.
+            if (WouldOverwriteHttpOnlyCookie(documentUri, context.PartitionKey, cookie, partitionKey))
+            {
+                CookieDiagnostics.LogIngressRejected(
+                    documentUri,
+                    cookieString,
+                    "httponly-overwrite-blocked",
                     fromScript: true,
                     topLevelDocumentUri);
                 return;
@@ -251,6 +267,54 @@ namespace FenBrowser.Core.Storage
             return filtered;
         }
 
+        private bool WouldOverwriteHttpOnlyCookie(
+            Uri documentUri,
+            StoragePartitionKey contextPartitionKey,
+            Cookie candidate,
+            StoragePartitionKey? candidatePartitionKey)
+        {
+            if (documentUri == null || candidate == null || string.IsNullOrEmpty(candidate.Name))
+                return false;
+
+            Uri probeUri;
+            try
+            {
+                var builder = new UriBuilder(documentUri)
+                {
+                    Scheme = Uri.UriSchemeHttps,
+                    Port = -1,
+                    Path = string.IsNullOrEmpty(candidate.Path) ? "/" : candidate.Path,
+                    Query = string.Empty,
+                    Fragment = string.Empty
+                };
+                probeUri = builder.Uri;
+            }
+            catch
+            {
+                return true; // fail closed for a malformed non-HTTP cookie probe
+            }
+
+            var existingCookies = _storage.Cookies.GetForUrl(
+                probeUri.AbsoluteUri,
+                contextPartitionKey,
+                includeHttpOnly: true);
+
+            foreach (var existing in existingCookies)
+            {
+                if (!existing.HttpOnly) continue;
+                if (!string.Equals(existing.Name, candidate.Name, StringComparison.Ordinal)) continue;
+                if (!string.Equals(existing.Domain, candidate.Domain, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!string.Equals(existing.Path, candidate.Path, StringComparison.Ordinal)) continue;
+                if (!Nullable.Equals(existing.PartitionKey, candidatePartitionKey)) continue;
+
+                // The store key is partition/domain/name/path; this write would replace
+                // the protected cookie regardless of HostOnly metadata.
+                return true;
+            }
+
+            return false;
+        }
+
         private static bool TryParseCookie(
             string cookieString,
             Uri requestUri,
@@ -262,8 +326,14 @@ namespace FenBrowser.Core.Storage
             cookie = null;
             actualPartitionKey = null;
 
-            if (requestUri == null || string.IsNullOrWhiteSpace(cookieString))
+            if (requestUri == null ||
+                !requestUri.IsAbsoluteUri ||
+                (!string.Equals(requestUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                 !string.Equals(requestUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)) ||
+                string.IsNullOrWhiteSpace(cookieString))
+            {
                 return false;
+            }
 
             var segments = cookieString.Split(';');
             if (segments.Length == 0)
@@ -276,10 +346,13 @@ namespace FenBrowser.Core.Storage
 
             var name = nameValue[..equalsIndex].Trim();
             var value = nameValue[(equalsIndex + 1)..].Trim();
-            if (string.IsNullOrEmpty(name))
+            if (!IsCookieName(name) || !IsSafeCookieValue(value))
                 return false;
 
-            var requestHost = requestUri.Host;
+            var requestHost = (requestUri.IdnHost ?? string.Empty).Trim().TrimEnd('.').ToLowerInvariant();
+            if (string.IsNullOrEmpty(requestHost))
+                return false;
+
             var defaultPath = GetDefaultCookiePath(requestUri.AbsolutePath);
             var path = defaultPath;
             var secure = false;
@@ -303,6 +376,9 @@ namespace FenBrowser.Core.Storage
                 var attributeValue = attributeEqualsIndex >= 0
                     ? segment[(attributeEqualsIndex + 1)..].Trim()
                     : string.Empty;
+
+                if (!IsCookieAttributeSafe(attributeName, attributeValue))
+                    return false;
 
                 switch (attributeName.ToLowerInvariant())
                 {
@@ -446,16 +522,67 @@ namespace FenBrowser.Core.Storage
             return now.AddSeconds(maxAge);
         }
 
+        private static bool IsCookieName(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return false;
+
+            foreach (var c in value)
+            {
+                if (c > 0x7F) return false;
+                if (char.IsLetterOrDigit(c)) continue;
+                if (c is '!' or '#' or '$' or '%' or '&' or '\'' or '*' or '+' or '-' or '.' or '^' or '_' or '`' or '|' or '~')
+                    continue;
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsSafeCookieValue(string value)
+        {
+            if (value == null) return false;
+            foreach (var c in value)
+            {
+                if (char.IsControl(c) || c == ';') return false;
+            }
+            return true;
+        }
+
+        private static bool IsCookieAttributeSafe(string name, string value)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            foreach (var c in name)
+            {
+                if (char.IsControl(c) || c == ';') return false;
+            }
+            if (value == null) return true;
+            foreach (var c in value)
+            {
+                if (char.IsControl(c) || c == ';') return false;
+            }
+            return true;
+        }
+
         private static bool IsAsciiCookieDomain(string value)
         {
-            if (string.IsNullOrEmpty(value))
+            if (string.IsNullOrEmpty(value) || value.Length > 253)
                 return false;
 
-            for (var i = 0; i < value.Length; i++)
+            // Cookie Domain is an ASCII DNS name here. IP literals are accepted only
+            // for exact-host matching by DomainMatches; no suffix matching is allowed
+            // by the storage layer for a host-only origin.
+            if (System.Net.IPAddress.TryParse(value, out _))
+                return true;
+
+            var labels = value.Split('.', StringSplitOptions.None);
+            foreach (var label in labels)
             {
-                var c = value[i];
-                if (c > 0x7F || char.IsControl(c) || char.IsWhiteSpace(c))
-                    return false;
+                if (label.Length == 0 || label.Length > 63) return false;
+                if (!char.IsLetterOrDigit(label[0]) || !char.IsLetterOrDigit(label[^1])) return false;
+                foreach (var c in label)
+                {
+                    if (c > 0x7F || (!char.IsLetterOrDigit(c) && c != '-')) return false;
+                }
             }
 
             return true;
@@ -497,8 +624,17 @@ namespace FenBrowser.Core.Storage
             if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(cookieDomain))
                 return false;
 
-            return host.Equals(cookieDomain, StringComparison.OrdinalIgnoreCase) ||
-                   host.EndsWith("." + cookieDomain, StringComparison.OrdinalIgnoreCase);
+            if (host.Equals(cookieDomain, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            // IP literals do not have DNS subdomains for cookie-domain matching.
+            if (System.Net.IPAddress.TryParse(host, out _) ||
+                System.Net.IPAddress.TryParse(cookieDomain, out _))
+            {
+                return false;
+            }
+
+            return host.EndsWith("." + cookieDomain, StringComparison.OrdinalIgnoreCase);
         }
 
         private static CookieContext BuildContext(Uri requestUri, Uri topLevelDocumentUri)
