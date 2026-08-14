@@ -50,20 +50,6 @@ public sealed partial class BytecodeInterpreter
                 {
                     return value;
                 }
-                // ECMA-262 10.3.3: callable native objects whose [[Prototype]] was
-                // never wired up still need Function.prototype methods (`call`,
-                // `apply`, `bind`, `toString`) to be reachable. Fall back through
-                // Function.prototype only for functions that have no explicit chain.
-                if (obj.PrototypeHandle is null
-                    && (obj is NativeFunctionObject || obj is JsFunctionObject || obj is BoundFunctionObject)
-                    && _functionPrototypeHandle is { } fnProto)
-                {
-                    var fpObj = _heap.GetObject(fnProto);
-                    if (TryGetPropertyValue(fpObj, receiver, key, out var fpValue))
-                    {
-                        return fpValue;
-                    }
-                }
                 return JsValue.Undefined;
             }
             case JsValueTag.HostObject:
@@ -251,60 +237,81 @@ public sealed partial class BytecodeInterpreter
     [MayExecuteJs]
     private bool TryGetPropertyValue(JsObject obj, JsValue receiver, string key, out JsValue value)
     {
-        if (obj is ProxyObject proxyGet)
-        {
-            value = ProxyGet(proxyGet, receiver, key);
-            return true;
-        }
+        // Ordinary prototype walks are hot, so keep the shallow path allocation-free.
+        // If a chain becomes unusually deep, lazily start recording visited handles so
+        // corrupted host/proxy state cannot turn a property read into an infinite loop.
+        const int CycleDetectionThreshold = 64;
+        HashSet<long>? visitedPrototypeHandles = null;
+        var depth = 0;
+        var current = obj;
 
-        // ECMA-262 10.4.5.4 [[Get]] for Integer-Indexed Exotic Objects (TypedArrays):
-        // numeric-like string keys route through IntegerIndexedElementGet, not
-        // OrdinaryGet. Non-integer indices (e.g. "1.1" → 1.1) return undefined
-        // without consulting the prototype chain.
-        if (obj is TypedArrayObject ta && TypedArrayObject.TryCanonicalNumericIndexString(key, out var taNumIdx))
+        while (true)
         {
-            if (taNumIdx != (int)taNumIdx || double.IsNaN(taNumIdx) ||
-                (double.IsNegative(taNumIdx) && taNumIdx == 0))
+            if (current is ProxyObject proxyGet)
             {
-                value = JsValue.Undefined;
+                value = ProxyGet(proxyGet, receiver, key);
                 return true;
             }
-            value = ta.GetElement((int)taNumIdx);
-            return true;
-        }
 
-        if (obj.TryGetOwnProperty(key, out var descriptor))
-        {
-            value = GetDescriptorValue(descriptor, receiver);
-            return true;
-        }
-
-        if (obj.PrototypeHandle is { } prototypeHandle)
-        {
-            JsObject protoObj;
-            try { protoObj = _heap.GetObject(prototypeHandle); }
-            catch (FenBrowser.Js.Heap.JsEngineFatalException ex)
+            // ECMA-262 10.4.5.4 [[Get]] for Integer-Indexed Exotic Objects (TypedArrays):
+            // numeric-like string keys route through IntegerIndexedElementGet, not
+            // OrdinaryGet. Non-integer indices (e.g. "1.1" → 1.1) return undefined
+            // without consulting the prototype chain.
+            if (current is TypedArrayObject ta && TypedArrayObject.TryCanonicalNumericIndexString(key, out var taNumIdx))
             {
-                throw new FenBrowser.Js.Heap.JsEngineFatalException(
-                    $"{ex.Message} [protoWalk owner={obj.GetType().Name} key={key}]");
+                if (taNumIdx != (int)taNumIdx || double.IsNaN(taNumIdx) ||
+                    (double.IsNegative(taNumIdx) && taNumIdx == 0))
+                {
+                    value = JsValue.Undefined;
+                    return true;
+                }
+                value = ta.GetElement((int)taNumIdx);
+                return true;
             }
-            return TryGetPropertyValue(protoObj, receiver, key, out value);
-        }
 
-        // ECMA-262 10.3.3: callable native objects whose [[Prototype]] was never
-        // wired up still need Function.prototype methods (`call`, `apply`, `bind`,
-        // `toString`) to be reachable. GetReceiverProperty already applies this
-        // fallback; mirror it here so internal consumers (ToPrimitive's
-        // toString/valueOf probe, IsRegExp, etc.) resolve inherited function
-        // methods too — otherwise String(nativeFn) / regex.test(nativeFn) throw
-        // "Cannot convert object to primitive value".
-        if ((obj is NativeFunctionObject || obj is JsFunctionObject || obj is BoundFunctionObject)
-            && _functionPrototypeHandle is { } fnProto)
-        {
-            return TryGetPropertyValue(_heap.GetObject(fnProto), receiver, key, out value);
-        }
+            if (current.TryGetOwnProperty(key, out var descriptor))
+            {
+                value = GetDescriptorValue(descriptor, receiver);
+                return true;
+            }
 
-        value = JsValue.Undefined;
-        return false;
+            ObjectHandle? nextHandle = current.PrototypeHandle;
+
+            // ECMA-262 10.3.3 compatibility fallback for callable native/function
+            // objects whose [[Prototype]] was never wired explicitly.
+            if (nextHandle is null &&
+                (current is NativeFunctionObject || current is JsFunctionObject || current is BoundFunctionObject) &&
+                _functionPrototypeHandle is { } fnProto)
+            {
+                nextHandle = fnProto;
+            }
+
+            if (nextHandle is not { } handle)
+            {
+                value = JsValue.Undefined;
+                return false;
+            }
+
+            depth++;
+            if (depth >= CycleDetectionThreshold)
+            {
+                visitedPrototypeHandles ??= new HashSet<long>();
+                if (!visitedPrototypeHandles.Add(handle.ToInt64()))
+                {
+                    throw new JsEngineFatalException(
+                        $"Prototype chain cycle detected while reading property '{key}'.");
+                }
+            }
+
+            try
+            {
+                current = _heap.GetObject(handle);
+            }
+            catch (JsEngineFatalException ex)
+            {
+                throw new JsEngineFatalException(
+                    $"{ex.Message} [protoWalk owner={current.GetType().Name} key={key}]");
+            }
+        }
     }
 }
