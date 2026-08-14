@@ -98,12 +98,14 @@ namespace FenBrowser.Core.Network
                 return null;
             }
 
-            // Scriptable signatures from the unknown-type sniffing family.
-            if (len - offset >= 15 && StartsWithIgnoreCase(bytes, offset, "<!DOCTYPE html")) return "text/html";
-            if (len - offset >= 5 && StartsWithIgnoreCase(bytes, offset, "<html")) return "text/html";
-            if (len - offset >= 5 && StartsWithIgnoreCase(bytes, offset, "<head")) return "text/html";
-            if (len - offset >= 6 && StartsWithIgnoreCase(bytes, offset, "<body")) return "text/html";
-            if (len - offset >= 5 && StartsWithIgnoreCase(bytes, offset, "<?xml")) return "text/xml";
+            // Scriptable signatures from the unknown-type sniffing family. Require a
+            // tag/declaration boundary after the signature: prefix-only matching would
+            // promote ordinary text such as "<htmlx>" or "<headache>" into active HTML.
+            if (StartsWithHtmlTagSignature(bytes, offset, "<!DOCTYPE html")) return "text/html";
+            if (StartsWithHtmlTagSignature(bytes, offset, "<html")) return "text/html";
+            if (StartsWithHtmlTagSignature(bytes, offset, "<head")) return "text/html";
+            if (StartsWithHtmlTagSignature(bytes, offset, "<body")) return "text/html";
+            if (StartsWithXmlDeclaration(bytes, offset)) return "text/xml";
             if (len >= 5 && bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46 && bytes[4] == 0x2D)
                 return "application/pdf";
 
@@ -143,6 +145,41 @@ namespace FenBrowser.Core.Network
             return null;
         }
 
+        private static bool StartsWithHtmlTagSignature(byte[] bytes, int offset, string pattern)
+        {
+            if (!StartsWithIgnoreCase(bytes, offset, pattern))
+            {
+                return false;
+            }
+
+            var end = offset + pattern.Length;
+            if (end >= bytes.Length)
+            {
+                return true;
+            }
+
+            var next = bytes[end];
+            return next == (byte)'>' || next == (byte)'/' || IsHttpWhitespace(next);
+        }
+
+        private static bool StartsWithXmlDeclaration(byte[] bytes, int offset)
+        {
+            const string declaration = "<?xml";
+            if (!StartsWithIgnoreCase(bytes, offset, declaration))
+            {
+                return false;
+            }
+
+            var end = offset + declaration.Length;
+            if (end >= bytes.Length)
+            {
+                return true;
+            }
+
+            var next = bytes[end];
+            return next == (byte)'?' || IsHttpWhitespace(next);
+        }
+
         private static bool StartsWithIgnoreCase(byte[] bytes, int offset, string pattern)
         {
             if (offset < 0 || bytes.Length - offset < pattern.Length) return false;
@@ -177,16 +214,32 @@ namespace FenBrowser.Core.Network
 
         /// <summary>
         /// Returns true if the MIME type indicates text content suitable for parsing.
+        /// Matching is based on the MIME essence/suffix, never arbitrary substrings.
         /// </summary>
         public static bool IsTextMime(string mime)
         {
-            if (string.IsNullOrEmpty(mime)) return false;
-            var lower = mime.ToLowerInvariant();
-            return lower.StartsWith("text/") ||
-                   lower.Contains("javascript") ||
-                   lower.Contains("json") ||
-                   lower.Contains("xml") ||
-                   lower.Contains("+xml");
+            var essence = NormalizeSuppliedMime(mime);
+            if (string.IsNullOrEmpty(essence))
+            {
+                return false;
+            }
+
+            if (essence.StartsWith("text/", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (essence is "application/javascript" or
+                "application/ecmascript" or
+                "application/x-javascript" or
+                "application/json" or
+                "application/xml")
+            {
+                return true;
+            }
+
+            return essence.EndsWith("+json", StringComparison.Ordinal) ||
+                   essence.EndsWith("+xml", StringComparison.Ordinal);
         }
     }
 }
