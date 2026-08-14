@@ -4,7 +4,7 @@ namespace FenBrowser.Js.Bytecode;
 
 // Plan §31: polymorphic inline cache for property access sites.
 // Up to 4 cached (Shape, Key, Slot) entries per instruction offset.
-// Beyond 4 distinct shapes the site becomes megamorphic and falls
+// Beyond 4 distinct shape/key pairs the site becomes megamorphic and falls
 // back to the generic [[Get]]/[[Set]] path.
 
 public sealed class PropertyInlineCacheEntry
@@ -45,16 +45,17 @@ public sealed class PolymorphicInlineCache
         if (slot < 0) throw new ArgumentOutOfRangeException(nameof(slot));
         if (IsMegamorphic) return;
 
-        // A single instruction normally uses one key, while dynamic string element
-        // access may see several. For an existing shape, keep the newest key/slot.
-        if (_e0?.Shape == shape) { _e0 = new(shape, key, slot); return; }
-        if (_e1?.Shape == shape) { _e1 = new(shape, key, slot); return; }
-        if (_e2?.Shape == shape) { _e2 = new(shape, key, slot); return; }
-        if (_e3?.Shape == shape) { _e3 = new(shape, key, slot); return; }
+        // Cache identity is (shape,key), not shape alone. Dynamic element access such
+        // as obj[k] commonly reads several stable keys from objects with the same
+        // shape. Replacing an entry merely because the shape matched caused the IC to
+        // thrash between keys and miss almost every alternating access.
+        if (Matches(_e0, shape, key)) { _e0 = new(shape, key, slot); return; }
+        if (Matches(_e1, shape, key)) { _e1 = new(shape, key, slot); return; }
+        if (Matches(_e2, shape, key)) { _e2 = new(shape, key, slot); return; }
+        if (Matches(_e3, shape, key)) { _e3 = new(shape, key, slot); return; }
 
         // Fill actual holes rather than choosing a slot from _count. Invalidation can
-        // leave sparse occupancy (for example e0/e2/e3), and the old count-based
-        // switch would overwrite e3 instead of reusing the empty e1 slot.
+        // leave sparse occupancy (for example e0/e2/e3).
         var entry = new PropertyInlineCacheEntry(shape, key, slot);
         if (_e0 is null) { _e0 = entry; _count++; return; }
         if (_e1 is null) { _e1 = entry; _count++; return; }
@@ -79,6 +80,13 @@ public sealed class PolymorphicInlineCache
             (_e1 is null ? 0 : 1) +
             (_e2 is null ? 0 : 1) +
             (_e3 is null ? 0 : 1);
+
+        // A previously-megamorphic site may become cacheable again after the
+        // invalidated shape disappears. Repopulation is bounded by the same four
+        // shape/key slots.
         IsMegamorphic = false;
     }
+
+    private static bool Matches(PropertyInlineCacheEntry? entry, Shape shape, string key) =>
+        entry is not null && entry.Shape == shape && string.Equals(entry.Key, key, StringComparison.Ordinal);
 }
