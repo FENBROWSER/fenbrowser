@@ -48,6 +48,7 @@ public sealed class HoverClickJavaScriptRegressionTests
   <div id="dbl-state">idle</div>
   <div id="context-state">idle</div>
   <div id="pointer-state">none</div>
+  <div id="boundary-state" style="display:none"></div>
   <div id="hover-target"></div>
   <button id="probe-button" type="button">Probe</button>
   <button id="dbl-button" type="button">Double</button>
@@ -68,6 +69,15 @@ public sealed class HoverClickJavaScriptRegressionTests
     });
     document.getElementById('hover-target').addEventListener('pointerdown', function (event) {
       document.getElementById('pointer-state').textContent = event.type + ':' + event.pointerType + ':' + event.button;
+    });
+    var hoverTarget = document.getElementById('hover-target');
+    var boundaryState = document.getElementById('boundary-state');
+    ['pointerover', 'pointerenter', 'mouseover', 'mouseenter',
+     'pointerout', 'pointerleave', 'mouseout', 'mouseleave'].forEach(function (name) {
+      hoverTarget.addEventListener(name, function (event) {
+        var related = event.relatedTarget && event.relatedTarget.id ? event.relatedTarget.id : 'null';
+        boundaryState.textContent += name + ':' + related + '|';
+      });
     });
   </script>
 </body>
@@ -99,6 +109,7 @@ public sealed class HoverClickJavaScriptRegressionTests
             var dblState = FindById(root, "dbl-state");
             var contextState = FindById(root, "context-state");
             var pointerState = FindById(root, "pointer-state");
+            var boundaryState = FindById(root, "boundary-state");
             var hoverTarget = FindById(root, "hover-target");
             var button = FindById(root, "probe-button");
             var dblButton = FindById(root, "dbl-button");
@@ -120,6 +131,12 @@ public sealed class HoverClickJavaScriptRegressionTests
             await WaitForAsync(
                 () => HasBackground(host.ComputedStyles, hoverTarget, 1, 2, 3),
                 "Hover did not recascade #hover-target:hover background.");
+            await WaitForAsync(
+                () => boundaryState.TextContent.Contains("pointerover:null|", StringComparison.Ordinal) &&
+                      boundaryState.TextContent.Contains("pointerenter:null|", StringComparison.Ordinal) &&
+                      boundaryState.TextContent.Contains("mouseover:null|", StringComparison.Ordinal) &&
+                      boundaryState.TextContent.Contains("mouseenter:null|", StringComparison.Ordinal),
+                $"Pointer entry did not dispatch complete boundary events. Actual: '{boundaryState.TextContent}'.");
 
             host.OnMouseDown(hoverRect.Left + hoverRect.Width / 2f, hoverRect.Top + hoverRect.Height / 2f, button: 0);
             await WaitForAsync(
@@ -128,6 +145,13 @@ public sealed class HoverClickJavaScriptRegressionTests
 
             RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
             Assert.True(renderer.LastLayout.TryGetElementRect(button, out var buttonRect), "Missing button layout rect.");
+            host.OnMouseMove(buttonRect.Left + buttonRect.Width / 2f, buttonRect.Top + buttonRect.Height / 2f);
+            await WaitForAsync(
+                () => boundaryState.TextContent.Contains("pointerout:probe-button|", StringComparison.Ordinal) &&
+                      boundaryState.TextContent.Contains("pointerleave:probe-button|", StringComparison.Ordinal) &&
+                      boundaryState.TextContent.Contains("mouseout:probe-button|", StringComparison.Ordinal) &&
+                      boundaryState.TextContent.Contains("mouseleave:probe-button|", StringComparison.Ordinal),
+                $"Pointer exit did not dispatch complete boundary events with relatedTarget. Actual: '{boundaryState.TextContent}'.");
             host.OnClick(buttonRect.Left + buttonRect.Width / 2f, buttonRect.Top + buttonRect.Height / 2f, button: 0);
 
             await WaitForAsync(
@@ -315,6 +339,59 @@ public sealed class HoverClickJavaScriptRegressionTests
         {
             Environment.SetEnvironmentVariable("FEN_FENJS_INPUT_EVENT_TIMEOUT_MS", previousTimeout);
         }
+    }
+
+    [Fact]
+    public async Task RenderedPage_UserInputIsNotStarvedByRepeatingTimer()
+    {
+        const string html = """
+<!doctype html>
+<html>
+<body>
+  <button id="target" type="button">Idle</button>
+  <script>
+    var target = document.getElementById('target');
+    target.addEventListener('mouseover', function () { target.textContent = 'Hovered'; });
+    target.textContent = 'Ready';
+    setInterval(function () {
+      var total = 0;
+      for (var i = 0; i < 250000; i++) { total += i; }
+      window.__timerTotal = total;
+    }, 0);
+  </script>
+</body>
+</html>
+""";
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        host.SetActiveRenderer(renderer);
+        host.Engine.SetExternalRenderer(renderer);
+
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/timer-starvation"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth: 640,
+            viewportHeight: 360,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var target = FindById(root, "target");
+        await WaitForAsync(
+            () => string.Equals(target.TextContent, "Ready", StringComparison.Ordinal),
+            "JavaScript did not install the timer-starvation listener.");
+        await Task.Delay(100);
+
+        var dispatch = Task.Run(() => host.Engine.DispatchPointerEvent(target, "mouseover"));
+        var completed = await Task.WhenAny(dispatch, Task.Delay(4000));
+
+        Assert.Same(dispatch, completed);
+        Assert.True(await dispatch);
+        Assert.Equal("Hovered", target.TextContent);
     }
 
     private static void RenderFrame(

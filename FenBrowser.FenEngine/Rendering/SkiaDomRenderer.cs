@@ -2272,6 +2272,11 @@ namespace FenBrowser.FenEngine.Rendering
                     continue;
                 }
 
+                if (!layout.TryGetElementRect(frameElement, out _))
+                {
+                    return true;
+                }
+
                 var frameDocument = frameElement.ChildNodes?.OfType<Document>().FirstOrDefault();
                 var frameRoot = frameDocument?.DocumentElement;
                 if (frameRoot != null && !layout.TryGetElementRect(frameRoot, out _))
@@ -2301,6 +2306,12 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 if (!string.Equals(frameElement.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
                 {
+                    continue;
+                }
+
+                if (!layout.TryGetElementRect(frameElement, out _))
+                {
+                    set.Add(frameElement);
                     continue;
                 }
 

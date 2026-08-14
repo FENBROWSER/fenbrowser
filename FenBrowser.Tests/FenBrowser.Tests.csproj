@@ -84,6 +84,7 @@
     <Compile Include="Host\Phase11InteractionRecascadeCtsTests.cs" />
     <!-- Phase 10 watchdog late-frame policy regression. -->
     <Compile Include="Rendering\Phase10WatchdogLateFramePolicyTests.cs" />
+    <Compile Include="Rendering\HitTesterContractTests.cs" />
     <!-- Phase 3 property-specific animation invalidation classification. -->
     <Compile Include="Rendering\Phase3AnimationClassificationTests.cs" />
     <!-- Phase 17 final multi-tab performance/isolation regression suite. -->

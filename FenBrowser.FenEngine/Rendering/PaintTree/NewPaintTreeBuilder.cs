@@ -4534,11 +4534,15 @@ namespace FenBrowser.FenEngine.Rendering
             if (box == null) return null;
             
             string inputType = elem.GetAttribute("type")?.ToLowerInvariant() ?? "text";
-            bool isChecked = elem.HasAttribute("checked");
+            bool isChecked = ElementStateManager.Instance.IsChecked(elem);
             bool isDisabled = elem.HasAttribute("disabled");
-            
-            SKColor borderColor = isDisabled ? SKColors.LightGray : SKColors.Gray;
-            SKColor fillColor = isDisabled ? new SKColor(240, 240, 240) : SKColors.White;
+
+            SKColor borderColor = isDisabled ? SKColors.LightGray
+                                : isHovered ? new SKColor(51, 51, 51)
+                                : new SKColor(153, 153, 153);
+            SKColor fillColor = isDisabled ? new SKColor(240, 240, 240)
+                              : isHovered ? new SKColor(230, 240, 255)
+                              : SKColors.White;
             SKColor checkColor = isDisabled ? SKColors.Gray : new SKColor(0, 120, 215); // Windows accent blue
             
             switch (inputType)

@@ -101,5 +101,38 @@ namespace FenBrowser.Tests.Rendering
             var hit = HitTester.HitTest(ctx, 10, 20);
             Assert.Same(child, hit);
         }
+
+        [Fact]
+        public void HitTest_IgnoresPaintNodeOutsideSourceLayoutBox()
+        {
+            var document = new Document();
+            var back = new Element("iframe", document);
+            var falseFront = new Element("div", document);
+            var ctx = new RenderContext
+            {
+                Boxes = new Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel>
+                {
+                    [falseFront] = FenBrowser.FenEngine.Layout.BoxModel.FromContentBox(0, 120, 100, 40)
+                },
+                PaintTreeRoots = new List<PaintNodeBase>
+                {
+                    new BackgroundPaintNode
+                    {
+                        SourceNode = back,
+                        Bounds = new SKRect(0, 0, 100, 100),
+                        Color = SKColors.Red
+                    },
+                    new BackgroundPaintNode
+                    {
+                        SourceNode = falseFront,
+                        Bounds = new SKRect(0, 0, 100, 100),
+                        Color = SKColors.Blue
+                    }
+                }
+            };
+
+            var hit = HitTester.HitTest(ctx, 10, 10);
+            Assert.Same(back, hit);
+        }
     }
 }

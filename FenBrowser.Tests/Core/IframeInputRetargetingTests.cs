@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
@@ -14,6 +15,48 @@ namespace FenBrowser.Tests.Core;
 
 public sealed class IframeInputRetargetingTests
 {
+    [Fact]
+    public void RenderFrame_ForcesLayoutForLateIframeMissingFromPreviousSnapshot()
+    {
+        const int viewportWidth = 640;
+        const int viewportHeight = 360;
+        var root = new Element("div");
+        var styles = new System.Collections.Generic.Dictionary<Node, CssComputed>
+        {
+            [root] = new CssComputed { Display = "block", Width = 400, Height = 200 }
+        };
+        var renderer = new SkiaDomRenderer();
+
+        RenderFrame(renderer, root, styles, viewportWidth, viewportHeight);
+
+        var iframe = new Element("iframe");
+        iframe.SetAttribute("width", "304");
+        iframe.SetAttribute("height", "78");
+        root.AppendChild(iframe);
+        styles[iframe] = new CssComputed { Display = "inline-block", Width = 304, Height = 78 };
+        root.ClearDirty(InvalidationKind.Style | InvalidationKind.Layout);
+        iframe.ClearDirty(InvalidationKind.Style | InvalidationKind.Layout);
+
+        using var bitmap = new SKBitmap(viewportWidth, viewportHeight);
+        using var canvas = new SKCanvas(bitmap);
+        renderer.RenderFrame(new RenderFrameRequest
+        {
+            Root = root,
+            Canvas = canvas,
+            Styles = styles,
+            Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+            BaseUrl = "https://fen.test/late-iframe",
+            InvalidationReason = RenderFrameInvalidationReason.None,
+            RequestedBy = "IframeInputRetargetingTests",
+            EmitVerificationReport = false
+        });
+
+        Assert.True(renderer.LastLayout.TryGetElementRect(iframe, out var rect));
+        Assert.Equal(304f, rect.Width, 1f);
+        Assert.Equal(78f, rect.Height, 1f);
+        Assert.True(renderer.CreateRenderContext().Boxes.ContainsKey(iframe));
+    }
+
     [Fact]
     public async Task AttachedIframeDocument_ClipsPaintToFrameContentBox()
     {
@@ -220,6 +263,222 @@ public sealed class IframeInputRetargetingTests
     }
 
     [Fact]
+    public async Task DynamicallyInsertedInlineIframe_ContributesToFollowingBlockFlow()
+    {
+        const int viewportWidth = 640;
+        const int viewportHeight = 360;
+        const string html = """
+<!doctype html>
+<html><body style="margin:0;padding:20px"><div style="max-width:400px"><form>
+<div id="frame-slot"></div></form><div id="following">About this page</div></div>
+<script>setTimeout(function(){
+  var slot=document.getElementById('frame-slot');
+  var outer=document.createElement('div'); outer.style.width='304px'; outer.style.height='78px';
+  var inner=document.createElement('div');
+  var frame=document.createElement('iframe'); frame.id='frame'; frame.width='304'; frame.height='78';
+  inner.appendChild(frame); outer.appendChild(inner); slot.appendChild(outer);
+  var doc=frame.contentDocument; doc.open();
+  doc.write('<!doctype html><html><body style="margin:0"><button id="target" style="width:40px;height:40px">check</button></body></html>');
+  doc.close();
+},0);</script></body></html>
+""";
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        host.SetActiveRenderer(renderer);
+        host.Engine.SetExternalRenderer(renderer);
+
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/dynamic-inline-iframe"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth,
+            viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        await WaitForAsync(
+            () => root.OwnerDocument?.GetElementById("frame") is Element frame &&
+                  frame.FirstChild is Document document &&
+                  document.GetElementById("target") != null,
+            "dynamic iframe target to be written");
+        await host.FlushPendingLayoutAsync();
+        var iframe = Assert.IsType<Element>(root.OwnerDocument?.GetElementById("frame"));
+        var following = Assert.IsType<Element>(root.OwnerDocument?.GetElementById("following"));
+        var frameDocument = Assert.IsType<Document>(iframe.FirstChild);
+        var target = Assert.IsType<Element>(frameDocument.GetElementById("target"));
+
+        RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+        Assert.True(renderer.LastLayout.TryGetElementRect(iframe, out var iframeRect));
+        Assert.True(renderer.LastLayout.TryGetElementRect(following, out var followingRect));
+        Assert.True(renderer.LastLayout.TryGetElementRect(target, out var targetRect));
+        Assert.True(followingRect.Top >= iframeRect.Bottom - 0.5f,
+            $"Following block started at {followingRect.Top:F1} before iframe bottom {iframeRect.Bottom:F1}.");
+
+        var x = targetRect.Left + targetRect.Width / 2f;
+        var y = targetRect.Top + targetRect.Height / 2f;
+        Assert.True(HitTester.HitTestInput(renderer.CreateRenderContext(), x, y, out var input));
+        Assert.Same(target, input.Target);
+    }
+
+    [Fact]
+    public async Task HitTestInput_RetargetsAncestorPaintHitIntoDescendantIframe()
+    {
+        const int viewportWidth = 640;
+        const int viewportHeight = 360;
+        const string html = """
+<!doctype html>
+<html><head><style>html,body{margin:0}#wrapper,iframe{display:block;width:304px;height:78px}iframe{border:0}</style></head>
+<body><div id="wrapper"><iframe id="frame"></iframe></div><script>
+var frame=document.getElementById('frame');
+var doc=frame.contentDocument;
+doc.open();
+doc.write('<!doctype html><html><head><style>html,body{margin:0}#target{display:block;width:40px;height:40px}</style></head><body><button id="target">check</button></body></html>');
+doc.close();
+</script></body></html>
+""";
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        host.SetActiveRenderer(renderer);
+        host.Engine.SetExternalRenderer(renderer);
+
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/iframe-ancestor-hit"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth,
+            viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var wrapper = FindById(root, "wrapper");
+        var iframe = FindById(root, "frame");
+        await WaitForAsync(
+            () => iframe.FirstChild is Document document && document.GetElementById("target") != null,
+            "iframe target to be written");
+        var frameDocument = Assert.IsType<Document>(iframe.FirstChild);
+        var target = Assert.IsType<Element>(frameDocument.GetElementById("target"));
+
+        RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+        Assert.True(renderer.LastLayout.TryGetElementRect(iframe, out var iframeRect));
+        Assert.True(renderer.LastLayout.TryGetElementRect(target, out var targetRect));
+
+        var context = renderer.CreateRenderContext();
+        context.Boxes.Remove(iframe);
+        context.PaintTreeRoots = new[]
+        {
+            new BackgroundPaintNode
+            {
+                SourceNode = iframe,
+                Bounds = new SKRect(iframeRect.Left, iframeRect.Top, iframeRect.Right, iframeRect.Bottom),
+                Color = SKColors.White
+            },
+            new BackgroundPaintNode
+            {
+                SourceNode = wrapper,
+                Bounds = new SKRect(iframeRect.Left, iframeRect.Top, iframeRect.Right, iframeRect.Bottom),
+                Color = SKColors.Transparent
+            }
+        };
+
+        var x = targetRect.Left + targetRect.Width / 2f;
+        var y = targetRect.Top + targetRect.Height / 2f;
+        Assert.True(HitTester.HitTestInput(context, x, y, out var input));
+        Assert.Same(target, input.Target);
+        Assert.True(input.RetargetedIntoFrame);
+        Assert.Equal(x - iframeRect.Left, input.ClientX, 1f);
+        Assert.Equal(y - iframeRect.Top, input.ClientY, 1f);
+    }
+
+    [Fact]
+    public async Task BrowserHostClick_CompletesIframeAsyncMutationAndNextFramePipeline()
+    {
+        const int viewportWidth = 640;
+        const int viewportHeight = 360;
+        const string html = """
+<!doctype html>
+<html><head><style>body{margin:0}iframe{display:block;width:300px;height:120px;margin:50px 0 0 40px;border:0}</style></head>
+<body><iframe id="challenge-frame"></iframe><script>
+var frame = document.getElementById('challenge-frame');
+var doc = frame.contentDocument;
+doc.open();
+doc.write('<!doctype html><html><head><style>body{margin:0}#anchor{display:block;width:120px;height:40px;margin:10px 0 0 20px}</style></head><body data-events=""><button id="anchor">check</button></body></html>');
+doc.close();
+doc.body.setAttribute('data-events', '');
+var anchor = doc.getElementById('anchor');
+['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(type) {
+  anchor.addEventListener(type, function() {
+    doc.body.setAttribute('data-events', doc.body.getAttribute('data-events') + type + ',');
+  });
+});
+anchor.addEventListener('click', function() {
+  Promise.resolve().then(function() {
+    doc.body.setAttribute('data-microtask', 'done');
+    doc.body.style.backgroundColor = 'rgb(10, 20, 30)';
+  });
+  var channel = new MessageChannel();
+  channel.port1.onmessage = function() { doc.body.setAttribute('data-message', 'done'); };
+  channel.port2.postMessage('go');
+  setTimeout(function() { doc.body.setAttribute('data-timer', 'done'); }, 0);
+});
+</script></body></html>
+""";
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        host.SetActiveRenderer(renderer);
+        host.Engine.SetExternalRenderer(renderer);
+
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/iframe-click-pipeline"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth,
+            viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var iframe = FindById(root, "challenge-frame");
+        await WaitForAsync(
+            () => iframe.FirstChild is Document document && document.GetElementById("anchor") != null,
+            "iframe click pipeline content");
+        var frameDocument = Assert.IsType<Document>(iframe.FirstChild);
+        var anchor = Assert.IsType<Element>(frameDocument.GetElementById("anchor"));
+        RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+        Assert.True(renderer.LastLayout.TryGetElementRect(anchor, out var anchorRect));
+        var repaintRequests = 0;
+        host.RepaintReady += (_, _) => Interlocked.Increment(ref repaintRequests);
+
+        var x = anchorRect.Left + anchorRect.Width / 2f;
+        var y = anchorRect.Top + anchorRect.Height / 2f;
+        host.OnMouseDown(x, y, 0);
+        host.OnMouseUp(x, y, 0);
+        await host.DispatchClickAndActivate(x, y, 0);
+
+        await WaitForAsync(
+            () => frameDocument.Body?.GetAttribute("data-message") == "done" &&
+                  frameDocument.Body?.GetAttribute("data-timer") == "done",
+            "iframe async click work");
+        Assert.Equal("pointerdown,mousedown,pointerup,mouseup,click,", frameDocument.Body?.GetAttribute("data-events"));
+        Assert.Equal("done", frameDocument.Body?.GetAttribute("data-microtask"));
+        Assert.True(Volatile.Read(ref repaintRequests) > 0);
+
+        var beforeFrame = RenderPipeline.FrameSequence;
+        RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+        Assert.True(RenderPipeline.FrameSequence > beforeFrame);
+    }
+
+    [Fact]
     public async Task ScrolledIframe_HitTestMatchesPaintedChildPosition()
     {
         const int viewportWidth = 320;
@@ -345,6 +604,68 @@ doc.close();
             "60",
             host.Engine.Evaluate(
                 "String(document.getElementById('frame').contentWindow.scrollY)")?.ToString());
+    }
+
+    [Fact]
+    public async Task BrowserHostMouseMove_DispatchesBoundaryEventsInsideIframe()
+    {
+        const int viewportWidth = 640;
+        const int viewportHeight = 360;
+        const string html = """
+<!doctype html>
+<html><head><style>html,body{margin:0}iframe{display:block;width:304px;height:78px;margin:20px;border:0}</style></head>
+<body><iframe id="challenge-frame"></iframe><script>
+var frame = document.getElementById('challenge-frame');
+var doc = frame.contentDocument;
+doc.open();
+doc.write('<!doctype html><html><head><style>body{margin:0}#target{display:block;width:40px;height:40px;margin:10px}</style></head><body><div id="target"></div></body></html>');
+doc.close();
+var target = doc.getElementById('target');
+target.addEventListener('pointerover', function () { target.setAttribute('data-pointerover', '1'); });
+target.addEventListener('mouseover', function () { target.classList.add('hovered'); });
+</script></body></html>
+""";
+
+        using var host = new BrowserHost();
+        var renderer = new SkiaDomRenderer();
+        host.EnableJavaScript = true;
+        host.SetActiveRenderer(renderer);
+        host.Engine.SetExternalRenderer(renderer);
+
+        await host.Engine.RenderAsync(
+            html,
+            new Uri("https://fen.test/iframe-hover"),
+            _ => Task.FromResult(string.Empty),
+            _ => Task.FromResult<Stream>(null),
+            _ => { },
+            viewportWidth,
+            viewportHeight,
+            forceJavascript: true);
+
+        var root = Assert.IsType<Element>(host.Engine.GetActiveDom());
+        var iframe = FindById(root, "challenge-frame");
+        await WaitForAsync(
+            () => iframe.FirstChild is Document document && document.GetElementById("target") != null,
+            "iframe hover target to be written");
+        var frameDocument = Assert.IsType<Document>(iframe.FirstChild);
+        var target = Assert.IsType<Element>(frameDocument.GetElementById("target"));
+
+        RenderFrame(renderer, root, host.ComputedStyles, viewportWidth, viewportHeight);
+        Assert.True(renderer.LastLayout.TryGetElementRect(target, out var targetRect), "Missing iframe hover target layout rect.");
+
+        var x = targetRect.Left + targetRect.Width / 2f;
+        var y = targetRect.Top + targetRect.Height / 2f;
+        var context = renderer.CreateRenderContext();
+        Assert.True(
+            HitTester.HitTestInput(context, x, y, out var input),
+            HitTester.DescribeFrameCandidates(context, iframe, x, y));
+        Assert.Same(target, input.Target);
+
+        host.OnMouseMove(x, y);
+
+        await WaitForAsync(
+            () => target.ClassList.Contains("hovered") && target.GetAttribute("data-pointerover") == "1",
+            "iframe target did not receive pointerover and mouseover boundary events");
     }
 
     [Fact]

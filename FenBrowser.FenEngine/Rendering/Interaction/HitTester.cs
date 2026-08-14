@@ -4,6 +4,7 @@ using SkiaSharp;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using FenBrowser.Core;
 using FenBrowser.FenEngine.DOM;
 using FenBrowser.FenEngine.Rendering.Core;
@@ -96,7 +97,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             // Priority: Use PaintTree (Stacking Context Aware)
             if (ctx.PaintTreeRoots != null && ctx.PaintTreeRoots.Count > 0)
             {
-               if (HitTestRecursive(ctx.PaintTreeRoots, x, y, out result))
+               if (HitTestRecursive(ctx, ctx.PaintTreeRoots, x, y, out result))
                {
                    return true;
                }
@@ -152,6 +153,16 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// </summary>
         public static bool HitTestRecursive(IReadOnlyList<PaintNodeBase> nodes, float x, float y, out global::FenBrowser.FenEngine.Interaction.HitTestResult result)
         {
+            return HitTestRecursive(null, nodes, x, y, out result);
+        }
+
+        private static bool HitTestRecursive(
+            RenderContext ctx,
+            IReadOnlyList<PaintNodeBase> nodes,
+            float x,
+            float y,
+            out global::FenBrowser.FenEngine.Interaction.HitTestResult result)
+        {
             result = global::FenBrowser.FenEngine.Interaction.HitTestResult.None;
             if (nodes == null) return false;
 
@@ -206,7 +217,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                 // 4. Check Children (Front-most first)
                 if (node.Children != null && node.Children.Count > 0)
                 {
-                    if (HitTestRecursive(node.Children, contentX, contentY, out result)) return true;
+                    if (HitTestRecursive(ctx, node.Children, contentX, contentY, out result)) return true;
                 }
 
                 // 5. Check Self
@@ -224,6 +235,14 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                     if (element != null)
                     {
                         if (!IsElementHitTestVisible(element))
+                        {
+                            continue;
+                        }
+
+                        if (ctx?.Boxes != null &&
+                            ctx.Boxes.TryGetValue(element, out var layoutBox) &&
+                            layoutBox != null &&
+                            !layoutBox.BorderBox.Contains(contentX, contentY))
                         {
                             continue;
                         }
@@ -322,17 +341,24 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             frameClientX = x;
             frameClientY = y;
 
-            if (source.NativeElement is not Element frame ||
-                !IsIframe(frame) ||
-                !TryGetFrameDocument(frame, out var frameDocument) ||
-                !TryGetFrameBox(ctx, frame, out var frameBox))
+            if (source.NativeElement is not Element sourceElement ||
+                !TryResolveFrameAtPoint(
+                    ctx,
+                    sourceElement,
+                    x,
+                    y,
+                    out var frame,
+                    out var frameBox,
+                    out var framePointX,
+                    out var framePointY) ||
+                !TryGetFrameDocument(frame, out var frameDocument))
             {
                 return false;
             }
 
             var origin = GetFrameContentOrigin(frameBox);
-            frameClientX = x - origin.X;
-            frameClientY = y - origin.Y;
+            frameClientX = framePointX - origin.X;
+            frameClientY = framePointY - origin.Y;
             var frameScroll = ctx.GetScrollOffset(frame);
             var frameHitX = frameClientX + frameScroll.X;
             var frameHitY = frameClientY + frameScroll.Y;
@@ -342,6 +368,179 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                 TryHitFrameContext(frameContext, x + frameScroll.X, y + frameScroll.Y, out result))
             {
                 return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryResolveFrameAtPoint(
+            RenderContext ctx,
+            Element source,
+            float x,
+            float y,
+            out Element frame,
+            out FenBrowser.FenEngine.Layout.BoxModel frameBox,
+            out float framePointX,
+            out float framePointY)
+        {
+            frame = null;
+            frameBox = null;
+            framePointX = x;
+            framePointY = y;
+            if (source == null || ctx?.Boxes == null)
+            {
+                return false;
+            }
+
+            if (IsIframe(source) && TryGetFrameBox(ctx, source, out frameBox))
+            {
+                frame = source;
+                return true;
+            }
+
+            float bestArea = float.MaxValue;
+            foreach (var kvp in ctx.Boxes)
+            {
+                if (kvp.Key is not Element candidate ||
+                    !IsIframe(candidate) ||
+                    !IsDescendantOf(candidate, source) ||
+                    !IsElementHitTestVisible(candidate) ||
+                    !TryGetFrameDocument(candidate, out _) ||
+                    kvp.Value == null ||
+                    !kvp.Value.BorderBox.Contains(x, y))
+                {
+                    continue;
+                }
+
+                var area = kvp.Value.BorderBox.Width * kvp.Value.BorderBox.Height;
+                if (area < bestArea)
+                {
+                    bestArea = area;
+                    frame = candidate;
+                    frameBox = kvp.Value;
+                }
+            }
+
+            if (frame != null)
+            {
+                return true;
+            }
+
+            return TryFindFrameInPaintTree(
+                ctx.PaintTreeRoots,
+                source,
+                x,
+                y,
+                out frame,
+                out frameBox,
+                out framePointX,
+                out framePointY);
+        }
+
+        private static bool TryFindFrameInPaintTree(
+            IReadOnlyList<PaintNodeBase> nodes,
+            Element source,
+            float x,
+            float y,
+            out Element frame,
+            out FenBrowser.FenEngine.Layout.BoxModel frameBox,
+            out float framePointX,
+            out float framePointY)
+        {
+            frame = null;
+            frameBox = null;
+            framePointX = x;
+            framePointY = y;
+            if (nodes == null)
+            {
+                return false;
+            }
+
+            for (var i = nodes.Count - 1; i >= 0; i--)
+            {
+                var node = nodes[i];
+                if (node == null)
+                {
+                    continue;
+                }
+
+                var localX = x;
+                var localY = y;
+                if (node.Transform.HasValue)
+                {
+                    if (!node.Transform.Value.TryInvert(out var inverse))
+                    {
+                        continue;
+                    }
+
+                    var localPoint = inverse.MapPoint(x, y);
+                    localX = localPoint.X;
+                    localY = localPoint.Y;
+                }
+
+                if (node.ClipRect.HasValue && !node.ClipRect.Value.Contains(localX, localY))
+                {
+                    continue;
+                }
+
+                var contentX = localX;
+                var contentY = localY;
+                if (node is ScrollPaintNode scrollNode)
+                {
+                    contentX += scrollNode.ScrollX;
+                    contentY += scrollNode.ScrollY;
+                }
+                if (node is StickyPaintNode stickyNode)
+                {
+                    contentX -= stickyNode.StickyOffset.X;
+                    contentY -= stickyNode.StickyOffset.Y;
+                }
+
+                if (TryFindFrameInPaintTree(
+                    node.Children,
+                    source,
+                    contentX,
+                    contentY,
+                    out frame,
+                    out frameBox,
+                    out framePointX,
+                    out framePointY))
+                {
+                    return true;
+                }
+
+                if (node.SourceNode is not Element candidate ||
+                    !IsIframe(candidate) ||
+                    (!ReferenceEquals(candidate, source) && !IsDescendantOf(candidate, source)) ||
+                    !IsElementHitTestVisible(candidate) ||
+                    !TryGetFrameDocument(candidate, out _) ||
+                    !node.Bounds.Contains(contentX, contentY))
+                {
+                    continue;
+                }
+
+                frame = candidate;
+                frameBox = FenBrowser.FenEngine.Layout.BoxModel.FromContentBox(
+                    node.Bounds.Left,
+                    node.Bounds.Top,
+                    node.Bounds.Width,
+                    node.Bounds.Height);
+                framePointX = contentX;
+                framePointY = contentY;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsDescendantOf(Element candidate, Element ancestor)
+        {
+            for (var current = candidate.ParentElement; current != null; current = current.ParentElement)
+            {
+                if (ReferenceEquals(current, ancestor))
+                {
+                    return true;
+                }
             }
 
             return false;
@@ -527,6 +726,10 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             if (!string.IsNullOrEmpty(href))
                 return global::FenBrowser.FenEngine.Interaction.CursorType.Pointer;
 
+            // Clickable elements (checkboxes, interactive inputs) → pointer
+            if (isClickable)
+                return global::FenBrowser.FenEngine.Interaction.CursorType.Pointer;
+
             if (isEditable)
                 return global::FenBrowser.FenEngine.Interaction.CursorType.Text;
 
@@ -618,6 +821,67 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
              return HitTestAllNaive(ctx, x, y);
         }
 
+        internal static string DescribeFrameCandidates(RenderContext ctx, Element source, float x, float y)
+        {
+            if (ctx == null)
+            {
+                return "context=none";
+            }
+
+            var description = new StringBuilder();
+            var count = 0;
+            foreach (var entry in ctx.Boxes)
+            {
+                if (entry.Key is not Element frame || !IsIframe(frame) || entry.Value == null)
+                {
+                    continue;
+                }
+
+                if (count++ > 0) description.Append(';');
+                var rect = entry.Value.BorderBox;
+                description.Append("layout[")
+                    .Append(rect.Left.ToString("F1")).Append(',')
+                    .Append(rect.Top.ToString("F1")).Append(',')
+                    .Append(rect.Right.ToString("F1")).Append(',')
+                    .Append(rect.Bottom.ToString("F1")).Append("] contains=")
+                    .Append(rect.Contains(x, y))
+                    .Append(" descendant=")
+                    .Append(source != null && IsDescendantOf(frame, source))
+                    .Append(" loaded=")
+                    .Append(TryGetFrameDocument(frame, out _));
+                if (count >= 4) break;
+            }
+
+            if (count == 0)
+            {
+                description.Append("layout=none");
+
+                var frameElements = source?.OwnerDocument?
+                    .DescendantsAndSelf()
+                    .OfType<Element>()
+                    .Where(IsIframe)
+                    .Take(4)
+                    .ToArray() ?? Array.Empty<Element>();
+                foreach (var frame in frameElements)
+                {
+                    var style = ctx.GetStyle(frame);
+                    description.Append(";dom[display=")
+                        .Append(style?.Display ?? "<null>")
+                        .Append(" visibility=")
+                        .Append(style?.Visibility ?? "<null>")
+                        .Append(" width=")
+                        .Append(style?.Width?.ToString() ?? frame.GetAttribute("width") ?? "<null>")
+                        .Append(" height=")
+                        .Append(style?.Height?.ToString() ?? frame.GetAttribute("height") ?? "<null>")
+                        .Append(" loaded=")
+                        .Append(TryGetFrameDocument(frame, out _))
+                        .Append(']');
+                }
+            }
+
+            return description.ToString();
+        }
+
         private static List<Element> HitTestAllNaive(RenderContext ctx, float x, float y)
         {
             if (ctx?.Boxes == null) return new List<Element>();
@@ -627,7 +891,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                 if (kvp.Key is Element el && kvp.Value.BorderBox.Contains(x,y))
                     hits.Add((el, kvp.Value.BorderBox.Width * kvp.Value.BorderBox.Height));
             }
-            return hits.OrderBy(h=>h.Item2).Select(h=>h.Item1).ToList();
+            return hits.OrderByDescending(h=>h.Item2).Select(h=>h.Item1).ToList();
         }
 
         public static Element HitTestClickable(RenderContext ctx, float x, float y)
@@ -682,4 +946,3 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         }
     }
 }
-
