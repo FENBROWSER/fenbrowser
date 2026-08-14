@@ -20,8 +20,7 @@ namespace FenBrowser.WebDriver.Commands
     /// </summary>
     public class NavigationCommands
     {
-        private const int DefaultPageLoadTimeoutMs = 30_000;
-        private const int MaxPageLoadTimeoutMs = 60_000;
+        private const int DefaultPageLoadTimeoutMs = 300_000;
         private static readonly TimeSpan NavigationPollInterval = TimeSpan.FromMilliseconds(25);
         private readonly CommandHandler _handler;
         
@@ -209,7 +208,7 @@ namespace FenBrowser.WebDriver.Commands
 
         private async Task<string> WaitForNavigationCommitAsync(string previousUrl, string requestedUrl, int timeoutMs)
         {
-            var cts = new CancellationTokenSource(timeoutMs);
+            using var cts = new CancellationTokenSource(timeoutMs);
             while (!cts.IsCancellationRequested)
             {
                 var currentUrl = await _handler.Browser.GetCurrentUrlAsync();
@@ -269,7 +268,7 @@ namespace FenBrowser.WebDriver.Commands
         {
             var normalizedLeft = NormalizeComparableUrl(left);
             var normalizedRight = NormalizeComparableUrl(right);
-            return string.Equals(normalizedLeft, normalizedRight, StringComparison.OrdinalIgnoreCase);
+            return string.Equals(normalizedLeft, normalizedRight, StringComparison.Ordinal);
         }
 
         private static string NormalizeComparableUrl(string url)
@@ -284,19 +283,25 @@ namespace FenBrowser.WebDriver.Commands
                 return url.Trim();
             }
 
-            // Normalize root slash differences (https://a and https://a/).
+            // System.Uri canonicalizes scheme/host while preserving the case-sensitive
+            // path/query payload. Normalize only the root slash difference here.
             return uri.AbsoluteUri.TrimEnd('/');
         }
 
         private static int ResolvePageLoadTimeoutMs(long? configuredTimeoutMs)
         {
-            var value = configuredTimeoutMs ?? DefaultPageLoadTimeoutMs;
-            if (value <= 0)
+            if (!configuredTimeoutMs.HasValue)
             {
                 return DefaultPageLoadTimeoutMs;
             }
 
-            return value > MaxPageLoadTimeoutMs ? MaxPageLoadTimeoutMs : (int)value;
+            var value = configuredTimeoutMs.Value;
+            if (value < 0)
+            {
+                return DefaultPageLoadTimeoutMs;
+            }
+
+            return value > int.MaxValue ? int.MaxValue : (int)value;
         }
 
         private static void EnsureTopLevelBrowsingContext(Session session)
