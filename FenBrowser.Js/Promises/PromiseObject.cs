@@ -11,13 +11,6 @@ namespace FenBrowser.Js.Promises;
 //   [[PromiseFulfillReactions]] - queue of reactions to run on fulfillment
 //   [[PromiseRejectReactions]]  - queue of reactions to run on rejection
 //   [[PromiseIsHandled]]        - has any then/catch attached to it yet?
-//
-// The reactions lists are stored as object handles (each reaction is a heap-allocated
-// PromiseReaction record landed in D.3). At this commit the lists are kept generic so
-// the type compiles without the reaction type, and reactions can be added via the
-// raw handle API. The tracing path traces every queued reaction handle plus the
-// settled value so resolved-but-not-yet-collected promises keep their reactions
-// reachable.
 public sealed class PromiseObject : ITraceable
 {
     private readonly List<ObjectHandle> _fulfillReactions = new();
@@ -37,8 +30,7 @@ public sealed class PromiseObject : ITraceable
 
     // 27.2.1.4 FulfillPromise / 27.2.1.7 RejectPromise: caller asserts state is
     // Pending. Returns false when the promise has already settled so the caller can
-    // ignore the duplicate settle attempt (matches the spec's "Assert" plus the
-    // common idempotent resolver semantics in CreateResolvingFunctions).
+    // ignore the duplicate settle attempt.
     public bool TrySettle(PromiseState terminalState, JsValue value)
     {
         if (terminalState is not (PromiseState.Fulfilled or PromiseState.Rejected))
@@ -54,15 +46,21 @@ public sealed class PromiseObject : ITraceable
 
         State = terminalState;
         _result = value;
+
+        // Only one reaction branch can ever run after settlement. The interpreter
+        // still drains the selected branch to enqueue jobs, so keep that list intact
+        // and immediately release the opposite branch rather than retaining its
+        // reaction records for the lifetime of the settled promise.
+        if (terminalState == PromiseState.Fulfilled)
+            _rejectReactions.Clear();
+        else
+            _fulfillReactions.Clear();
+
         return true;
     }
 
     public JsValue GetResultUnchecked() => _result;
 
-    // 27.2.6.1 PerformPromiseThen step "Append fulfillReaction as the last element of
-    // the List that is the value of promise.[[PromiseFulfillReactions]]." The list
-    // exists only while the promise is Pending; once settled it is cleared so the
-    // reactions can be GC'd.
     public void QueueFulfillReaction(ObjectHandle reaction)
     {
         if (State != PromiseState.Pending)
