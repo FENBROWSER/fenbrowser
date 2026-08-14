@@ -19,12 +19,17 @@ namespace FenBrowser.Core.Network
     internal static class SecureDnsResolver
     {
         private const int MaxDohResponseBytes = 64 * 1024;
+        private const int DnsTypeA = 1;
+        private const int DnsTypeCname = 5;
+        private const int DnsTypeAaaa = 28;
 
         private sealed class CacheEntry
         {
             public IPAddress[] Addresses { get; set; }
             public DateTimeOffset ExpiresAt { get; set; }
         }
+
+        private readonly record struct DohAnswer(string Name, int Type, string Data, int TtlSeconds);
 
         private static readonly ConcurrentDictionary<string, CacheEntry> _cache =
             new ConcurrentDictionary<string, CacheEntry>(StringComparer.OrdinalIgnoreCase);
@@ -212,7 +217,8 @@ namespace FenBrowser.Core.Network
 
             using var document = JsonDocument.Parse(body);
             var root = document.RootElement;
-            if (root.TryGetProperty("Status", out var statusElement) && statusElement.GetInt32() != 0)
+            if (root.TryGetProperty("Status", out var statusElement) &&
+                (!statusElement.TryGetInt32(out var status) || status != 0))
             {
                 return new List<(IPAddress address, int ttlSeconds)>();
             }
@@ -222,27 +228,20 @@ namespace FenBrowser.Core.Network
                 return new List<(IPAddress address, int ttlSeconds)>();
             }
 
-            var result = new List<(IPAddress address, int ttlSeconds)>();
+            var parsedAnswers = new List<DohAnswer>();
             foreach (var answer in answers.EnumerateArray())
             {
-                if (!answer.TryGetProperty("data", out var dataElement))
+                if (!answer.TryGetProperty("name", out var nameElement) ||
+                    !answer.TryGetProperty("type", out var typeElement) ||
+                    !answer.TryGetProperty("data", out var dataElement) ||
+                    !typeElement.TryGetInt32(out var recordType))
                 {
                     continue;
                 }
 
+                var recordName = NormalizeDnsHost(nameElement.GetString());
                 var data = dataElement.GetString();
-                if (string.IsNullOrWhiteSpace(data) || !IPAddress.TryParse(data, out var ip))
-                {
-                    continue;
-                }
-
-                // Ignore an address of the wrong family if a DoH endpoint returns a
-                // mixed answer section. CNAME records are already filtered by IP parse.
-                if (string.Equals(type, "A", StringComparison.Ordinal) && ip.AddressFamily != AddressFamily.InterNetwork)
-                {
-                    continue;
-                }
-                if (string.Equals(type, "AAAA", StringComparison.Ordinal) && ip.AddressFamily != AddressFamily.InterNetworkV6)
+                if (string.IsNullOrEmpty(recordName) || string.IsNullOrWhiteSpace(data))
                 {
                     continue;
                 }
@@ -250,10 +249,62 @@ namespace FenBrowser.Core.Network
                 var ttl = 300;
                 if (answer.TryGetProperty("TTL", out var ttlElement) && ttlElement.TryGetInt32(out var parsedTtl))
                 {
-                    ttl = parsedTtl;
+                    ttl = Math.Max(0, parsedTtl);
                 }
 
-                result.Add((ip, ttl));
+                parsedAnswers.Add(new DohAnswer(recordName, recordType, data.Trim(), ttl));
+            }
+
+            if (parsedAnswers.Count == 0)
+            {
+                return new List<(IPAddress address, int ttlSeconds)>();
+            }
+
+            // Only trust address records whose owner is the queried name or is reachable
+            // from it through CNAME records in this same authenticated DoH response.
+            // This prevents an unrelated A/AAAA record injected into Answer from being
+            // accepted merely because its data field parses as an IP address.
+            var allowedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { host };
+            bool changed;
+            int remainingPasses = parsedAnswers.Count;
+            do
+            {
+                changed = false;
+                foreach (var answer in parsedAnswers)
+                {
+                    if (answer.Type != DnsTypeCname || !allowedNames.Contains(answer.Name))
+                        continue;
+
+                    var canonicalTarget = NormalizeDnsHost(answer.Data);
+                    if (!string.IsNullOrEmpty(canonicalTarget) && allowedNames.Add(canonicalTarget))
+                    {
+                        changed = true;
+                    }
+                }
+            }
+            while (changed && --remainingPasses > 0);
+
+            int expectedType = string.Equals(type, "AAAA", StringComparison.Ordinal)
+                ? DnsTypeAaaa
+                : DnsTypeA;
+            var expectedFamily = expectedType == DnsTypeAaaa
+                ? AddressFamily.InterNetworkV6
+                : AddressFamily.InterNetwork;
+
+            var result = new List<(IPAddress address, int ttlSeconds)>();
+            var seenAddresses = new HashSet<IPAddress>();
+            foreach (var answer in parsedAnswers)
+            {
+                if (answer.Type != expectedType ||
+                    !allowedNames.Contains(answer.Name) ||
+                    !IPAddress.TryParse(answer.Data, out var ip) ||
+                    ip.AddressFamily != expectedFamily ||
+                    !seenAddresses.Add(ip))
+                {
+                    continue;
+                }
+
+                result.Add((ip, answer.TtlSeconds));
             }
 
             return result;
