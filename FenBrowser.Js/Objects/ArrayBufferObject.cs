@@ -70,9 +70,13 @@ public sealed class ArrayBufferObject : JsObject
     // 25.1.5.3 [[ArrayBufferDetached]]
     public bool IsDetached { get; private set; }
 
-    // 25.1.5.4 DetachArrayBuffer()
+    // 25.1.5.4 DetachArrayBuffer(). SharedArrayBuffer has shared backing memory
+    // and is never detachable; enforce that at the object boundary so an internal
+    // caller cannot bypass the transfer/builtin checks and invalidate shared views.
     public void Detach()
     {
+        if (IsSharedArrayBuffer)
+            throw new InvalidOperationException("SharedArrayBuffer cannot be detached.");
         if (IsDetached)
             return;
 
