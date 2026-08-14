@@ -17,38 +17,24 @@ namespace FenBrowser.Core.Dom.V2
     /// </summary>
     public abstract class EventTarget
     {
-        // Lazy-initialized event listener storage with lock for thread safety
         private EventListenerStorage _listeners;
         private readonly object _listenerLock = new object();
 
-        /// <summary>
-        /// Registers an event handler of a specific event type.
-        /// https://dom.spec.whatwg.org/#dom-eventtarget-addeventlistener
-        /// </summary>
         public void AddEventListener(string type, EventListener callback, bool capture = false)
         {
             AddEventListener(type, callback, new AddEventListenerOptions { Capture = capture });
         }
 
-        /// <summary>
-        /// Registers an event handler with options.
-        /// Thread-safe implementation.
-        /// </summary>
         public void AddEventListener(string type, EventListener callback, AddEventListenerOptions options)
         {
             if (string.IsNullOrEmpty(type) || callback == null)
                 return;
 
             bool added;
-
             lock (_listenerLock)
             {
                 var storage = _listeners ??= new EventListenerStorage();
                 added = storage.Add(type, callback, options, this);
-
-                // An AbortSignal can become aborted while Add() is registering its
-                // cleanup callback. In that case the listener may be removed
-                // synchronously before Add() returns; do not retain an empty storage.
                 if (storage.IsEmpty && ReferenceEquals(_listeners, storage))
                     _listeners = null;
             }
@@ -57,25 +43,18 @@ namespace FenBrowser.Core.Dom.V2
                 OnEventListenersChanged();
         }
 
-        /// <summary>
-        /// Removes an event listener.
-        /// https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener
-        /// Thread-safe implementation.
-        /// </summary>
         public void RemoveEventListener(string type, EventListener callback, bool capture = false)
         {
             if (string.IsNullOrEmpty(type) || callback == null)
                 return;
 
             bool removed = false;
-
             lock (_listenerLock)
             {
                 if (_listeners == null)
                     return;
 
                 removed = _listeners.Remove(type, callback, capture);
-
                 if (_listeners.IsEmpty)
                     _listeners = null;
             }
@@ -84,11 +63,6 @@ namespace FenBrowser.Core.Dom.V2
                 OnEventListenersChanged();
         }
 
-        /// <summary>
-        /// Dispatches an event to this target.
-        /// https://dom.spec.whatwg.org/#dom-eventtarget-dispatchevent
-        /// Implements full WHATWG event dispatch algorithm with capture/bubble phases.
-        /// </summary>
         public bool DispatchEvent(Event evt)
         {
             if (evt == null)
@@ -98,14 +72,10 @@ namespace FenBrowser.Core.Dom.V2
             if (!evt.Initialized)
                 throw new DomException("InvalidStateError", "Event has not been initialized");
 
-            evt.IsTrusted = false; // User-dispatched events are not trusted
+            evt.IsTrusted = false;
             return EventDispatcher.Dispatch(evt, this);
         }
 
-        /// <summary>
-        /// Gets event listeners for a specific type (internal use).
-        /// Thread-safe copy returned.
-        /// </summary>
         internal List<EventListenerEntry> GetEventListeners(string type)
         {
             return TryGetEventListeners(type, out var listeners)
@@ -118,51 +88,29 @@ namespace FenBrowser.Core.Dom.V2
             lock (_listenerLock)
             {
                 if (_listeners is not null)
-                {
                     return _listeners.TryGetCopy(type, out listeners);
-                }
 
                 listeners = null;
                 return false;
             }
         }
 
-        /// <summary>
-        /// Checks if this target has any event listeners.
-        /// </summary>
         internal bool HasEventListeners
         {
             get
             {
                 lock (_listenerLock)
-                {
                     return _listeners != null && !_listeners.IsEmpty;
-                }
             }
         }
 
-        /// <summary>
-        /// Called when event listeners are added or removed.
-        /// Override to update HasEventListeners flag in derived classes.
-        /// </summary>
         protected virtual void OnEventListenersChanged() { }
 
-        /// <summary>
-        /// Gets the parent for event dispatch (for building event path).
-        /// Override in Node to return ParentNode.
-        /// </summary>
         internal virtual EventTarget GetParentForEventDispatch() => null;
     }
 
-    /// <summary>
-    /// Event listener callback delegate.
-    /// </summary>
     public delegate void EventListener(Event evt);
 
-    /// <summary>
-    /// Options for addEventListener.
-    /// https://dom.spec.whatwg.org/#dictdef-addeventlisteneroptions
-    /// </summary>
     public struct AddEventListenerOptions
     {
         public bool Capture;
@@ -171,10 +119,6 @@ namespace FenBrowser.Core.Dom.V2
         public AbortSignal Signal;
     }
 
-    /// <summary>
-    /// Internal storage for event listeners.
-    /// Thread-safe operations via external lock in EventTarget.
-    /// </summary>
     internal sealed class EventListenerStorage
     {
         private Dictionary<string, List<EventListenerEntry>> _listeners;
@@ -199,11 +143,10 @@ namespace FenBrowser.Core.Dom.V2
                 _listeners[type] = list;
             }
 
-            // Check for duplicate (same callback + same capture phase)
             foreach (var entry in list)
             {
                 if (ReferenceEquals(entry.Callback, callback) && entry.Capture == options.Capture)
-                    return false; // Already registered, per spec
+                    return false;
             }
 
             var newEntry = new EventListenerEntry
@@ -215,17 +158,11 @@ namespace FenBrowser.Core.Dom.V2
                 Signal = options.Signal
             };
 
-            // Put the entry in storage before subscribing to the signal. If the signal
-            // raced to the aborted state, its add accessor invokes the abort algorithm
-            // immediately and RemoveEventListener can now find this exact entry.
             list.Add(newEntry);
             _totalCount++;
 
             if (options.Signal != null)
             {
-                // Removal must go through EventTarget so the listener lock and target
-                // bookkeeping are honored. Mutating EventListenerStorage directly from
-                // an AbortSignal callback races dispatch/add/remove on other threads.
                 Action abortHandler = () => owner.RemoveEventListener(type, callback, options.Capture);
                 newEntry.AbortHandler = abortHandler;
                 options.Signal.OnAbort += abortHandler;
@@ -244,8 +181,6 @@ namespace FenBrowser.Core.Dom.V2
                 var entry = list[i];
                 if (ReferenceEquals(entry.Callback, callback) && entry.Capture == capture)
                 {
-                    // Mark first so a dispatch copy observes removal immediately even if
-                    // signal cleanup invokes arbitrary code.
                     entry.Removed = true;
                     list.RemoveAt(i);
                     _totalCount--;
@@ -262,14 +197,10 @@ namespace FenBrowser.Core.Dom.V2
             return false;
         }
 
-        /// <summary>
-        /// Returns a copy of listeners for thread-safe iteration during dispatch.
-        /// </summary>
         public bool TryGetCopy(string type, out List<EventListenerEntry> copy)
         {
             if (_listeners != null && _listeners.TryGetValue(type, out var list))
             {
-                // Return copy to allow safe iteration even if listeners modified
                 copy = new List<EventListenerEntry>(list.Count);
                 foreach (var entry in list)
                 {
@@ -284,9 +215,6 @@ namespace FenBrowser.Core.Dom.V2
         }
     }
 
-    /// <summary>
-    /// Internal event listener entry.
-    /// </summary>
     internal sealed class EventListenerEntry
     {
         public EventListener Callback;
@@ -295,14 +223,9 @@ namespace FenBrowser.Core.Dom.V2
         public bool Passive;
         public AbortSignal Signal;
         public Action AbortHandler;
-        public volatile bool Removed; // Volatile for thread visibility
+        public volatile bool Removed;
     }
 
-    /// <summary>
-    /// Abort signal for cancellable operations.
-    /// https://dom.spec.whatwg.org/#interface-abortsignal
-    /// Thread-safe implementation.
-    /// </summary>
     public sealed class AbortSignal
     {
         private volatile bool _aborted;
@@ -320,25 +243,16 @@ namespace FenBrowser.Core.Dom.V2
                 {
                     invokeImmediately = _aborted;
                     if (!invokeImmediately)
-                    {
                         _onAbort += value;
-                    }
                 }
 
-                // Never invoke user/owner cleanup while holding the signal lock. Event
-                // listener cleanup takes EventTarget's listener lock and the reverse
-                // lock order occurs when listeners unsubscribe during removal.
                 if (invokeImmediately)
-                {
                     value?.Invoke();
-                }
             }
             remove
             {
                 lock (_lock)
-                {
                     _onAbort -= value;
-                }
             }
         }
 
@@ -353,15 +267,10 @@ namespace FenBrowser.Core.Dom.V2
                 _onAbort = null;
             }
 
-            // Invoke handlers outside lock to prevent deadlocks
             handlers?.Invoke();
         }
     }
 
-    /// <summary>
-    /// AbortController for creating abort signals.
-    /// https://dom.spec.whatwg.org/#interface-abortcontroller
-    /// </summary>
     public sealed class AbortController
     {
         public AbortSignal Signal { get; } = new AbortSignal();
@@ -372,13 +281,8 @@ namespace FenBrowser.Core.Dom.V2
         }
     }
 
-    /// <summary>
-    /// DOM Event class with full WHATWG compliance.
-    /// https://dom.spec.whatwg.org/#interface-event
-    /// </summary>
     public class Event
     {
-        // Internal state flags
         internal bool StopPropagationFlag;
         internal bool StopImmediatePropagationFlag;
         internal bool CanceledFlag;
@@ -387,42 +291,19 @@ namespace FenBrowser.Core.Dom.V2
         internal bool Initialized = true;
         internal bool DispatchFlag;
 
-        // Event path for composedPath()
         internal List<EventPathEntry> Path;
 
-        /// <summary>Event type name.</summary>
         public string Type { get; }
-
-        /// <summary>Target of the event.</summary>
         public EventTarget Target { get; internal set; }
-
-        /// <summary>Current target during dispatch.</summary>
         public EventTarget CurrentTarget { get; internal set; }
-
-        /// <summary>Current event phase.</summary>
         public EventPhase EventPhase { get; internal set; }
-
-        /// <summary>Whether event bubbles up through the DOM.</summary>
         public bool Bubbles { get; }
-
-        /// <summary>Whether event can be canceled.</summary>
         public bool Cancelable { get; }
-
-        /// <summary>Whether event can cross shadow DOM boundary.</summary>
         public bool Composed => ComposedFlag;
-
-        /// <summary>Whether default was prevented.</summary>
         public bool DefaultPrevented => CanceledFlag;
-
-        /// <summary>Whether event was dispatched by user agent.</summary>
         public bool IsTrusted { get; internal set; }
-
-        /// <summary>Event creation timestamp.</summary>
         public double TimeStamp { get; }
 
-        /// <summary>
-        /// Creates a new Event.
-        /// </summary>
         public Event(string type, EventInit init = default)
         {
             Type = type ?? throw new ArgumentNullException(nameof(type));
@@ -432,39 +313,23 @@ namespace FenBrowser.Core.Dom.V2
             TimeStamp = (DateTime.UtcNow - DateTime.UnixEpoch).TotalMilliseconds;
         }
 
-        /// <summary>
-        /// Stops event from reaching other listeners.
-        /// https://dom.spec.whatwg.org/#dom-event-stoppropagation
-        /// </summary>
         public void StopPropagation()
         {
             StopPropagationFlag = true;
         }
 
-        /// <summary>
-        /// Stops event immediately, including other listeners on same target.
-        /// https://dom.spec.whatwg.org/#dom-event-stopimmediatepropagation
-        /// </summary>
         public void StopImmediatePropagation()
         {
             StopPropagationFlag = true;
             StopImmediatePropagationFlag = true;
         }
 
-        /// <summary>
-        /// Prevents default action if event is cancelable.
-        /// https://dom.spec.whatwg.org/#dom-event-preventdefault
-        /// </summary>
         public void PreventDefault()
         {
             if (Cancelable && !InPassiveListenerFlag)
                 CanceledFlag = true;
         }
 
-        /// <summary>
-        /// Returns the event's path through the DOM.
-        /// https://dom.spec.whatwg.org/#dom-event-composedpath
-        /// </summary>
         public EventTarget[] ComposedPath()
         {
             if (Path == null || Path.Count == 0)
@@ -472,11 +337,8 @@ namespace FenBrowser.Core.Dom.V2
 
             var result = new List<EventTarget>();
             var currentTarget = CurrentTarget;
-
-            // Build composed path considering shadow DOM
             foreach (var entry in Path)
             {
-                // Filter based on shadow DOM encapsulation
                 if (entry.RootOfClosedTree && entry.InvocationTarget != currentTarget)
                     continue;
 
@@ -486,7 +348,6 @@ namespace FenBrowser.Core.Dom.V2
             return result.ToArray();
         }
 
-        // Legacy aliases
         public bool ReturnValue
         {
             get => !CanceledFlag;
@@ -496,9 +357,6 @@ namespace FenBrowser.Core.Dom.V2
         public EventTarget SrcElement => Target;
     }
 
-    /// <summary>
-    /// Event initialization options.
-    /// </summary>
     public struct EventInit
     {
         public bool Bubbles;
@@ -506,9 +364,6 @@ namespace FenBrowser.Core.Dom.V2
         public bool Composed;
     }
 
-    /// <summary>
-    /// Event dispatch phase.
-    /// </summary>
     public enum EventPhase : ushort
     {
         None = 0,
@@ -517,9 +372,6 @@ namespace FenBrowser.Core.Dom.V2
         Bubbling = 3
     }
 
-    /// <summary>
-    /// Entry in event path for composed path tracking.
-    /// </summary>
     internal sealed class EventPathEntry
     {
         public EventTarget InvocationTarget;
@@ -529,32 +381,20 @@ namespace FenBrowser.Core.Dom.V2
         public bool SlotInClosedTree;
     }
 
-    /// <summary>
-    /// Full WHATWG-compliant event dispatcher.
-    /// https://dom.spec.whatwg.org/#concept-event-dispatch
-    /// </summary>
     internal static class EventDispatcher
     {
-        /// <summary>
-        /// Dispatches an event following the WHATWG DOM spec algorithm.
-        /// Implements capture phase, target phase, and bubble phase.
-        /// </summary>
         public static bool Dispatch(Event evt, EventTarget target)
         {
             evt.DispatchFlag = true;
             evt.Target = target;
 
-            // Build event path
             var path = BuildEventPath(target, evt.ComposedFlag);
             evt.Path = path;
 
             try
             {
-                // Path is from Target (index 0) up to Root (index N).
-
-                // 1. CAPTURE PHASE - from Root down to target's parent
                 evt.EventPhase = EventPhase.Capturing;
-                for (int i = path.Count - 1; i > 0; i--) // Skip 0 which is target
+                for (int i = path.Count - 1; i > 0; i--)
                 {
                     if (evt.StopPropagationFlag) break;
 
@@ -563,22 +403,18 @@ namespace FenBrowser.Core.Dom.V2
                     InvokeEventListeners(evt, entry.InvocationTarget, EventPhase.Capturing);
                 }
 
-                // 2. TARGET PHASE
                 if (!evt.StopPropagationFlag && path.Count > 0)
                 {
                     evt.EventPhase = EventPhase.AtTarget;
                     var targetEntry = path[0];
                     evt.CurrentTarget = targetEntry.InvocationTarget;
-
-                    // At target, invoke both capture and bubble listeners
                     InvokeEventListeners(evt, targetEntry.InvocationTarget, EventPhase.AtTarget);
                 }
 
-                // 3. BUBBLE PHASE - from target's parent up to Root
                 if (evt.Bubbles && !evt.StopPropagationFlag)
                 {
                     evt.EventPhase = EventPhase.Bubbling;
-                    for (int i = 1; i < path.Count; i++) // Skip 0 which is target
+                    for (int i = 1; i < path.Count; i++)
                     {
                         if (evt.StopPropagationFlag) break;
 
@@ -592,8 +428,6 @@ namespace FenBrowser.Core.Dom.V2
             }
             finally
             {
-                // Dispatch-scoped flags must not poison a later redispatch of the
-                // same Event object. defaultPrevented/canceled state remains intact.
                 evt.StopPropagationFlag = false;
                 evt.StopImmediatePropagationFlag = false;
                 evt.InPassiveListenerFlag = false;
@@ -604,21 +438,17 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
-        /// <summary>
-        /// Builds the event propagation path from target up through ancestors.
-        /// </summary>
         private static List<EventPathEntry> BuildEventPath(EventTarget target, bool composed)
         {
-            var path = new List<EventPathEntry>();
-
-            // Start with target
-            path.Add(new EventPathEntry
+            var path = new List<EventPathEntry>
             {
-                InvocationTarget = target,
-                ShadowAdjustedTarget = target
-            });
+                new EventPathEntry
+                {
+                    InvocationTarget = target,
+                    ShadowAdjustedTarget = target
+                }
+            };
 
-            // Walk up through ancestors
             var current = target;
             while (true)
             {
@@ -626,18 +456,15 @@ namespace FenBrowser.Core.Dom.V2
                 if (parent == null)
                     break;
 
-                // Handle shadow DOM boundary
                 if (current is ShadowRoot shadowRoot)
                 {
-                    if (!composed && shadowRoot.Mode == ShadowRootMode.Closed)
-                    {
-                        // Stop at closed shadow root boundary
+                    // The `composed` flag controls whether an event crosses a shadow
+                    // boundary at all. Open/closed mode controls encapsulation and
+                    // composedPath/retargeting, not propagation for composed:false.
+                    if (!composed)
                         break;
-                    }
 
-                    // Shadow root's host becomes next in path
                     parent = shadowRoot.Host;
-
                     path.Add(new EventPathEntry
                     {
                         InvocationTarget = parent,
@@ -660,9 +487,6 @@ namespace FenBrowser.Core.Dom.V2
             return path;
         }
 
-        /// <summary>
-        /// Invokes event listeners on a target for the specified phase.
-        /// </summary>
         private static void InvokeEventListeners(Event evt, EventTarget target, EventPhase phase)
         {
             if (!target.TryGetEventListeners(evt.Type, out var listeners))
@@ -674,22 +498,16 @@ namespace FenBrowser.Core.Dom.V2
                 if (listener.Removed)
                     continue;
 
-                // Check phase matching
                 if (phase == EventPhase.Capturing && !listener.Capture)
                     continue;
                 if (phase == EventPhase.Bubbling && listener.Capture)
                     continue;
-
                 if (evt.StopImmediatePropagationFlag)
                     break;
 
-                // `once` listeners are removed before callback invocation. A callback
-                // can synchronously redispatch the same event type; leaving the entry
-                // registered until after the callback makes a once-listener fire twice.
                 if (listener.Once)
                     target.RemoveEventListener(evt.Type, listener.Callback, listener.Capture);
 
-                // Handle passive listeners
                 bool wasInPassive = evt.InPassiveListenerFlag;
                 if (listener.Passive)
                     evt.InPassiveListenerFlag = true;
@@ -700,7 +518,6 @@ namespace FenBrowser.Core.Dom.V2
                 }
                 catch (Exception ex)
                 {
-                    // Per spec: report error but continue dispatch
                     ReportError(ex, target, evt);
                 }
                 finally
@@ -710,12 +527,8 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
-        /// <summary>
-        /// Reports an error that occurred during event dispatch.
-        /// </summary>
         private static void ReportError(Exception ex, EventTarget target, Event evt)
         {
-            // Route to FenLogger so it surfaces in DevTools console rather than silently to Debug output
             EngineLogCompat.Error(
                 $"[EventDispatcher] Error in listener for '{evt.Type}' on {target}: {ex.Message}",
                 FenBrowser.Core.Logging.LogCategory.Events);
