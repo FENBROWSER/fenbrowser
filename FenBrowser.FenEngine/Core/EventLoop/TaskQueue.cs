@@ -94,24 +94,28 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     _activeSources.Enqueue(task.Source);
                 }
 
-                EngineLogCompat.Debug(
-                    $"[TaskQueue] Enqueued: {task.Description} (Source: {task.Source}, Priority: {priority}, SourceCount: {sourceCount}, TotalCount: {totalCount})",
-                    LogCategory.JavaScript);
+                EngineLogCompat.Log(
+                    LogCategory.JavaScript,
+                    LogLevel.Debug,
+                    $"[TaskQueue] Enqueued: {task.Description} (Source: {task.Source}, Priority: {priority}, SourceCount: {sourceCount}, TotalCount: {totalCount})");
             }
 
-            EventLoopTrace.Write(
-                "TaskQueued",
-                LogSeverity.Debug,
-                "[EventLoop] Task queued",
-                task.TraceId,
-                new Dictionary<string, object>
-                {
-                    ["source"] = task.Source.ToString(),
-                    ["priority"] = priority.ToString(),
-                    ["description"] = task.Description ?? string.Empty,
-                    ["sourceCount"] = sourceCount,
-                    ["totalCount"] = totalCount
-                });
+            if (EventLoopTrace.IsEnabled(LogSeverity.Debug))
+            {
+                EventLoopTrace.Write(
+                    "TaskQueued",
+                    LogSeverity.Debug,
+                    "[EventLoop] Task queued",
+                    task.TraceId,
+                    new Dictionary<string, object>
+                    {
+                        ["source"] = task.Source.ToString(),
+                        ["priority"] = priority.ToString(),
+                        ["description"] = task.Description ?? string.Empty,
+                        ["sourceCount"] = sourceCount,
+                        ["totalCount"] = totalCount
+                    });
+            }
         }
 
         public void Enqueue(Action callback, TaskSource source, string description = null)
@@ -321,9 +325,10 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     _activeSources.Enqueue(skippedSources.Dequeue());
                 }
 
-                EngineLogCompat.Debug(
-                    $"[TaskQueue] Dequeued: {task.Description} (Source: {task.Source}, Priority: {priorityGroup}, RemainingSourceCount: {queue.Count}, RemainingTotal: {_count})",
-                    LogCategory.JavaScript);
+                EngineLogCompat.Log(
+                    LogCategory.JavaScript,
+                    LogLevel.Debug,
+                    $"[TaskQueue] Dequeued: {task.Description} (Source: {task.Source}, Priority: {priorityGroup}, RemainingSourceCount: {queue.Count}, RemainingTotal: {_count})");
                 return task;
             }
 
