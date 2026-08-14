@@ -50,7 +50,7 @@ namespace FenBrowser.Core.Network.Handlers
 
         private bool ShouldBlock(Uri uri)
         {
-            var host = uri.Host;
+            var host = NormalizeHost(uri);
             foreach (var blockedDomain in _blockedDomains)
             {
                 if (HostMatches(host, blockedDomain))
@@ -67,6 +67,16 @@ namespace FenBrowser.Core.Network.Handlers
                     uri.AbsolutePath.StartsWith("/tr/", StringComparison.OrdinalIgnoreCase));
         }
 
+        private static string NormalizeHost(Uri uri)
+        {
+            if (uri == null)
+            {
+                return string.Empty;
+            }
+
+            return (uri.IdnHost ?? string.Empty).Trim().TrimEnd('.').ToLowerInvariant();
+        }
+
         private static bool HostMatches(string host, string blockedDomain)
         {
             if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(blockedDomain))
@@ -74,8 +84,15 @@ namespace FenBrowser.Core.Network.Handlers
                 return false;
             }
 
-            return string.Equals(host, blockedDomain, StringComparison.OrdinalIgnoreCase) ||
-                   host.EndsWith("." + blockedDomain, StringComparison.OrdinalIgnoreCase);
+            var normalizedHost = host.Trim().TrimEnd('.');
+            var normalizedDomain = blockedDomain.Trim().TrimStart('.').TrimEnd('.');
+            if (normalizedHost.Length == 0 || normalizedDomain.Length == 0)
+            {
+                return false;
+            }
+
+            return string.Equals(normalizedHost, normalizedDomain, StringComparison.OrdinalIgnoreCase) ||
+                   normalizedHost.EndsWith("." + normalizedDomain, StringComparison.OrdinalIgnoreCase);
         }
     }
 }
