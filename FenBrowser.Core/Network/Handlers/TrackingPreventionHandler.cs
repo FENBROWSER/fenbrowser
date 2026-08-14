@@ -227,6 +227,21 @@ namespace FenBrowser.Core.Network.Handlers
                 return next();
             }
 
+            // Normal browser fetches carry user-agent-owned Fetch Metadata. Do not
+            // classify a top-level navigation (site=none) or same-site request as a
+            // third-party tracker merely because its destination host appears in the
+            // built-in tracker list. This also removes Referer as the authority on the
+            // normal ResourceManager path.
+            var fetchSite = TryGetFetchSite(context.Request);
+            if (fetchSite is "none" or "same-origin" or "same-site")
+            {
+                return next();
+            }
+
+            // Requests created outside the normal browser header policy may not have
+            // Fetch Metadata. Preserve the legacy referrer-based fallback for those
+            // internal/embedder callers; cross-site browser requests use the same
+            // origin only as additional same-site protection inside IsTracker.
             var pageOrigin = context.Request.Headers.Referrer;
             if (IsTracker(context.Request.RequestUri, pageOrigin))
             {
@@ -243,6 +258,45 @@ namespace FenBrowser.Core.Network.Handlers
             }
 
             return next();
+        }
+
+        private static string TryGetFetchSite(HttpRequestMessage request)
+        {
+            if (request?.Headers == null || !request.Headers.TryGetValues("Sec-Fetch-Site", out var values))
+            {
+                return null;
+            }
+
+            string parsed = null;
+            foreach (var raw in values)
+            {
+                if (string.IsNullOrWhiteSpace(raw))
+                {
+                    continue;
+                }
+
+                var tokens = raw.Split(',', StringSplitOptions.RemoveEmptyEntries);
+                foreach (var item in tokens)
+                {
+                    var token = item.Trim().ToLowerInvariant();
+                    if (token is not ("none" or "same-origin" or "same-site" or "cross-site"))
+                    {
+                        continue;
+                    }
+
+                    if (parsed != null && !string.Equals(parsed, token, StringComparison.Ordinal))
+                    {
+                        // Conflicting Fetch Metadata is malformed. Do not let an
+                        // ambiguous value become a same-site bypass; fall back to the
+                        // conservative legacy classification below.
+                        return null;
+                    }
+
+                    parsed = token;
+                }
+            }
+
+            return parsed;
         }
     }
 }
