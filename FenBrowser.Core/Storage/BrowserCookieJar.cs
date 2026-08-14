@@ -1,4 +1,4 @@
-// SpecRef: RFC6265 cookie model and SameSite/Secure policy behavior
+// SpecRef: RFC6265bis cookie model and SameSite/Secure policy behavior
 // CapabilityId: SECURITY-COOKIE-MODEL-01
 // Determinism: strict
 // FallbackPolicy: spec-defined
@@ -28,10 +28,7 @@ namespace FenBrowser.Core.Storage
 
         public StorageService Storage => _storage;
 
-        public void ClearAll()
-        {
-            _storage.ClearAll();
-        }
+        public void ClearAll() => _storage.ClearAll();
 
         public string GetDocumentCookieString(Uri documentUri, Uri topLevelDocumentUri = null)
         {
@@ -63,9 +60,7 @@ namespace FenBrowser.Core.Storage
             foreach (var cookie in SnapshotCookies(documentUri, topLevelDocumentUri, includeHttpOnly: false))
             {
                 if (!map.ContainsKey(cookie.Name))
-                {
                     map[cookie.Name] = cookie.Value ?? string.Empty;
-                }
             }
 
             return map;
@@ -91,15 +86,11 @@ namespace FenBrowser.Core.Storage
             bool blockThirdPartyCookies = false)
         {
             if (documentUri == null || string.IsNullOrWhiteSpace(cookieString))
-            {
                 return;
-            }
 
             var context = BuildContext(documentUri, topLevelDocumentUri);
             if (blockThirdPartyCookies && context.IsThirdParty)
-            {
                 return;
-            }
 
             if (!TryParseCookie(
                     cookieString,
@@ -128,14 +119,10 @@ namespace FenBrowser.Core.Storage
             bool blockThirdPartyCookies = false)
         {
             if (response?.Headers == null || response.RequestMessage?.RequestUri == null)
-            {
                 return;
-            }
 
             if (!response.Headers.TryGetValues("Set-Cookie", out var setCookieValues))
-            {
                 return;
-            }
 
             var responseUri = response.RequestMessage.RequestUri;
             var context = BuildContext(responseUri, topLevelDocumentUri);
@@ -180,9 +167,7 @@ namespace FenBrowser.Core.Storage
         public void DeleteDocumentCookie(Uri documentUri, string name, Uri topLevelDocumentUri = null)
         {
             if (documentUri == null || string.IsNullOrWhiteSpace(name))
-            {
                 return;
-            }
 
             var context = BuildContext(documentUri, topLevelDocumentUri);
             _storage.Cookies.DeleteByName(documentUri.Host, name, context.PartitionKey);
@@ -197,9 +182,7 @@ namespace FenBrowser.Core.Storage
             string requestMethod)
         {
             if (requestUri == null)
-            {
                 return string.Empty;
-            }
 
             var matched = GetCookies(
                 requestUri,
@@ -208,10 +191,6 @@ namespace FenBrowser.Core.Storage
                 isTopLevelNavigation,
                 requestMethod);
 
-            // Egress diagnostics: only emitted when the request is an HTTP fetch
-            // (includeHttpOnly == true). document.cookie reads (HttpOnly excluded)
-            // are extremely chatty and would drown the log; their egress is captured
-            // implicitly by the next HTTP request.
             if (includeHttpOnly && matched is { Count: > 0 })
             {
                 CookieDiagnostics.LogEgress(
@@ -223,14 +202,11 @@ namespace FenBrowser.Core.Storage
             }
 
             var sb = new StringBuilder();
-            bool first = true;
-
+            var first = true;
             foreach (var cookie in matched)
             {
                 if (!first)
-                {
                     sb.Append("; ");
-                }
 
                 first = false;
                 sb.Append(cookie.Name).Append('=').Append(cookie.Value ?? string.Empty);
@@ -247,9 +223,7 @@ namespace FenBrowser.Core.Storage
             string requestMethod)
         {
             if (requestUri == null)
-            {
                 return Array.Empty<Cookie>();
-            }
 
             var context = BuildContext(requestUri, topLevelDocumentUri);
             var candidates = _storage.Cookies.GetForUrl(
@@ -257,7 +231,7 @@ namespace FenBrowser.Core.Storage
                 context.PartitionKey,
                 includeHttpOnly);
 
-            bool isSameSiteRequest = !context.IsThirdParty;
+            var isSameSiteRequest = !context.IsThirdParty;
             var filtered = new List<Cookie>(candidates.Count);
 
             foreach (var cookie in candidates)
@@ -289,64 +263,73 @@ namespace FenBrowser.Core.Storage
             actualPartitionKey = null;
 
             if (requestUri == null || string.IsNullOrWhiteSpace(cookieString))
-            {
                 return false;
-            }
 
             var segments = cookieString.Split(';');
             if (segments.Length == 0)
-            {
                 return false;
-            }
 
             var nameValue = segments[0].Trim();
-            int equalsIndex = nameValue.IndexOf('=');
+            var equalsIndex = nameValue.IndexOf('=');
             if (equalsIndex <= 0)
-            {
                 return false;
-            }
 
-            string name = nameValue[..equalsIndex].Trim();
-            string value = nameValue[(equalsIndex + 1)..].Trim();
+            var name = nameValue[..equalsIndex].Trim();
+            var value = nameValue[(equalsIndex + 1)..].Trim();
             if (string.IsNullOrEmpty(name))
-            {
                 return false;
-            }
 
-            string domain = requestUri.Host;
-            string path = GetDefaultCookiePath(requestUri.AbsolutePath);
-            bool secure = false;
-            bool httpOnly = false;
-            bool partitioned = false;
-            bool domainAttributeSpecified = false;
-            DateTimeOffset? expires = null;
-            CookieSameSite sameSite = CookieSameSite.Unspecified;
+            var requestHost = requestUri.Host;
+            var defaultPath = GetDefaultCookiePath(requestUri.AbsolutePath);
+            var path = defaultPath;
+            var secure = false;
+            var httpOnly = false;
+            var httpOnlyAttributeSpecified = false;
+            var partitioned = false;
+            var pathAttributeSpecified = false;
+            string lastDomainAttribute = null;
+            DateTimeOffset? expiresAttribute = null;
+            DateTimeOffset? maxAgeExpiry = null;
+            var sameSite = CookieSameSite.Unspecified;
 
-            for (int i = 1; i < segments.Length; i++)
+            for (var i = 1; i < segments.Length; i++)
             {
                 var segment = segments[i].Trim();
                 if (string.IsNullOrEmpty(segment))
-                {
                     continue;
-                }
 
-                int attributeEqualsIndex = segment.IndexOf('=');
-                string attributeName = (attributeEqualsIndex >= 0 ? segment[..attributeEqualsIndex] : segment).Trim();
-                string attributeValue = attributeEqualsIndex >= 0 ? segment[(attributeEqualsIndex + 1)..].Trim() : string.Empty;
+                var attributeEqualsIndex = segment.IndexOf('=');
+                var attributeName = (attributeEqualsIndex >= 0 ? segment[..attributeEqualsIndex] : segment).Trim();
+                var attributeValue = attributeEqualsIndex >= 0
+                    ? segment[(attributeEqualsIndex + 1)..].Trim()
+                    : string.Empty;
 
                 switch (attributeName.ToLowerInvariant())
                 {
                     case "path":
-                        path = string.IsNullOrWhiteSpace(attributeValue) ? "/" : attributeValue;
+                        // RFC6265bis: a Path attribute whose value is empty or does
+                        // not begin with '/' uses the computed default path.
+                        pathAttributeSpecified = true;
+                        path = !string.IsNullOrEmpty(attributeValue) && attributeValue[0] == '/'
+                            ? attributeValue
+                            : defaultPath;
                         break;
+
                     case "domain":
-                        var candidateDomain = attributeValue.Trim().TrimStart('.').ToLowerInvariant();
-                        if (!string.IsNullOrEmpty(candidateDomain) && DomainMatches(requestUri.Host, candidateDomain))
+                    {
+                        // An empty Domain cookie-av is ignored. For non-empty values,
+                        // keep the last attribute and validate it after parsing all
+                        // attributes, matching the cookie attribute-list algorithm.
+                        if (!string.IsNullOrEmpty(attributeValue))
                         {
-                            domain = candidateDomain;
-                            domainAttributeSpecified = true;
+                            var candidate = attributeValue.TrimStart('.').ToLowerInvariant();
+                            if (!IsAsciiCookieDomain(candidate))
+                                return false;
+                            lastDomainAttribute = candidate;
                         }
                         break;
+                    }
+
                     case "expires":
                         if (DateTimeOffset.TryParse(
                                 attributeValue,
@@ -354,53 +337,79 @@ namespace FenBrowser.Core.Storage
                                 DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeUniversal,
                                 out var parsedExpires))
                         {
-                            expires = parsedExpires;
+                            expiresAttribute = parsedExpires;
                         }
                         break;
+
                     case "max-age":
                         if (long.TryParse(attributeValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var maxAge))
-                        {
-                            expires = maxAge <= 0
-                                ? DateTimeOffset.UtcNow.AddSeconds(-1)
-                                : DateTimeOffset.UtcNow.AddSeconds(maxAge);
-                        }
+                            maxAgeExpiry = ComputeMaxAgeExpiry(maxAge);
                         break;
+
                     case "secure":
                         secure = true;
                         break;
+
                     case "httponly":
-                        if (!fromScript)
-                        {
-                            httpOnly = true;
-                        }
+                        httpOnlyAttributeSpecified = true;
+                        httpOnly = true;
                         break;
+
                     case "samesite":
                         sameSite = ParseSameSite(attributeValue);
                         break;
+
                     case "partitioned":
                         partitioned = true;
                         break;
                 }
             }
 
-            bool isSecureRequest = string.Equals(requestUri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
-            if (sameSite == CookieSameSite.None && !secure)
+            var domain = requestHost;
+            var domainAttributeSpecified = lastDomainAttribute != null;
+            if (domainAttributeSpecified)
             {
-                return false;
+                // Do not silently downgrade an invalid Domain attribute into a
+                // host-only cookie. A Domain scope must include the origin host.
+                if (string.IsNullOrEmpty(lastDomainAttribute) ||
+                    !DomainMatches(requestHost, lastDomainAttribute))
+                {
+                    return false;
+                }
+
+                domain = lastDomainAttribute;
             }
+
+            var isSecureRequest = string.Equals(
+                requestUri.Scheme,
+                Uri.UriSchemeHttps,
+                StringComparison.OrdinalIgnoreCase);
+
+            // A non-HTTP API cannot create/overwrite an HttpOnly cookie merely by
+            // specifying and then ignoring the HttpOnly attribute.
+            if (fromScript && httpOnlyAttributeSpecified)
+                return false;
+
+            // Secure cookies are accepted only from a secure origin. Otherwise an
+            // active HTTP attacker could plant state that is later sent over HTTPS.
+            if (secure && !isSecureRequest)
+                return false;
+
+            if (sameSite == CookieSameSite.None && !secure)
+                return false;
 
             if (partitioned && !secure)
-            {
                 return false;
-            }
 
             if (name.StartsWith("__Secure-", StringComparison.Ordinal) && (!secure || !isSecureRequest))
-            {
                 return false;
-            }
 
             if (name.StartsWith("__Host-", StringComparison.Ordinal) &&
-                (!secure || !isSecureRequest || domainAttributeSpecified || !string.Equals(path, "/", StringComparison.Ordinal)))
+                (!secure ||
+                 !isSecureRequest ||
+                 domainAttributeSpecified ||
+                 !pathAttributeSpecified ||
+                 !string.Equals(path, "/", StringComparison.Ordinal)))
             {
                 return false;
             }
@@ -416,9 +425,38 @@ namespace FenBrowser.Core.Storage
                 Secure = secure,
                 HttpOnly = httpOnly,
                 SameSite = sameSite,
-                Expires = expires,
+                // Max-Age takes precedence over Expires regardless of attribute order.
+                Expires = maxAgeExpiry ?? expiresAttribute,
                 PartitionKey = actualPartitionKey
             };
+
+            return true;
+        }
+
+        private static DateTimeOffset ComputeMaxAgeExpiry(long maxAge)
+        {
+            if (maxAge <= 0)
+                return DateTimeOffset.MinValue;
+
+            var now = DateTimeOffset.UtcNow;
+            var maxSeconds = (DateTimeOffset.MaxValue - now).TotalSeconds;
+            if (maxAge >= maxSeconds)
+                return DateTimeOffset.MaxValue;
+
+            return now.AddSeconds(maxAge);
+        }
+
+        private static bool IsAsciiCookieDomain(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return false;
+
+            for (var i = 0; i < value.Length; i++)
+            {
+                var c = value[i];
+                if (c > 0x7F || char.IsControl(c) || char.IsWhiteSpace(c))
+                    return false;
+            }
 
             return true;
         }
@@ -448,20 +486,16 @@ namespace FenBrowser.Core.Storage
         private static string GetDefaultCookiePath(string requestPath)
         {
             if (string.IsNullOrEmpty(requestPath) || requestPath == "/")
-            {
                 return "/";
-            }
 
-            int index = requestPath.LastIndexOf('/');
+            var index = requestPath.LastIndexOf('/');
             return index <= 0 ? "/" : requestPath[..index];
         }
 
         private static bool DomainMatches(string host, string cookieDomain)
         {
             if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(cookieDomain))
-            {
                 return false;
-            }
 
             return host.Equals(cookieDomain, StringComparison.OrdinalIgnoreCase) ||
                    host.EndsWith("." + cookieDomain, StringComparison.OrdinalIgnoreCase);
@@ -485,7 +519,6 @@ namespace FenBrowser.Core.Storage
             }
 
             public StoragePartitionKey PartitionKey { get; }
-
             public bool IsThirdParty => PartitionKey.IsThirdParty;
         }
     }
