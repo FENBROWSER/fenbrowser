@@ -195,10 +195,10 @@ namespace FenBrowser.FenEngine.Rendering.Backends
 
             try
             {
-                DrawBorderSide(rect, BorderSide.Top, border.TopColor, border.TopWidth, border.TopStyle, paintTop);
-                DrawBorderSide(rect, BorderSide.Right, border.RightColor, border.RightWidth, border.RightStyle, paintRight);
-                DrawBorderSide(rect, BorderSide.Bottom, border.BottomColor, border.BottomWidth, border.BottomStyle, paintBottom);
-                DrawBorderSide(rect, BorderSide.Left, border.LeftColor, border.LeftWidth, border.LeftStyle, paintLeft);
+                DrawBorderSide(rect, BorderSide.Top, border.TopColor, border.TopWidth, border.TopStyle, paintTop, border);
+                DrawBorderSide(rect, BorderSide.Right, border.RightColor, border.RightWidth, border.RightStyle, paintRight, border);
+                DrawBorderSide(rect, BorderSide.Bottom, border.BottomColor, border.BottomWidth, border.BottomStyle, paintBottom, border);
+                DrawBorderSide(rect, BorderSide.Left, border.LeftColor, border.LeftWidth, border.LeftStyle, paintLeft, border);
             }
             finally
             {
@@ -209,7 +209,7 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             }
         }
 
-        private void DrawBorderSide(SKRect rect, BorderSide side, SKColor color, float width, string style, bool enabled)
+        private void DrawBorderSide(SKRect rect, BorderSide side, SKColor color, float width, string style, bool enabled, BorderStyle border)
         {
             if (!enabled || width <= 0 || rect.Width <= 0 || rect.Height <= 0 || color.Alpha == 0)
             {
@@ -223,7 +223,29 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             }
 
             using var paint = CreateBorderPaint(color, width, style);
-            using var path = CreateBorderSideLine(rect, side, width / 2f);
+            using var path = PathBuilderHelper.Build(p =>
+            {
+                float offset = width / 2f;
+                switch (side)
+                {
+                    case BorderSide.Top:
+                        p.MoveTo(rect.Left + border.LeftWidth, rect.Top + offset);
+                        p.LineTo(rect.Right - border.RightWidth, rect.Top + offset);
+                        break;
+                    case BorderSide.Right:
+                        p.MoveTo(rect.Right - offset, rect.Top + border.TopWidth);
+                        p.LineTo(rect.Right - offset, rect.Bottom - border.BottomWidth);
+                        break;
+                    case BorderSide.Bottom:
+                        p.MoveTo(rect.Left + border.LeftWidth, rect.Bottom - offset);
+                        p.LineTo(rect.Right - border.RightWidth, rect.Bottom - offset);
+                        break;
+                    case BorderSide.Left:
+                        p.MoveTo(rect.Left + offset, rect.Top + border.TopWidth);
+                        p.LineTo(rect.Left + offset, rect.Bottom - border.BottomWidth);
+                        break;
+                }
+            });
             _canvas.DrawPath(path, paint);
         }
 

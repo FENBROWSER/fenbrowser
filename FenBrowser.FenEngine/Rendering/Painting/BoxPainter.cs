@@ -425,13 +425,15 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 canvas.DrawLine(box.Left, y, box.Right, y, linePaint);
             }
 
-            // Right
+            // Right — inset vertically by top/bottom thickness to avoid corner overlap
             if (thickness.Right > 0 && IsPaintableBorderStyle(style.BorderStyleRight))
             {
                 linePaint.StrokeWidth = (float)thickness.Right;
                 SetupBorderStyle(linePaint, style.BorderStyleRight, linePaint.StrokeWidth);
                 float x = box.Right - (float)thickness.Right / 2;
-                canvas.DrawLine(x, box.Top, x, box.Bottom, linePaint);
+                float rY0 = box.Top + (float)thickness.Top;
+                float rY1 = box.Bottom - (float)thickness.Bottom;
+                canvas.DrawLine(x, rY0, x, rY1, linePaint);
             }
 
             // Bottom
@@ -443,13 +445,15 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 canvas.DrawLine(box.Left, y, box.Right, y, linePaint);
             }
 
-            // Left
+            // Left — inset vertically by top/bottom thickness to avoid corner overlap
             if (thickness.Left > 0 && IsPaintableBorderStyle(style.BorderStyleLeft))
             {
                 linePaint.StrokeWidth = (float)thickness.Left;
                 SetupBorderStyle(linePaint, style.BorderStyleLeft, linePaint.StrokeWidth);
                 float x = box.Left + (float)thickness.Left / 2;
-                canvas.DrawLine(x, box.Top, x, box.Bottom, linePaint);
+                float lY0 = box.Top + (float)thickness.Top;
+                float lY1 = box.Bottom - (float)thickness.Bottom;
+                canvas.DrawLine(x, lY0, x, lY1, linePaint);
             }
         }
 
