@@ -150,6 +150,27 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void DeferredAutomaticCollectionRunsOnlyAtExplicitSafePoint()
+    {
+        var heap = new JsHeap
+        {
+            YoungAllocationsPerMinorGc = 1,
+            DeferAutomaticCollectionUntilSafePoint = true
+        };
+
+        var value = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+
+        Assert.Equal(0, heap.MinorCollectionCount);
+        Assert.NotNull(heap.GetObject(value));
+
+        heap.PushRoot(value);
+        heap.CollectAtSafePointIfRequested();
+
+        Assert.Equal(1, heap.MinorCollectionCount);
+        Assert.NotNull(heap.GetObject(value));
+    }
+
+    [Fact]
     public void HeapDetectsStaleHandleAfterFree()
     {
         var heap = new JsHeap();
@@ -353,7 +374,7 @@ public sealed class RuntimeHeapTests
     [Fact]
     public void HeapVerifierRejectsStaleWriteBarrierEdges()
     {
-        var heap = new JsHeap();
+        var heap = new JsHeap(verifyHeapBeforeGc: true);
         var verifier = new HeapVerifier();
         var owner = heap.AllocateObject(new JsObject(), AllocationSite.Current());
         var child = heap.AllocateObject(new JsObject(), AllocationSite.Current());

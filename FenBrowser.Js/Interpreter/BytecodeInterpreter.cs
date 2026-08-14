@@ -35,6 +35,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // a cell only reachable through a frame register can be reclaimed by an
     // auto-MinorCollect inside user code and surface as "Stale heap handle.".
     private readonly Stack<InterpreterFrame> _activeFrames = new();
+    public bool IsExecuting => _activeFrames.Count > 0;
     // Browsers render an array that recursively contains itself as an empty
     // element while Array.prototype.join/toString is already processing that
     // same array. Without this guard, circular page data recurses indefinitely.
@@ -119,6 +120,36 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         foreach (var prototype in _hostObjectPrototypes.Values)
         {
             TraceRootValue(tracer, prototype);
+        }
+
+        _globalEnvironment?.Trace(tracer);
+        _directEvalEnv?.Trace(tracer);
+        _preResolvedEnv?.Trace(tracer);
+
+        foreach (var callback in _pendingMicrotasks)
+        {
+            TraceRootValue(tracer, callback);
+        }
+
+        foreach (var (callback, heldValues) in _finalizationCleanupJobs)
+        {
+            TraceRootValue(tracer, callback);
+            foreach (var heldValue in heldValues)
+            {
+                TraceRootValue(tracer, heldValue);
+            }
+        }
+
+        _jobQueue.Trace(tracer);
+        TraceRootValue(tracer, _pendingNewTarget);
+        TraceRootValue(tracer, _tailCallee);
+        TraceRootValue(tracer, _tailThis);
+        if (_tailArgs != null)
+        {
+            foreach (var argument in _tailArgs)
+            {
+                TraceRootValue(tracer, argument);
+            }
         }
     }
 
@@ -401,6 +432,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void CheckExecutionBudgetForJit()
     {
+        _heap.CollectAtSafePointIfRequested();
         if (InstructionBudget > 0 && ++_instructionCount > InstructionBudget)
             throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
 
@@ -416,6 +448,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private void CheckExecutionBudgetAtTaskBoundary()
     {
+        _heap.CollectAtSafePointIfRequested();
         if (InstructionBudget > 0 && ++_instructionCount > InstructionBudget)
             throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
         if (InterruptCallback is { } callback && !callback())
@@ -432,6 +465,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     public BytecodeInterpreter(JsHeap? heap = null)
     {
         _heap = heap ?? new JsHeap();
+        _heap.DeferAutomaticCollectionUntilSafePoint = true;
         _heap.AddRootSource(this);
 
         // Wire Proxy trap delegates so ProxyObject.SetProperty/DeleteProperty
@@ -439,7 +473,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         ProxyObject.ProxySetTrap = ProxyObjSet;
         ProxyObject.ProxyDeleteTrap = ProxyObjDelete;
         ProxyObject.ProxyEnumerateTrap = ProxyObjEnumerate;
-        ProxyObject.CreateTypeErrorFn = CreateTypeError;
     }
 
     private bool ProxyObjSet(ProxyObject proxy, JsValue receiver, string prop, JsValue value)
@@ -910,16 +943,36 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Bounds JS recursion so a runaway tail-less recursive function surfaces as a
     // catchable JS RangeError instead of crashing the host with a native
     // StackOverflowException. ExecuteInternalCore is a large method and its native
-    // frame cost is meaningfully higher than a trivial function call; on this
-    // runtime, allowing up to 80 JS frames can overflow before the guard triggers.
-    // Keep the cap just above the deepest intentional regression depth (35) while
-    // reserving stack headroom for unwind/exception paths.
-    private const int DefaultMaxCallDepth = 40;
+    // frame cost is meaningfully higher than a trivial function call. Keep the
+    // default below the measured native-stack failure point while reserving enough
+    // headroom to materialize and unwind the catchable RangeError.
+    private const int DefaultMaxCallDepth = 20;
+    private const int MaxInternalRecursionDepth = 128;
     private int _callDepth;
+    private int _proxyGetDepth;
 
     public int MaxCallDepth { get; set; } = DefaultMaxCallDepth;
 
     public int? ParserMaxRecursionDepth { get; set; }
+
+    private bool IsRecursiveFunctionActivation(BytecodeFunction function)
+    {
+        var matches = 0;
+        foreach (var frame in _activeFrames)
+        {
+            if (!ReferenceEquals(frame.Function, function))
+            {
+                continue;
+            }
+
+            if (++matches > 1)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     [MayExecuteJs]
     private JsValue ExecuteInternal(
@@ -1210,7 +1263,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // the dispatch loop. The delegate executes the entire function
         // body and returns the function's return value. Exceptions
         // propagate via JsThrownException same as the interpreter.
-        if (function.JitDelegate is { } jitFn)
+        if (function.JitDelegate is { } jitFn && !IsRecursiveFunctionActivation(function))
         {
             return jitFn(this, frame);
         }
@@ -1218,6 +1271,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         while (frame.InstructionPointer < function.Instructions.Count)
         {
+            _heap.CollectAtSafePointIfRequested();
             // Plan §14.2: instruction budget and interrupt check.
             if (InstructionBudget > 0 && ++_instructionCount > InstructionBudget)
                 throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
@@ -3322,6 +3376,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         public ArrayIteratorKind Kind { get; }
         public int Index { get; set; }
         public bool IsExhausted { get; set; }
+
+        public override void Trace(IHeapTracer tracer)
+        {
+            base.Trace(tracer);
+            tracer.Trace(SourceHandle);
+        }
     }
 
     // CreateForOfIterator / DrainIteratorIntoList / CreateForInIterator /
@@ -4217,6 +4277,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         public void Clear() => _entries.Clear();
 
         public IReadOnlyList<(JsValue, JsValue)> Snapshot() => _entries.ToArray();
+
+        public override void Trace(IHeapTracer tracer)
+        {
+            base.Trace(tracer);
+            foreach (var (key, value) in _entries)
+            {
+                TraceRootValue(tracer, key);
+                TraceRootValue(tracer, value);
+            }
+        }
     }
 
     private SetObject CreateFreshSet(out ObjectHandle handle, ObjectHandle? selfHandle = null)
@@ -4412,6 +4482,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         public IReadOnlyList<JsValue> Values { get; }
         public int Index { get; set; }
         public SnapshotIteratorObject(IReadOnlyList<JsValue> values) => Values = values;
+
+        public override void Trace(IHeapTracer tracer)
+        {
+            base.Trace(tracer);
+            foreach (var value in Values)
+            {
+                TraceRootValue(tracer, value);
+            }
+        }
     }
 
     // ECMA-262 24.1.5 / 24.2.5 — live Map/Set iterator. Stores a handle to the
@@ -4428,6 +4507,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             SourceHandle = sourceHandle;
             Kind = kind;
+        }
+
+        public override void Trace(IHeapTracer tracer)
+        {
+            base.Trace(tracer);
+            tracer.Trace(SourceHandle);
         }
     }
 
@@ -4484,6 +4569,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         public void Clear() => _entries.Clear();
 
         public IReadOnlyList<JsValue> Snapshot() => _entries.ToArray();
+
+        public override void Trace(IHeapTracer tracer)
+        {
+            base.Trace(tracer);
+            foreach (var value in _entries)
+            {
+                TraceRootValue(tracer, value);
+            }
+        }
     }
 
     // ECMA-262 24.3 WeakMap and 24.4 WeakSet. Spec requires keys to be Objects
@@ -8646,40 +8740,53 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     [MayExecuteJs]
     private JsValue ProxyGet(ProxyObject proxy, JsValue receiver, string prop)
     {
-        var trap = TryGetProxyTrap(proxy, "get");
-        if (trap is not null)
+        if (++_proxyGetDepth > MaxInternalRecursionDepth)
         {
-            var target = JsValue.FromObject(proxy.TargetHandle);
-            var propVal = JsValue.FromString(prop);
-            var trapResult = CallFunction(trap.Value, new[] { target, propVal, receiver },
-                JsValue.FromObject(proxy.HandlerHandle!.Value));
-            if (TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc) &&
-                !targetDesc.Configurable)
+            _proxyGetDepth--;
+            throw new JsThrownException(CreateRangeError("Maximum call stack size exceeded."));
+        }
+
+        try
+        {
+            var trap = TryGetProxyTrap(proxy, "get");
+            if (trap is not null)
             {
-                if (!targetDesc.IsAccessor && !targetDesc.Writable &&
-                    !AreStrictlyEqual(trapResult, targetDesc.Value))
+                var target = JsValue.FromObject(proxy.TargetHandle);
+                var propVal = JsValue.FromString(prop);
+                var trapResult = CallFunction(trap.Value, new[] { target, propVal, receiver },
+                    JsValue.FromObject(proxy.HandlerHandle!.Value));
+                if (TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc) &&
+                    !targetDesc.Configurable)
                 {
-                    throw new JsThrownException(CreateTypeError(
-                        "Proxy get trap must return the target value for non-writable, non-configurable data properties."));
+                    if (!targetDesc.IsAccessor && !targetDesc.Writable &&
+                        !AreStrictlyEqual(trapResult, targetDesc.Value))
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Proxy get trap must return the target value for non-writable, non-configurable data properties."));
+                    }
+
+                    if (targetDesc.IsAccessor && targetDesc.Get.Tag == JsValueTag.Undefined &&
+                        trapResult.Tag != JsValueTag.Undefined)
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Proxy get trap must return undefined for non-configurable accessor properties without a getter."));
+                    }
                 }
 
-                if (targetDesc.IsAccessor && targetDesc.Get.Tag == JsValueTag.Undefined &&
-                    trapResult.Tag != JsValueTag.Undefined)
-                {
-                    throw new JsThrownException(CreateTypeError(
-                        "Proxy get trap must return undefined for non-configurable accessor properties without a getter."));
-                }
+                return trapResult;
             }
-
-            return trapResult;
+            var targetObj = _heap.GetObject(proxy.TargetHandle);
+            if (targetObj is ProxyObject nestedProxy)
+            {
+                return ProxyGet(nestedProxy, receiver, prop);
+            }
+            return TryGetPropertyValue(targetObj, receiver, prop, out var value)
+                ? value : JsValue.Undefined;
         }
-        var targetObj = _heap.GetObject(proxy.TargetHandle);
-        if (targetObj is ProxyObject nestedProxy)
+        finally
         {
-            return ProxyGet(nestedProxy, receiver, prop);
+            _proxyGetDepth--;
         }
-        return TryGetPropertyValue(targetObj, receiver, prop, out var value)
-            ? value : JsValue.Undefined;
     }
 
     [MayExecuteJs]
@@ -13918,14 +14025,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         if (obj is TypedArrayObject typedArray &&
-            TypedArrayObject.IsCanonicalNumericIndex(key, out var typedArrayIndex))
+            TypedArrayObject.TryCanonicalNumericIndexString(key, out var typedArrayNumericIndex))
         {
-            // Aligned spec: "-0" canonical numeric index returns -0; [[HasProperty]]
-            // step 2.b.ii: "If intIndex = -0, return false."
-            if (key == "-0")
+            if (double.IsNaN(typedArrayNumericIndex) ||
+                double.IsInfinity(typedArrayNumericIndex) ||
+                Math.Truncate(typedArrayNumericIndex) != typedArrayNumericIndex ||
+                (typedArrayNumericIndex == 0d && BitConverter.DoubleToInt64Bits(typedArrayNumericIndex) < 0) ||
+                typedArrayNumericIndex < 0d ||
+                typedArrayNumericIndex > int.MaxValue)
+            {
                 return false;
+            }
+
+            var typedArrayIndex = (int)typedArrayNumericIndex;
             return !typedArray.IsOutOfBounds() &&
-                   typedArrayIndex >= 0 &&
                    typedArrayIndex < typedArray.Length;
         }
 
@@ -13994,9 +14107,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // Normalize the value through ToBigInt/ToNumber first so SetElement sees the
         // correctly-typed primitive (avoids BigInt TypedArrays silently accepting
         // Number values through the wrong conversion path).
-        if (obj is TypedArrayObject ta && TypedArrayObject.IsCanonicalNumericIndex(key, out var taIdx))
+        if (obj is TypedArrayObject ta &&
+            TypedArrayObject.TryCanonicalNumericIndexString(key, out var taNumericIndex))
         {
             var coerced = NormalizeTypedArrayElementValue(ta.ElementType, value);
+            var taIdx = !double.IsNaN(taNumericIndex) &&
+                        !double.IsInfinity(taNumericIndex) &&
+                        Math.Truncate(taNumericIndex) == taNumericIndex &&
+                        !(taNumericIndex == 0d && BitConverter.DoubleToInt64Bits(taNumericIndex) < 0) &&
+                        taNumericIndex >= 0d &&
+                        taNumericIndex <= int.MaxValue
+                ? (int)taNumericIndex
+                : -1;
             ta.SetElement(taIdx, coerced);
             return true;
         }
@@ -15805,13 +15927,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             ? Math.Max(0, (int)ToNumber(args[0]))
             : 1;
         var items = new List<JsValue>();
-        FlattenInto(obj, thisValue, depth, items);
+        FlattenInto(obj, thisValue, depth, items, recursionDepth: 0);
         // ECMA-262 23.1.3.9 step 5: ArraySpeciesCreate
         return ArraySpeciesCreate(thisValue, items);
     }
 
-    private void FlattenInto(JsObject source, JsValue receiver, int depth, List<JsValue> sink)
+    private void FlattenInto(
+        JsObject source,
+        JsValue receiver,
+        int depth,
+        List<JsValue> sink,
+        int recursionDepth)
     {
+        if (recursionDepth >= MaxInternalRecursionDepth)
+        {
+            throw new JsThrownException(CreateRangeError("Maximum call stack size exceeded."));
+        }
+
         var length = GetArrayLength(source);
         for (var i = 0; i < length; i++)
         {
@@ -15824,7 +15956,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (depth > 0 && element.Tag == JsValueTag.Object &&
                 _heap.GetObject(element.AsObjectHandle()) is ArrayObject child)
             {
-                FlattenInto(child, element, depth - 1, sink);
+                FlattenInto(child, element, depth - 1, sink, recursionDepth + 1);
             }
             else
             {
@@ -15857,7 +15989,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (mapped.Tag == JsValueTag.Object &&
                 _heap.GetObject(mapped.AsObjectHandle()) is ArrayObject inner)
             {
-                FlattenInto(inner, mapped, depth: 0, items);   // append elements (1 level)
+                FlattenInto(inner, mapped, depth: 0, items, recursionDepth: 0);   // append elements (1 level)
             }
             else
             {
@@ -16094,7 +16226,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var args = new[] { value, index, receiver };
-        return CallFunction(callback, args, thisArg);
+        var result = CallFunction(callback, args, thisArg);
+        PinIfObject(result);
+        return result;
     }
 
     private JsValue ArrayPrototypeForEach(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -17510,6 +17644,17 @@ fallbackArraySpecies:
         public void EnqueueCleanup(Entry entry)
         {
             CleanupEnqueuer?.Invoke(entry);
+        }
+
+        public override void Trace(IHeapTracer tracer)
+        {
+            base.Trace(tracer);
+            tracer.Trace(Callback);
+            foreach (var entry in Entries)
+            {
+                TraceRootValue(tracer, entry.HeldValue);
+                TraceRootValue(tracer, entry.UnregisterToken);
+            }
         }
     }
 
@@ -22329,9 +22474,34 @@ fallbackArraySpecies:
     [MayExecuteJs]
     private JsValue ToPrimitive(JsValue value, PrimitiveHint hint)
     {
-        if (value.Tag != JsValueTag.Object)
+        if (value.Tag != JsValueTag.Object && value.Tag != JsValueTag.HostObject)
         {
             return value;
+        }
+
+        if (value.Tag == JsValueTag.HostObject)
+        {
+            var hintName = hint switch
+            {
+                PrimitiveHint.String => "string",
+                PrimitiveHint.Default => "default",
+                _ => "number"
+            };
+            if (_hostHooks.TryConvertHostObjectToPrimitive(
+                    value.AsHostObjectHandle(),
+                    hintName,
+                    out var hostPrimitive))
+            {
+                if (hostPrimitive.Tag == JsValueTag.Object || hostPrimitive.Tag == JsValueTag.HostObject)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Host object primitive conversion must return a primitive value."));
+                }
+
+                return hostPrimitive;
+            }
+
+            return JsValue.FromString("[object Object]");
         }
 
         if (TryCallSymbolToPrimitive(value, hint, out var exoticPrimitive))
@@ -22422,7 +22592,7 @@ fallbackArraySpecies:
 
     private string ToStringValue(JsValue value)
     {
-        if (value.Tag == JsValueTag.Object)
+        if (value.Tag == JsValueTag.Object || value.Tag == JsValueTag.HostObject)
         {
             // ECMA-262 7.1.17 ToString step 2: an object is first coerced with
             // ToPrimitive(argument, string), which honors @@toPrimitive and the

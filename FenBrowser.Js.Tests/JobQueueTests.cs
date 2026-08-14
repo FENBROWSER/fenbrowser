@@ -1,4 +1,5 @@
 using FenBrowser.Js.Promises;
+using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 using Xunit;
 
@@ -110,8 +111,37 @@ public sealed class JobQueueTests
         Assert.Equal(JsValueTag.Object, job.Then.Tag);
     }
 
+    [Fact]
+    public void RunningJobRemainsTraceableAfterItLeavesThePendingQueue()
+    {
+        var queue = new JobQueue();
+        var handler = new ObjectHandle(7, 1);
+        queue.Enqueue(new PromiseReactionJob(
+            new PromiseReaction(PromiseCapability.Empty, PromiseReactionType.Fulfill, JsValue.FromObject(handler)),
+            JsValue.Undefined,
+            realmId: 0));
+        var tracer = new RecordingTracer();
+
+        queue.RunMicrotaskCheckpoint(_ =>
+        {
+            queue.Trace(tracer);
+            return true;
+        });
+
+        Assert.Contains(handler, tracer.Objects);
+    }
+
     private static PromiseReactionJob NewReactionJob(JsValue argument) => new(
         reaction: new PromiseReaction(PromiseCapability.Empty, PromiseReactionType.Fulfill, JsValue.Undefined),
         argument: argument,
         realmId: 0);
+
+    private sealed class RecordingTracer : IHeapTracer
+    {
+        public List<ObjectHandle> Objects { get; } = new();
+
+        public void Trace(ObjectHandle handle) => Objects.Add(handle);
+        public void Trace(StringHandle handle) { }
+        public void Trace(SymbolHandle handle) { }
+    }
 }

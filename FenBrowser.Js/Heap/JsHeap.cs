@@ -21,6 +21,7 @@ public sealed class JsHeap
     private int _lastMinorMarked;
     private int _lastMinorSwept;
     private int _lastMinorPromoted;
+    private long _allocationCount;
     // Weak-target registry: a WeakRef or FinalizationRegistry entry holds a
     // handle to a target that must NOT keep the target alive. The target handle
     // is only an index+generation pair; nothing here marks it. When the target
@@ -52,6 +53,7 @@ public sealed class JsHeap
     // don't pay nursery overhead unnecessarily, small enough that long
     // allocation-heavy runs see periodic minor sweeps.
     public int YoungAllocationsPerMinorGc { get; set; } = 4096;
+    public bool DeferAutomaticCollectionUntilSafePoint { get; set; }
     // Long-running browser workloads can keep temporary objects alive across
     // enough nursery collections to promote them. Without a periodic major
     // collection those dead Old cells accumulate until the whole JS realm is
@@ -59,6 +61,7 @@ public sealed class JsHeap
     // Zero disables the automatic major collection cadence.
     public int MinorCollectionsPerMajorGc { get; set; } = 32;
     private int _youngAllocationsSinceLastMinorGc;
+    private bool _minorCollectionPending;
     private readonly bool _verifyHeapBeforeGc;
     private readonly bool _verifyHeapAfterGc;
     private readonly HeapVerifier _verifier = new();
@@ -98,6 +101,7 @@ public sealed class JsHeap
     public int LastMinorMarked => _lastMinorMarked;
     public int LastMinorSwept => _lastMinorSwept;
     public int LastMinorPromoted => _lastMinorPromoted;
+    public long AllocationCount => _allocationCount;
     public int RememberedSetEdgeCount
     {
         get
@@ -161,6 +165,10 @@ public sealed class JsHeap
             CollectGarbage();
             _roots.PopTo(mark);
         }
+        else
+        {
+            MaybeAutoMinorCollect(stringHandle);
+        }
 
         return stringHandle;
     }
@@ -181,6 +189,10 @@ public sealed class JsHeap
             _roots.Push(symbolHandle);
             CollectGarbage();
             _roots.PopTo(mark);
+        }
+        else
+        {
+            MaybeAutoMinorCollect(symbolHandle);
         }
 
         return symbolHandle;
@@ -387,19 +399,75 @@ public sealed class JsHeap
         _youngAllocationsSinceLastMinorGc++;
         if (_youngAllocationsSinceLastMinorGc >= YoungAllocationsPerMinorGc)
         {
+            if (DeferAutomaticCollectionUntilSafePoint)
+            {
+                _minorCollectionPending = true;
+                return;
+            }
+
             _youngAllocationsSinceLastMinorGc = 0;
             // Keep the freshly-allocated object (which triggered this minor
             // collection but is not yet referenced by any root) alive across
             // the sweep.
             var mark = _roots.Count;
             _roots.Push(pin);
-            MinorCollect();
-            if (MinorCollectionsPerMajorGc > 0 &&
-                _minorGcCount % MinorCollectionsPerMajorGc == 0)
-            {
-                CollectGarbage();
-            }
+            RunAutomaticCollection();
             _roots.PopTo(mark);
+        }
+    }
+
+    private void MaybeAutoMinorCollect(StringHandle pin)
+    {
+        if (YoungAllocationsPerMinorGc <= 0) return;
+        _youngAllocationsSinceLastMinorGc++;
+        if (_youngAllocationsSinceLastMinorGc < YoungAllocationsPerMinorGc) return;
+        if (DeferAutomaticCollectionUntilSafePoint)
+        {
+            _minorCollectionPending = true;
+            return;
+        }
+
+        _youngAllocationsSinceLastMinorGc = 0;
+        var mark = _roots.Count;
+        _roots.Push(pin);
+        RunAutomaticCollection();
+        _roots.PopTo(mark);
+    }
+
+    private void MaybeAutoMinorCollect(SymbolHandle pin)
+    {
+        if (YoungAllocationsPerMinorGc <= 0) return;
+        _youngAllocationsSinceLastMinorGc++;
+        if (_youngAllocationsSinceLastMinorGc < YoungAllocationsPerMinorGc) return;
+        if (DeferAutomaticCollectionUntilSafePoint)
+        {
+            _minorCollectionPending = true;
+            return;
+        }
+
+        _youngAllocationsSinceLastMinorGc = 0;
+        var mark = _roots.Count;
+        _roots.Push(pin);
+        RunAutomaticCollection();
+        _roots.PopTo(mark);
+    }
+
+    public void CollectAtSafePointIfRequested()
+    {
+        if (!_minorCollectionPending) return;
+
+        _minorCollectionPending = false;
+        _youngAllocationsSinceLastMinorGc = 0;
+        RunAutomaticCollection();
+    }
+
+    private void RunAutomaticCollection()
+    {
+        MinorCollect();
+        if (MinorCollectionsPerMajorGc > 0 &&
+            _minorGcCount % MinorCollectionsPerMajorGc == 0)
+        {
+            CollectGarbage();
         }
     }
 
@@ -680,6 +748,7 @@ public sealed class JsHeap
 
     private (int Index, int Generation) AllocateCell(HeapCellKind kind, ITraceable payload)
     {
+        _allocationCount++;
         int index;
         int generation;
 

@@ -20,6 +20,7 @@ public sealed class HostObjectIntegrationTests
         public List<(HostObjectHandle Handle, string Prop)> Reads { get; } = new();
         public List<(HostObjectHandle Handle, string Prop, JsValue Value)> Writes { get; } = new();
         public bool RefuseWrites { get; set; }
+        public JsValue? PrimitiveValue { get; set; }
 
         public void EnqueuePromiseJob(PromiseJob job) { }
         public void ReportPromiseRejection(JsValue promise, PromiseRejectionOperation operation) { }
@@ -36,6 +37,17 @@ public sealed class HostObjectIntegrationTests
             if (RefuseWrites) return false;
             Store[(handle.Index, property)] = value;
             return true;
+        }
+
+        public bool TryConvertHostObjectToPrimitive(
+            HostObjectHandle handle,
+            string hint,
+            out JsValue value)
+        {
+            _ = handle;
+            _ = hint;
+            value = PrimitiveValue ?? JsValue.Undefined;
+            return PrimitiveValue.HasValue;
         }
 
         public JsValue CallHostFunction(int functionId, JsValue thisValue, System.ReadOnlySpan<JsValue> args)
@@ -80,6 +92,17 @@ public sealed class HostObjectIntegrationTests
     {
         var (interpreter, _, _) = Setup();
         Assert.Equal("object", Run(interpreter, "typeof myHost;").AsString());
+    }
+
+    [Fact]
+    public void StringConversionUsesHostPrimitiveHookWithObjectFallback()
+    {
+        var (interpreter, hooks, _) = Setup();
+
+        Assert.Equal("[object Object]", Run(interpreter, "String(myHost);").AsString());
+
+        hooks.PrimitiveValue = JsValue.FromString("https://example.test/");
+        Assert.Equal("https://example.test/", Run(interpreter, "String(myHost);").AsString());
     }
 
     [Fact]
@@ -178,7 +201,8 @@ public sealed class HostObjectIntegrationTests
     [Fact]
     public void RefusedWriteThrowsTypeError()
     {
-        var (interpreter, hooks, _) = Setup();
+        var (interpreter, hooks, handle) = Setup();
+        hooks.Store[(handle.Index, "color")] = JsValue.FromString("blue");
         hooks.RefuseWrites = true;
         Assert.Throws<JsThrownException>(() => Run(interpreter, "myHost.color = 'red';"));
     }

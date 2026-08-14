@@ -666,6 +666,7 @@ A massive facilitator class that bridges the JS runtime (Jint/V8 abstraction) wi
 - **DOM Bindings**: Implements standards like `document.getElementById`, `element.addEventListener`.
 - **Event Loop**: Drives the browser pulse via `RequestAnimationFrame` and `SetTimeout`.
   - Event-loop diagnostics now emit `EventLoop` JSONL trace rows from both `Core/EventLoop` and the FenJS browser timer bridge: task queue/start/complete, microtask queue/checkpoint/execute, timer schedule/fire, requestAnimationFrame schedule/fire, and render opportunity start/complete, with top-level `task_id` correlation and ordering fields.
+  - FenJS browser timers use monotonic deadlines with high-resolution short-delay waiting, avoiding the coarse Windows timer tick that can turn chained 4-5 ms callbacks into 15-16 ms callbacks.
 - **Error Handling**: Captures and dispatches `unhandledrejection` and global `error` events through `IExecutionContext` hooks (2026-04-07).
 - **Sandboxing**: Enforces permissions (network, sensors) via `SandboxBlockRecord`.
 
@@ -10529,3 +10530,22 @@ Verification:
 
 - The focused MDN regression slice passes `13/13` across declarative shadow DOM, slot composition, grid max-content sizing, and custom-property fallback.
 - Exact URL bundle `logs/real-site/developer.mozilla.org/20260801T075921Z` completes with `5/5` scripts, 73 network requests, zero failed requests, zero navigation failures, and zero exceptions. Its screenshot shows separated navigation labels, laid-out hero content, and visible featured-card text.
+
+## 2.400 FenJS Host Primitive Conversion And HTML Reflection (2026-08-11)
+
+- FenJS host hooks can now provide a primitive conversion for host objects. The browser location host uses that contract so `String(location)` and `location.toString()` return the current URL without weakening ordinary host-object fallback behavior.
+- The browser DOM bridge now reflects the challenge-page properties used by `Document`, iframe, meta, and script elements, including `activeElement`, `sandbox`, `scrolling`, `title`, `httpEquiv`, `async`, `type`, `charset`, `integrity`, and `crossOrigin`.
+
+Verification:
+
+- Focused FenJS browser/runtime, missing-API tracker, and host-object conversion tests pass (`38/38`).
+
+## 2.401 FenJS Safe-Point Collection And Recursion Guards (2026-08-15)
+
+- Automatic nursery collection can be deferred until an interpreter safe point, so newly allocated values are rooted before a collection can observe them.
+- The active promise job remains a heap root while its callback runs, and native callbacks can declare captured FenJS values explicitly.
+- Function, proxy, and array-flattening recursion now fail with a catchable `RangeError` before exhausting the native stack.
+
+Verification:
+
+- Focused heap, job-queue, host-object, array-iteration, and recursion tests pass (`75/75`).

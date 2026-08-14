@@ -497,12 +497,17 @@ public sealed partial class BytecodeInterpreter
     public JsValue AllocateNativeFunction(
         string name,
         Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
-        int length = 0)
+        int length = 0,
+        IReadOnlyList<JsValue>? capturedRoots = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(name);
         ArgumentNullException.ThrowIfNull(call);
 
-        var function = new NativeFunctionObject(name, call, length: length);
+        var function = new NativeFunctionObject(
+            name,
+            call,
+            length: length,
+            capturedRoots: capturedRoots);
         function.SetPrototype(EnsureFunctionPrototype());
         var handle = _heap.AllocateObject(function, AllocationSite.Current());
         return JsValue.FromObject(handle);

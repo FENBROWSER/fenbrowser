@@ -8,6 +8,20 @@ namespace FenBrowser.Js.Tests;
 
 public sealed class ArrayIterationTests
 {
+    [Fact]
+    public void MapKeepsObjectResultsAliveAcrossAutomaticCollections()
+    {
+        var interpreter = new BytecodeInterpreter();
+        interpreter.Heap.YoungAllocationsPerMinorGc = 4;
+        var compiler = new BytecodeCompiler();
+        var source = "Array.from({length: 200}, function(_, i) { return i; }).map(function(i) { return { value: i }; })[199].value;";
+
+        var result = interpreter.Execute(compiler.CompileScript(new SourceText(source)));
+
+        Assert.Equal(199, result.AsNumber());
+        Assert.True(interpreter.Heap.MinorCollectionCount > 0);
+    }
+
     private static double RunNum(string source)
     {
         var fn = new BytecodeCompiler().CompileScript(new SourceText(source));

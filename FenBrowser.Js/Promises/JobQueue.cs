@@ -1,6 +1,6 @@
-using FenBrowser.Js.Heap;
-
 namespace FenBrowser.Js.Promises;
+
+using FenBrowser.Js.Heap;
 
 // 9.5 Jobs and Host Operations to Enqueue Jobs.
 //
@@ -16,6 +16,7 @@ public sealed class JobQueue : IHeapRootSource
 {
     private readonly Queue<PromiseJob> _jobs = new();
     private readonly object _sync = new();
+    private PromiseJob? _runningJob;
 
     public int Count
     {
@@ -26,6 +27,11 @@ public sealed class JobQueue : IHeapRootSource
                 return _jobs.Count;
             }
         }
+    }
+
+    public void Trace(IHeapTracer tracer)
+    {
+        TraceRoots(tracer);
     }
 
     public void Enqueue(PromiseJob job)
@@ -58,6 +64,7 @@ public sealed class JobQueue : IHeapRootSource
 
         lock (_sync)
         {
+            _runningJob?.Trace(tracer);
             foreach (var job in _jobs)
             {
                 job.Trace(tracer);
@@ -78,14 +85,39 @@ public sealed class JobQueue : IHeapRootSource
         ArgumentNullException.ThrowIfNull(runJob);
 
         var ran = 0;
-        while (TryDequeue(out var job))
+        while (true)
         {
-            if (!runJob(job!))
+            PromiseJob job;
+            lock (_sync)
             {
-                return ran;
+                if (_jobs.Count == 0)
+                {
+                    break;
+                }
+
+                job = _jobs.Dequeue();
+                _runningJob = job;
             }
 
-            ran++;
+            try
+            {
+                if (!runJob(job))
+                {
+                    return ran;
+                }
+
+                ran++;
+            }
+            finally
+            {
+                lock (_sync)
+                {
+                    if (ReferenceEquals(_runningJob, job))
+                    {
+                        _runningJob = null;
+                    }
+                }
+            }
         }
 
         return ran;

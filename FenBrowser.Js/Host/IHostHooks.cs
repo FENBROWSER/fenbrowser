@@ -60,6 +60,17 @@ public interface IHostHooks
     // Companion to TryGetHostProperty. False return = host rejected the write.
     bool TrySetHostProperty(HostObjectHandle handle, string property, JsValue value);
 
+    bool TryConvertHostObjectToPrimitive(
+        HostObjectHandle handle,
+        string hint,
+        out JsValue value)
+    {
+        _ = handle;
+        _ = hint;
+        value = JsValue.Undefined;
+        return false;
+    }
+
     // Diagnostic-only observation emitted after a script successfully creates an
     // own string property on an ordinary function's instance prototype. Hosts may
     // use the key to distinguish framework protocol markers from missing Web APIs.

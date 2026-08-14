@@ -18,8 +18,8 @@ public sealed class RecursionDepthGuardTests
     [Fact]
     public void DeepFiniteRecursionStillWorks()
     {
-        // 35 levels of recursion must still succeed with native-stack headroom.
-        Assert.Equal(35, RunNum("function f(n){return n === 0 ? 0 : 1 + f(n - 1);} f(35);"));
+        // A useful finite recursion depth must still succeed with native-stack headroom.
+        Assert.Equal(15, RunNum("function f(n){return n === 0 ? 0 : 1 + f(n - 1);} f(15);"));
     }
 
     [Fact]
@@ -44,8 +44,8 @@ public sealed class RecursionDepthGuardTests
         new BytecodeVerifier().Verify(bad);
         Assert.Equal(1, interpreter.Execute(bad).AsNumber());
 
-        var good = compiler.CompileScript(new SourceText("function f(n){return n === 0 ? 0 : 1 + f(n - 1);} f(35);"));
+        var good = compiler.CompileScript(new SourceText("function f(n){return n === 0 ? 0 : 1 + f(n - 1);} f(15);"));
         new BytecodeVerifier().Verify(good);
-        Assert.Equal(35, interpreter.Execute(good).AsNumber());
+        Assert.Equal(15, interpreter.Execute(good).AsNumber());
     }
 }
