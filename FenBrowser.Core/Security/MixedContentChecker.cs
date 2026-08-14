@@ -5,14 +5,11 @@ using FenBrowser.Core.Logging;
 namespace FenBrowser.Core.Security
 {
     /// <summary>
-    /// Mixed Content blocking per W3C Mixed Content specification.
-    /// Blocks active mixed content (scripts, iframes, stylesheets, etc.) on secure pages.
-    /// Optionally upgrades passive mixed content (images, video, audio).
+    /// Mixed Content blocking and upgrade decisions for requests initiated by secure pages.
     /// </summary>
     public static class MixedContentChecker
     {
-        // Active mixed content types - always blocked on HTTPS pages
-        private static readonly HashSet<string> ActiveMixedContentTypes = new(StringComparer.OrdinalIgnoreCase)
+        private static readonly HashSet<string> BlockableMixedContentTypes = new(StringComparer.OrdinalIgnoreCase)
         {
             "script",
             "iframe",
@@ -20,11 +17,8 @@ namespace FenBrowser.Core.Security
             "object",
             "embed",
             "applet",
-            "link",        // stylesheets
-            "audio",
-            "video",
-            "source",
-            "track",
+            "link",
+            "style",
             "worker",
             "sharedworker",
             "serviceworker",
@@ -32,12 +26,10 @@ namespace FenBrowser.Core.Security
             "xmlhttprequest",
             "fetch",
             "websocket",
-            "eventsource",
-            "navigation"   // top-level navigation
+            "eventsource"
         };
 
-        // Passive mixed content types - can be upgraded with Upgrade-Insecure-Requests
-        private static readonly HashSet<string> PassiveMixedContentTypes = new(StringComparer.OrdinalIgnoreCase)
+        private static readonly HashSet<string> UpgradeableMixedContentTypes = new(StringComparer.OrdinalIgnoreCase)
         {
             "image",
             "img",
@@ -48,119 +40,145 @@ namespace FenBrowser.Core.Security
         };
 
         /// <summary>
-        /// Checks if a request constitutes mixed content on a secure page.
+        /// Checks an insecure request initiated by a secure page.
+        /// upgrade-insecure-requests is applied before the mixed-content decision.
         /// </summary>
-        /// <param name="requestUrl">The URL being requested</param>
-        /// <param name="pageUrl">The URL of the page making the request (must be HTTPS)</param>
-        /// <param name="requestType">The type of request (e.g., "script", "image", "style", "fetch")</param>
-        /// <param name="isUpgradeInsecureRequestsEnabled">Whether Upgrade-Insecure-Requests CSP directive is active</param>
-        /// <returns>MixedContentDecision indicating whether to block, upgrade, or allow</returns>
         public static MixedContentDecision CheckMixedContent(
             Uri requestUrl,
             Uri pageUrl,
             string requestType,
             bool isUpgradeInsecureRequestsEnabled = false)
         {
-            // No mixed content if page is not secure
             if (pageUrl == null || !string.Equals(pageUrl.Scheme, "https", StringComparison.OrdinalIgnoreCase))
             {
                 return MixedContentDecision.Allow();
             }
 
-            // No mixed content if request is also secure
-            if (requestUrl != null && string.Equals(requestUrl.Scheme, "https", StringComparison.OrdinalIgnoreCase))
+            if (requestUrl == null)
             {
                 return MixedContentDecision.Allow();
             }
 
-            // Request is HTTP on HTTPS page = mixed content
-            if (requestUrl == null || !string.Equals(requestUrl.Scheme, "http", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(requestUrl.Scheme, "https", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(requestUrl.Scheme, "wss", StringComparison.OrdinalIgnoreCase))
             {
-                // Not HTTP/HTTPS (data:, blob:, etc.) - allow
                 return MixedContentDecision.Allow();
             }
 
-            // Determine if this is active or passive mixed content
-            bool isActive = ActiveMixedContentTypes.Contains(requestType);
-            bool isPassive = PassiveMixedContentTypes.Contains(requestType);
-
-            // If neither active nor passive, treat as active for safety
-            if (!isActive && !isPassive)
+            var isHttp = string.Equals(requestUrl.Scheme, "http", StringComparison.OrdinalIgnoreCase);
+            var isWs = string.Equals(requestUrl.Scheme, "ws", StringComparison.OrdinalIgnoreCase);
+            if (!isHttp && !isWs)
             {
-                isActive = true;
+                return MixedContentDecision.Allow();
             }
 
-            if (isActive)
+            // UIR rewrites non-navigation insecure resource requests before mixed-content
+            // blocking. A rewritten request is then evaluated as the secure URL.
+            if (isUpgradeInsecureRequestsEnabled &&
+                !string.Equals(requestType, "navigation", StringComparison.OrdinalIgnoreCase))
             {
-                // Active mixed content is ALWAYS blocked
-                return MixedContentDecision.Block(
-                    $"Active mixed content blocked: {requestType} from {requestUrl} on secure page {pageUrl}",
-                    "active-mixed-content-blocked");
+                var upgradedUrl = UpgradeToSecureTransport(requestUrl);
+                return MixedContentDecision.Upgrade(
+                    $"Insecure request upgraded before mixed-content checks: {requestType} from {requestUrl} -> {upgradedUrl}",
+                    "upgrade-insecure-requests",
+                    upgradedUrl);
             }
-            else // isPassive
+
+            // Top-level navigations are not mixed-content subresource requests. UIR may
+            // upgrade navigations back to the protected resource's own host/port tuple;
+            // third-party HTTP navigations remain allowed rather than being blocked as
+            // mixed content.
+            if (string.Equals(requestType, "navigation", StringComparison.OrdinalIgnoreCase))
             {
-                if (isUpgradeInsecureRequestsEnabled)
+                if (isUpgradeInsecureRequestsEnabled && IsSameHostAndEffectivePort(requestUrl, pageUrl))
                 {
-                    // Upgrade passive mixed content to HTTPS
-                    var upgradedUrl = UpgradeToHttps(requestUrl);
+                    var upgradedUrl = UpgradeToSecureTransport(requestUrl);
                     return MixedContentDecision.Upgrade(
-                        $"Passive mixed content upgraded to HTTPS: {requestType} from {requestUrl} -> {upgradedUrl}",
-                        "passive-mixed-content-upgraded",
+                        $"Insecure navigation upgraded: {requestUrl} -> {upgradedUrl}",
+                        "upgrade-insecure-navigation",
                         upgradedUrl);
                 }
-                else
-                {
-                    // Allow passive mixed content but log warning
-                    EngineLogCompat.Warn(
-                        $"[MixedContent] Passive mixed content allowed: {requestType} from {requestUrl} on secure page {pageUrl}",
-                        LogCategory.Security);
-                    return MixedContentDecision.Allow();
-                }
+
+                return MixedContentDecision.Allow();
             }
+
+            var isBlockable = BlockableMixedContentTypes.Contains(requestType);
+            var isUpgradeable = UpgradeableMixedContentTypes.Contains(requestType);
+
+            if (!isBlockable && !isUpgradeable)
+            {
+                isBlockable = true;
+            }
+
+            if (isUpgradeable)
+            {
+                var upgradedUrl = UpgradeToSecureTransport(requestUrl);
+                return MixedContentDecision.Upgrade(
+                    $"Upgradeable mixed content rewritten to secure transport: {requestType} from {requestUrl} -> {upgradedUrl}",
+                    "upgradeable-mixed-content",
+                    upgradedUrl);
+            }
+
+            return MixedContentDecision.Block(
+                $"Blockable mixed content blocked: {requestType} from {requestUrl} on secure page {pageUrl}",
+                "blockable-mixed-content");
         }
 
         /// <summary>
-        /// Checks if a CSP header contains the upgrade-insecure-requests directive.
+        /// Checks if a CSP header contains the value-less upgrade-insecure-requests directive.
         /// </summary>
         public static bool HasUpgradeInsecureRequestsDirective(string cspHeader)
         {
             if (string.IsNullOrWhiteSpace(cspHeader)) return false;
-            
+
             var directives = cspHeader.Split(';', StringSplitOptions.RemoveEmptyEntries);
-            foreach (var dir in directives)
+            foreach (var directive in directives)
             {
-                var trimmed = dir.Trim();
-                if (trimmed.Equals("upgrade-insecure-requests", StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-                // Also check if it's part of a directive value
-                if (trimmed.StartsWith("upgrade-insecure-requests", StringComparison.OrdinalIgnoreCase))
+                if (directive.Trim().Equals("upgrade-insecure-requests", StringComparison.OrdinalIgnoreCase))
                 {
                     return true;
                 }
             }
+
             return false;
         }
 
-        /// <summary>
-        /// Upgrades an HTTP URL to HTTPS.
-        /// </summary>
-        private static Uri UpgradeToHttps(Uri httpUrl)
+        private static Uri UpgradeToSecureTransport(Uri insecureUrl)
         {
-            if (httpUrl == null) return null;
-            
-            var builder = new UriBuilder(httpUrl)
+            if (insecureUrl == null) return null;
+
+            var sourceScheme = insecureUrl.Scheme;
+            var targetScheme = string.Equals(sourceScheme, "ws", StringComparison.OrdinalIgnoreCase)
+                ? "wss"
+                : "https";
+
+            var preservePort = !insecureUrl.IsDefaultPort && insecureUrl.Port != 80;
+            var originalPort = insecureUrl.Port;
+            var builder = new UriBuilder(insecureUrl)
             {
-                Scheme = "https",
-                Port = -1 // Use default port (443)
+                Scheme = targetScheme,
+                Port = preservePort ? originalPort : -1
             };
             return builder.Uri;
         }
 
-        /// <summary>
-        /// Checks if a navigation request should be blocked due to mixed content.
-        /// </summary>
+        private static bool IsSameHostAndEffectivePort(Uri requestUrl, Uri pageUrl)
+        {
+            if (requestUrl == null || pageUrl == null)
+            {
+                return false;
+            }
+
+            if (!string.Equals(requestUrl.Host, pageUrl.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var requestPort = requestUrl.IsDefaultPort ? 80 : requestUrl.Port;
+            var pagePort = pageUrl.IsDefaultPort ? 80 : pageUrl.Port;
+            return requestPort == pagePort;
+        }
+
         public static MixedContentDecision CheckNavigationMixedContent(
             Uri navigationUrl,
             Uri pageUrl,
@@ -170,9 +188,6 @@ namespace FenBrowser.Core.Security
         }
     }
 
-    /// <summary>
-    /// Result of a mixed content check.
-    /// </summary>
     public sealed class MixedContentDecision
     {
         public MixedContentAction Action { get; }
@@ -189,9 +204,9 @@ namespace FenBrowser.Core.Security
         }
 
         public static MixedContentDecision Allow() => new(MixedContentAction.Allow, string.Empty, string.Empty);
-        
+
         public static MixedContentDecision Block(string reason, string code) => new(MixedContentAction.Block, reason, code);
-        
+
         public static MixedContentDecision Upgrade(string reason, string code, Uri upgradedUrl) => new(MixedContentAction.Upgrade, reason, code, upgradedUrl);
 
         public bool IsBlocked => Action == MixedContentAction.Block;
