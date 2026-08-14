@@ -168,6 +168,18 @@ namespace FenBrowser.WebDriver.Security
 
         public static SecurityDecision ValidateRequestedCapabilities(Capabilities? caps)
         {
+            // The current default WebDriver server installs NoOpBiDiTransportBootstrap,
+            // while the concrete transport is a separately-owned listener whose
+            // endpoint/lifecycle is not yet integrated with the HTTP remote end.
+            // Never turn `webSocketUrl: true` into an advertised URL until the server
+            // can actually start and own a standards-compliant BiDi listener.
+            if (Capabilities.NormalizeWebSocketUrl(caps?.WebSocketUrl) is bool webSocketRequested && webSocketRequested)
+            {
+                return SecurityDecision.Block(
+                    SecurityBlockReasons.CapabilityPolicyViolation,
+                    "webSocketUrl/BiDi is unavailable until the WebDriver remote end owns a standards-compliant BiDi transport");
+            }
+
             var args = caps?.FenOptions?.Args ?? new List<string>();
             if (args.Count == 0)
             {
