@@ -89,25 +89,27 @@ public static class BytecodeCache
         }
 
         var key = new CacheKey(sourceText, strictMode);
+        BytecodeFunction template;
         lock (Sync)
         {
-            if (Entries.TryGetValue(key, out var entry))
+            if (!Entries.TryGetValue(key, out var entry))
             {
-                Recency.Remove(entry.RecencyNode);
-                Recency.AddFirst(entry.RecencyNode);
-                _hitCount++;
-
-                // Never expose the process-global template. Every compile request gets
-                // fresh nested functions, IC dictionaries, counters, and JIT state so
-                // heap-local runtime feedback cannot cross interpreter boundaries.
-                function = entry.Template.CreateExecutionCopy();
-                return true;
+                _missCount++;
+                function = null!;
+                return false;
             }
 
-            _missCount++;
-            function = null!;
-            return false;
+            Recency.Remove(entry.RecencyNode);
+            Recency.AddFirst(entry.RecencyNode);
+            _hitCount++;
+            template = entry.Template;
         }
+
+        // Cloning a large nested function tree can be non-trivial. Do not hold the
+        // process-global cache lock while doing it or one large cache hit will stall
+        // unrelated script compilations in every tab/isolate.
+        function = template.CreateExecutionCopy();
+        return true;
     }
 
     public static void Put(string sourceText, bool strictMode, BytecodeFunction function)
@@ -129,6 +131,7 @@ public static class BytecodeCache
         // Snapshot the compiler output BEFORE the caller executes it. Storing the
         // original object would let the first execution populate IC/JIT feedback in
         // the supposedly immutable template later returned to other interpreters.
+        // Build the copy outside the cache lock for the same reason as cache-hit copies.
         var template = function.CreateExecutionCopy();
         var key = new CacheKey(sourceText, strictMode);
 
