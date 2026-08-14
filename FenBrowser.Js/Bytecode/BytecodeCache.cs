@@ -1,11 +1,15 @@
 namespace FenBrowser.Js.Bytecode;
 
-// Process-global bytecode cache for repeated script compilation.
+// Process-global bytecode template cache for repeated script compilation.
+//
+// IMPORTANT: cached BytecodeFunction instances are immutable templates only. A
+// BytecodeFunction also owns interpreter feedback (ICs/JIT counters), including call
+// IC entries that contain heap-local ObjectHandle values. Cache hits therefore return
+// a fresh execution copy rather than the stored template itself.
 //
 // The cache is bounded by both entry count and retained source size. Entry-count-only
 // eviction allowed a few hundred multi-megabyte bundles to pin a very large amount of
-// source/bytecode memory. Recency is tracked with an O(1) linked-list LRU so frequently
-// reused scripts survive churn without sorting or full-cache scans.
+// source/bytecode memory. Recency is tracked with an O(1) linked-list LRU.
 public static class BytecodeCache
 {
     private const int MaxEntries = 256;
@@ -14,7 +18,7 @@ public static class BytecodeCache
 
     private sealed class CacheEntry
     {
-        public required BytecodeFunction Function { get; init; }
+        public required BytecodeFunction Template { get; init; }
         public required LinkedListNode<CacheKey> RecencyNode { get; init; }
     }
 
@@ -43,7 +47,9 @@ public static class BytecodeCache
         get { lock (Sync) return _cachedSourceChars; }
     }
 
-    // Isolated realms bypass shared compiled state for their full compile/execute scope.
+    // Isolated realms bypass shared compiled templates for their full compile/execute
+    // scope. The current realm API is synchronous; keep this thread-local so unrelated
+    // interpreter work on another thread is not accidentally suppressed.
     [ThreadStatic] private static int _bypassDepth;
 
     public static bool IsBypassed => _bypassDepth > 0;
@@ -90,7 +96,11 @@ public static class BytecodeCache
                 Recency.Remove(entry.RecencyNode);
                 Recency.AddFirst(entry.RecencyNode);
                 _hitCount++;
-                function = entry.Function;
+
+                // Never expose the process-global template. Every compile request gets
+                // fresh nested functions, IC dictionaries, counters, and JIT state so
+                // heap-local runtime feedback cannot cross interpreter boundaries.
+                function = entry.Template.CreateExecutionCopy();
                 return true;
             }
 
@@ -109,13 +119,25 @@ public static class BytecodeCache
         if (sourceChars > MaxSingleSourceChars || sourceChars > MaxCachedSourceChars)
             return;
 
+        // Private brand tokens are evaluation identities, not reusable compiler
+        // constants. Heap object/host-object constants are likewise process-local.
+        // Do not cache such function trees until the compiler represents those values
+        // as rematerializable descriptors rather than runtime identities.
+        if (!function.CanUseProcessGlobalTemplate())
+            return;
+
+        // Snapshot the compiler output BEFORE the caller executes it. Storing the
+        // original object would let the first execution populate IC/JIT feedback in
+        // the supposedly immutable template later returned to other interpreters.
+        var template = function.CreateExecutionCopy();
         var key = new CacheKey(sourceText, strictMode);
+
         lock (Sync)
         {
             if (Entries.TryGetValue(key, out var existing))
             {
                 // A racing compilation may arrive after another thread populated the
-                // same key. Keep the first function and refresh its recency.
+                // same key. Keep the first immutable template and refresh recency.
                 Recency.Remove(existing.RecencyNode);
                 Recency.AddFirst(existing.RecencyNode);
                 return;
@@ -139,7 +161,7 @@ public static class BytecodeCache
             var node = Recency.AddFirst(key);
             Entries.Add(key, new CacheEntry
             {
-                Function = function,
+                Template = template,
                 RecencyNode = node
             });
             _cachedSourceChars += sourceChars;
