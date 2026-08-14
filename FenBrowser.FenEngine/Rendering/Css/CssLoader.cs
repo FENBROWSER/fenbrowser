@@ -829,6 +829,8 @@ namespace FenBrowser.FenEngine.Rendering
                             i,em{font-style:italic;}
                             pre,code{font-family:monospace;}
                             mark{display:inline;background-color:yellow;color:black;}
+                            :link{color:#0000ee;text-decoration:underline;}
+                            :visited{color:#551a8b;text-decoration:underline;}
                         ";
                     }
                 }
@@ -3032,7 +3034,7 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 ProcessRuleList(sheet.Rules);
 
-                EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS] [CHECKPOINT] ParseRules FINISHED for {text.Length} bytes.");
+                EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Info, $"[PERF-CSS] [CHECKPOINT] ParseRules FINISHED for {text.Length} bytes. Time: {sw.ElapsedMilliseconds}ms");
             }
             catch (Exception ex)
             {

@@ -114,6 +114,16 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 }
             }
 
+            // A tags (Links)
+            if (tag == "A")
+            {
+                if (style == null) style = new CssComputed();
+                if (node is Element el && el.HasAttribute("href"))
+                {
+                    if (string.IsNullOrEmpty(style.Cursor)) style.Cursor = "pointer";
+                }
+            }
+
             // DIV specific (not covered by generic block elements)
             if (tag == "DIV")
             {
