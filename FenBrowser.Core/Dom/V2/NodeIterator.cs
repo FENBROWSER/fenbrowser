@@ -14,6 +14,7 @@ namespace FenBrowser.Core.Dom.V2
     public sealed class NodeIterator
     {
         private Document _owningDocument;
+        private bool _isActive;
 
         /// <summary>
         /// The root of the iteration.
@@ -113,11 +114,9 @@ namespace FenBrowser.Core.Dom.V2
 
         private Node NextNodeInTree(Node node)
         {
-            // First try children
             if (node.HasChildNodes)
                 return node.FirstChild;
 
-            // Then try siblings
             while (node != null && node != Root)
             {
                 if (node.NextSibling != null)
@@ -130,37 +129,44 @@ namespace FenBrowser.Core.Dom.V2
 
         private Node PreviousNodeInTree(Node node)
         {
-            // If at root, can't go back
             if (node == Root)
                 return null;
 
-            // Try previous sibling
             if (node.PreviousSibling != null)
             {
-                // Go to last descendant of previous sibling
                 node = node.PreviousSibling;
                 while (node.HasChildNodes)
                     node = node.LastChild;
                 return node;
             }
 
-            // A direct child of Root is preceded by Root itself in pre-order.
-            // Returning null here used to make previousNode() stop one node early.
             return node.ParentNode;
         }
 
         private NodeFilterResult AcceptNode(Node node)
         {
-            // Check whatToShow
             uint flag = 1u << ((int)node.NodeType - 1);
             if ((WhatToShow & flag) == 0)
                 return NodeFilterResult.Skip;
 
-            // Check filter
-            if (Filter != null)
-                return Filter(node);
+            if (Filter == null)
+                return NodeFilterResult.Accept;
 
-            return NodeFilterResult.Accept;
+            // DOM traversal filters are not reentrant. A callback that calls
+            // nextNode()/previousNode() on this iterator while it is already being
+            // evaluated must fail instead of mutating ReferenceNode mid-filter.
+            if (_isActive)
+                throw new DomException("InvalidStateError", "NodeIterator filter is already active");
+
+            _isActive = true;
+            try
+            {
+                return Filter(node);
+            }
+            finally
+            {
+                _isActive = false;
+            }
         }
 
         /// <summary>
@@ -169,13 +175,11 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         internal void OnNodeRemoved(Node node)
         {
-            // Check if removed node is an ancestor of or is the reference node
             if (!IsAncestorOrSelf(node, ReferenceNode))
                 return;
 
             if (PointerBeforeReferenceNode)
             {
-                // Find next node not in removed subtree
                 var next = NextNodeInTree(node);
                 while (next != null && IsAncestorOrSelf(node, next))
                     next = NextNodeInTree(next);
@@ -186,7 +190,6 @@ namespace FenBrowser.Core.Dom.V2
                 }
                 else
                 {
-                    // Go to previous
                     var prev = PreviousNodeInTree(node);
                     while (prev != null && IsAncestorOrSelf(node, prev))
                         prev = PreviousNodeInTree(prev);
@@ -197,7 +200,6 @@ namespace FenBrowser.Core.Dom.V2
             }
             else
             {
-                // Find previous node not in removed subtree
                 var prev = PreviousNodeInTree(node);
                 while (prev != null && IsAncestorOrSelf(node, prev))
                     prev = PreviousNodeInTree(prev);
@@ -208,7 +210,6 @@ namespace FenBrowser.Core.Dom.V2
                 }
                 else
                 {
-                    // Go to next
                     var next = NextNodeInTree(node);
                     while (next != null && IsAncestorOrSelf(node, next))
                         next = NextNodeInTree(next);
