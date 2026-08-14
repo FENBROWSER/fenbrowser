@@ -3,243 +3,179 @@ using System;
 namespace FenBrowser.Core.Network
 {
     /// <summary>
-    /// MIME type sniffing per WHATWG MIME Sniff Standard.
-    /// https://mimesniff.spec.whatwg.org/
-    /// 
-    /// Used when Content-Type header is missing, unknown, or potentially wrong.
+    /// Conservative MIME type sniffing for resources whose supplied type is missing
+    /// or explicitly unknown. A valid supplied MIME type is authoritative here; the
+    /// caller can apply context-specific MIME Sniffing rules separately when needed.
     /// </summary>
     public static class MimeSniffer
     {
         /// <summary>
-        /// Sniffs the actual MIME type from bytes.
+        /// Sniffs the actual MIME type from bytes only when the supplied type is absent
+        /// or one of the standard unknown sentinels.
         /// </summary>
-        /// <param name="bytes">First bytes of resource (512+ recommended).</param>
-        /// <param name="declaredMime">MIME type from Content-Type header (may be null).</param>
-        /// <returns>Sniffed MIME type or declared MIME if sniffing fails.</returns>
         public static string SniffMimeType(byte[] bytes, string declaredMime)
         {
-            if (bytes == null || bytes.Length == 0)
-                return declaredMime ?? "application/octet-stream";
-
-            // If text/* declared, trust it unless obviously binary
-            if (!string.IsNullOrEmpty(declaredMime) && declaredMime.StartsWith("text/", StringComparison.OrdinalIgnoreCase))
+            var supplied = NormalizeSuppliedMime(declaredMime);
+            if (!IsUnknownMime(supplied))
             {
-                if (!LooksBinary(bytes))
-                    return declaredMime;
+                // Do not promote server-declared low-privilege content into HTML,
+                // JavaScript, CSS, or another active type based on body heuristics.
+                return declaredMime.Trim();
             }
 
-            // Magic byte sniffing
+            if (bytes == null || bytes.Length == 0)
+            {
+                return "application/octet-stream";
+            }
+
             var sniffed = SniffFromMagicBytes(bytes);
             if (!string.IsNullOrEmpty(sniffed))
+            {
                 return sniffed;
+            }
 
-            // If declared MIME is available, trust it
-            if (!string.IsNullOrEmpty(declaredMime))
-                return declaredMime;
+            // WHATWG's unknown-type algorithm ends by distinguishing text from binary.
+            // Plain textual bytes are text/plain, never implicitly privileged HTML.
+            return LooksBinary(bytes) ? "application/octet-stream" : "text/plain";
+        }
 
-            // Unknown - if not binary, assume HTML (legacy web behavior)
-            return LooksBinary(bytes) ? "application/octet-stream" : "text/html";
+        private static string NormalizeSuppliedMime(string declaredMime)
+        {
+            if (string.IsNullOrWhiteSpace(declaredMime))
+            {
+                return null;
+            }
+
+            var semicolon = declaredMime.IndexOf(';');
+            var essence = semicolon >= 0 ? declaredMime[..semicolon] : declaredMime;
+            return essence.Trim().ToLowerInvariant();
+        }
+
+        private static bool IsUnknownMime(string mime)
+        {
+            return string.IsNullOrEmpty(mime) ||
+                   string.Equals(mime, "unknown/unknown", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(mime, "application/unknown", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(mime, "*/*", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
-        /// Checks if content appears to be binary (contains NUL or high density of non-printable chars).
+        /// Checks for binary data bytes using the MIME Sniffing Standard's byte class.
         /// </summary>
         private static bool LooksBinary(byte[] bytes)
         {
-            int checkLen = Math.Min(bytes.Length, 512);
-            int nonPrintable = 0;
-
-            for (int i = 0; i < checkLen; i++)
+            var checkLen = Math.Min(bytes.Length, 1445);
+            for (var i = 0; i < checkLen; i++)
             {
-                byte b = bytes[i];
-                
-                // NUL byte = definitely binary
-                if (b == 0) return true;
-                
-                // Non-printable (except common whitespace)
-                if (b < 0x20 && b != 0x09 && b != 0x0A && b != 0x0D)
-                    nonPrintable++;
+                var b = bytes[i];
+                if (b <= 0x08 || b == 0x0B || (b >= 0x0E && b <= 0x1A) || (b >= 0x1C && b <= 0x1F))
+                {
+                    return true;
+                }
             }
 
-            // > 10% non-printable = likely binary
-            return nonPrintable > (checkLen / 10);
+            return false;
         }
 
         /// <summary>
-        /// Sniffs MIME type from magic bytes.
+        /// Sniffs well-defined byte signatures for an unknown supplied type.
+        /// Deliberately does not guess JavaScript/CSS/JSON from source text.
         /// </summary>
         private static string SniffFromMagicBytes(byte[] bytes)
         {
-            int len = bytes.Length;
-            int offset = SkipInsignificantPrefix(bytes, len);
+            var len = bytes.Length;
+            var offset = SkipInsignificantPrefix(bytes, len);
             if (offset >= len)
             {
                 return null;
             }
 
-            // HTML signatures
-            if (len - offset >= 5 && StartsWithIgnoreCase(bytes, offset, "<!DOC")) return "text/html";
+            // Scriptable signatures from the unknown-type sniffing family.
+            if (len - offset >= 15 && StartsWithIgnoreCase(bytes, offset, "<!DOCTYPE html")) return "text/html";
             if (len - offset >= 5 && StartsWithIgnoreCase(bytes, offset, "<html")) return "text/html";
             if (len - offset >= 5 && StartsWithIgnoreCase(bytes, offset, "<head")) return "text/html";
             if (len - offset >= 6 && StartsWithIgnoreCase(bytes, offset, "<body")) return "text/html";
-            if (len - offset >= 15 && StartsWithIgnoreCase(bytes, offset, "<!DOCTYPE html")) return "text/html";
+            if (len - offset >= 5 && StartsWithIgnoreCase(bytes, offset, "<?xml")) return "text/xml";
+            if (len >= 5 && bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46 && bytes[4] == 0x2D)
+                return "application/pdf";
 
-            // XML
-            if (len - offset >= 5 && StartsWithIgnoreCase(bytes, offset, "<?xml")) return "application/xml";
+            // BOM signatures are text/plain in the unknown-type algorithm.
+            if (len >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) return "text/plain";
+            if (len >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) return "text/plain";
+            if (len >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) return "text/plain";
 
-            // JSON (starts with { or [)
-            if (len - offset >= 1 && (bytes[offset] == '{' || bytes[offset] == '[')) return "application/json";
+            // Images.
+            if (len >= 6 && bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 &&
+                (bytes[3] == 0x38) && (bytes[4] == 0x37 || bytes[4] == 0x39) && bytes[5] == 0x61)
+                return "image/gif";
+            if (len >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47 &&
+                bytes[4] == 0x0D && bytes[5] == 0x0A && bytes[6] == 0x1A && bytes[7] == 0x0A)
+                return "image/png";
+            if (len >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF)
+                return "image/jpeg";
+            if (len >= 12 && bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46 &&
+                bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50)
+                return "image/webp";
 
-            // JavaScript (common patterns)
-            if (LooksLikeJavaScript(bytes, offset, len)) return "application/javascript";
+            // Audio/video.
+            if (len >= 4 && bytes[0] == 0x4F && bytes[1] == 0x67 && bytes[2] == 0x67 && bytes[3] == 0x53)
+                return "application/ogg";
+            if (len >= 4 && bytes[0] == 0x1A && bytes[1] == 0x45 && bytes[2] == 0xDF && bytes[3] == 0xA3)
+                return "video/webm";
+            if (len >= 3 && bytes[0] == 0x49 && bytes[1] == 0x44 && bytes[2] == 0x33)
+                return "audio/mpeg";
+            if (len >= 12 && bytes[4] == 0x66 && bytes[5] == 0x74 && bytes[6] == 0x79 && bytes[7] == 0x70)
+                return "video/mp4";
 
-            // CSS
-            if (len - offset >= 1 && bytes[offset] == '@') return "text/css"; // @charset, @import, etc.
-            if (len - offset >= 4 && ContainsPattern(bytes, offset, 100, "{") && ContainsPattern(bytes, offset, 100, ":")) 
-                return "text/css"; // Likely CSS ruleset
-
-            // Images
-            if (len >= 6 && bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46) return "image/gif";
-            if (len >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) return "image/png";
-            if (len >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8) return "image/jpeg";
-            if (len >= 4 && bytes[0] == 0x52 && bytes[1] == 0x49 && bytes[2] == 0x46 && bytes[3] == 0x46) 
-            {
-                if (len >= 12 && bytes[8] == 0x57 && bytes[9] == 0x45 && bytes[10] == 0x42 && bytes[11] == 0x50)
-                    return "image/webp";
-                if (len >= 12 && bytes[8] == 0x57 && bytes[9] == 0x41 && bytes[10] == 0x56 && bytes[11] == 0x45)
-                    return "audio/wav";
-            }
-            if (len - offset >= 4 && StartsWithIgnoreCase(bytes, offset, "<svg")) return "image/svg+xml";
-
-            // Audio/Video
-            // Ogg (OggS)
-            if (len >= 4 && bytes[0] == 0x4F && bytes[1] == 0x67 && bytes[2] == 0x67 && bytes[3] == 0x53) return "audio/ogg";
-            
-            // WebM (EBML 1A 45 DF A3)
-            if (len >= 4 && bytes[0] == 0x1A && bytes[1] == 0x45 && bytes[2] == 0xDF && bytes[3] == 0xA3) return "video/webm";
-
-            // MP3 (ID3)
-            if (len >= 3 && bytes[0] == 0x49 && bytes[1] == 0x44 && bytes[2] == 0x33) return "audio/mpeg";
-
-            // MP4 (ftyp at offset 4)
-            if (len >= 12 && bytes[4] == 0x66 && bytes[5] == 0x74 && bytes[6] == 0x79 && bytes[7] == 0x70) return "video/mp4";
-
-            // PDF
-            if (len >= 4 && bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46) return "application/pdf";
-
-            // Fonts
-            if (len >= 4 && bytes[0] == 0x00 && bytes[1] == 0x01 && bytes[2] == 0x00 && bytes[3] == 0x00) return "font/ttf";
-            if (len >= 4 && bytes[0] == 0x4F && bytes[1] == 0x54 && bytes[2] == 0x54 && bytes[3] == 0x4F) return "font/otf";
-            if (len >= 4 && bytes[0] == 0x77 && bytes[1] == 0x4F && bytes[2] == 0x46 && bytes[3] == 0x46) return "font/woff";
-            if (len >= 4 && bytes[0] == 0x77 && bytes[1] == 0x4F && bytes[2] == 0x46 && bytes[3] == 0x32) return "font/woff2";
+            // Fonts.
+            if (len >= 4 && bytes[0] == 0x00 && bytes[1] == 0x01 && bytes[2] == 0x00 && bytes[3] == 0x00)
+                return "font/ttf";
+            if (len >= 4 && bytes[0] == 0x4F && bytes[1] == 0x54 && bytes[2] == 0x54 && bytes[3] == 0x4F)
+                return "font/otf";
+            if (len >= 4 && bytes[0] == 0x77 && bytes[1] == 0x4F && bytes[2] == 0x46 && bytes[3] == 0x46)
+                return "font/woff";
+            if (len >= 4 && bytes[0] == 0x77 && bytes[1] == 0x4F && bytes[2] == 0x46 && bytes[3] == 0x32)
+                return "font/woff2";
 
             return null;
         }
 
-        private static bool StartsWithIgnoreCase(byte[] bytes, string pattern)
-        {
-            return StartsWithIgnoreCase(bytes, 0, pattern);
-        }
-
         private static bool StartsWithIgnoreCase(byte[] bytes, int offset, string pattern)
         {
-            if (bytes.Length - offset < pattern.Length) return false;
-            for (int i = 0; i < pattern.Length; i++)
+            if (offset < 0 || bytes.Length - offset < pattern.Length) return false;
+            for (var i = 0; i < pattern.Length; i++)
             {
-                byte b = bytes[offset + i];
-                char c = pattern[i];
-                if (char.ToLowerInvariant((char)b) != char.ToLowerInvariant(c))
-                    return false;
+                var b = bytes[offset + i];
+                var expected = (byte)pattern[i];
+                if (b == expected) continue;
+
+                // All signatures passed here are ASCII. Fold only ASCII letters; do
+                // not involve culture/Unicode character casing in byte matching.
+                if (b >= (byte)'A' && b <= (byte)'Z') b = (byte)(b + 0x20);
+                if (expected >= (byte)'A' && expected <= (byte)'Z') expected = (byte)(expected + 0x20);
+                if (b != expected) return false;
             }
             return true;
         }
 
-        private static bool ContainsPattern(byte[] bytes, int start, int maxLen, string pattern)
-        {
-            int end = Math.Min(bytes.Length, start + maxLen);
-            for (int i = start; i <= end - pattern.Length; i++)
-            {
-                bool match = true;
-                for (int j = 0; j < pattern.Length; j++)
-                {
-                    if ((char)bytes[i + j] != pattern[j])
-                    {
-                        match = false;
-                        break;
-                    }
-                }
-                if (match) return true;
-            }
-            return false;
-        }
-
         private static int SkipInsignificantPrefix(byte[] bytes, int len)
         {
-            int index = 0;
-
+            var index = 0;
             if (len >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
             {
                 index = 3;
             }
 
-            while (index < len)
+            while (index < len && IsHttpWhitespace(bytes[index]))
             {
-                while (index < len && char.IsWhiteSpace((char)bytes[index]))
-                {
-                    index++;
-                }
-
-                if (index + 1 < len && bytes[index] == '/' && bytes[index + 1] == '/')
-                {
-                    index += 2;
-                    while (index < len && bytes[index] != '\n' && bytes[index] != '\r')
-                    {
-                        index++;
-                    }
-                    continue;
-                }
-
-                if (index + 1 < len && bytes[index] == '/' && bytes[index + 1] == '*')
-                {
-                    index += 2;
-                    while (index + 1 < len && !(bytes[index] == '*' && bytes[index + 1] == '/'))
-                    {
-                        index++;
-                    }
-
-                    if (index + 1 < len)
-                    {
-                        index += 2;
-                    }
-
-                    continue;
-                }
-
-                break;
+                index++;
             }
 
             return index;
         }
 
-        private static bool LooksLikeJavaScript(byte[] bytes, int offset, int len)
-        {
-            return StartsWithIgnoreCase(bytes, offset, "function")
-                   || StartsWithIgnoreCase(bytes, offset, "var ")
-                   || StartsWithIgnoreCase(bytes, offset, "let ")
-                   || StartsWithIgnoreCase(bytes, offset, "const ")
-                   || StartsWithIgnoreCase(bytes, offset, "window.")
-                   || StartsWithIgnoreCase(bytes, offset, "document.")
-                   || StartsWithIgnoreCase(bytes, offset, "self.")
-                   || StartsWithIgnoreCase(bytes, offset, "this.")
-                   || StartsWithIgnoreCase(bytes, offset, "(()=>")
-                   || StartsWithIgnoreCase(bytes, offset, "(function")
-                   || StartsWithIgnoreCase(bytes, offset, "!function")
-                   || StartsWithIgnoreCase(bytes, offset, ";(function")
-                   || StartsWithIgnoreCase(bytes, offset, "if(")
-                   || StartsWithIgnoreCase(bytes, offset, "if (")
-                   || StartsWithIgnoreCase(bytes, offset, "for(")
-                   || StartsWithIgnoreCase(bytes, offset, "for (");
-        }
+        private static bool IsHttpWhitespace(byte b) =>
+            b is 0x09 or 0x0A or 0x0C or 0x0D or 0x20;
 
         /// <summary>
         /// Returns true if the MIME type indicates text content suitable for parsing.
