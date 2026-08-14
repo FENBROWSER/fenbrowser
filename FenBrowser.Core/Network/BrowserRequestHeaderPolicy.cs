@@ -20,9 +20,6 @@ internal static class BrowserRequestHeaderPolicy
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(context);
 
-        // Preserve the browser's typed security/navigation context across the existing
-        // INetworkClient(HttpRequestMessage) boundary. This is process-local metadata,
-        // not an HTTP header, and lets middleware consume authoritative state directly.
         FetchContextRequestOptions.Set(request, context);
         CorsHandler.SetCredentialsMode(request, context.CredentialsMode);
 
@@ -34,9 +31,6 @@ internal static class BrowserRequestHeaderPolicy
         var destination = string.IsNullOrWhiteSpace(context.Destination) ? "empty" : context.Destination;
         var mode = string.IsNullOrWhiteSpace(context.Mode) ? DetermineMode(destination) : context.Mode;
 
-        // Fetch Metadata headers are user-agent controlled state. Never preserve a
-        // stale/caller-supplied value when a request is reused, cloned for a redirect,
-        // or passed in from an internal embedder; derive them from this FetchContext.
         SetBrowserHeader(request, "Sec-Fetch-Dest", destination);
         SetBrowserHeader(request, "Sec-Fetch-Mode", mode);
 
@@ -74,9 +68,15 @@ internal static class BrowserRequestHeaderPolicy
 
     internal static string DetermineSite(Uri initiator, Uri request)
     {
-        if (request == null || initiator == null) return "none";
-        if (IsSameOrigin(initiator, request)) return "same-origin";
-        return IsSameSite(initiator.Host, request.Host) ? "same-site" : "cross-site";
+        if (request == null || initiator == null || !request.IsAbsoluteUri || !initiator.IsAbsoluteUri)
+            return "none";
+
+        if (IsSameOrigin(initiator, request))
+            return "same-origin";
+
+        // Fetch Metadata uses a schemeful site boundary. A host-only comparison
+        // incorrectly labels http↔https transitions as same-site.
+        return IsSameSite(initiator, request) ? "same-site" : "cross-site";
     }
 
     internal static Uri ComputeReferrer(
@@ -101,9 +101,6 @@ internal static class BrowserRequestHeaderPolicy
             return null;
         }
 
-        // Referrer Policy limits a full referrer URL to 4096 serialized characters.
-        // Collapse oversized values to the already-stripped origin before policy
-        // selection rather than sending an arbitrarily large path/query.
         if (referrerUrl.AbsoluteUri.Length > 4096)
         {
             referrerUrl = origin;
@@ -131,8 +128,6 @@ internal static class BrowserRequestHeaderPolicy
         Uri requestUri,
         ReferrerPolicyDirective policy)
     {
-        // Always assign, including null. A no-referrer decision must clear any
-        // pre-existing Referer value instead of silently leaving it on the request.
         request.Headers.Referrer = ComputeReferrer(candidate, requestUri, policy);
     }
 
@@ -143,8 +138,6 @@ internal static class BrowserRequestHeaderPolicy
             return null;
         }
 
-        // Fetch defines about:, blob:, and data: as local schemes; Referrer Policy
-        // requires local-scheme URLs to produce no referrer.
         if (uri.Scheme.Equals("about", StringComparison.OrdinalIgnoreCase) ||
             uri.Scheme.Equals("blob", StringComparison.OrdinalIgnoreCase) ||
             uri.Scheme.Equals("data", StringComparison.OrdinalIgnoreCase))
@@ -197,7 +190,7 @@ internal static class BrowserRequestHeaderPolicy
             return true;
         }
 
-        var host = uri.Host?.TrimEnd('.');
+        var host = uri.Host?.TrimEnd('.').Trim('[', ']');
         if (string.IsNullOrEmpty(host))
         {
             return false;
@@ -218,11 +211,22 @@ internal static class BrowserRequestHeaderPolicy
         string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase) &&
         left.Port == right.Port;
 
-    private static bool IsSameSite(string left, string right)
+    private static bool IsSameSite(Uri left, Uri right)
+    {
+        if (left == null || right == null || !left.IsAbsoluteUri || !right.IsAbsoluteUri)
+            return false;
+
+        if (!string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return IsSameSiteHost(left.Host, right.Host);
+    }
+
+    private static bool IsSameSiteHost(string left, string right)
     {
         if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
         if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase)) return true;
-        if (IPAddress.TryParse(left, out _) || IPAddress.TryParse(right, out _)) return false;
+        if (IPAddress.TryParse(left.Trim('[', ']'), out _) || IPAddress.TryParse(right.Trim('[', ']'), out _)) return false;
         return string.Equals(SiteKey(left), SiteKey(right), StringComparison.OrdinalIgnoreCase);
     }
 
