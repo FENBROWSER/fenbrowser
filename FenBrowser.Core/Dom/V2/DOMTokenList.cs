@@ -4,7 +4,6 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Text;
 
 namespace FenBrowser.Core.Dom.V2
 {
@@ -45,10 +44,6 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
-        /// <summary>
-        /// Returns the token at the specified index.
-        /// https://dom.spec.whatwg.org/#dom-domtokenlist-item
-        /// </summary>
         /// <summary>
         /// Returns the token at the specified index.
         /// https://dom.spec.whatwg.org/#dom-domtokenlist-item
@@ -104,18 +99,14 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public void Add(params string[] tokens)
         {
-            if (tokens == null || tokens.Length == 0)
+            if (tokens == null)
                 return;
 
-            // Validate tokens
             foreach (var token in tokens)
-            {
                 ValidateToken(token);
-            }
 
             EnsureTokens();
 
-            // Build new token list
             var newTokens = new List<string>(_tokens);
             foreach (var token in tokens)
             {
@@ -123,8 +114,7 @@ namespace FenBrowser.Core.Dom.V2
                     newTokens.Add(token);
             }
 
-            // Update attribute
-            UpdateAttribute(newTokens);
+            RunUpdateSteps(newTokens);
         }
 
         /// <summary>
@@ -133,18 +123,14 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public void Remove(params string[] tokens)
         {
-            if (tokens == null || tokens.Length == 0)
+            if (tokens == null)
                 return;
 
-            // Validate tokens
             foreach (var token in tokens)
-            {
                 ValidateToken(token);
-            }
 
             EnsureTokens();
 
-            // Build new token list without the specified tokens
             var newTokens = new List<string>(_tokens.Length);
             foreach (var t in _tokens)
             {
@@ -161,8 +147,7 @@ namespace FenBrowser.Core.Dom.V2
                     newTokens.Add(t);
             }
 
-            // Update attribute
-            UpdateAttribute(newTokens);
+            RunUpdateSteps(newTokens);
         }
 
         /// <summary>
@@ -183,26 +168,20 @@ namespace FenBrowser.Core.Dom.V2
                         Add(token);
                     return true;
                 }
-                else
-                {
-                    if (present)
-                        Remove(token);
-                    return false;
-                }
-            }
-            else
-            {
+
                 if (present)
-                {
                     Remove(token);
-                    return false;
-                }
-                else
-                {
-                    Add(token);
-                    return true;
-                }
+                return false;
             }
+
+            if (present)
+            {
+                Remove(token);
+                return false;
+            }
+
+            Add(token);
+            return true;
         }
 
         /// <summary>
@@ -220,34 +199,58 @@ namespace FenBrowser.Core.Dom.V2
             if (index < 0)
                 return false;
 
-            // Check if new token already exists
             if (Array.IndexOf(_tokens, newToken) >= 0)
             {
-                // Just remove old token
                 Remove(oldToken);
             }
             else
             {
-                // Replace in place
                 var newTokens = new List<string>(_tokens);
                 newTokens[index] = newToken;
-                UpdateAttribute(newTokens);
+                RunUpdateSteps(newTokens);
             }
 
             return true;
         }
 
         /// <summary>
-        /// Returns true if the token is a valid supported token.
+        /// Returns true if the token is one of the supported tokens defined for
+        /// this element/attribute pair.
         /// https://dom.spec.whatwg.org/#dom-domtokenlist-supports
         /// </summary>
         public bool Supports(string token)
         {
-            // For classList, all tokens are supported
-            return true;
-        }
+            // classList has no specification-defined supported-token set, so the
+            // DOM validation steps require TypeError rather than treating every
+            // syntactically valid class name as "supported".
+            if (!string.Equals(_attributeName, "sandbox", StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(_element.LocalName, "iframe", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new DomException("TypeError", "This DOMTokenList does not define supported tokens.");
+            }
 
-        // --- IEnumerable Implementation ---
+            if (token == null)
+                token = string.Empty;
+
+            // HTML iframe sandbox keywords are ASCII case-insensitive.
+            return token.ToLowerInvariant() switch
+            {
+                "allow-downloads" => true,
+                "allow-forms" => true,
+                "allow-modals" => true,
+                "allow-orientation-lock" => true,
+                "allow-pointer-lock" => true,
+                "allow-popups" => true,
+                "allow-popups-to-escape-sandbox" => true,
+                "allow-presentation" => true,
+                "allow-same-origin" => true,
+                "allow-scripts" => true,
+                "allow-top-navigation" => true,
+                "allow-top-navigation-by-user-activation" => true,
+                "allow-top-navigation-to-custom-protocols" => true,
+                _ => false,
+            };
+        }
 
         public IEnumerator<string> GetEnumerator()
         {
@@ -257,8 +260,6 @@ namespace FenBrowser.Core.Dom.V2
         }
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
-
-        // --- Private Helpers ---
 
         private void ValidateToken(string token)
         {
@@ -274,12 +275,9 @@ namespace FenBrowser.Core.Dom.V2
         {
             var currentValue = _element.GetAttribute(_attributeName) ?? "";
 
-            // Check if cache is valid
             if (_tokens != null && _cachedValue == currentValue)
                 return;
 
-            // Parse the attribute's ordered set of unique ASCII-whitespace-
-            // separated tokens while preserving the literal attribute value.
             var parsedTokens = currentValue.Split(
                 new[] { ' ', '\t', '\r', '\n', '\f' },
                 StringSplitOptions.RemoveEmptyEntries);
@@ -288,21 +286,27 @@ namespace FenBrowser.Core.Dom.V2
             foreach (var token in parsedTokens)
             {
                 if (seen.Add(token))
-                {
                     orderedTokens.Add(token);
-                }
             }
 
             _tokens = orderedTokens.ToArray();
             _cachedValue = currentValue;
         }
 
-        private void UpdateAttribute(List<string> tokens)
+        private void RunUpdateSteps(List<string> tokens)
         {
+            // DOMTokenList update steps explicitly preserve an absent attribute
+            // when the token set is empty. This matters for calls such as
+            // element.classList.remove("x") on an element with no class attribute.
+            if (tokens.Count == 0 && !_element.HasAttribute(_attributeName))
+            {
+                _tokens = Array.Empty<string>();
+                _cachedValue = "";
+                return;
+            }
+
             var value = string.Join(" ", tokens);
             _element.SetAttribute(_attributeName, value);
-
-            // Update cache
             _tokens = tokens.ToArray();
             _cachedValue = value;
         }
