@@ -1,6 +1,6 @@
 #nullable enable
 using System;
-using System.Collections.Generic;
+using System.Threading;
 using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Security;
@@ -59,57 +59,49 @@ public sealed class CrossOriginIsolationPolicy
         EmbedderPolicy is CoepValue.RequireCorp or CoepValue.Credentialless;
 
     /// <summary>
-    /// True when COEP requires CORP for cross-origin no-cors fetches.
+    /// True when the current implementation requires a CORP opt-in for cross-origin
+    /// no-cors fetches. Credentialless remains conservative here until request-side
+    /// credential stripping is enforced by the fetch pipeline.
     /// </summary>
     public bool RequiresCorp => EmbedderPolicy is CoepValue.RequireCorp or CoepValue.Credentialless;
 
     /// <summary>
-    /// Parses the COOP header.
+    /// Parses the COOP header. Invalid, empty, or duplicated policy values fail closed
+    /// to unsafe-none instead of retaining policy from a previous parse/navigation.
     /// </summary>
     public void ParseCoopHeader(string? headerValue)
     {
-        if (string.IsNullOrWhiteSpace(headerValue))
-        {
-            OpenerPolicy = CoopValue.UnsafeNone;
+        OpenerPolicy = CoopValue.UnsafeNone;
+        if (!TryGetSinglePolicyToken(headerValue, out var token))
             return;
-        }
 
-        var tokens = SplitHeader(headerValue);
-        foreach (var token in tokens)
+        OpenerPolicy = token switch
         {
-            OpenerPolicy = token.ToLowerInvariant() switch
-            {
-                "same-origin" => CoopValue.SameOrigin,
-                "same-origin-allow-popups" => CoopValue.SameOriginAllowPopups,
-                "same-origin-plus-coep" => CoopValue.SameOriginPlusCoep,
-                "unsafe-none" => CoopValue.UnsafeNone,
-                _ => OpenerPolicy
-            };
-        }
+            "same-origin" => CoopValue.SameOrigin,
+            "same-origin-allow-popups" => CoopValue.SameOriginAllowPopups,
+            "same-origin-plus-coep" => CoopValue.SameOriginPlusCoep,
+            "unsafe-none" => CoopValue.UnsafeNone,
+            _ => CoopValue.UnsafeNone
+        };
     }
 
     /// <summary>
-    /// Parses the COEP header.
+    /// Parses the COEP header. Invalid, empty, or duplicated policy values fail closed
+    /// to unsafe-none instead of retaining policy from a previous parse/navigation.
     /// </summary>
     public void ParseCoepHeader(string? headerValue)
     {
-        if (string.IsNullOrWhiteSpace(headerValue))
-        {
-            EmbedderPolicy = CoepValue.UnsafeNone;
+        EmbedderPolicy = CoepValue.UnsafeNone;
+        if (!TryGetSinglePolicyToken(headerValue, out var token))
             return;
-        }
 
-        var tokens = SplitHeader(headerValue);
-        foreach (var token in tokens)
+        EmbedderPolicy = token switch
         {
-            EmbedderPolicy = token.ToLowerInvariant() switch
-            {
-                "require-corp" => CoepValue.RequireCorp,
-                "credentialless" => CoepValue.Credentialless,
-                "unsafe-none" => CoepValue.UnsafeNone,
-                _ => EmbedderPolicy
-            };
-        }
+            "require-corp" => CoepValue.RequireCorp,
+            "credentialless" => CoepValue.Credentialless,
+            "unsafe-none" => CoepValue.UnsafeNone,
+            _ => CoepValue.UnsafeNone
+        };
     }
 
     /// <summary>
@@ -164,18 +156,88 @@ public sealed class CrossOriginIsolationPolicy
     }
 
     /// <summary>
-    /// Logs the resulting isolation state.
+    /// Logs the resulting isolation state without persisting path/query/fragment data.
     /// </summary>
     public void LogState(Uri documentUri)
     {
         EngineLogCompat.Info(
-            $"[CrossOriginIsolation] {documentUri}: COOP={OpenerPolicy} COEP={EmbedderPolicy} isolated={IsCrossOriginIsolated}",
+            $"[CrossOriginIsolation] {GetSafeOriginLabel(documentUri)}: COOP={OpenerPolicy} COEP={EmbedderPolicy} isolated={IsCrossOriginIsolated}",
             LogCategory.Security);
     }
 
-    private static string[] SplitHeader(string headerValue)
+    private static bool TryGetSinglePolicyToken(string? headerValue, out string token)
     {
-        return headerValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        token = string.Empty;
+        if (string.IsNullOrWhiteSpace(headerValue))
+            return false;
+
+        // COOP/COEP are single policy values. Multiple comma-separated members are
+        // ambiguous/invalid and must not accidentally enable isolation. Ignore commas
+        // inside a quoted reporting parameter while checking for duplicate members.
+        bool inQuote = false;
+        char quote = '\0';
+        for (int i = 0; i < headerValue.Length; i++)
+        {
+            char ch = headerValue[i];
+            if (inQuote)
+            {
+                if (ch == '\\' && i + 1 < headerValue.Length)
+                {
+                    i++;
+                    continue;
+                }
+
+                if (ch == quote)
+                {
+                    inQuote = false;
+                    quote = '\0';
+                }
+                continue;
+            }
+
+            if (ch is '\'' or '"')
+            {
+                inQuote = true;
+                quote = ch;
+                continue;
+            }
+
+            if (ch == ',')
+                return false;
+        }
+
+        if (inQuote)
+            return false;
+
+        var value = headerValue.Trim();
+        int parameterIndex = value.IndexOf(';');
+        if (parameterIndex >= 0)
+            value = value.Substring(0, parameterIndex).Trim();
+
+        if (value.Length == 0)
+            return false;
+
+        token = value.ToLowerInvariant();
+        return true;
+    }
+
+    private static string GetSafeOriginLabel(Uri? documentUri)
+    {
+        if (documentUri == null || !documentUri.IsAbsoluteUri)
+            return "<opaque-or-relative>";
+
+        try
+        {
+            var builder = new UriBuilder(
+                documentUri.Scheme,
+                documentUri.Host,
+                documentUri.IsDefaultPort ? -1 : documentUri.Port);
+            return builder.Uri.GetLeftPart(UriPartial.Authority);
+        }
+        catch
+        {
+            return documentUri.Scheme + "://<invalid-host>";
+        }
     }
 }
 
