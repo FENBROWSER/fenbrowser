@@ -24,9 +24,9 @@ namespace FenBrowser.Core.Security.Corb
 
     public enum CorbVerdict
     {
-        Allow,            // Response is safe to deliver to the renderer
-        Block,            // Block entire response (return 0-byte opaque)
-        AllowSafeHeaders, // Deliver response with sensitive headers stripped
+        Allow,
+        Block,
+        AllowSafeHeaders,
     }
 
     public sealed class CorbFilterResult
@@ -56,7 +56,6 @@ namespace FenBrowser.Core.Security.Corb
     /// </summary>
     public sealed class CorbFilter
     {
-        // Sensitive MIME types that must never reach an opaque renderer context
         private static readonly HashSet<string> SensitiveMimeTypes = new(StringComparer.OrdinalIgnoreCase)
         {
             "text/html",
@@ -64,7 +63,6 @@ namespace FenBrowser.Core.Security.Corb
             "application/xml",
             "application/xhtml+xml",
             "image/svg+xml",
-            // JSON types
             "application/json",
             "text/json",
             "application/ld+json",
@@ -80,7 +78,6 @@ namespace FenBrowser.Core.Security.Corb
             "text/ecmascript"
         };
 
-        // MIME types always safe for cross-origin opaque reads
         private static readonly HashSet<string> SafeMimeTypes = new(StringComparer.OrdinalIgnoreCase)
         {
             "image/png", "image/jpeg", "image/gif", "image/webp", "image/avif",
@@ -90,7 +87,6 @@ namespace FenBrowser.Core.Security.Corb
             "application/octet-stream",
         };
 
-        // Response headers that MUST be stripped from blocked responses (CORB-safe headers)
         private static readonly HashSet<string> CorbSafeResponseHeaders = new(StringComparer.OrdinalIgnoreCase)
         {
             "cache-control", "content-language", "content-length", "content-type",
@@ -103,16 +99,6 @@ namespace FenBrowser.Core.Security.Corb
             "access-control-max-age",
         };
 
-        /// <summary>
-        /// Determine whether a response should be blocked, allowed, or sanitised.
-        /// Call this in the Network/Broker process before delivering to the renderer.
-        /// </summary>
-        /// <param name="requestMode">Fetch mode (cors, no-cors, navigate, same-origin, etc.).</param>
-        /// <param name="requestOrigin">Origin of the renderer making the request.</param>
-        /// <param name="responseUrl">Final URL of the response (after redirects).</param>
-        /// <param name="contentType">Value of the Content-Type response header.</param>
-        /// <param name="contentTypeOptions">Value of X-Content-Type-Options header.</param>
-        /// <param name="responseBodyPrefix">First bytes of the response body (for MIME sniffing).</param>
         public CorbFilterResult Evaluate(
             string requestMode,
             string requestOrigin,
@@ -121,37 +107,29 @@ namespace FenBrowser.Core.Security.Corb
             string contentTypeOptions,
             ReadOnlySpan<byte> responseBodyPrefix)
         {
-            // CORB only applies to cross-origin, no-cors requests (opaque responses).
             if (!string.Equals(requestMode, "no-cors", StringComparison.OrdinalIgnoreCase))
                 return CorbFilterResult.Allow("Not a no-cors request");
 
             if (IsSameOrigin(requestOrigin, responseUrl))
                 return CorbFilterResult.Allow("Same origin");
 
-            // Parse MIME type
             var mime = ParseMimeType(contentType);
 
             var shouldSniff = IsSensitiveMimeType(mime) || IsSniffableMimeType(mime);
             if (!shouldSniff)
                 return CorbFilterResult.Allow($"MIME type '{mime}' not sensitive");
 
-            // nosniff header: if present and MIME is sensitive, block immediately
             bool nosniff = string.Equals(contentTypeOptions?.Trim(), "nosniff", StringComparison.OrdinalIgnoreCase);
             if (nosniff && IsSensitiveMimeType(mime))
                 return CorbFilterResult.Block($"CORB blocked: nosniff + sensitive MIME '{mime}'");
 
-            // MIME sniffing: verify declared MIME matches actual body
             var sniffed = SniffMimeType(responseBodyPrefix, mime);
             if (IsSensitiveMimeType(sniffed))
                 return CorbFilterResult.Block($"CORB blocked: sniffed MIME '{sniffed}' confirms sensitive type");
 
-            // Body doesn't match declared MIME — allow (might be misclassified, not leaking HTML/JSON/XML)
             return CorbFilterResult.Allow($"Sniffed MIME '{sniffed}' not sensitive despite declared '{mime}'");
         }
 
-        /// <summary>
-        /// Strip sensitive headers from a blocked response, returning only CORB-safe headers.
-        /// </summary>
         public Dictionary<string, string> SanitiseHeaders(Dictionary<string, string> headers)
         {
             if (headers == null) return new();
@@ -164,7 +142,6 @@ namespace FenBrowser.Core.Security.Corb
             return result;
         }
 
-        /// <summary>Build a zero-byte opaque response for a blocked resource.</summary>
         public static BlockedCorbResponse CreateBlockedResponse(
             string requestId,
             Dictionary<string, string> originalHeaders)
@@ -172,7 +149,7 @@ namespace FenBrowser.Core.Security.Corb
             return new BlockedCorbResponse
             {
                 RequestId = requestId,
-                StatusCode = 200,       // CORB returns 200 with empty body (not 403) to avoid leaking status
+                StatusCode = 200,
                 Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
                     ["content-type"] = "text/plain",
@@ -181,8 +158,6 @@ namespace FenBrowser.Core.Security.Corb
                 Body = Array.Empty<byte>(),
             };
         }
-
-        // ── Helpers ──────────────────────────────────────────────────────────
 
         private static bool IsSameOrigin(string originA, string urlB)
         {
@@ -257,24 +232,30 @@ namespace FenBrowser.Core.Security.Corb
         {
             if (prefix.IsEmpty) return declared;
             prefix = TrimLeadingNoise(prefix);
+            if (prefix.IsEmpty) return declared;
 
-            // HTML sniffing: look for BOM or <!DOCTYPE html or <html
-            if (StartsWithSkippingWhitespace(prefix, "<!doctype"u8) ||
-                StartsWithSkippingWhitespace(prefix, "<html"u8) ||
-                StartsWithSkippingWhitespace(prefix, "<head"u8) ||
-                StartsWithSkippingWhitespace(prefix, "<body"u8) ||
-                StartsWithSkippingWhitespace(prefix, "<script"u8) ||
-                StartsWithSkippingWhitespace(prefix, "<iframe"u8) ||
-                HasHtmlBom(prefix))
+            // Require real tag/declaration boundaries. Prefix-only checks classify
+            // ordinary text such as <htmlx>, <scripture> or <svgwhatever> as active
+            // markup and can incorrectly zero a cross-origin response.
+            if (StartsWithMarkupToken(prefix, "<!doctype"u8, declarationToken: true) ||
+                StartsWithMarkupToken(prefix, "<html"u8) ||
+                StartsWithMarkupToken(prefix, "<head"u8) ||
+                StartsWithMarkupToken(prefix, "<body"u8) ||
+                StartsWithMarkupToken(prefix, "<script"u8) ||
+                StartsWithMarkupToken(prefix, "<iframe"u8))
+            {
                 return "text/html";
+            }
 
-            // XML sniffing
-            if (StartsWithSkippingWhitespace(prefix, "<?xml"u8) ||
-                StartsWithSkippingWhitespace(prefix, "<svg"u8) ||
-                StartsWithSkippingWhitespace(prefix, "<?"u8))
+            if (StartsWithMarkupToken(prefix, "<?xml"u8, declarationToken: true) ||
+                StartsWithMarkupToken(prefix, "<svg"u8))
+            {
                 return "text/xml";
+            }
 
-            // JSON sniffing: starts with { or [ (whitespace allowed)
+            // JSON sniffing remains intentionally conservative: an opaque response
+            // whose first non-whitespace byte is an object/array opener is treated as
+            // sensitive data.
             byte first = SkipWhitespace(prefix);
             if (first == '{' || first == '[')
                 return "application/json";
@@ -282,25 +263,55 @@ namespace FenBrowser.Core.Security.Corb
             return declared;
         }
 
-        private static bool StartsWithSkippingWhitespace(ReadOnlySpan<byte> data, ReadOnlySpan<byte> prefix)
+        private static bool StartsWithMarkupToken(
+            ReadOnlySpan<byte> data,
+            ReadOnlySpan<byte> token,
+            bool declarationToken = false)
         {
-            int i = 0;
-            while (i < data.Length && (data[i] == ' ' || data[i] == '\t' || data[i] == '\n' || data[i] == '\r'))
-                i++;
-            var slice = data.Slice(i);
-            if (slice.Length < prefix.Length) return false;
-            for (int j = 0; j < prefix.Length; j++)
-                if (char.ToLowerInvariant((char)slice[j]) != char.ToLowerInvariant((char)prefix[j]))
+            var offset = SkipWhitespaceOffset(data);
+            if (data.Length - offset < token.Length)
+                return false;
+
+            for (var i = 0; i < token.Length; i++)
+            {
+                var actual = data[offset + i];
+                var expected = token[i];
+                if (actual >= (byte)'A' && actual <= (byte)'Z') actual = (byte)(actual + 0x20);
+                if (expected >= (byte)'A' && expected <= (byte)'Z') expected = (byte)(expected + 0x20);
+                if (actual != expected)
                     return false;
-            return true;
+            }
+
+            var end = offset + token.Length;
+            if (end >= data.Length)
+                return true;
+
+            var next = data[end];
+            if (declarationToken)
+            {
+                return next == (byte)'>' || next == (byte)'?' || IsHtmlWhitespace(next);
+            }
+
+            return next == (byte)'>' || next == (byte)'/' || IsHtmlWhitespace(next);
+        }
+
+        private static int SkipWhitespaceOffset(ReadOnlySpan<byte> data)
+        {
+            var i = 0;
+            while (i < data.Length && IsHtmlWhitespace(data[i]))
+                i++;
+            return i;
         }
 
         private static byte SkipWhitespace(ReadOnlySpan<byte> data)
         {
             foreach (var b in data)
-                if (b != ' ' && b != '\t' && b != '\n' && b != '\r') return b;
+                if (!IsHtmlWhitespace(b)) return b;
             return 0;
         }
+
+        private static bool IsHtmlWhitespace(byte value) =>
+            value is (byte)' ' or (byte)'\t' or (byte)'\n' or (byte)'\r' or 0x0C;
 
         private static ReadOnlySpan<byte> TrimLeadingNoise(ReadOnlySpan<byte> data)
         {
@@ -312,7 +323,7 @@ namespace FenBrowser.Core.Security.Corb
                 offset = 2;
 
             var slice = data.Slice(offset);
-            while (slice.Length > 0 && (slice[0] == ' ' || slice[0] == '\t' || slice[0] == '\n' || slice[0] == '\r'))
+            while (slice.Length > 0 && IsHtmlWhitespace(slice[0]))
                 slice = slice.Slice(1);
 
             if (slice.Length >= 5 &&
@@ -326,18 +337,6 @@ namespace FenBrowser.Core.Security.Corb
             }
 
             return slice;
-        }
-
-        private static bool HasHtmlBom(ReadOnlySpan<byte> data)
-        {
-            // UTF-8 BOM: EF BB BF
-            if (data.Length >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF)
-                return true;
-            // UTF-16 LE BOM: FF FE
-            if (data.Length >= 2 && data[0] == 0xFF && data[1] == 0xFE) return true;
-            // UTF-16 BE BOM: FE FF
-            if (data.Length >= 2 && data[0] == 0xFE && data[1] == 0xFF) return true;
-            return false;
         }
     }
 
