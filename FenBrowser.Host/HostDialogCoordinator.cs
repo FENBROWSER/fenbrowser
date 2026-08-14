@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Scripting;
@@ -20,11 +21,6 @@ public static class HostDialogCoordinator
     private static readonly object _gate = new();
     private static readonly HashSet<PendingDialog> _pendingDialogs = new();
 
-    /// <summary>
-    /// Install the dialog bridge into FenEngine so that alert/confirm/prompt
-    /// native functions call back into the Host. Must be called once during
-    /// Host startup, before any page script runs.
-    /// </summary>
     public static void Install()
     {
         JsDialogBridge.ShowDialog = ShowDialog;
@@ -76,13 +72,9 @@ public static class HostDialogCoordinator
             }
             catch
             {
-                // Headless/startup teardown: fail closed immediately.
                 return GetDefaultResult(type);
             }
 
-            // This is a dedicated FenJS worker thread. Wait on the signal directly;
-            // polling with Thread.Sleep wakes ~60 times/second for no useful work and
-            // still cannot make a stalled UI queue progress.
             if (!pending.Signal.Wait(TimeSpan.FromSeconds(30)))
             {
                 FenLogger.Warn(
@@ -108,8 +100,6 @@ public static class HostDialogCoordinator
     {
         lock (_gate)
         {
-            // A UI callback can arrive after timeout/navigation teardown. Once the
-            // waiter unregisters, never touch its disposed ManualResetEventSlim.
             if (!pending.IsRegistered || pending.IsCompleted)
                 return;
 
@@ -148,7 +138,6 @@ public static class HostDialogCoordinator
         }
         catch
         {
-            // Best effort during teardown/headless operation.
         }
     }
 
@@ -156,11 +145,9 @@ public static class HostDialogCoordinator
     {
         return type switch
         {
-            // A dialog that cannot be shown, is aborted by navigation, or times out
-            // must never synthesize user approval.
             "confirm" => false,
             "prompt" => null,
-            _ => null // alert
+            _ => null
         };
     }
 
@@ -192,81 +179,77 @@ public static class HostDialogCoordinator
 
     private sealed class PopupState
     {
+        public readonly object Sync = new();
         public PopupWindow Window;
         public BrowserTab Tab;
         public string Name;
+        public string NavigationUrl;
         public string AccumulatedHtml = string.Empty;
+        public bool Closed;
     }
 
     private static object OpenPopupWindow(string url, string name, string features)
     {
-        // Parse width/height from features string like "width=460,height=360"
-        int width = ParseFeaturePx(features, "width", 460);
-        int height = ParseFeaturePx(features, "height", 360);
+        var width = ParseFeaturePx(features, "width", 460);
+        var height = ParseFeaturePx(features, "height", 360);
+        var state = new PopupState
+        {
+            Name = name,
+            NavigationUrl = NormalizePopupNavigationUrl(url)
+        };
 
-        PopupState state = null;
+        lock (_popupsLock)
+            _popups[state] = state;
+
         try
         {
-            using var signal = new ManualResetEventSlim(false);
-            Exception createError = null;
-            WindowManager.Instance.RunOnMainThread(() =>
-            {
-                try
-                {
-                    if (state != null)
-                    {
-                        return;
-                    }
-
-                    var navigationUrl = NormalizePopupNavigationUrl(url);
-                    var tab = TabManager.Instance.CreateTab(navigationUrl);
-                    state = new PopupState { Tab = tab, Name = name };
-                    lock (_popupsLock) { _popups[state] = state; }
-                }
-                catch (Exception ex)
-                {
-                    createError = ex;
-                }
-                finally
-                {
-                    signal.Set();
-                }
-            });
-
-            if (!signal.Wait(TimeSpan.FromMilliseconds(50)) || createError != null)
-            {
-                // WebDriver element click can invoke window.open() from the JS
-                // event path while the main thread is still inside the command.
-                // In that case the queued UI action cannot drain before WPT's
-                // new-window poll times out. Fall back to direct tab creation so
-                // the popup is still represented as a top-level browsing context.
-                var navigationUrl = NormalizePopupNavigationUrl(url);
-                var tab = TabManager.Instance.CreateTab(navigationUrl);
-                state = new PopupState { Tab = tab, Name = name };
-                lock (_popupsLock) { _popups[state] = state; }
-            }
-
-            if (!string.IsNullOrEmpty(url) &&
-                !string.Equals(url, "undefined", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(url, "null", StringComparison.OrdinalIgnoreCase))
-            {
-                // Keep a host popup fallback for document.write()/close() callers
-                // that expect the lightweight PopupWindow object surface.
-                var popup = PopupWindowManager.Create(name, width, height);
-                state.Window = popup;
-                state.AccumulatedHtml = $"<html><body style='font-family:sans-serif;padding:20px;'>Loading {url}...</body></html>";
-                popup.SetContent(state.AccumulatedHtml);
-            }
+            // window.open() is synchronous at the JS surface, but native tab/window
+            // construction is a UI-thread concern. Return the opaque WindowProxy host
+            // handle immediately and enqueue creation instead of waiting 50 ms and then
+            // violating thread ownership by calling TabManager.CreateTab off-thread.
+            var createTask = WindowManager.Instance.RunOnMainThread(() =>
+                CreatePopupOnMainThread(state, width, height));
+            ObservePopupUiTask(createTask, state, "create popup", closeOnFailure: true);
+            return state;
         }
         catch (Exception ex)
         {
+            MarkPopupClosed(state);
             FenLogger.Error(
-                $"[HostDialogCoordinator] Failed to create popup window: {ex.Message}",
+                $"[HostDialogCoordinator] Failed to queue popup creation: {ex.Message}",
                 LogCategory.JavaScript);
             return null;
         }
+    }
 
-        return state;
+    private static void CreatePopupOnMainThread(PopupState state, int width, int height)
+    {
+        lock (state.Sync)
+        {
+            if (state.Closed)
+                return;
+
+            var tab = TabManager.Instance.CreateTab(state.NavigationUrl);
+            state.Tab = tab;
+
+            if (!string.Equals(state.NavigationUrl, "about:blank", StringComparison.OrdinalIgnoreCase))
+            {
+                var popup = PopupWindowManager.Create(state.Name, width, height);
+                state.Window = popup;
+                if (string.IsNullOrEmpty(state.AccumulatedHtml))
+                {
+                    state.AccumulatedHtml =
+                        $"<html><body style='font-family:sans-serif;padding:20px;'>Loading {state.NavigationUrl}...</body></html>";
+                }
+                popup.SetContent(state.AccumulatedHtml);
+            }
+
+            if (!string.IsNullOrEmpty(state.AccumulatedHtml))
+            {
+                _ = tab.NavigateProgrammaticAsync(
+                    "data:text/html;charset=utf-8," + Uri.EscapeDataString(state.AccumulatedHtml));
+            }
+        }
     }
 
     private static string NormalizePopupNavigationUrl(string url)
@@ -302,57 +285,140 @@ public static class HostDialogCoordinator
 
     private static void FinalizePopupDocument(object handle, string html)
     {
-        if (handle is not PopupState state) return;
-        state.AccumulatedHtml = html;
-        if (state.Window != null && !state.Window.IsClosed)
+        if (handle is not PopupState state)
+            return;
+
+        lock (state.Sync)
         {
-            state.Window.SetContent(html);
+            if (state.Closed)
+                return;
+            state.AccumulatedHtml = html ?? string.Empty;
         }
-        if (state.Tab != null)
+
+        try
         {
-            _ = WindowManager.Instance.RunOnMainThread(() =>
+            var task = WindowManager.Instance.RunOnMainThread(() =>
             {
-                _ = state.Tab.NavigateProgrammaticAsync("data:text/html;charset=utf-8," + Uri.EscapeDataString(html ?? string.Empty));
+                lock (state.Sync)
+                {
+                    if (state.Closed)
+                        return;
+
+                    state.Window?.SetContent(state.AccumulatedHtml);
+                    if (state.Tab != null)
+                    {
+                        _ = state.Tab.NavigateProgrammaticAsync(
+                            "data:text/html;charset=utf-8," + Uri.EscapeDataString(state.AccumulatedHtml));
+                    }
+                }
             });
+            ObservePopupUiTask(task, state, "finalize popup document", closeOnFailure: false);
+        }
+        catch (Exception ex)
+        {
+            FenLogger.Error(
+                $"[HostDialogCoordinator] Failed to queue popup document update: {ex.Message}",
+                LogCategory.JavaScript);
         }
     }
 
     private static void ClosePopupWindow(object handle)
     {
-        if (handle is not PopupState state) return;
-        try { state.Window?.Close(); } catch { }
+        if (handle is not PopupState state)
+            return;
+
+        lock (state.Sync)
+        {
+            if (state.Closed)
+                return;
+            state.Closed = true;
+        }
+
+        lock (_popupsLock)
+            _popups.Remove(state);
+
         try
         {
-            WindowManager.Instance.RunOnMainThread(() =>
+            var task = WindowManager.Instance.RunOnMainThread(() =>
             {
+                try
+                {
+                    state.Window?.Close();
+                }
+                catch
+                {
+                }
+
+                var tab = state.Tab;
+                if (tab == null)
+                    return;
+
                 var tabs = TabManager.Instance;
                 for (var i = 0; i < tabs.Tabs.Count; i++)
                 {
-                    if (ReferenceEquals(tabs.Tabs[i], state.Tab))
+                    if (ReferenceEquals(tabs.Tabs[i], tab))
                     {
                         tabs.CloseTab(i);
                         break;
                     }
                 }
             });
+            ObservePopupUiTask(task, state, "close popup", closeOnFailure: false);
         }
-        catch { }
-        lock (_popupsLock) { _popups.Remove(state); }
+        catch
+        {
+        }
     }
 
     private static bool IsPopupWindowClosed(object handle)
     {
         if (handle is not PopupState state)
-        {
             return true;
-        }
 
-        if (state.Tab != null)
+        lock (state.Sync)
         {
-            var tabs = TabManager.Instance.Tabs;
-            return !tabs.Any(tab => ReferenceEquals(tab, state.Tab));
-        }
+            if (state.Closed)
+                return true;
 
-        return state.Window == null || state.Window.IsClosed;
+            // Native creation can still be queued; the returned WindowProxy remains
+            // open during that short interval.
+            if (state.Tab == null)
+                return false;
+
+            return !TabManager.Instance.Tabs.Any(tab => ReferenceEquals(tab, state.Tab));
+        }
+    }
+
+    private static void ObservePopupUiTask(
+        Task task,
+        PopupState state,
+        string operation,
+        bool closeOnFailure)
+    {
+        if (task == null)
+            return;
+
+        _ = task.ContinueWith(
+            completed =>
+            {
+                var ex = completed.Exception?.GetBaseException();
+                FenLogger.Error(
+                    $"[HostDialogCoordinator] Failed to {operation}: {ex?.Message ?? "unknown error"}",
+                    LogCategory.JavaScript);
+                if (closeOnFailure)
+                    MarkPopupClosed(state);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously | TaskContinuationOptions.OnlyOnFaulted,
+            TaskScheduler.Default);
+    }
+
+    private static void MarkPopupClosed(PopupState state)
+    {
+        lock (state.Sync)
+            state.Closed = true;
+
+        lock (_popupsLock)
+            _popups.Remove(state);
     }
 }
