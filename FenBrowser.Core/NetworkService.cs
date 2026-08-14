@@ -36,8 +36,11 @@ public class NetworkService : INetworkService
         var encoding = contentType?.CharSet ?? "utf-8 (implicit)";
         var mime = contentType?.MediaType ?? "unknown";
         var contentEncoding = string.Join(", ", response.Content.Headers.ContentEncoding);
+        var requestUri = response.RequestMessage?.RequestUri;
         
-        EngineLogCompat.Log($"[Loader] {response.RequestMessage.Method} {response.RequestMessage.RequestUri}", LogCategory.Network);
+        EngineLogCompat.Log(
+            $"[Loader] {response.RequestMessage?.Method?.Method ?? "?"} {GetSafeUriForLog(requestUri)}",
+            LogCategory.Network);
         EngineLogCompat.Log($"[Loader] Status: {(int)response.StatusCode} {response.ReasonPhrase}", LogCategory.Network);
         EngineLogCompat.Log($"[Loader] MIME: {mime}", LogCategory.Network);
         EngineLogCompat.Log($"[Loader] Encoding: {encoding}", LogCategory.Network);
@@ -50,7 +53,7 @@ public class NetworkService : INetworkService
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
         {
-            throw new InvalidOperationException($"Invalid network URL: {url}");
+            throw new InvalidOperationException("Invalid network URL.");
         }
 
         return GetStreamAsync(uri);
@@ -60,7 +63,7 @@ public class NetworkService : INetworkService
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
         {
-            throw new InvalidOperationException($"Invalid network URL: {url}");
+            throw new InvalidOperationException("Invalid network URL.");
         }
 
         return GetStringAsync(uri);
@@ -71,7 +74,7 @@ public class NetworkService : INetworkService
         if (uri == null)
             throw new ArgumentNullException(nameof(uri));
         if (!uri.IsAbsoluteUri)
-            throw new InvalidOperationException($"Invalid network URL: {uri}");
+            throw new InvalidOperationException("Invalid network URL.");
 
         var configuration = NetworkConfiguration.Instance;
         configuration.ValidateOrThrow();
@@ -81,7 +84,7 @@ public class NetworkService : INetworkService
             component: "NetworkService",
             data: new System.Collections.Generic.Dictionary<string, object>
             {
-                ["url"] = uri.AbsoluteUri,
+                ["url"] = GetSafeUriForLog(uri),
                 ["mode"] = "stream"
             });
 
@@ -90,7 +93,7 @@ public class NetworkService : INetworkService
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(configuration.ResourceTimeoutSeconds));
 
         if (DebugConfig.LogResourceLoader)
-            EngineLogCompat.Log($"[Loader] GET {uri}", LogCategory.Network);
+            EngineLogCompat.Log($"[Loader] GET {GetSafeUriForLog(uri)}", LogCategory.Network);
 
         HttpResponseMessage response = null;
         try
@@ -121,7 +124,7 @@ public class NetworkService : INetworkService
         if (uri == null)
             throw new ArgumentNullException(nameof(uri));
         if (!uri.IsAbsoluteUri)
-            throw new InvalidOperationException($"Invalid network URL: {uri}");
+            throw new InvalidOperationException("Invalid network URL.");
 
         var configuration = NetworkConfiguration.Instance;
         configuration.ValidateOrThrow();
@@ -131,7 +134,7 @@ public class NetworkService : INetworkService
             component: "NetworkService",
             data: new System.Collections.Generic.Dictionary<string, object>
             {
-                ["url"] = uri.AbsoluteUri,
+                ["url"] = GetSafeUriForLog(uri),
                 ["mode"] = "string"
             });
 
@@ -140,15 +143,33 @@ public class NetworkService : INetworkService
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(configuration.DocumentTimeoutSeconds));
 
         if (DebugConfig.LogResourceLoader)
-            EngineLogCompat.Log($"[Loader] GET {uri}", LogCategory.Network);
+            EngineLogCompat.Log($"[Loader] GET {GetSafeUriForLog(uri)}", LogCategory.Network);
 
+        // Headers-first completion is required for admission control. Using
+        // ResponseContentRead here would let HttpClient buffer the entire response
+        // before FenBrowser can enforce MaxTextResourceBytes.
         using var response = await _httpClient.SendAsync(
             request,
-            HttpCompletionOption.ResponseContentRead,
+            HttpCompletionOption.ResponseHeadersRead,
             timeoutCts.Token).ConfigureAwait(false);
 
         response.EnsureSuccessStatusCode();
         LogResponse(response);
+
+        var declaredLength = response.Content.Headers.ContentLength;
+        if (declaredLength.HasValue && declaredLength.Value > configuration.MaxTextResourceBytes)
+        {
+            throw new InvalidDataException(
+                $"Text resource exceeds the configured {configuration.MaxTextResourceBytes}-byte admission limit.");
+        }
+
+        // LoadIntoBufferAsync enforces the same ceiling for chunked/unknown-length
+        // responses. Only after that bounded buffer succeeds do we decode text using
+        // HttpContent's charset/BOM handling.
+        await response.Content.LoadIntoBufferAsync(
+            configuration.MaxTextResourceBytes,
+            timeoutCts.Token).ConfigureAwait(false);
+
         return await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
     }
 
@@ -173,6 +194,29 @@ public class NetworkService : INetworkService
         BrowserSettings.ApplyBrowserRequestHeaders(request);
         request.Headers.TryAddWithoutValidation("Accept-Encoding", configuration.GetAcceptEncodingHeader());
         return request;
+    }
+
+    private static string GetSafeUriForLog(Uri uri)
+    {
+        if (uri == null || !uri.IsAbsoluteUri)
+        {
+            return string.Empty;
+        }
+
+        if (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+            uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                return uri.GetLeftPart(UriPartial.Authority);
+            }
+            catch
+            {
+                return uri.Scheme + ":";
+            }
+        }
+
+        return uri.Scheme + ":";
     }
 
     private sealed class ResponseOwnedStream : Stream
