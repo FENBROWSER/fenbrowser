@@ -162,11 +162,48 @@ namespace FenBrowser.Core.Security
 
         private static Dictionary<string, object> CreateUriData(Uri uri)
         {
-            return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+            var data = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
             {
-                ["uri"] = uri?.ToString() ?? string.Empty,
-                ["scheme"] = uri?.Scheme ?? string.Empty
+                ["uri"] = GetSafeUriForTelemetry(uri),
+                ["scheme"] = uri?.Scheme ?? string.Empty,
+                ["host"] = uri?.IsAbsoluteUri == true ? uri.Host ?? string.Empty : string.Empty,
+                ["port"] = uri?.IsAbsoluteUri == true && !uri.IsDefaultPort ? uri.Port : -1,
+                ["hasQuery"] = uri?.IsAbsoluteUri == true && !string.IsNullOrEmpty(uri.Query),
+                ["hasFragment"] = uri?.IsAbsoluteUri == true && !string.IsNullOrEmpty(uri.Fragment)
             };
+
+            // Paths can themselves contain credentials, local filenames, signed object
+            // names, or user identifiers. Record only their size for diagnostics.
+            data["pathLength"] = uri?.IsAbsoluteUri == true
+                ? Math.Min(uri.AbsolutePath?.Length ?? 0, 1_000_000)
+                : 0;
+
+            return data;
+        }
+
+        private static string GetSafeUriForTelemetry(Uri uri)
+        {
+            if (uri == null || !uri.IsAbsoluteUri)
+            {
+                return string.Empty;
+            }
+
+            // Never log userinfo, query, fragment, data: payloads, local file paths,
+            // or custom-scheme opaque content from a security-decision object.
+            if (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    return uri.GetLeftPart(UriPartial.Authority);
+                }
+                catch
+                {
+                    return uri.Scheme + ":";
+                }
+            }
+
+            return uri.Scheme + ":";
         }
     }
 }
