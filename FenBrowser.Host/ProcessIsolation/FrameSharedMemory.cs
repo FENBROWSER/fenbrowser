@@ -80,60 +80,33 @@ namespace FenBrowser.Host.ProcessIsolation
             int regionCapacity = ComputeRegionCapacity(windowWidth, windowHeight);
             long totalSize = HeaderSize + (long)regionCapacity;
 
-            var baseMmfName = MakeMmfName(tabId, parentPid);
-            var baseEventName = MakeEventName(tabId, parentPid);
+            // Renderer and broker are launched into the same interactive session. Using
+            // Global\ unnecessarily exposes the object namespace across Windows sessions
+            // and can also require SeCreateGlobalPrivilege. Keep frame transport local to
+            // the browser session; a future protocol revision should additionally derive
+            // these names from the authenticated renderer capability token.
+            var mmfName = MakeMmfName(tabId, parentPid);
+            var eventName = MakeEventName(tabId, parentPid);
 
-            MemoryMappedFile mmf = null;
-            string usedMmfName = null;
-            foreach (var prefix in new[] { "Global\\", "" })
+            MemoryMappedFile mmf;
+            try
             {
-                var candidate = prefix + baseMmfName;
-                try
-                {
-                    mmf = MemoryMappedFile.CreateNew(candidate, totalSize, MemoryMappedFileAccess.ReadWrite);
-                    usedMmfName = candidate;
-                    break;
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    EngineLogBridge.Warn($"[FrameSharedMemory] CreateNew denied for '{candidate}'; falling back.", LogCategory.General);
-                }
-                catch (Exception ex)
-                {
-                    EngineLogBridge.Warn($"[FrameSharedMemory] CreateNew failed for '{candidate}': {ex.Message}", LogCategory.General);
-                }
+                mmf = MemoryMappedFile.CreateNew(mmfName, totalSize, MemoryMappedFileAccess.ReadWrite);
             }
-
-            if (mmf == null)
+            catch (Exception ex)
             {
-                EngineLogBridge.Warn("[FrameSharedMemory] Could not create shared memory region.", LogCategory.General);
+                EngineLogBridge.Warn($"[FrameSharedMemory] CreateNew failed for session-local mapping: {ex.Message}", LogCategory.General);
                 return null;
             }
 
-            EventWaitHandle readyEvent = null;
-            string usedEventName = null;
-            foreach (var prefix in new[] { "Global\\", "" })
+            EventWaitHandle readyEvent;
+            try
             {
-                var candidate = prefix + baseEventName;
-                try
-                {
-                    readyEvent = new EventWaitHandle(false, EventResetMode.AutoReset, candidate);
-                    usedEventName = candidate;
-                    break;
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    EngineLogBridge.Warn($"[FrameSharedMemory] EventWaitHandle denied for '{candidate}'; falling back.", LogCategory.General);
-                }
-                catch (Exception ex)
-                {
-                    EngineLogBridge.Warn($"[FrameSharedMemory] EventWaitHandle failed for '{candidate}': {ex.Message}", LogCategory.General);
-                }
+                readyEvent = new EventWaitHandle(false, EventResetMode.AutoReset, eventName);
             }
-
-            if (readyEvent == null)
+            catch (Exception ex)
             {
-                EngineLogBridge.Warn("[FrameSharedMemory] Could not create frame-ready event; rejecting unsignaled mapping.", LogCategory.General);
+                EngineLogBridge.Warn($"[FrameSharedMemory] Could not create session-local frame-ready event: {ex.Message}", LogCategory.General);
                 TryDispose(mmf, "writer-memory-mapped-file");
                 return null;
             }
@@ -156,13 +129,13 @@ namespace FenBrowser.Host.ProcessIsolation
             }
 
             EngineLogBridge.Info(
-                $"[FrameSharedMemory] Writer created: mmf='{usedMmfName}', event='{usedEventName}', window={windowWidth}×{windowHeight}, " +
+                $"[FrameSharedMemory] Writer created for tab={tabId}, window={windowWidth}×{windowHeight}, " +
                 $"regionBytes={regionCapacity} ({regionCapacity / 1024 / 1024} MB).",
                 LogCategory.General);
 
             return new FrameSharedMemory(
-                usedMmfName,
-                usedEventName,
+                mmfName,
+                eventName,
                 isWriter: true,
                 mmf,
                 accessor,
@@ -175,67 +148,39 @@ namespace FenBrowser.Host.ProcessIsolation
             if (!OperatingSystem.IsWindows())
                 return null;
 
-            var baseMmfName = MakeMmfName(tabId, parentPid);
-            var baseEventName = MakeEventName(tabId, parentPid);
+            var mmfName = MakeMmfName(tabId, parentPid);
+            var eventName = MakeEventName(tabId, parentPid);
 
-            MemoryMappedFile mmf = null;
-            string usedMmfName = null;
-            foreach (var prefix in new[] { "Global\\", "" })
+            MemoryMappedFile mmf;
+            try
             {
-                var candidate = prefix + baseMmfName;
-                try
-                {
-                    // The compositor only consumes published frame bytes. Do not give
-                    // the reader write access to renderer-owned shared memory.
-                    mmf = MemoryMappedFile.OpenExisting(candidate, MemoryMappedFileRights.Read);
-                    usedMmfName = candidate;
-                    break;
-                }
-                catch (FileNotFoundException)
-                {
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    EngineLogBridge.Warn($"[FrameSharedMemory] OpenExisting denied for '{candidate}'; falling back.", LogCategory.General);
-                }
-                catch (Exception ex)
-                {
-                    EngineLogBridge.Warn($"[FrameSharedMemory] OpenExisting failed for '{candidate}': {ex.Message}", LogCategory.General);
-                }
+                // The compositor only consumes published frame bytes. Do not give
+                // the reader write access to renderer-owned shared memory.
+                mmf = MemoryMappedFile.OpenExisting(mmfName, MemoryMappedFileRights.Read);
             }
-
-            if (mmf == null)
+            catch (FileNotFoundException)
             {
-                EngineLogBridge.Warn("[FrameSharedMemory] Could not open shared memory region.", LogCategory.General);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                EngineLogBridge.Warn($"[FrameSharedMemory] Could not open session-local mapping: {ex.Message}", LogCategory.General);
                 return null;
             }
 
-            EventWaitHandle readyEvent = null;
-            string usedEventName = null;
-            foreach (var prefix in new[] { "Global\\", "" })
+            EventWaitHandle readyEvent;
+            try
             {
-                var candidate = prefix + baseEventName;
-                try
+                if (!EventWaitHandle.TryOpenExisting(eventName, out readyEvent))
                 {
-                    if (EventWaitHandle.TryOpenExisting(candidate, out readyEvent))
-                    {
-                        usedEventName = candidate;
-                        break;
-                    }
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    EngineLogBridge.Warn($"[FrameSharedMemory] EventWaitHandle open denied for '{candidate}'; falling back.", LogCategory.General);
-                }
-                catch (Exception ex)
-                {
-                    EngineLogBridge.Warn($"[FrameSharedMemory] EventWaitHandle open failed for '{candidate}': {ex.Message}", LogCategory.General);
+                    EngineLogBridge.Warn("[FrameSharedMemory] Could not open session-local frame-ready event; rejecting mapping.", LogCategory.General);
+                    TryDispose(mmf, "reader-memory-mapped-file");
+                    return null;
                 }
             }
-
-            if (readyEvent == null)
+            catch (Exception ex)
             {
-                EngineLogBridge.Warn("[FrameSharedMemory] Could not open frame-ready event; rejecting mapping.", LogCategory.General);
+                EngineLogBridge.Warn($"[FrameSharedMemory] Could not open session-local frame-ready event: {ex.Message}", LogCategory.General);
                 TryDispose(mmf, "reader-memory-mapped-file");
                 return null;
             }
@@ -261,13 +206,13 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
 
                 EngineLogBridge.Info(
-                    $"[FrameSharedMemory] Reader opened: mmf='{usedMmfName}', event='{usedEventName}', regionBytes={regionCapacity} " +
+                    $"[FrameSharedMemory] Reader opened for tab={tabId}, regionBytes={regionCapacity} " +
                     $"({regionCapacity / 1024 / 1024} MB).",
                     LogCategory.General);
 
                 return new FrameSharedMemory(
-                    usedMmfName,
-                    usedEventName,
+                    mmfName,
+                    eventName,
                     isWriter: false,
                     mmf,
                     accessor,
@@ -307,9 +252,6 @@ namespace FenBrowser.Host.ProcessIsolation
                 return;
             }
 
-            // Seqlock-style publication. Odd means a write is in progress; stable
-            // frames always expose an even sequence. Readers verify the sequence both
-            // before and after copying so they never accept partially updated pixels.
             uint previous = _accessor.ReadUInt32(OffsetSeq);
             uint writingSequence = (previous & 1u) == 0 ? previous + 1u : previous + 2u;
             uint publishedSequence = writingSequence + 1u;
