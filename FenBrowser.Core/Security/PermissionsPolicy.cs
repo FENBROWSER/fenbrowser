@@ -1,12 +1,10 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace FenBrowser.Core.Security
 {
     /// <summary>
-    /// Feature identifiers understood by the Permissions Policy engine
-    /// (Permissions-Policy specification, W3C).
+    /// Feature identifiers understood by the Permissions Policy engine.
     /// </summary>
     public enum PolicyControlledFeature
     {
@@ -42,90 +40,66 @@ namespace FenBrowser.Core.Security
         public bool Allows(string origin, string documentOrigin)
         {
             if (AllowsAll)
-            {
                 return true;
+
+            var normalizedOrigin = PermissionsPolicy.NormalizeOrigin(origin);
+            if (normalizedOrigin.Length == 0)
+                return false;
+
+            if (AllowsSelf)
+            {
+                var normalizedDocumentOrigin = PermissionsPolicy.NormalizeOrigin(documentOrigin);
+                if (normalizedDocumentOrigin.Length > 0 &&
+                    string.Equals(normalizedOrigin, normalizedDocumentOrigin, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
             }
 
-            if (AllowsSelf && string.Equals(origin, documentOrigin, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            return !string.IsNullOrEmpty(origin) && AllowedOrigins.Contains(origin);
+            return AllowedOrigins.Contains(normalizedOrigin);
         }
     }
 
     /// <summary>
     /// Parsed Permissions-Policy (or legacy Feature-Policy) declaration.
-    /// Tracks the default policy applied to documents and per-feature
-    /// allowlists. Deny-by-default: a feature not mentioned is disabled unless
-    /// the default allowlist grants it.
     /// </summary>
     public sealed class PermissionsPolicy
     {
-        /// <summary>
-        /// Per-feature allowlists parsed from the header.
-        /// </summary>
         public Dictionary<PolicyControlledFeature, FeatureAllowlist> Allowlists { get; } =
             new Dictionary<PolicyControlledFeature, FeatureAllowlist>();
 
-        /// <summary>
-        /// Default allowlist for features not explicitly mentioned: '*' for
-        /// secure-by-default features, 'self' otherwise. Mirrors the spec's
-        /// "default allowlist" concept.
-        /// </summary>
         public bool DefaultAllowsAll { get; set; }
-
         public string RawHeader { get; set; }
 
         public static readonly PermissionsPolicy None = new PermissionsPolicy();
 
-        /// <summary>
-        /// Parses a Permissions-Policy header value.
-        /// Grammar: feature (space)* [= (space)* allowlist]? (comma feature...)*
-        /// Example: "geolocation=(self), camera=(), fullscreen=*"
-        /// </summary>
         public static PermissionsPolicy Parse(string headerValue)
         {
             var policy = new PermissionsPolicy();
             if (string.IsNullOrWhiteSpace(headerValue))
-            {
                 return policy;
-            }
 
             policy.RawHeader = headerValue.Trim();
-            var segments = SplitTopLevel(headerValue, ',');
-
-            foreach (var segment in segments)
+            foreach (var segment in SplitTopLevel(headerValue, ','))
             {
                 var trimmed = segment.Trim();
                 if (trimmed.Length == 0)
-                {
                     continue;
-                }
 
                 var parts = SplitTopLevel(trimmed, '=');
+                if (parts.Count != 2)
+                    continue;
+
                 string featureName = parts[0].Trim().ToLowerInvariant();
-                if (featureName.Length == 0)
-                {
-                    continue;
-                }
-
                 var feature = ParseFeature(featureName);
-                var allowlist = new FeatureAllowlist();
-
-                if (parts.Count < 2)
-                {
-                    // No allowlist: the feature is disabled.
-                    allowlist.AllowsSelf = false;
-                    policy.Allowlists[feature] = allowlist;
+                if (feature == PolicyControlledFeature.Unknown)
                     continue;
-                }
 
+                var allowlist = new FeatureAllowlist();
                 string allowlistValue = parts[1].Trim();
+
                 if (allowlistValue.Length == 0 || allowlistValue == "()")
                 {
-                    // Empty allowlist: disabled for everyone.
                     policy.Allowlists[feature] = allowlist;
                     continue;
                 }
@@ -137,35 +111,35 @@ namespace FenBrowser.Core.Security
                     continue;
                 }
 
-                if (allowlistValue == "self")
-                {
-                    allowlist.AllowsSelf = true;
-                    policy.Allowlists[feature] = allowlist;
-                    continue;
-                }
-
-                // Parenthesized origin list: (https://a.example https://b.example)
                 string inner = allowlistValue;
                 if (allowlistValue.StartsWith("(", StringComparison.Ordinal) &&
                     allowlistValue.EndsWith(")", StringComparison.Ordinal))
                 {
                     inner = allowlistValue.Substring(1, allowlistValue.Length - 2);
                 }
-
-                var origins = inner.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (var rawOrigin in origins)
+                else if (allowlistValue.StartsWith("(", StringComparison.Ordinal) ||
+                         allowlistValue.EndsWith(")", StringComparison.Ordinal))
                 {
-                    if (rawOrigin == "*")
+                    // Unbalanced allowlist syntax is an invalid directive.
+                    continue;
+                }
+
+                foreach (var rawToken in SplitAllowlistTokens(inner))
+                {
+                    var token = StripQuotes(rawToken);
+                    if (token == "*")
                     {
                         allowlist.AllowsAll = true;
                     }
-                    else if (rawOrigin == "self")
+                    else if (string.Equals(token, "self", StringComparison.OrdinalIgnoreCase))
                     {
                         allowlist.AllowsSelf = true;
                     }
                     else
                     {
-                        allowlist.AllowedOrigins.Add(NormalizeOrigin(rawOrigin));
+                        var normalized = NormalizeOrigin(token);
+                        if (normalized.Length > 0)
+                            allowlist.AllowedOrigins.Add(normalized);
                     }
                 }
 
@@ -175,18 +149,11 @@ namespace FenBrowser.Core.Security
             return policy;
         }
 
-        /// <summary>
-        /// Parses a legacy Feature-Policy header value. Uses the same declaration
-        /// syntax but ';' separates declarations and the allowlist is written
-        /// unparenthesized ("fullscreen *", "geolocation 'self' https://x").
-        /// </summary>
         public static PermissionsPolicy ParseLegacyFeaturePolicy(string headerValue)
         {
             var policy = new PermissionsPolicy();
             if (string.IsNullOrWhiteSpace(headerValue))
-            {
                 return policy;
-            }
 
             policy.RawHeader = headerValue.Trim();
 
@@ -194,70 +161,44 @@ namespace FenBrowser.Core.Security
             {
                 var trimmed = segment.Trim();
                 if (trimmed.Length == 0)
-                {
                     continue;
-                }
 
-                // "feature allowlist" — first token is the feature, the rest is
-                // the allowlist. Features are separated by whitespace from their
-                // allowlists (unlike Permissions-Policy's '=').
-                var tokens = trimmed.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                var tokens = trimmed.Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
                 if (tokens.Length == 0)
-                {
                     continue;
-                }
 
                 var feature = ParseFeature(tokens[0].Trim().ToLowerInvariant());
-                var allowlist = new FeatureAllowlist();
-
-                if (tokens.Length == 1)
-                {
-                    policy.Allowlists[feature] = allowlist;
+                if (feature == PolicyControlledFeature.Unknown)
                     continue;
-                }
 
+                var allowlist = new FeatureAllowlist();
                 for (int i = 1; i < tokens.Length; i++)
                 {
-                    var token = tokens[i].Trim();
+                    var token = StripQuotes(tokens[i]);
                     if (token == "*")
                     {
                         allowlist.AllowsAll = true;
                     }
-                    else if (token == "'self'" || token == "self")
+                    else if (string.Equals(token, "self", StringComparison.OrdinalIgnoreCase))
                     {
                         allowlist.AllowsSelf = true;
                     }
-                    else if (token == "src")
+                    else if (string.Equals(token, "src", StringComparison.OrdinalIgnoreCase))
                     {
-                        // Legacy 'src' keyword: allowed for any iframe source.
+                        // Feature-Policy's src keyword is source-origin scoped, but this
+                        // legacy policy object has no iframe source context. Preserve the
+                        // existing permissive behavior here; iframe allow= is evaluated
+                        // origin-aware below.
                         allowlist.AllowsAll = true;
-                    }
-                    else if (token.Length >= 3 &&
-                             token[0] == '(' &&
-                             token[token.Length - 1] == ')')
-                    {
-                        // Parenthesized single keyword, e.g. "(self)".
-                        var inner = token.Substring(1, token.Length - 2).Trim();
-                        if (inner == "*")
-                        {
-                            allowlist.AllowsAll = true;
-                        }
-                        else if (inner == "'self'" || inner == "self")
-                        {
-                            allowlist.AllowsSelf = true;
-                        }
-                        else if (inner == "src")
-                        {
-                            allowlist.AllowsAll = true;
-                        }
-                        else if (inner.Length > 0)
-                        {
-                            allowlist.AllowedOrigins.Add(NormalizeOrigin(inner));
-                        }
                     }
                     else
                     {
-                        allowlist.AllowedOrigins.Add(NormalizeOrigin(token));
+                        if (token.Length >= 2 && token[0] == '(' && token[token.Length - 1] == ')')
+                            token = StripQuotes(token.Substring(1, token.Length - 2).Trim());
+
+                        var normalized = NormalizeOrigin(token);
+                        if (normalized.Length > 0)
+                            allowlist.AllowedOrigins.Add(normalized);
                     }
                 }
 
@@ -267,117 +208,232 @@ namespace FenBrowser.Core.Security
             return policy;
         }
 
-        /// <summary>
-        /// Checks whether a feature is allowed for the given origin in a
-        /// document served with this policy.
-        /// </summary>
         public bool IsFeatureAllowed(PolicyControlledFeature feature, string origin, string documentOrigin)
         {
             if (Allowlists.TryGetValue(feature, out var allowlist))
-            {
                 return allowlist.Allows(origin, documentOrigin);
-            }
 
-            // Feature not mentioned: apply the default allowlist.
             return DefaultAllowsAll;
         }
 
-        /// <summary>
-        /// Enforces the header policy for a feature inside an iframe given the
-        /// iframe's allow attribute allowlist (if any). A feature is allowed in
-        /// the frame only when both the header policy and the frame allowlist
-        /// permit the frame origin.
-        /// </summary>
         public bool IsFeatureAllowedInFrame(
             PolicyControlledFeature feature,
             string frameOrigin,
             string documentOrigin,
             string iframeAllowAttribute)
         {
-            bool headerAllows = IsFeatureAllowed(feature, frameOrigin, documentOrigin);
-            if (!headerAllows)
-            {
+            if (!IsFeatureAllowed(feature, frameOrigin, documentOrigin))
                 return false;
-            }
 
             if (string.IsNullOrWhiteSpace(iframeAllowAttribute))
-            {
                 return false;
-            }
 
-            var frameAllowlist = ParseIframeAllowAttribute(iframeAllowAttribute);
-            if (frameAllowlist.TryGetValue(feature, out var allow))
-            {
-                return allow;
-            }
-
-            return false;
+            return IsIframeFeatureAllowed(
+                iframeAllowAttribute,
+                feature,
+                frameOrigin,
+                documentOrigin);
         }
 
         /// <summary>
-        /// Parses an iframe allow attribute (a permissions-policy-declaration
-        /// list) into per-feature booleans. Unknown features are ignored.
+        /// Parses iframe allow= directives into a compatibility boolean map.
+        /// This method reports whether each directive has a non-empty allowlist;
+        /// IsFeatureAllowedInFrame performs the origin-aware check.
         /// </summary>
         public static Dictionary<PolicyControlledFeature, bool> ParseIframeAllowAttribute(string allowAttribute)
         {
             var result = new Dictionary<PolicyControlledFeature, bool>();
             if (string.IsNullOrWhiteSpace(allowAttribute))
-            {
                 return result;
-            }
 
             foreach (var segment in SplitTopLevel(allowAttribute, ';'))
             {
-                var trimmed = segment.Trim();
-                if (trimmed.Length == 0)
-                {
+                if (!TryParseIframeDirective(segment, out var feature, out var tokens))
                     continue;
-                }
 
-                var parts = SplitTopLevel(trimmed, '=');
-                string featureName = parts[0].Trim().ToLowerInvariant();
-                if (featureName.Length == 0)
-                {
-                    continue;
-                }
-
-                var feature = ParseFeature(featureName);
-                if (feature == PolicyControlledFeature.Unknown)
-                {
-                    continue;
-                }
-
-                if (parts.Count < 2)
-                {
-                    result[feature] = true;
-                    continue;
-                }
-
-                string value = parts[1].Trim().ToLowerInvariant();
-                result[feature] = value != "none" && value != "0";
+                bool denied = ContainsNoneToken(tokens);
+                result[feature] = !denied;
             }
 
             return result;
         }
 
+        private static bool IsIframeFeatureAllowed(
+            string allowAttribute,
+            PolicyControlledFeature requestedFeature,
+            string frameOrigin,
+            string documentOrigin)
+        {
+            var normalizedFrameOrigin = NormalizeOrigin(frameOrigin);
+            var normalizedDocumentOrigin = NormalizeOrigin(documentOrigin);
+
+            foreach (var segment in SplitTopLevel(allowAttribute, ';'))
+            {
+                if (!TryParseIframeDirective(segment, out var feature, out var tokens) ||
+                    feature != requestedFeature)
+                {
+                    continue;
+                }
+
+                // A bare feature name uses the iframe source origin as its allowlist.
+                if (tokens.Count == 0)
+                    return normalizedFrameOrigin.Length > 0;
+
+                if (ContainsNoneToken(tokens))
+                    return false;
+
+                foreach (var rawToken in tokens)
+                {
+                    var token = StripQuotes(rawToken);
+                    if (token == "*")
+                        return true;
+
+                    if (string.Equals(token, "src", StringComparison.OrdinalIgnoreCase))
+                        return normalizedFrameOrigin.Length > 0;
+
+                    if (string.Equals(token, "self", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (normalizedFrameOrigin.Length > 0 &&
+                            normalizedDocumentOrigin.Length > 0 &&
+                            string.Equals(normalizedFrameOrigin, normalizedDocumentOrigin, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                        continue;
+                    }
+
+                    var allowedOrigin = NormalizeOrigin(token);
+                    if (allowedOrigin.Length > 0 &&
+                        string.Equals(allowedOrigin, normalizedFrameOrigin, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            return false;
+        }
+
+        private static bool TryParseIframeDirective(
+            string segment,
+            out PolicyControlledFeature feature,
+            out List<string> allowlistTokens)
+        {
+            feature = PolicyControlledFeature.Unknown;
+            allowlistTokens = new List<string>();
+
+            var trimmed = segment?.Trim();
+            if (string.IsNullOrEmpty(trimmed))
+                return false;
+
+            int separatorIndex = -1;
+            for (int i = 0; i < trimmed.Length; i++)
+            {
+                char ch = trimmed[i];
+                if (ch == '=' || char.IsWhiteSpace(ch))
+                {
+                    separatorIndex = i;
+                    break;
+                }
+            }
+
+            string featureName;
+            string allowlistText;
+            if (separatorIndex < 0)
+            {
+                featureName = trimmed;
+                allowlistText = string.Empty;
+            }
+            else
+            {
+                featureName = trimmed.Substring(0, separatorIndex).Trim();
+                int valueStart = separatorIndex;
+                while (valueStart < trimmed.Length &&
+                       (trimmed[valueStart] == '=' || char.IsWhiteSpace(trimmed[valueStart])))
+                {
+                    valueStart++;
+                }
+                allowlistText = valueStart < trimmed.Length ? trimmed.Substring(valueStart).Trim() : string.Empty;
+            }
+
+            feature = ParseFeature(featureName.ToLowerInvariant());
+            if (feature == PolicyControlledFeature.Unknown)
+                return false;
+
+            if (allowlistText.StartsWith("(", StringComparison.Ordinal) &&
+                allowlistText.EndsWith(")", StringComparison.Ordinal))
+            {
+                allowlistText = allowlistText.Substring(1, allowlistText.Length - 2).Trim();
+            }
+
+            allowlistTokens.AddRange(SplitAllowlistTokens(allowlistText));
+            return true;
+        }
+
+        private static bool ContainsNoneToken(List<string> tokens)
+        {
+            foreach (var rawToken in tokens)
+            {
+                if (string.Equals(StripQuotes(rawToken), "none", StringComparison.OrdinalIgnoreCase) ||
+                    rawToken == "0")
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static string[] SplitAllowlistTokens(string value)
+        {
+            return string.IsNullOrWhiteSpace(value)
+                ? Array.Empty<string>()
+                : value.Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
+        }
+
         internal static List<string> SplitTopLevel(string value, char separator)
         {
             var parts = new List<string>();
+            if (value == null)
+                return parts;
+
             int depth = 0;
             int start = 0;
+            bool inQuote = false;
+            char quote = '\0';
+
             for (int i = 0; i < value.Length; i++)
             {
                 char ch = value[i];
-                if (ch == '(')
+                if (inQuote)
+                {
+                    if (ch == '\\' && i + 1 < value.Length)
+                    {
+                        i++;
+                        continue;
+                    }
+                    if (ch == quote)
+                    {
+                        inQuote = false;
+                        quote = '\0';
+                    }
+                    continue;
+                }
+
+                if (ch is '\'' or '"')
+                {
+                    inQuote = true;
+                    quote = ch;
+                }
+                else if (ch == '(')
                 {
                     depth++;
                 }
                 else if (ch == ')')
                 {
                     if (depth > 0)
-                    {
                         depth--;
-                    }
                 }
                 else if (ch == separator && depth == 0)
                 {
@@ -414,25 +470,47 @@ namespace FenBrowser.Core.Security
             };
         }
 
-        private static string NormalizeOrigin(string origin)
+        private static string StripQuotes(string value)
         {
-            if (string.IsNullOrWhiteSpace(origin))
+            if (string.IsNullOrWhiteSpace(value))
+                return string.Empty;
+
+            value = value.Trim();
+            if (value.Length >= 2 &&
+                ((value[0] == '"' && value[value.Length - 1] == '"') ||
+                 (value[0] == '\'' && value[value.Length - 1] == '\'')))
+            {
+                value = value.Substring(1, value.Length - 2).Trim();
+            }
+            return value;
+        }
+
+        internal static string NormalizeOrigin(string origin)
+        {
+            origin = StripQuotes(origin);
+            if (origin.Length == 0)
+                return string.Empty;
+
+            if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) ||
+                string.IsNullOrEmpty(uri.Scheme) ||
+                string.IsNullOrEmpty(uri.Host))
             {
                 return string.Empty;
             }
 
-            origin = origin.Trim().TrimEnd('/');
-
-            // Strip surrounding double quotes used in the header grammar:
-            // (self "https://a.example")
-            if (origin.Length >= 2 &&
-                origin[0] == '"' &&
-                origin[origin.Length - 1] == '"')
+            var scheme = uri.Scheme.ToLowerInvariant();
+            var host = uri.Host.ToLowerInvariant();
+            if (host.IndexOf(':') >= 0 &&
+                !host.StartsWith("[", StringComparison.Ordinal) &&
+                !host.EndsWith("]", StringComparison.Ordinal))
             {
-                origin = origin.Substring(1, origin.Length - 2).Trim();
+                host = "[" + host + "]";
             }
 
-            return origin;
+            bool omitPort = uri.IsDefaultPort || uri.Port <= 0;
+            return omitPort
+                ? $"{scheme}://{host}"
+                : $"{scheme}://{host}:{uri.Port}";
         }
     }
 }
