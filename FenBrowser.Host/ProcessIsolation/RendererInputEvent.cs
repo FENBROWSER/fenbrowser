@@ -59,13 +59,13 @@ namespace FenBrowser.Host.ProcessIsolation
         public string Key
         {
             get => _key;
-            init => _key = NormalizeText(value);
+            init => _key = NormalizeInputText(value);
         }
 
         public string Text
         {
             get => _text;
-            init => _text = NormalizeText(value);
+            init => _text = NormalizeInputText(value);
         }
 
         public bool Ctrl { get; init; }
@@ -104,9 +104,12 @@ namespace FenBrowser.Host.ProcessIsolation
             return float.IsFinite(value) ? value : 0f;
         }
 
-        private static string NormalizeText(string value)
+        private static string NormalizeInputText(string value)
         {
-            return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+            // KeyboardEvent.key and text input are payload data, not identifiers.
+            // Whitespace is semantically meaningful (for example the Space key is
+            // represented by " "), so never Trim() it at the IPC boundary.
+            return value ?? string.Empty;
         }
     }
 }
