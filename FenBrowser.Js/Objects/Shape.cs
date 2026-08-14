@@ -37,6 +37,7 @@ public class Shape
     private sealed class ChainMap
     {
         public readonly ConcurrentDictionary<string, int> Map = new(StringComparer.Ordinal);
+        public readonly object ExtensionGate = new();
         public int Tail;
     }
 
@@ -61,12 +62,21 @@ public class Shape
         PropertyCount = parent.PropertyCount + 1;
 
         var parentChain = parent._chain;
-        if (Volatile.Read(ref parentChain.Tail) == parent.PropertyCount &&
-            parentChain.Map.TryAdd(property, _addedSlot))
+
+        // Extending a shared chain is a compound operation: Tail must still point
+        // exactly at the parent depth, the property must claim that one slot, and
+        // Tail must advance as one atomic decision. Without this gate two sibling
+        // transitions can both observe Tail=N and insert different names at slot N,
+        // after which each sibling incorrectly sees the other's property.
+        lock (parentChain.ExtensionGate)
         {
-            Interlocked.Increment(ref parentChain.Tail);
-            _chain = parentChain;
-            return;
+            if (parentChain.Tail == parent.PropertyCount &&
+                parentChain.Map.TryAdd(property, _addedSlot))
+            {
+                parentChain.Tail++;
+                _chain = parentChain;
+                return;
+            }
         }
 
         // Branch point (or a stale entry from a dead sibling chain): build a
