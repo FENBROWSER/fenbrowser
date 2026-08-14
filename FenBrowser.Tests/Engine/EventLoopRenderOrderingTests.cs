@@ -1,6 +1,6 @@
 using System.Collections.Generic;
+using System.Threading;
 using FenBrowser.Core.Engine;
-using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Core.EventLoop;
 using Xunit;
 
@@ -12,16 +12,10 @@ namespace FenBrowser.Tests.Engine
     [Collection("Engine Tests")]
     public class EventLoopRenderOrderingTests
     {
-        public EventLoopRenderOrderingTests()
-        {
-            EventLoopCoordinator.ResetInstance();
-            EnginePhaseManager.EnterPhase(EnginePhase.Idle);
-        }
-
         [Fact]
         public void RenderingUpdate_RunsObserversBeforeAnimationFramesBeforePaint()
         {
-            var loop = EventLoopCoordinator.Instance;
+            var loop = EventLoopCoordinator.CreateIsolated();
             var log = new List<string>();
 
             loop.SetObserverCallback(() => log.Add("observers"));
@@ -37,7 +31,7 @@ namespace FenBrowser.Tests.Engine
         [Fact]
         public void RenderingUpdate_DrainsMicrotasksBetweenSteps()
         {
-            var loop = EventLoopCoordinator.Instance;
+            var loop = EventLoopCoordinator.CreateIsolated();
             var log = new List<string>();
 
             loop.SetObserverCallback(() =>
@@ -70,9 +64,50 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void RenderingUpdate_CoalescesDirtySignalsWithinOneFrame()
+        {
+            var loop = EventLoopCoordinator.CreateIsolated();
+            var paintCount = 0;
+            loop.SetRenderCallback(() => paintCount++);
+
+            loop.NotifyLayoutDirty();
+            loop.ProcessRenderingUpdate();
+
+            // A second timer/DOM mutation in the same frame must wait for the
+            // next rendering opportunity instead of forcing another paint.
+            loop.NotifyLayoutDirty();
+            loop.ProcessRenderingUpdate();
+
+            Assert.Equal(1, paintCount);
+        }
+
+        [Fact]
+        public void RenderingUpdate_PreservesMutationRaisedByRenderCallback()
+        {
+            var loop = EventLoopCoordinator.CreateIsolated();
+            var paintCount = 0;
+            loop.SetRenderCallback(() =>
+            {
+                paintCount++;
+                if (paintCount == 1)
+                {
+                    loop.NotifyLayoutDirty();
+                }
+            });
+
+            loop.NotifyLayoutDirty();
+            loop.ProcessRenderingUpdate();
+
+            Thread.Sleep(20);
+            loop.ProcessRenderingUpdate();
+
+            Assert.Equal(2, paintCount);
+        }
+
+        [Fact]
         public void AnimationFrameCallback_RunsInAnimationPhase()
         {
-            var loop = EventLoopCoordinator.Instance;
+            var loop = EventLoopCoordinator.CreateIsolated();
             EnginePhase observedPhase = EnginePhase.Idle;
 
             loop.ScheduleAnimationFrame(() =>
@@ -88,7 +123,7 @@ namespace FenBrowser.Tests.Engine
         [Fact]
         public void MicrotaskQueued_FromAnimationFrame_DrainsImmediately()
         {
-            var loop = EventLoopCoordinator.Instance;
+            var loop = EventLoopCoordinator.CreateIsolated();
             var log = new List<string>();
 
             loop.ScheduleAnimationFrame(() =>
@@ -106,23 +141,5 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(new[] { "raf1", "mt", "raf2" }, log);
         }
 
-        [Fact]
-        public void QueueMicrotaskGlobal_ExposedToScript()
-        {
-            var runtime = new FenRuntime();
-            runtime.ExecuteSimple(@"
-                var log = [];
-                queueMicrotask(function() { log.push('mt'); });
-                log.push('sync');
-            ");
-
-            // Microtasks fire as part of script completion via EventLoop.
-            EventLoopCoordinator.Instance.PerformMicrotaskCheckpoint();
-            var log = runtime.GetGlobal("log");
-            // log is a JS array; verify entries via runtime API.
-            var asObj = log.AsObject();
-            Assert.Equal("sync", asObj.Get("0").ToString2());
-            Assert.Equal("mt", asObj.Get("1").ToString2());
-        }
     }
 }

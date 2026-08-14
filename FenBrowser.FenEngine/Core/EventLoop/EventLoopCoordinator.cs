@@ -495,7 +495,12 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             var now = Environment.TickCount64;
             var lastRenderTime = Volatile.Read(ref _lastRenderTime);
             var layoutDirty = Volatile.Read(ref _layoutDirty);
-            bool hasRenderingOpportunity = layoutDirty || lastRenderTime == 0 || (now - lastRenderTime) >= RenderingIntervalMs;
+            // A DOM mutation only makes the next frame eligible; it must not
+            // bypass the frame cadence.  Timer-heavy pages can otherwise force
+            // a full layout/paint for every mutation (for example, a typewriter
+            // loop that inserts one node per timer callback).
+            bool hasRenderingOpportunity =
+                lastRenderTime == 0 || (now - lastRenderTime) >= RenderingIntervalMs;
             if (!hasRenderingOpportunity)
             {
                 return;
@@ -560,6 +565,11 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     {
                         EngineLogCompat.Debug("[EventLoop] Rendering update (layout dirty)", LogCategory.Rendering);
                         renderRan = true;
+                        // Consume the current dirty signal before entering the
+                        // callback. The callback is asynchronous in the host;
+                        // mutations raised while it runs must remain dirty for
+                        // the next frame instead of being cleared on return.
+                        Volatile.Write(ref _layoutDirty, false);
                         _renderCallback.Invoke();
                     }
                     catch (Exception ex)
@@ -571,7 +581,6 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     }
                     finally
                     {
-                        Volatile.Write(ref _layoutDirty, false);
                         EngineContext.Current.EndPhase();
                     }
                 }
