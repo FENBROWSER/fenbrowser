@@ -10,6 +10,9 @@ namespace FenBrowser.FenEngine.Security
     /// </summary>
     public class PermissionManager : IPermissionManager
     {
+        // This mask represents embedder/engine capabilities granted explicitly through
+        // the constructor or Grant(). It must never be populated from a website's
+        // persistent/user permission decision because those decisions are origin scoped.
         private JsPermissions _grantedPermissions;
         private readonly List<SecurityViolation> _violations = new List<SecurityViolation>();
         private readonly object _lock = new object();
@@ -56,37 +59,48 @@ namespace FenBrowser.FenEngine.Security
 
         public async System.Threading.Tasks.Task<bool> RequestPermissionAsync(JsPermissions permission, string origin)
         {
-            // 1. Check in-memory grant first
-            if (Check(permission)) return true;
-
-            // 2. Check persistent store
-            var storeState = PermissionStore.Instance.GetState(origin, permission);
-            if (storeState == PermissionState.Granted)
-            {
-                Grant(permission); // Sync memory
+            // Explicit embedder capabilities remain global by design. Website grants,
+            // however, are always evaluated below against the requesting origin.
+            if (Check(permission))
                 return true;
-            }
+
+            var normalizedOrigin = PermissionStore.NormalizeOrigin(origin);
+            if (normalizedOrigin == null)
+                return false;
+
+            var storeState = PermissionStore.Instance.GetState(normalizedOrigin, permission);
+            if (storeState == PermissionState.Granted)
+                return true;
+
             if (storeState == PermissionState.Denied)
+                return false;
+
+            var handler = PermissionRequestedHandler;
+            if (handler == null)
+                return false;
+
+            bool granted;
+            try
             {
+                // Pass only a canonical serialized origin to UI. Paths, query strings,
+                // fragments, and credentials must never become part of the permission
+                // identity or prompt text.
+                granted = await handler(normalizedOrigin, permission).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Permission prompts fail closed. UI/host failures must not become grants.
                 return false;
             }
 
-            // 3. Prompt user if Prompt
-            if (PermissionRequestedHandler != null)
-            {
-                bool granted = await PermissionRequestedHandler(origin, permission);
-                
-                // Update Store
-                PermissionStore.Instance.SetState(origin, permission, granted ? PermissionState.Granted : PermissionState.Denied);
+            PermissionStore.Instance.SetState(
+                normalizedOrigin,
+                permission,
+                granted ? PermissionState.Granted : PermissionState.Denied);
 
-                if (granted)
-                {
-                    Grant(permission);
-                    return true;
-                }
-            }
-
-            return false;
+            // Do not call Grant(permission) here. Doing so would turn one origin's
+            // decision into a process-wide permission for every subsequently loaded site.
+            return granted;
         }
 
         public void LogViolation(JsPermissions permission, string operation, string details = null)
