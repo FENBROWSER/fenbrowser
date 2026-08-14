@@ -73,6 +73,7 @@ namespace FenBrowser.Core.Security
             BlockAllMixedContent, RequireSriFor, NavigateTo
         };
     }
+
     public class CspPolicy
     {
         public Dictionary<string, CspDirective> Directives { get; } = new Dictionary<string, CspDirective>(StringComparer.OrdinalIgnoreCase);
@@ -114,25 +115,56 @@ namespace FenBrowser.Core.Security
             // If no policy, everything allowed
             if (Directives.Count == 0) return true;
 
-            // Resolve directive (fallback to default-src only for directives whose
-            // fetch algorithm defines that fallback chain).
-            CspDirective directive = null;
-            if (!Directives.TryGetValue(directiveName, out directive))
-            {
-                if (CspDirectiveNames.NoFallbackDirectives.Contains(directiveName))
-                {
-                    return true;
-                }
-
-                if (!Directives.TryGetValue(CspDirectiveNames.DefaultSrc, out directive))
-                {
-                    return true;
-                }
-            }
-
+            var directive = ResolveEffectiveDirective(directiveName);
             if (directive == null) return true;
 
             return directive.IsAllowed(url, nonce, isInline, isEval, origin, elementHash, elementTrustedType);
+        }
+
+        private CspDirective ResolveEffectiveDirective(string directiveName)
+        {
+            if (string.IsNullOrWhiteSpace(directiveName))
+            {
+                return null;
+            }
+
+            if (Directives.TryGetValue(directiveName, out var direct))
+            {
+                return direct;
+            }
+
+            if (CspDirectiveNames.NoFallbackDirectives.Contains(directiveName))
+            {
+                return null;
+            }
+
+            // Fetch directive fallback chains are not uniformly "directive -> default-src".
+            // Element/attribute script and style directives first inherit their family
+            // directive; frame-src inherits child-src; worker-src inherits child-src and
+            // script-src before reaching default-src.
+            if (string.Equals(directiveName, CspDirectiveNames.ScriptSrcElem, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(directiveName, CspDirectiveNames.ScriptSrcAttr, StringComparison.OrdinalIgnoreCase))
+            {
+                if (Directives.TryGetValue(CspDirectiveNames.ScriptSrc, out var script)) return script;
+            }
+            else if (string.Equals(directiveName, CspDirectiveNames.StyleSrcElem, StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(directiveName, CspDirectiveNames.StyleSrcAttr, StringComparison.OrdinalIgnoreCase))
+            {
+                if (Directives.TryGetValue(CspDirectiveNames.StyleSrc, out var style)) return style;
+            }
+            else if (string.Equals(directiveName, CspDirectiveNames.FrameSrc, StringComparison.OrdinalIgnoreCase))
+            {
+                if (Directives.TryGetValue(CspDirectiveNames.ChildSrc, out var child)) return child;
+            }
+            else if (string.Equals(directiveName, CspDirectiveNames.WorkerSrc, StringComparison.OrdinalIgnoreCase))
+            {
+                if (Directives.TryGetValue(CspDirectiveNames.ChildSrc, out var child)) return child;
+                if (Directives.TryGetValue(CspDirectiveNames.ScriptSrc, out var script)) return script;
+            }
+
+            return Directives.TryGetValue(CspDirectiveNames.DefaultSrc, out var fallback)
+                ? fallback
+                : null;
         }
 
         public static CspPolicy Parse(string headerValue)
@@ -149,7 +181,12 @@ namespace FenBrowser.Core.Security
                 var trimmed = part.Trim();
                 if (string.IsNullOrEmpty(trimmed)) continue;
 
-                var tokens = trimmed.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                // CSP uses ASCII whitespace between directive tokens. Splitting only
+                // on a literal space let a tab turn the whole directive into an unknown
+                // name and silently disable enforcement for that directive.
+                var tokens = trimmed.Split(
+                    new[] { ' ', '\t', '\r', '\n', '\f' },
+                    StringSplitOptions.RemoveEmptyEntries);
                 if (tokens.Length == 0) continue;
 
                 var name = tokens[0];
@@ -350,7 +387,7 @@ namespace FenBrowser.Core.Security
             // while URL source matching continues for compatibility until provenance
             // is represented by the caller.
 
-            if (Sources.Contains("*") || (url.Scheme == "data" && Sources.Contains("data:")) || (url.Scheme == "blob" && Sources.Contains("blob:"))) return true;
+            if (Sources.Contains("*")) return true;
 
             // Check 'self'
             if (Sources.Contains("'self'") && origin != null)
@@ -361,73 +398,145 @@ namespace FenBrowser.Core.Security
             foreach (var src in Sources)
             {
                 if (src == "*") return true;
-                if (src.StartsWith("'")) continue; // keywords
-
-                string srcHost = src;
-                string srcScheme = null;
-                string srcPort = null;
-
-                if (src.Contains("://"))
-                {
-                    var uriParts = src.Split(new[] { "://" }, 2, StringSplitOptions.None);
-                    srcScheme = uriParts[0];
-                    srcHost = uriParts[1];
-                }
-
-                // Remove the path before interpreting an optional port. The previous
-                // order turned "example.com:443/path" into a non-numeric port and
-                // silently skipped the port restriction.
-                var slash = srcHost.IndexOf('/');
-                if (slash >= 0) srcHost = srcHost.Substring(0, slash);
-
-                if (srcHost.StartsWith("[", StringComparison.Ordinal))
-                {
-                    var closeBracket = srcHost.IndexOf(']');
-                    if (closeBracket > 0 && closeBracket + 1 < srcHost.Length && srcHost[closeBracket + 1] == ':')
-                    {
-                        srcPort = srcHost.Substring(closeBracket + 2);
-                        srcHost = srcHost.Substring(0, closeBracket + 1);
-                    }
-                }
-                else
-                {
-                    var portIdx = srcHost.LastIndexOf(':');
-                    if (portIdx >= 0)
-                    {
-                        srcPort = srcHost.Substring(portIdx + 1);
-                        srcHost = srcHost.Substring(0, portIdx);
-                    }
-                }
-
-                if (srcScheme != null && !string.Equals(url.Scheme, srcScheme, StringComparison.OrdinalIgnoreCase)) continue;
-
-                if (srcPort != null)
-                {
-                    var uPort = url.Port;
-                    if (uPort == -1) uPort = url.Scheme == "https" ? 443 : 80;
-                    if (srcPort != "*")
-                    {
-                        if (!int.TryParse(srcPort, out int p) || p != uPort) continue;
-                    }
-                }
-
-                if (srcHost == "*") return true;
-                if (srcHost.StartsWith("*.", StringComparison.Ordinal))
-                {
-                    var suffix = srcHost.Substring(2).TrimEnd('.');
-                    if (!string.IsNullOrEmpty(suffix) &&
-                        url.Host.TrimEnd('.').EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return true;
-                    }
-                }
-                else
-                {
-                    if (string.Equals(url.Host.TrimEnd('.'), srcHost.TrimEnd('.'), StringComparison.OrdinalIgnoreCase)) return true;
-                }
+                if (src.StartsWith("'", StringComparison.Ordinal)) continue; // keywords
+                if (MatchesSourceExpression(src, url)) return true;
             }
 
             return false;
+        }
+
+        private static bool MatchesSourceExpression(string source, Uri url)
+        {
+            if (string.IsNullOrWhiteSpace(source) || url == null || !url.IsAbsoluteUri)
+            {
+                return false;
+            }
+
+            var src = source.Trim();
+
+            // scheme-source, e.g. https:, data:, blob:. It has no host/port/path.
+            if (src.EndsWith(":", StringComparison.Ordinal) &&
+                src.IndexOf('/') < 0 &&
+                src.IndexOf("[", StringComparison.Ordinal) < 0)
+            {
+                return string.Equals(
+                    url.Scheme,
+                    src.Substring(0, src.Length - 1),
+                    StringComparison.OrdinalIgnoreCase);
+            }
+
+            string srcHost = src;
+            string srcScheme = null;
+            string srcPort = null;
+            string srcPath = null;
+            bool explicitScheme = false;
+
+            var schemeSeparator = src.IndexOf("://", StringComparison.Ordinal);
+            if (schemeSeparator >= 0)
+            {
+                explicitScheme = true;
+                srcScheme = src.Substring(0, schemeSeparator);
+                srcHost = src.Substring(schemeSeparator + 3);
+                if (string.IsNullOrWhiteSpace(srcScheme)) return false;
+            }
+
+            var slash = srcHost.IndexOf('/');
+            if (slash >= 0)
+            {
+                srcPath = srcHost.Substring(slash);
+                srcHost = srcHost.Substring(0, slash);
+            }
+
+            if (string.IsNullOrWhiteSpace(srcHost)) return false;
+
+            if (srcHost.StartsWith("[", StringComparison.Ordinal))
+            {
+                var closeBracket = srcHost.IndexOf(']');
+                if (closeBracket <= 0) return false;
+
+                if (closeBracket + 1 < srcHost.Length)
+                {
+                    if (srcHost[closeBracket + 1] != ':') return false;
+                    srcPort = srcHost.Substring(closeBracket + 2);
+                }
+                srcHost = srcHost.Substring(0, closeBracket + 1);
+            }
+            else
+            {
+                var portIdx = srcHost.LastIndexOf(':');
+                if (portIdx >= 0)
+                {
+                    srcPort = srcHost.Substring(portIdx + 1);
+                    srcHost = srcHost.Substring(0, portIdx);
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(srcHost)) return false;
+
+            if (explicitScheme && !string.Equals(url.Scheme, srcScheme, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (!PortMatches(url, srcScheme, srcPort, explicitScheme))
+            {
+                return false;
+            }
+
+            var urlHost = url.Host.TrimEnd('.');
+            if (srcHost == "*")
+            {
+                // Host wildcard still obeys any explicit scheme/port/path restrictions.
+            }
+            else if (srcHost.StartsWith("*.", StringComparison.Ordinal))
+            {
+                var suffix = srcHost.Substring(2).TrimEnd('.');
+                if (string.IsNullOrEmpty(suffix) ||
+                    !urlHost.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+            else if (!string.Equals(urlHost, srcHost.TrimEnd('.'), StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return PathMatches(url, srcPath);
+        }
+
+        private static bool PortMatches(Uri url, string sourceScheme, string sourcePort, bool explicitScheme)
+        {
+            var urlPort = url.IsDefaultPort ? GetDefaultPort(url.Scheme) : url.Port;
+
+            if (!string.IsNullOrEmpty(sourcePort))
+            {
+                if (sourcePort == "*") return true;
+                return int.TryParse(sourcePort, out var parsedPort) &&
+                       parsedPort >= 0 && parsedPort <= 65535 &&
+                       parsedPort == urlPort;
+            }
+
+            // A scheme-qualified host source with no explicit port is constrained to
+            // that scheme's default port. Preserve existing host-only behavior where
+            // the protected resource's scheme is not available to this directive.
+            if (!explicitScheme) return true;
+
+            var expectedPort = GetDefaultPort(sourceScheme);
+            return expectedPort < 0 || urlPort == expectedPort;
+        }
+
+        private static bool PathMatches(Uri url, string sourcePath)
+        {
+            if (string.IsNullOrEmpty(sourcePath)) return true;
+
+            var requestPath = string.IsNullOrEmpty(url.AbsolutePath) ? "/" : url.AbsolutePath;
+            if (sourcePath.EndsWith("/", StringComparison.Ordinal))
+            {
+                return requestPath.StartsWith(sourcePath, StringComparison.Ordinal);
+            }
+
+            return string.Equals(requestPath, sourcePath, StringComparison.Ordinal);
         }
 
         private static bool IsSameOrigin(Uri url, Uri origin)
@@ -435,8 +544,8 @@ namespace FenBrowser.Core.Security
             if (url == null || origin == null) return false;
             if (!string.Equals(url.Scheme, origin.Scheme, StringComparison.OrdinalIgnoreCase)) return false;
             if (!string.Equals(url.Host, origin.Host, StringComparison.OrdinalIgnoreCase)) return false;
-            int urlPort = url.Port == -1 ? GetDefaultPort(url.Scheme) : url.Port;
-            int originPort = origin.Port == -1 ? GetDefaultPort(origin.Scheme) : origin.Port;
+            int urlPort = url.IsDefaultPort ? GetDefaultPort(url.Scheme) : url.Port;
+            int originPort = origin.IsDefaultPort ? GetDefaultPort(origin.Scheme) : origin.Port;
             return urlPort == originPort;
         }
 
@@ -447,6 +556,8 @@ namespace FenBrowser.Core.Security
                 "http" => 80,
                 "https" => 443,
                 "ftp" => 21,
+                "ws" => 80,
+                "wss" => 443,
                 _ => -1
             };
         }
