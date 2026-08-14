@@ -9,29 +9,26 @@ namespace FenBrowser.Host.ProcessIsolation
 {
     /// <summary>
     /// Manages a cross-process shared memory region for transferring rendered frame pixels.
-    /// Each tab's region is sized to its actual window dimensions (capped at 4K UHD),
-    /// so a 1280×720 tab uses ~3.5MB instead of the former fixed 33MB.
-    /// The renderer child creates it; the host opens it by mapping the entire file (size=0).
+    /// Each tab's region is sized to its actual window dimensions (capped at 4K UHD).
     /// </summary>
     public sealed class FrameSharedMemory : IDisposable
     {
-        // Absolute upper bound — no single tab can exceed 4K UHD.
         public const int MaxWidth = 3840;
         public const int MaxHeight = 2160;
         public const int BytesPerPixel = 4; // BGRA32
 
         // Header layout at start of MMF (32 bytes):
-        // [0..3]   int  FrameWidth        — width of the most-recently-written frame
-        // [4..7]   int  FrameHeight       — height of the most-recently-written frame
-        // [8..11]  uint SequenceNumber    — incremented on every WriteFrame
-        // [12..15] int  RegionCapacity    — pixel-byte capacity of this MMF (excluding header)
+        // [0..3]   int  FrameWidth
+        // [4..7]   int  FrameHeight
+        // [8..11]  uint SequenceNumber — odd while writer is publishing, even when stable
+        // [12..15] int  RegionCapacity — pixel-byte capacity excluding header
         // [16..31] padding
-        // Pixel data starts at offset 32.
         private const int HeaderSize = 32;
-        private const int OffsetWidth    = 0;
-        private const int OffsetHeight   = 4;
-        private const int OffsetSeq      = 8;
+        private const int OffsetWidth = 0;
+        private const int OffsetHeight = 4;
+        private const int OffsetSeq = 8;
         private const int OffsetCapacity = 12;
+        private const int MaxRegionCapacity = MaxWidth * MaxHeight * BytesPerPixel;
 
         private readonly string _mmfName;
         private readonly string _readyEventName;
@@ -39,11 +36,16 @@ namespace FenBrowser.Host.ProcessIsolation
         private MemoryMappedViewAccessor _accessor;
         private EventWaitHandle _readyEvent;
         private readonly bool _isWriter;
-        private readonly int _regionCapacity; // pixel bytes, excluding header
+        private readonly int _regionCapacity;
         private bool _disposed;
 
-        private FrameSharedMemory(string mmfName, string readyEventName, bool isWriter,
-            MemoryMappedFile mmf, MemoryMappedViewAccessor accessor, EventWaitHandle readyEvent,
+        private FrameSharedMemory(
+            string mmfName,
+            string readyEventName,
+            bool isWriter,
+            MemoryMappedFile mmf,
+            MemoryMappedViewAccessor accessor,
+            EventWaitHandle readyEvent,
             int regionCapacity)
         {
             _mmfName = mmfName;
@@ -55,12 +57,12 @@ namespace FenBrowser.Host.ProcessIsolation
             _regionCapacity = regionCapacity;
         }
 
-        /// <summary>Compute the pixel-byte capacity for a given window size (capped at 4K).</summary>
         public static int ComputeRegionCapacity(int windowWidth, int windowHeight)
         {
-            int w = Math.Max(1, Math.Min(windowWidth,  MaxWidth));
-            int h = Math.Max(1, Math.Min(windowHeight, MaxHeight));
-            return w * h * BytesPerPixel;
+            int w = Math.Clamp(windowWidth, 1, MaxWidth);
+            int h = Math.Clamp(windowHeight, 1, MaxHeight);
+            long bytes = (long)w * h * BytesPerPixel;
+            return checked((int)bytes);
         }
 
         public static string MakeMmfName(int tabId, int parentPid) =>
@@ -69,22 +71,18 @@ namespace FenBrowser.Host.ProcessIsolation
         public static string MakeEventName(int tabId, int parentPid) =>
             $"fen_frame_rdy_{tabId}_{parentPid}";
 
-        /// <summary>
-        /// Writer constructor (renderer child): creates the MMF and ready event.
-        /// The MMF is sized to the actual window dimensions (capped at 4K) rather than
-        /// a fixed 33MB ceiling, so memory usage scales with the real viewport.
-        /// Falls back from Global\ to session-local naming if access is denied.
-        /// </summary>
-        public static FrameSharedMemory CreateForWriter(int tabId, int parentPid,
-            int windowWidth = MaxWidth, int windowHeight = MaxHeight)
+        public static FrameSharedMemory CreateForWriter(
+            int tabId,
+            int parentPid,
+            int windowWidth = MaxWidth,
+            int windowHeight = MaxHeight)
         {
             int regionCapacity = ComputeRegionCapacity(windowWidth, windowHeight);
-            long totalSize = HeaderSize + regionCapacity;
+            long totalSize = HeaderSize + (long)regionCapacity;
 
             var baseMmfName = MakeMmfName(tabId, parentPid);
             var baseEventName = MakeEventName(tabId, parentPid);
 
-            // Try Global\ first, fall back to session-local on access denied.
             MemoryMappedFile mmf = null;
             string usedMmfName = null;
             foreach (var prefix in new[] { "Global\\", "" })
@@ -131,26 +129,42 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
             }
 
-            // Map the full region and record the capacity in the header so the reader
-            // can validate frames without needing the size out-of-band.
-            var accessor = mmf.CreateViewAccessor(0, totalSize, MemoryMappedFileAccess.ReadWrite);
-            accessor.Write(OffsetCapacity, regionCapacity);
+            MemoryMappedViewAccessor accessor = null;
+            try
+            {
+                accessor = mmf.CreateViewAccessor(0, totalSize, MemoryMappedFileAccess.ReadWrite);
+                accessor.Write(OffsetWidth, 0);
+                accessor.Write(OffsetHeight, 0);
+                accessor.Write(OffsetSeq, 0u);
+                accessor.Write(OffsetCapacity, regionCapacity);
+            }
+            catch
+            {
+                TryDispose(accessor, "writer-accessor");
+                TryDispose(readyEvent, "writer-ready-event");
+                TryDispose(mmf, "writer-memory-mapped-file");
+                throw;
+            }
 
-            EngineLogBridge.Info($"[FrameSharedMemory] Writer created: mmf='{usedMmfName}', " +
-                $"window={windowWidth}×{windowHeight}, regionBytes={regionCapacity} ({regionCapacity / 1024 / 1024} MB).", LogCategory.General);
-            return new FrameSharedMemory(usedMmfName, baseEventName, isWriter: true, mmf, accessor, readyEvent, regionCapacity);
+            EngineLogBridge.Info(
+                $"[FrameSharedMemory] Writer created: mmf='{usedMmfName}', window={windowWidth}×{windowHeight}, " +
+                $"regionBytes={regionCapacity} ({regionCapacity / 1024 / 1024} MB).",
+                LogCategory.General);
+
+            return new FrameSharedMemory(
+                usedMmfName,
+                baseEventName,
+                isWriter: true,
+                mmf,
+                accessor,
+                readyEvent,
+                regionCapacity);
         }
 
-        /// <summary>
-        /// Reader constructor (host): opens the existing MMF and ready event.
-        /// Mirrors the fallback logic of CreateForWriter.
-        /// </summary>
         public static FrameSharedMemory OpenForReader(int tabId, int parentPid)
         {
             if (!OperatingSystem.IsWindows())
-            {
                 return null;
-            }
 
             var baseMmfName = MakeMmfName(tabId, parentPid);
             var baseEventName = MakeEventName(tabId, parentPid);
@@ -168,7 +182,6 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
                 catch (FileNotFoundException)
                 {
-                    // Not created yet or different prefix — try next.
                 }
                 catch (UnauthorizedAccessException)
                 {
@@ -193,9 +206,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 try
                 {
                     if (EventWaitHandle.TryOpenExisting(candidate, out readyEvent))
-                    {
                         break;
-                    }
                 }
                 catch (UnauthorizedAccessException)
                 {
@@ -207,46 +218,80 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
             }
 
-            // size=0 maps the entire file — no need to know the region size upfront.
-            var accessor = mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.ReadWrite);
-
-            // Read the capacity the writer stamped into the header.
-            int regionCapacity = accessor.ReadInt32(OffsetCapacity);
-            if (regionCapacity <= 0 || regionCapacity > MaxWidth * MaxHeight * BytesPerPixel)
+            MemoryMappedViewAccessor accessor = null;
+            try
             {
-                EngineLogBridge.Warn($"[FrameSharedMemory] Invalid region capacity {regionCapacity} in header; clamping to max.", LogCategory.General);
-                regionCapacity = MaxWidth * MaxHeight * BytesPerPixel;
-            }
+                accessor = mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.ReadWrite);
+                if (accessor.Capacity < HeaderSize)
+                    throw new InvalidDataException("Shared frame mapping is smaller than its header.");
 
-            EngineLogBridge.Info($"[FrameSharedMemory] Reader opened: mmf='{usedMmfName}', regionBytes={regionCapacity} ({regionCapacity / 1024 / 1024} MB).", LogCategory.General);
-            return new FrameSharedMemory(usedMmfName, baseEventName, isWriter: false, mmf, accessor, readyEvent, regionCapacity);
+                int regionCapacity = accessor.ReadInt32(OffsetCapacity);
+                if (regionCapacity <= 0 || regionCapacity > MaxRegionCapacity)
+                {
+                    throw new InvalidDataException($"Invalid shared frame region capacity {regionCapacity}.");
+                }
+
+                long requiredMappingBytes = HeaderSize + (long)regionCapacity;
+                if (accessor.Capacity < requiredMappingBytes)
+                {
+                    throw new InvalidDataException(
+                        $"Shared frame mapping is truncated: capacity={accessor.Capacity}, required={requiredMappingBytes}.");
+                }
+
+                EngineLogBridge.Info(
+                    $"[FrameSharedMemory] Reader opened: mmf='{usedMmfName}', regionBytes={regionCapacity} " +
+                    $"({regionCapacity / 1024 / 1024} MB).",
+                    LogCategory.General);
+
+                return new FrameSharedMemory(
+                    usedMmfName,
+                    baseEventName,
+                    isWriter: false,
+                    mmf,
+                    accessor,
+                    readyEvent,
+                    regionCapacity);
+            }
+            catch (Exception ex)
+            {
+                EngineLogBridge.Warn($"[FrameSharedMemory] Rejected shared memory mapping: {ex.Message}", LogCategory.General);
+                TryDispose(accessor, "reader-accessor");
+                TryDispose(readyEvent, "reader-ready-event");
+                TryDispose(mmf, "reader-memory-mapped-file");
+                return null;
+            }
         }
 
-        /// <summary>
-        /// Writer: write BGRA pixels from a raw byte array into shared memory.
-        /// Writes the header fields first, then the pixel data after HeaderSize offset.
-        /// </summary>
         public void WriteFrame(int width, int height, ReadOnlySpan<byte> bgraPixels)
         {
-            if (_accessor == null || _disposed) return;
+            if (_accessor == null || _disposed)
+                return;
 
-            int pixelBytes = width * height * BytesPerPixel;
-            if (pixelBytes > _regionCapacity)
+            if (!TryComputePixelBytes(width, height, out var pixelBytes) || pixelBytes > _regionCapacity)
             {
-                EngineLogBridge.Warn($"[FrameSharedMemory] Frame too large: {width}x{height} ({pixelBytes} bytes > capacity {_regionCapacity}).", LogCategory.Rendering);
+                EngineLogBridge.Warn(
+                    $"[FrameSharedMemory] Rejected invalid/oversized frame dimensions: {width}x{height}.",
+                    LogCategory.Rendering);
                 return;
             }
 
-            // Read current sequence and increment
-            uint seq = _accessor.ReadUInt32(OffsetSeq);
-            seq++;
+            if (bgraPixels.Length < pixelBytes)
+            {
+                EngineLogBridge.Warn(
+                    $"[FrameSharedMemory] Rejected short frame buffer: have={bgraPixels.Length}, need={pixelBytes}.",
+                    LogCategory.Rendering);
+                return;
+            }
 
-            // Write header
-            _accessor.Write(OffsetWidth, width);
-            _accessor.Write(OffsetHeight, height);
-            _accessor.Write(OffsetSeq, seq);
+            // Seqlock-style publication. Odd means a write is in progress; stable
+            // frames always expose an even sequence. Readers verify the sequence both
+            // before and after copying so they never accept partially updated pixels.
+            uint previous = _accessor.ReadUInt32(OffsetSeq);
+            uint writingSequence = (previous & 1u) == 0 ? previous + 1u : previous + 2u;
+            uint publishedSequence = writingSequence + 1u;
+            _accessor.Write(OffsetSeq, writingSequence);
+            Thread.MemoryBarrier();
 
-            // Write pixel data after header
             unsafe
             {
                 byte* ptr = null;
@@ -254,33 +299,39 @@ namespace FenBrowser.Host.ProcessIsolation
                 try
                 {
                     var dest = new Span<byte>(ptr + HeaderSize, pixelBytes);
-                    bgraPixels.Slice(0, pixelBytes).CopyTo(dest);
+                    bgraPixels[..pixelBytes].CopyTo(dest);
                 }
                 finally
                 {
                     _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
                 }
             }
+
+            _accessor.Write(OffsetWidth, width);
+            _accessor.Write(OffsetHeight, height);
+            Thread.MemoryBarrier();
+            _accessor.Write(OffsetSeq, publishedSequence);
         }
 
-        /// <summary>
-        /// Reader: copy pixels from shared memory.
-        /// Returns (width, height, sequenceNumber, pixelBytes) or null if not initialized.
-        /// </summary>
         public (int width, int height, uint seq, byte[] pixels)? TryReadFrame()
         {
-            if (_accessor == null || _disposed) return null;
+            if (_accessor == null || _disposed)
+                return null;
+
+            uint sequenceBefore = _accessor.ReadUInt32(OffsetSeq);
+            if ((sequenceBefore & 1u) != 0)
+                return null;
 
             int width = _accessor.ReadInt32(OffsetWidth);
             int height = _accessor.ReadInt32(OffsetHeight);
-            uint seq = _accessor.ReadUInt32(OffsetSeq);
-
-            if (width <= 0 || height <= 0) return null;
-
-            int pixelBytes = width * height * BytesPerPixel;
-            if (pixelBytes > _regionCapacity)
+            if (!TryComputePixelBytes(width, height, out var pixelBytes) || pixelBytes > _regionCapacity)
             {
-                EngineLogBridge.Warn($"[FrameSharedMemory] Read: reported frame dimensions too large: {width}x{height} ({pixelBytes} bytes > capacity {_regionCapacity}).", LogCategory.Rendering);
+                if (width != 0 || height != 0)
+                {
+                    EngineLogBridge.Warn(
+                        $"[FrameSharedMemory] Read rejected invalid/oversized dimensions: {width}x{height}.",
+                        LogCategory.Rendering);
+                }
                 return null;
             }
 
@@ -300,22 +351,36 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
             }
 
-            return (width, height, seq, pixels);
+            Thread.MemoryBarrier();
+            uint sequenceAfter = _accessor.ReadUInt32(OffsetSeq);
+            if (sequenceBefore != sequenceAfter || (sequenceAfter & 1u) != 0)
+                return null;
+
+            return (width, height, sequenceAfter, pixels);
         }
 
-        /// <summary>
-        /// Signal the host that a frame is ready (called by writer after WriteFrame).
-        /// </summary>
+        private static bool TryComputePixelBytes(int width, int height, out int pixelBytes)
+        {
+            pixelBytes = 0;
+            if (width <= 0 || height <= 0 || width > MaxWidth || height > MaxHeight)
+                return false;
+
+            long bytes = (long)width * height * BytesPerPixel;
+            if (bytes <= 0 || bytes > MaxRegionCapacity || bytes > int.MaxValue)
+                return false;
+
+            pixelBytes = (int)bytes;
+            return true;
+        }
+
         public void SignalReady() => _readyEvent?.Set();
 
-        /// <summary>
-        /// Wait for a frame to be ready (called by host, returns false on timeout).
-        /// </summary>
         public bool WaitForReady(TimeSpan timeout) => _readyEvent?.WaitOne(timeout) ?? false;
 
         public void Dispose()
         {
-            if (_disposed) return;
+            if (_disposed)
+                return;
             _disposed = true;
 
             TryDispose(_accessor, "accessor");
@@ -330,9 +395,7 @@ namespace FenBrowser.Host.ProcessIsolation
         private static void TryDispose(IDisposable disposable, string resourceName)
         {
             if (disposable == null)
-            {
                 return;
-            }
 
             try
             {
@@ -340,9 +403,11 @@ namespace FenBrowser.Host.ProcessIsolation
             }
             catch (Exception ex)
             {
-                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug, $"[FrameSharedMemory] Dispose failed for {resourceName}: {ex.Message}");
+                EngineLog.Write(
+                    LogSubsystem.ProcessIsolation,
+                    LogSeverity.Debug,
+                    $"[FrameSharedMemory] Dispose failed for {resourceName}: {ex.Message}");
             }
         }
     }
 }
-
