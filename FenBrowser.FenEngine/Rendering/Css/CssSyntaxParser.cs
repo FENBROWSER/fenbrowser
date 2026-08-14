@@ -16,9 +16,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
         private int _emittedRuleCount;
         private bool _ruleLimitLogged;
         private bool _declarationLimitLogged;
+        private bool _nestingLimitLogged;
 
         public int MaxRules { get; set; } = 200000;
         public int MaxDeclarationsPerBlock { get; set; } = 8192;
+        public int MaxRuleNestingDepth { get; set; } = 256;
 
         public CssSyntaxParser(CssTokenizer tokenizer)
         {
@@ -48,14 +50,14 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
                 if (_currentToken.Type == CssTokenType.AtKeyword)
                 {
-                    var rule = ConsumeAtRule();
+                    var rule = ConsumeAtRule(0);
                     if (!TryAddRule(sheet.Rules, rule)) break;
                     ConsumeWhitespace();
                     continue;
                 }
 
                 // Qualified Rule (Style Rule)
-                var qRule = ConsumeQualifiedRule();
+                var qRule = ConsumeQualifiedRule(null, 0);
                 if (qRule != null && !TryAddRule(sheet.Rules, qRule))
                 {
                     break;
@@ -65,33 +67,26 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return sheet;
         }
 
-        private CssRule ConsumeAtRule()
+        private CssRule ConsumeAtRule(int nestingDepth)
         {
-            // Placeholder for @media, etc.
-            // For now, simple consumption until block
             string name = _currentToken.Value;
             ConsumeToken(); // skip @name
 
             if (name.Equals("media", StringComparison.OrdinalIgnoreCase))
             {
                 var mediaRule = new CssMediaRule();
-                
-                // 1. Consume condition (up to the opening brace)
                 var conditionTokens = new List<CssToken>();
                 while (_currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.Semicolon && _currentToken.Type != CssTokenType.EOF)
                 {
                     conditionTokens.Add(_currentToken);
                     ConsumeToken();
                 }
-                
-                // Flatten tokens to string for the condition
                 mediaRule.Condition = string.Join("", conditionTokens.Select(t => t.ToStringValue())).Trim();
 
-                // 2. Consume block content
                 if (_currentToken.Type == CssTokenType.LeftBrace)
                 {
                     ConsumeToken(); // {
-                    ParseInsideBlock(mediaRule.Rules);
+                    ParseInsideBlock(mediaRule.Rules, nestingDepth + 1);
                     if (_currentToken.Type == CssTokenType.RightBrace)
                     {
                         ConsumeToken(); // }
@@ -116,22 +111,13 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 {
                     ConsumeToken();
                     var layerRule = new CssLayerRule { Name = names.FirstOrDefault() };
-                    ParseInsideBlock(layerRule.Rules);
+                    ParseInsideBlock(layerRule.Rules, nestingDepth + 1);
                     if (_currentToken.Type == CssTokenType.RightBrace) ConsumeToken();
                     return layerRule;
                 }
                 else if (_currentToken.Type == CssTokenType.Semicolon)
                 {
                     ConsumeToken();
-                    // Just a declaration of order: @layer base, theme;
-                    // We can represent this by returning multiple rules or a special rule.
-                    // For simplicity, let's return a CssLayerRule with multiple names or handle it in a special way.
-                    // But the parser returns ONE rule.
-                    // Let's make CssLayerRule.Name contain the comma-separated string if it's a declaration only?
-                    // No, let's return a rule for EACH name.
-                    // Wait, ParseStylesheet accepts a list of rules.
-                    
-                    // Actually, I'll return a special CssLayerRule where Name identifies it as a multi-declaration.
                     return new CssLayerRule { Name = rawNames, Rules = { } }; 
                 }
                 return null;
@@ -148,7 +134,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 }
                 
                 string raw = string.Join("", selectorTokens.Select(t => t.ToStringValue())).Trim();
-                // Simple @scope (...) to (...) parsing
                 if (raw.Contains(" to "))
                 {
                     var parts = raw.Split(new[] { " to " }, 2, StringSplitOptions.None);
@@ -163,7 +148,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 if (_currentToken.Type == CssTokenType.LeftBrace)
                 {
                     ConsumeToken();
-                    ParseInsideBlock(scopeRule.Rules);
+                    ParseInsideBlock(scopeRule.Rules, nestingDepth + 1);
                     if (_currentToken.Type == CssTokenType.RightBrace) ConsumeToken();
                 }
                 return scopeRule;
@@ -173,7 +158,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
             {
                 var fontFaceRule = new CssFontFaceRule();
 
-                // Consume any at-rule prelude tokens up to the declaration block.
                 while (_currentToken.Type != CssTokenType.LeftBrace &&
                        _currentToken.Type != CssTokenType.Semicolon &&
                        _currentToken.Type != CssTokenType.EOF)
@@ -240,11 +224,17 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 ConsumeToken();
             }
             
-            return null; // Ignore unknown rules
+            return null;
         }
 
-        private void ParseInsideBlock(List<CssRule> rules)
+        private void ParseInsideBlock(List<CssRule> rules, int nestingDepth)
         {
+            if (nestingDepth > MaxRuleNestingDepth)
+            {
+                SkipCurrentBlockContentsAtNestingLimit();
+                return;
+            }
+
             int loopCount = 0;
             while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
             {
@@ -257,55 +247,48 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
                 if (_currentToken.Type == CssTokenType.AtKeyword)
                 {
-                    var subRule = ConsumeAtRule();
+                    var subRule = ConsumeAtRule(nestingDepth);
                     if (!TryAddRule(rules, subRule)) return;
                 }
                 else
                 {
-                    var subRule = ConsumeQualifiedRule();
+                    var subRule = ConsumeQualifiedRule(null, nestingDepth);
                     if (!TryAddRule(rules, subRule)) return;
                 }
             }
         }
 
-        private CssStyleRule ConsumeQualifiedRule(CssSelector parentSelector = null)
+        private CssStyleRule ConsumeQualifiedRule(CssSelector parentSelector = null, int nestingDepth = 0)
         {
             var rule = new CssStyleRule();
             rule.Order = _ruleCount++;
 
-            // Parse selector (prelude)
             var selectorTokens = new List<CssToken>();
             int selLoop = 0;
             while (_currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.EOF)
             {
-                if (selLoop++ > 100000) break; // Safety break
+                if (selLoop++ > 100000) break;
                 selectorTokens.Add(_currentToken);
                 ConsumeToken();
             }
 
-            if (_currentToken.Type == CssTokenType.EOF) return null; // Parse error
+            if (_currentToken.Type == CssTokenType.EOF) return null;
 
-            // Parse selector string and specificity
             rule.Selector = ParseSelector(selectorTokens, parentSelector);
             if (rule.Selector == null)
             {
-                 // Invalid selector (e.g. empty or malformed), but we MUST consume the block to advance parser state
                  ConsumeDeclarationBlock(null);
                  return null; 
             }
 
-            // Parse block
-            ConsumeStyleRuleBlock(rule);
-            
+            ConsumeStyleRuleBlock(rule, nestingDepth);
             return rule;
         }
 
-        private void ConsumeStyleRuleBlock(CssStyleRule rule)
+        private void ConsumeStyleRuleBlock(CssStyleRule rule, int nestingDepth)
         {
             ConsumeToken(); // {
             int declarationCount = 0;
-            int nestCount = 0;
-            const int MaxNestingDepth = 256;
 
             while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
             {
@@ -315,42 +298,37 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     continue;
                 }
 
-                // Check for unambiguous nested rule starts (delim selectors, hash, at-keyword, brackets, colon)
                 if (IsUnambiguousNestedRuleStart(_currentToken))
                 {
-                    if (nestCount >= MaxNestingDepth)
+                    if (nestingDepth >= MaxRuleNestingDepth)
                     {
-                        ConsumeComponentValue();
+                        ConsumeNestedRuleAtNestingLimit();
                         continue;
                     }
 
                     if (_currentToken.Type == CssTokenType.AtKeyword)
                     {
-                        var nestedAtRule = ConsumeNestedAtRule(rule.Selector);
+                        var nestedAtRule = ConsumeNestedAtRule(rule.Selector, nestingDepth + 1);
                         if (nestedAtRule != null)
                         {
                             rule.NestedRules.Add(nestedAtRule);
-                            nestCount++;
                         }
                     }
                     else
                     {
-                        var nestedRule = ConsumeQualifiedRule(rule.Selector);
+                        var nestedRule = ConsumeQualifiedRule(rule.Selector, nestingDepth + 1);
                         if (nestedRule != null)
                         {
                             rule.NestedRules.Add(nestedRule);
-                            nestCount++;
                         }
                     }
                     continue;
                 }
 
-                // For Ident tokens, try declaration first; if invalid (no colon), treat as nested rule
                 if (_currentToken.Type == CssTokenType.Ident)
                 {
-                    // Peek past whitespace to check if next meaningful token is a colon
-                    var peek = ConsumeDeclarationOrNestedRule(rule, ref nestCount, MaxNestingDepth);
-                    if (peek) continue;
+                    var handledNestedRule = ConsumeDeclarationOrNestedRule(rule, nestingDepth);
+                    if (handledNestedRule) continue;
                 }
 
                 if (declarationCount >= MaxDeclarationsPerBlock)
@@ -381,50 +359,35 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
         }
 
-        private bool ConsumeDeclarationOrNestedRule(CssStyleRule rule, ref int nestCount, int maxNestingDepth)
+        private bool ConsumeDeclarationOrNestedRule(CssStyleRule rule, int nestingDepth)
         {
-            // Peek the next token to disambiguate Ident token
             var savedPosition = _tokenizer.SavePosition();
             var savedToken = _currentToken;
 
-            // Skip current Ident
             ConsumeToken();
-
-            // Skip whitespace to find the next meaningful token
             while (_currentToken.Type == CssTokenType.Whitespace)
                 ConsumeToken();
 
             bool isDeclaration = _currentToken.Type == CssTokenType.Colon;
 
-            // Restore position
             _tokenizer.RestorePosition(savedPosition);
             _currentToken = savedToken;
 
             if (isDeclaration)
             {
-                // ConsumeDeclaration will handle it above
                 return false;
             }
 
-            // This is a nested rule starting with an Ident selector
-            if (nestCount >= maxNestingDepth)
+            if (nestingDepth >= MaxRuleNestingDepth)
             {
-                // Consume to avoid infinite loop
-                var discardSelectorTokens = new List<CssToken>();
-                while (_currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.EOF)
-                {
-                    _currentToken = _tokenizer.Consume();
-                }
-                if (_currentToken.Type == CssTokenType.LeftBrace)
-                    ConsumeSimpleBlock();
+                ConsumeNestedRuleAtNestingLimit();
                 return true;
             }
 
-            var nestedRule = ConsumeQualifiedRule(rule.Selector);
+            var nestedRule = ConsumeQualifiedRule(rule.Selector, nestingDepth + 1);
             if (nestedRule != null)
             {
                 rule.NestedRules.Add(nestedRule);
-                nestCount++;
             }
             return true;
         }
@@ -448,27 +411,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
         }
 
-        private static bool IsNestedRuleStart(CssToken token)
-        {
-            switch (token.Type)
-            {
-                case CssTokenType.Ident:
-                case CssTokenType.Delim when token.Delimiter == '.' || token.Delimiter == '#' || 
-                                             token.Delimiter == ':' || token.Delimiter == '[' ||
-                                             token.Delimiter == '*' || token.Delimiter == '&' ||
-                                             token.Delimiter == '>' || token.Delimiter == '+' || 
-                                             token.Delimiter == '~':
-                case CssTokenType.Hash:
-                case CssTokenType.LeftBracket:
-                case CssTokenType.Colon:
-                case CssTokenType.AtKeyword:
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
-        private CssRule ConsumeNestedAtRule(CssSelector parentSelector)
+        private CssRule ConsumeNestedAtRule(CssSelector parentSelector, int nestingDepth)
         {
             string name = _currentToken.Value;
             ConsumeToken(); // skip @name
@@ -488,7 +431,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 {
                     ConsumeToken(); // {
                     var mediaRule = new CssMediaRule { Condition = condition };
-                    ParseInsideBlockWithParent(mediaRule.Rules, parentSelector);
+                    ParseInsideBlockWithParent(mediaRule.Rules, parentSelector, nestingDepth + 1);
                     if (_currentToken.Type == CssTokenType.RightBrace)
                         ConsumeToken(); // }
                     return mediaRule;
@@ -512,7 +455,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 {
                     ConsumeToken(); // {
                     var atRule = new CssMediaRule { Condition = condition };
-                    ParseInsideBlockWithParent(atRule.Rules, parentSelector);
+                    ParseInsideBlockWithParent(atRule.Rules, parentSelector, nestingDepth + 1);
                     if (_currentToken.Type == CssTokenType.RightBrace)
                         ConsumeToken(); // }
                     return atRule;
@@ -520,7 +463,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return null;
             }
 
-            // Unknown nested at-rule: consume and discard
             while (_currentToken.Type != CssTokenType.Semicolon && _currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.EOF)
                 ConsumeToken();
 
@@ -532,8 +474,14 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return null;
         }
 
-        private void ParseInsideBlockWithParent(List<CssRule> rules, CssSelector parentSelector)
+        private void ParseInsideBlockWithParent(List<CssRule> rules, CssSelector parentSelector, int nestingDepth)
         {
+            if (nestingDepth > MaxRuleNestingDepth)
+            {
+                SkipCurrentBlockContentsAtNestingLimit();
+                return;
+            }
+
             int loopCount = 0;
             while (_currentToken.Type != CssTokenType.RightBrace && _currentToken.Type != CssTokenType.EOF)
             {
@@ -546,15 +494,87 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
                 if (_currentToken.Type == CssTokenType.AtKeyword)
                 {
-                    var subRule = ConsumeAtRule();
+                    var nestedName = _currentToken.Value;
+                    CssRule subRule;
+                    if (nestedName.Equals("media", StringComparison.OrdinalIgnoreCase) ||
+                        nestedName.Equals("supports", StringComparison.OrdinalIgnoreCase) ||
+                        nestedName.Equals("container", StringComparison.OrdinalIgnoreCase))
+                    {
+                        subRule = ConsumeNestedAtRule(parentSelector, nestingDepth);
+                    }
+                    else
+                    {
+                        subRule = ConsumeAtRule(nestingDepth);
+                    }
                     if (!TryAddRule(rules, subRule)) return;
                 }
                 else
                 {
-                    var subRule = ConsumeQualifiedRule(parentSelector);
+                    var subRule = ConsumeQualifiedRule(parentSelector, nestingDepth);
                     if (!TryAddRule(rules, subRule)) return;
                 }
             }
+        }
+
+        private void ConsumeNestedRuleAtNestingLimit()
+        {
+            LogNestingLimitOnce();
+
+            if (_currentToken.Type == CssTokenType.AtKeyword)
+            {
+                ConsumeToken();
+                while (_currentToken.Type != CssTokenType.Semicolon &&
+                       _currentToken.Type != CssTokenType.LeftBrace &&
+                       _currentToken.Type != CssTokenType.EOF)
+                {
+                    ConsumeComponentValue();
+                }
+
+                if (_currentToken.Type == CssTokenType.LeftBrace)
+                {
+                    ConsumeSimpleBlock();
+                }
+                else if (_currentToken.Type == CssTokenType.Semicolon)
+                {
+                    ConsumeToken();
+                }
+                return;
+            }
+
+            while (_currentToken.Type != CssTokenType.LeftBrace &&
+                   _currentToken.Type != CssTokenType.RightBrace &&
+                   _currentToken.Type != CssTokenType.EOF)
+            {
+                ConsumeComponentValue();
+            }
+
+            if (_currentToken.Type == CssTokenType.LeftBrace)
+            {
+                ConsumeSimpleBlock();
+            }
+        }
+
+        private void SkipCurrentBlockContentsAtNestingLimit()
+        {
+            LogNestingLimitOnce();
+            while (_currentToken.Type != CssTokenType.RightBrace &&
+                   _currentToken.Type != CssTokenType.EOF)
+            {
+                ConsumeComponentValue();
+            }
+        }
+
+        private void LogNestingLimitOnce()
+        {
+            if (_nestingLimitLogged)
+            {
+                return;
+            }
+
+            _nestingLimitLogged = true;
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[CssSyntaxParser] Rule nesting limit reached ({MaxRuleNestingDepth}). Deeper nested rules were skipped.",
+                FenBrowser.Core.Logging.LogCategory.CSS);
         }
 
         private List<CssDeclaration> ConsumeDeclarationBlock(CssSelector parentSelector = null)
@@ -628,7 +648,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             if (_currentToken.Type != CssTokenType.Ident)
             {
-                // Recovery: consume until ; or }
                 ConsumeComponentValue(); 
                 return null;
             }
@@ -640,7 +659,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             if (_currentToken.Type != CssTokenType.Colon)
             {
-                // Parse error: recover until declaration boundary while preserving parser progress.
                 RecoverMalformedDeclaration();
                 return null;
             }
@@ -648,7 +666,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             while (_currentToken.Type == CssTokenType.Whitespace) ConsumeToken();
 
-            // Value
             var valueTokens = new List<CssToken>();
             bool important = false;
             
@@ -658,13 +675,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 ConsumeToken();
             }
             
-            // Post-process value tokens for !important
-            // Reverse check for "important" ident and "!" delim
             if (valueTokens.Count >= 2)
             {
-                var last = valueTokens.Last();
-                // Check if last is separate whitespace? Tokenizer might merge? No.
-                // Loop backwards skipping whitespace
                 int i = valueTokens.Count - 1;
                 while (i >= 0 && valueTokens[i].Type == CssTokenType.Whitespace) i--;
                 
@@ -675,28 +687,17 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     if (j >= 0 && valueTokens[j].Type == CssTokenType.Delim && valueTokens[j].Delimiter == '!')
                     {
                         important = true;
-                        // Remove ! and important from value
-                        // Truncate list at j
                         valueTokens = valueTokens.Take(j).ToList();
                     }
                 }
             }
 
-            // CSS parsing rule: a leftover '!' inside a declaration value is invalid
-            // unless it formed a terminal !important that we stripped above.
-            // Acid2 depends on malformed declarations like "border: ... ! error" being ignored.
             if (valueTokens.Any(t => t.Type == CssTokenType.Delim && t.Delimiter == '!'))
             {
                 return null;
             }
 
-            // Stringify value (Basic support)
-            string valueStr = string.Join("", valueTokens.Select(t => t.ToStringValue())); // Need simple ToString helper
-
-            // Per-declaration tracing disabled — too verbose for large stylesheets.
-            // Enable with FEN_TRACE_CSS_DECLARATIONS=1 for debugging.
-            // if (property == "visibility")
-            // { ... }
+            string valueStr = string.Join("", valueTokens.Select(t => t.ToStringValue()));
 
             return new CssDeclaration 
             {
@@ -713,7 +714,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return property ?? string.Empty;
             }
 
-            // Custom properties are case-sensitive and must preserve authored casing.
             if (property.StartsWith("--", StringComparison.Ordinal))
             {
                 return property;
@@ -747,21 +747,18 @@ namespace FenBrowser.FenEngine.Rendering.Css
             int loop = 0;
             while ((_currentToken.Type == CssTokenType.Whitespace || _currentToken.Type == CssTokenType.Comment) && _currentToken.Type != CssTokenType.EOF)
             {
-                if (loop++ > 100000) break; // Safety
+                if (loop++ > 100000) break;
                 ConsumeToken(); 
             }
         }
 
         private void ConsumeSimpleBlock()
         {
-            // Iterative implementation to avoid StackOverflow and improve performance
-            
-            // Determine initial ending
             CssTokenType initialEnding = CssTokenType.RightBrace;
             if (_currentToken.Type == CssTokenType.LeftParen) initialEnding = CssTokenType.RightParen;
             else if (_currentToken.Type == CssTokenType.LeftBracket) initialEnding = CssTokenType.RightBracket;
 
-            ConsumeToken(); // Consume the opening token
+            ConsumeToken();
             
             var stack = new Stack<CssTokenType>();
             stack.Push(initialEnding);
@@ -791,7 +788,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
                         continue;
                     }
 
-                    // Nested block starts
                     if (_currentToken.Type == CssTokenType.LeftBrace)
                     {
                         stack.Push(CssTokenType.RightBrace);
@@ -815,7 +811,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
             catch (Exception ex)
             {
-                 // Log and rethrow to Ensure visibility
                  FenBrowser.Core.EngineLogCompat.Error($"[CssSyntaxParser] Crash in ConsumeSimpleBlock: {ex}", FenBrowser.Core.Logging.LogCategory.Rendering);
                  throw;
             }
@@ -842,7 +837,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
             string raw = ReconstructSelectorText(tokens);
             if (string.IsNullOrWhiteSpace(raw)) return null;
 
-            // CSS Nesting: resolve & references and implicit parent prepending
             if (parentSelector != null)
             {
                 raw = ResolveNestingSelector(raw, parentSelector.Raw);
@@ -886,7 +880,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return nestedSelector.Replace("&", parentSelector);
             }
 
-            // Implicit nesting: prepend parent with descendant combinator
             return parentSelector + " " + nestedSelector;
         }
 
