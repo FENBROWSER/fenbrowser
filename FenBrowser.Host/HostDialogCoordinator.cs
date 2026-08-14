@@ -185,6 +185,7 @@ public static class HostDialogCoordinator
         public string Name;
         public string NavigationUrl;
         public string AccumulatedHtml = string.Empty;
+        public bool HasFinalizedDocument;
         public bool Closed;
     }
 
@@ -205,8 +206,8 @@ public static class HostDialogCoordinator
         {
             // window.open() is synchronous at the JS surface, but native tab/window
             // construction is a UI-thread concern. Return the opaque WindowProxy host
-            // handle immediately and enqueue creation instead of waiting 50 ms and then
-            // violating thread ownership by calling TabManager.CreateTab off-thread.
+            // handle immediately and enqueue creation instead of waiting and violating
+            // thread ownership by calling TabManager.CreateTab off-thread.
             var createTask = WindowManager.Instance.RunOnMainThread(() =>
                 CreatePopupOnMainThread(state, width, height));
             ObservePopupUiTask(createTask, state, "create popup", closeOnFailure: true);
@@ -236,15 +237,16 @@ public static class HostDialogCoordinator
             {
                 var popup = PopupWindowManager.Create(state.Name, width, height);
                 state.Window = popup;
-                if (string.IsNullOrEmpty(state.AccumulatedHtml))
-                {
-                    state.AccumulatedHtml =
-                        $"<html><body style='font-family:sans-serif;padding:20px;'>Loading {state.NavigationUrl}...</body></html>";
-                }
-                popup.SetContent(state.AccumulatedHtml);
+                var displayHtml = state.HasFinalizedDocument
+                    ? state.AccumulatedHtml
+                    : $"<html><body style='font-family:sans-serif;padding:20px;'>Loading {state.NavigationUrl}...</body></html>";
+                popup.SetContent(displayHtml);
             }
 
-            if (!string.IsNullOrEmpty(state.AccumulatedHtml))
+            // document.write()/document.close() may have completed before the queued
+            // UI creation ran. Only that explicit finalization replaces the real URL;
+            // the lightweight "Loading …" widget placeholder must never navigate the tab.
+            if (state.HasFinalizedDocument)
             {
                 _ = tab.NavigateProgrammaticAsync(
                     "data:text/html;charset=utf-8," + Uri.EscapeDataString(state.AccumulatedHtml));
@@ -293,6 +295,7 @@ public static class HostDialogCoordinator
             if (state.Closed)
                 return;
             state.AccumulatedHtml = html ?? string.Empty;
+            state.HasFinalizedDocument = true;
         }
 
         try
@@ -380,8 +383,6 @@ public static class HostDialogCoordinator
             if (state.Closed)
                 return true;
 
-            // Native creation can still be queued; the returned WindowProxy remains
-            // open during that short interval.
             if (state.Tab == null)
                 return false;
 
