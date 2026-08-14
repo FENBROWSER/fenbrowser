@@ -7,33 +7,11 @@ using FenBrowser.Core.Network;
 
 namespace FenBrowser.Core.Storage
 {
-    // ── Storage Partitioning ──────────────────────────────────────────────────
-    // Per the guide §14: all storage is keyed by (top-level site, frame site).
-    // This prevents cross-site tracking via shared storage state.
-    //
-    // Partitioned storage types:
-    //   - Cookies (SameSite + partition key)
-    //   - HTTP cache
-    //   - localStorage / sessionStorage
-    //   - IndexedDB (origin + partition key)
-    //   - Cache Storage (Service Worker scoped)
-    //   - Permissions (origin + partition key)
-    //
-    // Partition key: (topLevelSite, frameSite) pair.
-    // topLevelSite = eTLD+1 of the top-level document URL.
-    // frameSite    = eTLD+1 of the frame URL (or origin in strict mode).
-    // ─────────────────────────────────────────────────────────────────────────
-
     /// <summary>Immutable storage partition key.</summary>
     public readonly struct StoragePartitionKey : IEquatable<StoragePartitionKey>
     {
-        /// <summary>eTLD+1 of the top-level frame (or "null" for opaque).</summary>
         public string TopLevelSite { get; }
-
-        /// <summary>eTLD+1 of the frame (or "null" for opaque).</summary>
         public string FrameSite { get; }
-
-        /// <summary>Whether this partition is in a third-party context.</summary>
         public bool IsThirdParty => !string.Equals(TopLevelSite, FrameSite, StringComparison.OrdinalIgnoreCase);
 
         public StoragePartitionKey(string topLevelSite, string frameSite)
@@ -42,10 +20,7 @@ namespace FenBrowser.Core.Storage
             FrameSite = frameSite ?? "null";
         }
 
-        /// <summary>First-party partition: top-level site = frame site.</summary>
         public static StoragePartitionKey FirstParty(string site) => new(site, site);
-
-        /// <summary>Opaque / sandboxed partition (no storage access).</summary>
         public static StoragePartitionKey Opaque => new("null", "null");
 
         public bool Equals(StoragePartitionKey other) =>
@@ -53,23 +28,24 @@ namespace FenBrowser.Core.Storage
 
         public override bool Equals(object obj) => obj is StoragePartitionKey k && Equals(k);
 
-        public override int GetHashCode() =>
-            HashCode.Combine(TopLevelSite, FrameSite);
+        public override int GetHashCode() => HashCode.Combine(TopLevelSite, FrameSite);
 
         public override string ToString() => $"({TopLevelSite}, {FrameSite})";
 
-        /// <summary>Stable opaque representation for use as a storage key string.</summary>
+        /// <summary>
+        /// Stable opaque representation for persistent storage keys. Keep the full
+        /// SHA-256 digest: storage partition identity is a security boundary and must
+        /// not rely on the collision resistance of a truncated 64-bit prefix.
+        /// </summary>
         public string ToStorageKey()
         {
             var combined = TopLevelSite + "\0" + FrameSite;
             var hash = SHA256.HashData(Encoding.UTF8.GetBytes(combined));
-            return Convert.ToHexString(hash)[..16]; // first 8 bytes = 16 hex chars
+            return Convert.ToHexString(hash);
         }
     }
 
-    /// <summary>
-    /// Computes partition keys from navigation context.
-    /// </summary>
+    /// <summary>Computes partition keys from navigation context.</summary>
     public static class StoragePartitionKeyFactory
     {
         public static StoragePartitionKey Compute(string topLevelUrl, string frameUrl)
@@ -86,7 +62,7 @@ namespace FenBrowser.Core.Storage
             if (parsed == null) return "null";
             var origin = parsed.ComputeOrigin();
             if (origin.Kind == Network.UrlOriginKind.Opaque) return "null";
-            // scheme + eTLD+1
+
             var host = parsed.Hostname;
             var domain = GetEtldPlusOne(host);
             return $"{parsed.Scheme}://{domain}";
@@ -101,12 +77,8 @@ namespace FenBrowser.Core.Storage
         }
     }
 
-    // ── Cookie store with partitioning ────────────────────────────────────────
-
-    /// <summary>Cookie SameSite attribute value.</summary>
     public enum CookieSameSite { Unspecified, Strict, Lax, None }
 
-    /// <summary>Immutable cookie record.</summary>
     public sealed record Cookie
     {
         public string Name { get; init; }
@@ -118,35 +90,32 @@ namespace FenBrowser.Core.Storage
         public bool HttpOnly { get; init; }
         public CookieSameSite SameSite { get; init; } = CookieSameSite.Lax;
         public DateTimeOffset? Expires { get; init; }
-        public StoragePartitionKey? PartitionKey { get; init; }   // null = unpartitioned
+        public StoragePartitionKey? PartitionKey { get; init; }
 
         public bool IsPartitioned => PartitionKey.HasValue;
         public bool IsExpired => Expires.HasValue && Expires.Value < DateTimeOffset.UtcNow;
         public bool IsSession => !Expires.HasValue;
     }
 
-    /// <summary>
-    /// Partitioned cookie store.
-    /// Cookies are keyed by (domain, path, name, partitionKey?).
-    /// Implements SameSite + Secure + domain matching semantics.
-    /// </summary>
     public sealed class PartitionedCookieStore
     {
-        // Key: (partitionKeyStr, domain, name, path)
         private readonly ConcurrentDictionary<string, Cookie> _cookies = new(StringComparer.Ordinal);
 
-        /// <summary>Set a cookie. Partitioned cookies require the partition key.</summary>
         public void Set(Cookie cookie, StoragePartitionKey? partitionKey = null)
         {
             if (cookie == null) throw new ArgumentNullException(nameof(cookie));
-            if (cookie.IsExpired) { Delete(cookie, partitionKey); return; }
-
             var actualKey = partitionKey ?? (cookie.IsPartitioned ? cookie.PartitionKey : null);
+
+            if (cookie.IsExpired)
+            {
+                Delete(cookie, actualKey);
+                return;
+            }
+
             var storeKey = MakeKey(actualKey, cookie.Domain, cookie.Name, cookie.Path);
             _cookies[storeKey] = cookie with { PartitionKey = actualKey };
         }
 
-        /// <summary>Get all cookies matching the given URL and partition key.</summary>
         public IReadOnlyList<Cookie> GetForUrl(
             string requestUrl,
             StoragePartitionKey partitionKey,
@@ -158,44 +127,45 @@ namespace FenBrowser.Core.Storage
             var host = parsed.Hostname;
             var path = parsed.Pathname;
             bool isSecure = parsed.Scheme == "https" || parsed.Scheme == "wss";
-
             var result = new List<Cookie>();
-            foreach (var cookie in _cookies.Values)
+
+            foreach (var pair in _cookies)
             {
-                if (cookie.IsExpired) continue;
+                var cookie = pair.Value;
+                if (cookie.IsExpired)
+                {
+                    _cookies.TryRemove(pair.Key, out _);
+                    continue;
+                }
                 if (cookie.Secure && !isSecure) continue;
                 if (cookie.HttpOnly && !includeHttpOnly) continue;
                 if (!DomainMatches(host, cookie.Domain, cookie.HostOnly)) continue;
                 if (!PathMatches(path, cookie.Path)) continue;
 
-                // Partition key check
-                if (cookie.IsPartitioned)
+                if (cookie.IsPartitioned &&
+                    (!cookie.PartitionKey.HasValue || !cookie.PartitionKey.Value.Equals(partitionKey)))
                 {
-                    if (!cookie.PartitionKey.HasValue ||
-                        !cookie.PartitionKey.Value.Equals(partitionKey))
-                        continue;
+                    continue;
                 }
 
                 result.Add(cookie);
             }
 
-            // Sort by path length descending (more specific paths first)
             result.Sort((a, b) => b.Path.Length.CompareTo(a.Path.Length));
             return result;
         }
 
         public void Delete(Cookie cookie, StoragePartitionKey? partitionKey = null)
         {
-            var key = MakeKey(partitionKey, cookie.Domain, cookie.Name, cookie.Path);
+            if (cookie == null) return;
+            var actualKey = partitionKey ?? (cookie.IsPartitioned ? cookie.PartitionKey : null);
+            var key = MakeKey(actualKey, cookie.Domain, cookie.Name, cookie.Path);
             _cookies.TryRemove(key, out _);
         }
 
         public void DeleteByName(string domain, string name, StoragePartitionKey? partitionKey = null)
         {
-            if (string.IsNullOrWhiteSpace(domain) || string.IsNullOrWhiteSpace(name))
-            {
-                return;
-            }
+            if (string.IsNullOrWhiteSpace(domain) || string.IsNullOrWhiteSpace(name)) return;
 
             var partitionKeyText = partitionKey?.ToStorageKey() ?? "unpartitioned";
             var prefix = $"pk:{partitionKeyText}:{domain}:{name}:";
@@ -211,9 +181,13 @@ namespace FenBrowser.Core.Storage
         public void ClearPartition(StoragePartitionKey partitionKey)
         {
             var prefix = $"pk:{partitionKey.ToStorageKey()}:";
-            foreach (var k in _cookies.Keys)
-                if (k.StartsWith(prefix, StringComparison.Ordinal))
-                    _cookies.TryRemove(k, out _);
+            foreach (var key in _cookies.Keys)
+            {
+                if (key.StartsWith(prefix, StringComparison.Ordinal))
+                {
+                    _cookies.TryRemove(key, out _);
+                }
+            }
         }
 
         public void ClearAll() => _cookies.Clear();
@@ -231,10 +205,7 @@ namespace FenBrowser.Core.Storage
             }
 
             var suffix = cookieDomain.TrimStart('.');
-            if (string.IsNullOrEmpty(suffix))
-            {
-                return false;
-            }
+            if (string.IsNullOrEmpty(suffix)) return false;
 
             return string.Equals(host, suffix, StringComparison.OrdinalIgnoreCase) ||
                    host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase);
@@ -243,20 +214,12 @@ namespace FenBrowser.Core.Storage
         private static bool PathMatches(string requestPath, string cookiePath)
         {
             if (string.IsNullOrEmpty(cookiePath) || cookiePath == "/") return true;
-            if (requestPath.StartsWith(cookiePath, StringComparison.Ordinal))
-            {
-                return requestPath.Length == cookiePath.Length || requestPath[cookiePath.Length] == '/';
-            }
-            return false;
+            if (!requestPath.StartsWith(cookiePath, StringComparison.Ordinal)) return false;
+
+            return requestPath.Length == cookiePath.Length || requestPath[cookiePath.Length] == '/';
         }
     }
 
-    // ── LocalStorage / SessionStorage with partitioning ───────────────────────
-
-    /// <summary>
-    /// Partitioned key-value storage (localStorage / sessionStorage).
-    /// Each (origin, partitionKey) pair has independent storage.
-    /// </summary>
     public sealed class PartitionedKeyValueStorage
     {
         private sealed class StorageBucket
@@ -269,17 +232,24 @@ namespace FenBrowser.Core.Storage
         private readonly ConcurrentDictionary<string, StorageBucket> _buckets = new(StringComparer.Ordinal);
         private readonly long _quotaBytesPerBucket;
 
-        public PartitionedKeyValueStorage(long quotaBytesPerBucket = 5 * 1024 * 1024 /* 5 MB */)
+        public PartitionedKeyValueStorage(long quotaBytesPerBucket = 5 * 1024 * 1024)
         {
+            if (quotaBytesPerBucket <= 0) throw new ArgumentOutOfRangeException(nameof(quotaBytesPerBucket));
             _quotaBytesPerBucket = quotaBytesPerBucket;
         }
 
-        private StorageBucket GetBucket(string origin, StoragePartitionKey key) =>
-            _buckets.GetOrAdd($"{origin}\0{key.ToStorageKey()}", _ => new StorageBucket());
+        private static string MakeBucketKey(string origin, StoragePartitionKey key) =>
+            $"{origin}\0{key.ToStorageKey()}";
+
+        private StorageBucket GetOrCreateBucket(string origin, StoragePartitionKey key) =>
+            _buckets.GetOrAdd(MakeBucketKey(origin, key), _ => new StorageBucket());
+
+        private bool TryGetBucket(string origin, StoragePartitionKey key, out StorageBucket bucket) =>
+            _buckets.TryGetValue(MakeBucketKey(origin, key), out bucket);
 
         public string GetItem(string origin, StoragePartitionKey partitionKey, string itemKey)
         {
-            var bucket = GetBucket(origin, partitionKey);
+            if (!TryGetBucket(origin, partitionKey, out var bucket)) return null;
             lock (bucket.SyncRoot)
             {
                 return bucket.Items.TryGetValue(itemKey, out var value) ? value : null;
@@ -288,7 +258,7 @@ namespace FenBrowser.Core.Storage
 
         public bool SetItem(string origin, StoragePartitionKey partitionKey, string itemKey, string value)
         {
-            var bucket = GetBucket(origin, partitionKey);
+            var bucket = GetOrCreateBucket(origin, partitionKey);
             var normalizedValue = value ?? string.Empty;
             var keyBytes = Encoding.UTF8.GetByteCount(itemKey ?? string.Empty);
             var newEntryBytes = keyBytes + Encoding.UTF8.GetByteCount(normalizedValue);
@@ -302,10 +272,7 @@ namespace FenBrowser.Core.Storage
                 }
 
                 var projectedBytes = bucket.Bytes - existingEntryBytes + newEntryBytes;
-                if (projectedBytes > _quotaBytesPerBucket)
-                {
-                    return false; // QuotaExceededError
-                }
+                if (projectedBytes > _quotaBytesPerBucket) return false;
 
                 bucket.Items[itemKey] = normalizedValue;
                 bucket.Bytes = projectedBytes;
@@ -315,7 +282,7 @@ namespace FenBrowser.Core.Storage
 
         public void RemoveItem(string origin, StoragePartitionKey partitionKey, string itemKey)
         {
-            var bucket = GetBucket(origin, partitionKey);
+            if (!TryGetBucket(origin, partitionKey, out var bucket)) return;
             lock (bucket.SyncRoot)
             {
                 if (bucket.Items.Remove(itemKey, out var removedValue))
@@ -328,7 +295,7 @@ namespace FenBrowser.Core.Storage
 
         public void Clear(string origin, StoragePartitionKey partitionKey)
         {
-            var bucket = GetBucket(origin, partitionKey);
+            if (!TryGetBucket(origin, partitionKey, out var bucket)) return;
             lock (bucket.SyncRoot)
             {
                 bucket.Items.Clear();
@@ -338,7 +305,7 @@ namespace FenBrowser.Core.Storage
 
         public IReadOnlyList<string> GetKeys(string origin, StoragePartitionKey partitionKey)
         {
-            var bucket = GetBucket(origin, partitionKey);
+            if (!TryGetBucket(origin, partitionKey, out var bucket)) return Array.Empty<string>();
             lock (bucket.SyncRoot)
             {
                 return new List<string>(bucket.Items.Keys);
@@ -347,7 +314,7 @@ namespace FenBrowser.Core.Storage
 
         public int Length(string origin, StoragePartitionKey partitionKey)
         {
-            var bucket = GetBucket(origin, partitionKey);
+            if (!TryGetBucket(origin, partitionKey, out var bucket)) return 0;
             lock (bucket.SyncRoot)
             {
                 return bucket.Items.Count;
@@ -359,15 +326,16 @@ namespace FenBrowser.Core.Storage
         public void ClearPartition(StoragePartitionKey partitionKey)
         {
             var suffix = $"\0{partitionKey.ToStorageKey()}";
-            foreach (var k in _buckets.Keys)
-                if (k.EndsWith(suffix, StringComparison.Ordinal))
-                    _buckets.TryRemove(k, out _);
+            foreach (var key in _buckets.Keys)
+            {
+                if (key.EndsWith(suffix, StringComparison.Ordinal))
+                {
+                    _buckets.TryRemove(key, out _);
+                }
+            }
         }
     }
 
-    // ── HTTP cache with partitioning ──────────────────────────────────────────
-
-    /// <summary>Cache entry.</summary>
     public sealed record HttpCacheEntry
     {
         public string Url { get; init; }
@@ -380,14 +348,9 @@ namespace FenBrowser.Core.Storage
         public string LastModified { get; init; }
         public StoragePartitionKey PartitionKey { get; init; }
 
-        public bool IsStale(DateTimeOffset now) =>
-            Expires.HasValue && Expires.Value < now;
+        public bool IsStale(DateTimeOffset now) => Expires.HasValue && Expires.Value < now;
     }
 
-    /// <summary>
-    /// Partitioned HTTP cache.
-    /// Entries are keyed by (partitionKey, url, vary-key).
-    /// </summary>
     public sealed class PartitionedHttpCache
     {
         private readonly ConcurrentDictionary<string, HttpCacheEntry> _cache = new(StringComparer.Ordinal);
@@ -395,7 +358,7 @@ namespace FenBrowser.Core.Storage
         private readonly long _maxBytes;
         private long _currentBytes;
 
-        public PartitionedHttpCache(long maxBytes = 256 * 1024 * 1024 /* 256 MB */)
+        public PartitionedHttpCache(long maxBytes = 256 * 1024 * 1024)
         {
             if (maxBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxBytes));
             _maxBytes = maxBytes;
@@ -409,8 +372,6 @@ namespace FenBrowser.Core.Storage
             var now = DateTimeOffset.UtcNow;
             if (!entry.IsStale(now)) return entry;
 
-            // Recheck under the mutation lock so a concurrent replacement is not
-            // removed just because the earlier snapshot was stale.
             lock (_mutationLock)
             {
                 if (!_cache.TryGetValue(key, out var current)) return null;
@@ -428,7 +389,7 @@ namespace FenBrowser.Core.Storage
         {
             if (entry == null) throw new ArgumentNullException(nameof(entry));
             var entryBytes = GetBodyBytes(entry);
-            if (entryBytes > _maxBytes / 4) return false; // single entry > 25% of cache cap → skip
+            if (entryBytes > _maxBytes / 4) return false;
 
             var key = MakeKey(partitionKey, url, varyKey);
             lock (_mutationLock)
@@ -439,10 +400,7 @@ namespace FenBrowser.Core.Storage
                     ? GetBodyBytes(existing)
                     : 0L;
                 var projectedBytes = _currentBytes - existingBytes + entryBytes;
-                if (projectedBytes > _maxBytes)
-                {
-                    return false;
-                }
+                if (projectedBytes > _maxBytes) return false;
 
                 _cache[key] = entry with { PartitionKey = partitionKey };
                 _currentBytes = projectedBytes;
@@ -455,10 +413,10 @@ namespace FenBrowser.Core.Storage
             var prefix = $"pk:{partitionKey.ToStorageKey()}:url:{url}";
             lock (_mutationLock)
             {
-                foreach (var k in _cache.Keys)
+                foreach (var key in _cache.Keys)
                 {
-                    if (k.StartsWith(prefix, StringComparison.Ordinal) &&
-                        _cache.TryRemove(k, out var entry))
+                    if (key.StartsWith(prefix, StringComparison.Ordinal) &&
+                        _cache.TryRemove(key, out var entry))
                     {
                         _currentBytes -= GetBodyBytes(entry);
                     }
@@ -471,10 +429,10 @@ namespace FenBrowser.Core.Storage
             var prefix = $"pk:{partitionKey.ToStorageKey()}:";
             lock (_mutationLock)
             {
-                foreach (var k in _cache.Keys)
+                foreach (var key in _cache.Keys)
                 {
-                    if (k.StartsWith(prefix, StringComparison.Ordinal) &&
-                        _cache.TryRemove(k, out var entry))
+                    if (key.StartsWith(prefix, StringComparison.Ordinal) &&
+                        _cache.TryRemove(key, out var entry))
                     {
                         _currentBytes -= GetBodyBytes(entry);
                     }
@@ -493,9 +451,9 @@ namespace FenBrowser.Core.Storage
 
         private void EvictStaleLocked(DateTimeOffset now)
         {
-            foreach (var (key, entry) in _cache)
+            foreach (var pair in _cache)
             {
-                if (entry.IsStale(now) && _cache.TryRemove(key, out var removed))
+                if (pair.Value.IsStale(now) && _cache.TryRemove(pair.Key, out var removed))
                 {
                     _currentBytes -= GetBodyBytes(removed);
                 }
@@ -508,20 +466,13 @@ namespace FenBrowser.Core.Storage
             $"pk:{pk.ToStorageKey()}:url:{url}:{varyKey ?? ""}";
     }
 
-    // ── StorageService — unified access point ─────────────────────────────────
-
-    /// <summary>
-    /// Top-level storage service: owns all partitioned storage backends.
-    /// The Broker creates one per browser profile; renderers access via IPC.
-    /// </summary>
     public sealed class StorageService
     {
         public PartitionedCookieStore Cookies { get; } = new();
         public PartitionedKeyValueStorage LocalStorage { get; } = new();
-        public PartitionedKeyValueStorage SessionStorage { get; } = new(1024 * 1024 /* 1 MB per tab */);
+        public PartitionedKeyValueStorage SessionStorage { get; } = new(1024 * 1024);
         public PartitionedHttpCache HttpCache { get; } = new();
 
-        /// <summary>Clear all storage for a given partition (e.g. when clearing browsing data).</summary>
         public void ClearPartition(StoragePartitionKey partitionKey)
         {
             Cookies.ClearPartition(partitionKey);
@@ -530,7 +481,6 @@ namespace FenBrowser.Core.Storage
             HttpCache.ClearPartition(partitionKey);
         }
 
-        /// <summary>Clear all storage (factory reset).</summary>
         public void ClearAll()
         {
             Cookies.ClearAll();
