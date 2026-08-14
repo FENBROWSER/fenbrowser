@@ -189,6 +189,8 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             // Read attribute name
             SkipWhitespace(input, ref i);
             var attrName = ReadIdent(input, ref i);
+            if (string.IsNullOrEmpty(attrName))
+                throw new DomException("SyntaxError", $"Expected attribute name at position {i}");
             SkipWhitespace(input, ref i);
 
             if (i >= input.Length)
@@ -237,6 +239,8 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             else
             {
                 value = ReadIdent(input, ref i);
+                if (string.IsNullOrEmpty(value))
+                    throw new DomException("SyntaxError", $"Expected attribute value at position {i}");
             }
 
             // Check for case-sensitivity flag
@@ -262,39 +266,98 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             char quote = input[i];
             i++;
             var sb = new StringBuilder();
-            while (i < input.Length && input[i] != quote)
+            while (i < input.Length)
             {
-                if (input[i] == '\\' && i + 1 < input.Length)
+                if (input[i] == quote)
                 {
                     i++;
-                    sb.Append(input[i]);
+                    return sb.ToString();
                 }
-                else
+
+                if (input[i] == '\\')
                 {
+                    if (i + 1 >= input.Length)
+                        throw new DomException("SyntaxError", "Unterminated escape in selector string");
+
+                    i++;
                     sb.Append(input[i]);
+                    i++;
+                    continue;
                 }
+
+                sb.Append(input[i]);
                 i++;
             }
-            if (i < input.Length) i++; // Skip closing quote
-            return sb.ToString();
+
+            throw new DomException("SyntaxError", "Unterminated selector string");
         }
 
         private static string ReadFunctionArg(string input, ref int i)
         {
             int depth = 1;
+            char quote = '\0';
+            bool escaped = false;
             var sb = new StringBuilder();
-            while (i < input.Length && depth > 0)
-            {
-                if (input[i] == '(') depth++;
-                else if (input[i] == ')') depth--;
 
-                if (depth > 0)
+            while (i < input.Length)
+            {
+                char c = input[i++];
+
+                if (quote != '\0')
                 {
-                    sb.Append(input[i]);
+                    sb.Append(c);
+                    if (escaped)
+                    {
+                        escaped = false;
+                    }
+                    else if (c == '\\')
+                    {
+                        escaped = true;
+                    }
+                    else if (c == quote)
+                    {
+                        quote = '\0';
+                    }
+                    continue;
                 }
-                i++;
+
+                if (c == '"' || c == '\'')
+                {
+                    quote = c;
+                    sb.Append(c);
+                    continue;
+                }
+
+                if (c == '(')
+                {
+                    depth++;
+                    sb.Append(c);
+                    continue;
+                }
+
+                if (c == ')')
+                {
+                    depth--;
+                    if (depth == 0)
+                        return sb.ToString().Trim();
+
+                    sb.Append(c);
+                    continue;
+                }
+
+                if (c == '\\' && i < input.Length)
+                {
+                    // Preserve CSS escapes for the nested selector parser rather
+                    // than consuming them at the outer functional-pseudo layer.
+                    sb.Append(c);
+                    sb.Append(input[i++]);
+                    continue;
+                }
+
+                sb.Append(c);
             }
-            return sb.ToString().Trim();
+
+            throw new DomException("SyntaxError", "Unterminated functional pseudo-class");
         }
 
         private static void SkipWhitespace(string input, ref int i)
@@ -335,9 +398,21 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             {
                 var hex = input.Substring(hexStart, hexLen);
                 if (int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int codePoint))
-                    escaped = char.ConvertFromUtf32(Math.Clamp(codePoint, 0, 0x10FFFF));
+                {
+                    // CSS Syntax replaces NULL, surrogate code points and values
+                    // outside Unicode's scalar range rather than feeding them to
+                    // ConvertFromUtf32 (which throws for surrogates).
+                    if (codePoint == 0 || codePoint > 0x10FFFF ||
+                        (codePoint >= 0xD800 && codePoint <= 0xDFFF))
+                    {
+                        codePoint = 0xFFFD;
+                    }
+                    escaped = char.ConvertFromUtf32(codePoint);
+                }
                 else
-                    escaped = hex;
+                {
+                    escaped = "\uFFFD";
+                }
 
                 if (i < input.Length && char.IsWhiteSpace(input[i]))
                     i++;
@@ -365,6 +440,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             var currentCompound = new List<SimpleSelector>();
             var currentChain = new List<(List<SimpleSelector> Compound, Combinator Combinator)>();
             Combinator pendingCombinator = Combinator.None;
+            bool justSawComma = false;
 
             for (int i = 0; i < tokens.Count; i++)
             {
@@ -373,22 +449,24 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 switch (token.Type)
                 {
                     case TokenType.Comma:
-                        // End of selector
-                        if (currentCompound.Count > 0)
+                        if (currentCompound.Count == 0)
                         {
-                            currentChain.Add((currentCompound, Combinator.None));
-                            currentCompound = new List<SimpleSelector>();
+                            // Empty branches, repeated commas, and a comma after an
+                            // explicit combinator are all invalid selector lists.
+                            throw new DomException("SyntaxError", "Empty selector branch");
                         }
-                        if (currentChain.Count > 0)
-                        {
-                            chains.Add(new SelectorChain(currentChain));
-                            currentChain = new List<(List<SimpleSelector>, Combinator)>();
-                        }
+
+                        currentChain.Add((currentCompound, Combinator.None));
+                        chains.Add(new SelectorChain(currentChain));
+                        currentCompound = new List<SimpleSelector>();
+                        currentChain = new List<(List<SimpleSelector>, Combinator)>();
                         pendingCombinator = Combinator.None;
+                        justSawComma = true;
                         break;
 
                     case TokenType.Whitespace:
-                        // Potential descendant combinator
+                        // Potential descendant combinator. Leading/trailing whitespace
+                        // is harmless and does not create an empty compound.
                         if (currentCompound.Count > 0)
                         {
                             pendingCombinator = Combinator.Descendant;
@@ -396,30 +474,26 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                         break;
 
                     case TokenType.ChildCombinator:
-                        if (currentCompound.Count > 0)
-                        {
-                            currentChain.Add((currentCompound, Combinator.Child));
-                            currentCompound = new List<SimpleSelector>();
-                        }
-                        pendingCombinator = Combinator.None;
-                        break;
-
                     case TokenType.AdjacentSiblingCombinator:
-                        if (currentCompound.Count > 0)
-                        {
-                            currentChain.Add((currentCompound, Combinator.AdjacentSibling));
-                            currentCompound = new List<SimpleSelector>();
-                        }
-                        pendingCombinator = Combinator.None;
-                        break;
-
                     case TokenType.GeneralSiblingCombinator:
-                        if (currentCompound.Count > 0)
+                        if (currentCompound.Count == 0)
                         {
-                            currentChain.Add((currentCompound, Combinator.GeneralSibling));
-                            currentCompound = new List<SimpleSelector>();
+                            // Relative selectors are not accepted by this top-level
+                            // parser; callers such as querySelector must fail closed on
+                            // leading/repeated explicit combinators.
+                            throw new DomException("SyntaxError", "Combinator is missing a left-hand selector");
                         }
+
+                        var explicitCombinator = token.Type switch
+                        {
+                            TokenType.ChildCombinator => Combinator.Child,
+                            TokenType.AdjacentSiblingCombinator => Combinator.AdjacentSibling,
+                            _ => Combinator.GeneralSibling
+                        };
+                        currentChain.Add((currentCompound, explicitCombinator));
+                        currentCompound = new List<SimpleSelector>();
                         pendingCombinator = Combinator.None;
+                        justSawComma = false;
                         break;
 
                     default:
@@ -432,15 +506,25 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                         pendingCombinator = Combinator.None;
 
                         currentCompound.Add(TokenToSimpleSelector(token));
+                        justSawComma = false;
                         break;
                 }
             }
 
-            // Handle remaining tokens
+            if (justSawComma)
+                throw new DomException("SyntaxError", "Selector list cannot end with a comma");
+
             if (currentCompound.Count > 0)
             {
                 currentChain.Add((currentCompound, Combinator.None));
             }
+            else if (currentChain.Count > 0)
+            {
+                // The only way to have a chain without a current compound here is
+                // to have ended with an explicit combinator.
+                throw new DomException("SyntaxError", "Selector cannot end with a combinator");
+            }
+
             if (currentChain.Count > 0)
             {
                 chains.Add(new SelectorChain(currentChain));
