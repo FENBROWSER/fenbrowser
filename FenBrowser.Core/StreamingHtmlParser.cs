@@ -1,5 +1,6 @@
 using FenBrowser.Core.Dom.V2;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -10,9 +11,10 @@ using FenBrowser.Core.Parsing;
 namespace FenBrowser.Core
 {
     /// <summary>
-    /// Streaming HTML parser that can parse incrementally from TextReader/Stream.
-    /// Supports partial parsing and callbacks for progressive rendering.
-    /// Implements HTML5 streaming parsing per WHATWG spec.
+    /// Incremental HTML parsing surface used for progressive browser parsing.
+    /// The full-document Parse/ParseAsync paths delegate to the canonical HtmlParser;
+    /// the incremental path preserves chunk state and handles HTML text/raw-text
+    /// boundaries without corrupting script/style source.
     /// </summary>
     public class StreamingHtmlParser : IDisposable
     {
@@ -21,67 +23,43 @@ namespace FenBrowser.Core
         private readonly bool _ownsReader;
         private int _bufferPos;
         private bool _disposed;
-        
-        // Buffer size for reading chunks
-        private const int ChunkSize = 8192;
-        private const int MaxBufferSize = 1024 * 1024; // 1MB max buffer
 
-        /// <summary>
-        /// Event fired when an element is fully parsed
-        /// </summary>
-#pragma warning disable CS0067 // Reserved callback surface; currently not raised on this parser path.
+        private const int ChunkSize = 8192;
+        private const int MaxBufferSize = 1024 * 1024;
+
+#pragma warning disable CS0067
         public event Action<Element> OnElementParsed;
 #pragma warning restore CS0067
-
-        /// <summary>
-        /// Event fired when a text node is parsed
-        /// </summary>
         public event Action<string> OnTextParsed;
-
-        /// <summary>
-        /// Event fired when document parsing is complete
-        /// </summary>
         public event Action<Document> OnDocumentComplete;
 
-        /// <summary>
-        /// Create streaming parser from TextReader
-        /// </summary>
         public StreamingHtmlParser(TextReader reader, bool ownsReader = false)
         {
             _reader = reader ?? throw new ArgumentNullException(nameof(reader));
             _buffer = new StringBuilder(ChunkSize);
             _ownsReader = ownsReader;
-            _bufferPos = 0;
         }
 
-        /// <summary>
-        /// Create streaming parser from Stream
-        /// </summary>
         public StreamingHtmlParser(Stream stream, Encoding encoding = null)
             : this(new StreamReader(stream, encoding ?? Encoding.UTF8, true, ChunkSize, leaveOpen: false), true)
         {
         }
 
-        /// <summary>
-        /// Create streaming parser from string (for compatibility)
-        /// </summary>
         public StreamingHtmlParser(string html)
             : this(new StringReader(html ?? string.Empty), true)
         {
         }
 
-        /// <summary>
-        /// Parse the entire document asynchronously
-        /// </summary>
         public async Task<Document> ParseAsync(CancellationToken ct = default)
         {
             try
             {
-                var content = await _reader.ReadToEndAsync();
-                ct.ThrowIfCancellationRequested();
+                var content = await _reader.ReadToEndAsync(ct).ConfigureAwait(false);
                 var doc = HtmlParser.ParseDocument(content, out _);
                 OnDocumentComplete?.Invoke(doc);
-                EngineLogCompat.Debug($"[StreamingHtmlParser] Parsed document with {CountElements(doc)} elements", LogCategory.HtmlParsing);
+                EngineLogCompat.Debug(
+                    $"[StreamingHtmlParser] Parsed document with {CountElements(doc)} elements",
+                    LogCategory.HtmlParsing);
                 return doc;
             }
             catch (OperationCanceledException)
@@ -91,27 +69,23 @@ namespace FenBrowser.Core
             }
             catch (Exception ex)
             {
-                EngineLogCompat.Error($"[StreamingHtmlParser] Error during parsing: {ex.Message}", LogCategory.HtmlParsing);
+                EngineLogCompat.Error(
+                    $"[StreamingHtmlParser] Error during parsing: {ex.Message}",
+                    LogCategory.HtmlParsing);
                 throw new InvalidOperationException("Streaming HTML parsing failed.", ex);
             }
         }
 
-        /// <summary>
-        /// Parse synchronously (for backward compatibility)
-        /// </summary>
         public Document Parse()
         {
-            // Read all content first
             var content = _reader.ReadToEnd();
-
             using var reader = new StringReader(content);
             return HtmlParser.ParseStream(reader, options: null, out _);
         }
 
-        /// <summary>
-        /// Parse incrementally, processing data as it becomes available
-        /// </summary>
-        public async Task ParseIncrementallyAsync(Action<Document> onProgress = null, CancellationToken ct = default)
+        public async Task ParseIncrementallyAsync(
+            Action<Document> onProgress = null,
+            CancellationToken ct = default)
         {
             var document = new Document();
             var state = new IncrementalParseState(document);
@@ -120,11 +94,9 @@ namespace FenBrowser.Core
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
-                var read = await ReadChunkAsync(chunk, ct);
+                var read = await ReadChunkAsync(chunk, ct).ConfigureAwait(false);
                 if (read <= 0)
-                {
                     break;
-                }
 
                 _buffer.Append(chunk, 0, read);
                 ParseBufferedContent(state, isFinalChunk: false);
@@ -133,7 +105,7 @@ namespace FenBrowser.Core
                 if (_buffer.Length > MaxBufferSize)
                 {
                     throw new InvalidOperationException(
-                        $"Streaming parser buffer exceeded {MaxBufferSize} bytes while waiting for a complete token.");
+                        $"Streaming parser buffer exceeded {MaxBufferSize} characters while waiting for a complete token.");
                 }
 
                 onProgress?.Invoke(document);
@@ -147,77 +119,54 @@ namespace FenBrowser.Core
             OnDocumentComplete?.Invoke(document);
         }
 
-        /// <summary>
-        /// Feed data to the parser incrementally
-        /// </summary>
         public void FeedData(string data)
         {
-            if (string.IsNullOrEmpty(data)) return;
-            _buffer.Append(data);
+            if (!string.IsNullOrEmpty(data))
+                _buffer.Append(data);
         }
 
-        /// <summary>
-        /// Get current buffer position for debugging
-        /// </summary>
         public int BufferPosition => _bufferPos;
-
-        /// <summary>
-        /// Get current buffer length
-        /// </summary>
         public int BufferLength => _buffer.Length;
 
-        private async Task<int> ReadChunkAsync(char[] buffer, CancellationToken ct)
+        private ValueTask<int> ReadChunkAsync(char[] buffer, CancellationToken ct)
         {
-            // TextReader.ReadAsync doesn't support CancellationToken directly
-            // So we wrap it in a task
-            return await Task.Run(() => _reader.Read(buffer, 0, buffer.Length), ct);
+            // net10 TextReader supports cancellable Memory<char> reads; do not burn a
+            // thread-pool worker around a blocking Read for every 8 KiB chunk.
+            return _reader.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
         }
 
         private void ParseBufferedContent(IncrementalParseState state, bool isFinalChunk)
         {
-            // Parse complete tags from buffer
             while (_bufferPos < _buffer.Length)
             {
                 if (state.TryGetRawTextTagName(out var rawTextTagName))
                 {
                     if (!ParseRawTextContent(state, rawTextTagName, isFinalChunk))
-                    {
                         break;
-                    }
-
                     continue;
                 }
 
-                char c = _buffer[_bufferPos];
-                
+                var c = _buffer[_bufferPos];
                 if (c == '<')
                 {
-                    // Look for complete tag
-                    int tagEnd = FindTagEnd(_bufferPos);
+                    var tagEnd = FindTagEnd(_bufferPos);
                     if (tagEnd < 0)
-                    {
-                        // Incomplete tag, wait for more data
                         break;
-                    }
-                    
-                    // Extract and parse the tag
-                    string tagContent = _buffer.ToString(_bufferPos, tagEnd - _bufferPos + 1);
+
+                    var tagContent = _buffer.ToString(_bufferPos, tagEnd - _bufferPos + 1);
                     state.ProcessToken(tagContent);
                     _bufferPos = tagEnd + 1;
                 }
                 else
                 {
-                    // Text content
-                    int textEnd = _bufferPos;
+                    var textEnd = _bufferPos;
                     while (textEnd < _buffer.Length && _buffer[textEnd] != '<')
-                    {
                         textEnd++;
-                    }
-                    
+
                     if (textEnd > _bufferPos)
                     {
-                        string text = _buffer.ToString(_bufferPos, textEnd - _bufferPos);
-                        state.ProcessText(text);
+                        var text = _buffer.ToString(_bufferPos, textEnd - _bufferPos);
+                        state.ProcessText(text, decodeCharacterReferences: true);
                         OnTextParsed?.Invoke(text);
                         _bufferPos = textEnd;
                     }
@@ -225,21 +174,35 @@ namespace FenBrowser.Core
             }
         }
 
-        private bool ParseRawTextContent(IncrementalParseState state, string rawTextTagName, bool isFinalChunk)
+        private bool ParseRawTextContent(
+            IncrementalParseState state,
+            string rawTextTagName,
+            bool isFinalChunk)
         {
-            var currentBuffer = _buffer.ToString();
-            var closingTagPrefix = $"</{rawTextTagName}";
-            var closingTagIndex = currentBuffer.IndexOf(
-                closingTagPrefix,
-                _bufferPos,
-                StringComparison.OrdinalIgnoreCase);
+            var availableTextLength = _buffer.Length - _bufferPos;
+            if (availableTextLength <= 0)
+                return false;
 
+            // <plaintext> consumes everything after its start tag; there is no
+            // recognized </plaintext> end tag in the HTML parsing model.
+            if (string.Equals(rawTextTagName, "plaintext", StringComparison.OrdinalIgnoreCase))
+            {
+                var text = _buffer.ToString(_bufferPos, availableTextLength);
+                state.ProcessText(text, decodeCharacterReferences: false);
+                OnTextParsed?.Invoke(text);
+                _bufferPos += availableTextLength;
+                return true;
+            }
+
+            var closingTagIndex = FindRawTextClosingTag(_bufferPos, rawTextTagName);
             if (closingTagIndex >= 0)
             {
                 if (closingTagIndex > _bufferPos)
                 {
-                    var text = currentBuffer.Substring(_bufferPos, closingTagIndex - _bufferPos);
-                    state.ProcessText(text);
+                    var text = _buffer.ToString(_bufferPos, closingTagIndex - _bufferPos);
+                    state.ProcessText(
+                        text,
+                        decodeCharacterReferences: state.ShouldDecodeRawTextCharacterReferences(rawTextTagName));
                     OnTextParsed?.Invoke(text);
                 }
 
@@ -248,53 +211,77 @@ namespace FenBrowser.Core
             }
 
             var holdBack = state.GetRawTextHoldBackLength(rawTextTagName);
-            var availableTextLength = _buffer.Length - _bufferPos;
             if (!isFinalChunk && availableTextLength <= holdBack)
-            {
                 return false;
-            }
 
             var textLength = isFinalChunk
                 ? availableTextLength
                 : Math.Max(0, availableTextLength - holdBack);
-
             if (textLength <= 0)
-            {
                 return false;
-            }
 
-            var textContent = currentBuffer.Substring(_bufferPos, textLength);
-            state.ProcessText(textContent);
+            var textContent = _buffer.ToString(_bufferPos, textLength);
+            state.ProcessText(
+                textContent,
+                decodeCharacterReferences: state.ShouldDecodeRawTextCharacterReferences(rawTextTagName));
             OnTextParsed?.Invoke(textContent);
             _bufferPos += textLength;
             return true;
         }
 
-        private int FindTagEnd(int start)
+        private int FindRawTextClosingTag(int start, string tagName)
         {
-            int i = start + 1;
-            bool inQuote = false;
-            char quoteChar = '\0';
-            
-            // Handle comments
-            if (i + 3 < _buffer.Length && 
-                _buffer[i] == '!' && _buffer[i + 1] == '-' && _buffer[i + 2] == '-')
+            var nameLength = tagName.Length;
+            for (var i = start; i + 2 + nameLength <= _buffer.Length; i++)
             {
-                // Find comment end
-                for (int j = i + 3; j < _buffer.Length - 2; j++)
+                if (_buffer[i] != '<' || i + 1 >= _buffer.Length || _buffer[i + 1] != '/')
+                    continue;
+
+                var matches = true;
+                for (var j = 0; j < nameLength; j++)
                 {
-                    if (_buffer[j] == '-' && _buffer[j + 1] == '-' && _buffer[j + 2] == '>')
+                    if (char.ToUpperInvariant(_buffer[i + 2 + j]) != char.ToUpperInvariant(tagName[j]))
                     {
-                        return j + 2;
+                        matches = false;
+                        break;
                     }
                 }
-                return -1; // Incomplete comment
+
+                if (!matches)
+                    continue;
+
+                var afterName = i + 2 + nameLength;
+                if (afterName >= _buffer.Length)
+                    return -1; // boundary may arrive in the next chunk
+
+                var boundary = _buffer[afterName];
+                if (boundary == '>' || boundary == '/' || IsHtmlSpace(boundary))
+                    return i;
             }
-            
+
+            return -1;
+        }
+
+        private int FindTagEnd(int start)
+        {
+            var i = start + 1;
+            var inQuote = false;
+            var quoteChar = '\0';
+
+            if (i + 3 < _buffer.Length &&
+                _buffer[i] == '!' && _buffer[i + 1] == '-' && _buffer[i + 2] == '-')
+            {
+                for (var j = i + 3; j < _buffer.Length - 2; j++)
+                {
+                    if (_buffer[j] == '-' && _buffer[j + 1] == '-' && _buffer[j + 2] == '>')
+                        return j + 2;
+                }
+                return -1;
+            }
+
             while (i < _buffer.Length)
             {
-                char c = _buffer[i];
-                
+                var c = _buffer[i];
                 if (inQuote)
                 {
                     if (c == quoteChar)
@@ -309,51 +296,46 @@ namespace FenBrowser.Core
                 {
                     return i;
                 }
-                
                 i++;
             }
-            
-            return -1; // Incomplete tag
+
+            return -1;
         }
 
         private void TrimBuffer()
         {
-            if (_bufferPos > 0)
-            {
-                _buffer.Remove(0, _bufferPos);
-                _bufferPos = 0;
-            }
+            if (_bufferPos <= 0)
+                return;
+
+            _buffer.Remove(0, _bufferPos);
+            _bufferPos = 0;
         }
+
+        private static bool IsHtmlSpace(char c) =>
+            c is ' ' or '\t' or '\n' or '\r' or '\f';
 
         private static int CountElements(Node root)
         {
-            int count = 1;
+            var count = 1;
             if (root is ContainerNode container)
             {
                 foreach (var child in container.ChildNodes)
-                {
                     count += CountElements(child);
-                }
             }
             return count;
         }
 
         public void Dispose()
         {
-            if (!_disposed)
-            {
-                if (_ownsReader)
-                {
-                    _reader?.Dispose();
-                }
-                _disposed = true;
-            }
+            if (_disposed)
+                return;
+
+            if (_ownsReader)
+                _reader.Dispose();
+            _disposed = true;
         }
 
-        /// <summary>
-        /// Internal state for incremental parsing
-        /// </summary>
-        private class IncrementalParseState
+        private sealed class IncrementalParseState
         {
             private static readonly HashSet<string> RawTextElements = new(StringComparer.OrdinalIgnoreCase)
             {
@@ -370,201 +352,200 @@ namespace FenBrowser.Core
             };
 
             private readonly Document _document;
-            private readonly System.Collections.Generic.Stack<Node> _stack;
-            
+            private readonly Stack<Node> _stack;
+
             public IncrementalParseState(Document document)
             {
                 _document = document;
-                _stack = new System.Collections.Generic.Stack<Node>();
+                _stack = new Stack<Node>();
                 _stack.Push(document);
             }
 
             public void ProcessToken(string token)
             {
-                if (string.IsNullOrEmpty(token) || token.Length < 2) return;
-                
-                // Remove < and >
+                if (string.IsNullOrEmpty(token) || token.Length < 2)
+                    return;
+
                 token = token.Substring(1, token.Length - 2).Trim();
-                if (string.IsNullOrEmpty(token)) return;
-                
-                // Handle comments and declarations
-                if (token.StartsWith("!"))
+                if (string.IsNullOrEmpty(token))
+                    return;
+
+                if (token.StartsWith("!", StringComparison.Ordinal))
+                    return;
+
+                if (token.StartsWith("/", StringComparison.Ordinal))
                 {
-                    return; // Skip comments and DOCTYPE
-                }
-                
-                // Handle end tags
-                if (token.StartsWith("/"))
-                {
-                    var endTag = token.Substring(1).Trim().ToLowerInvariant();
-                    while (_stack.Count > 1 && 
-                           !string.Equals((_stack.Peek() as Element)?.NodeName, endTag, StringComparison.OrdinalIgnoreCase))
+                    var endTagText = token.Substring(1).TrimStart();
+                    var end = 0;
+                    while (end < endTagText.Length &&
+                           !IsHtmlSpace(endTagText[end]) &&
+                           endTagText[end] != '/')
+                    {
+                        end++;
+                    }
+
+                    if (end == 0)
+                        return;
+
+                    var endTag = endTagText.Substring(0, end).ToLowerInvariant();
+                    while (_stack.Count > 1 &&
+                           !string.Equals(
+                               (_stack.Peek() as Element)?.LocalName,
+                               endTag,
+                               StringComparison.OrdinalIgnoreCase))
                     {
                         _stack.Pop();
                     }
-                    if (_stack.Count > 1) _stack.Pop();
+
+                    if (_stack.Count > 1)
+                        _stack.Pop();
                     return;
                 }
-                
-                // Handle start tags
-                bool selfClosing = token.EndsWith("/");
+
+                var selfClosing = token.EndsWith("/", StringComparison.Ordinal);
                 if (selfClosing)
                     token = token.Substring(0, token.Length - 1).Trim();
-                
-                // Extract tag name
-                int spaceIdx = token.IndexOfAny(new[] { ' ', '\t', '\r', '\n' });
-                string tagName = (spaceIdx > 0 ? token.Substring(0, spaceIdx) : token).ToLowerInvariant();
-                
-                var element = new Element(tagName);
-                
-                // Parse attributes (simplified)
-                if (spaceIdx > 0)
-                {
-                    ParseAttributes(element, token.Substring(spaceIdx));
-                }
-                
-                // Add to parent
-                if (_stack.Count > 0)
-                {
-                    ((ContainerNode)_stack.Peek()).AppendChild(element);
-                }
 
-                // Push if not self-closing and not void
+                var spaceIdx = token.IndexOfAny(new[] { ' ', '\t', '\r', '\n', '\f' });
+                var tagName = (spaceIdx > 0 ? token.Substring(0, spaceIdx) : token).ToLowerInvariant();
+                if (string.IsNullOrEmpty(tagName))
+                    return;
+
+                var element = new Element(tagName, _document);
+                if (spaceIdx > 0)
+                    ParseAttributes(element, token.Substring(spaceIdx));
+
+                if (_stack.Peek() is ContainerNode parent)
+                    parent.AppendChild(element);
+
                 if (!selfClosing && !Parsing.HtmlParser.IsVoid(tagName))
-                {
                     _stack.Push(element);
-                }
             }
 
-            public void ProcessText(string text)
+            public void ProcessText(string text, bool decodeCharacterReferences)
             {
-                if (string.IsNullOrWhiteSpace(text)) return;
-                
-                var decoded = System.Net.WebUtility.HtmlDecode(text);
-                if (_stack.Count > 0)
+                if (string.IsNullOrEmpty(text))
+                    return;
+
+                var value = decodeCharacterReferences
+                    ? System.Net.WebUtility.HtmlDecode(text)
+                    : text;
+
+                if (_stack.Count == 0 || _stack.Peek() is not ContainerNode parent)
+                    return;
+
+                var children = parent.ChildNodes;
+                var lastChild = children.Length > 0 ? children[children.Length - 1] : null;
+                if (lastChild is Text lastText)
                 {
-                    var parent = _stack.Peek();
-                    var lastChild = ((ContainerNode)parent).ChildNodes.Length > 0 
-                        ? ((ContainerNode)parent).ChildNodes[((ContainerNode)parent).ChildNodes.Length - 1] 
-                        : null;
-                    
-                    if (lastChild != null && lastChild.NodeType == NodeType.Text)
-                    {
-                        lastChild.NodeValue += decoded;
-                    }
-                    else
-                    {
-                        ((ContainerNode)parent).AppendChild(new Text(decoded));
-                    }
+                    lastText.Data += value;
+                }
+                else
+                {
+                    parent.AppendChild(new Text(value, _document));
                 }
             }
 
             public void Finish()
             {
-                // Close any remaining open tags
                 while (_stack.Count > 1)
-                {
                     _stack.Pop();
-                }
             }
 
             public bool TryGetRawTextTagName(out string tagName)
             {
                 tagName = string.Empty;
                 if (_stack.Count <= 1 || _stack.Peek() is not Element element)
-                {
                     return false;
-                }
 
-                if (!RawTextElements.Contains(element.TagName))
-                {
+                if (!RawTextElements.Contains(element.LocalName))
                     return false;
-                }
 
-                tagName = element.TagName.ToLowerInvariant();
+                tagName = element.LocalName.ToLowerInvariant();
                 return true;
+            }
+
+            public bool ShouldDecodeRawTextCharacterReferences(string tagName)
+            {
+                // title/textarea are RCDATA; script/style/xmp/iframe/noembed/
+                // noframes/noscript are raw-text-like on this incremental path.
+                return string.Equals(tagName, "title", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(tagName, "textarea", StringComparison.OrdinalIgnoreCase);
             }
 
             public int GetRawTextHoldBackLength(string rawTextTagName)
             {
                 if (string.IsNullOrEmpty(rawTextTagName))
-                {
                     return 0;
-                }
 
+                // Hold enough trailing characters for a chunk-split "</name" plus
+                // the first boundary character used to validate an actual end tag.
                 return rawTextTagName.Length + 3;
             }
 
             private static void ParseAttributes(Element element, string attrString)
             {
-                // Simplified attribute parsing
-                int i = 0;
+                var i = 0;
                 while (i < attrString.Length)
                 {
-                    // Skip whitespace
-                    while (i < attrString.Length && char.IsWhiteSpace(attrString[i])) i++;
-                    if (i >= attrString.Length) break;
-                    
-                    // Read attribute name
-                    int nameStart = i;
-                    while (i < attrString.Length && attrString[i] != '=' && 
-                           !char.IsWhiteSpace(attrString[i]) && attrString[i] != '/')
+                    while (i < attrString.Length && IsHtmlSpace(attrString[i]))
+                        i++;
+                    if (i >= attrString.Length)
+                        break;
+
+                    var nameStart = i;
+                    while (i < attrString.Length &&
+                           attrString[i] != '=' &&
+                           !IsHtmlSpace(attrString[i]) &&
+                           attrString[i] != '/')
                     {
                         i++;
                     }
-                    
-                    if (i == nameStart) break;
-                    
-                    string name = attrString.Substring(nameStart, i - nameStart).ToLowerInvariant();
-                    string value = name; // Boolean attribute default
-                    
-                    // Skip whitespace
-                    while (i < attrString.Length && char.IsWhiteSpace(attrString[i])) i++;
-                    
-                    // Check for value
+
+                    if (i == nameStart)
+                        break;
+
+                    var name = attrString.Substring(nameStart, i - nameStart).ToLowerInvariant();
+                    var value = string.Empty; // boolean/missing-value attribute
+
+                    while (i < attrString.Length && IsHtmlSpace(attrString[i]))
+                        i++;
+
                     if (i < attrString.Length && attrString[i] == '=')
                     {
-                        i++; // Skip =
-                        while (i < attrString.Length && char.IsWhiteSpace(attrString[i])) i++;
-                        
+                        i++;
+                        while (i < attrString.Length && IsHtmlSpace(attrString[i]))
+                            i++;
+
                         if (i < attrString.Length)
                         {
-                            char quote = attrString[i];
+                            var quote = attrString[i];
                             if (quote == '"' || quote == '\'')
                             {
-                                i++; // Skip opening quote
-                                int valueStart = i;
-                                while (i < attrString.Length && attrString[i] != quote) i++;
+                                i++;
+                                var valueStart = i;
+                                while (i < attrString.Length && attrString[i] != quote)
+                                    i++;
                                 value = System.Net.WebUtility.HtmlDecode(
                                     attrString.Substring(valueStart, i - valueStart));
-                                if (i < attrString.Length) i++; // Skip closing quote
+                                if (i < attrString.Length)
+                                    i++;
                             }
                             else
                             {
-                                // Unquoted value
-                                int valueStart = i;
-                                while (i < attrString.Length)
-                                {
-                                    if (char.IsWhiteSpace(attrString[i]) || attrString[i] == '>')
-                                    {
-                                        break;
-                                    }
-
+                                var valueStart = i;
+                                while (i < attrString.Length && !IsHtmlSpace(attrString[i]))
                                     i++;
-                                }
                                 value = System.Net.WebUtility.HtmlDecode(
                                     attrString.Substring(valueStart, i - valueStart));
                             }
                         }
                     }
-                    
+
                     if (!string.IsNullOrEmpty(name) && !element.HasAttribute(name))
-                    {
                         element.SetAttribute(name, value);
-                    }
                 }
             }
         }
     }
 }
-
