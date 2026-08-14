@@ -80,72 +80,95 @@ namespace FenBrowser.FenEngine.Rendering
 </html>";
         }
 
+        private static string GetSafeRetryHref(string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+                !(uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                  uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+            {
+                return "about:blank";
+            }
+
+            try
+            {
+                // Never carry URL credentials into an internal-page link. Query/path are
+                // retained so retry still targets the failed resource, while HTML encoding
+                // prevents quote/markup injection into the href attribute.
+                var builder = new UriBuilder(uri)
+                {
+                    UserName = string.Empty,
+                    Password = string.Empty
+                };
+                return WebUtility.HtmlEncode(builder.Uri.AbsoluteUri);
+            }
+            catch
+            {
+                return "about:blank";
+            }
+        }
+
         // ================= SSL ERROR PAGE =================
 
-public static string RenderSslError(string url, string details, FenBrowser.Core.CertificateInfo cert = null)
-{
-    bool isDark = IsDarkTheme();
-
-    string safeUrl     = WebUtility.HtmlEncode(url);
-    string safeDetails = WebUtility.HtmlEncode(details ?? "Unknown TLS error");
-
-    // Derive a specific, user-friendly headline from the SslPolicyErrors flags
-    var errors = cert?.PolicyErrors ?? System.Net.Security.SslPolicyErrors.None;
-    string headline, errorLabel;
-    if (errors == System.Net.Security.SslPolicyErrors.None)
-    {
-        // Validation callback returned false for another reason
-        headline   = "This connection isn't secure";
-        errorLabel = "TLS handshake failed";
-    }
-    else if ((errors & System.Net.Security.SslPolicyErrors.RemoteCertificateNotAvailable) != 0)
-    {
-        headline   = "No security certificate";
-        errorLabel = "Site did not provide a certificate";
-    }
-    else if ((errors & System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch) != 0)
-    {
-        headline   = "Certificate name mismatch";
-        errorLabel = "Certificate name does not match the site's address";
-    }
-    else // RemoteCertificateChainErrors
-    {
-        // Distinguish expired vs untrusted using the cert dates
-        if (cert != null && cert.NotAfter < DateTime.Now)
+        public static string RenderSslError(string url, string details, FenBrowser.Core.CertificateInfo cert = null)
         {
-            headline   = "Certificate has expired";
-            errorLabel = $"Certificate expired on {cert.NotAfter:yyyy-MM-dd}";
-        }
-        else if (cert != null && cert.NotBefore > DateTime.Now)
-        {
-            headline   = "Certificate not yet valid";
-            errorLabel = $"Certificate is not valid until {cert.NotBefore:yyyy-MM-dd}";
-        }
-        else
-        {
-            headline   = "Certificate not trusted";
-            errorLabel = "Certificate was not issued by a trusted authority";
-        }
-    }
+            bool isDark = IsDarkTheme();
 
-    // Build optional cert detail rows
-    string certRows = "";
-    if (cert != null)
-    {
-        if (!string.IsNullOrEmpty(cert.Subject))
-            certRows += $"<tr><td style='color:#6b7280;padding-right:12px'>Issued to</td><td>{WebUtility.HtmlEncode(cert.Subject)}</td></tr>";
-        if (!string.IsNullOrEmpty(cert.Issuer))
-            certRows += $"<tr><td style='color:#6b7280;padding-right:12px'>Issued by</td><td>{WebUtility.HtmlEncode(cert.Issuer)}</td></tr>";
-        if (cert.NotAfter != DateTime.MaxValue)
-            certRows += $"<tr><td style='color:#6b7280;padding-right:12px'>Expires</td><td>{cert.NotAfter:yyyy-MM-dd} ({cert.ExpiryStatus})</td></tr>";
-        if (!string.IsNullOrEmpty(cert.Thumbprint))
-            certRows += $"<tr><td style='color:#6b7280;padding-right:12px'>Fingerprint</td><td style='font-family:monospace;font-size:11px'>{WebUtility.HtmlEncode(cert.Thumbprint)}</td></tr>";
-    }
-    string certTable = certRows.Length > 0
-        ? $"<table style='border-collapse:collapse;font-size:12px;margin-top:8px'>{certRows}</table>"
-        : "";
+            string safeUrl = WebUtility.HtmlEncode(url);
+            string safeDetails = WebUtility.HtmlEncode(details ?? "Unknown TLS error");
 
-    return $@"
+            var errors = cert?.PolicyErrors ?? System.Net.Security.SslPolicyErrors.None;
+            string headline, errorLabel;
+            if (errors == System.Net.Security.SslPolicyErrors.None)
+            {
+                headline = "This connection isn't secure";
+                errorLabel = "TLS handshake failed";
+            }
+            else if ((errors & System.Net.Security.SslPolicyErrors.RemoteCertificateNotAvailable) != 0)
+            {
+                headline = "No security certificate";
+                errorLabel = "Site did not provide a certificate";
+            }
+            else if ((errors & System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch) != 0)
+            {
+                headline = "Certificate name mismatch";
+                errorLabel = "Certificate name does not match the site's address";
+            }
+            else
+            {
+                if (cert != null && cert.NotAfter < DateTime.Now)
+                {
+                    headline = "Certificate has expired";
+                    errorLabel = $"Certificate expired on {cert.NotAfter:yyyy-MM-dd}";
+                }
+                else if (cert != null && cert.NotBefore > DateTime.Now)
+                {
+                    headline = "Certificate not yet valid";
+                    errorLabel = $"Certificate is not valid until {cert.NotBefore:yyyy-MM-dd}";
+                }
+                else
+                {
+                    headline = "Certificate not trusted";
+                    errorLabel = "Certificate was not issued by a trusted authority";
+                }
+            }
+
+            string certRows = "";
+            if (cert != null)
+            {
+                if (!string.IsNullOrEmpty(cert.Subject))
+                    certRows += $"<tr><td style='color:#6b7280;padding-right:12px'>Issued to</td><td>{WebUtility.HtmlEncode(cert.Subject)}</td></tr>";
+                if (!string.IsNullOrEmpty(cert.Issuer))
+                    certRows += $"<tr><td style='color:#6b7280;padding-right:12px'>Issued by</td><td>{WebUtility.HtmlEncode(cert.Issuer)}</td></tr>";
+                if (cert.NotAfter != DateTime.MaxValue)
+                    certRows += $"<tr><td style='color:#6b7280;padding-right:12px'>Expires</td><td>{cert.NotAfter:yyyy-MM-dd} ({cert.ExpiryStatus})</td></tr>";
+                if (!string.IsNullOrEmpty(cert.Thumbprint))
+                    certRows += $"<tr><td style='color:#6b7280;padding-right:12px'>Fingerprint</td><td style='font-family:monospace;font-size:11px'>{WebUtility.HtmlEncode(cert.Thumbprint)}</td></tr>";
+            }
+            string certTable = certRows.Length > 0
+                ? $"<table style='border-collapse:collapse;font-size:12px;margin-top:8px'>{certRows}</table>"
+                : "";
+
+            return $@"
 <html>
 <body style=""{GetPageStyle(isDark)}"">
   <div style=""{GetContainerStyle(isDark)} max-width:560px;"">
@@ -206,34 +229,34 @@ public static string RenderSslError(string url, string details, FenBrowser.Core.
   </div>
 </body>
 </html>";
-}
-
-
-        // ================= EXISTING PAGES (UNCHANGED BEHAVIOR) =================
+        }
 
         public static string RenderConnectionFailed(string url, string details)
         {
+            var retryHref = GetSafeRetryHref(url);
             return RenderBase($@"
 <h1>Hmm... can't reach this page</h1>
 <p>{WebUtility.HtmlEncode(details)}</p>
-<a href=""{url}"" style=""{PrimaryBtnStyle}"">Refresh</a>");
+<a href=""{retryHref}"" style=""{PrimaryBtnStyle}"">Refresh</a>");
         }
 
         public static string RenderNoInternet(string url, string details)
         {
+            var retryHref = GetSafeRetryHref(url);
             return RenderBase($@"
 <h1>No Internet</h1>
 <p>Try checking your network connection.</p>
-<a href=""{url}"" style=""{PrimaryBtnStyle}"">Refresh</a>");
+<a href=""{retryHref}"" style=""{PrimaryBtnStyle}"">Refresh</a>");
         }
 
         public static string RenderGenericError(string url, string title, string message, string details)
         {
+            var retryHref = GetSafeRetryHref(url);
             return RenderBase($@"
 <h1>{WebUtility.HtmlEncode(title)}</h1>
 <p>{WebUtility.HtmlEncode(message)}</p>
 <div style=""{GetCodeStyle(IsDarkTheme())}"">{WebUtility.HtmlEncode(details)}</div>
-<a href=""{url}"" style=""{PrimaryBtnStyle}"">Refresh</a>");
+<a href=""{retryHref}"" style=""{PrimaryBtnStyle}"">Refresh</a>");
         }
     }
 }
