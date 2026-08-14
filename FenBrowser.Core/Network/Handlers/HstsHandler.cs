@@ -21,6 +21,7 @@ namespace FenBrowser.Core.Network.Handlers
             new(StringComparer.OrdinalIgnoreCase);
         private readonly string _storePath;
         private readonly object _hstsLock = new();
+        private readonly SemaphoreSlim _persistGate = new(1, 1);
 
         public HstsHandler(string cacheRoot)
         {
@@ -74,13 +75,14 @@ namespace FenBrowser.Core.Network.Handlers
             }
         }
 
-        private void SaveHsts()
+        private async Task SaveHstsAsync()
         {
+            if (_storePath == null)
+                return;
+
+            await _persistGate.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (_storePath == null)
-                    return;
-
                 var now = DateTimeOffset.UtcNow;
                 var sb = new StringBuilder();
                 lock (_hstsLock)
@@ -97,11 +99,35 @@ namespace FenBrowser.Core.Network.Handlers
                     }
                 }
 
-                File.WriteAllText(_storePath, sb.ToString());
+                var directory = Path.GetDirectoryName(_storePath);
+                if (!string.IsNullOrEmpty(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                var tempPath = _storePath + ".tmp";
+                await File.WriteAllTextAsync(tempPath, sb.ToString(), Encoding.UTF8).ConfigureAwait(false);
+                File.Move(tempPath, _storePath, overwrite: true);
             }
             catch (Exception ex)
             {
                 EngineLogCompat.Debug($"[HSTS] Save failed: {ex.Message}", LogCategory.Security);
+                try
+                {
+                    var tempPath = _storePath + ".tmp";
+                    if (File.Exists(tempPath))
+                    {
+                        File.Delete(tempPath);
+                    }
+                }
+                catch
+                {
+                    // Cleanup failure must not affect network processing.
+                }
+            }
+            finally
+            {
+                _persistGate.Release();
             }
         }
 
@@ -120,8 +146,6 @@ namespace FenBrowser.Core.Network.Handlers
                 if (TryGetLiveEntryLocked(host, now, out _))
                     return UpgradeToHttps(uri);
 
-                // A superdomain can cover this host only when includeSubDomains is
-                // asserted. Walk DNS-label parents instead of scanning every HSTS entry.
                 var dot = host.IndexOf('.');
                 while (dot >= 0 && dot + 1 < host.Length)
                 {
@@ -155,7 +179,6 @@ namespace FenBrowser.Core.Network.Handlers
             if (!response.Headers.TryGetValues("Strict-Transport-Security", out var values))
                 return;
 
-            // RFC 6797 requires processing only the first STS header field.
             string firstValue = null;
             foreach (var value in values)
             {
@@ -168,7 +191,7 @@ namespace FenBrowser.Core.Network.Handlers
 
             var host = NormalizeHost(responseUri.Host);
             if (host == null || IsIpLiteral(host))
-                return; // HSTS hosts are domain names, not IP literals.
+                return;
 
             lock (_hstsLock)
             {
@@ -186,10 +209,7 @@ namespace FenBrowser.Core.Network.Handlers
                 }
             }
 
-            // Persistence is still synchronous today; the in-memory lookup path is
-            // lock-bounded and O(number of DNS labels). A future storage service can
-            // debounce/atomically persist without changing HSTS policy semantics.
-            SaveHsts();
+            await SaveHstsAsync().ConfigureAwait(false);
         }
 
         private bool TryGetLiveEntryLocked(string host, DateTimeOffset now, out HstsEntry entry)
@@ -271,8 +291,6 @@ namespace FenBrowser.Core.Network.Handlers
                 }
                 else if (value != null && !IsToken(value) && !IsQuotedString(value))
                 {
-                    // Unknown directives are ignored, but the overall field still has
-                    // to conform to the directive syntax.
                     return false;
                 }
             }
