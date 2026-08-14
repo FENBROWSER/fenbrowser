@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using FenBrowser.Core.Network;
@@ -12,19 +13,20 @@ namespace FenBrowser.Core.Storage
     {
         public string TopLevelSite { get; }
         public string FrameSite { get; }
-        public bool IsThirdParty => !string.Equals(TopLevelSite, FrameSite, StringComparison.OrdinalIgnoreCase);
+        public bool IsThirdParty => !string.Equals(TopLevelSite, FrameSite, StringComparison.Ordinal);
 
         public StoragePartitionKey(string topLevelSite, string frameSite)
         {
-            TopLevelSite = topLevelSite ?? "null";
-            FrameSite = frameSite ?? "null";
+            TopLevelSite = NormalizeSite(topLevelSite);
+            FrameSite = NormalizeSite(frameSite);
         }
 
         public static StoragePartitionKey FirstParty(string site) => new(site, site);
         public static StoragePartitionKey Opaque => new("null", "null");
 
         public bool Equals(StoragePartitionKey other) =>
-            TopLevelSite == other.TopLevelSite && FrameSite == other.FrameSite;
+            string.Equals(TopLevelSite, other.TopLevelSite, StringComparison.Ordinal) &&
+            string.Equals(FrameSite, other.FrameSite, StringComparison.Ordinal);
 
         public override bool Equals(object obj) => obj is StoragePartitionKey k && Equals(k);
 
@@ -42,6 +44,13 @@ namespace FenBrowser.Core.Storage
             var combined = TopLevelSite + "\0" + FrameSite;
             var hash = SHA256.HashData(Encoding.UTF8.GetBytes(combined));
             return Convert.ToHexString(hash);
+        }
+
+        private static string NormalizeSite(string site)
+        {
+            return string.IsNullOrWhiteSpace(site)
+                ? "null"
+                : site.Trim().ToLowerInvariant();
         }
     }
 
@@ -64,16 +73,23 @@ namespace FenBrowser.Core.Storage
             if (origin.Kind == Network.UrlOriginKind.Opaque) return "null";
 
             var host = parsed.Hostname;
-            var domain = GetEtldPlusOne(host);
+            var domain = GetApproximateRegistrableDomain(host);
             return $"{parsed.Scheme}://{domain}";
         }
 
-        private static string GetEtldPlusOne(string host)
+        private static string GetApproximateRegistrableDomain(string host)
         {
-            var parts = host.Split('.');
+            if (string.IsNullOrWhiteSpace(host))
+                return "null";
+
+            var normalized = host.Trim().TrimEnd('.').ToLowerInvariant();
+            if (IPAddress.TryParse(normalized, out _))
+                return normalized;
+
+            var parts = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries);
             return parts.Length >= 2
-                ? parts[parts.Length - 2] + "." + parts[parts.Length - 1]
-                : host;
+                ? parts[^2] + "." + parts[^1]
+                : normalized;
         }
     }
 
@@ -214,9 +230,16 @@ namespace FenBrowser.Core.Storage
         private static bool PathMatches(string requestPath, string cookiePath)
         {
             if (string.IsNullOrEmpty(cookiePath) || cookiePath == "/") return true;
+            if (string.IsNullOrEmpty(requestPath)) requestPath = "/";
+            if (string.Equals(requestPath, cookiePath, StringComparison.Ordinal)) return true;
             if (!requestPath.StartsWith(cookiePath, StringComparison.Ordinal)) return false;
 
-            return requestPath.Length == cookiePath.Length || requestPath[cookiePath.Length] == '/';
+            // RFC 6265 path-match: a prefix is sufficient when the cookie path
+            // itself ends in '/', otherwise the next request-path character must
+            // be '/'. Without the first condition, Path=/foo/ incorrectly fails
+            // to match /foo/bar.
+            return cookiePath[^1] == '/' ||
+                   (requestPath.Length > cookiePath.Length && requestPath[cookiePath.Length] == '/');
         }
     }
 
