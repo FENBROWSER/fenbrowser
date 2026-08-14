@@ -84,6 +84,14 @@ namespace FenBrowser.Core.Network
         private static string SniffFromMagicBytes(byte[] bytes)
         {
             var len = bytes.Length;
+
+            // BOM signatures take precedence over any later active-content signature.
+            // In the unknown-type algorithm they identify text/plain, so a BOM-prefixed
+            // "<html>" body must not be promoted to scriptable HTML.
+            if (len >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) return "text/plain";
+            if (len >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) return "text/plain";
+            if (len >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) return "text/plain";
+
             var offset = SkipInsignificantPrefix(bytes, len);
             if (offset >= len)
             {
@@ -99,14 +107,9 @@ namespace FenBrowser.Core.Network
             if (len >= 5 && bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46 && bytes[4] == 0x2D)
                 return "application/pdf";
 
-            // BOM signatures are text/plain in the unknown-type algorithm.
-            if (len >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) return "text/plain";
-            if (len >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) return "text/plain";
-            if (len >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) return "text/plain";
-
             // Images.
             if (len >= 6 && bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46 &&
-                (bytes[3] == 0x38) && (bytes[4] == 0x37 || bytes[4] == 0x39) && bytes[5] == 0x61)
+                bytes[3] == 0x38 && (bytes[4] == 0x37 || bytes[4] == 0x39) && bytes[5] == 0x61)
                 return "image/gif";
             if (len >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47 &&
                 bytes[4] == 0x0D && bytes[5] == 0x0A && bytes[6] == 0x1A && bytes[7] == 0x0A)
@@ -161,11 +164,6 @@ namespace FenBrowser.Core.Network
         private static int SkipInsignificantPrefix(byte[] bytes, int len)
         {
             var index = 0;
-            if (len >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
-            {
-                index = 3;
-            }
-
             while (index < len && IsHttpWhitespace(bytes[index]))
             {
                 index++;
