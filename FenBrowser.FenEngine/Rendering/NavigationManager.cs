@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -42,7 +43,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (string.IsNullOrWhiteSpace(url)) 
                 return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Empty URL" };
 
-            url = NormalizeInternalFenUrl(url);
+            url = NormalizeInternalFenUrl(url.Trim());
 
             // Handle internal schemes
             if (url.Equals("about:blank", StringComparison.OrdinalIgnoreCase))
@@ -75,10 +76,20 @@ namespace FenBrowser.FenEngine.Rendering
                 !url.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
             {
                 // Check if it has a colon (e.g. C:\) or starts with \\ (UNC)
-                if (url.IndexOf(':') >= 0 || url.StartsWith("\\\\"))
+                if (url.IndexOf(':') >= 0 || url.StartsWith("\\\\", StringComparison.Ordinal))
                 {
                     url = "file:///" + url.Replace("\\", "/");
-                    try { FenBrowser.Core.EngineLogCompat.Debug($"[NavigationManager] Converted to file URI: {url}", FenBrowser.Core.Logging.LogCategory.Navigation); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[NavigationManager] Debug log failed: {ex.Message}"); }
+                    try
+                    {
+                        // Do not emit local filesystem paths into normal navigation logs.
+                        FenBrowser.Core.EngineLogCompat.Debug(
+                            "[NavigationManager] Converted rooted user path to file URI.",
+                            FenBrowser.Core.Logging.LogCategory.Navigation);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[NavigationManager] Debug log failed: {ex.GetType().Name}");
+                    }
                 }
             }
             else if (requestKind == NavigationRequestKind.Programmatic &&
@@ -92,11 +103,21 @@ namespace FenBrowser.FenEngine.Rendering
                 };
             }
 
-            // Default to HTTPS if no scheme
-            if (!url.StartsWith("http://") && !url.StartsWith("https://") && !url.StartsWith("file://") && !url.StartsWith("fen://") && !url.StartsWith("about:") && !url.StartsWith("data:"))
+            // Default to HTTPS if no supported scheme prefix is present. Scheme
+            // matching is ASCII case-insensitive; treating HTTP:// as schemeless
+            // produced malformed URLs such as https://HTTP://example.test.
+            if (!HasKnownNavigationSchemePrefix(url))
             {
-                // Log what we are doing
-                try { FenBrowser.Core.EngineLogCompat.Debug($"[NavigationManager] Defaulting '{url}' to HTTPS", FenBrowser.Core.Logging.LogCategory.Navigation); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[NavigationManager] Debug log failed: {ex.Message}"); }
+                try
+                {
+                    FenBrowser.Core.EngineLogCompat.Debug(
+                        "[NavigationManager] Defaulting schemeless navigation to HTTPS.",
+                        FenBrowser.Core.Logging.LogCategory.Navigation);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[NavigationManager] Debug log failed: {ex.GetType().Name}");
+                }
                 url = "https://" + url;
             }
 
@@ -131,11 +152,22 @@ namespace FenBrowser.FenEngine.Rendering
 
             // Handle images
             var path = uri.AbsolutePath.ToLowerInvariant();
-            try { FenBrowser.Core.EngineLogCompat.Debug($"[NavigationManager] Checking image: path='{path}' endsWithJpg={path.EndsWith(".jpg")}", FenBrowser.Core.Logging.LogCategory.Navigation); } catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[NavigationManager] Debug log failed: {ex.Message}"); }
-            if (path.EndsWith(".png") || path.EndsWith(".jpg") || path.EndsWith(".jpeg") || 
-                path.EndsWith(".gif") || path.EndsWith(".bmp") || path.EndsWith(".webp") || path.EndsWith(".svg"))
+            if (path.EndsWith(".png", StringComparison.Ordinal) ||
+                path.EndsWith(".jpg", StringComparison.Ordinal) ||
+                path.EndsWith(".jpeg", StringComparison.Ordinal) || 
+                path.EndsWith(".gif", StringComparison.Ordinal) ||
+                path.EndsWith(".bmp", StringComparison.Ordinal) ||
+                path.EndsWith(".webp", StringComparison.Ordinal) ||
+                path.EndsWith(".svg", StringComparison.Ordinal))
             {
-                var syntheticHtml = $"<!DOCTYPE html><html style=\"width: 100%; height: 100%; background-color: rgb(14, 14, 14);\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>{System.IO.Path.GetFileName(uri.LocalPath)}</title></head><body style=\"margin: 0; padding: 0; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgb(14, 14, 14); overflow: hidden;\"><img style=\"display: block; position: absolute; top: 0; bottom: 0; left: 0; right: 0; margin: auto; max-width: 100%; max-height: 100%; object-fit: contain; -webkit-user-select: none;\" src=\"{uri.AbsoluteUri}\" alt=\"{System.IO.Path.GetFileName(uri.LocalPath)}\"></body></html>";
+                // This HTML becomes a privileged synthetic document. Encode every
+                // URI-derived value before placing it into markup rather than relying
+                // on System.Uri escaping to also satisfy HTML attribute/text syntax.
+                var fileName = System.IO.Path.GetFileName(uri.LocalPath) ?? string.Empty;
+                var encodedTitle = WebUtility.HtmlEncode(fileName);
+                var encodedAlt = WebUtility.HtmlEncode(fileName);
+                var encodedSrc = WebUtility.HtmlEncode(uri.AbsoluteUri);
+                var syntheticHtml = $"<!DOCTYPE html><html style=\"width: 100%; height: 100%; background-color: rgb(14, 14, 14);\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>{encodedTitle}</title></head><body style=\"margin: 0; padding: 0; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background-color: rgb(14, 14, 14); overflow: hidden;\"><img style=\"display: block; position: absolute; top: 0; bottom: 0; left: 0; right: 0; margin: auto; max-width: 100%; max-height: 100%; object-fit: contain; -webkit-user-select: none;\" src=\"{encodedSrc}\" alt=\"{encodedAlt}\"></body></html>";
                 return new FetchResult { Status = FetchStatus.Success, Content = syntheticHtml, FinalUri = uri, ContentType = "text/html" };
             }
 
@@ -155,7 +187,17 @@ namespace FenBrowser.FenEngine.Rendering
                     IsTopLevelNavigation = true,
                     IsUserInitiated = requestKind == NavigationRequestKind.UserInput,
                     Method = "GET"
-                });
+                }).ConfigureAwait(false);
+        }
+
+        private static bool HasKnownNavigationSchemePrefix(string url)
+        {
+            return url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                   url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+                   url.StartsWith("file://", StringComparison.OrdinalIgnoreCase) ||
+                   url.StartsWith("fen://", StringComparison.OrdinalIgnoreCase) ||
+                   url.StartsWith("about:", StringComparison.OrdinalIgnoreCase) ||
+                   url.StartsWith("data:", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string NormalizeInternalFenUrl(string url)
@@ -230,6 +272,3 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
-
-
-
