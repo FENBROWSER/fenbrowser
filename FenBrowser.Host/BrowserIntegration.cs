@@ -1316,11 +1316,21 @@ public class BrowserIntegration : IDisposable
         RequestFrame(RenderFrameInvalidationReason.ProcessIsolation, "RendererChild.FrameReady", notifyUi: true);
     }
 
-    private void OnMetadataChangedFromRenderer(int tabId, FenBrowser.Host.ProcessIsolation.RendererMetadataChangedPayload payload)
+    internal void OnMetadataChangedFromRenderer(int tabId, FenBrowser.Host.ProcessIsolation.RendererMetadataChangedPayload payload)
     {
         if (OwnerTab != null && OwnerTab.Id != tabId)
         {
             return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload?.Url))
+        {
+            var committedUrl = payload.Url.Trim();
+            if (!string.Equals(_overrideUrl, committedUrl, StringComparison.Ordinal))
+            {
+                _overrideUrl = committedUrl;
+                UrlChanged?.Invoke(committedUrl);
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(payload?.Title))
@@ -3729,6 +3739,9 @@ public class BrowserIntegration : IDisposable
     {
         var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
         var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        EngineLogBridge.Info(
+            $"[InputPipeline] host mousedown window=({windowX:F1},{windowY:F1}) document=({docX:F1},{docY:F1}) target='{result.ElementId}'",
+            LogCategory.Events);
         
         if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
         {
@@ -3759,6 +3772,9 @@ public class BrowserIntegration : IDisposable
     {
         var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
         var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        EngineLogBridge.Info(
+            $"[InputPipeline] host mouseup window=({windowX:F1},{windowY:F1}) document=({docX:F1},{docY:F1}) target='{result.ElementId}' emitClick={emitClick}",
+            LogCategory.Events);
         
         if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
         {

@@ -1546,6 +1546,15 @@ Verification:
 - During damage rasterization, the host `BrowserIntegration` passes ownership of the reused base-frame seed `SKImage` directly into the `ContentSnapshot` struct.
 - This prevents a race condition where the engine thread aggressively disposes the old seed image before the UI compositor thread completes its display-list presentation, which previously caused full-viewport white flashes during fast scrolling when the background was cleared.
 
+### 6.80 Brokered Committed-URL Synchronization (2026-08-11)
+
+- Renderer children publish metadata when a navigation commits even when the title and loading state are unchanged.
+- `BrowserIntegration` applies the committed renderer URL through the existing `UrlChanged` notification, keeping the address bar and tab state aligned with server redirects such as Google challenge navigation.
+
+Verification:
+
+- Focused renderer IPC metadata tests pass (`6/6`), including URL-only publication and host application of a committed redirect URL.
+
 ### Correlated Renderer Command Acknowledgements (2026-08-11)
 
 - The broker now owns `Ack` as a valid renderer-to-host message only when its correlation ID matches a `Navigate` or `Input` envelope successfully written to the renderer pipe.

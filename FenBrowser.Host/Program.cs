@@ -438,6 +438,7 @@ namespace FenBrowser.Host
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
             using var browser = new FenBrowser.FenEngine.Rendering.BrowserHost();
             using var logForwarder = new ChildProcessLogForwarder("renderer", tabId);
+            var childRenderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
 
             bool handshakeComplete = false;
             bool running = true;
@@ -491,7 +492,6 @@ namespace FenBrowser.Host
                             {
                                 canvas.Translate(0, -scrollY);
                             }
-                            var childRenderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
                             var contentHeightHint = Math.Max(
                                 browser.Engine?.LastLayout?.ContentHeight ?? 0f,
                                 scrollY + actualHeight);
@@ -506,9 +506,7 @@ namespace FenBrowser.Host
                             {
                                 Root = domRoot,
                                 Canvas = canvas,
-                                Styles = styles != null
-                                    ? new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(styles)
-                                    : new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(),
+                                Styles = styles ?? new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(),
                                 Viewport = viewport,
                                 BaseUrl = browser.CurrentUri?.AbsoluteUri,
                                 SeparateLayoutViewport = new SkiaSharp.SKSize(viewportWidth, viewportHeight),
@@ -537,7 +535,7 @@ namespace FenBrowser.Host
                     }
                     catch (Exception renderEx)
                     {
-                        EngineLog.Write(LogSubsystem.Paint, LogSeverity.Warn, $"[RendererChild] Frame render failed for tab={tabId}: {renderEx.Message}");
+                        EngineLog.Write(LogSubsystem.Paint, LogSeverity.Warn, $"[RendererChild] Frame render failed for tab={tabId}: {renderEx}");
                     }
                 }
 
@@ -596,7 +594,11 @@ namespace FenBrowser.Host
                     Guid.NewGuid().ToString("N"));
             }
 
-            void SendMetadata(string title = null, SkiaSharp.SKBitmap favicon = null, bool faviconChanged = false)
+            void SendMetadata(
+                string title = null,
+                SkiaSharp.SKBitmap favicon = null,
+                bool faviconChanged = false,
+                bool urlChanged = false)
             {
                 if (!handshakeComplete)
                 {
@@ -618,7 +620,7 @@ namespace FenBrowser.Host
                     }
                 }
 
-                if (string.IsNullOrWhiteSpace(title) && !faviconChanged)
+                if (!ShouldPublishRendererMetadata(title, faviconChanged, urlChanged))
                 {
                     return;
                 }
@@ -638,6 +640,7 @@ namespace FenBrowser.Host
                 });
             }
 
+            browser.Navigated += (_, _) => SendMetadata(urlChanged: true);
             browser.TitleChanged += (_, title) => SendMetadata(title: title);
             browser.FaviconChanged += (_, favicon) => SendMetadata(favicon: favicon, faviconChanged: true);
             browser.RepaintReady += (_, __) =>
@@ -2084,6 +2087,14 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
             ArgumentNullException.ThrowIfNull(browser);
             ArgumentNullException.ThrowIfNull(input);
 
+            if (input.Type is RendererInputEventType.MouseDown or RendererInputEventType.MouseUp)
+            {
+                EngineLog.Write(
+                    LogSubsystem.Event,
+                    LogSeverity.Info,
+                    $"[InputPipeline] renderer received {input.Type} document=({input.X:F1},{input.Y:F1}) emitClick={input.EmitClick}");
+            }
+
             switch (input.Type)
             {
                 case RendererInputEventType.MouseDown:
@@ -2122,6 +2133,9 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                     break;
             }
         }
+
+        internal static bool ShouldPublishRendererMetadata(string title, bool faviconChanged, bool urlChanged) =>
+            !string.IsNullOrWhiteSpace(title) || faviconChanged || urlChanged;
 
         private static string MapRendererKey(string key)
         {

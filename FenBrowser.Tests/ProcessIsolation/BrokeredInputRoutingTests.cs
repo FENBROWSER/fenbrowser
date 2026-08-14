@@ -18,6 +18,43 @@ namespace FenBrowser.Tests.ProcessIsolation;
 
 public sealed class BrokeredInputRoutingTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task BrowserTab_Navigation_RoutesOneRequestToBrokeredRenderer(bool isUserInput)
+    {
+        var previousAutoStart = System.Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
+        System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", "0");
+
+        var coordinator = new RecordingCoordinator();
+        ProcessIsolationRuntime.SetCoordinator(coordinator);
+
+        try
+        {
+            using var tab = new BrowserTab();
+            const string url = "https://example.test/search?q=chrome";
+
+            if (isUserInput)
+            {
+                await tab.NavigateAsync(url);
+            }
+            else
+            {
+                await tab.NavigateProgrammaticAsync(url);
+            }
+
+            var navigation = Assert.Single(coordinator.Navigations);
+            Assert.Equal(tab.Id, navigation.TabId);
+            Assert.Equal(url, navigation.Url);
+            Assert.Equal(isUserInput, navigation.IsUserInput);
+        }
+        finally
+        {
+            ProcessIsolationRuntime.SetCoordinator(null);
+            System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", previousAutoStart);
+        }
+    }
+
     [Fact]
     public async Task BrowserIntegration_HandleKeyPress_RoutesTextToRendererOnlyInBrokeredMode()
     {
@@ -753,11 +790,13 @@ public sealed class BrokeredInputRoutingTests
         public string Mode => "test-brokered";
         public bool UsesOutOfProcessRenderer => true;
         public List<RendererInputEvent> Inputs { get; } = new();
+        public List<(int TabId, string Url, bool IsUserInput)> Navigations { get; } = new();
 
         public void Initialize() { }
         public void OnTabCreated(BrowserTab tab) { }
         public void OnTabActivated(BrowserTab tab) { }
-        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput) { }
+        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput) =>
+            Navigations.Add((tab.Id, url, isUserInput));
         public void OnInputEvent(BrowserTab tab, RendererInputEvent inputEvent) => Inputs.Add(inputEvent);
         public void OnFrameRequested(BrowserTab tab, float viewportWidth, float viewportHeight, float scrollY = 0) { }
         public void OnTabClosed(BrowserTab tab) { }

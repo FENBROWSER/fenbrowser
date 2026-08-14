@@ -1,5 +1,4 @@
 using SkiaSharp;
-using FenBrowser.Host.ProcessIsolation;
 
 namespace FenBrowser.Host.Tabs;
 
@@ -161,7 +160,6 @@ public class BrowserTab : IDisposable
     {
         IsCrashed = false; // Reset crash state on new navigation
         SetPendingNavigationDisplayUrl(url);
-        ProcessIsolationRuntime.Current?.OnNavigationRequested(this, url, isUserInput: true);
         await Browser.NavigateAsync(url);
     }
 
@@ -172,7 +170,6 @@ public class BrowserTab : IDisposable
     {
         IsCrashed = false; // Reset crash state on new navigation
         SetPendingNavigationDisplayUrl(url);
-        ProcessIsolationRuntime.Current?.OnNavigationRequested(this, url, isUserInput: false);
         await Browser.NavigateProgrammaticAsync(url);
     }
 

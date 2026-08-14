@@ -54,14 +54,15 @@ public sealed class BrokeredRendererProcessAcceptanceTests
         {
             coordinator.Initialize();
             coordinator.OnTabCreated(tab);
+
+            const string fixture = "data:text/html,%3Ctitle%3Ebrokered-ready%3C%2Ftitle%3E%3Cmain%20style%3D%27background%3A%230b7%3Bwidth%3A160px%3Bheight%3A80px%27%3Ebrokered%3C%2Fmain%3E";
+            coordinator.OnNavigationRequested(tab, fixture, isUserInput: false);
+
             await AwaitSessionReadyAsync(
                 coordinator,
                 tab.Id,
                 startupFailure.Task,
                 TimeSpan.FromSeconds(8));
-
-            const string fixture = "data:text/html,%3Ctitle%3Ebrokered-ready%3C%2Ftitle%3E%3Cmain%20style%3D%27background%3A%230b7%3Bwidth%3A160px%3Bheight%3A80px%27%3Ebrokered%3C%2Fmain%3E";
-            coordinator.OnNavigationRequested(tab, fixture, isUserInput: false);
 
             var metadata = await AwaitOrFailAsync(
                 metadataReady.Task,

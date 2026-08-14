@@ -128,40 +128,44 @@ namespace FenBrowser.Host.ProcessIsolation
             var state = new TabProcessState(tab);
             _tabStates[tab.Id] = state;
             _isolationRegistry.EnsureTab(tab.Id);
-
-            // Fire-and-forget: renderer startup involves process launch and IPC
-            // handshake which can take seconds.  Never block the UI thread.
-            _ = StartSessionAsync(state, restartAttempt: 0, restartReason: "tab-created");
-        }
-
-        private async Task StartSessionAsync(TabProcessState state, int restartAttempt, string restartReason)
-        {
-            try
-            {
-                if (!await TryStartSessionAsync(state, restartAttempt, restartReason).ConfigureAwait(false))
-                {
-                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn,
-                        $"[ProcessIsolation] Initial renderer spawn failed for tab {state.TabId}; will retry on next navigation.");
-                    RendererCrashed?.Invoke(state.TabId, "renderer-startup-failed");
-                }
-            }
-            catch (Exception ex)
-            {
-                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error,
-                    $"[ProcessIsolation] Renderer startup threw for tab {state.TabId}: {ex.Message}");
-                RendererCrashed?.Invoke(state.TabId, "renderer-startup-failed");
-            }
         }
 
         /// <summary>
         /// Starts a renderer session and then sends the navigation URL once ready.
         /// Used by OnNavigationRequested when no session exists for the tab.
         /// </summary>
-        private async Task StartSessionAndNavigateAsync(TabProcessState state, string url, bool isUserInput)
+        private async Task DispatchNavigationAsync(TabProcessState state, string url, bool isUserInput)
         {
+            await state.NavigationGate.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (!await TryStartSessionAsync(state, restartAttempt: 0, restartReason: "navigation").ConfigureAwait(false))
+                if (state.IsClosed || _isShuttingDown)
+                {
+                    return;
+                }
+
+                var navDecision = _isolationRegistry.ApplyNavigation(state.TabId, url, isUserInput);
+                if (navDecision.HasValidAssignment)
+                {
+                    var bootstrapSessionNeedsAssignment = !navDecision.RequiresReassignment &&
+                        string.IsNullOrWhiteSpace(navDecision.PreviousAssignmentKey) &&
+                        state.Session != null;
+
+                    if (navDecision.RequiresReassignment || bootstrapSessionNeedsAssignment)
+                    {
+                        var previousAssignmentLabel = string.IsNullOrWhiteSpace(navDecision.PreviousAssignmentKey)
+                            ? "(bootstrap)"
+                            : navDecision.PreviousAssignmentKey;
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info,
+                            $"[ProcessIsolation] Reassigning renderer process for tab {state.TabId}: {previousAssignmentLabel} -> {navDecision.RequestedAssignmentKey}");
+                        RecycleSessionForAssignmentChange(state, navDecision.RequestedAssignmentKey);
+                    }
+
+                    state.AssignmentKey = navDecision.RequestedAssignmentKey;
+                }
+
+                if (state.Session == null &&
+                    !await TryStartSessionAsync(state, restartAttempt: 0, restartReason: "navigation").ConfigureAwait(false))
                 {
                     RendererCrashed?.Invoke(state.TabId, "renderer-startup-failed");
                     return;
@@ -179,8 +183,12 @@ namespace FenBrowser.Host.ProcessIsolation
             catch (Exception ex)
             {
                 EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error,
-                    $"[ProcessIsolation] StartSessionAndNavigateAsync threw for tab {state.TabId}: {ex.Message}");
+                    $"[ProcessIsolation] DispatchNavigationAsync threw for tab {state.TabId}: {ex.Message}");
                 RendererCrashed?.Invoke(state.TabId, "renderer-startup-failed");
+            }
+            finally
+            {
+                state.NavigationGate.Release();
             }
         }
 
@@ -212,36 +220,6 @@ namespace FenBrowser.Host.ProcessIsolation
                 return;
             }
 
-            var navDecision = _isolationRegistry.ApplyNavigation(tab.Id, url, isUserInput);
-            if (navDecision.HasValidAssignment)
-            {
-                var bootstrapSessionNeedsAssignment = !navDecision.RequiresReassignment &&
-                    string.IsNullOrWhiteSpace(navDecision.PreviousAssignmentKey) &&
-                    state.Session != null;
-
-                if (navDecision.RequiresReassignment || bootstrapSessionNeedsAssignment)
-                {
-                    var previousAssignmentLabel = string.IsNullOrWhiteSpace(navDecision.PreviousAssignmentKey)
-                        ? "(bootstrap)"
-                        : navDecision.PreviousAssignmentKey;
-                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, 
-                        $"[ProcessIsolation] Reassigning renderer process for tab {tab.Id}: {previousAssignmentLabel} -> {navDecision.RequestedAssignmentKey}");
-                    RecycleSessionForAssignmentChange(state, navDecision.RequestedAssignmentKey);
-                }
-
-                state.AssignmentKey = navDecision.RequestedAssignmentKey;
-            }
-
-            var session = state.Session;
-            if (session == null)
-            {
-                // Fire-and-forget: process creation + IPC handshake is slow.
-                // Don't block the caller; the navigation URL is stashed in the
-                // tab state and will be consumed when the session is ready.
-                _ = StartSessionAndNavigateAsync(state, url, isUserInput);
-                return;
-            }
-
             var viewport = tab.Browser?.ViewportSize ?? default;
             if (viewport.Width > 1f && viewport.Height > 1f)
             {
@@ -249,7 +227,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 state.LastViewportHeight = viewport.Height;
             }
 
-            session?.SendNavigate(url, isUserInput, viewport.Width, viewport.Height);
+            _ = DispatchNavigationAsync(state, url, isUserInput);
         }
 
         private void RecycleSessionForAssignmentChange(TabProcessState state, string newAssignment)
@@ -271,8 +249,6 @@ namespace FenBrowser.Host.ProcessIsolation
             state.Session = null;
             state.ActivePid = 0;
             state.PooledSlot = null;
-
-            _ = TryStartSessionAsync(state, restartAttempt: 0, restartReason: "assignment-change");
         }
 
         public void OnInputEvent(BrowserTab tab, RendererInputEvent inputEvent)
@@ -508,39 +484,46 @@ namespace FenBrowser.Host.ProcessIsolation
                     return;
                 }
 
-                // Another coordinator path already recovered this tab; do not clobber active session.
-                if (state.ActivePid != 0)
+                await state.NavigationGate.WaitAsync().ConfigureAwait(false);
+                try
                 {
-                    return;
-                }
-
-                if (state.Session != null)
-                {
-                    var existingPid = state.Session.ChildProcess?.Id ?? 0;
-                    if (existingPid != 0 && existingPid != exitedPid)
+                    if (_isShuttingDown || state.IsClosed || state.ActivePid != 0)
                     {
                         return;
                     }
 
-                    TearDownSession(state, state.Session, $"tab {tabId} crash cleanup");
+                    if (state.Session != null)
+                    {
+                        var existingPid = state.Session.ChildProcess?.Id ?? 0;
+                        if (existingPid != 0 && existingPid != exitedPid)
+                        {
+                            return;
+                        }
+
+                        TearDownSession(state, state.Session, $"tab {tabId} crash cleanup");
+                    }
+
+                    state.Session = null;
+                    state.ActivePid = 0;
+                    state.PooledSlot = null;
+
+                    if (!await TryStartSessionAsync(state, exitDecision.RestartAttempt, "crash-restart").ConfigureAwait(false))
+                    {
+                        return;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(exitDecision.ReplayUrl))
+                    {
+                        state.Session?.SendNavigate(
+                            exitDecision.ReplayUrl,
+                            exitDecision.ReplayIsUserInput,
+                            state.LastViewportWidth,
+                            state.LastViewportHeight);
+                    }
                 }
-
-                state.Session = null;
-                state.ActivePid = 0;
-                state.PooledSlot = null;
-
-                if (!await TryStartSessionAsync(state, exitDecision.RestartAttempt, "crash-restart").ConfigureAwait(false))
+                finally
                 {
-                    return;
-                }
-
-                if (!string.IsNullOrWhiteSpace(exitDecision.ReplayUrl))
-                {
-                    state.Session?.SendNavigate(
-                        exitDecision.ReplayUrl,
-                        exitDecision.ReplayIsUserInput,
-                        state.LastViewportWidth,
-                        state.LastViewportHeight);
+                    state.NavigationGate.Release();
                 }
             });
         }
@@ -966,6 +949,7 @@ namespace FenBrowser.Host.ProcessIsolation
             public float LastViewportWidth { get; set; }
             public float LastViewportHeight { get; set; }
             public string LastStartupFailure { get; set; }
+            public SemaphoreSlim NavigationGate { get; } = new(1, 1);
 
             /// <summary>
             /// The OS-level sandbox applied to the renderer child process.

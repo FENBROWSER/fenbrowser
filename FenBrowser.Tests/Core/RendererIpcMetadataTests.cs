@@ -1,3 +1,4 @@
+using FenBrowser.Host;
 using FenBrowser.Host.ProcessIsolation;
 
 namespace FenBrowser.Tests.Core;
@@ -48,5 +49,30 @@ public class RendererIpcMetadataTests
         Assert.False(tracker.TryAcknowledge(first, out _, out _));
         Assert.True(tracker.TryAcknowledge(second, out var messageType, out _));
         Assert.Equal(RendererIpcMessageType.Input, messageType);
+    }
+
+    [Fact]
+    public void RendererPublisher_AllowsUrlOnlyMetadata()
+    {
+        Assert.True(Program.ShouldPublishRendererMetadata(null, faviconChanged: false, urlChanged: true));
+        Assert.False(Program.ShouldPublishRendererMetadata(null, faviconChanged: false, urlChanged: false));
+    }
+
+    [Fact]
+    public void BrowserIntegration_AppliesCommittedRendererUrl()
+    {
+        using var integration = new BrowserIntegration();
+        string changedUrl = null;
+        integration.UrlChanged += url => changedUrl = url;
+
+        integration.OnMetadataChangedFromRenderer(
+            tabId: 17,
+            new RendererMetadataChangedPayload
+            {
+                Url = "https://www.google.com/sorry/index?continue=search"
+            });
+
+        Assert.Equal("https://www.google.com/sorry/index?continue=search", integration.CurrentUrl);
+        Assert.Equal(integration.CurrentUrl, changedUrl);
     }
 }
