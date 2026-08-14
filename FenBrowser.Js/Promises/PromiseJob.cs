@@ -1,3 +1,4 @@
+using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Promises;
@@ -10,6 +11,9 @@ namespace FenBrowser.Js.Promises;
 // runs JS. The interpreter is the layer that decides how to execute a dequeued job,
 // which keeps the Promises module independent of any concrete interpreter
 // implementation (and lets unit tests drive the queue without an isolate).
+//
+// A queued job can be the only owner of JS heap objects until the next microtask
+// checkpoint, so every concrete job must explicitly trace its captured JS values.
 public abstract class PromiseJob
 {
     protected PromiseJob(int realmId)
@@ -20,6 +24,16 @@ public abstract class PromiseJob
     // 9.5 step 4 "If realm is not null, queueing context is added to" - the realm
     // captured at enqueue time determines which realm the job runs in when dequeued.
     public int RealmId { get; }
+
+    public abstract void Trace(IHeapTracer tracer);
+
+    protected static void TraceValue(IHeapTracer tracer, JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object)
+        {
+            tracer.Trace(value.AsObjectHandle());
+        }
+    }
 }
 
 // 27.2.2.1 NewPromiseReactionJob ( reaction, argument ). Carries one reaction plus the
@@ -36,6 +50,13 @@ public sealed class PromiseReactionJob : PromiseJob
 
     public PromiseReaction Reaction { get; }
     public JsValue Argument { get; }
+
+    public override void Trace(IHeapTracer tracer)
+    {
+        ArgumentNullException.ThrowIfNull(tracer);
+        Reaction.Trace(tracer);
+        TraceValue(tracer, Argument);
+    }
 }
 
 // 27.2.2.2 NewPromiseResolveThenableJob ( promiseToResolve, thenable, then ). Used
@@ -59,4 +80,12 @@ public sealed class PromiseResolveThenableJob : PromiseJob
     public JsValue PromiseToResolve { get; }
     public JsValue Thenable { get; }
     public JsValue Then { get; }
+
+    public override void Trace(IHeapTracer tracer)
+    {
+        ArgumentNullException.ThrowIfNull(tracer);
+        TraceValue(tracer, PromiseToResolve);
+        TraceValue(tracer, Thenable);
+        TraceValue(tracer, Then);
+    }
 }
