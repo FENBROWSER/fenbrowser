@@ -46,18 +46,24 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             {
                 _microtasks.Enqueue(entry);
                 pendingCount = _microtasks.Count;
-                EngineLogCompat.Debug($"[MicrotaskQueue] Enqueued microtask (Count: {pendingCount})", LogCategory.JavaScript);
+                EngineLogCompat.Log(
+                    LogCategory.JavaScript,
+                    LogLevel.Debug,
+                    $"[MicrotaskQueue] Enqueued microtask (Count: {pendingCount})");
             }
 
-            EventLoopTrace.Write(
-                "MicrotaskQueued",
-                LogSeverity.Debug,
-                "[EventLoop] Microtask queued",
-                entry.TraceId,
-                new Dictionary<string, object>
-                {
-                    ["pendingCount"] = pendingCount
-                });
+            if (EventLoopTrace.IsEnabled(LogSeverity.Debug))
+            {
+                EventLoopTrace.Write(
+                    "MicrotaskQueued",
+                    LogSeverity.Debug,
+                    "[EventLoop] Microtask queued",
+                    entry.TraceId,
+                    new Dictionary<string, object>
+                    {
+                        ["pendingCount"] = pendingCount
+                    });
+            }
         }
 
         /// <summary>
@@ -100,31 +106,40 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     try
                     {
                         microtask.Callback();
-                        EventLoopTrace.Write(
-                            "MicrotaskExecuted",
-                            LogSeverity.Debug,
-                            "[EventLoop] Microtask executed",
-                            microtask.TraceId,
-                            new Dictionary<string, object>
-                            {
-                                ["drainIndex"] = processed
-                            });
+                        if (EventLoopTrace.IsEnabled(LogSeverity.Debug))
+                        {
+                            EventLoopTrace.Write(
+                                "MicrotaskExecuted",
+                                LogSeverity.Debug,
+                                "[EventLoop] Microtask executed",
+                                microtask.TraceId,
+                                new Dictionary<string, object>
+                                {
+                                    ["drainIndex"] = processed
+                                });
+                        }
                     }
                     catch (Exception ex)
                     {
-                        EngineLogCompat.Debug($"[MicrotaskQueue] Microtask error: {ex.Message}", LogCategory.Errors);
-                        EventLoopTrace.Write(
-                            "MicrotaskFailed",
-                            LogSeverity.Warn,
-                            "[EventLoop] Microtask failed",
-                            microtask.TraceId,
-                            new Dictionary<string, object>
-                            {
-                                ["drainIndex"] = processed,
-                                ["errorType"] = ex.GetType().Name,
-                                ["error"] = ex.Message
-                            },
-                            LogMarker.EngineBug);
+                        EngineLogCompat.Log(
+                            LogCategory.Errors,
+                            LogLevel.Debug,
+                            $"[MicrotaskQueue] Microtask error: {ex.Message}");
+                        if (EventLoopTrace.IsEnabled(LogSeverity.Warn))
+                        {
+                            EventLoopTrace.Write(
+                                "MicrotaskFailed",
+                                LogSeverity.Warn,
+                                "[EventLoop] Microtask failed",
+                                microtask.TraceId,
+                                new Dictionary<string, object>
+                                {
+                                    ["drainIndex"] = processed,
+                                    ["errorType"] = ex.GetType().Name,
+                                    ["error"] = ex.Message
+                                },
+                                LogMarker.EngineBug);
+                        }
                     }
                 }
 
@@ -135,9 +150,10 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
                 if (passBudgetReached)
                 {
-                    EngineLogCompat.Warn(
-                        $"[MicrotaskQueue] Drain pass budget ({MaxMicrotasksPerDrainPass}) reached; preserving remaining microtasks for the checkpoint",
-                        LogCategory.Errors);
+                    EngineLogCompat.Log(
+                        LogCategory.Errors,
+                        LogLevel.Warn,
+                        $"[MicrotaskQueue] Drain pass budget ({MaxMicrotasksPerDrainPass}) reached; preserving remaining microtasks for the checkpoint");
                 }
             }
             finally
@@ -148,9 +164,10 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 }
             }
 
-            EngineLogCompat.Debug(
-                $"[MicrotaskQueue] Drain pass complete (processed: {processed}, budgetReached: {passBudgetReached})",
-                LogCategory.JavaScript);
+            EngineLogCompat.Log(
+                LogCategory.JavaScript,
+                LogLevel.Debug,
+                $"[MicrotaskQueue] Drain pass complete (processed: {processed}, budgetReached: {passBudgetReached})");
             return processed;
         }
 
