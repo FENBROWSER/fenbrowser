@@ -103,16 +103,33 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Timeout payload must be a JSON object");
             }
 
+            // Parse the entire request first. A rejected timeout payload must not leave
+            // a partially-mutated session (for example script accepted before an invalid
+            // implicit value throws).
+            var nextScript = session.Timeouts.Script;
+            var nextPageLoad = session.Timeouts.PageLoad;
+            var nextImplicit = session.Timeouts.Implicit;
+
             if (body.Value.TryGetProperty("script", out var script))
-                session.Timeouts.Script = ParseTimeout("script", script);
+                nextScript = ParseTimeout("script", script);
 
             if (body.Value.TryGetProperty("pageLoad", out var pageLoad))
-                session.Timeouts.PageLoad = ParseTimeout("pageLoad", pageLoad);
+                nextPageLoad = ParseTimeout("pageLoad", pageLoad);
 
             if (body.Value.TryGetProperty("implicit", out var implicitTimeout))
-                session.Timeouts.Implicit = ParseTimeout("implicit", implicitTimeout);
+                nextImplicit = ParseTimeout("implicit", implicitTimeout);
 
-            session.Timeouts.ValidateOrThrow();
+            var updated = new Timeouts
+            {
+                Script = nextScript,
+                PageLoad = nextPageLoad,
+                Implicit = nextImplicit
+            };
+            updated.ValidateOrThrow();
+
+            session.Timeouts.Script = updated.Script;
+            session.Timeouts.PageLoad = updated.PageLoad;
+            session.Timeouts.Implicit = updated.Implicit;
             return WebDriverResponse.Success(null);
         }
 
@@ -456,12 +473,16 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} timeout must be a non-negative integer or null");
             }
 
-            if (double.IsNaN(rawValue) || double.IsInfinity(rawValue) || rawValue < 0 || rawValue >= 9007199254740992d)
+            if (double.IsNaN(rawValue) ||
+                double.IsInfinity(rawValue) ||
+                rawValue < 0 ||
+                rawValue >= 9007199254740992d ||
+                Math.Truncate(rawValue) != rawValue)
             {
-                throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} timeout must stay within [0, 2^53 - 1]");
+                throw new WebDriverException(ErrorCodes.InvalidArgument, $"{name} timeout must be a non-negative integer within [0, 2^53 - 1]");
             }
 
-            return (long)Math.Floor(rawValue);
+            return (long)rawValue;
         }
     }
 }
