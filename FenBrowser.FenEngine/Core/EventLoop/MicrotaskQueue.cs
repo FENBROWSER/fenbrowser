@@ -18,14 +18,15 @@ namespace FenBrowser.FenEngine.Core.EventLoop
     {
         private sealed class ScheduledMicrotask
         {
+            private string _traceId;
+
             public ScheduledMicrotask(Action callback)
             {
                 Callback = callback ?? throw new ArgumentNullException(nameof(callback));
-                TraceId = EventLoopTrace.NextId("microtask");
             }
 
             public Action Callback { get; }
-            public string TraceId { get; }
+            public string TraceId => _traceId ??= EventLoopTrace.NextId("microtask");
         }
 
         private readonly Queue<ScheduledMicrotask> _microtasks = new();
