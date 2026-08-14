@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Typography;
@@ -22,6 +23,7 @@ namespace FenBrowser.FenEngine.Layout
         private static readonly ConcurrentDictionary<TextLayoutCacheKey, (LayoutMetrics Metrics, List<ComputedTextLine> Lines)>
             s_textLayoutCache = new();
         private static readonly object s_cacheMutationLock = new();
+        private static long s_fontGeneration;
 
         private readonly record struct TextLayoutCacheKey(
             string Text,
@@ -31,9 +33,24 @@ namespace FenBrowser.FenEngine.Layout
             SKFontStyleSlant FontStyle,
             float AvailableWidth,
             float? LineHeight,
-            string WhiteSpaceMode);
+            string WhiteSpaceMode,
+            long FontGeneration);
 
         private readonly record struct TextToken(string Text, bool IsWhitespace = false, bool IsNewline = false);
+
+        static TextLayoutComputer()
+        {
+            // Async @font-face completion changes shaping/metrics for subsequent
+            // layouts. Bump a generation in addition to clearing so an in-flight old
+            // layout cannot repopulate a cache entry that future lookups will accept.
+            FenBrowser.FenEngine.Rendering.FontRegistry.FontLoaded += OnFontLoaded;
+        }
+
+        private static void OnFontLoaded(string _)
+        {
+            Interlocked.Increment(ref s_fontGeneration);
+            s_textLayoutCache.Clear();
+        }
 
         public static (LayoutMetrics Metrics, List<ComputedTextLine> Lines) ComputeTextLayout(
             Node node,
@@ -50,6 +67,36 @@ namespace FenBrowser.FenEngine.Layout
             var fontSize = (float)(style?.FontSize ?? DefaultFontSize);
             var resolvedSlant = style?.FontStyle ?? SKFontStyleSlant.Upright;
             var resolvedWeight = style?.FontWeight ?? 400;
+            var maxLineWidth = ResolveMaxLineWidth(availableSize.Width, viewportWidth);
+            var whiteSpaceMode = NormalizeWhiteSpaceMode(style?.WhiteSpace);
+            var configuredLineHeight = style?.LineHeight.HasValue == true
+                ? (float?)style.LineHeight.Value
+                : null;
+            var cacheable = text.Length <= MaxCacheableTextChars;
+            var fontGeneration = Volatile.Read(ref s_fontGeneration);
+
+            var cacheKey = new TextLayoutCacheKey(
+                text,
+                style?.FontFamilyName ?? string.Empty,
+                fontSize,
+                resolvedWeight,
+                resolvedSlant,
+                maxLineWidth,
+                configuredLineHeight,
+                whiteSpaceMode,
+                fontGeneration);
+
+            // This check intentionally happens BEFORE resolving a typeface. Fallback
+            // resolution scans glyph support across candidate fonts and was previously
+            // paid even on a complete layout-cache hit, defeating much of the cache's
+            // value on repeated frames.
+            if (cacheable && s_textLayoutCache.TryGetValue(cacheKey, out var cached))
+            {
+                var cachedLines = CloneLines(cached.Lines);
+                ApplyHorizontalAlignment(cachedLines, maxLineWidth, style?.TextAlign);
+                return (cached.Metrics, cachedLines);
+            }
+
             var resolvedTypeface = TextLayoutHelper.ResolveTypeface(
                 style?.FontFamilyName,
                 text,
@@ -60,36 +107,10 @@ namespace FenBrowser.FenEngine.Layout
             var normalizedMetrics = NormalizedFontMetrics.FromSkia(
                 font.Metrics,
                 fontSize,
-                style?.LineHeight.HasValue == true ? (float?)style.LineHeight.Value : null);
+                configuredLineHeight);
 
             var lineHeight = normalizedMetrics.LineHeight;
             var baselineOffset = normalizedMetrics.GetBaselineOffset();
-            var maxLineWidth = ResolveMaxLineWidth(availableSize.Width, viewportWidth);
-            var whiteSpaceMode = NormalizeWhiteSpaceMode(style?.WhiteSpace);
-            var cacheable = text.Length <= MaxCacheableTextChars;
-
-            var cacheKey = new TextLayoutCacheKey(
-                text,
-                style?.FontFamilyName ?? string.Empty,
-                fontSize,
-                resolvedWeight,
-                resolvedSlant,
-                maxLineWidth,
-                style?.LineHeight.HasValue == true ? (float?)style.LineHeight.Value : null,
-                whiteSpaceMode);
-
-            if (cacheable && s_textLayoutCache.TryGetValue(cacheKey, out var cached))
-            {
-                // Alignment is intentionally applied AFTER the cache lookup. It changes
-                // only line origins, not shaping/wrapping/metrics, so storing aligned
-                // lines poisoned otherwise-identical cache entries across text-align
-                // values and unnecessarily fragmented the cache when align was part of
-                // the key. Keep cached geometry in its natural left-origin form.
-                var cachedLines = CloneLines(cached.Lines);
-                ApplyHorizontalAlignment(cachedLines, maxLineWidth, style?.TextAlign);
-                return (cached.Metrics, cachedLines);
-            }
-
             var collapseWhitespace = whiteSpaceMode is "normal" or "nowrap" or "pre-line";
             var preserveNewlines = whiteSpaceMode is "pre" or "pre-wrap" or "pre-line";
             var allowWrap = whiteSpaceMode is "normal" or "pre-wrap" or "pre-line";
@@ -142,9 +163,6 @@ namespace FenBrowser.FenEngine.Layout
                     ? spaceWidth
                     : font.MeasureText(token.Text);
 
-                // Min-content sizing previously re-measured every non-whitespace token
-                // after line construction, doubling expensive Skia text measurements on
-                // ordinary paragraphs. The width is already known here.
                 if (!token.IsWhitespace && !string.IsNullOrEmpty(token.Text))
                 {
                     minContentWidth = Math.Max(minContentWidth, tokenWidth);
@@ -201,10 +219,6 @@ namespace FenBrowser.FenEngine.Layout
                 Baseline = baselineOffset
             };
 
-            // Cache only natural, unaligned line geometry. Large text nodes are not
-            // retained globally: a few huge editor/log/preformatted nodes should not
-            // pin hundreds of megabytes of source strings and line copies just because
-            // layout happened to touch them once.
             if (cacheable)
             {
                 AddToCache(cacheKey, metrics, lines);
@@ -279,11 +293,6 @@ namespace FenBrowser.FenEngine.Layout
         {
             var cachedLines = CloneLines(lines);
 
-            // All cache mutations go through this lock while reads remain lock-free.
-            // The previous Count/check/remove/add sequence raced across layout threads:
-            // several writers could over-evict and then still grow past the advertised
-            // limit. This keeps the global retention bound real without serializing hot
-            // cache hits or the expensive text measurement itself.
             lock (s_cacheMutationLock)
             {
                 if (!s_textLayoutCache.ContainsKey(key))
