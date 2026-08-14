@@ -130,8 +130,6 @@ namespace FenBrowser.Core
 
         private ValueTask<int> ReadChunkAsync(char[] buffer, CancellationToken ct)
         {
-            // net10 TextReader supports cancellable Memory<char> reads; do not burn a
-            // thread-pool worker around a blocking Read for every 8 KiB chunk.
             return _reader.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
         }
 
@@ -183,8 +181,6 @@ namespace FenBrowser.Core
             if (availableTextLength <= 0)
                 return false;
 
-            // <plaintext> consumes everything after its start tag; there is no
-            // recognized </plaintext> end tag in the HTML parsing model.
             if (string.Equals(rawTextTagName, "plaintext", StringComparison.OrdinalIgnoreCase))
             {
                 var text = _buffer.ToString(_bufferPos, availableTextLength);
@@ -206,7 +202,17 @@ namespace FenBrowser.Core
                     OnTextParsed?.Invoke(text);
                 }
 
+                // Consume the actual closing tag here. If we merely leave the cursor
+                // on '<', the state is still raw-text and the next loop iteration finds
+                // the exact same closing tag forever.
                 _bufferPos = closingTagIndex;
+                var tagEnd = FindTagEnd(_bufferPos);
+                if (tagEnd < 0)
+                    return false;
+
+                var closingToken = _buffer.ToString(_bufferPos, tagEnd - _bufferPos + 1);
+                state.ProcessToken(closingToken);
+                _bufferPos = tagEnd + 1;
                 return true;
             }
 
@@ -252,7 +258,7 @@ namespace FenBrowser.Core
 
                 var afterName = i + 2 + nameLength;
                 if (afterName >= _buffer.Length)
-                    return -1; // boundary may arrive in the next chunk
+                    return -1;
 
                 var boundary = _buffer[afterName];
                 if (boundary == '>' || boundary == '/' || IsHtmlSpace(boundary))
@@ -388,6 +394,23 @@ namespace FenBrowser.Core
                         return;
 
                     var endTag = endTagText.Substring(0, end).ToLowerInvariant();
+                    var hasMatchingOpenElement = false;
+                    foreach (var node in _stack)
+                    {
+                        if (node is Element openElement &&
+                            string.Equals(openElement.LocalName, endTag, StringComparison.OrdinalIgnoreCase))
+                        {
+                            hasMatchingOpenElement = true;
+                            break;
+                        }
+                    }
+
+                    // This incremental stack is intentionally simpler than the full
+                    // HTML5 tree builder, but an unmatched end tag must at least be
+                    // ignored rather than popping every currently-open element.
+                    if (!hasMatchingOpenElement)
+                        return;
+
                     while (_stack.Count > 1 &&
                            !string.Equals(
                                (_stack.Peek() as Element)?.LocalName,
@@ -467,8 +490,6 @@ namespace FenBrowser.Core
 
             public bool ShouldDecodeRawTextCharacterReferences(string tagName)
             {
-                // title/textarea are RCDATA; script/style/xmp/iframe/noembed/
-                // noframes/noscript are raw-text-like on this incremental path.
                 return string.Equals(tagName, "title", StringComparison.OrdinalIgnoreCase) ||
                        string.Equals(tagName, "textarea", StringComparison.OrdinalIgnoreCase);
             }
@@ -478,8 +499,6 @@ namespace FenBrowser.Core
                 if (string.IsNullOrEmpty(rawTextTagName))
                     return 0;
 
-                // Hold enough trailing characters for a chunk-split "</name" plus
-                // the first boundary character used to validate an actual end tag.
                 return rawTextTagName.Length + 3;
             }
 
@@ -506,7 +525,7 @@ namespace FenBrowser.Core
                         break;
 
                     var name = attrString.Substring(nameStart, i - nameStart).ToLowerInvariant();
-                    var value = string.Empty; // boolean/missing-value attribute
+                    var value = string.Empty;
 
                     while (i < attrString.Length && IsHtmlSpace(attrString[i]))
                         i++;
