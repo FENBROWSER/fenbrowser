@@ -82,31 +82,23 @@ public sealed class BytecodeFunction
     // loaded in the constructor via LoadFieldKey instead of recomputing.
     public List<JsValue> ComputedFieldKeys { get; init; } = new();
 
+    // Runtime feedback. These fields are intentionally NOT part of the immutable
+    // compiled template stored by BytecodeCache. Property ICs hold Shapes and call
+    // ICs hold heap-local ObjectHandle values, so sharing them across interpreters
+    // can make one heap consume another heap's feedback.
     internal Dictionary<int, PolymorphicInlineCache>? LoadICs { get; set; }
     internal Dictionary<int, PolymorphicInlineCache>? StoreICs { get; set; }
     internal Dictionary<int, CallICEntry>? CallICs { get; set; }
 
-    // Tier 4 #24 JIT bookkeeping. Invocations is incremented on every call
-    // through CallFunction; once it crosses JitCompiler.TierUpThreshold the
-    // interpreter calls TryCompile once. JitDelegate is the produced
-    // compiled body, or null when the JIT bailed out (which is the
-    // default path for almost every function today).
+    // Tier 4 #24 JIT bookkeeping. This is also execution-local feedback and must be
+    // reset when a cached template is materialized for another compilation request.
     internal int Invocations;
-    // Back-edge counter for JIT tier-up. Incremented in the dispatch loop
-    // whenever a Jump/JumpIfFalse targets an earlier instruction (i.e. a
-    // loop iteration). Combined with Invocations in the tier-up trigger:
-    // a function with one invocation but a million loop iterations still
-    // gets JIT-compiled on the next call. See audit doc §3.2.
     internal int BackEdges;
 #if !PUBLISH_AOT
     internal bool JitCompileAttempted;
     internal JitCompiler.JitDelegate? JitDelegate;
 #endif
 
-    // Read-only accessors for test/diagnostic use. The setters are
-    // internal so only the interpreter mutates them; the getters expose
-    // counters for tier-up assertion in tests and for runtime
-    // introspection by tooling.
     public int InvocationsObserved => Invocations;
     public int BackEdgesObserved => BackEdges;
 #if !PUBLISH_AOT
@@ -119,4 +111,103 @@ public sealed class BytecodeFunction
     // SetPrivateField instructions indexes into this list. The interpreter checks
     // obj.PrivateBrand == BrandTokens[ins.D] for access.
     public IReadOnlyList<long> BrandTokens { get; init; } = Array.Empty<long>();
+
+    /// <summary>
+    /// True when this function tree can safely be retained as a process-global
+    /// compiled template. Heap object constants and private-brand tokens are excluded:
+    /// the former are heap-local, while the latter must be freshly allocated for each
+    /// class evaluation rather than reused from a previous cached compilation.
+    /// </summary>
+    internal bool CanUseProcessGlobalTemplate()
+    {
+        if (BrandTokens.Count != 0)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < Constants.Count; i++)
+        {
+            if (IsHeapLocalValue(Constants[i]))
+            {
+                return false;
+            }
+        }
+
+        for (var i = 0; i < ComputedFieldKeys.Count; i++)
+        {
+            if (IsHeapLocalValue(ComputedFieldKeys[i]))
+            {
+                return false;
+            }
+        }
+
+        for (var i = 0; i < NestedFunctions.Count; i++)
+        {
+            if (!NestedFunctions[i].CanUseProcessGlobalTemplate())
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Materializes a fresh execution object from immutable compiler output. The
+    /// instruction/constant/name tables are immutable after compilation and can be
+    /// shared; nested functions and every mutable runtime-feedback field are fresh.
+    /// </summary>
+    internal BytecodeFunction CreateExecutionCopy()
+    {
+        var nested = new BytecodeFunction[NestedFunctions.Count];
+        for (var i = 0; i < NestedFunctions.Count; i++)
+        {
+            nested[i] = NestedFunctions[i].CreateExecutionCopy();
+        }
+
+        return new BytecodeFunction
+        {
+            Name = Name,
+            SourceText = SourceText,
+            Instructions = Instructions,
+            Constants = Constants,
+            VariableSlots = VariableSlots,
+            VarDeclarationNames = VarDeclarationNames,
+            LexicalDeclarationNames = LexicalDeclarationNames,
+            ConstDeclarationNames = ConstDeclarationNames,
+            PropertyNames = PropertyNames,
+            ParameterNames = ParameterNames,
+            RestParameterIndex = RestParameterIndex,
+            ExpectedArgumentCount = ExpectedArgumentCount,
+            BindsOwnNameInBody = BindsOwnNameInBody,
+            HasOwnArgumentsObject = HasOwnArgumentsObject,
+            UsesRestrictedArgumentsObject = UsesRestrictedArgumentsObject,
+            UsesOuterArguments = UsesOuterArguments,
+            Kind = Kind,
+            IsEvalCode = IsEvalCode,
+            IsStrictMode = IsStrictMode,
+            NestedFunctions = nested,
+            RegisterCount = RegisterCount,
+            PrologueEndIp = PrologueEndIp,
+            IsDerivedConstructor = IsDerivedConstructor,
+            IsClassConstructor = IsClassConstructor,
+            ComputedFieldKeys = new List<JsValue>(ComputedFieldKeys),
+            BrandTokens = BrandTokens,
+
+            // Explicitly document the execution-local reset rather than relying on
+            // default field initialization as the cache contract evolves.
+            LoadICs = null,
+            StoreICs = null,
+            CallICs = null,
+            Invocations = 0,
+            BackEdges = 0,
+#if !PUBLISH_AOT
+            JitCompileAttempted = false,
+            JitDelegate = null,
+#endif
+        };
+    }
+
+    private static bool IsHeapLocalValue(JsValue value) =>
+        value.Tag is JsValueTag.Object or JsValueTag.HostObject;
 }
