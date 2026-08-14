@@ -16,6 +16,7 @@ namespace FenBrowser.FenEngine.Adapters
     {
         private static readonly Lazy<bool> SvgBackendInitialized =
             new(WarmUpSvgBackend, isThreadSafe: true);
+        private static readonly TimeSpan SanitizerRegexTimeout = TimeSpan.FromMilliseconds(250);
 
         public SvgRenderResult Render(string svgContent)
         {
@@ -32,8 +33,11 @@ namespace FenBrowser.FenEngine.Adapters
                     ErrorMessage = "Empty SVG content"
                 };
             }
+
+            limits = NormalizeLimits(limits);
             
-            // Pre-validation: Check for complexity bombs
+            // Pre-validation: Check for complexity bombs before sending untrusted text
+            // into the SVG parser/native renderer.
             if (!ValidateSvgComplexity(svgContent, limits, out string validationError))
             {
                 return new SvgRenderResult
@@ -43,7 +47,8 @@ namespace FenBrowser.FenEngine.Adapters
                 };
             }
             
-            // Strip external references if not allowed
+            // Strip external references if not allowed. Svg.Skia must never become a
+            // second network/file loader that bypasses the browser fetch policy.
             if (!limits.AllowExternalReferences)
             {
                 svgContent = StripExternalReferences(svgContent);
@@ -91,24 +96,44 @@ namespace FenBrowser.FenEngine.Adapters
                 }
                 
                 var cullRect = picture.CullRect;
-                
-                // DEBUG: Log picture details to diagnose fill rendering issue
-                FenBrowser.Core.EngineLogCompat.Debug($"[SvgSkiaRenderer] SVG parsed. CullRect={cullRect.Width}x{cullRect.Height}", FenBrowser.Core.Logging.LogCategory.Rendering);
-                
-                // Check if CullRect is valid
-                if (cullRect.Width <= 0 || cullRect.Height <= 0)
+                if (!float.IsFinite(cullRect.Width) || !float.IsFinite(cullRect.Height) ||
+                    !float.IsFinite(cullRect.Left) || !float.IsFinite(cullRect.Top))
                 {
-                    FenBrowser.Core.EngineLogCompat.Debug($"[SvgSkiaRenderer] WARNING: Invalid CullRect! SVG content first 200 chars: {svgContent.Substring(0, Math.Min(200, svgContent.Length))}", FenBrowser.Core.Logging.LogCategory.Rendering);
+                    return new SvgRenderResult
+                    {
+                        Success = false,
+                        ErrorMessage = "SVG produced non-finite raster bounds"
+                    };
                 }
+
+                FenBrowser.Core.EngineLogCompat.Debug(
+                    $"[SvgSkiaRenderer] SVG parsed. CullRect={cullRect.Width}x{cullRect.Height}",
+                    FenBrowser.Core.Logging.LogCategory.Rendering);
                 
-                // CRITICAL FIX: Render to bitmap INSIDE the using scope BEFORE SKSvg is disposed
-                // SKPicture's internal resources are tied to SKSvg and become invalid after disposal
-                int bitmapWidth = (int)Math.Max(1, Math.Ceiling(cullRect.Width));
-                int bitmapHeight = (int)Math.Max(1, Math.Ceiling(cullRect.Height));
-                var bitmap = new SkiaSharp.SKBitmap(bitmapWidth, bitmapHeight);
-                using (var canvas = new SkiaSharp.SKCanvas(bitmap))
+                // Render to bitmap INSIDE the using scope BEFORE SKSvg is disposed.
+                // Validate dimensions before allocating native bitmap memory. A compact
+                // SVG can otherwise declare a gigantic viewport/cull rect and request
+                // hundreds of megabytes or more before ImageLoader cache limits run.
+                double rasterWidth = Math.Max(1d, Math.Ceiling(cullRect.Width));
+                double rasterHeight = Math.Max(1d, Math.Ceiling(cullRect.Height));
+                if (rasterWidth > limits.MaxRasterWidth || rasterHeight > limits.MaxRasterHeight ||
+                    rasterWidth * rasterHeight > limits.MaxRasterPixels)
                 {
-                    canvas.Clear(SkiaSharp.SKColors.Transparent);
+                    return new SvgRenderResult
+                    {
+                        Success = false,
+                        ErrorMessage =
+                            $"SVG raster bounds {rasterWidth:0}x{rasterHeight:0} exceed browser limits " +
+                            $"({limits.MaxRasterWidth}x{limits.MaxRasterHeight}, {limits.MaxRasterPixels} pixels)"
+                    };
+                }
+
+                int bitmapWidth = checked((int)rasterWidth);
+                int bitmapHeight = checked((int)rasterHeight);
+                var bitmap = new SKBitmap(bitmapWidth, bitmapHeight);
+                using (var canvas = new SKCanvas(bitmap))
+                {
+                    canvas.Clear(SKColors.Transparent);
                     // CullRect can have a non-zero origin (for example viewBox="0 -960 960 960").
                     // Shift into bitmap-local coordinates so geometry is not clipped away.
                     canvas.Translate(-cullRect.Left, -cullRect.Top);
@@ -117,8 +142,8 @@ namespace FenBrowser.FenEngine.Adapters
                 
                 return new SvgRenderResult
                 {
-                    Picture = picture, // Keep for backward compat but may be invalid
-                    Bitmap = bitmap,   // Pre-rendered bitmap that's safe to use
+                    Picture = picture, // Kept for backward compatibility; Bitmap is the safe post-SKSvg result.
+                    Bitmap = bitmap,
                     Width = cullRect.Width,
                     Height = cullRect.Height,
                     Success = true
@@ -132,6 +157,20 @@ namespace FenBrowser.FenEngine.Adapters
                     ErrorMessage = $"SVG render error: {ex.Message}"
                 };
             }
+        }
+
+        private static SvgRenderLimits NormalizeLimits(SvgRenderLimits limits)
+        {
+            var defaults = SvgRenderLimits.Default;
+            if (limits.MaxRecursionDepth <= 0) limits.MaxRecursionDepth = defaults.MaxRecursionDepth;
+            if (limits.MaxFilterCount <= 0) limits.MaxFilterCount = defaults.MaxFilterCount;
+            if (limits.MaxRenderTimeMs <= 0) limits.MaxRenderTimeMs = defaults.MaxRenderTimeMs;
+            if (limits.MaxElementCount <= 0) limits.MaxElementCount = defaults.MaxElementCount;
+            if (limits.MaxSourceChars <= 0) limits.MaxSourceChars = defaults.MaxSourceChars;
+            if (limits.MaxRasterWidth <= 0) limits.MaxRasterWidth = defaults.MaxRasterWidth;
+            if (limits.MaxRasterHeight <= 0) limits.MaxRasterHeight = defaults.MaxRasterHeight;
+            if (limits.MaxRasterPixels <= 0) limits.MaxRasterPixels = defaults.MaxRasterPixels;
+            return limits;
         }
 
         private static bool WarmUpSvgBackend()
@@ -154,9 +193,15 @@ namespace FenBrowser.FenEngine.Adapters
         /// Pre-validate SVG complexity before parsing.
         /// This catches complexity bombs early without full parsing.
         /// </summary>
-        private bool ValidateSvgComplexity(string svgContent, SvgRenderLimits limits, out string error)
+        private static bool ValidateSvgComplexity(string svgContent, SvgRenderLimits limits, out string error)
         {
             error = null;
+
+            if (svgContent.Length > limits.MaxSourceChars)
+            {
+                error = $"SVG source length ({svgContent.Length}) exceeds limit ({limits.MaxSourceChars})";
+                return false;
+            }
             
             // Count elements (rough estimate)
             int elementCount = 0;
@@ -185,7 +230,7 @@ namespace FenBrowser.FenEngine.Adapters
                 return false;
             }
             
-            // Check for deep nesting (rough estimate using <g> tags)
+            // Check for deep nesting (rough estimate using grouping elements).
             int maxDepth = EstimateMaxDepth(svgContent);
             if (maxDepth > limits.MaxRecursionDepth)
             {
@@ -197,36 +242,52 @@ namespace FenBrowser.FenEngine.Adapters
         }
         
         /// <summary>
-        /// Strip external references (xlink:href, url()) pointing outside document.
+        /// Remove references that could cause Svg.Skia to perform its own external
+        /// resource access. Fragment-local references and inline data: payloads remain.
         /// </summary>
-        private string StripExternalReferences(string svgContent)
+        private static string StripExternalReferences(string svgContent)
         {
-            // Remove xlink:href to external URLs
-            // Pattern: xlink:href="http..." or xlink:href="https..."
-            svgContent = System.Text.RegularExpressions.Regex.Replace(
-                svgContent,
-                @"xlink:href\s*=\s*[""']https?://[^""']*[""']",
-                "",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            
-            // Remove href to external URLs
-            svgContent = System.Text.RegularExpressions.Regex.Replace(
-                svgContent,
-                @"href\s*=\s*[""']https?://[^""']*[""']",
-                "",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            
-            // Remove url() references to external URLs
-            svgContent = System.Text.RegularExpressions.Regex.Replace(
-                svgContent,
-                @"url\s*\(\s*[""']?https?://[^)""']*[""']?\s*\)",
-                "url()",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            
+            try
+            {
+                svgContent = Regex.Replace(
+                    svgContent,
+                    @"\b(?:xlink:href|href)\s*=\s*(?<q>[""'])(?<value>.*?)\k<q>",
+                    match => IsInlineSvgReference(match.Groups["value"].Value) ? match.Value : string.Empty,
+                    RegexOptions.IgnoreCase | RegexOptions.Singleline,
+                    SanitizerRegexTimeout);
+
+                svgContent = Regex.Replace(
+                    svgContent,
+                    @"url\s*\(\s*(?<value>(?:[""'][^""']*[""']|[^)]*))\s*\)",
+                    match =>
+                    {
+                        var value = match.Groups["value"].Value.Trim().Trim('"', '\'');
+                        return IsInlineSvgReference(value) ? match.Value : "url()";
+                    },
+                    RegexOptions.IgnoreCase | RegexOptions.Singleline,
+                    SanitizerRegexTimeout);
+            }
+            catch (RegexMatchTimeoutException)
+            {
+                // Sanitization must fail closed. Returning an empty document prevents a
+                // pathological attribute string from escaping into Svg.Skia unsanitized.
+                return "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"/>";
+            }
+
             return svgContent;
         }
+
+        private static bool IsInlineSvgReference(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return true;
+
+            var trimmed = value.Trim();
+            return trimmed.StartsWith("#", StringComparison.Ordinal) ||
+                   trimmed.StartsWith("data:", StringComparison.OrdinalIgnoreCase);
+        }
         
-        private int CountOccurrences(string text, string pattern)
+        private static int CountOccurrences(string text, string pattern)
         {
             int count = 0;
             int index = 0;
@@ -238,9 +299,10 @@ namespace FenBrowser.FenEngine.Adapters
             return count;
         }
         
-        private int EstimateMaxDepth(string svgContent)
+        private static int EstimateMaxDepth(string svgContent)
         {
-            // Simple heuristic: count nested <g> or <svg> tags
+            // Simple heuristic: count nested <g> tags. This remains a cheap prescan;
+            // the source/element/raster limits provide independent safety boundaries.
             int depth = 0;
             int maxDepth = 0;
             
@@ -272,11 +334,6 @@ namespace FenBrowser.FenEngine.Adapters
         /// </summary>
         private static string InjectDefaultFill(string svgContent)
         {
-            // Per-element fill injection: only add fill="currentColor" to shape elements
-            // that don't already have a fill= attribute on that specific element.
-            // Previous approach had two bugs:
-            //  1) Early-returned if ANY element had fill=, skipping elements that didn't
-            //  2) Only matched "<shape " with trailing space, missing newlines/self-closing
             string inheritedFill = ResolveSvgRootFill(svgContent);
             if (string.Equals(inheritedFill, "none", StringComparison.OrdinalIgnoreCase))
             {
@@ -293,7 +350,6 @@ namespace FenBrowser.FenEngine.Adapters
             {
                 try
                 {
-                    // Regex matches: <shape followed by whitespace/>/> then attributes WITHOUT fill=, then closing
                     svgContent = Regex.Replace(
                         svgContent,
                         $@"<{shape}(?=[\s/>])((?:(?!fill\s*=)[^>])*?)(/?>)",
@@ -303,7 +359,6 @@ namespace FenBrowser.FenEngine.Adapters
                 }
                 catch (RegexMatchTimeoutException)
                 {
-                    // SVG too complex for regex — skip fill injection for this shape type
                     break;
                 }
             }
@@ -474,6 +529,7 @@ namespace FenBrowser.FenEngine.Adapters
 
             return (attrs ?? string.Empty) + " " + replacement;
         }
+
         /// <summary>
         /// Deduplicate attributes within SVG tags. 
         /// Strict XML/SVG parsers fail if they find two 'fill' attributes on the same element.
@@ -484,44 +540,48 @@ namespace FenBrowser.FenEngine.Adapters
 
             try
             {
-                // Regex to find tags and their interior content
-                // <tag attr="val" attr2="val2">
-                return System.Text.RegularExpressions.Regex.Replace(svgContent, @"<([a-zA-Z0-9_\-]+)\s+([^>]*?)(/?)>", m =>
-                {
-                    string tagName = m.Groups[1].Value;
-                    string attrsArea = m.Groups[2].Value;
-                    string selfClose = m.Groups[3].Value;
-
-                    // Regex to match individual attributes: attr="val" or attr='val' or attr=val
-                    var attrMatches = System.Text.RegularExpressions.Regex.Matches(attrsArea, 
-                        @"(?<name>[a-zA-Z0-9_\-:]+)\s*=\s*(?:""(?<val>[^""]*)""|'(?<val>[^']*)'|(?<val>[^>\s]+))");
-
-                    var seen = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    var uniqueAttrs = new System.Collections.Generic.List<string>();
-
-                    foreach (System.Text.RegularExpressions.Match attr in attrMatches)
+                return Regex.Replace(
+                    svgContent,
+                    @"<([a-zA-Z0-9_\-]+)\s+([^>]*?)(/?)>",
+                    m =>
                     {
-                        string name = attr.Groups["name"].Value;
-                        if (seen.Add(name))
+                        string tagName = m.Groups[1].Value;
+                        string attrsArea = m.Groups[2].Value;
+                        string selfClose = m.Groups[3].Value;
+
+                        var attrMatches = Regex.Matches(
+                            attrsArea,
+                            @"(?<name>[a-zA-Z0-9_\-:]+)\s*=\s*(?:""(?<val>[^""]*)""|'(?<val>[^']*)'|(?<val>[^>\s]+))",
+                            RegexOptions.None,
+                            SanitizerRegexTimeout);
+
+                        var seen = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        var uniqueAttrs = new System.Collections.Generic.List<string>();
+
+                        foreach (Match attr in attrMatches)
                         {
-                            uniqueAttrs.Add(attr.Value);
+                            string name = attr.Groups["name"].Value;
+                            if (seen.Add(name))
+                            {
+                                uniqueAttrs.Add(attr.Value);
+                            }
                         }
-                    }
 
-                    // If we found attributes, rebuild the tag. 
-                    // Note: This might strip non-attribute junk inside the tag, which is usually fine for SVGs.
-                    if (uniqueAttrs.Count > 0)
-                    {
-                        var closeSuffix = string.IsNullOrEmpty(selfClose) ? ">" : "/>";
-                        return $"<{tagName} {string.Join(" ", uniqueAttrs)}{closeSuffix}";
-                    }
+                        if (uniqueAttrs.Count > 0)
+                        {
+                            var closeSuffix = string.IsNullOrEmpty(selfClose) ? ">" : "/>";
+                            return $"<{tagName} {string.Join(" ", uniqueAttrs)}{closeSuffix}";
+                        }
 
-                    return m.Value; // No attributes found or parsing failure, return as is
-                });
+                        return m.Value;
+                    },
+                    RegexOptions.Singleline,
+                    SanitizerRegexTimeout);
             }
-            catch
+            catch (RegexMatchTimeoutException)
             {
-                return svgContent; // Fallback
+                // Keep the already-sanitized source rather than retrying without limits.
+                return svgContent;
             }
         }
     }
