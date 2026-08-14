@@ -18,23 +18,15 @@ namespace FenBrowser.Core.Dom.V2
         private readonly Element _element;
         private readonly string _attributeName;
 
-        // Cached token list (invalidated on attribute change)
         private string[] _tokens;
         private string _cachedValue;
 
-        /// <summary>
-        /// Creates a DOMTokenList for the given element and attribute.
-        /// </summary>
         internal DOMTokenList(Element element, string attributeName)
         {
             _element = element ?? throw new ArgumentNullException(nameof(element));
             _attributeName = attributeName ?? throw new ArgumentNullException(nameof(attributeName));
         }
 
-        /// <summary>
-        /// Returns the number of tokens.
-        /// https://dom.spec.whatwg.org/#dom-domtokenlist-length
-        /// </summary>
         public int Length
         {
             get
@@ -44,10 +36,6 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
-        /// <summary>
-        /// Returns the token at the specified index.
-        /// https://dom.spec.whatwg.org/#dom-domtokenlist-item
-        /// </summary>
         [System.Runtime.CompilerServices.IndexerName("ItemAt")]
         public string this[int index]
         {
@@ -60,43 +48,26 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
-        /// <summary>
-        /// Returns the token at the specified index.
-        /// </summary>
         public string Item(int index) => this[index];
 
-        /// <summary>
-        /// Gets or sets the underlying attribute value.
-        /// https://dom.spec.whatwg.org/#dom-domtokenlist-value
-        /// </summary>
         public string Value
         {
             get => _element.GetAttribute(_attributeName) ?? "";
             set => _element.SetAttribute(_attributeName, value ?? "");
         }
 
-        /// <summary>
-        /// Returns true if the token is present.
-        /// https://dom.spec.whatwg.org/#dom-domtokenlist-contains
-        /// </summary>
         public bool Contains(string token)
         {
-            if (string.IsNullOrEmpty(token))
-                return false;
-
+            ValidateToken(token);
             EnsureTokens();
-            foreach (var t in _tokens)
+            for (var i = 0; i < _tokens.Length; i++)
             {
-                if (t == token)
+                if (string.Equals(_tokens[i], token, StringComparison.Ordinal))
                     return true;
             }
             return false;
         }
 
-        /// <summary>
-        /// Adds the given tokens.
-        /// https://dom.spec.whatwg.org/#dom-domtokenlist-add
-        /// </summary>
         public void Add(params string[] tokens)
         {
             if (tokens == null)
@@ -117,10 +88,6 @@ namespace FenBrowser.Core.Dom.V2
             RunUpdateSteps(newTokens);
         }
 
-        /// <summary>
-        /// Removes the given tokens.
-        /// https://dom.spec.whatwg.org/#dom-domtokenlist-remove
-        /// </summary>
         public void Remove(params string[] tokens)
         {
             if (tokens == null)
@@ -150,15 +117,11 @@ namespace FenBrowser.Core.Dom.V2
             RunUpdateSteps(newTokens);
         }
 
-        /// <summary>
-        /// Toggles a token. Returns true if the token is now present.
-        /// https://dom.spec.whatwg.org/#dom-domtokenlist-toggle
-        /// </summary>
         public bool Toggle(string token, bool? force = null)
         {
             ValidateToken(token);
 
-            bool present = Contains(token);
+            bool present = ContainsValidated(token);
 
             if (force.HasValue)
             {
@@ -184,10 +147,6 @@ namespace FenBrowser.Core.Dom.V2
             return true;
         }
 
-        /// <summary>
-        /// Replaces a token with another.
-        /// https://dom.spec.whatwg.org/#dom-domtokenlist-replace
-        /// </summary>
         public bool Replace(string oldToken, string newToken)
         {
             ValidateToken(oldToken);
@@ -213,16 +172,8 @@ namespace FenBrowser.Core.Dom.V2
             return true;
         }
 
-        /// <summary>
-        /// Returns true if the token is one of the supported tokens defined for
-        /// this element/attribute pair.
-        /// https://dom.spec.whatwg.org/#dom-domtokenlist-supports
-        /// </summary>
         public bool Supports(string token)
         {
-            // classList has no specification-defined supported-token set, so the
-            // DOM validation steps require TypeError rather than treating every
-            // syntactically valid class name as "supported".
             if (!string.Equals(_attributeName, "sandbox", StringComparison.OrdinalIgnoreCase) ||
                 !string.Equals(_element.LocalName, "iframe", StringComparison.OrdinalIgnoreCase))
             {
@@ -232,7 +183,6 @@ namespace FenBrowser.Core.Dom.V2
             if (token == null)
                 token = string.Empty;
 
-            // HTML iframe sandbox keywords are ASCII case-insensitive.
             return token.ToLowerInvariant() switch
             {
                 "allow-downloads" => true,
@@ -261,15 +211,34 @@ namespace FenBrowser.Core.Dom.V2
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-        private void ValidateToken(string token)
+        private bool ContainsValidated(string token)
+        {
+            EnsureTokens();
+            for (var i = 0; i < _tokens.Length; i++)
+            {
+                if (string.Equals(_tokens[i], token, StringComparison.Ordinal))
+                    return true;
+            }
+            return false;
+        }
+
+        private static void ValidateToken(string token)
         {
             if (string.IsNullOrEmpty(token))
                 throw new DomException("SyntaxError", "Token cannot be empty");
 
-            if (token.IndexOfAny(new[] { ' ', '\t', '\r', '\n', '\f' }) >= 0)
-                throw new DomException("InvalidCharacterError",
-                    "Token cannot contain whitespace");
+            for (var i = 0; i < token.Length; i++)
+            {
+                if (IsAsciiWhitespace(token[i]))
+                {
+                    throw new DomException("InvalidCharacterError",
+                        "Token cannot contain whitespace");
+                }
+            }
         }
+
+        private static bool IsAsciiWhitespace(char value) =>
+            value is ' ' or '\t' or '\r' or '\n' or '\f';
 
         private void EnsureTokens()
         {
@@ -295,9 +264,6 @@ namespace FenBrowser.Core.Dom.V2
 
         private void RunUpdateSteps(List<string> tokens)
         {
-            // DOMTokenList update steps explicitly preserve an absent attribute
-            // when the token set is empty. This matters for calls such as
-            // element.classList.remove("x") on an element with no class attribute.
             if (tokens.Count == 0 && !_element.HasAttribute(_attributeName))
             {
                 _tokens = Array.Empty<string>();
