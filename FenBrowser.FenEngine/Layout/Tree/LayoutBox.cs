@@ -72,14 +72,18 @@ namespace FenBrowser.FenEngine.Layout.Tree
         }
 
         /// <summary>
-        /// Children boxes.
+        /// Children boxes. The returned mutable view remains bound to this box's
+        /// store generation; retaining it across LayoutBoxStore.Reset() cannot mutate
+        /// a later tree that happens to reuse the same integer store id.
         /// </summary>
         public IList<LayoutBox> Children
         {
             get
             {
                 EnsureAlive();
-                return _children ??= Store.GetChildrenList(StoreId);
+                return _children ??= new GenerationValidatedChildrenList(
+                    this,
+                    Store.GetChildrenList(StoreId));
             }
         }
 
@@ -163,6 +167,134 @@ namespace FenBrowser.FenEngine.Layout.Tree
         private void EnsureAlive()
         {
             Store.ValidateAccess(StoreId, _storeGeneration);
+        }
+
+        private sealed class GenerationValidatedChildrenList : IList<LayoutBox>
+        {
+            private readonly LayoutBox _owner;
+            private readonly IList<LayoutBox> _inner;
+
+            public GenerationValidatedChildrenList(LayoutBox owner, IList<LayoutBox> inner)
+            {
+                _owner = owner ?? throw new ArgumentNullException(nameof(owner));
+                _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+            }
+
+            public LayoutBox this[int index]
+            {
+                get
+                {
+                    EnsureOwnerAlive();
+                    return _inner[index];
+                }
+                set
+                {
+                    EnsureOwnerAlive();
+                    EnsureItemAlive(value);
+                    _inner[index] = value;
+                }
+            }
+
+            public int Count
+            {
+                get
+                {
+                    EnsureOwnerAlive();
+                    return _inner.Count;
+                }
+            }
+
+            public bool IsReadOnly
+            {
+                get
+                {
+                    EnsureOwnerAlive();
+                    return _inner.IsReadOnly;
+                }
+            }
+
+            public void Add(LayoutBox item)
+            {
+                EnsureOwnerAlive();
+                EnsureItemAlive(item);
+                _inner.Add(item);
+            }
+
+            public void Clear()
+            {
+                EnsureOwnerAlive();
+                _inner.Clear();
+            }
+
+            public bool Contains(LayoutBox item)
+            {
+                EnsureOwnerAlive();
+                EnsureItemAlive(item);
+                return _inner.Contains(item);
+            }
+
+            public void CopyTo(LayoutBox[] array, int arrayIndex)
+            {
+                EnsureOwnerAlive();
+                _inner.CopyTo(array, arrayIndex);
+            }
+
+            public IEnumerator<LayoutBox> GetEnumerator()
+            {
+                EnsureOwnerAlive();
+                for (var i = 0; ; i++)
+                {
+                    EnsureOwnerAlive();
+                    if (i >= _inner.Count)
+                    {
+                        yield break;
+                    }
+
+                    yield return _inner[i];
+                }
+            }
+
+            System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+            public int IndexOf(LayoutBox item)
+            {
+                EnsureOwnerAlive();
+                EnsureItemAlive(item);
+                return _inner.IndexOf(item);
+            }
+
+            public void Insert(int index, LayoutBox item)
+            {
+                EnsureOwnerAlive();
+                EnsureItemAlive(item);
+                _inner.Insert(index, item);
+            }
+
+            public bool Remove(LayoutBox item)
+            {
+                EnsureOwnerAlive();
+                EnsureItemAlive(item);
+                return _inner.Remove(item);
+            }
+
+            public void RemoveAt(int index)
+            {
+                EnsureOwnerAlive();
+                _inner.RemoveAt(index);
+            }
+
+            private void EnsureOwnerAlive() => _owner.EnsureAlive();
+
+            private void EnsureItemAlive(LayoutBox item)
+            {
+                if (item == null)
+                {
+                    throw new ArgumentNullException(nameof(item));
+                }
+
+                item.EnsureAlive();
+                _owner.EnsureSameStore(item);
+            }
         }
     }
 }
