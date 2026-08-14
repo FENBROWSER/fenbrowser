@@ -1,30 +1,33 @@
+using System.Collections.Concurrent;
+
 namespace FenBrowser.Js.Runtime;
 
 public readonly struct JsValue
 {
     private static long _nextStringId;
-    private static readonly Dictionary<long, string> StringPool = new();
+    private static readonly ConcurrentDictionary<long, string> StringPool = new();
     // Reverse map for interning short strings. Identifiers and property names
     // dominate FromString calls — deduplicating them cuts pool growth from
     // O(allocations) to O(distinct strings). Capped at 256 chars to keep the
     // intern table from absorbing arbitrarily large user strings.
     private const int StringInternMaxLength = 256;
-    private static readonly Dictionary<string, long> StringInternTable = new(StringComparer.Ordinal);
-    private static readonly Lock StringPoolLock = new();
+    private static readonly ConcurrentDictionary<string, long> StringInternTable = new(StringComparer.Ordinal);
+    // Only short-string misses need serialization so two threads cannot allocate
+    // different ids for the same interned primitive. Hits and all reads remain
+    // lock-free; long strings never touch this gate.
+    private static readonly Lock StringInternMissLock = new();
 
     // Symbol pool. A Symbol's identity is its monotonically-assigned 64-bit id; the
-    // optional description is looked up alongside. Two Symbol values are === iff
-    // their ids match - the description is a debug aid only and never affects
-    // identity (matching ECMA-262 7.4.4 'Symbol description', which is optional and
-    // does not participate in equality).
+    // optional description is looked up alongside. Use a non-nullable value wrapper
+    // so ConcurrentDictionary can represent Symbol() with no description safely.
+    private readonly record struct SymbolRecord(string? Description);
     private static long _nextSymbolId;
-    private static readonly Dictionary<long, string?> SymbolPool = new();
-    private static readonly Lock SymbolPoolLock = new();
+    private static readonly ConcurrentDictionary<long, SymbolRecord> SymbolPool = new();
 
-    // BigInt pool. BigInts are interned by id (same pattern as String and Symbol).
+    // BigInt pool. IDs remain stable for the lifetime of a JsValue, but creation and
+    // reads do not need to serialize unrelated interpreters behind a global lock.
     private static long _nextBigIntId;
-    private static readonly Dictionary<long, System.Numerics.BigInteger> BigIntPool = new();
-    private static readonly Lock BigIntPoolLock = new();
+    private static readonly ConcurrentDictionary<long, System.Numerics.BigInteger> BigIntPool = new();
 
     public readonly JsValueTag Tag;
     private readonly long _payload;
@@ -54,22 +57,33 @@ public readonly struct JsValue
     public static JsValue FromString(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        lock (StringPoolLock)
+
+        if (value.Length <= StringInternMaxLength)
         {
-            if (value.Length <= StringInternMaxLength &&
-                StringInternTable.TryGetValue(value, out var existingId))
+            if (StringInternTable.TryGetValue(value, out var existingId))
             {
                 return new JsValue(JsValueTag.String, existingId, 0);
             }
 
-            var id = ++_nextStringId;
-            StringPool[id] = value;
-            if (value.Length <= StringInternMaxLength)
+            lock (StringInternMissLock)
             {
+                // Double-check after acquiring the miss gate. Only the first thread
+                // publishes an id for this interned string.
+                if (StringInternTable.TryGetValue(value, out existingId))
+                {
+                    return new JsValue(JsValueTag.String, existingId, 0);
+                }
+
+                var id = Interlocked.Increment(ref _nextStringId);
+                StringPool[id] = value;
                 StringInternTable[value] = id;
+                return new JsValue(JsValueTag.String, id, 0);
             }
-            return new JsValue(JsValueTag.String, id, 0);
         }
+
+        var longStringId = Interlocked.Increment(ref _nextStringId);
+        StringPool[longStringId] = value;
+        return new JsValue(JsValueTag.String, longStringId, 0);
     }
 
     public bool AsBoolean() => Tag == JsValueTag.Boolean && _payload != 0;
@@ -105,11 +119,8 @@ public readonly struct JsValue
             throw new InvalidOperationException($"Value is not a string (tag={Tag}).");
         }
 
-        lock (StringPoolLock)
-        {
-            if (StringPool.TryGetValue(_payload, out var value))
-                return value;
-        }
+        if (StringPool.TryGetValue(_payload, out var value))
+            return value;
 
         throw new InvalidOperationException($"Unknown or stale string pool id {_payload}.");
     }
@@ -120,12 +131,9 @@ public readonly struct JsValue
     // Symbol() is the only public way to mint identity tokens.
     public static JsValue FromSymbol(string? description = null)
     {
-        lock (SymbolPoolLock)
-        {
-            var id = ++_nextSymbolId;
-            SymbolPool[id] = description;
-            return new JsValue(JsValueTag.Symbol, id, 0);
-        }
+        var id = Interlocked.Increment(ref _nextSymbolId);
+        SymbolPool[id] = new SymbolRecord(description);
+        return new JsValue(JsValueTag.Symbol, id, 0);
     }
 
     // Construct a Symbol value from an existing id; used to expose well-known
@@ -153,23 +161,17 @@ public readonly struct JsValue
             throw new InvalidOperationException($"Value is not a symbol (tag={Tag}).");
         }
 
-        lock (SymbolPoolLock)
-        {
-            if (SymbolPool.TryGetValue(_payload, out var description))
-                return description;
-        }
+        if (SymbolPool.TryGetValue(_payload, out var record))
+            return record.Description;
 
         throw new InvalidOperationException($"Unknown or stale symbol pool id {_payload}.");
     }
 
     public static JsValue FromBigInt(System.Numerics.BigInteger value)
     {
-        lock (BigIntPoolLock)
-        {
-            var id = ++_nextBigIntId;
-            BigIntPool[id] = value;
-            return new JsValue(JsValueTag.BigInt, id, 0);
-        }
+        var id = Interlocked.Increment(ref _nextBigIntId);
+        BigIntPool[id] = value;
+        return new JsValue(JsValueTag.BigInt, id, 0);
     }
 
     public System.Numerics.BigInteger AsBigInt()
@@ -179,11 +181,8 @@ public readonly struct JsValue
             throw new InvalidOperationException($"Value is not a BigInt (tag={Tag}).");
         }
 
-        lock (BigIntPoolLock)
-        {
-            if (BigIntPool.TryGetValue(_payload, out var value))
-                return value;
-        }
+        if (BigIntPool.TryGetValue(_payload, out var value))
+            return value;
 
         throw new InvalidOperationException($"Unknown or stale BigInt pool id {_payload}.");
     }
