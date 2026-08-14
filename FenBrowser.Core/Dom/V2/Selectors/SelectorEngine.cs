@@ -8,14 +8,33 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 {
     /// <summary>
     /// High-performance selector matching engine.
-    /// Uses compiled selectors with bloom filter optimization.
+    /// Uses compiled selectors with a thread-local bounded LRU cache.
     /// </summary>
     public static class SelectorEngine
     {
-        // Thread-local selector cache (LRU-like)
-        [ThreadStatic]
-        private static Dictionary<string, CompiledSelector> _cache;
         private const int MaxCacheSize = 256;
+
+        [ThreadStatic]
+        private static SelectorCacheState _cache;
+
+        private sealed class SelectorCacheState
+        {
+            public readonly Dictionary<string, LinkedListNode<SelectorCacheEntry>> Entries =
+                new(StringComparer.Ordinal);
+            public readonly LinkedList<SelectorCacheEntry> Recency = new();
+        }
+
+        private sealed class SelectorCacheEntry
+        {
+            public SelectorCacheEntry(string key, CompiledSelector selector)
+            {
+                Key = key;
+                Selector = selector;
+            }
+
+            public string Key { get; }
+            public CompiledSelector Selector { get; }
+        }
 
         /// <summary>
         /// Returns the first element matching the selector.
@@ -69,23 +88,42 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         }
 
         /// <summary>
-        /// Compiles a selector string (with caching).
+        /// Compiles a selector string with a bounded per-thread LRU cache.
         /// </summary>
         public static CompiledSelector Compile(string selectors)
         {
             ArgumentNullException.ThrowIfNull(selectors);
-            _cache ??= new Dictionary<string, CompiledSelector>(StringComparer.Ordinal);
+            var cache = _cache ??= new SelectorCacheState();
 
-            if (_cache.TryGetValue(selectors, out var cached))
-                return cached;
+            if (cache.Entries.TryGetValue(selectors, out var cachedNode))
+            {
+                if (!ReferenceEquals(cache.Recency.First, cachedNode))
+                {
+                    cache.Recency.Remove(cachedNode);
+                    cache.Recency.AddFirst(cachedNode);
+                }
+                return cachedNode.Value.Selector;
+            }
 
+            // Parse outside any cache mutation. The cache is thread-local, so there is
+            // no synchronization to gain by interleaving parse and bookkeeping.
             var compiled = SelectorParser.Parse(selectors);
 
-            // LRU-like eviction
-            if (_cache.Count >= MaxCacheSize)
-                _cache.Clear();
+            // Evict exactly one least-recently-used selector when full. The previous
+            // implementation cleared all 256 entries at once, creating periodic parse
+            // storms on selector-heavy applications.
+            if (cache.Entries.Count >= MaxCacheSize)
+            {
+                var leastRecent = cache.Recency.Last;
+                if (leastRecent != null)
+                {
+                    cache.Recency.RemoveLast();
+                    cache.Entries.Remove(leastRecent.Value.Key);
+                }
+            }
 
-            _cache[selectors] = compiled;
+            var newNode = cache.Recency.AddFirst(new SelectorCacheEntry(selectors, compiled));
+            cache.Entries[selectors] = newNode;
             return compiled;
         }
 
@@ -94,17 +132,14 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         /// </summary>
         public static void ClearCache()
         {
-            _cache?.Clear();
+            var cache = _cache;
+            if (cache == null) return;
+            cache.Entries.Clear();
+            cache.Recency.Clear();
         }
-
-        // --- Internal Query Implementation ---
 
         private static Element QueryFirstInternal(Node root, CompiledSelector selector)
         {
-            // Pre-order depth-first traversal in document tree order. Push siblings
-            // from last to first so the stack pops FirstChild first. Using the DOM's
-            // existing sibling links avoids allocating a temporary List<Node> for
-            // every container visited by querySelector.
             var stack = new Stack<Node>();
             PushChildrenReverse(root, stack);
 
@@ -112,13 +147,9 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             {
                 var node = stack.Pop();
 
-                if (node is Element el)
+                if (node is Element el && selector.Matches(el))
                 {
-                    // Fast-path bloom filter information is intentionally not used to
-                    // prune descendants here: a selector that cannot match this element
-                    // can still match one of its descendants.
-                    if (selector.Matches(el))
-                        return el;
+                    return el;
                 }
 
                 PushChildrenReverse(node, stack);
@@ -148,7 +179,6 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             if (node is not ContainerNode container)
                 return;
 
-            // Last -> first push yields first -> last processing with LIFO stack.
             for (var child = container.LastChild; child != null; child = child.PreviousSibling)
                 stack.Push(child);
         }
@@ -159,33 +189,21 @@ namespace FenBrowser.Core.Dom.V2.Selectors
     /// </summary>
     public static class SelectorExtensions
     {
-        /// <summary>
-        /// Returns the first descendant element matching the selector.
-        /// </summary>
         public static Element QuerySelector(this ContainerNode node, string selectors)
         {
             return SelectorEngine.QueryFirst(node, selectors);
         }
 
-        /// <summary>
-        /// Returns all descendant elements matching the selector.
-        /// </summary>
         public static NodeList QuerySelectorAll(this ContainerNode node, string selectors)
         {
             return SelectorEngine.QueryAll(node, selectors);
         }
 
-        /// <summary>
-        /// Returns true if this element matches the selector.
-        /// </summary>
         public static bool Matches(this Element element, string selectors)
         {
             return SelectorEngine.Matches(element, selectors);
         }
 
-        /// <summary>
-        /// Returns the closest ancestor (or self) matching the selector.
-        /// </summary>
         public static Element Closest(this Element element, string selectors)
         {
             return SelectorEngine.Closest(element, selectors);
