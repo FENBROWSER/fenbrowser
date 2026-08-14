@@ -32,6 +32,7 @@ namespace FenBrowser.Core.Dom.V2
         /// The current node.
         /// </summary>
         private Node _currentNode;
+        private bool _isActive;
 
         public Node CurrentNode
         {
@@ -57,9 +58,6 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public Node ParentNode()
         {
-            if (!IsInclusiveDescendantOfRoot(CurrentNode))
-                return null;
-
             var node = CurrentNode;
             while (node != null && node != Root)
             {
@@ -76,31 +74,28 @@ namespace FenBrowser.Core.Dom.V2
         /// <summary>
         /// Moves to the first child.
         /// </summary>
-        public Node FirstChild() => IsInclusiveDescendantOfRoot(CurrentNode) ? TraverseChildren(true) : null;
+        public Node FirstChild() => TraverseChildren(true);
 
         /// <summary>
         /// Moves to the last child.
         /// </summary>
-        public Node LastChild() => IsInclusiveDescendantOfRoot(CurrentNode) ? TraverseChildren(false) : null;
+        public Node LastChild() => TraverseChildren(false);
 
         /// <summary>
         /// Moves to the previous sibling.
         /// </summary>
-        public Node PreviousSibling() => IsInclusiveDescendantOfRoot(CurrentNode) ? TraverseSiblings(false) : null;
+        public Node PreviousSibling() => TraverseSiblings(false);
 
         /// <summary>
         /// Moves to the next sibling.
         /// </summary>
-        public Node NextSibling() => IsInclusiveDescendantOfRoot(CurrentNode) ? TraverseSiblings(true) : null;
+        public Node NextSibling() => TraverseSiblings(true);
 
         /// <summary>
         /// Moves to the previous node in document order.
         /// </summary>
         public Node PreviousNode()
         {
-            if (!IsInclusiveDescendantOfRoot(CurrentNode))
-                return null;
-
             var node = CurrentNode;
             while (node != Root)
             {
@@ -143,9 +138,6 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public Node NextNode()
         {
-            if (!IsInclusiveDescendantOfRoot(CurrentNode))
-                return null;
-
             var node = CurrentNode;
             var result = NodeFilterResult.Accept;
 
@@ -275,27 +267,25 @@ namespace FenBrowser.Core.Dom.V2
 
         private NodeFilterResult AcceptNode(Node node)
         {
-            // Check whatToShow
             uint flag = 1u << ((int)node.NodeType - 1);
             if ((WhatToShow & flag) == 0)
                 return NodeFilterResult.Skip;
 
-            // Check filter
-            if (Filter != null)
-                return Filter(node);
+            if (Filter == null)
+                return NodeFilterResult.Accept;
 
-            return NodeFilterResult.Accept;
-        }
+            if (_isActive)
+                throw new DomException("InvalidStateError", "TreeWalker filter is already active");
 
-        private bool IsInclusiveDescendantOfRoot(Node node)
-        {
-            for (var current = node; current != null; current = current.ParentNode)
+            _isActive = true;
+            try
             {
-                if (ReferenceEquals(current, Root))
-                    return true;
+                return Filter(node);
             }
-
-            return false;
+            finally
+            {
+                _isActive = false;
+            }
         }
     }
 
