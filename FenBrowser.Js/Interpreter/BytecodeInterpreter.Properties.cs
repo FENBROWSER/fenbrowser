@@ -115,9 +115,8 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
-    // Symbol-keyed [[Get]] mirroring GetReceiverProperty: Object falls through to
-    // the symbol-table lookup; String/Number/Boolean primitives consult their
-    // prototype's symbol table; undefined / null raise TypeError.
+    // Symbol-keyed [[Get]] mirroring GetReceiverProperty. Prototype traversal stays
+    // inside the interpreter so it cannot consume the managed stack on deep chains.
     [MayExecuteJs]
     private JsValue GetReceiverSymbolProperty(JsValue receiver, long symbolId)
     {
@@ -126,35 +125,30 @@ public sealed partial class BytecodeInterpreter
             case JsValueTag.Object:
             {
                 var obj = ResolveObject(receiver);
-                if (obj is ProxyObject proxyGet)
-                {
-                    return ProxyGetSymbol(proxyGet, receiver, symbolId);
-                }
-
-                return obj.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
-                    ? GetDescriptorValue(desc, receiver)
+                return TryGetSymbolPropertyValue(obj, receiver, symbolId, out var value)
+                    ? value
                     : JsValue.Undefined;
             }
             case JsValueTag.String:
             {
                 var stringProto = _heap.GetObject(GetGlobalPrototype("String"));
-                return stringProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
-                    ? GetDescriptorValue(desc, receiver)
+                return TryGetSymbolPropertyValue(stringProto, receiver, symbolId, out var value)
+                    ? value
                     : JsValue.Undefined;
             }
             case JsValueTag.Number:
             case JsValueTag.Int32:
             {
                 var numberProto = _heap.GetObject(GetGlobalPrototype("Number"));
-                return numberProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
-                    ? GetDescriptorValue(desc, receiver)
+                return TryGetSymbolPropertyValue(numberProto, receiver, symbolId, out var value)
+                    ? value
                     : JsValue.Undefined;
             }
             case JsValueTag.Boolean:
             {
                 var boolProto = _heap.GetObject(GetGlobalPrototype("Boolean"));
-                return boolProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
-                    ? GetDescriptorValue(desc, receiver)
+                return TryGetSymbolPropertyValue(boolProto, receiver, symbolId, out var value)
+                    ? value
                     : JsValue.Undefined;
             }
             case JsValueTag.Symbol:
@@ -162,8 +156,8 @@ public sealed partial class BytecodeInterpreter
                 // ToObject(symbol) → %Symbol.prototype% for symbol-keyed reads
                 // such as sym[Symbol.toPrimitive].
                 var symbolProto = _heap.GetObject(GetGlobalPrototype("Symbol"));
-                return symbolProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
-                    ? GetDescriptorValue(desc, receiver)
+                return TryGetSymbolPropertyValue(symbolProto, receiver, symbolId, out var value)
+                    ? value
                     : JsValue.Undefined;
             }
             case JsValueTag.BigInt:
@@ -171,8 +165,8 @@ public sealed partial class BytecodeInterpreter
                 // ToObject(bigint) → %BigInt.prototype% for symbol-keyed reads
                 // such as the @@toStringTag used by Object.prototype.toString.
                 var bigIntProto = _heap.GetObject(GetGlobalPrototype("BigInt"));
-                return bigIntProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
-                    ? GetDescriptorValue(desc, receiver)
+                return TryGetSymbolPropertyValue(bigIntProto, receiver, symbolId, out var value)
+                    ? value
                     : JsValue.Undefined;
             }
             case JsValueTag.HostObject:
@@ -192,6 +186,61 @@ public sealed partial class BytecodeInterpreter
                     "Cannot read properties of null (reading symbol key)."));
             default:
                 return JsValue.Undefined;
+        }
+    }
+
+    [MayExecuteJs]
+    private bool TryGetSymbolPropertyValue(
+        JsObject obj,
+        JsValue receiver,
+        long symbolId,
+        out JsValue value)
+    {
+        const int CycleDetectionThreshold = 64;
+        HashSet<long>? visitedPrototypeHandles = null;
+        var depth = 0;
+        var current = obj;
+
+        while (true)
+        {
+            if (current is ProxyObject proxyGet)
+            {
+                value = ProxyGetSymbol(proxyGet, receiver, symbolId);
+                return true;
+            }
+
+            if (current.TryGetOwnSymbolProperty(symbolId, out var descriptor))
+            {
+                value = GetDescriptorValue(descriptor, receiver);
+                return true;
+            }
+
+            if (current.PrototypeHandle is not { } handle)
+            {
+                value = JsValue.Undefined;
+                return false;
+            }
+
+            depth++;
+            if (depth >= CycleDetectionThreshold)
+            {
+                visitedPrototypeHandles ??= new HashSet<long>();
+                if (!visitedPrototypeHandles.Add(handle.ToInt64()))
+                {
+                    throw new JsEngineFatalException(
+                        $"Prototype chain cycle detected while reading symbol {symbolId}.");
+                }
+            }
+
+            try
+            {
+                current = _heap.GetObject(handle);
+            }
+            catch (JsEngineFatalException ex)
+            {
+                throw new JsEngineFatalException(
+                    $"{ex.Message} [symbolProtoWalk owner={current.GetType().Name} symbol={symbolId}]");
+            }
         }
     }
 
