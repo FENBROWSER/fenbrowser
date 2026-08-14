@@ -15,6 +15,7 @@ namespace FenBrowser.Core.Network
     {
         public HttpRequestMessage Request { get; set; }
         public HttpResponseMessage Response { get; set; }
+        public FetchContext FetchContext { get; }
         public Dictionary<string, object> Properties { get; } = new Dictionary<string, object>();
         public bool IsBlocked { get; set; }
         public string BlockReason { get; set; }
@@ -22,6 +23,7 @@ namespace FenBrowser.Core.Network
         public NetworkContext(HttpRequestMessage request)
         {
             Request = request ?? throw new ArgumentNullException(nameof(request));
+            FetchContext = FetchContextRequestOptions.Get(request);
         }
     }
 
