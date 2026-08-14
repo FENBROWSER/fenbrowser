@@ -66,12 +66,11 @@ namespace FenBrowser.Core.Dom.V2
         }
 
         /// <summary>
-        /// Detaches the iterator (no-op in modern browsers).
+        /// Legacy API retained by the DOM standard. It intentionally does nothing.
+        /// The iterator must remain registered for mutation-adjustment bookkeeping.
         /// </summary>
         public void Detach()
         {
-            _owningDocument?.UnregisterNodeIterator(this);
-            _owningDocument = null;
         }
 
         private Node Traverse(bool next)
