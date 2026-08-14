@@ -98,11 +98,12 @@ namespace FenBrowser.Host.ProcessIsolation
             var authToken = CreateAuthToken();
             var session = new RendererChildSession(tabId, pipeName, authToken);
             ISandbox sandbox = null;
+            Process process = null;
 
             try
             {
                 sandbox = CreateSandbox(sandboxFactory, assignmentKey);
-                var process = StartRendererChildWithSandbox(
+                process = StartRendererChildWithSandbox(
                     tabId, pipeName, authToken, assignmentKey, sandbox);
 
                 if (process == null)
@@ -113,20 +114,31 @@ namespace FenBrowser.Host.ProcessIsolation
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 cts.CancelAfter(timeout);
 
-                // Use the linked token rather than the caller token so the local
-                // startup timeout is actually enforced even when the caller supplied
-                // an uncancelled token.
                 var ready = await session.WaitForReadyAsync(timeout, cts.Token).ConfigureAwait(false);
                 if (!ready)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
                     throw new RendererProcessSlotException("Renderer process startup timeout");
+                }
 
                 EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info,
                     $"[RendererProcessSlot] Process {process.Id} ready for assignment {assignmentKey}");
 
                 return new RendererProcessSlot(session, process, sandbox, assignmentKey);
             }
+            catch (OperationCanceledException)
+            {
+                // A partially started child must not outlive the failed acquisition.
+                TryKillProcess(process, $"startup-cancelled assignment={assignmentKey}");
+                sandbox?.Dispose();
+                session.Dispose();
+                throw;
+            }
             catch (Exception ex)
             {
+                // RendererChildSession.Dispose closes IPC but intentionally does not
+                // own process lifetime, so kill the partially launched child here.
+                TryKillProcess(process, $"startup-failed assignment={assignmentKey}");
                 sandbox?.Dispose();
                 session.Dispose();
 
@@ -245,8 +257,6 @@ namespace FenBrowser.Host.ProcessIsolation
 
         private static int GenerateTabId()
         {
-            // Negative IDs distinguish pooled child sessions from user tabs. Avoid
-            // Math.Abs(int.MinValue) and timestamp truncation collisions.
             var id = Interlocked.Increment(ref _nextPoolTabId);
             if (id <= 0)
                 throw new InvalidOperationException("Renderer pool tab ID space exhausted.");
@@ -380,12 +390,13 @@ namespace FenBrowser.Host.ProcessIsolation
 
         private static void TryKillProcess(Process process, string reason)
         {
-            if (process == null || process.HasExited)
+            if (process == null)
                 return;
 
             try
             {
-                process.Kill(entireProcessTree: true);
+                if (!process.HasExited)
+                    process.Kill(entireProcessTree: true);
             }
             catch (Exception ex)
             {
