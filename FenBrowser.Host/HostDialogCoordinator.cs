@@ -13,11 +13,12 @@ namespace FenBrowser.Host;
 /// <summary>
 /// Host-side implementation of the JS dialog bridge.
 /// Posts dialog creation to the UI thread via WindowManager.RunOnMainThread,
-/// then blocks the calling thread until the user dismisses the dialog.
+/// then blocks the calling FenJS worker until the user dismisses the dialog.
 /// </summary>
 public static class HostDialogCoordinator
 {
     private static readonly object _gate = new();
+    private static readonly HashSet<PendingDialog> _pendingDialogs = new();
 
     /// <summary>
     /// Install the dialog bridge into FenEngine so that alert/confirm/prompt
@@ -43,11 +44,15 @@ public static class HostDialogCoordinator
             _ => JsDialogType.Alert
         };
 
-        var resultBox = new ResultBox();
-        using (var signal = new ManualResetEventSlim(false))
+        using var pending = new PendingDialog(type);
+        lock (_gate)
         {
-            // Post dialog creation to the main thread via WindowManager's queue.
-            // If that throws (headless, startup race), create the dialog directly.
+            pending.IsRegistered = true;
+            _pendingDialogs.Add(pending);
+        }
+
+        try
+        {
             try
             {
                 WindowManager.Instance.RunOnMainThread(() =>
@@ -55,41 +60,30 @@ public static class HostDialogCoordinator
                     try
                     {
                         ChromeManager.Instance.ShowJavascriptDialog(
-                            dialogType, message, defaultValue,
-                            r => { resultBox.Value = r; signal.Set(); });
+                            dialogType,
+                            message,
+                            defaultValue,
+                            result => CompletePending(pending, result));
                     }
                     catch (Exception ex)
                     {
                         FenLogger.Error(
                             $"[HostDialogCoordinator] ShowDialog failed: {ex.Message}",
                             LogCategory.JavaScript);
-                        resultBox.Value = GetDefaultResult(type);
-                        signal.Set();
+                        CompletePending(pending, GetDefaultResult(type));
                     }
                 });
             }
             catch
             {
-                // WindowManager unavailable — fall back immediately
+                // Headless/startup teardown: fail closed immediately.
                 return GetDefaultResult(type);
             }
 
-            // Poll with Thread.Sleep instead of a blocking Wait().
-            // A blocking WaitOne (or Wait) can expose thread-pool starvation
-            // if the main-thread queue never gets drained (e.g. during
-            // engine-thread stalls).  Polling at ~60 Hz keeps the thread
-            // alive and lets the CLR pump finalizers / GC without risk of
-            // a permanent hang within a single WaitHandle.
-            const int pollIntervalMs = 16;  // ~60 fps
-            const int timeoutMs = 30_000;
-            int elapsed = 0;
-            while (!signal.IsSet && elapsed < timeoutMs)
-            {
-                Thread.Sleep(pollIntervalMs);
-                elapsed += pollIntervalMs;
-            }
-
-            if (!signal.IsSet)
+            // This is a dedicated FenJS worker thread. Wait on the signal directly;
+            // polling with Thread.Sleep wakes ~60 times/second for no useful work and
+            // still cannot make a stalled UI queue progress.
+            if (!pending.Signal.Wait(TimeSpan.FromSeconds(30)))
             {
                 FenLogger.Warn(
                     "[HostDialogCoordinator] Dialog wait timed out after 30s.",
@@ -97,14 +91,50 @@ public static class HostDialogCoordinator
                 TryRemoveOverlay();
                 return GetDefaultResult(type);
             }
-        }
 
-        return resultBox.Value;
+            return pending.Value;
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                pending.IsRegistered = false;
+                _pendingDialogs.Remove(pending);
+            }
+        }
     }
 
-    private sealed class ResultBox
+    private static void CompletePending(PendingDialog pending, object value)
     {
-        public object Value;
+        lock (_gate)
+        {
+            // A UI callback can arrive after timeout/navigation teardown. Once the
+            // waiter unregisters, never touch its disposed ManualResetEventSlim.
+            if (!pending.IsRegistered || pending.IsCompleted)
+                return;
+
+            pending.Value = value;
+            pending.IsCompleted = true;
+            pending.Signal.Set();
+        }
+    }
+
+    private sealed class PendingDialog : IDisposable
+    {
+        public PendingDialog(string type)
+        {
+            Type = type;
+            Value = GetDefaultResult(type);
+            Signal = new ManualResetEventSlim(false);
+        }
+
+        public string Type { get; }
+        public ManualResetEventSlim Signal { get; }
+        public object Value { get; set; }
+        public bool IsCompleted { get; set; }
+        public bool IsRegistered { get; set; }
+
+        public void Dispose() => Signal.Dispose();
     }
 
     private static void TryRemoveOverlay()
@@ -116,14 +146,19 @@ public static class HostDialogCoordinator
                 ChromeManager.Instance.DismissCurrentDialog();
             });
         }
-        catch { /* best effort */ }
+        catch
+        {
+            // Best effort during teardown/headless operation.
+        }
     }
 
     private static object GetDefaultResult(string type)
     {
         return type switch
         {
-            "confirm" => true,
+            // A dialog that cannot be shown, is aborted by navigation, or times out
+            // must never synthesize user approval.
+            "confirm" => false,
             "prompt" => null,
             _ => null // alert
         };
@@ -131,11 +166,23 @@ public static class HostDialogCoordinator
 
     private static void AbortPending()
     {
-        // No static signal to abort — each call has its own local signal.
-        // The JsDialogBridge.AbortPending delegate is kept for API compatibility
-        // and called during navigation teardown. Since ShowDialog uses a
-        // per-call ManualResetEventSlim with a 30s timeout, stale dialogs
-        // self-recover.
+        PendingDialog[] pending;
+        lock (_gate)
+        {
+            pending = _pendingDialogs.ToArray();
+            foreach (var dialog in pending)
+            {
+                if (!dialog.IsRegistered || dialog.IsCompleted)
+                    continue;
+
+                dialog.Value = GetDefaultResult(dialog.Type);
+                dialog.IsCompleted = true;
+                dialog.Signal.Set();
+            }
+        }
+
+        if (pending.Length > 0)
+            TryRemoveOverlay();
     }
 
     // ── window.open() support ──
