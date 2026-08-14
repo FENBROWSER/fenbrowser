@@ -30,7 +30,6 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         Pong,
         Shutdown,
         Error,
-        // Font service operations
         FontGetMetrics,
         FontGetMetricsResponse,
         FontMeasureWidth,
@@ -39,7 +38,6 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         FontShapeTextResponse,
         FontResolveTypeface,
         FontResolveTypefaceResponse,
-        // Image/SVG decoding operations
         ImageDecode,
         ImageDecodeResponse,
         SvgDecode,
@@ -82,7 +80,6 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         public long AcknowledgedAtUnixMs { get; set; } = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     }
 
-    // Font service payloads
     public sealed class FontGetMetricsPayload
     {
         public string FontFamily { get; set; }
@@ -141,7 +138,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
     {
         public string FontFamily { get; set; }
         public int FontWeight { get; set; } = 400;
-        public int FontStyle { get; set; } = 0; // SKFontStyleSlant enum value
+        public int FontStyle { get; set; } = 0;
     }
 
     public sealed class FontResolveTypefaceResponsePayload
@@ -154,20 +151,19 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         public int FontWidth { get; set; }
     }
 
-    // Image/SVG decoding payloads
     public sealed class ImageDecodePayload
     {
         public byte[] Data { get; set; }
         public int? TargetWidth { get; set; }
         public int? TargetHeight { get; set; }
-        public string Url { get; set; } // For format detection
+        public string Url { get; set; }
     }
 
     public sealed class ImageDecodeResponsePayload
     {
         public bool Success { get; set; }
         public string ErrorMessage { get; set; }
-        public byte[] BitmapBytes { get; set; } // BGRA pixels
+        public byte[] BitmapBytes { get; set; }
         public int Width { get; set; }
         public int Height { get; set; }
         public string Format { get; set; }
@@ -188,7 +184,6 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         public int Height { get; set; }
     }
 
-    // Serializable data structures (Skia types don't serialize well)
     public sealed class PositionedGlyphData
     {
         public ushort GlyphId { get; set; }
@@ -388,6 +383,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         public long LastSubmittedCompositorFrameSequence => Interlocked.Read(ref _lastSubmittedCompositorFrameSequence);
         public long LastAckedCompositorFrameSequence => Interlocked.Read(ref _lastAckedCompositorFrameSequence);
         public event Action TargetProcessCrashed;
+        public event Action<TargetIpcEnvelope> ResponseReceived;
 
         public void Start(Process childProcess)
         {
@@ -546,7 +542,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                         continue;
                     }
 
-                    DispatchInbound(envelope);
+                    DispatchInbound(envelope, messageType);
                 }
             }
             catch (Exception ex)
@@ -559,13 +555,8 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
             }
         }
 
-        private void DispatchInbound(TargetIpcEnvelope envelope)
+        private void DispatchInbound(TargetIpcEnvelope envelope, TargetIpcMessageType messageType)
         {
-            if (!TargetIpc.TryValidateInboundEnvelope(envelope, out var messageType, out _))
-            {
-                return;
-            }
-
             switch (messageType)
             {
                 case TargetIpcMessageType.Ready:
@@ -588,6 +579,29 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                     break;
                 case TargetIpcMessageType.Pong:
                     break;
+                case TargetIpcMessageType.FontGetMetricsResponse:
+                case TargetIpcMessageType.FontMeasureWidthResponse:
+                case TargetIpcMessageType.FontShapeTextResponse:
+                case TargetIpcMessageType.FontResolveTypefaceResponse:
+                case TargetIpcMessageType.ImageDecodeResponse:
+                case TargetIpcMessageType.SvgDecodeResponse:
+                    DispatchResponse(envelope);
+                    break;
+            }
+        }
+
+        private void DispatchResponse(TargetIpcEnvelope envelope)
+        {
+            try
+            {
+                ResponseReceived?.Invoke(envelope);
+            }
+            catch (Exception ex)
+            {
+                EngineLog.Write(
+                    LogSubsystem.ProcessIsolation,
+                    LogSeverity.Warn,
+                    $"[{_targetKind}Process] Response subscriber failed for {envelope?.Type}: {ex.Message}");
             }
         }
 
@@ -618,4 +632,3 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         }
     }
 }
-
