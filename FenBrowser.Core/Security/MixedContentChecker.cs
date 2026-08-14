@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Security
 {
@@ -72,29 +71,23 @@ namespace FenBrowser.Core.Security
                 return MixedContentDecision.Allow();
             }
 
-            // UIR rewrites non-navigation insecure resource requests before mixed-content
-            // blocking. A rewritten request is then evaluated as the secure URL.
             if (isUpgradeInsecureRequestsEnabled &&
                 !string.Equals(requestType, "navigation", StringComparison.OrdinalIgnoreCase))
             {
                 var upgradedUrl = UpgradeToSecureTransport(requestUrl);
                 return MixedContentDecision.Upgrade(
-                    $"Insecure request upgraded before mixed-content checks: {requestType} from {requestUrl} -> {upgradedUrl}",
+                    $"Insecure request upgraded before mixed-content checks: type={requestType} host={DescribeAuthority(requestUrl)}",
                     "upgrade-insecure-requests",
                     upgradedUrl);
             }
 
-            // Top-level navigations are not mixed-content subresource requests. UIR may
-            // upgrade navigations back to the protected resource's own host/port tuple;
-            // third-party HTTP navigations remain allowed rather than being blocked as
-            // mixed content.
             if (string.Equals(requestType, "navigation", StringComparison.OrdinalIgnoreCase))
             {
                 if (isUpgradeInsecureRequestsEnabled && IsSameHostAndEffectivePort(requestUrl, pageUrl))
                 {
                     var upgradedUrl = UpgradeToSecureTransport(requestUrl);
                     return MixedContentDecision.Upgrade(
-                        $"Insecure navigation upgraded: {requestUrl} -> {upgradedUrl}",
+                        $"Insecure navigation upgraded: host={DescribeAuthority(requestUrl)}",
                         "upgrade-insecure-navigation",
                         upgradedUrl);
                 }
@@ -114,19 +107,16 @@ namespace FenBrowser.Core.Security
             {
                 var upgradedUrl = UpgradeToSecureTransport(requestUrl);
                 return MixedContentDecision.Upgrade(
-                    $"Upgradeable mixed content rewritten to secure transport: {requestType} from {requestUrl} -> {upgradedUrl}",
+                    $"Upgradeable mixed content rewritten: type={requestType} host={DescribeAuthority(requestUrl)}",
                     "upgradeable-mixed-content",
                     upgradedUrl);
             }
 
             return MixedContentDecision.Block(
-                $"Blockable mixed content blocked: {requestType} from {requestUrl} on secure page {pageUrl}",
+                $"Blockable mixed content blocked: type={requestType} requestHost={DescribeAuthority(requestUrl)} pageHost={DescribeAuthority(pageUrl)}",
                 "blockable-mixed-content");
         }
 
-        /// <summary>
-        /// Checks if a CSP header contains the value-less upgrade-insecure-requests directive.
-        /// </summary>
         public static bool HasUpgradeInsecureRequestsDirective(string cspHeader)
         {
             if (string.IsNullOrWhiteSpace(cspHeader)) return false;
@@ -174,9 +164,46 @@ namespace FenBrowser.Core.Security
                 return false;
             }
 
-            var requestPort = requestUrl.IsDefaultPort ? 80 : requestUrl.Port;
-            var pagePort = pageUrl.IsDefaultPort ? 80 : pageUrl.Port;
-            return requestPort == pagePort;
+            return GetEffectivePort(requestUrl) == GetEffectivePort(pageUrl);
+        }
+
+        private static int GetEffectivePort(Uri uri)
+        {
+            if (uri == null)
+            {
+                return -1;
+            }
+
+            if (!uri.IsDefaultPort)
+            {
+                return uri.Port;
+            }
+
+            return uri.Scheme.ToLowerInvariant() switch
+            {
+                "http" => 80,
+                "https" => 443,
+                "ws" => 80,
+                "wss" => 443,
+                _ => uri.Port
+            };
+        }
+
+        private static string DescribeAuthority(Uri uri)
+        {
+            if (uri == null || !uri.IsAbsoluteUri)
+            {
+                return "<invalid>";
+            }
+
+            try
+            {
+                return uri.GetLeftPart(UriPartial.Authority);
+            }
+            catch
+            {
+                return uri.Scheme + ":";
+            }
         }
 
         public static MixedContentDecision CheckNavigationMixedContent(
