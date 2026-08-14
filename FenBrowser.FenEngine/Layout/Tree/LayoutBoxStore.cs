@@ -9,21 +9,23 @@ namespace FenBrowser.FenEngine.Layout.Tree
 {
     /// <summary>
     /// Struct-of-Arrays (SoA) backing store for layout boxes.
-    /// Dramatically reduces LOH allocations by storing tree state in parallel arrays
-    /// instead of thousands of individual heap-allocated objects.
+    /// Tree child storage is allocated lazily per parent and reused across resets so
+    /// building a wide sibling list is amortized O(1) per append rather than O(N)
+    /// array-copy work for every child.
     /// </summary>
     public sealed class LayoutBoxStore : IDisposable
     {
         private const int DefaultCapacity = 4096;
+        private static readonly IReadOnlyList<int> EmptyChildIds = Array.Empty<int>();
 
-        // SoA parallel arrays
         private Node[] _sourceNodes;
         private CssComputed[] _styles;
         private BoxModel[] _geometries;
         private int[] _parentIds;
-        private int[][] _childIds;
-        private byte[] _boxTypes; // 0=Block, 1=Inline, 2=Text, 3=AnonymousBlock, 4=ListItem, 5=ListMarker
+        private List<int>[] _childIds;
+        private byte[] _boxTypes;
         private bool[] _isAnonymous;
+        private LayoutBox[] _wrappers;
 
         private int _count;
         private int _generation = 1;
@@ -38,26 +40,23 @@ namespace FenBrowser.FenEngine.Layout.Tree
             ListMarker = 5
         }
 
-        private LayoutBox[] _wrappers;
-
         public LayoutBoxStore(int capacity = DefaultCapacity)
         {
             if (capacity < 1)
             {
                 capacity = DefaultCapacity;
             }
+
             AllocateArrays(capacity);
         }
 
         private void AllocateArrays(int capacity)
         {
-            // Allocate from standard heap for references, but these grow gracefully
-            // and are reused across frames via pooling, avoiding LOH churn per-frame.
             _sourceNodes = new Node[capacity];
             _styles = new CssComputed[capacity];
             _geometries = new BoxModel[capacity];
             _parentIds = new int[capacity];
-            _childIds = new int[capacity][];
+            _childIds = new List<int>[capacity];
             _boxTypes = new byte[capacity];
             _isAnonymous = new bool[capacity];
             _wrappers = new LayoutBox[capacity];
@@ -65,18 +64,20 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
         private void EnsureCapacity()
         {
-            if (_count >= _sourceNodes.Length)
+            if (_count < _sourceNodes.Length)
             {
-                int newCapacity = checked(_sourceNodes.Length * 2);
-                Array.Resize(ref _sourceNodes, newCapacity);
-                Array.Resize(ref _styles, newCapacity);
-                Array.Resize(ref _geometries, newCapacity);
-                Array.Resize(ref _parentIds, newCapacity);
-                Array.Resize(ref _childIds, newCapacity);
-                Array.Resize(ref _boxTypes, newCapacity);
-                Array.Resize(ref _isAnonymous, newCapacity);
-                Array.Resize(ref _wrappers, newCapacity);
+                return;
             }
+
+            int newCapacity = checked(_sourceNodes.Length * 2);
+            Array.Resize(ref _sourceNodes, newCapacity);
+            Array.Resize(ref _styles, newCapacity);
+            Array.Resize(ref _geometries, newCapacity);
+            Array.Resize(ref _parentIds, newCapacity);
+            Array.Resize(ref _childIds, newCapacity);
+            Array.Resize(ref _boxTypes, newCapacity);
+            Array.Resize(ref _isAnonymous, newCapacity);
+            Array.Resize(ref _wrappers, newCapacity);
         }
 
         public void Reset()
@@ -90,11 +91,18 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 }
             }
 
-            // Clear reference arrays to prevent memory leaks
             Array.Clear(_sourceNodes, 0, _count);
             Array.Clear(_styles, 0, _count);
-            Array.Clear(_childIds, 0, _count);
             Array.Clear(_wrappers, 0, _count);
+
+            // Keep allocated child buffers so repeated layout passes reuse their
+            // capacity, but clear logical contents and parent links.
+            for (int i = 0; i < _count; i++)
+            {
+                _childIds[i]?.Clear();
+                _parentIds[i] = -1;
+            }
+
             _count = 0;
         }
 
@@ -112,7 +120,6 @@ namespace FenBrowser.FenEngine.Layout.Tree
             }
             else
             {
-                // Reset state for pooled instance
                 var g = _geometries[id];
                 g.MarginBox = default;
                 g.BorderBox = default;
@@ -131,7 +138,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             }
 
             _parentIds[id] = -1;
-            _childIds[id] = Array.Empty<int>();
+            _childIds[id]?.Clear();
             _boxTypes[id] = (byte)type;
             _isAnonymous[id] = isAnonymous || source == null;
 
@@ -145,8 +152,6 @@ namespace FenBrowser.FenEngine.Layout.Tree
             var oldParentId = _parentIds[childId];
             if (oldParentId == parentId)
             {
-                // Recover gracefully if a caller had written only the parent side in an
-                // older tree: ensure the child appears exactly once in the parent's list.
                 if (IndexOfChild(parentId, childId) >= 0)
                 {
                     return;
@@ -157,27 +162,25 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 RemoveChildId(oldParentId, childId, clearParent: false);
             }
 
-            var currentChildren = _childIds[parentId] ?? Array.Empty<int>();
-            int currentLength = currentChildren.Length;
-            var newChildren = new int[currentLength + 1];
-            if (currentLength > 0)
-            {
-                Array.Copy(currentChildren, newChildren, currentLength);
-            }
-            newChildren[currentLength] = childId;
-            _childIds[parentId] = newChildren;
+            var children = _childIds[parentId] ??= new List<int>(4);
+            children.Add(childId);
             _parentIds[childId] = parentId;
         }
 
         public void ClearChildren(int parentId)
         {
-            if (parentId < 0 || parentId >= _count)
+            if ((uint)parentId >= (uint)_count)
             {
                 return;
             }
 
-            var children = _childIds[parentId] ?? Array.Empty<int>();
-            for (var i = 0; i < children.Length; i++)
+            var children = _childIds[parentId];
+            if (children == null || children.Count == 0)
+            {
+                return;
+            }
+
+            for (int i = 0; i < children.Count; i++)
             {
                 var childId = children[i];
                 if ((uint)childId < (uint)_count && _parentIds[childId] == parentId)
@@ -186,12 +189,12 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 }
             }
 
-            _childIds[parentId] = Array.Empty<int>();
+            children.Clear();
         }
 
         public void ReplaceChildren(int parentId, IReadOnlyList<int> newChildIds)
         {
-            if (parentId < 0 || parentId >= _count)
+            if ((uint)parentId >= (uint)_count)
             {
                 return;
             }
@@ -200,7 +203,6 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 throw new ArgumentNullException(nameof(newChildIds));
             }
 
-            var newArray = new int[newChildIds.Count];
             var unique = new HashSet<int>();
             for (int i = 0; i < newChildIds.Count; i++)
             {
@@ -210,26 +212,26 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 {
                     throw new InvalidOperationException("A layout box cannot appear more than once under the same parent.");
                 }
-                newArray[i] = childId;
             }
 
-            // Detach children that are leaving this parent.
-            var oldChildren = _childIds[parentId] ?? Array.Empty<int>();
-            for (var i = 0; i < oldChildren.Length; i++)
+            var oldChildren = _childIds[parentId];
+            if (oldChildren != null)
             {
-                var oldChildId = oldChildren[i];
-                if (!unique.Contains(oldChildId) &&
-                    (uint)oldChildId < (uint)_count &&
-                    _parentIds[oldChildId] == parentId)
+                for (int i = 0; i < oldChildren.Count; i++)
                 {
-                    _parentIds[oldChildId] = -1;
+                    var oldChildId = oldChildren[i];
+                    if (!unique.Contains(oldChildId) &&
+                        (uint)oldChildId < (uint)_count &&
+                        _parentIds[oldChildId] == parentId)
+                    {
+                        _parentIds[oldChildId] = -1;
+                    }
                 }
             }
 
-            // Reparent incoming children from any previous parent.
-            for (var i = 0; i < newArray.Length; i++)
+            for (int i = 0; i < newChildIds.Count; i++)
             {
-                var childId = newArray[i];
+                var childId = newChildIds[i];
                 var oldParentId = _parentIds[childId];
                 if (oldParentId >= 0 && oldParentId != parentId && oldParentId < _count)
                 {
@@ -238,7 +240,16 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 _parentIds[childId] = parentId;
             }
 
-            _childIds[parentId] = newArray;
+            var children = _childIds[parentId] ??= new List<int>(Math.Max(4, newChildIds.Count));
+            children.Clear();
+            if (children.Capacity < newChildIds.Count)
+            {
+                children.Capacity = newChildIds.Count;
+            }
+            for (int i = 0; i < newChildIds.Count; i++)
+            {
+                children.Add(newChildIds[i]);
+            }
         }
 
         public Node GetSourceNode(int id) => _sourceNodes[id];
@@ -271,7 +282,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             AddChild(parentId, id);
         }
 
-        public IReadOnlyList<int> GetChildIds(int id) => _childIds[id];
+        public IReadOnlyList<int> GetChildIds(int id) => _childIds[id] ?? EmptyChildIds;
         public BoxType GetBoxType(int id) => (BoxType)_boxTypes[id];
         public bool GetIsAnonymous(int id) => _isAnonymous[id];
         public int Count => _count;
@@ -310,15 +321,9 @@ namespace FenBrowser.FenEngine.Layout.Tree
             return box;
         }
 
-        public IList<LayoutBox> GetChildrenList(int id)
-        {
-            return new ChildrenListWrapper(this, id);
-        }
+        public IList<LayoutBox> GetChildrenList(int id) => new ChildrenListWrapper(this, id);
 
-        public void Dispose()
-        {
-            Reset();
-        }
+        public void Dispose() => Reset();
 
         private void ValidateTreeMutation(int parentId, int childId)
         {
@@ -335,9 +340,6 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 throw new InvalidOperationException("A layout box cannot be its own parent.");
             }
 
-            // Walk the candidate parent's ancestry. Attaching one of its ancestors as
-            // a child would create a cycle and make recursive layout/paint traversal
-            // unbounded.
             var ancestorId = parentId;
             var hops = 0;
             while (ancestorId >= 0)
@@ -357,15 +359,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
         private int IndexOfChild(int parentId, int childId)
         {
-            var children = _childIds[parentId] ?? Array.Empty<int>();
-            for (var i = 0; i < children.Length; i++)
-            {
-                if (children[i] == childId)
-                {
-                    return i;
-                }
-            }
-            return -1;
+            var children = _childIds[parentId];
+            return children?.IndexOf(childId) ?? -1;
         }
 
         private void RemoveChildId(int parentId, int childId, bool clearParent)
@@ -385,27 +380,14 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
         private void RemoveChildAt(int parentId, int index, bool clearParent = true)
         {
-            var current = _childIds[parentId] ?? Array.Empty<int>();
-            if ((uint)index >= (uint)current.Length)
+            var children = _childIds[parentId];
+            if (children == null || (uint)index >= (uint)children.Count)
             {
                 throw new ArgumentOutOfRangeException(nameof(index));
             }
 
-            var removedChildId = current[index];
-            if (current.Length == 1)
-            {
-                _childIds[parentId] = Array.Empty<int>();
-            }
-            else
-            {
-                var newArray = new int[current.Length - 1];
-                if (index > 0) Array.Copy(current, newArray, index);
-                if (index < current.Length - 1)
-                {
-                    Array.Copy(current, index + 1, newArray, index, current.Length - index - 1);
-                }
-                _childIds[parentId] = newArray;
-            }
+            var removedChildId = children[index];
+            children.RemoveAt(index);
 
             if (clearParent &&
                 (uint)removedChildId < (uint)_count &&
@@ -418,8 +400,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
         private void ReplaceChildAt(int parentId, int index, int childId)
         {
             ValidateTreeMutation(parentId, childId);
-            var children = _childIds[parentId] ?? Array.Empty<int>();
-            if ((uint)index >= (uint)children.Length)
+            var children = _childIds[parentId];
+            if (children == null || (uint)index >= (uint)children.Count)
             {
                 throw new ArgumentOutOfRangeException(nameof(index));
             }
@@ -459,9 +441,19 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 _parentId = parentId;
             }
 
+            private List<int> ChildIds => _store._childIds[_parentId];
+
             public LayoutBox this[int index]
             {
-                get => _store.GetWrapper(_store._childIds[_parentId][index]);
+                get
+                {
+                    var childIds = ChildIds;
+                    if (childIds == null || (uint)index >= (uint)childIds.Count)
+                    {
+                        throw new ArgumentOutOfRangeException(nameof(index));
+                    }
+                    return _store.GetWrapper(childIds[index]);
+                }
                 set
                 {
                     ValidateItem(value);
@@ -469,7 +461,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 }
             }
 
-            public int Count => _store._childIds[_parentId].Length;
+            public int Count => ChildIds?.Count ?? 0;
             public bool IsReadOnly => false;
 
             public void Add(LayoutBox item)
@@ -489,20 +481,30 @@ namespace FenBrowser.FenEngine.Layout.Tree
             public void CopyTo(LayoutBox[] array, int arrayIndex)
             {
                 if (array == null) throw new ArgumentNullException(nameof(array));
-                var childIds = _store._childIds[_parentId];
-                if (arrayIndex < 0 || arrayIndex > array.Length - childIds.Length)
+                var childIds = ChildIds;
+                var count = childIds?.Count ?? 0;
+                if (arrayIndex < 0 || arrayIndex > array.Length - count)
                 {
                     throw new ArgumentOutOfRangeException(nameof(arrayIndex));
                 }
-                for (int i = 0; i < childIds.Length; i++)
+                for (int i = 0; i < count; i++)
+                {
                     array[arrayIndex + i] = _store.GetWrapper(childIds[i]);
+                }
             }
 
             public IEnumerator<LayoutBox> GetEnumerator()
             {
-                var childIds = _store._childIds[_parentId];
-                for (int i = 0; i < childIds.Length; i++)
+                var childIds = ChildIds;
+                if (childIds == null)
+                {
+                    yield break;
+                }
+
+                for (int i = 0; i < childIds.Count; i++)
+                {
                     yield return _store.GetWrapper(childIds[i]);
+                }
             }
 
             System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
@@ -516,8 +518,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
             public void Insert(int index, LayoutBox item)
             {
                 ValidateItem(item);
-                var current = _store._childIds[_parentId];
-                if ((uint)index > (uint)current.Length)
+                var currentCount = Count;
+                if ((uint)index > (uint)currentCount)
                 {
                     throw new ArgumentOutOfRangeException(nameof(index));
                 }
@@ -525,40 +527,32 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 {
                     throw new InvalidOperationException("A layout box cannot appear more than once under the same parent.");
                 }
-                _store.ValidateTreeMutation(_parentId, item.StoreId);
 
+                _store.ValidateTreeMutation(_parentId, item.StoreId);
                 var oldParentId = _store._parentIds[item.StoreId];
                 if (oldParentId >= 0 && oldParentId != _parentId && oldParentId < _store._count)
                 {
                     _store.RemoveChildId(oldParentId, item.StoreId, clearParent: false);
                 }
 
-                var newArray = new int[current.Length + 1];
-                if (index > 0) Array.Copy(current, newArray, index);
-                newArray[index] = item.StoreId;
-                if (index < current.Length)
-                {
-                    Array.Copy(current, index, newArray, index + 1, current.Length - index);
-                }
-                _store._childIds[_parentId] = newArray;
+                var children = _store._childIds[_parentId] ??= new List<int>(4);
+                children.Insert(index, item.StoreId);
                 _store._parentIds[item.StoreId] = _parentId;
             }
 
             public bool Remove(LayoutBox item)
             {
                 int index = IndexOf(item);
-                if (index >= 0)
+                if (index < 0)
                 {
-                    RemoveAt(index);
-                    return true;
+                    return false;
                 }
-                return false;
+
+                RemoveAt(index);
+                return true;
             }
 
-            public void RemoveAt(int index)
-            {
-                _store.RemoveChildAt(_parentId, index);
-            }
+            public void RemoveAt(int index) => _store.RemoveChildAt(_parentId, index);
 
             private void ValidateItem(LayoutBox item)
             {
