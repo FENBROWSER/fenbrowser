@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.FenEngine.Core.EventLoop;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
 
@@ -32,15 +33,21 @@ internal sealed class FenJsMutationObserverHost
     {
         Callback = callback;
         _owner = owner ?? throw new ArgumentNullException(nameof(owner));
-        _observer = new MutationObserver(OnMutations);
+
+        // Capture the coordinator bound to this script engine at construction time.
+        // DOM mutations then enqueue observer delivery into that page/event-loop
+        // checkpoint instead of invoking JS synchronously inside AppendChild,
+        // SetAttribute, CharacterData.ReplaceData, etc.
+        var eventLoop = EventLoopCoordinator.Instance;
+        _observer = new MutationObserver(
+            OnMutations,
+            eventLoop.QueueMutationObserverMicrotask);
     }
 
     private void OnMutations(IReadOnlyList<MutationRecord> records, MutationObserver observer)
     {
         if (_disposed)
-        {
             return;
-        }
 
         // Delegate to the owner so it can acquire the interpreter lock and
         // convert records on the correct thread.
@@ -68,9 +75,7 @@ internal sealed class FenJsMutationObserverHost
     public void Dispose()
     {
         if (_disposed)
-        {
             return;
-        }
 
         _disposed = true;
         _observer.Disconnect();
@@ -79,8 +84,6 @@ internal sealed class FenJsMutationObserverHost
     private void ThrowIfDisposed()
     {
         if (_disposed)
-        {
             throw new ObjectDisposedException(nameof(FenJsMutationObserverHost));
-        }
     }
 }
