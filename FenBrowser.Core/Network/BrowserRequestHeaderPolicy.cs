@@ -20,6 +20,10 @@ internal static class BrowserRequestHeaderPolicy
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(context);
 
+        // Preserve the browser's typed security/navigation context across the existing
+        // INetworkClient(HttpRequestMessage) boundary. This is process-local metadata,
+        // not an HTTP header, and lets middleware consume authoritative state directly.
+        FetchContextRequestOptions.Set(request, context);
         CorsHandler.SetCredentialsMode(request, context.CredentialsMode);
 
         Add(request, "Accept", accept);
