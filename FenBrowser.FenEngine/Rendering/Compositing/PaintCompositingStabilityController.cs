@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -16,6 +17,8 @@ namespace FenBrowser.FenEngine.Rendering
         private readonly int _forcedRebuildFrames;
 
         private int _forcedRebuildFramesRemaining;
+        private long _lastObservedTick;
+        private bool _hasObservedTick;
 
         public PaintCompositingStabilityController(
             int burstThreshold = 6,
@@ -25,8 +28,29 @@ namespace FenBrowser.FenEngine.Rendering
         {
             _burstThreshold = Math.Max(1, burstThreshold);
             _forcedRebuildFrames = Math.Max(1, forcedRebuildFrames);
-            _windowTicks = (burstWindow == default ? TimeSpan.FromMilliseconds(250) : burstWindow).Ticks;
-            _tickProvider = tickProvider ?? (() => DateTime.UtcNow.Ticks);
+
+            var effectiveWindow = burstWindow == default
+                ? TimeSpan.FromMilliseconds(250)
+                : burstWindow;
+            if (effectiveWindow <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(burstWindow), "Burst window must be positive.");
+            }
+
+            if (tickProvider == null)
+            {
+                _tickProvider = Stopwatch.GetTimestamp;
+                _windowTicks = Math.Max(
+                    1,
+                    checked((long)Math.Ceiling(effectiveWindow.TotalSeconds * Stopwatch.Frequency)));
+            }
+            else
+            {
+                // Preserve the existing custom-provider contract used by callers that
+                // inject TimeSpan-style ticks for deterministic simulations.
+                _tickProvider = tickProvider;
+                _windowTicks = effectiveWindow.Ticks;
+            }
         }
 
         public bool ShouldForcePaintRebuild => _forcedRebuildFramesRemaining > 0;
@@ -37,7 +61,17 @@ namespace FenBrowser.FenEngine.Rendering
 
         public void ObserveFrame(bool hasPaintInvalidationSignal, bool rebuiltPaintTree)
         {
-            long now = _tickProvider();
+            var now = _tickProvider();
+
+            // A custom clock should be monotonic too, but fail safely if it moves
+            // backwards: old invalidations must not suddenly look recent forever.
+            if (_hasObservedTick && now < _lastObservedTick)
+            {
+                _invalidationTicks.Clear();
+            }
+            _lastObservedTick = now;
+            _hasObservedTick = true;
+
             TrimWindow(now);
 
             if (hasPaintInvalidationSignal)
@@ -47,7 +81,9 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (_invalidationTicks.Count >= _burstThreshold)
                 {
-                    _forcedRebuildFramesRemaining = Math.Max(_forcedRebuildFramesRemaining, _forcedRebuildFrames);
+                    _forcedRebuildFramesRemaining = Math.Max(
+                        _forcedRebuildFramesRemaining,
+                        _forcedRebuildFrames);
                 }
             }
 
@@ -61,12 +97,20 @@ namespace FenBrowser.FenEngine.Rendering
         {
             _invalidationTicks.Clear();
             _forcedRebuildFramesRemaining = 0;
+            _lastObservedTick = 0;
+            _hasObservedTick = false;
         }
 
         private void TrimWindow(long now)
         {
-            while (_invalidationTicks.Count > 0 && (now - _invalidationTicks.Peek()) > _windowTicks)
+            while (_invalidationTicks.Count > 0)
             {
+                var age = now - _invalidationTicks.Peek();
+                if (age >= 0 && age <= _windowTicks)
+                {
+                    break;
+                }
+
                 _invalidationTicks.Dequeue();
             }
         }
