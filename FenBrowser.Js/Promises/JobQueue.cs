@@ -1,5 +1,4 @@
 using FenBrowser.Js.Heap;
-using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Promises;
 
@@ -61,19 +60,7 @@ public sealed class JobQueue : IHeapRootSource
         {
             foreach (var job in _jobs)
             {
-                switch (job)
-                {
-                    case PromiseReactionJob reactionJob:
-                        reactionJob.Reaction.Trace(tracer);
-                        TraceValue(tracer, reactionJob.Argument);
-                        break;
-
-                    case PromiseResolveThenableJob thenableJob:
-                        TraceValue(tracer, thenableJob.PromiseToResolve);
-                        TraceValue(tracer, thenableJob.Thenable);
-                        TraceValue(tracer, thenableJob.Then);
-                        break;
-                }
+                job.Trace(tracer);
             }
         }
     }
@@ -102,13 +89,5 @@ public sealed class JobQueue : IHeapRootSource
         }
 
         return ran;
-    }
-
-    private static void TraceValue(IHeapTracer tracer, JsValue value)
-    {
-        if (value.Tag == JsValueTag.Object)
-        {
-            tracer.Trace(value.AsObjectHandle());
-        }
     }
 }
