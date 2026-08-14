@@ -77,6 +77,41 @@ namespace FenBrowser.Tests.Scripting
         }
 
         [Fact]
+        public async Task InsertBefore_PreservesSiblingLinksWithoutRebuildingTheChain()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var document = new HtmlParser("<html><body></body></html>", baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(
+                """
+                (function () {
+                    var host = document.createElement('div');
+                    var cursor = document.createElement('span');
+                    var first = document.createElement('i');
+                    var second = document.createElement('b');
+                    host.appendChild(cursor);
+                    host.insertBefore(first, cursor);
+                    host.insertBefore(second, cursor);
+                    return [
+                        host.firstChild === first,
+                        first.nextSibling === second,
+                        second.nextSibling === cursor,
+                        cursor.previousSibling === second,
+                        host.lastChild === cursor
+                    ].map(String).join('|');
+                })();
+                """);
+
+            Assert.Equal("true|true|true|true|true", result?.ToString());
+        }
+
+        [Fact]
         public async Task ReplaceChild_ReplacesElementAndDocumentFragmentChildren()
         {
             var baseUri = new Uri("https://www.youtube.com/");

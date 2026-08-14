@@ -467,6 +467,11 @@ namespace FenBrowser.Core.Dom.V2
             // Mark inserted node as style-dirty so incremental recascade picks it up
             node.MarkDirty(InvalidationKind.Style);
 
+            // Adding a child changes the containing block's inline/block flow.
+            // Mark the parent itself for layout so incremental layout rebuilds
+            // the sibling positions, not just the newly inserted subtree.
+            MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+
             InvalidateStructuralCachesAfterMutation();
 
             // Notify observers
@@ -518,6 +523,10 @@ namespace FenBrowser.Core.Dom.V2
             // Mark inserted node as style-dirty so incremental recascade picks it up
             node.MarkDirty(InvalidationKind.Style);
 
+            // Insertion can reflow every following sibling in the containing
+            // block; the parent must be the incremental layout root.
+            MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
+
             InvalidateStructuralCachesAfterMutation();
 
             // Notify observers
@@ -566,6 +575,10 @@ namespace FenBrowser.Core.Dom.V2
 
             // Mark parent style-dirty: removal may affect sibling selectors
             this.MarkDirty(InvalidationKind.Style);
+
+            // Removing a child also changes the containing block's flow and
+            // paint geometry, including all following siblings.
+            this.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
 
             // Notify observers
             NotifyChildListMutation(child, null);
@@ -893,9 +906,14 @@ namespace FenBrowser.Core.Dom.V2
 
         public void InsertBefore(Node node, Node before)
         {
-            int index = IndexOf(before);
+            // The common case is inserting immediately before the current last
+            // child (for example, a typewriter loop inserting before a cursor).
+            // Avoid scanning the overflow list to find that reference node.
+            int index = ReferenceEquals(before, Last) ? _count - 1 : IndexOf(before);
             if (index < 0)
                 throw new InvalidOperationException("Reference node not found");
+
+            var previous = before._previousSibling;
 
             // Shift everything after index
             if (_count < 4)
@@ -922,7 +940,15 @@ namespace FenBrowser.Core.Dom.V2
                 }
             }
             _count++;
-            RebuildSiblingLinks();
+
+            // Storage shifts do not change the logical neighbours of existing
+            // nodes. Update only the three affected links instead of rebuilding
+            // the complete sibling chain after every insertion.
+            node._previousSibling = previous;
+            node._nextSibling = before;
+            if (previous != null)
+                previous._nextSibling = node;
+            before._previousSibling = node;
         }
 
         public void Remove(Node node)
