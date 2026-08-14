@@ -25,6 +25,7 @@ public sealed class IpcFontService : IFontService
     {
         _session = session ?? throw new ArgumentNullException(nameof(session));
         _session.TargetProcessCrashed += OnTargetProcessCrashed;
+        _session.ResponseReceived += HandleResponse;
     }
 
     private void OnTargetProcessCrashed()
@@ -295,6 +296,7 @@ public sealed class IpcFontService : IFontService
         }
 
         _session.TargetProcessCrashed -= OnTargetProcessCrashed;
+        _session.ResponseReceived -= HandleResponse;
         foreach (var kvp in _pendingRequests)
         {
             if (_pendingRequests.TryRemove(kvp.Key, out var tcs))
