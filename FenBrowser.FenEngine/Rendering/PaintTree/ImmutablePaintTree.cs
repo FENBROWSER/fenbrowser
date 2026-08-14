@@ -1,49 +1,21 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using FenBrowser.Core.Dom.V2;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
 {
     /// <summary>
     /// Immutable paint tree - fully ordered description of everything to draw.
-    /// 
-    /// INVARIANTS:
-    /// - Fully ordered (no runtime sorting)
-    /// - No hidden dependencies
-    /// - No DOM references
-    /// - No layout math
-    /// - Safe to reuse across frames
     /// </summary>
     public sealed class ImmutablePaintTree
     {
-        /// <summary>
-        /// Root paint nodes of the tree (multiple roots for multiple stacking contexts).
-        /// </summary>
         public IReadOnlyList<PaintNodeBase> Roots { get; }
-        
-        /// <summary>
-        /// Frame ID this paint tree was built for.
-        /// Used for caching and invalidation.
-        /// </summary>
         public int FrameId { get; }
-        
-        /// <summary>
-        /// Total number of nodes in the tree.
-        /// </summary>
         public int NodeCount { get; }
-        
-        /// <summary>
-        /// Timestamp when this tree was built.
-        /// </summary>
         public long BuildTimestamp { get; }
-        
-        /// <summary>
-        /// Creates a new immutable paint tree.
-        /// </summary>
-        /// <param name="nodeCount">
-        /// Phase 15: pre-counted node count from the builder. When provided, the
-        /// constructor skips the recursive <see cref="CountNodes"/> traversal.
-        /// </param>
+
         public ImmutablePaintTree(IReadOnlyList<PaintNodeBase> roots, int frameId = 0, int? nodeCount = null)
         {
             Roots = roots ?? throw new ArgumentNullException(nameof(roots));
@@ -51,110 +23,170 @@ namespace FenBrowser.FenEngine.Rendering
             NodeCount = nodeCount ?? CountNodes(roots);
             BuildTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         }
-        
-        /// <summary>
-        /// Creates an empty paint tree.
-        /// </summary>
-        public static ImmutablePaintTree Empty => new ImmutablePaintTree(Array.Empty<PaintNodeBase>());
-        
-        /// <summary>
-        /// Counts all nodes in the tree recursively.
-        /// </summary>
+
+        public static ImmutablePaintTree Empty { get; } =
+            new ImmutablePaintTree(Array.Empty<PaintNodeBase>());
+
         private static int CountNodes(IReadOnlyList<PaintNodeBase> nodes)
         {
             if (nodes == null || nodes.Count == 0) return 0;
-            
-            int count = 0;
-            foreach (var node in nodes)
+
+            var count = 0;
+            var stack = new Stack<PaintNodeBase>();
+            for (var i = nodes.Count - 1; i >= 0; i--)
             {
-                count += 1 + CountNodes(node.Children);
+                if (nodes[i] != null) stack.Push(nodes[i]);
             }
+
+            while (stack.Count > 0)
+            {
+                var node = stack.Pop();
+                count++;
+                var children = node.Children;
+                if (children == null) continue;
+                for (var i = children.Count - 1; i >= 0; i--)
+                {
+                    if (children[i] != null) stack.Push(children[i]);
+                }
+            }
+
             return count;
         }
-        
+
         /// <summary>
-        /// Bottleneck 1: returns a new <see cref="ImmutablePaintTree"/> where the
-        /// paint subtree rooted at <paramref name="sourceNode"/> is replaced with
-        /// <paramref name="newSubtreeNodes"/>. Unchanged subtrees share references
-        /// with the original tree (copy-on-write). If <paramref name="sourceNode"/>
-        /// is not found in the tree, returns this instance unchanged.
+        /// Returns a copy-on-write tree with the first paint node belonging to
+        /// <paramref name="sourceNode"/> replaced by <paramref name="newSubtreeNodes"/>.
+        /// Unchanged nodes/subtrees share references; every ancestor on the modified
+        /// path is shallow-cloned so the previously published tree is never mutated.
         /// </summary>
         public ImmutablePaintTree WithReplacedSubtree(
-            FenBrowser.Core.Dom.V2.Node sourceNode,
+            Node sourceNode,
             IReadOnlyList<PaintNodeBase> newSubtreeNodes)
         {
-            if (sourceNode == null || newSubtreeNodes == null || newSubtreeNodes.Count == 0)
+            if (sourceNode == null || newSubtreeNodes == null || Roots.Count == 0)
                 return this;
 
-            var newRoots = ReplaceInNodeList(Roots, sourceNode, newSubtreeNodes);
-            if (ReferenceEquals(newRoots, Roots))
-                return this; // No match found
+            var parentLinks = new Dictionary<PaintNodeBase, ParentLink>();
+            var search = new Stack<PaintNodeBase>();
 
-            return new ImmutablePaintTree(newRoots, FrameId);
-        }
-
-        private static IReadOnlyList<PaintNodeBase> ReplaceInNodeList(
-            IReadOnlyList<PaintNodeBase> nodes,
-            FenBrowser.Core.Dom.V2.Node sourceNode,
-            IReadOnlyList<PaintNodeBase> replacement)
-        {
-            if (nodes == null || nodes.Count == 0) return nodes;
-
-            for (int i = 0; i < nodes.Count; i++)
+            for (var i = Roots.Count - 1; i >= 0; i--)
             {
-                var node = nodes[i];
+                var root = Roots[i];
+                if (root == null) continue;
+                parentLinks[root] = new ParentLink(null, i);
+                search.Push(root);
+            }
+
+            PaintNodeBase found = null;
+            while (search.Count > 0)
+            {
+                var node = search.Pop();
                 if (ReferenceEquals(node.SourceNode, sourceNode))
                 {
-                    // Found the exact match — replace this node's position
-                    // with the new subtree nodes.
-                    var newList = new List<PaintNodeBase>(nodes);
-                    newList.RemoveAt(i);
-                    newList.InsertRange(i, replacement);
-                    return newList;
+                    found = node;
+                    break;
                 }
 
-                if (node.Children != null && node.Children.Count > 0)
+                var children = node.Children;
+                if (children == null) continue;
+                for (var i = children.Count - 1; i >= 0; i--)
                 {
-                    var newChildren = ReplaceInNodeList(node.Children, sourceNode, replacement);
-                    if (!ReferenceEquals(newChildren, node.Children))
-                    {
-                        node.Children = newChildren;
-                        // Children changed — mark this position as modified.
-                        var newList = new List<PaintNodeBase>(nodes);
-                        newList[i] = node; // Same node object, children updated in-place
-                        return newList;
-                    }
+                    var child = children[i];
+                    if (child == null) continue;
+                    parentLinks[child] = new ParentLink(node, i);
+                    search.Push(child);
                 }
             }
 
-            return nodes;
+            if (found == null)
+                return this;
+
+            IReadOnlyList<PaintNodeBase> replacement = newSubtreeNodes;
+            var current = found;
+
+            while (parentLinks.TryGetValue(current, out var link) && link.Parent != null)
+            {
+                var parent = link.Parent;
+                var newChildren = ReplaceAt(parent.Children, link.Index, replacement);
+                var clonedParent = parent.CloneWithChildren(newChildren);
+                replacement = new[] { clonedParent };
+                current = parent;
+            }
+
+            if (!parentLinks.TryGetValue(current, out var rootLink) || rootLink.Parent != null)
+                return this;
+
+            var newRoots = ReplaceAt(Roots, rootLink.Index, replacement);
+            return new ImmutablePaintTree(newRoots, FrameId, CountNodes(newRoots));
         }
 
-        /// <summary>
-        /// Traverses the tree in paint order, invoking action for each node.
-        /// </summary>
+        private static IReadOnlyList<PaintNodeBase> ReplaceAt(
+            IReadOnlyList<PaintNodeBase> nodes,
+            int index,
+            IReadOnlyList<PaintNodeBase> replacement)
+        {
+            if (nodes == null || index < 0 || index >= nodes.Count)
+                return nodes;
+
+            var replacementCount = replacement?.Count ?? 0;
+            var result = new List<PaintNodeBase>(Math.Max(0, nodes.Count - 1 + replacementCount));
+            for (var i = 0; i < index; i++) result.Add(nodes[i]);
+            if (replacement != null)
+            {
+                for (var i = 0; i < replacement.Count; i++) result.Add(replacement[i]);
+            }
+            for (var i = index + 1; i < nodes.Count; i++) result.Add(nodes[i]);
+            return result;
+        }
+
+        private readonly struct ParentLink
+        {
+            public ParentLink(PaintNodeBase parent, int index)
+            {
+                Parent = parent;
+                Index = index;
+            }
+
+            public PaintNodeBase Parent { get; }
+            public int Index { get; }
+        }
+
         public void Traverse(Action<PaintNodeBase> action)
         {
-            if (action == null) return;
-            
-            foreach (var root in Roots)
+            if (action == null || Roots.Count == 0) return;
+
+            var stack = new Stack<PaintNodeBase>();
+            for (var i = Roots.Count - 1; i >= 0; i--)
             {
-                TraverseNode(root, action);
+                if (Roots[i] != null) stack.Push(Roots[i]);
+            }
+
+            while (stack.Count > 0)
+            {
+                var node = stack.Pop();
+                action(node);
+
+                var children = node.Children;
+                if (children == null) continue;
+                for (var i = children.Count - 1; i >= 0; i--)
+                {
+                    if (children[i] != null) stack.Push(children[i]);
+                }
             }
         }
-        
-        /// <summary>
-        /// Compares this paint tree with another to identify changes.
-        /// </summary>
+
         public PaintTreeDiff Diff(ImmutablePaintTree other)
         {
-            if (other == null) return new PaintTreeDiff { AddedNodes = new List<PaintNodeBase>(Roots) };
-            
+            if (other == null)
+            {
+                return new PaintTreeDiff { AddedNodes = new List<PaintNodeBase>(Roots) };
+            }
+
             var added = new List<PaintNodeBase>();
             var removed = new List<PaintNodeBase>();
             var modified = new List<NodeChange>();
 
-            DiffRecursive(Roots, other.Roots, added, removed, modified);
+            DiffIterative(Roots, other.Roots, added, removed, modified);
 
             return new PaintTreeDiff
             {
@@ -164,89 +196,113 @@ namespace FenBrowser.FenEngine.Rendering
             };
         }
 
-        private void DiffRecursive(
-            IReadOnlyList<PaintNodeBase> current,
-            IReadOnlyList<PaintNodeBase> other,
+        private static void DiffIterative(
+            IReadOnlyList<PaintNodeBase> currentRoots,
+            IReadOnlyList<PaintNodeBase> previousRoots,
             List<PaintNodeBase> added,
             List<PaintNodeBase> removed,
             List<NodeChange> modified)
         {
-            // Paint trees on real apps (React, virtualized lists, deep flex/grid
-            // shells) routinely descend 100+ levels. Diff runs every frame, so a
-            // managed StackOverflow here takes the process down with no recovery
-            // path. Match the existing depth-limit pattern used by
-            // PaintTreeBuilder.BuildRecursive (limit 256) and the new builder
-            // (limit 128 + EnsureSufficientExecutionStack). Using
-            // EnsureSufficientExecutionStack so we degrade gracefully — past the
-            // safe margin, we abandon the diff for this subtree and treat its
-            // children as unchanged (a one-frame visual stall is preferable to
-            // a process crash).
-            try { System.Runtime.CompilerServices.RuntimeHelpers.EnsureSufficientExecutionStack(); }
-            catch (InsufficientExecutionStackException) { return; }
+            var work = new Stack<(IReadOnlyList<PaintNodeBase> Current, IReadOnlyList<PaintNodeBase> Previous)>();
+            work.Push((currentRoots ?? Array.Empty<PaintNodeBase>(), previousRoots ?? Array.Empty<PaintNodeBase>()));
 
-            // Keyed Matching: Use SourceNode + GetType() as a stable key.
-            // This allows us to detect moved nodes and stable updates even if order changes slightly.
-            var otherNodesByKey = new Dictionary<string, PaintNodeBase>();
-            foreach (var node in other)
+            while (work.Count > 0)
             {
-                string key = GetNodeKey(node);
-                if (!string.IsNullOrEmpty(key)) otherNodesByKey[key] = node;
-            }
+                var pair = work.Pop();
+                var previousByKey = new Dictionary<PaintNodeKey, PaintNodeBase>();
 
-            foreach (var nodeB in current)
-            {
-                string key = GetNodeKey(nodeB);
-                if (string.IsNullOrEmpty(key) || !otherNodesByKey.TryGetValue(key, out var nodeA))
+                foreach (var node in pair.Previous)
                 {
-                    added.Add(nodeB);
-                    continue;
+                    if (TryGetNodeKey(node, out var key))
+                    {
+                        previousByKey[key] = node;
+                    }
                 }
 
-                // Node exists in both, check for modifications
-                bool geomChanged = nodeA.Bounds != nodeB.Bounds || nodeA.Transform != nodeB.Transform;
-                bool styleChanged = nodeA.Opacity != nodeB.Opacity
-                    || nodeA.ClipRect != nodeB.ClipRect
-                    || nodeA.IsHovered != nodeB.IsHovered
-                    || nodeA.IsFocused != nodeB.IsFocused
-                    || !HasEquivalentVisualState(nodeA, nodeB);
-                
-                if (geomChanged) modified.Add(new NodeChange(nodeA, nodeB, ChangeType.Geometry));
-                else if (styleChanged) modified.Add(new NodeChange(nodeA, nodeB, ChangeType.Style));
+                foreach (var current in pair.Current)
+                {
+                    if (!TryGetNodeKey(current, out var key) ||
+                        !previousByKey.TryGetValue(key, out var previous))
+                    {
+                        if (current != null) added.Add(current);
+                        continue;
+                    }
 
-                // Recurse into children
-                DiffRecursive(nodeB.Children, nodeA.Children, added, removed, modified);
-                
-                // Mark as processed
-                otherNodesByKey.Remove(key);
-            }
+                    var geomChanged = previous.Bounds != current.Bounds || previous.Transform != current.Transform;
+                    var styleChanged = previous.Opacity != current.Opacity
+                        || previous.ClipRect != current.ClipRect
+                        || previous.IsHovered != current.IsHovered
+                        || previous.IsFocused != current.IsFocused
+                        || !HasEquivalentVisualState(previous, current);
 
-            // Remaining nodes in 'other' were removed
-            foreach (var node in otherNodesByKey.Values)
-            {
-                removed.Add(node);
+                    if (geomChanged)
+                    {
+                        modified.Add(new NodeChange(previous, current, ChangeType.Geometry));
+                    }
+                    else if (styleChanged)
+                    {
+                        modified.Add(new NodeChange(previous, current, ChangeType.Style));
+                    }
+
+                    work.Push((
+                        current.Children ?? Array.Empty<PaintNodeBase>(),
+                        previous.Children ?? Array.Empty<PaintNodeBase>()));
+                    previousByKey.Remove(key);
+                }
+
+                foreach (var node in previousByKey.Values)
+                {
+                    removed.Add(node);
+                }
             }
         }
 
-        private string GetNodeKey(PaintNodeBase node)
+        private readonly struct PaintNodeKey : IEquatable<PaintNodeKey>
         {
-            if (node.SourceNode == null) return null;
-            // Key is composed of the DOM node hash and the paint node type (role)
-            return $"{node.SourceNode.GetHashCode()}_{node.GetType().Name}";
+            private readonly ulong _stableNodeId;
+            private readonly Node _sourceNode;
+            private readonly Type _nodeType;
+
+            public PaintNodeKey(PaintNodeBase node)
+            {
+                _stableNodeId = node.StableNodeId;
+                _sourceNode = node.SourceNode;
+                _nodeType = node.GetType();
+            }
+
+            public bool Equals(PaintNodeKey other)
+            {
+                if (!ReferenceEquals(_nodeType, other._nodeType)) return false;
+
+                if (_stableNodeId != 0 || other._stableNodeId != 0)
+                {
+                    return _stableNodeId != 0 && _stableNodeId == other._stableNodeId;
+                }
+
+                return ReferenceEquals(_sourceNode, other._sourceNode);
+            }
+
+            public override bool Equals(object obj) => obj is PaintNodeKey other && Equals(other);
+
+            public override int GetHashCode()
+            {
+                var identityHash = _stableNodeId != 0
+                    ? _stableNodeId.GetHashCode()
+                    : (_sourceNode == null ? 0 : RuntimeHelpers.GetHashCode(_sourceNode));
+                return HashCode.Combine(_nodeType, identityHash);
+            }
         }
 
-        private static void TraverseNode(PaintNodeBase node, Action<PaintNodeBase> action)
+        private static bool TryGetNodeKey(PaintNodeBase node, out PaintNodeKey key)
         {
-            if (node == null) return;
-            
-            action(node);
-            
-            if (node.Children != null)
+            if (node == null || (node.StableNodeId == 0 && node.SourceNode == null))
             {
-                foreach (var child in node.Children)
-                {
-                    TraverseNode(child, action);
-                }
+                key = default;
+                return false;
             }
+
+            key = new PaintNodeKey(node);
+            return true;
         }
 
         private static bool HasEquivalentVisualState(PaintNodeBase previous, PaintNodeBase current)
@@ -280,7 +336,15 @@ namespace FenBrowser.FenEngine.Rendering
                 (ImagePaintNode a, ImagePaintNode b) => ReferenceEquals(a.Bitmap, b.Bitmap)
                     && Nullable.Equals(a.SourceRect, b.SourceRect)
                     && string.Equals(a.ObjectFit, b.ObjectFit, StringComparison.Ordinal)
-                    && string.Equals(a.ObjectPosition, b.ObjectPosition, StringComparison.Ordinal),
+                    && string.Equals(a.ObjectPosition, b.ObjectPosition, StringComparison.Ordinal)
+                    && a.IsBackgroundImage == b.IsBackgroundImage
+                    && a.TileModeX == b.TileModeX
+                    && a.TileModeY == b.TileModeY
+                    && a.BackgroundPosition == b.BackgroundPosition
+                    && Nullable.Equals(a.BackgroundImageSize, b.BackgroundImageSize)
+                    && a.BackgroundOrigin == b.BackgroundOrigin
+                    && a.BackgroundAttachmentFixed == b.BackgroundAttachmentFixed
+                    && a.FixedViewportOrigin == b.FixedViewportOrigin,
                 (BoxShadowPaintNode a, BoxShadowPaintNode b) => a.Blur.Equals(b.Blur)
                     && a.Spread.Equals(b.Spread)
                     && a.Offset == b.Offset
@@ -295,99 +359,57 @@ namespace FenBrowser.FenEngine.Rendering
                 (StickyPaintNode a, StickyPaintNode b) => a.StickyOffset == b.StickyOffset,
                 (MaskPaintNode a, MaskPaintNode b) => ReferenceEquals(a.MaskBitmap, b.MaskBitmap)
                     && string.Equals(a.MaskSize, b.MaskSize, StringComparison.Ordinal),
+                (ClipPaintNode a, ClipPaintNode b) => ReferenceEquals(a.ClipPath, b.ClipPath),
+                (CustomPaintNode a, CustomPaintNode b) => ReferenceEquals(a.PaintAction, b.PaintAction),
                 _ => true
             };
         }
 
         private static bool HaveEqualFloats(IReadOnlyList<float> left, IReadOnlyList<float> right)
         {
-            if (ReferenceEquals(left, right))
-            {
-                return true;
-            }
+            if (ReferenceEquals(left, right)) return true;
+            if (left == null || right == null || left.Count != right.Count) return false;
 
-            if (left == null || right == null || left.Count != right.Count)
+            for (var i = 0; i < left.Count; i++)
             {
-                return false;
+                if (!left[i].Equals(right[i])) return false;
             }
-
-            for (int i = 0; i < left.Count; i++)
-            {
-                if (!left[i].Equals(right[i]))
-                {
-                    return false;
-                }
-            }
-
             return true;
         }
 
         private static bool HaveEqualPoints(IReadOnlyList<SKPoint> left, IReadOnlyList<SKPoint> right)
         {
-            if (ReferenceEquals(left, right))
-            {
-                return true;
-            }
+            if (ReferenceEquals(left, right)) return true;
+            if (left == null || right == null || left.Count != right.Count) return false;
 
-            if (left == null || right == null || left.Count != right.Count)
+            for (var i = 0; i < left.Count; i++)
             {
-                return false;
+                if (left[i] != right[i]) return false;
             }
-
-            for (int i = 0; i < left.Count; i++)
-            {
-                if (left[i] != right[i])
-                {
-                    return false;
-                }
-            }
-
             return true;
         }
 
         private static bool HaveEqualColors(IReadOnlyList<SKColor> left, IReadOnlyList<SKColor> right)
         {
-            if (ReferenceEquals(left, right))
-            {
-                return true;
-            }
+            if (ReferenceEquals(left, right)) return true;
+            if (left == null || right == null || left.Count != right.Count) return false;
 
-            if (left == null || right == null || left.Count != right.Count)
+            for (var i = 0; i < left.Count; i++)
             {
-                return false;
+                if (left[i] != right[i]) return false;
             }
-
-            for (int i = 0; i < left.Count; i++)
-            {
-                if (left[i] != right[i])
-                {
-                    return false;
-                }
-            }
-
             return true;
         }
 
         private static bool HaveEqualStrings(IReadOnlyList<string> left, IReadOnlyList<string> right)
         {
-            if (ReferenceEquals(left, right))
-            {
-                return true;
-            }
+            if (ReferenceEquals(left, right)) return true;
+            if (left == null || right == null || left.Count != right.Count) return false;
 
-            if (left == null || right == null || left.Count != right.Count)
+            for (var i = 0; i < left.Count; i++)
             {
-                return false;
+                if (!string.Equals(left[i], right[i], StringComparison.Ordinal)) return false;
             }
-
-            for (int i = 0; i < left.Count; i++)
-            {
-                if (!string.Equals(left[i], right[i], StringComparison.Ordinal))
-                {
-                    return false;
-                }
-            }
-
             return true;
         }
     }
