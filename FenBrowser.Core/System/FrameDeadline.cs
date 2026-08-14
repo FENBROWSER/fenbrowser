@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 
 namespace FenBrowser.Core.Deadlines
 {
@@ -8,7 +9,8 @@ namespace FenBrowser.Core.Deadlines
     /// </summary>
     public class FrameDeadline
     {
-        private readonly long _deadlineTicks;
+        private readonly long _startedTimestamp;
+        private readonly TimeSpan _budget;
         private readonly string _contextName;
         private readonly double _budgetMs;
 
@@ -17,13 +19,17 @@ namespace FenBrowser.Core.Deadlines
         /// </summary>
         public FrameDeadline(double budgetMs, string contextName = "Unknown")
         {
-            if (double.IsNaN(budgetMs) || double.IsInfinity(budgetMs) || budgetMs < 0)
+            if (double.IsNaN(budgetMs) ||
+                double.IsInfinity(budgetMs) ||
+                budgetMs < 0 ||
+                budgetMs > TimeSpan.MaxValue.TotalMilliseconds)
             {
                 throw new ArgumentOutOfRangeException(nameof(budgetMs));
             }
 
             _budgetMs = budgetMs;
-            _deadlineTicks = DateTime.UtcNow.Ticks + (long)(budgetMs * TimeSpan.TicksPerMillisecond);
+            _budget = TimeSpan.FromMilliseconds(budgetMs);
+            _startedTimestamp = Stopwatch.GetTimestamp();
             _contextName = string.IsNullOrWhiteSpace(contextName) ? "Unknown" : contextName.Trim();
         }
 
@@ -31,14 +37,14 @@ namespace FenBrowser.Core.Deadlines
 
         public string ContextName => _contextName;
 
-        public bool IsExpired => DateTime.UtcNow.Ticks > _deadlineTicks;
+        public bool IsExpired => Stopwatch.GetElapsedTime(_startedTimestamp) >= _budget;
 
-        public TimeSpan Remaining 
+        public TimeSpan Remaining
         {
-            get 
+            get
             {
-                var diff = _deadlineTicks - DateTime.UtcNow.Ticks;
-                return diff > 0 ? TimeSpan.FromTicks(diff) : TimeSpan.Zero;
+                var remaining = _budget - Stopwatch.GetElapsedTime(_startedTimestamp);
+                return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
             }
         }
 
