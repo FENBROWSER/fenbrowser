@@ -111,12 +111,14 @@ namespace FenBrowser.Host.ProcessIsolation
             }
 
             EventWaitHandle readyEvent = null;
+            string usedEventName = null;
             foreach (var prefix in new[] { "Global\\", "" })
             {
                 var candidate = prefix + baseEventName;
                 try
                 {
                     readyEvent = new EventWaitHandle(false, EventResetMode.AutoReset, candidate);
+                    usedEventName = candidate;
                     break;
                 }
                 catch (UnauthorizedAccessException)
@@ -127,6 +129,13 @@ namespace FenBrowser.Host.ProcessIsolation
                 {
                     EngineLogBridge.Warn($"[FrameSharedMemory] EventWaitHandle failed for '{candidate}': {ex.Message}", LogCategory.General);
                 }
+            }
+
+            if (readyEvent == null)
+            {
+                EngineLogBridge.Warn("[FrameSharedMemory] Could not create frame-ready event; rejecting unsignaled mapping.", LogCategory.General);
+                TryDispose(mmf, "writer-memory-mapped-file");
+                return null;
             }
 
             MemoryMappedViewAccessor accessor = null;
@@ -147,13 +156,13 @@ namespace FenBrowser.Host.ProcessIsolation
             }
 
             EngineLogBridge.Info(
-                $"[FrameSharedMemory] Writer created: mmf='{usedMmfName}', window={windowWidth}×{windowHeight}, " +
+                $"[FrameSharedMemory] Writer created: mmf='{usedMmfName}', event='{usedEventName}', window={windowWidth}×{windowHeight}, " +
                 $"regionBytes={regionCapacity} ({regionCapacity / 1024 / 1024} MB).",
                 LogCategory.General);
 
             return new FrameSharedMemory(
                 usedMmfName,
-                baseEventName,
+                usedEventName,
                 isWriter: true,
                 mmf,
                 accessor,
@@ -176,7 +185,9 @@ namespace FenBrowser.Host.ProcessIsolation
                 var candidate = prefix + baseMmfName;
                 try
                 {
-                    mmf = MemoryMappedFile.OpenExisting(candidate, MemoryMappedFileRights.ReadWrite);
+                    // The compositor only consumes published frame bytes. Do not give
+                    // the reader write access to renderer-owned shared memory.
+                    mmf = MemoryMappedFile.OpenExisting(candidate, MemoryMappedFileRights.Read);
                     usedMmfName = candidate;
                     break;
                 }
@@ -200,13 +211,17 @@ namespace FenBrowser.Host.ProcessIsolation
             }
 
             EventWaitHandle readyEvent = null;
+            string usedEventName = null;
             foreach (var prefix in new[] { "Global\\", "" })
             {
                 var candidate = prefix + baseEventName;
                 try
                 {
                     if (EventWaitHandle.TryOpenExisting(candidate, out readyEvent))
+                    {
+                        usedEventName = candidate;
                         break;
+                    }
                 }
                 catch (UnauthorizedAccessException)
                 {
@@ -218,10 +233,17 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
             }
 
+            if (readyEvent == null)
+            {
+                EngineLogBridge.Warn("[FrameSharedMemory] Could not open frame-ready event; rejecting mapping.", LogCategory.General);
+                TryDispose(mmf, "reader-memory-mapped-file");
+                return null;
+            }
+
             MemoryMappedViewAccessor accessor = null;
             try
             {
-                accessor = mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.ReadWrite);
+                accessor = mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
                 if (accessor.Capacity < HeaderSize)
                     throw new InvalidDataException("Shared frame mapping is smaller than its header.");
 
@@ -239,13 +261,13 @@ namespace FenBrowser.Host.ProcessIsolation
                 }
 
                 EngineLogBridge.Info(
-                    $"[FrameSharedMemory] Reader opened: mmf='{usedMmfName}', regionBytes={regionCapacity} " +
+                    $"[FrameSharedMemory] Reader opened: mmf='{usedMmfName}', event='{usedEventName}', regionBytes={regionCapacity} " +
                     $"({regionCapacity / 1024 / 1024} MB).",
                     LogCategory.General);
 
                 return new FrameSharedMemory(
                     usedMmfName,
-                    baseEventName,
+                    usedEventName,
                     isWriter: false,
                     mmf,
                     accessor,
@@ -264,6 +286,8 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public void WriteFrame(int width, int height, ReadOnlySpan<byte> bgraPixels)
         {
+            if (!_isWriter)
+                throw new InvalidOperationException("A shared-frame reader cannot publish frames.");
             if (_accessor == null || _disposed)
                 return;
 
@@ -315,6 +339,8 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public (int width, int height, uint seq, byte[] pixels)? TryReadFrame()
         {
+            if (_isWriter)
+                throw new InvalidOperationException("A shared-frame writer cannot consume compositor frames.");
             if (_accessor == null || _disposed)
                 return null;
 
@@ -373,9 +399,19 @@ namespace FenBrowser.Host.ProcessIsolation
             return true;
         }
 
-        public void SignalReady() => _readyEvent?.Set();
+        public void SignalReady()
+        {
+            if (!_isWriter)
+                throw new InvalidOperationException("A shared-frame reader cannot signal frame publication.");
+            _readyEvent?.Set();
+        }
 
-        public bool WaitForReady(TimeSpan timeout) => _readyEvent?.WaitOne(timeout) ?? false;
+        public bool WaitForReady(TimeSpan timeout)
+        {
+            if (_isWriter)
+                throw new InvalidOperationException("A shared-frame writer cannot wait as a compositor reader.");
+            return _readyEvent?.WaitOne(timeout) ?? false;
+        }
 
         public void Dispose()
         {
