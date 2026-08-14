@@ -4385,3 +4385,14 @@ Verification:
 - Focused WebDriver contracts for add-cookie validation and metadata preservation: pass (`5/5`, zero failed/skipped).
 - Release build of `FenBrowser.Host`: pass (zero errors).
 - WPT `/webdriver/tests/classic/add_cookie`: pass (`2/2`, zero unexpected test or subtest failures) in `Results/wpt/wdspec_add_cookie_after_cookie_validation`; previous clean run had `28` unexpected subtest failures in `add.py` and `user_prompts.py`.
+
+## 6.191 CSS Parser Microbenchmark Tool (2026-08-15)
+
+- `scripts/BenchCSS` accepts an explicit local HTML input and measures the production CSS tokenizer, stylesheet parser, and any discovered `@font-face` descriptors over configurable warmup and measured iterations.
+- Each measured phase verifies that its observed token, rule, or font-face count stays stable across iterations.
+- The tool emits its schema-v1 JSON report to standard output only. It does not create or retain CSV result files.
+
+Verification:
+
+- Release build of `scripts/BenchCSS/BenchCSS.csproj`: pass (zero errors).
+- One run over `Results/html-tokenizer-bench/benchmark-corpus.html` processed 6,860 style blocks with stable counts of 130,339 tokens and 6,860 parsed rules.
