@@ -1,3 +1,4 @@
+using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
 
@@ -18,6 +19,7 @@ public sealed class NativeFunctionObject : JsObject
     // builtins whose behavior depends on it (e.g. an abstract base like Iterator that
     // throws for `new Iterator()` but allows `class X extends Iterator`).
     private readonly Func<IReadOnlyList<JsValue>, JsValue, JsValue>? _constructWithNewTarget;
+    private readonly JsValue[] _capturedRoots;
 
     public NativeFunctionObject(
         string name,
@@ -26,12 +28,17 @@ public sealed class NativeFunctionObject : JsObject
         int length = 0,
         Func<IReadOnlyList<JsValue>, JsValue, JsValue>? constructWithNewTarget = null,
         bool lengthConfigurable = true,
-        bool nameConfigurable = true)
+        bool nameConfigurable = true,
+        IReadOnlyList<JsValue>? capturedRoots = null)
     {
         Name = name;
-        _call = call;
+        _call = call ?? throw new ArgumentNullException(nameof(call));
         _construct = construct;
         _constructWithNewTarget = constructWithNewTarget;
+        _capturedRoots = capturedRoots is { Count: > 0 }
+            ? capturedRoots.ToArray()
+            : Array.Empty<JsValue>();
+
         _ = DefineOwnProperty(
             "length",
             new JsPropertyDescriptor(
@@ -71,5 +78,22 @@ public sealed class NativeFunctionObject : JsObject
         }
 
         return _construct(args);
+    }
+
+    public override void Trace(IHeapTracer tracer)
+    {
+        base.Trace(tracer);
+
+        // CLR closures are opaque to the FenJS heap. Native functions that capture
+        // JS values must declare those captures here so object handles remain live for
+        // exactly as long as the callable remains reachable.
+        for (var i = 0; i < _capturedRoots.Length; i++)
+        {
+            var value = _capturedRoots[i];
+            if (value.Tag == JsValueTag.Object)
+            {
+                tracer.Trace(value.AsObjectHandle());
+            }
+        }
     }
 }
