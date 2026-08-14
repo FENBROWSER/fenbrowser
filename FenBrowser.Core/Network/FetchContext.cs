@@ -1,4 +1,5 @@
 using System;
+using System.Net.Http;
 
 namespace FenBrowser.Core.Network;
 
@@ -19,4 +20,34 @@ public sealed record FetchContext
     public bool IsTopLevelNavigation { get; init; }
     public bool IsUserInitiated { get; init; }
     public string Method { get; init; } = "GET";
+}
+
+/// <summary>
+/// Internal transport bridge for preserving browser fetch state across the existing
+/// INetworkClient(HttpRequestMessage) boundary. HttpRequestMessage.Options is process-
+/// local metadata and is never serialized onto the wire.
+/// </summary>
+internal static class FetchContextRequestOptions
+{
+    private static readonly HttpRequestOptionsKey<FetchContext> ContextKey =
+        new("FenBrowser.FetchContext");
+
+    public static void Set(HttpRequestMessage request, FetchContext context)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(context);
+        request.Options.Set(ContextKey, context);
+    }
+
+    public static FetchContext Get(HttpRequestMessage request)
+    {
+        if (request == null)
+        {
+            return null;
+        }
+
+        return request.Options.TryGetValue(ContextKey, out var context)
+            ? context
+            : null;
+    }
 }
