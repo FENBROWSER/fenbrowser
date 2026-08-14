@@ -19,8 +19,6 @@
 
 using System;
 using System.Diagnostics;
-using System.Runtime;
-using System.Runtime.CompilerServices;
 using System.Threading;
 using FenBrowser.Core.Logging;
 
@@ -34,33 +32,33 @@ namespace FenBrowser.Core.Engine
     {
         private static readonly PipelineResourceGuard _instance = new();
         private readonly Timer _memoryPressureTimer;
-        private readonly object _syncRoot = new();
-        
+
         // Per-stage resource tracking
         private readonly PipelineStageResources[] _stageResources;
-        
+
         // System-level tracking
-        private long _totalMemoryUsed = 0;
-        private long _peakMemoryUsed = 0;
+        private long _totalMemoryUsed;
+        private long _peakMemoryUsed;
         private DateTime _lastMemoryWarning = DateTime.MinValue;
-        private bool _isHighMemoryPressure = false;
-        private int _highPressureCount = 0;
+        private bool _isHighMemoryPressure;
+        private int _highPressureCount;
 
         private PipelineResourceGuard()
         {
-            // Initialize per-stage tracking
             var stageCount = Enum.GetValues(typeof(PipelineStage)).Length;
             _stageResources = new PipelineStageResources[stageCount];
-            
+
             for (int i = 0; i < _stageResources.Length; i++)
             {
                 _stageResources[i] = new PipelineStageResources((PipelineStage)i);
             }
 
-            // Start memory pressure monitoring
-            _memoryPressureTimer = new Timer(MonitorMemoryPressure, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            _memoryPressureTimer = new Timer(
+                MonitorMemoryPressure,
+                null,
+                TimeSpan.FromSeconds(5),
+                TimeSpan.FromSeconds(5));
 
-            // Register for system memory notifications
             AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
         }
 
@@ -68,19 +66,16 @@ namespace FenBrowser.Core.Engine
 
         #region Resource Budgets
 
-        // Default memory budgets per stage (in bytes)
-        public long MaxStageMemoryPerFrame = 512 * 1024 * 1024; // 512MB per stage per frame
-        public long MaxTotalMemoryPerFrame = 2L * 1024 * 1024 * 1024; // 2GB total per frame
-        public long MaxPeakMemory = 4L * 1024 * 1024 * 1024; // 4GB peak
-        
-        // Stage time budgets
-        public TimeSpan MaxStageDuration = TimeSpan.FromMilliseconds(100); // 100ms per stage max
-        public TimeSpan MaxFrameDuration = TimeSpan.FromMilliseconds(250); // 250ms per frame max
-        
-        // Allocation counters
-        public int MaxDomNodeCount = 1_000_000; // 1M DOM nodes
-        public int MaxLayoutBoxCount = 2_000_000; // 2M layout boxes
-        public int MaxPaintCommandCount = 5_000_000; // 5M paint commands
+        public long MaxStageMemoryPerFrame = 512 * 1024 * 1024;
+        public long MaxTotalMemoryPerFrame = 2L * 1024 * 1024 * 1024;
+        public long MaxPeakMemory = 4L * 1024 * 1024 * 1024;
+
+        public TimeSpan MaxStageDuration = TimeSpan.FromMilliseconds(100);
+        public TimeSpan MaxFrameDuration = TimeSpan.FromMilliseconds(250);
+
+        public int MaxDomNodeCount = 1_000_000;
+        public int MaxLayoutBoxCount = 2_000_000;
+        public int MaxPaintCommandCount = 5_000_000;
 
         #endregion
 
@@ -120,15 +115,19 @@ namespace FenBrowser.Core.Engine
         /// </summary>
         public void TrackMemoryAllocation(PipelineStage stage, long bytes, string description = null)
         {
+            if (bytes < 0)
+                throw new ArgumentOutOfRangeException(nameof(bytes), "Tracked allocation size cannot be negative.");
+            if (bytes == 0)
+                return;
+
             var stageResources = _stageResources[(int)stage];
-            
+
             lock (stageResources.SyncRoot)
             {
-                // Check if this allocation itself exceeds the single allocation limit
                 if (bytes > MaxStageMemoryPerFrame)
                 {
                     throw new PipelineResourceException(
-                        stage, 
+                        stage,
                         $"Single allocation of {bytes:N0} bytes exceeds maximum of {MaxStageMemoryPerFrame:N0} bytes " +
                         $"for stage {stage} ({description ?? "unknown"})");
                 }
@@ -136,45 +135,42 @@ namespace FenBrowser.Core.Engine
                 var newStageMemory = stageResources.CurrentMemory + bytes;
                 var newTotalMemory = Interlocked.Add(ref _totalMemoryUsed, bytes);
 
-                // Check stage memory limit
                 if (newStageMemory > MaxStageMemoryPerFrame)
                 {
-                    Interlocked.Add(ref _totalMemoryUsed, -bytes); // Revert increment
+                    SubtractTrackedMemory(bytes);
                     throw new PipelineResourceException(
                         stage,
                         $"Stage {stage} memory of {newStageMemory:N0} bytes exceeds maximum of {MaxStageMemoryPerFrame:N0} bytes " +
                         $"({description ?? "allocation"})");
                 }
 
-                // Check total memory limit
                 if (newTotalMemory > MaxTotalMemoryPerFrame)
                 {
-                    Interlocked.Add(ref _totalMemoryUsed, -bytes); // Revert increment
+                    SubtractTrackedMemory(bytes);
                     throw new PipelineResourceException(
                         PipelineStage.Idle,
                         $"Total pipeline memory of {newTotalMemory:N0} bytes exceeds maximum of {MaxTotalMemoryPerFrame:N0} bytes " +
                         $"({description ?? "allocation"})");
                 }
 
-                // Update stage memory (we've already updated total)
                 stageResources.CurrentMemory = newStageMemory;
                 stageResources.TotalAllocated += bytes;
                 stageResources.AllocationCount++;
 
-                // Track peak memory
                 var peak = Interlocked.Read(ref _totalMemoryUsed);
                 long currentPeak;
                 do
                 {
                     currentPeak = Interlocked.Read(ref _peakMemoryUsed);
-                    if (peak <= currentPeak) break;
-                } while (Interlocked.CompareExchange(ref _peakMemoryUsed, peak, currentPeak) != currentPeak);
+                    if (peak <= currentPeak)
+                        break;
+                }
+                while (Interlocked.CompareExchange(ref _peakMemoryUsed, peak, currentPeak) != currentPeak);
 
-                // Warn on very large allocations
-                if (bytes > 100 * 1024 * 1024) // 100MB+
+                if (bytes > 100 * 1024 * 1024)
                 {
                     var now = DateTime.UtcNow;
-                    if ((now - _lastMemoryWarning).TotalSeconds > 10) // Throttle warnings
+                    if ((now - _lastMemoryWarning).TotalSeconds > 10)
                     {
                         _lastMemoryWarning = now;
                         EngineLogCompat.Warn(
@@ -190,14 +186,40 @@ namespace FenBrowser.Core.Engine
         /// </summary>
         public void ReleaseMemoryAllocation(PipelineStage stage, long bytes, string description = null)
         {
+            if (bytes < 0)
+                throw new ArgumentOutOfRangeException(nameof(bytes), "Tracked release size cannot be negative.");
+            if (bytes == 0)
+                return;
+
             var stageResources = _stageResources[(int)stage];
-            
+
             lock (stageResources.SyncRoot)
             {
-                stageResources.CurrentMemory = Math.Max(0, stageResources.CurrentMemory - bytes);
-                Interlocked.Add(ref _totalMemoryUsed, -bytes);
+                // Never subtract more from the process-wide total than this stage
+                // actually owns. The old code clamped the stage to zero but subtracted
+                // the caller-supplied amount globally, which could make total memory
+                // negative and disable later budget checks.
+                var releasedBytes = Math.Min(bytes, stageResources.CurrentMemory);
+                if (releasedBytes == 0)
+                    return;
+
+                stageResources.CurrentMemory -= releasedBytes;
+                stageResources.TotalDeallocated += releasedBytes;
                 stageResources.DeallocationCount++;
+                SubtractTrackedMemory(releasedBytes);
             }
+        }
+
+        private void SubtractTrackedMemory(long bytes)
+        {
+            long current;
+            long next;
+            do
+            {
+                current = Interlocked.Read(ref _totalMemoryUsed);
+                next = Math.Max(0, current - bytes);
+            }
+            while (Interlocked.CompareExchange(ref _totalMemoryUsed, next, current) != current);
         }
 
         /// <summary>
@@ -205,6 +227,11 @@ namespace FenBrowser.Core.Engine
         /// </summary>
         public void TrackObjectCount(PipelineStage stage, string objectType, int count, int limit)
         {
+            if (count < 0)
+                throw new ArgumentOutOfRangeException(nameof(count), "Object count cannot be negative.");
+            if (limit < 0)
+                throw new ArgumentOutOfRangeException(nameof(limit), "Object limit cannot be negative.");
+
             if (count > limit)
             {
                 throw new PipelineResourceException(
@@ -215,8 +242,7 @@ namespace FenBrowser.Core.Engine
             var stageResources = _stageResources[(int)stage];
             stageResources.SetObjectCount(objectType, count);
 
-            // Log warning for high object counts
-            if (count > limit * 0.9) // 90% of limit
+            if (limit > 0 && count > limit * 0.9)
             {
                 EngineLogCompat.Warn(
                     $"[RESOURCE WARNING] {objectType} count {count:N0} approaching limit {limit:N0} in {stage}",
@@ -226,45 +252,48 @@ namespace FenBrowser.Core.Engine
 
         private void MonitorMemoryPressure(object state)
         {
-            var currentProcess = Process.GetCurrentProcess();
+            using var currentProcess = Process.GetCurrentProcess();
             var workingSet = currentProcess.WorkingSet64;
-            var gcMemory = GC.GetTotalMemory(false);
+            var managedMemory = GC.GetTotalMemory(false);
 
-            // Calculate pressure (0.0 to 1.0)
-            var totalMemory = workingSet + gcMemory;
-            var pressure = Math.Min(1.0, (double)totalMemory / MaxPeakMemory);
+            // WorkingSet64 already measures resident process pages, including managed
+            // heap pages. Adding GC.GetTotalMemory() to it double-counts managed memory
+            // and can manufacture false pressure. Keep managed memory as a diagnostic
+            // only and base process pressure on the working set.
+            var pressure = MaxPeakMemory > 0
+                ? Math.Min(1.0, (double)workingSet / MaxPeakMemory)
+                : 1.0;
 
             var wasHighPressure = _isHighMemoryPressure;
-            _isHighMemoryPressure = pressure > 0.85; // 85% of peak budget
+            _isHighMemoryPressure = pressure > 0.85;
 
             if (_isHighMemoryPressure)
             {
-                Interlocked.Increment(ref _highPressureCount);
-                
+                var pressureCount = Interlocked.Increment(ref _highPressureCount);
+
                 if ((DateTime.UtcNow - _lastMemoryWarning).TotalSeconds > 30)
                 {
                     _lastMemoryWarning = DateTime.UtcNow;
                     EngineLogCompat.Error(
                         $"[RESOURCE PRESSURE] Memory pressure high: {pressure:P1} " +
-                        $"(workingSet={workingSet:N0}, gc={gcMemory:N0}, total={totalMemory:N0}, peak={_peakMemoryUsed:N0})",
+                        $"(workingSet={workingSet:N0}, managed={managedMemory:N0}, tracked={Interlocked.Read(ref _totalMemoryUsed):N0}, peakTracked={Interlocked.Read(ref _peakMemoryUsed):N0})",
                         LogCategory.Performance);
                 }
 
-                // Force garbage collection in severe pressure
-                if (pressure > 0.95 || _highPressureCount > 10)
+                // A timer must not stop every renderer/engine thread by forcing full,
+                // blocking CLR collections and waiting for finalizers. Severe pressure
+                // is surfaced to diagnostics; allocation/document/process budgets must
+                // shed work at their actual ownership boundaries.
+                if (pressure > 0.95 || pressureCount > 10)
                 {
                     EngineLogCompat.Error(
-                        $"[RESOURCE CRITICAL] Severe memory pressure {pressure:P1}, forcing GC and compaction",
+                        $"[RESOURCE CRITICAL] Severe process memory pressure {pressure:P1}; " +
+                        "resource owners must shed or reject work",
                         LogCategory.Critical);
-                    
-                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true);
-                    GC.WaitForPendingFinalizers();
-                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true);
                 }
             }
             else if (wasHighPressure)
             {
-                // Recovered from high pressure
                 Interlocked.Exchange(ref _highPressureCount, 0);
                 EngineLogCompat.Info(
                     $"[RESOURCE RECOVERY] Memory pressure normalized: {pressure:P1}",
@@ -274,11 +303,7 @@ namespace FenBrowser.Core.Engine
 
         private void OnProcessExit(object sender, EventArgs e)
         {
-            if (_memoryPressureTimer != null)
-            {
-                _memoryPressureTimer.Dispose();
-            }
-            
+            _memoryPressureTimer.Dispose();
             LogResourceSummary();
         }
 
@@ -291,17 +316,21 @@ namespace FenBrowser.Core.Engine
         public string GenerateResourceSummary()
         {
             var builder = new System.Text.StringBuilder();
-            builder.Append($"PeakMemory={_peakMemoryUsed:N0}, TotalAllocated={_totalMemoryUsed:N0}");
-            
+            builder.Append(
+                $"PeakTrackedMemory={Interlocked.Read(ref _peakMemoryUsed):N0}, " +
+                $"CurrentTrackedMemory={Interlocked.Read(ref _totalMemoryUsed):N0}");
+
             for (int i = 0; i < _stageResources.Length; i++)
             {
                 var stageResources = _stageResources[i];
                 if (stageResources.AllocationCount > 0)
                 {
-                    builder.Append($", {stageResources.Stage}:{{alloc={stageResources.AllocationCount:N0},mem={stageResources.CurrentMemory:N0}}}");
+                    builder.Append(
+                        $", {stageResources.Stage}:{{alloc={stageResources.AllocationCount:N0}," +
+                        $"dealloc={stageResources.DeallocationCount:N0},mem={stageResources.CurrentMemory:N0}}}");
                 }
             }
-            
+
             return builder.ToString();
         }
 
@@ -312,7 +341,7 @@ namespace FenBrowser.Core.Engine
         public override string ToString()
         {
             var pressure = _isHighMemoryPressure ? " [HIGH PRESSURE]" : "";
-            return $"PipelineResourceGuard: Peak={_peakMemoryUsed:N0}, Current={_totalMemoryUsed:N0}{pressure}";
+            return $"PipelineResourceGuard: Peak={Interlocked.Read(ref _peakMemoryUsed):N0}, Current={Interlocked.Read(ref _totalMemoryUsed):N0}{pressure}";
         }
 
         #endregion
@@ -325,7 +354,7 @@ namespace FenBrowser.Core.Engine
     {
         public PipelineStage Stage { get; }
         public readonly object SyncRoot = new();
-        
+
         public long CurrentMemory { get; set; }
         public long TotalAllocated { get; set; }
         public long TotalDeallocated { get; set; }
@@ -334,9 +363,9 @@ namespace FenBrowser.Core.Engine
         public TimeSpan TotalDuration { get; set; }
         public int ExecutionCount { get; set; }
         public TimeSpan PeakDuration { get; set; }
-        
+
         private readonly Dictionary<string, int> _objectCounts = new();
-        
+
         public PipelineStageResources(PipelineStage stage)
         {
             Stage = stage;
@@ -362,10 +391,12 @@ namespace FenBrowser.Core.Engine
         {
             ExecutionCount++;
             TotalDuration += duration;
-            if (duration > PeakDuration) PeakDuration = duration;
+            if (duration > PeakDuration)
+                PeakDuration = duration;
         }
 
-        public double AverageDurationMs => ExecutionCount > 0 ? TotalDuration.TotalMilliseconds / ExecutionCount : 0;
+        public double AverageDurationMs =>
+            ExecutionCount > 0 ? TotalDuration.TotalMilliseconds / ExecutionCount : 0;
     }
 
     /// <summary>
