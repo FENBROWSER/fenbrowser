@@ -40,11 +40,13 @@ namespace FenBrowser.FenEngine.Core.EventLoop
     /// </summary>
     public class ScheduledTask
     {
+        private string _traceId;
+
         public Action Callback { get; }
         public TaskSource Source { get; }
         public long ScheduledTime { get; }
         public string Description { get; }
-        public string TraceId { get; }
+        public string TraceId => _traceId ??= EventLoopTrace.NextId("task");
 
         public ScheduledTask(Action callback, TaskSource source, string description = null)
         {
@@ -52,7 +54,6 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             Source = source;
             ScheduledTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             Description = description ?? source.ToString();
-            TraceId = EventLoopTrace.NextId("task");
         }
     }
 
