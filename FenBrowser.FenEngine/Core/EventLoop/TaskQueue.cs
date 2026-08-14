@@ -139,21 +139,17 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     return null;
                 }
 
-                ScheduledTask task = null;
-
                 if (prioritizeInteractive)
                 {
-                    task = TryDequeueMatchingLocked(
-                        source => ClassifyPriority(source) == TaskPriorityGroup.Interactive,
-                        out priorityGroup);
-
-                    task ??= TryDequeueMatchingLocked(
-                        source => ClassifyPriority(source) == TaskPriorityGroup.UserVisible,
-                        out priorityGroup);
+                    var task = TryDequeuePriorityLocked(TaskPriorityGroup.Interactive, out priorityGroup);
+                    task ??= TryDequeuePriorityLocked(TaskPriorityGroup.UserVisible, out priorityGroup);
+                    if (task != null)
+                    {
+                        return task;
+                    }
                 }
 
-                task ??= TryDequeueMatchingLocked(_ => true, out priorityGroup);
-                return task;
+                return DequeueAnyLocked(out priorityGroup);
             }
         }
 
@@ -282,18 +278,15 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             };
         }
 
-        private ScheduledTask TryDequeueMatchingLocked(Func<TaskSource, bool> sourcePredicate, out TaskPriorityGroup priorityGroup)
+        /// <summary>
+        /// Fast ordinary round-robin dequeue. The old generic matcher allocated a
+        /// temporary Queue&lt;TaskSource&gt; and a predicate delegate for every task even
+        /// though this path accepts the first live source. Keep it allocation-free.
+        /// </summary>
+        private ScheduledTask DequeueAnyLocked(out TaskPriorityGroup priorityGroup)
         {
             priorityGroup = TaskPriorityGroup.Background;
-            if (_activeSources.Count == 0)
-            {
-                return null;
-            }
-
-            int attempts = _activeSources.Count;
-            var skippedSources = new Queue<TaskSource>();
-
-            for (int i = 0; i < attempts; i++)
+            while (_activeSources.Count > 0)
             {
                 var source = _activeSources.Dequeue();
                 if (!_tasksBySource.TryGetValue(source, out var queue) || queue.Count == 0)
@@ -302,43 +295,88 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     continue;
                 }
 
-                if (!sourcePredicate(source))
-                {
-                    skippedSources.Enqueue(source);
-                    continue;
-                }
-
-                var task = queue.Dequeue();
-                _count--;
-                priorityGroup = ClassifyPriority(source);
-
-                if (queue.Count > 0)
-                {
-                    _activeSources.Enqueue(source);
-                }
-                else
-                {
-                    _activeSourceSet.Remove(source);
-                }
-
-                while (skippedSources.Count > 0)
-                {
-                    _activeSources.Enqueue(skippedSources.Dequeue());
-                }
-
-                EngineLogCompat.Log(
-                    LogCategory.JavaScript,
-                    LogLevel.Debug,
-                    $"[TaskQueue] Dequeued: {task.Description} (Source: {task.Source}, Priority: {priorityGroup}, RemainingSourceCount: {queue.Count}, RemainingTotal: {_count})");
-                return task;
-            }
-
-            while (skippedSources.Count > 0)
-            {
-                _activeSources.Enqueue(skippedSources.Dequeue());
+                return DequeueFromSourceLocked(source, queue, out priorityGroup);
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Searches the bounded set of task sources for a priority class while
+        /// preserving the scheduler's existing queue order. TaskSource is a small
+        /// fixed enum, so skipped sources fit in stack memory instead of allocating a
+        /// Queue on every prioritized dequeue.
+        /// </summary>
+        private ScheduledTask TryDequeuePriorityLocked(
+            TaskPriorityGroup desiredPriority,
+            out TaskPriorityGroup priorityGroup)
+        {
+            priorityGroup = TaskPriorityGroup.Background;
+            if (_activeSources.Count == 0)
+            {
+                return null;
+            }
+
+            var attempts = _activeSources.Count;
+            Span<TaskSource> skippedSources = attempts <= 32
+                ? stackalloc TaskSource[attempts]
+                : new TaskSource[attempts];
+            var skippedCount = 0;
+
+            for (var i = 0; i < attempts; i++)
+            {
+                var source = _activeSources.Dequeue();
+                if (!_tasksBySource.TryGetValue(source, out var queue) || queue.Count == 0)
+                {
+                    _activeSourceSet.Remove(source);
+                    continue;
+                }
+
+                if (ClassifyPriority(source) != desiredPriority)
+                {
+                    skippedSources[skippedCount++] = source;
+                    continue;
+                }
+
+                var task = DequeueFromSourceLocked(source, queue, out priorityGroup);
+                for (var skippedIndex = 0; skippedIndex < skippedCount; skippedIndex++)
+                {
+                    _activeSources.Enqueue(skippedSources[skippedIndex]);
+                }
+                return task;
+            }
+
+            for (var skippedIndex = 0; skippedIndex < skippedCount; skippedIndex++)
+            {
+                _activeSources.Enqueue(skippedSources[skippedIndex]);
+            }
+
+            return null;
+        }
+
+        private ScheduledTask DequeueFromSourceLocked(
+            TaskSource source,
+            Queue<ScheduledTask> queue,
+            out TaskPriorityGroup priorityGroup)
+        {
+            var task = queue.Dequeue();
+            _count--;
+            priorityGroup = ClassifyPriority(source);
+
+            if (queue.Count > 0)
+            {
+                _activeSources.Enqueue(source);
+            }
+            else
+            {
+                _activeSourceSet.Remove(source);
+            }
+
+            EngineLogCompat.Log(
+                LogCategory.JavaScript,
+                LogLevel.Debug,
+                $"[TaskQueue] Dequeued: {task.Description} (Source: {task.Source}, Priority: {priorityGroup}, RemainingSourceCount: {queue.Count}, RemainingTotal: {_count})");
+            return task;
         }
     }
 }
