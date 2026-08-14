@@ -124,3 +124,11 @@ interface mixin DocumentAndElementEventHandlers {
   attribute EventHandler oncut;
   attribute EventHandler onpaste;
 };
+
+// Selected declaration from local WPT interfaces/html.idl at
+// 88152b842c3f60c2a5f95e0106ded4a375f710b0.
+partial interface mixin DocumentOrShadowRoot {
+  readonly attribute Element? activeElement;
+};
+
+Document includes DocumentOrShadowRoot;

@@ -1,0 +1,13 @@
+// Selected declarations from local WPT interfaces/html.idl at
+// 88152b842c3f60c2a5f95e0106ded4a375f710b0.
+// Metadata only: generated FenEngine bindings remain excluded from compilation.
+[Exposed=Window]
+interface HTMLIFrameElement : HTMLElement {
+  [SameObject, PutForwards=value, Reflect] readonly attribute DOMTokenList sandbox;
+  readonly attribute Document? contentDocument;
+  readonly attribute WindowProxy? contentWindow;
+};
+
+partial interface HTMLIFrameElement {
+  [CEReactions, Reflect] attribute DOMString scrolling;
+};

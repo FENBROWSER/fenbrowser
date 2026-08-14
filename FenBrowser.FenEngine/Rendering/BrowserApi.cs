@@ -353,6 +353,7 @@ namespace FenBrowser.FenEngine.Rendering
         private bool _lastClickHadTarget;
         private Element _lastClickTarget;
         private Element _lastDispatchedInputTarget;
+        private Element _lastPointerEventTarget;
         private bool _pendingWebDriverClickPointValid;
         private int _pendingWebDriverClickClientX;
         private int _pendingWebDriverClickClientY;
@@ -1271,6 +1272,8 @@ namespace FenBrowser.FenEngine.Rendering
                 _elementMap.Clear();
                 _elementBrowsingContextMap.Clear();
                 _shadowRootMap.Clear();
+                _lastPointerEventTarget = null;
+                ElementStateManager.Instance.SetHoveredElement(null);
 
                 navigationId = _navigationLifecycle.BeginNavigation(url, requestKind == NavigationRequestKind.UserInput);
                 var previousNavigationId = Interlocked.Exchange(ref _latestNavigationId, navigationId);
@@ -3347,6 +3350,42 @@ pre {{
                     : null;
         }
 
+        private static bool IsClickSequenceInput(string type) =>
+            string.Equals(type, "pointerdown", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(type, "mousedown", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(type, "pointerup", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(type, "mouseup", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(type, "click", StringComparison.OrdinalIgnoreCase);
+
+        private static string DescribeInputTarget(Element target)
+        {
+            if (target == null) return "<none>";
+            var id = target.GetAttribute("id");
+            var className = target.GetAttribute("class")?.Trim();
+            if (className?.Length > 80)
+            {
+                className = className.Substring(0, 80);
+            }
+
+            var identity = target.TagName ?? string.Empty;
+            if (!string.IsNullOrEmpty(id)) identity += $"#{id}";
+            if (!string.IsNullOrEmpty(className)) identity += $".{className.Replace(' ', '.')}";
+            var documentHost = target.OwnerDocument?.ParentNode is Element host
+                ? host.TagName
+                : "top";
+            var ancestors = new List<string>();
+            for (var current = target.ParentElement; current != null && ancestors.Count < 5; current = current.ParentElement)
+            {
+                var ancestorId = current.GetAttribute("id");
+                ancestors.Add(string.IsNullOrEmpty(ancestorId)
+                    ? current.TagName
+                    : $"{current.TagName}#{ancestorId}");
+            }
+
+            var path = ancestors.Count == 0 ? string.Empty : $" ancestors={string.Join('/', ancestors)}";
+            return $"<{identity} document={documentHost}{path}>";
+        }
+
         private static bool ShouldRetryTopLevelNavigation(FetchResult result, string url, int attempt, int maxAttempts)
         {
             if (attempt >= maxAttempts) return false;
@@ -3409,6 +3448,8 @@ pre {{
             float deltaX = 0,
             float deltaY = 0)
         {
+            var sourceX = x;
+            var sourceY = y;
             var eventType = MapToInputEventType(type);
             var buttonMask = BuildButtonMask(button, type);
             // Prefer the active renderer (injected by BrowserIntegration) which has the actual
@@ -3455,6 +3496,17 @@ pre {{
             }
             _lastDispatchedInputTarget = inputEvent.Target;
 
+            if (IsClickSequenceInput(type))
+            {
+                var frame = TryGetEmbeddingFrame(inputEvent.Target);
+                var frameCandidates = frame == null
+                    ? $" candidates='{FenBrowser.FenEngine.Rendering.Interaction.HitTester.DescribeFrameCandidates(renderContext, inputEvent.Target, sourceX, sourceY)}'"
+                    : string.Empty;
+                TryLogInfo(
+                    $"[InputPipeline] hit type='{type}' document=({sourceX:F1},{sourceY:F1}) client=({inputEvent.X:F1},{inputEvent.Y:F1}) target='{DescribeInputTarget(inputEvent.Target)}' frame='{DescribeInputTarget(frame)}'{frameCandidates}",
+                    LogCategory.Events);
+            }
+
             var eventInit = new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
             {
                 ClientX = inputEvent.X,
@@ -3475,6 +3527,12 @@ pre {{
                 Cancelable = true
             };
             var defaultAllowed = true;
+
+            if (string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase))
+            {
+                DispatchPointerBoundaryEvents(_lastPointerEventTarget, inputEvent.Target, eventInit);
+                _lastPointerEventTarget = inputEvent.Target;
+            }
 
             var isClick = string.Equals(type, "click", StringComparison.OrdinalIgnoreCase);
             if (isClick)
@@ -3527,6 +3585,13 @@ pre {{
                 SyncFocusFromPointerTarget(inputEvent.Target);
             }
 
+            if (IsClickSequenceInput(type))
+            {
+                TryLogInfo(
+                    $"[InputPipeline] DOM complete type='{type}' target='{DescribeInputTarget(inputEvent.Target)}' defaultAllowed={defaultAllowed}",
+                    LogCategory.Events);
+            }
+
             // NOTE: HandleElementClick is NOT called here because BrowserIntegration's
             // HandleMouseUp already calls it with the paint-tree hit-test result. Calling it
             // here too would cause double-navigation for links and double-focus for inputs.
@@ -3548,6 +3613,8 @@ pre {{
             float deltaX = 0,
             float deltaY = 0)
         {
+            var sourceX = x;
+            var sourceY = y;
             var eventType = MapToInputEventType(type);
             var buttonMask = BuildButtonMask(button, type);
             var renderContext = _activeRenderer?.CreateRenderContext() ?? _engine.BuildRenderContext();
@@ -3579,6 +3646,17 @@ pre {{
             }
             _lastDispatchedInputTarget = inputEvent.Target;
 
+            if (IsClickSequenceInput(type))
+            {
+                var frame = TryGetEmbeddingFrame(inputEvent.Target);
+                var frameCandidates = frame == null
+                    ? $" candidates='{FenBrowser.FenEngine.Rendering.Interaction.HitTester.DescribeFrameCandidates(renderContext, inputEvent.Target, sourceX, sourceY)}'"
+                    : string.Empty;
+                TryLogInfo(
+                    $"[InputPipeline] hit type='{type}' document=({sourceX:F1},{sourceY:F1}) client=({inputEvent.X:F1},{inputEvent.Y:F1}) target='{DescribeInputTarget(inputEvent.Target)}' frame='{DescribeInputTarget(frame)}'{frameCandidates}",
+                    LogCategory.Events);
+            }
+
             var eventInit = new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
             {
                 ClientX = inputEvent.X,
@@ -3599,6 +3677,12 @@ pre {{
                 Cancelable = true
             };
             var defaultAllowed = true;
+
+            if (string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase))
+            {
+                await DispatchPointerBoundaryEventsAsync(_lastPointerEventTarget, inputEvent.Target, eventInit).ConfigureAwait(false);
+                _lastPointerEventTarget = inputEvent.Target;
+            }
 
             var isClick = string.Equals(type, "click", StringComparison.OrdinalIgnoreCase);
             if (isClick)
@@ -3642,6 +3726,13 @@ pre {{
                 SyncFocusFromPointerTarget(inputEvent.Target);
             }
 
+            if (IsClickSequenceInput(type))
+            {
+                TryLogInfo(
+                    $"[InputPipeline] DOM complete type='{type}' target='{DescribeInputTarget(inputEvent.Target)}' defaultAllowed={defaultAllowed}",
+                    LogCategory.Events);
+            }
+
             return defaultAllowed;
         }
 
@@ -3665,6 +3756,157 @@ pre {{
                 "mousemove" => "pointermove",
                 _ => null
             };
+        }
+
+        private void DispatchPointerBoundaryEvents(
+            Element previousTarget,
+            Element currentTarget,
+            FenBrowser.FenEngine.Scripting.BrowserDomEventInit source)
+        {
+            if (ReferenceEquals(previousTarget, currentTarget))
+            {
+                return;
+            }
+
+            ElementStateManager.Instance.SetHoveredElement(NormalizeHoverTarget(currentTarget));
+            var (exited, entered) = BuildBoundaryPaths(previousTarget, currentTarget);
+            DispatchBoundaryEvent(previousTarget, "pointerout", currentTarget, source, bubbles: true, cancelable: true);
+            DispatchBoundaryEvent(previousTarget, "mouseout", currentTarget, source, bubbles: true, cancelable: true);
+            foreach (var element in exited)
+            {
+                DispatchBoundaryEvent(element, "pointerleave", currentTarget, source, bubbles: false, cancelable: false);
+                DispatchBoundaryEvent(element, "mouseleave", currentTarget, source, bubbles: false, cancelable: false);
+            }
+
+            DispatchBoundaryEvent(currentTarget, "pointerover", previousTarget, source, bubbles: true, cancelable: true);
+            DispatchBoundaryEvent(currentTarget, "mouseover", previousTarget, source, bubbles: true, cancelable: true);
+            for (var i = entered.Count - 1; i >= 0; i--)
+            {
+                DispatchBoundaryEvent(entered[i], "pointerenter", previousTarget, source, bubbles: false, cancelable: false);
+                DispatchBoundaryEvent(entered[i], "mouseenter", previousTarget, source, bubbles: false, cancelable: false);
+            }
+        }
+
+        private async Task DispatchPointerBoundaryEventsAsync(
+            Element previousTarget,
+            Element currentTarget,
+            FenBrowser.FenEngine.Scripting.BrowserDomEventInit source)
+        {
+            if (ReferenceEquals(previousTarget, currentTarget))
+            {
+                return;
+            }
+
+            ElementStateManager.Instance.SetHoveredElement(NormalizeHoverTarget(currentTarget));
+            var (exited, entered) = BuildBoundaryPaths(previousTarget, currentTarget);
+            await DispatchBoundaryEventAsync(previousTarget, "pointerout", currentTarget, source, true, true).ConfigureAwait(false);
+            await DispatchBoundaryEventAsync(previousTarget, "mouseout", currentTarget, source, true, true).ConfigureAwait(false);
+            foreach (var element in exited)
+            {
+                await DispatchBoundaryEventAsync(element, "pointerleave", currentTarget, source, false, false).ConfigureAwait(false);
+                await DispatchBoundaryEventAsync(element, "mouseleave", currentTarget, source, false, false).ConfigureAwait(false);
+            }
+
+            await DispatchBoundaryEventAsync(currentTarget, "pointerover", previousTarget, source, true, true).ConfigureAwait(false);
+            await DispatchBoundaryEventAsync(currentTarget, "mouseover", previousTarget, source, true, true).ConfigureAwait(false);
+            for (var i = entered.Count - 1; i >= 0; i--)
+            {
+                await DispatchBoundaryEventAsync(entered[i], "pointerenter", previousTarget, source, false, false).ConfigureAwait(false);
+                await DispatchBoundaryEventAsync(entered[i], "mouseenter", previousTarget, source, false, false).ConfigureAwait(false);
+            }
+        }
+
+        private void DispatchBoundaryEvent(
+            Element target,
+            string type,
+            Element relatedTarget,
+            FenBrowser.FenEngine.Scripting.BrowserDomEventInit source,
+            bool bubbles,
+            bool cancelable)
+        {
+            if (target == null)
+            {
+                return;
+            }
+
+            _engine.DispatchPointerEvent(target, type, CreateBoundaryEventInit(target, relatedTarget, source, bubbles, cancelable));
+        }
+
+        private async Task DispatchBoundaryEventAsync(
+            Element target,
+            string type,
+            Element relatedTarget,
+            FenBrowser.FenEngine.Scripting.BrowserDomEventInit source,
+            bool bubbles,
+            bool cancelable)
+        {
+            if (target == null)
+            {
+                return;
+            }
+
+            await _engine.DispatchPointerEventAsync(
+                target,
+                type,
+                CreateBoundaryEventInit(target, relatedTarget, source, bubbles, cancelable)).ConfigureAwait(false);
+        }
+
+        private static FenBrowser.FenEngine.Scripting.BrowserDomEventInit CreateBoundaryEventInit(
+            Element target,
+            Element relatedTarget,
+            FenBrowser.FenEngine.Scripting.BrowserDomEventInit source,
+            bool bubbles,
+            bool cancelable)
+        {
+            return new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
+            {
+                ClientX = source.ClientX,
+                ClientY = source.ClientY,
+                PageX = source.PageX,
+                PageY = source.PageY,
+                ScreenX = source.ScreenX,
+                ScreenY = source.ScreenY,
+                Button = source.Button,
+                Buttons = source.Buttons,
+                PointerId = source.PointerId,
+                PointerType = source.PointerType,
+                Pressure = source.Pressure,
+                IsPrimary = source.IsPrimary,
+                RelatedTarget = ReferenceEquals(target?.OwnerDocument, relatedTarget?.OwnerDocument) ? relatedTarget : null,
+                Bubbles = bubbles,
+                Cancelable = cancelable,
+                Composed = source.Composed,
+                IsTrusted = source.IsTrusted
+            };
+        }
+
+        private static (List<Element> Exited, List<Element> Entered) BuildBoundaryPaths(
+            Element previousTarget,
+            Element currentTarget)
+        {
+            var previousPath = BuildAncestorPath(previousTarget);
+            var currentPath = BuildAncestorPath(currentTarget);
+            Element commonAncestor = null;
+            if (ReferenceEquals(previousTarget?.OwnerDocument, currentTarget?.OwnerDocument))
+            {
+                var currentAncestors = new HashSet<Element>(currentPath);
+                commonAncestor = previousPath.FirstOrDefault(currentAncestors.Contains);
+            }
+
+            return (
+                previousPath.TakeWhile(element => !ReferenceEquals(element, commonAncestor)).ToList(),
+                currentPath.TakeWhile(element => !ReferenceEquals(element, commonAncestor)).ToList());
+        }
+
+        private static List<Element> BuildAncestorPath(Element target)
+        {
+            var path = new List<Element>();
+            for (var current = target; current != null; current = current.ParentElement)
+            {
+                path.Add(current);
+            }
+
+            return path;
         }
 
         private static int BuildButtonMask(int button, string type)

@@ -3,6 +3,13 @@
 // Metadata only: generated FenEngine bindings remain excluded from compilation.
 [Exposed=Window]
 interface HTMLScriptElement : HTMLElement {
+  [CEReactions, Reflect] attribute DOMString type;
   [CEReactions] attribute boolean async;
+  [CEReactions] attribute DOMString? crossOrigin;
+  [CEReactions, Reflect] attribute DOMString integrity;
   [CEReactions] attribute DOMString fetchPriority;
+};
+
+partial interface HTMLScriptElement {
+  [CEReactions, Reflect] attribute DOMString charset;
 };

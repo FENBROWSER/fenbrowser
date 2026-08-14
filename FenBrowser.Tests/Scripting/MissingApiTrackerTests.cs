@@ -220,6 +220,36 @@ public sealed class MissingApiTrackerTests
     }
 
     [Fact]
+    public void Classifier_RecognizesGoogleChallengeHtmlMembers()
+    {
+        var members = new[]
+        {
+            ("Document", "activeElement"),
+            ("HTMLIFrameElement", "sandbox"),
+            ("HTMLIFrameElement", "scrolling"),
+            ("HTMLIFrameElement", "title"),
+            ("HTMLMetaElement", "httpEquiv"),
+            ("HTMLScriptElement", "async"),
+            ("HTMLScriptElement", "charset"),
+            ("HTMLScriptElement", "crossOrigin"),
+            ("HTMLScriptElement", "integrity"),
+            ("HTMLScriptElement", "type")
+        };
+
+        foreach (var (receiver, property) in members)
+        {
+            var result = MissingApiClassifier.Classify(new MissingApiClassificationInput(
+                receiver,
+                property,
+                MissingApiOperationKind.Read));
+
+            Assert.Equal("STANDARD_API", MissingApiClassifier.ToToken(result.Classification));
+            Assert.True(result.ReceiverMatchesDefinedInterface);
+            Assert.True(result.StandardPriorityEligible);
+        }
+    }
+
+    [Fact]
     public async Task MissingHostProperty_DeduplicatesByApiNameInPerSiteJson()
     {
         var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
@@ -625,7 +655,7 @@ public sealed class MissingApiTrackerTests
     }
 
     [Fact]
-    public async Task KnownWebIdlStringifierAndPartialInterfaceMisses_AreStandardsPriority()
+    public async Task KnownWebIdlPartialInterfaceMisses_AreStandardsPriority()
     {
         var outputRoot = Path.Combine(Path.GetTempPath(), $"fenbrowser-missing-apis-{Guid.NewGuid():N}");
         var baseUri = new Uri("https://example.test/stringifier-partial-interface.html");
@@ -643,7 +673,7 @@ public sealed class MissingApiTrackerTests
 
             await engine.SetDomAsync(document.DocumentElement, baseUri);
 
-            Assert.Equal("undefined|undefined", engine.Evaluate(@"
+            Assert.Equal("function|undefined", engine.Evaluate(@"
                 typeof location.toString + '|' + typeof navigator.geolocation;")?.ToString());
 
             using var outputJson = JsonDocument.Parse(File.ReadAllText(MissingApiTracker.GetOutputPathForTests(baseUri)));
@@ -651,7 +681,6 @@ public sealed class MissingApiTrackerTests
                 .EnumerateArray()
                 .ToDictionary(record => record.GetProperty("apiName").GetString()!, record => record);
 
-            AssertStandard(records["Location.toString"], "Location");
             AssertStandard(records["Navigator.geolocation"], "Navigator");
         }
         finally
@@ -795,7 +824,6 @@ public sealed class MissingApiTrackerTests
 
             Assert.Equal("assigned", engine.Evaluate(@"
                 var scriptProbe = document.createElement('script');
-                scriptProbe.async = true;
                 scriptProbe.fetchPriority = 'high';
                 var linkProbe = document.createElement('link');
                 linkProbe.as = 'script';
@@ -808,7 +836,6 @@ public sealed class MissingApiTrackerTests
                 .EnumerateArray()
                 .ToDictionary(record => record.GetProperty("apiName").GetString()!, record => record);
 
-            AssertStandardWrite(records, "HTMLScriptElement.async", "HTMLScriptElement");
             AssertStandardWrite(records, "HTMLScriptElement.fetchPriority", "HTMLScriptElement");
             AssertStandardWrite(records, "HTMLLinkElement.as", "HTMLLinkElement");
             AssertStandardWrite(records, "HTMLImageElement.fetchPriority", "HTMLImageElement");

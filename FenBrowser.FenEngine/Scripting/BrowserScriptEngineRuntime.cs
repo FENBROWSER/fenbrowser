@@ -21,6 +21,7 @@ using FenBrowser.Core.Storage;
 using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Host;
+using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Promises;
@@ -344,6 +345,7 @@ public sealed class BrowserDomEventInit
     public string PointerType { get; init; } = "mouse";
     public double Pressure { get; init; }
     public bool IsPrimary { get; init; } = true;
+    public Element RelatedTarget { get; init; }
     public bool Bubbles { get; init; } = true;
     public bool Cancelable { get; init; } = true;
     public bool Composed { get; init; } = true;
@@ -373,7 +375,7 @@ internal sealed record BrowserHostLifetimeSnapshot(
 /// FenJS browser script engine — the sole JS runtime for the browser pipeline.
 /// All page scripts execute through FenJS; there is no legacy fallback.
 /// </summary>
-public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
+public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSource
 {
     private sealed class MessagePortEndpoint
     {
@@ -383,10 +385,21 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         public bool Closed { get; set; }
     }
 
+    private sealed class FenJsTimerRegistration : IDisposable
+    {
+        public Timer Timer { get; set; }
+        public JsValue Callback { get; init; }
+        public IReadOnlyList<JsValue> Arguments { get; init; } = Array.Empty<JsValue>();
+        public FenJsWindowCallbackContext WindowContext { get; init; }
+        public int CallbackPending;
+
+        public void Dispose() => Timer?.Dispose();
+    }
+
     private readonly object _fenJsLock = new();
     private readonly object _windowMessageQueueLock = new();
     private Task _windowMessageDeliveryTail = Task.CompletedTask;
-    private readonly ConcurrentDictionary<long, Timer> _fenJsTimers = new();
+    private readonly ConcurrentDictionary<long, FenJsTimerRegistration> _fenJsTimers = new();
     private long _fenJsTimerIdCounter;
     private long _diagnosticCookieCaptureCounter;
     private JsValue _fenJsGlobalThis = JsValue.Undefined;
@@ -444,6 +457,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private string _currentNavigationId;
     private string _documentReadyState = "loading";
     private int _fenJsEvaluationCount;
+    private long _fenJsAllocationCountAtLastBoundaryGc;
     private int _dynamicScriptTraceCounter;
     private readonly object _scriptLoadingLock = new();
     private BrowserScriptLoadingSnapshot _lastScriptLoadingSnapshot = new();
@@ -458,6 +472,102 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     // Direct engine properties (were delegated to legacy adapter).
     private IExecutionContext _globalContext;
     private JavaScriptRuntimeProfile _runtimeProfile;
+
+    void IHeapRootSource.TraceRoots(IHeapTracer tracer)
+    {
+        TraceJsRoot(tracer, _fenJsGlobalThis);
+        TraceJsRoot(tracer, _visualViewport);
+        TraceJsRoot(tracer, _fenJsTopWindowFacade);
+        TraceJsRoot(tracer, _fenJsSameOriginTopWindowFacade);
+        TraceJsRoot(tracer, _embeddedParentWindowProxy);
+        TraceJsRoot(tracer, _activeWindowEventTarget);
+        TraceJsRoot(tracer, _fenJsFileConstructor);
+
+        TraceBrowserEventListeners(tracer, _documentEventListeners);
+        TraceBrowserEventListeners(tracer, _windowEventListeners);
+        TraceBrowserEventListeners(tracer, _visualViewportEventListeners);
+        TraceBrowserEventListeners(tracer, _embeddedParentWindowListeners);
+        if (_activeWindowEventListeners != null)
+        {
+            TraceBrowserEventListeners(tracer, _activeWindowEventListeners);
+        }
+
+        foreach (var entry in _elementEventListeners)
+        {
+            TraceBrowserEventListeners(tracer, entry.Value);
+        }
+        foreach (var entry in _iframeWindowEventListeners)
+        {
+            TraceBrowserEventListeners(tracer, entry.Value);
+        }
+        foreach (var entry in _hostCallableCache)
+        {
+            TraceJsRoots(tracer, entry.Value.Values);
+        }
+        foreach (var entry in _hostPropertyStore)
+        {
+            TraceJsRoots(tracer, entry.Value.Values);
+        }
+
+        foreach (var (promise, diagnostic) in _pendingPromiseRejectionDiagnostics)
+        {
+            TraceJsRoot(tracer, promise);
+            TraceJsRoot(tracer, diagnostic.Reason);
+        }
+
+        foreach (var endpoint in _messagePortEndpoints.Values)
+        {
+            if (ReferenceEquals(endpoint.Owner, this))
+            {
+                TraceJsRoot(tracer, endpoint.Port);
+            }
+        }
+
+        foreach (var registration in _fenJsTimers.Values)
+        {
+            TraceJsRoot(tracer, registration.Callback);
+            TraceJsRoots(tracer, registration.Arguments);
+            if (registration.WindowContext != null)
+            {
+                TraceJsRoot(tracer, registration.WindowContext.WindowTarget);
+                TraceBrowserEventListeners(tracer, registration.WindowContext.WindowListeners);
+            }
+        }
+
+        foreach (var hostObject in _hostHandleCache.Keys)
+        {
+            if (hostObject is FenJsMutationObserverHost observer)
+            {
+                TraceJsRoot(tracer, observer.Callback);
+            }
+        }
+    }
+
+    private static void TraceBrowserEventListeners(
+        IHeapTracer tracer,
+        IEnumerable<BrowserEventListener> listeners)
+    {
+        foreach (var listener in listeners)
+        {
+            TraceJsRoot(tracer, listener.Callback);
+        }
+    }
+
+    private static void TraceJsRoots(IHeapTracer tracer, IEnumerable<JsValue> values)
+    {
+        foreach (var value in values)
+        {
+            TraceJsRoot(tracer, value);
+        }
+    }
+
+    private static void TraceJsRoot(IHeapTracer tracer, JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object)
+        {
+            tracer.Trace(value.AsObjectHandle());
+        }
+    }
     private IHistoryBridge _historyBridge;
     private readonly IJsHost _host;
     private double _windowWidth;
@@ -936,8 +1046,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         if (TryGetFrameRealm(element.OwnerDocument, out var frameRealm))
         {
+            LogInputPipelineDispatch(element, eventName, "iframe");
             var defaultAllowed = frameRealm.DispatchEventForElement(element, eventName, eventInit);
             SyncFrameRealmObservables(TryGetFrameElementForDocument(element.OwnerDocument), frameRealm);
+            LogInputPipelineCompletion(element, eventName, defaultAllowed);
             return defaultAllowed;
         }
 
@@ -972,7 +1084,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             });
                     }
                 }
-            }, inputTimeoutMs);
+            }, inputTimeoutMs, FenJsBrowserTaskInstructionBudget, prioritize: true);
         }
         catch (JsThrownException ex) when (IsFenJsInputEventTimeout(ex))
         {
@@ -994,8 +1106,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         if (TryGetFrameRealm(element.OwnerDocument, out var frameRealm))
         {
+            LogInputPipelineDispatch(element, eventName, "iframe");
             var defaultAllowed = frameRealm.DispatchEventForElement(element, eventName, eventInit);
             SyncFrameRealmObservables(TryGetFrameElementForDocument(element.OwnerDocument), frameRealm);
+            LogInputPipelineCompletion(element, eventName, defaultAllowed);
             return defaultAllowed;
         }
 
@@ -1030,7 +1144,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             });
                     }
                 }
-            }, inputTimeoutMs).ConfigureAwait(false);
+            }, inputTimeoutMs, FenJsBrowserTaskInstructionBudget, prioritize: true).ConfigureAwait(false);
         }
         catch (JsThrownException ex) when (IsFenJsInputEventTimeout(ex))
         {
@@ -1047,10 +1161,45 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                message.Contains("Execution interrupted", StringComparison.Ordinal);
     }
 
+    private static bool IsInputPipelineEvent(string eventName) =>
+        string.Equals(eventName, "pointerdown", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(eventName, "mousedown", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(eventName, "pointerup", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(eventName, "mouseup", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(eventName, "click", StringComparison.OrdinalIgnoreCase);
+
+    private static void LogInputPipelineDispatch(Element element, string eventName, string realm)
+    {
+        if (!IsInputPipelineEvent(eventName)) return;
+        var id = element?.GetAttribute("id");
+        var target = element == null
+            ? "<none>"
+            : string.IsNullOrEmpty(id) ? $"<{element.TagName}>" : $"<{element.TagName}#{id}>";
+        FenBrowser.Core.EngineLogCompat.Info(
+            $"[InputPipeline] JS dispatch type='{eventName}' target='{target}' realm='{realm}'",
+            FenBrowser.Core.Logging.LogCategory.Events);
+    }
+
+    private static void LogInputPipelineCompletion(Element element, string eventName, bool defaultAllowed)
+    {
+        if (!IsInputPipelineEvent(eventName)) return;
+        var id = element?.GetAttribute("id");
+        var target = element == null
+            ? "<none>"
+            : string.IsNullOrEmpty(id) ? $"<{element.TagName}>" : $"<{element.TagName}#{id}>";
+        FenBrowser.Core.EngineLogCompat.Info(
+            $"[InputPipeline] JS complete type='{eventName}' target='{target}' defaultAllowed={defaultAllowed}",
+            FenBrowser.Core.Logging.LogCategory.Events);
+    }
+
     public object Evaluate(string script)
     {
         if (CanEvaluateWithFenJs(script))
         {
+            lock (_fenJsLock)
+            {
+                CollectFenJsHeapAtSafeBoundary();
+            }
             return EvaluateWithFenJs(script);
         }
         return null;
@@ -1404,6 +1553,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private const int FenJsBrowserInstructionBudget = 100_000_000;
     private const int FenJsBrowserTaskInstructionBudget = 10_000_000;
     private const int FenJsBrowserParserMaxRecursionDepth = 1024;
+    private const int FenJsBoundaryGcAllocationThreshold = 4_096;
+
+    private void CollectFenJsHeapAtSafeBoundary()
+    {
+        if (_interpreter == null || _interpreter.IsExecuting)
+        {
+            return;
+        }
+
+        var heap = _interpreter.Heap;
+        if (heap.AllocationCount - _fenJsAllocationCountAtLastBoundaryGc < FenJsBoundaryGcAllocationThreshold)
+        {
+            return;
+        }
+
+        heap.CollectGarbage();
+        _fenJsAllocationCountAtLastBoundaryGc = heap.AllocationCount;
+    }
 
     // Persistent large-stack worker thread — created once per engine instance
     // and reused across all page-script evaluations.  Creating+joining a 256 MB
@@ -1412,6 +1579,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     // near-zero after the first evaluation.
     private Thread _fenJsWorkerThread;
     private readonly AutoResetEvent _fenJsWorkAvailable = new AutoResetEvent(false);
+    private readonly ConcurrentQueue<FenJsWorkItem> _fenJsInputWorkQueue = new();
     private readonly ConcurrentQueue<FenJsWorkItem> _fenJsWorkQueue = new();
     private bool _fenJsWorkerRunning;
 
@@ -1451,7 +1619,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             _fenJsWorkAvailable.WaitOne();
             if (!_fenJsWorkerRunning) break;
 
-            while (_fenJsWorkQueue.TryDequeue(out var workItem))
+            while (TryDequeueFenJsWork(out var workItem))
             {
                 // A bounded caller may time out while its item is still queued.
                 // Do not execute that stale event after the caller has moved on.
@@ -1475,6 +1643,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 }
             }
         }
+    }
+
+    private bool TryDequeueFenJsWork(out FenJsWorkItem workItem)
+    {
+        return _fenJsInputWorkQueue.TryDequeue(out workItem) ||
+               _fenJsWorkQueue.TryDequeue(out workItem);
     }
 
     private T RunFenJsWithLargeStack<T>(Func<T> work)
@@ -1501,7 +1675,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private T RunFenJsWithLargeStack<T>(
         Func<T> work,
         long waitForWorkerMs,
-        int instructionBudget = FenJsBrowserInstructionBudget)
+        int instructionBudget = FenJsBrowserInstructionBudget,
+        bool prioritize = false)
     {
         if (_onFenJsLargeStackThread)
         {
@@ -1513,7 +1688,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         EnsureFenJsWorkerRunning();
 
         var workItem = new FenJsWorkItem(() => (object)work(), instructionBudget);
-        _fenJsWorkQueue.Enqueue(workItem);
+        (prioritize ? _fenJsInputWorkQueue : _fenJsWorkQueue).Enqueue(workItem);
         _fenJsWorkAvailable.Set();
 
         object result;
@@ -1556,7 +1731,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     /// the worker finishes, without blocking the calling (engine) thread. Applies
     /// the same timeout policy as the synchronous path via CancellationToken.
     /// </summary>
-    private async Task<T> RunFenJsWithLargeStackAsync<T>(Func<T> work, long timeoutMs = -1)
+    private async Task<T> RunFenJsWithLargeStackAsync<T>(
+        Func<T> work,
+        long timeoutMs = -1,
+        int instructionBudget = FenJsBrowserInstructionBudget,
+        bool prioritize = false)
     {
         if (_onFenJsLargeStackThread)
         {
@@ -1568,12 +1747,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         var workItem = new FenJsWorkItem(
             () => (object)work(),
-            FenJsBrowserInstructionBudget);
+            instructionBudget);
         var cts = timeoutMs > 0
             ? new CancellationTokenSource(TimeSpan.FromMilliseconds(timeoutMs))
             : null;
 
-        _fenJsWorkQueue.Enqueue(workItem);
+        (prioritize ? _fenJsInputWorkQueue : _fenJsWorkQueue).Enqueue(workItem);
         _fenJsWorkAvailable.Set();
 
         try
@@ -3235,6 +3414,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 MaxCallDepth = 1024,
                 ParserMaxRecursionDepth = FenJsBrowserParserMaxRecursionDepth
             };
+            _fenJsAllocationCountAtLastBoundaryGc = 0;
+            _interpreter.Heap.AddRootSource(this);
 
             // Wire a diagnostic Promise rejection tracker so unhandled rejections
             // surface in engine logs with the rejection reason and source ownership.
@@ -3243,16 +3424,6 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 TrackPromiseRejection,
                 RecordPromiseRejection);
             _interpreter.PromiseRejectionTracker = _diagnosticPromiseRejectionTracker;
-
-            // The generational nursery GC (tier-4 scaffold) does not yet root every
-            // transient handle that real-world bundles keep live across an allocation
-            // burst, so an auto-MinorCollect fired mid-bundle can reclaim a still-reachable
-            // object and resurface as "Stale heap handle." — which aborts page boot for
-            // allocation-heavy SPAs like x.com (its webpack runtime trips it immediately).
-            // Until the missing roots are tracked down, disable the auto-trigger for the
-            // browser page-script interpreter: a single page load does not need nursery
-            // sweeps, and correctness here matters far more than reclaiming young cells.
-            _interpreter.Heap.YoungAllocationsPerMinorGc = 0;
 
             _hostHandleCache.Clear();
             _documentEventListeners.Clear();
@@ -5673,48 +5844,63 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 ["callbackTag"] = callback.Tag.ToString()
             });
         var period = repeat ? Math.Max(4, delayMs) : Timeout.Infinite;
-        var timer = new Timer(
+        var registration = new FenJsTimerRegistration
+        {
+            Callback = callback,
+            Arguments = extraArgs,
+            WindowContext = callbackContext
+        };
+        registration.Timer = new Timer(
             _ =>
             {
-                if (!repeat)
+                if (Interlocked.Exchange(ref registration.CallbackPending, 1) != 0)
                 {
-                    if (_fenJsTimers.TryRemove(id, out var self))
-                    {
-                        self.Dispose();
-                    }
+                    return;
                 }
 
-                InvokeFenJsCallbackSafely(
-                    callback,
-                    extraArgs,
-                    repeat ? "setInterval" : "setTimeout",
-                    id,
-                    callbackContext,
-                    callbackProvenance,
-                    callbackSessionGeneration,
-                    callbackDocumentId,
-                    () =>
+                try
+                {
+                    InvokeFenJsCallbackSafely(
+                        callback,
+                        extraArgs,
+                        repeat ? "setInterval" : "setTimeout",
+                        id,
+                        callbackContext,
+                        callbackProvenance,
+                        callbackSessionGeneration,
+                        callbackDocumentId,
+                        () =>
+                        {
+                            AddEventLoopRecord("TimerFired", callback.Tag.ToString(), id, delayMs, repeat);
+                            LogEventLoop(
+                                "TimerFired",
+                                LogSeverity.Debug,
+                                "[FenJsBridge] Host timer fired",
+                                new Dictionary<string, object>
+                                {
+                                    ["id"] = id,
+                                    ["delayMs"] = delayMs,
+                                    ["repeating"] = repeat,
+                                    ["timerType"] = repeat ? "interval" : "timeout",
+                                    ["callbackTag"] = callback.Tag.ToString()
+                                });
+                        });
+                }
+                finally
+                {
+                    Volatile.Write(ref registration.CallbackPending, 0);
+                    if (!repeat && _fenJsTimers.TryRemove(id, out var completed))
                     {
-                        AddEventLoopRecord("TimerFired", callback.Tag.ToString(), id, delayMs, repeat);
-                        LogEventLoop(
-                            "TimerFired",
-                            LogSeverity.Debug,
-                            "[FenJsBridge] Host timer fired",
-                            new Dictionary<string, object>
-                            {
-                                ["id"] = id,
-                                ["delayMs"] = delayMs,
-                                ["repeating"] = repeat,
-                                ["timerType"] = repeat ? "interval" : "timeout",
-                                ["callbackTag"] = callback.Tag.ToString()
-                            });
-                    });
+                        completed.Dispose();
+                    }
+                }
             },
             null,
-            Math.Max(0, delayMs),
-            period);
+            Timeout.Infinite,
+            Timeout.Infinite);
 
-        _fenJsTimers[id] = timer;
+        _fenJsTimers[id] = registration;
+        registration.Timer.Change(Math.Max(0, delayMs), period);
         return JsValue.FromNumber(id);
     }
 
@@ -5743,44 +5929,55 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 ["delayMs"] = 16,
                 ["callbackTag"] = callback.Tag.ToString()
             });
-        var timer = new Timer(
+        var registration = new FenJsTimerRegistration
+        {
+            Callback = callback,
+            WindowContext = callbackContext
+        };
+        registration.Timer = new Timer(
             _ =>
             {
-                if (_fenJsTimers.TryRemove(id, out var self))
+                try
                 {
-                    self.Dispose();
+                    var timestamp = JsValue.FromNumber(_fenJsClock.Elapsed.TotalMilliseconds);
+                    InvokeFenJsCallbackSafely(
+                        callback,
+                        new[] { timestamp },
+                        "requestAnimationFrame",
+                        id,
+                        callbackContext,
+                        callbackProvenance,
+                        callbackSessionGeneration,
+                        callbackDocumentId,
+                        () =>
+                        {
+                            AddEventLoopRecord("RequestAnimationFrameFired", callback.Tag.ToString(), id, 16);
+                            LogEventLoop(
+                                "RequestAnimationFrameFired",
+                                LogSeverity.Debug,
+                                "[FenJsBridge] requestAnimationFrame fired",
+                                new Dictionary<string, object>
+                                {
+                                    ["id"] = id,
+                                    ["delayMs"] = 16,
+                                    ["callbackTag"] = callback.Tag.ToString()
+                                });
+                        });
                 }
-
-                var timestamp = JsValue.FromNumber(_fenJsClock.Elapsed.TotalMilliseconds);
-                InvokeFenJsCallbackSafely(
-                    callback,
-                    new[] { timestamp },
-                    "requestAnimationFrame",
-                    id,
-                    callbackContext,
-                    callbackProvenance,
-                    callbackSessionGeneration,
-                    callbackDocumentId,
-                    () =>
+                finally
+                {
+                    if (_fenJsTimers.TryRemove(id, out var completed))
                     {
-                        AddEventLoopRecord("RequestAnimationFrameFired", callback.Tag.ToString(), id, 16);
-                        LogEventLoop(
-                            "RequestAnimationFrameFired",
-                            LogSeverity.Debug,
-                            "[FenJsBridge] requestAnimationFrame fired",
-                            new Dictionary<string, object>
-                            {
-                                ["id"] = id,
-                                ["delayMs"] = 16,
-                                ["callbackTag"] = callback.Tag.ToString()
-                            });
-                    });
+                        completed.Dispose();
+                    }
+                }
             },
             null,
-            16,
+            Timeout.Infinite,
             Timeout.Infinite);
 
-        _fenJsTimers[id] = timer;
+        _fenJsTimers[id] = registration;
+        registration.Timer.Change(16, Timeout.Infinite);
         return JsValue.FromNumber(id);
     }
 
@@ -6284,6 +6481,32 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     Exception attributedMicrotaskFailure = null;
                     try
                     {
+                        var heap = _interpreter.Heap;
+                        var rootMark = heap.RootCount;
+                        try
+                        {
+                            if (callback.Tag == JsValueTag.Object)
+                            {
+                                heap.PushRoot(callback.AsObjectHandle());
+                            }
+                            if (callbackThis.Tag == JsValueTag.Object)
+                            {
+                                heap.PushRoot(callbackThis.AsObjectHandle());
+                            }
+                            foreach (var arg in args ?? Array.Empty<JsValue>())
+                            {
+                                if (arg.Tag == JsValueTag.Object)
+                                {
+                                    heap.PushRoot(arg.AsObjectHandle());
+                                }
+                            }
+                            CollectFenJsHeapAtSafeBoundary();
+                        }
+                        finally
+                        {
+                            heap.PopRootsTo(rootMark);
+                        }
+
                         using var callbackWindowScope = windowContext != null
                             ? ActivateWindowCallbackContext(windowContext.WindowTarget, windowContext.WindowListeners)
                             : null;
@@ -6627,6 +6850,27 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     });
                 }
 
+                var documentPositionConstants = {
+                    DOCUMENT_POSITION_DISCONNECTED: 0x01,
+                    DOCUMENT_POSITION_PRECEDING: 0x02,
+                    DOCUMENT_POSITION_FOLLOWING: 0x04,
+                    DOCUMENT_POSITION_CONTAINS: 0x08,
+                    DOCUMENT_POSITION_CONTAINED_BY: 0x10,
+                    DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: 0x20
+                };
+                for (var documentPositionName in documentPositionConstants) {
+                    Object.defineProperty(Node, documentPositionName, {
+                        value: documentPositionConstants[documentPositionName],
+                        enumerable: true,
+                        configurable: true
+                    });
+                    Object.defineProperty(Node.prototype, documentPositionName, {
+                        value: documentPositionConstants[documentPositionName],
+                        enumerable: true,
+                        configurable: true
+                    });
+                }
+
                 var Document = defineCtor('Document', Node, ['Node', 'Document'], function (candidate) {
                     return typeof candidate.readyState === 'string' &&
                         typeof candidate.createElement === 'function' &&
@@ -6866,6 +7110,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
                 [
                     'contains',
+                    'compareDocumentPosition',
                     'dispatchEvent',
                     'cloneNode',
                     'appendChild',
@@ -12531,7 +12776,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     catch (Exception ex)
                     {
                         FenBrowser.Core.EngineLogCompat.Warn(
-                            $"[FenJsBridge] MessagePort delivery failed: {ex.Message}",
+                            $"[FenJsBridge] MessagePort delivery failed: {ex}",
                             FenBrowser.Core.Logging.LogCategory.JavaScript);
                     }
 
@@ -13304,8 +13549,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                 }
                             }
 
-                            return null;
-                        });
+                return null;
+            }, waitForWorkerMs: -1, instructionBudget: FenJsBrowserTaskInstructionBudget);
                     }
                     catch (Exception ex)
                     {
@@ -14234,12 +14479,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         eventInit ??= new BrowserDomEventInit();
         var state = new BrowserDomEventDispatchState();
         var target = element == null ? JsValue.Null : ToHostOrNull(element, HostObjectKind.DomElement);
+        var relatedTarget = eventInit.RelatedTarget == null
+            ? JsValue.Null
+            : ToHostOrNull(eventInit.RelatedTarget, HostObjectKind.DomElement);
         var eventValue = _interpreter.AllocateObject(new Dictionary<string, JsValue>
         {
             ["type"] = JsValue.FromString(type ?? string.Empty),
             ["target"] = target,
             ["currentTarget"] = target,
             ["srcElement"] = target,
+            ["relatedTarget"] = relatedTarget,
             ["bubbles"] = JsValue.FromBoolean(eventInit.Bubbles),
             ["cancelable"] = JsValue.FromBoolean(eventInit.Cancelable),
             ["composed"] = JsValue.FromBoolean(eventInit.Composed),
@@ -15017,6 +15266,26 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var created = _interpreter.AllocateNativeFunction(name, call, length);
         methods[name] = created;
         return created;
+    }
+
+    private JsValue CreateCompareDocumentPositionCallable(Node node)
+    {
+        return GetOrCreateHostCallable(
+            node,
+            "compareDocumentPosition",
+            (_, args) =>
+            {
+                var other = args.Count > 0 ? ResolveHostObjectOrNull<Node>(args[0]) : null;
+                if (other == null)
+                {
+                    ThrowDomException(
+                        "TypeError",
+                        "Failed to execute 'compareDocumentPosition' on 'Node': parameter 1 is not of type 'Node'.");
+                }
+
+                return JsValue.FromInt32((int)node.CompareDocumentPosition(other));
+            },
+            length: 1);
     }
 
     private object ResolveHostObjectOrNull(JsValue value)
@@ -16589,6 +16858,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         "tabindex",
                         ((int)CoerceToFiniteNumber(value, 0)).ToString(CultureInfo.InvariantCulture));
                     return true;
+                case Element element when string.Equals(property, "title", StringComparison.Ordinal):
+                    element.SetAttribute("title", CoerceToHostString(value));
+                    return true;
                 case Element element when string.Equals(property, "name", StringComparison.Ordinal):
                     element.SetAttribute("name", CoerceToHostString(value));
                     return true;
@@ -16603,6 +16875,39 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return true;
                 case Element element when string.Equals(property, "nonce", StringComparison.Ordinal):
                     element.SetAttribute("nonce", CoerceToHostString(value));
+                    return true;
+                case Element element when IsIFrameElement(element) &&
+                    string.Equals(property, "sandbox", StringComparison.Ordinal):
+                    element.SetAttribute("sandbox", CoerceToHostString(value));
+                    return true;
+                case Element element when IsIFrameElement(element) &&
+                    string.Equals(property, "scrolling", StringComparison.Ordinal):
+                    element.SetAttribute("scrolling", CoerceToHostString(value));
+                    return true;
+                case Element element when IsMetaElement(element) &&
+                    string.Equals(property, "httpEquiv", StringComparison.Ordinal):
+                    element.SetAttribute("http-equiv", CoerceToHostString(value));
+                    return true;
+                case Element element when IsScriptElement(element) &&
+                    string.Equals(property, "async", StringComparison.Ordinal):
+                    SetBooleanAttribute(element, "async", CoerceToHostBoolean(value));
+                    return true;
+                case Element element when IsScriptElement(element) &&
+                    (string.Equals(property, "type", StringComparison.Ordinal) ||
+                     string.Equals(property, "charset", StringComparison.Ordinal) ||
+                     string.Equals(property, "integrity", StringComparison.Ordinal)):
+                    element.SetAttribute(property, CoerceToHostString(value));
+                    return true;
+                case Element element when IsScriptElement(element) &&
+                    string.Equals(property, "crossOrigin", StringComparison.Ordinal):
+                    if (value.Tag == JsValueTag.Null)
+                    {
+                        element.RemoveAttribute("crossorigin");
+                    }
+                    else
+                    {
+                        element.SetAttribute("crossorigin", CoerceToHostString(value));
+                    }
                     return true;
                 case Element element when property.StartsWith("on", StringComparison.OrdinalIgnoreCase):
                     _owner.SetStoredHostProperty(element, property.ToLowerInvariant(), value);
@@ -16724,6 +17029,30 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             return JsValue.Undefined;
         }
 
+        public bool TryConvertHostObjectToPrimitive(
+            HostObjectHandle handle,
+            string hint,
+            out JsValue value)
+        {
+            if (_owner?._interpreter == null)
+            {
+                value = JsValue.Undefined;
+                return false;
+            }
+
+            var resolution = _owner._interpreter.HostObjectTable.Resolve(
+                handle,
+                _owner._interpreter.HostResolveContext);
+            if (resolution.IsOk && resolution.HostObject is FenJsLocationHost location)
+            {
+                value = JsValue.FromString(location.Uri?.AbsoluteUri ?? string.Empty);
+                return true;
+            }
+
+            value = JsValue.Undefined;
+            return false;
+        }
+
         private bool TryGetDocumentProperty(Document document, string property, out JsValue value)
         {
             switch (property)
@@ -16836,6 +17165,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return true;
                 case "currentScript":
                     value = _owner.ToHostOrNull(_owner.GetCurrentScriptElement(), HostObjectKind.DomElement);
+                    return true;
+                case "activeElement":
+                    value = _owner.ToHostOrNull(document.ActiveElement, HostObjectKind.DomElement);
                     return true;
                 case "defaultView":
                     value = _owner.GetStoredHostPropertyOrUndefined(document, "__fenDefaultView");
@@ -17275,6 +17607,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         },
                         length: 1);
                     return true;
+                case "compareDocumentPosition":
+                    value = _owner.CreateCompareDocumentPositionCallable(document);
+                    return true;
                 case "getElementsByName":
                     value = _owner.GetOrCreateHostCallable(
                         document,
@@ -17367,6 +17702,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "childNodes":
                     value = _owner.CreateNodeArrayLike(node.ChildNodes.ToArray());
                     return true;
+                case "compareDocumentPosition":
+                    value = _owner.CreateCompareDocumentPositionCallable(node);
+                    return true;
                 default:
                     value = JsValue.Undefined;
                     return false;
@@ -17402,6 +17740,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "nonce":
                     value = JsValue.FromString(element.GetAttribute("nonce") ?? string.Empty);
                     return true;
+                case "title":
+                    value = JsValue.FromString(element.GetAttribute("title") ?? string.Empty);
+                    return true;
                 case "value":
                     value = JsValue.FromString(ReadElementValue(element));
                     return true;
@@ -17426,6 +17767,25 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     value = element.NamespaceUri == "http://www.w3.org/1999/xhtml"
                         ? _owner.GetOrCreateDomTokenListView(element.SandboxList)
                         : JsValue.Undefined;
+                    return true;
+                case "scrolling" when IsIFrameElement(element):
+                    value = JsValue.FromString(element.GetAttribute("scrolling") ?? string.Empty);
+                    return true;
+                case "httpEquiv" when IsMetaElement(element):
+                    value = JsValue.FromString(element.GetAttribute("http-equiv") ?? string.Empty);
+                    return true;
+                case "async" when IsScriptElement(element):
+                    value = JsValue.FromBoolean(element.HasAttribute("async"));
+                    return true;
+                case "type" when IsScriptElement(element):
+                case "charset" when IsScriptElement(element):
+                case "integrity" when IsScriptElement(element):
+                    value = JsValue.FromString(element.GetAttribute(property) ?? string.Empty);
+                    return true;
+                case "crossOrigin" when IsScriptElement(element):
+                    value = element.HasAttribute("crossorigin")
+                        ? JsValue.FromString(element.GetAttribute("crossorigin") ?? string.Empty)
+                        : JsValue.Null;
                     return true;
                 case "content" when IsTemplateElement(element):
                     value = _owner.GetOrCreateTemplateContent(element);
@@ -18330,6 +18690,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         },
                         length: 1);
                     return true;
+                case "compareDocumentPosition":
+                    value = _owner.CreateCompareDocumentPositionCallable(element);
+                    return true;
                 case "offsetWidth":
                 case "offsetHeight":
                 case "offsetLeft":
@@ -18741,6 +19104,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "lastChild":
                     value = JsValue.Null;
                     return true;
+                case "childNodes":
+                    value = _owner.CreateNodeArrayLike(characterData.ChildNodes.ToArray());
+                    return true;
                 case "nextSibling":
                     value = _owner.ToHostNodeOrNull(characterData.NextSibling);
                     return true;
@@ -18831,6 +19197,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             return _owner.ToHostNodeOrNull(characterData.CloneNode(deep));
                         },
                         length: 1);
+                    return true;
+                case "compareDocumentPosition":
+                    value = _owner.CreateCompareDocumentPositionCallable(characterData);
                     return true;
                 default:
                     value = JsValue.Undefined;
@@ -19100,6 +19469,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             return JsValue.FromBoolean(other != null && fragment.Contains(other));
                         },
                         length: 1);
+                    return true;
+                case "compareDocumentPosition":
+                    value = _owner.CreateCompareDocumentPositionCallable(fragment);
                     return true;
                 case "append":
                     value = _owner.GetOrCreateHostCallable(
@@ -20191,6 +20563,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "hash":
                     value = JsValue.FromString(uri?.Fragment ?? string.Empty);
                     return true;
+                case "toString":
+                    value = _owner.GetOrCreateHostCallable(
+                        location,
+                        "toString",
+                        (_, _) => JsValue.FromString(location.Uri?.AbsoluteUri ?? string.Empty),
+                        length: 0);
+                    return true;
                 case "reload":
                     value = _owner.GetOrCreateHostCallable(
                         location, "reload",
@@ -20257,6 +20636,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         {
             return string.Equals(element?.TagName, "img", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(element?.TagName, "image", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsMetaElement(Element element) =>
+            string.Equals(element?.TagName, "meta", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsScriptElement(Element element) =>
+            string.Equals(element?.TagName, "script", StringComparison.OrdinalIgnoreCase);
+
+        private static void SetBooleanAttribute(Element element, string attributeName, bool enabled)
+        {
+            if (enabled)
+            {
+                element.SetAttribute(attributeName, string.Empty);
+            }
+            else
+            {
+                element.RemoveAttribute(attributeName);
+            }
         }
 
         private static bool IsDialogElement(Element element)
