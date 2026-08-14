@@ -128,7 +128,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             if (_matchType == AttributeMatchType.Exists)
                 return attrValue != null;
 
-            if (attrValue == null)
+            if (attrValue == null || _value == null)
                 return false;
 
             var comparison = _caseInsensitive
@@ -138,26 +138,26 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             return _matchType switch
             {
                 AttributeMatchType.Equals => string.Equals(attrValue, _value, comparison),
-                AttributeMatchType.Includes => ContainsWord(attrValue, _value, comparison),
-                AttributeMatchType.DashMatch => attrValue.Equals(_value, comparison) ||
-                                                attrValue.StartsWith(_value + "-", comparison),
-                AttributeMatchType.Prefix => attrValue.StartsWith(_value, comparison),
-                AttributeMatchType.Suffix => attrValue.EndsWith(_value, comparison),
-                AttributeMatchType.Substring => attrValue.IndexOf(_value, comparison) >= 0,
+                AttributeMatchType.Includes => _value.Length > 0 && SelectorTokenList.Contains(attrValue, _value, comparison),
+                AttributeMatchType.DashMatch => MatchesDashSeparated(attrValue, _value, comparison),
+                AttributeMatchType.Prefix => _value.Length > 0 && attrValue.StartsWith(_value, comparison),
+                AttributeMatchType.Suffix => _value.Length > 0 && attrValue.EndsWith(_value, comparison),
+                AttributeMatchType.Substring => _value.Length > 0 && attrValue.IndexOf(_value, comparison) >= 0,
                 _ => false
             };
         }
 
-        private static bool ContainsWord(string haystack, string needle, StringComparison comparison)
+        private static bool MatchesDashSeparated(string value, string prefix, StringComparison comparison)
         {
-            var words = haystack.Split(new[] { ' ', '\t', '\r', '\n', '\f' },
-                StringSplitOptions.RemoveEmptyEntries);
-            foreach (var word in words)
-            {
-                if (word.Equals(needle, comparison))
-                    return true;
-            }
-            return false;
+            if (string.IsNullOrEmpty(prefix))
+                return false;
+
+            if (string.Equals(value, prefix, comparison))
+                return true;
+
+            return value.Length > prefix.Length &&
+                   value.StartsWith(prefix, comparison) &&
+                   value[prefix.Length] == '-';
         }
 
         public override Specificity GetSpecificity() => new Specificity(0, 1, 0);
@@ -215,13 +215,10 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         private bool MatchesPart(Element element)
         {
-            if (string.IsNullOrEmpty(_arg)) return false;
+            if (string.IsNullOrWhiteSpace(_arg)) return false;
             var partAttr = element.GetAttribute("part");
             if (string.IsNullOrEmpty(partAttr)) return false;
-            var targetPart = _arg.Trim();
-            foreach (var p in partAttr.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
-                if (string.Equals(p, targetPart, StringComparison.Ordinal)) return true;
-            return false;
+            return SelectorTokenList.Contains(partAttr, _arg.Trim(), StringComparison.Ordinal);
         }
 
         public override Specificity GetSpecificity() => new Specificity(0, 0, 1);
@@ -234,27 +231,39 @@ namespace FenBrowser.Core.Dom.V2.Selectors
     /// </summary>
     public sealed class HostSelector : SimpleSelector
     {
-        /// <summary>
-        /// Optional inner selector argument from :host(selector). Null means bare :host.
-        /// </summary>
         private readonly string _arg;
+        private readonly CompiledSelector _inner;
 
         public HostSelector(string arg = null)
         {
             _arg = string.IsNullOrWhiteSpace(arg) ? null : arg.Trim();
+            if (_arg != null)
+            {
+                _inner = SelectorParser.Parse(_arg);
+            }
         }
 
         public override bool Matches(Element element)
         {
-            // Basic: element is a shadow host (has an attached shadow root)
-            if (element.ShadowRoot == null) return false;
-            // :host with argument — element must also match the inner selector
-            // We skip deep matching here to avoid a Core→Engine circular dep.
-            // :host() with a non-empty arg is treated as always matching the host when arg is unparsed.
-            return true;
+            if (element?.ShadowRoot == null)
+                return false;
+
+            return _inner == null || _inner.Matches(element);
         }
 
-        public override Specificity GetSpecificity() => new Specificity(0, 1, 0);
+        public override Specificity GetSpecificity()
+        {
+            var baseSpecificity = new Specificity(0, 1, 0);
+            if (_inner == null)
+                return baseSpecificity;
+
+            var arg = _inner.GetSpecificity();
+            return new Specificity(
+                baseSpecificity.A + arg.A,
+                baseSpecificity.B + arg.B,
+                baseSpecificity.C + arg.C);
+        }
+
         public override string ToString() => string.IsNullOrEmpty(_arg) ? ":host" : $":host({_arg})";
     }
 
@@ -293,11 +302,11 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                                 element.NextElementSibling == null,
                 "enabled" => SupportsEnabledDisabledPseudoClass(element) && !HasAttribute(element, "disabled"),
                 "disabled" => SupportsEnabledDisabledPseudoClass(element) && HasAttribute(element, "disabled"),
-                "checked" => IsCheckedFormControl(element),
-                "required" => HasAttribute(element, "required"),
-                "optional" => !HasAttribute(element, "required"),
-                "read-only" => HasAttribute(element, "readonly"),
-                "read-write" => !HasAttribute(element, "readonly"),
+                "checked" => StateProvider(element, "checked") || IsCheckedFormControl(element),
+                "required" => SupportsRequiredOptionalPseudoClass(element) && HasAttribute(element, "required"),
+                "optional" => SupportsRequiredOptionalPseudoClass(element) && !HasAttribute(element, "required"),
+                "read-only" => !IsReadWrite(element),
+                "read-write" => IsReadWrite(element),
                 "link" => element.LocalName == "a" && element.HasAttribute("href"),
                 // Dynamic states delegated to ElementStateManager (wired by FenEngine)
                 "hover" or "active" or "focus" or "focus-visible" or "focus-within" or
@@ -329,7 +338,46 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                    string.Equals(tagName, "BUTTON", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(tagName, "SELECT", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(tagName, "TEXTAREA", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(tagName, "FIELDSET", StringComparison.OrdinalIgnoreCase);
+                   string.Equals(tagName, "FIELDSET", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tagName, "OPTION", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tagName, "OPTGROUP", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool SupportsRequiredOptionalPseudoClass(Element element)
+        {
+            var tagName = element?.TagName;
+            return string.Equals(tagName, "INPUT", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tagName, "SELECT", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(tagName, "TEXTAREA", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsReadWrite(Element element)
+        {
+            if (element == null)
+                return false;
+
+            var contentEditable = element.GetAttribute("contenteditable");
+            if (contentEditable != null &&
+                (contentEditable.Length == 0 ||
+                 string.Equals(contentEditable, "true", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(contentEditable, "plaintext-only", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+
+            if (HasAttribute(element, "disabled") || HasAttribute(element, "readonly"))
+                return false;
+
+            var tagName = element.TagName;
+            if (string.Equals(tagName, "TEXTAREA", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (!string.Equals(tagName, "INPUT", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var type = (element.GetAttribute("type") ?? "text").Trim().ToLowerInvariant();
+            return type is "text" or "search" or "tel" or "url" or "email" or "password" or
+                   "date" or "month" or "week" or "time" or "datetime-local" or "number";
         }
 
         private static bool IsCheckedFormControl(Element element)
@@ -462,7 +510,9 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         public override bool Matches(Element element)
         {
-            // Check if any descendant matches
+            // Check if any descendant matches. Relative sibling/leading-combinator
+            // :has() arguments require a dedicated relative-selector representation
+            // and are intentionally not approximated here.
             foreach (var node in element.Descendants())
             {
                 if (node is Element el && _inner.Matches(el))
@@ -499,7 +549,9 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         private static void ParseFormula(string formula, out int a, out int b)
         {
-            formula = formula?.Trim().ToLowerInvariant() ?? "";
+            formula = formula?.Trim().ToLowerInvariant() ?? string.Empty;
+            if (formula.Length == 0)
+                throw new DomException("SyntaxError", "Missing :nth-child() formula");
 
             if (formula == "odd")
             {
@@ -512,37 +564,40 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 return;
             }
 
-            // Parse an+b
             int nIndex = formula.IndexOf('n');
             if (nIndex < 0)
             {
+                if (!int.TryParse(formula, out b))
+                    throw new DomException("SyntaxError", $"Invalid nth formula '{formula}'");
                 a = 0;
-                b = int.TryParse(formula, out int val) ? val : 1;
                 return;
             }
 
-            var aStr = formula.Substring(0, nIndex).Trim();
-            a = aStr switch
-            {
-                "" or "+" => 1,
-                "-" => -1,
-                _ => int.TryParse(aStr, out int val) ? val : 0
-            };
+            if (formula.IndexOf('n', nIndex + 1) >= 0)
+                throw new DomException("SyntaxError", $"Invalid nth formula '{formula}'");
 
-            var bPart = formula.Substring(nIndex + 1).Trim();
-            if (string.IsNullOrEmpty(bPart))
+            var aStr = formula.Substring(0, nIndex).Trim();
+            if (aStr is "" or "+")
+                a = 1;
+            else if (aStr == "-")
+                a = -1;
+            else if (!int.TryParse(aStr, out a))
+                throw new DomException("SyntaxError", $"Invalid nth coefficient '{aStr}'");
+
+            var bPart = formula.Substring(nIndex + 1).Replace(" ", string.Empty);
+            if (bPart.Length == 0)
             {
                 b = 0;
             }
-            else
+            else if (!int.TryParse(bPart, out b))
             {
-                b = int.TryParse(bPart.Replace("+", "").Replace(" ", ""), out int val) ? val : 0;
+                throw new DomException("SyntaxError", $"Invalid nth offset '{bPart}'");
             }
         }
 
         private static void ParseFormulaAndOfSelector(string input, out string formula, out string ofSelector)
         {
-            formula = input?.Trim() ?? "";
+            formula = input?.Trim() ?? string.Empty;
             ofSelector = null;
 
             if (string.IsNullOrWhiteSpace(input))
@@ -596,6 +651,8 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 {
                     formula = input.Substring(0, i).Trim();
                     ofSelector = input.Substring(i + 2).Trim();
+                    if (formula.Length == 0 || ofSelector.Length == 0)
+                        throw new DomException("SyntaxError", "Invalid :nth-child(... of ...) selector");
                     return;
                 }
             }
@@ -621,11 +678,9 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             int index = GetIndex(element);
             if (index < 1) return false;
 
-            // Check if index matches an+b
             if (_a == 0)
                 return index == _b;
 
-            // (index - b) must be divisible by a and result must be non-negative
             int diff = index - _b;
             if (_a > 0)
                 return diff >= 0 && diff % _a == 0;
@@ -640,22 +695,27 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
             if (_ofSelector != null)
             {
-                var matches = new List<Element>();
-                for (var sibling = parent.FirstElementChild; sibling != null; sibling = sibling.NextElementSibling)
+                if (!_ofSelector.Matches(element))
+                    return 0;
+
+                int filteredIndex = 0;
+                if (_fromEnd)
                 {
-                    if (_ofSelector.Matches(sibling))
+                    for (var sibling = element; sibling != null; sibling = sibling.NextElementSibling)
                     {
-                        matches.Add(sibling);
+                        if (_ofSelector.Matches(sibling))
+                            filteredIndex++;
                     }
                 }
-
-                int position = matches.IndexOf(element);
-                if (position < 0)
+                else
                 {
-                    return 0;
+                    for (var sibling = element; sibling != null; sibling = sibling.PreviousElementSibling)
+                    {
+                        if (_ofSelector.Matches(sibling))
+                            filteredIndex++;
+                    }
                 }
-
-                return _fromEnd ? matches.Count - position : position + 1;
+                return filteredIndex;
             }
 
             int index = 0;
@@ -722,8 +782,9 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         private static void ParseFormula(string formula, out int a, out int b)
         {
-            // Same parsing as NthChildSelector
-            formula = formula?.Trim().ToLowerInvariant() ?? "";
+            formula = formula?.Trim().ToLowerInvariant() ?? string.Empty;
+            if (formula.Length == 0)
+                throw new DomException("SyntaxError", "Missing :nth-of-type() formula");
 
             if (formula == "odd") { a = 2; b = 1; return; }
             if (formula == "even") { a = 2; b = 0; return; }
@@ -731,17 +792,28 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             int nIndex = formula.IndexOf('n');
             if (nIndex < 0)
             {
+                if (!int.TryParse(formula, out b))
+                    throw new DomException("SyntaxError", $"Invalid nth formula '{formula}'");
                 a = 0;
-                b = int.TryParse(formula, out int val) ? val : 1;
                 return;
             }
 
-            var aStr = formula.Substring(0, nIndex).Trim();
-            a = aStr switch { "" or "+" => 1, "-" => -1, _ => int.TryParse(aStr, out int valA) ? valA : 0 };
+            if (formula.IndexOf('n', nIndex + 1) >= 0)
+                throw new DomException("SyntaxError", $"Invalid nth formula '{formula}'");
 
-            var bPart = formula.Substring(nIndex + 1).Trim();
-            b = string.IsNullOrEmpty(bPart) ? 0 :
-                int.TryParse(bPart.Replace("+", "").Replace(" ", ""), out int valB) ? valB : 0;
+            var aStr = formula.Substring(0, nIndex).Trim();
+            if (aStr is "" or "+")
+                a = 1;
+            else if (aStr == "-")
+                a = -1;
+            else if (!int.TryParse(aStr, out a))
+                throw new DomException("SyntaxError", $"Invalid nth coefficient '{aStr}'");
+
+            var bPart = formula.Substring(nIndex + 1).Replace(" ", string.Empty);
+            if (bPart.Length == 0)
+                b = 0;
+            else if (!int.TryParse(bPart, out b))
+                throw new DomException("SyntaxError", $"Invalid nth offset '{bPart}'");
         }
 
         public override bool Matches(Element element)
@@ -831,6 +903,38 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         public override Specificity GetSpecificity() => new Specificity(0, 1, 0);
         public override string ToString() => _ofType ? ":only-of-type" : ":only-child";
+    }
+
+    internal static class SelectorTokenList
+    {
+        public static bool Contains(string value, string token, StringComparison comparison)
+        {
+            if (string.IsNullOrEmpty(value) || string.IsNullOrEmpty(token))
+                return false;
+
+            int index = 0;
+            while (index < value.Length)
+            {
+                while (index < value.Length && IsCssWhitespace(value[index]))
+                    index++;
+
+                int start = index;
+                while (index < value.Length && !IsCssWhitespace(value[index]))
+                    index++;
+
+                int length = index - start;
+                if (length == token.Length &&
+                    string.Compare(value, start, token, 0, token.Length, comparison) == 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsCssWhitespace(char c) =>
+            c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f';
     }
 
     /// <summary>
