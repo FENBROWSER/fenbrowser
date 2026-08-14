@@ -283,9 +283,11 @@ namespace FenBrowser.WebDriver.Commands
                 return url.Trim();
             }
 
-            // System.Uri canonicalizes scheme/host while preserving the case-sensitive
-            // path/query payload. Normalize only the root slash difference here.
-            return uri.AbsoluteUri.TrimEnd('/');
+            // System.Uri already canonicalizes the scheme/host and normalizes an
+            // origin-only HTTP(S) URL to include its root slash. Do not TrimEnd('/')
+            // on the full AbsoluteUri: a trailing slash can belong to the query or
+            // fragment payload (for example ?next=/) and is semantically significant.
+            return uri.AbsoluteUri;
         }
 
         private static int ResolvePageLoadTimeoutMs(long? configuredTimeoutMs)
