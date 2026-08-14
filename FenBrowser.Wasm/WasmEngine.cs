@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.IO;
 using System.Threading;
 using Wasmtime;
 
@@ -41,7 +42,7 @@ public sealed class WasmEngine : IDisposable
         _engine = new Engine(config);
 
         // Epoch interruption only works when the embedder advances the engine epoch.
-        // Keep the cadence aligned with CreateStore's deadline calculation.
+        // Keep the cadence aligned with the per-call deadline calculation.
         _epochTimer = new Timer(
             static state => ((WasmEngine)state!).AdvanceEpoch(),
             this,
@@ -62,6 +63,11 @@ public sealed class WasmEngine : IDisposable
         ThrowIfDisposed();
         if (wasmBytes.IsEmpty)
             throw new ArgumentException("WASM bytes cannot be empty.", nameof(wasmBytes));
+        if (wasmBytes.Length > _limits.MaxModuleBytes)
+        {
+            throw new InvalidDataException(
+                $"WASM module exceeds the configured compilation limit ({wasmBytes.Length} > {_limits.MaxModuleBytes} bytes).");
+        }
 
         var module = Module.FromBytes(_engine, name ?? "module", wasmBytes.ToArray());
         return new WasmModule(this, module, name ?? "module");
@@ -76,8 +82,19 @@ public sealed class WasmEngine : IDisposable
         if (string.IsNullOrWhiteSpace(path))
             throw new ArgumentException("Path cannot be empty.", nameof(path));
 
+        var fileInfo = new FileInfo(path);
+        if (!fileInfo.Exists)
+            throw new FileNotFoundException("WASM module file was not found.", path);
+        if (fileInfo.Length <= 0)
+            throw new InvalidDataException("WASM module file is empty.");
+        if (fileInfo.Length > _limits.MaxModuleBytes)
+        {
+            throw new InvalidDataException(
+                $"WASM module exceeds the configured compilation limit ({fileInfo.Length} > {_limits.MaxModuleBytes} bytes).");
+        }
+
         var module = Module.FromFile(_engine, path);
-        return new WasmModule(this, module, System.IO.Path.GetFileName(path));
+        return new WasmModule(this, module, Path.GetFileName(path));
     }
 
     internal Store CreateStore()
@@ -100,14 +117,30 @@ public sealed class WasmEngine : IDisposable
         // Set initial fuel budget.
         store.Fuel = _limits.MaxFuelPerInstance;
 
+        ResetExecutionDeadline(store);
+        return store;
+    }
+
+    /// <summary>
+    /// Refreshes the Wasmtime epoch deadline for one guest invocation. Epoch
+    /// deadlines are relative to the engine's current epoch, so installing the
+    /// deadline only when the Store is created would make later calls inherit a
+    /// stale/expired timeout.
+    /// </summary>
+    internal void ResetExecutionDeadline(Store store)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(store);
+        store.SetEpochDeadline(ComputeExecutionDeadlineTicks());
+    }
+
+    private ulong ComputeExecutionDeadlineTicks()
+    {
         // Epoch deadlines are relative tick counts. Clamp to at least one tick so
         // sub-cadence execution budgets don't become an already-expired deadline.
-        var epochTicks = (ulong)Math.Max(
+        return (ulong)Math.Max(
             1d,
             Math.Ceiling(_limits.MaxExecutionTime.TotalMilliseconds / EpochTickMilliseconds));
-        store.SetEpochDeadline(epochTicks);
-
-        return store;
     }
 
     private void AdvanceEpoch()

@@ -8,9 +8,14 @@ public sealed class WasmResourceLimits
 {
     private const ulong MinMemoryBytes = 16UL * 1024 * 1024;
     private const ulong MaxWasm32MemoryBytes = 4UL * 1024 * 1024 * 1024;
+    private const long MinModuleBytes = 64L * 1024;
+    private const long MaxModuleBytesLimit = 256L * 1024 * 1024;
 
     /// <summary>Maximum memory size in bytes (default 512 MiB).</summary>
     public ulong MaxMemoryBytes { get; set; } = 512UL * 1024 * 1024;
+
+    /// <summary>Maximum encoded module size admitted for compilation (default 32 MiB).</summary>
+    public long MaxModuleBytes { get; set; } = 32L * 1024 * 1024;
 
     /// <summary>Maximum number of WASM instances (default 16 per document).</summary>
     public int MaxInstances { get; set; } = 16;
@@ -38,6 +43,12 @@ public sealed class WasmResourceLimits
         // guarantees the later Store.SetLimits long conversion cannot overflow.
         if (MaxMemoryBytes < MinMemoryBytes) MaxMemoryBytes = MinMemoryBytes;
         if (MaxMemoryBytes > MaxWasm32MemoryBytes) MaxMemoryBytes = MaxWasm32MemoryBytes;
+
+        // Compilation happens before Store/instance limits exist, so encoded module
+        // bytes need their own admission bound. Keep the configurable range useful
+        // while preventing accidental effectively-unbounded values.
+        if (MaxModuleBytes < MinModuleBytes) MaxModuleBytes = MinModuleBytes;
+        if (MaxModuleBytes > MaxModuleBytesLimit) MaxModuleBytes = MaxModuleBytesLimit;
 
         if (MaxInstances < 1) MaxInstances = 1;
         if (MaxInstances > 256) MaxInstances = 256;

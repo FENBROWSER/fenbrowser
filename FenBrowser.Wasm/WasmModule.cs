@@ -116,6 +116,11 @@ public sealed class WasmInstance : IDisposable
         {
             ThrowIfDisposed();
 
+            // Epoch deadlines are relative to the current engine epoch. Refresh for
+            // every invocation so a long-lived Store does not inherit the deadline
+            // installed at creation time.
+            _engine.ResetExecutionDeadline(_store);
+
             ulong fuelBefore = (ulong)Math.Max(0, _store.Fuel);
             var sw = System.Diagnostics.Stopwatch.StartNew();
 
