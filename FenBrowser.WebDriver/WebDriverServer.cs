@@ -6,7 +6,7 @@
 //                 https://www.w3.org/TR/webdriver2/#nodes
 // 
 // PURPOSE: Production-grade HTTP server for WebDriver commands.
-// SECURITY: Origin validation, capability guards, rate limiting.
+// SECURITY: Origin validation, capability guards, bounded request admission.
 // =============================================================================
 
 using System;
@@ -40,10 +40,12 @@ namespace FenBrowser.WebDriver
         private readonly OriginValidator _originValidator;
         private readonly CancellationTokenSource _cts;
         private readonly IBiDiTransportBootstrap _biDiBootstrap;
+        private readonly SemaphoreSlim _requestAdmission;
         private readonly int _port;
         private static readonly string[] AllowedCorsMethods = { "GET", "POST", "DELETE", "OPTIONS" };
         private static readonly string[] AllowedCorsHeaders = { "content-type" };
         private const int MaxRequestBodyBytes = 16 * 1024 * 1024;
+        private const int MaxConcurrentRequests = 32;
         private Task _listenerTask;
         private long _nextCommandId;
         private bool _disposed;
@@ -67,6 +69,7 @@ namespace FenBrowser.WebDriver
             _commandQueue = new WebDriverCommandQueue();
             _originValidator = new OriginValidator(allowLocalhostOnly: true);
             _cts = new CancellationTokenSource();
+            _requestAdmission = new SemaphoreSlim(MaxConcurrentRequests, MaxConcurrentRequests);
             _biDiBootstrap = biDiBootstrap ?? new NoOpBiDiTransportBootstrap();
         }
         
@@ -112,12 +115,21 @@ namespace FenBrowser.WebDriver
             {
                 try
                 {
-                    var context = await _listener.GetContextAsync();
-                    _ = Task.Run(() => HandleRequestAsync(context));
+                    var context = await _listener.GetContextAsync().ConfigureAwait(false);
+                    if (!_requestAdmission.Wait(0))
+                    {
+                        await SendErrorAsync(
+                            context.Response,
+                            ErrorCodes.UnknownError,
+                            "WebDriver server is busy.",
+                            503).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    _ = HandleAdmittedRequestAsync(context);
                 }
                 catch (HttpListenerException) when (_cts.Token.IsCancellationRequested)
                 {
-                    // Expected during shutdown
                     break;
                 }
                 catch (ObjectDisposedException)
@@ -126,8 +138,20 @@ namespace FenBrowser.WebDriver
                 }
                 catch (Exception ex)
                 {
-                    Log($"Listener error: {ex.Message}");
+                    Log($"Listener error: {ex}");
                 }
+            }
+        }
+
+        private async Task HandleAdmittedRequestAsync(HttpListenerContext context)
+        {
+            try
+            {
+                await HandleRequestAsync(context).ConfigureAwait(false);
+            }
+            finally
+            {
+                _requestAdmission.Release();
             }
         }
         
@@ -165,7 +189,6 @@ namespace FenBrowser.WebDriver
                     return;
                 }
 
-                // CORS headers only for validated browser origins.
                 if (!string.IsNullOrEmpty(origin))
                 {
                     response.Headers["Access-Control-Allow-Origin"] = origin;
@@ -173,7 +196,6 @@ namespace FenBrowser.WebDriver
                     response.Headers["Vary"] = "Origin";
                 }
                 
-                // Handle preflight
                 if (request.HttpMethod == "OPTIONS")
                 {
                     if (!ValidatePreflightRequest(request, response))
@@ -199,7 +221,6 @@ namespace FenBrowser.WebDriver
                     return;
                 }
                 
-                // Route the request
                 var path = request.Url?.AbsolutePath ?? "/";
                 var method = request.HttpMethod;
                 
@@ -214,16 +235,12 @@ namespace FenBrowser.WebDriver
                     return;
                 }
                 
-                // Read request body with a hard ceiling. Content-Length can be absent
-                // for chunked requests, so the streaming loop enforces the same limit.
                 string body = null;
                 if (request.HasEntityBody)
                 {
                     body = await ReadRequestBodyAsync(request).ConfigureAwait(false);
                 }
                 
-                // The WebDriver remote end has one request queue. Browser and
-                // session state must never be mutated by overlapping commands.
                 var commandId = Interlocked.Increment(ref _nextCommandId);
                 var queuedAt = Stopwatch.StartNew();
                 var result = await _commandQueue.ExecuteWithSynchronousAdmissionAsync(async () =>
@@ -287,8 +304,15 @@ namespace FenBrowser.WebDriver
             }
             catch (Exception ex)
             {
+                // Preserve detailed diagnostics internally, but do not expose file
+                // paths, stack-adjacent state, socket details, or implementation
+                // messages through the remote WebDriver protocol.
                 Log($"Request error: {ex}");
-                await SendErrorAsync(response, ErrorCodes.UnknownError, ex.Message, 500);
+                await SendErrorAsync(
+                    response,
+                    ErrorCodes.UnknownError,
+                    "Internal WebDriver error.",
+                    500);
             }
         }
 
@@ -460,6 +484,7 @@ namespace FenBrowser.WebDriver
             
             Stop();
             _sessionManager.Dispose();
+            _requestAdmission.Dispose();
             _cts.Dispose();
             _listener.Close();
         }
