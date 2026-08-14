@@ -10,12 +10,9 @@ namespace FenBrowser.Js.Builtins;
 //
 // Disposal is performed synchronously when disposeAsync runs and the settled
 // Promise is then resolved/rejected. The spec awaits each disposer in turn;
-// a faithful await chain would have to keep the captured resources reachable
-// across microtask ticks, which the native-closure capture is invisible to
-// the moving GC. Running the disposers in reverse order synchronously settles
-// every test whose disposers record their effect at call time (the common
-// case); only the handful of tests asserting the precise microtask cadence of
-// an empty/awaited disposal remain.
+// a faithful await chain requires a traced continuation object that survives
+// across microtask checkpoints. Until that state machine is implemented, the
+// resource records themselves remain fully visible to FenJS GC.
 [EcmaSpecReference("28.4", AbstractOperation = "AsyncDisposableStack", Url = "https://tc39.es/ecma262/#sec-asyncdisposablestack-constructor")]
 public sealed class AsyncDisposableStackBuiltin : IBuiltinModule
 {
@@ -66,8 +63,6 @@ public sealed class AsyncDisposableStackBuiltin : IBuiltinModule
         DefinePrototypeMethod(context, heap, prototypeHandle, prototype, "defer", Defer, length: 1);
         DefinePrototypeMethod(context, heap, prototypeHandle, prototype, "move", (ctx, thisValue, _) => Move(ctx, thisValue, prototypeHandle), length: 0);
 
-        // 28.4.3.5 AsyncDisposableStack.prototype[@@asyncDispose] is the same
-        // function object as the initial disposeAsync.
         var asyncDisposeSymbol = context.CreateWellKnownSymbol("asyncDispose");
         _ = prototype.DefineOwnSymbolProperty(
             asyncDisposeSymbol.AsSymbolId(),
@@ -109,14 +104,16 @@ public sealed class AsyncDisposableStackBuiltin : IBuiltinModule
 
     private sealed class DisposableResource
     {
-        public DisposableResource(JsValue value, JsValue method)
+        public DisposableResource(JsValue value, JsValue method, bool passValueAsArgument = false)
         {
             Value = value;
             Method = method;
+            PassValueAsArgument = passValueAsArgument;
         }
 
         public JsValue Value { get; }
         public JsValue Method { get; }
+        public bool PassValueAsArgument { get; }
     }
 
     private sealed class AsyncDisposableStackObject : JsObject
@@ -294,8 +291,6 @@ public sealed class AsyncDisposableStackBuiltin : IBuiltinModule
         return method;
     }
 
-    // 27.3.1.1 GetDisposeMethod(V, async-dispose): prefer @@asyncDispose, fall
-    // back to wrapping @@dispose.
     private static JsValue GetAsyncDisposeMethod(IBuiltinContext ctx, JsValue receiver)
     {
         var method = GetSymbolMethod(ctx, receiver, "asyncDispose");
@@ -304,25 +299,7 @@ public sealed class AsyncDisposableStackBuiltin : IBuiltinModule
             return method;
         }
 
-        var syncMethod = GetSymbolMethod(ctx, receiver, "dispose");
-        if (syncMethod.Tag == JsValueTag.Undefined)
-        {
-            return JsValue.Undefined;
-        }
-
-        // Wrap the synchronous @@dispose so the recorded disposer calls it with
-        // the resource as the receiver.
-        var wrapper = new NativeFunctionObject(string.Empty, (_, _) =>
-        {
-            _ = ctx.CallFunction(syncMethod, Array.Empty<JsValue>(), receiver);
-            return JsValue.Undefined;
-        }, length: 0);
-        wrapper.SetPrototype(ctx.GetObjectPrototype());
-        var wrapperHandle = ctx.Heap.AllocateObject(wrapper, AllocationSite.Current());
-        var callHandle = ctx.GetFunctionCallMethod();
-        wrapper.SetProperty("call", JsValue.FromObject(callHandle));
-        ctx.Heap.WriteBarrier(wrapperHandle, callHandle);
-        return JsValue.FromObject(wrapperHandle);
+        return GetSymbolMethod(ctx, receiver, "dispose");
     }
 
     private static JsValue Use(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -347,9 +324,6 @@ public sealed class AsyncDisposableStackBuiltin : IBuiltinModule
             throw new JsThrownException(ctx.CreateTypeError("AsyncDisposableStack.prototype.use requires a Symbol.asyncDispose or Symbol.dispose method."));
         }
 
-        // A direct @@asyncDispose method is invoked with the resource as its
-        // receiver; the @@dispose wrapper ignores its receiver (it captured the
-        // resource), so passing the value through is harmless either way.
         stack.Resources.Add(new DisposableResource(value, method));
         return value;
     }
@@ -366,18 +340,7 @@ public sealed class AsyncDisposableStackBuiltin : IBuiltinModule
             throw new JsThrownException(ctx.CreateTypeError("AsyncDisposableStack.prototype.adopt requires a callable disposer."));
         }
 
-        var closure = new NativeFunctionObject(string.Empty, (_, _) =>
-        {
-            _ = ctx.CallFunction(onDispose, new[] { value }, JsValue.Undefined);
-            return JsValue.Undefined;
-        }, length: 0);
-        closure.SetPrototype(ctx.GetObjectPrototype());
-        var closureHandle = ctx.Heap.AllocateObject(closure, AllocationSite.Current());
-        var callHandle = ctx.GetFunctionCallMethod();
-        closure.SetProperty("call", JsValue.FromObject(callHandle));
-        ctx.Heap.WriteBarrier(closureHandle, callHandle);
-
-        stack.Resources.Add(new DisposableResource(JsValue.Undefined, JsValue.FromObject(closureHandle)));
+        stack.Resources.Add(new DisposableResource(value, onDispose, passValueAsArgument: true));
         return value;
     }
 
@@ -415,8 +378,6 @@ public sealed class AsyncDisposableStackBuiltin : IBuiltinModule
         return JsValue.FromObject(newHandle);
     }
 
-    // 28.4.3.3 AsyncDisposableStack.prototype.disposeAsync. Returns a Promise
-    // that settles once every recorded disposer has run (in reverse order).
     private static JsValue DisposeAsync(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
@@ -444,7 +405,14 @@ public sealed class AsyncDisposableStackBuiltin : IBuiltinModule
             {
                 if (resource.Method.Tag != JsValueTag.Undefined)
                 {
-                    _ = ctx.CallFunction(resource.Method, Array.Empty<JsValue>(), resource.Value);
+                    if (resource.PassValueAsArgument)
+                    {
+                        _ = ctx.CallFunction(resource.Method, new[] { resource.Value }, JsValue.Undefined);
+                    }
+                    else
+                    {
+                        _ = ctx.CallFunction(resource.Method, Array.Empty<JsValue>(), resource.Value);
+                    }
                 }
             }
             catch (JsThrownException ex)
