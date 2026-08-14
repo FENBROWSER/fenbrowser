@@ -12,10 +12,8 @@ namespace FenBrowser.Core.Network.Handlers
     /// </summary>
     public sealed class TrackingPreventionHandler : INetworkHandler
     {
-        // Known tracking domains (subset of EasyPrivacy/Disconnect lists)
         private static readonly HashSet<string> _trackerDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            // Major Ad/Tracking Networks
             "doubleclick.net",
             "googlesyndication.com",
             "googleadservices.com",
@@ -28,16 +26,10 @@ namespace FenBrowser.Core.Network.Handlers
             "pixel.facebook.com",
             "ad.doubleclick.net",
             "stats.g.doubleclick.net",
-
-            // Twitter/X
             "analytics.twitter.com",
             "ads-twitter.com",
-
-            // Microsoft
             "bat.bing.com",
             "clarity.ms",
-
-            // Other common trackers
             "scorecardresearch.com",
             "quantserve.com",
             "taboola.com",
@@ -65,7 +57,6 @@ namespace FenBrowser.Core.Network.Handlers
             "nr-data.net"
         };
 
-        // Known tracking pixel patterns
         private static readonly string[] _trackingPixelPatterns = new[]
         {
             "/pixel", "/tracking", "/beacon", "/collect", "/log", "/impression",
@@ -79,21 +70,16 @@ namespace FenBrowser.Core.Network.Handlers
 
         private static int _blockedCount;
 
-        /// <summary>Whether Enhanced Tracking Prevention is enabled.</summary>
         public static bool IsEnabled { get; set; } = true;
 
-        /// <summary>Count of blocked tracking requests in current session.</summary>
         public static int BlockedCount => Volatile.Read(ref _blockedCount);
 
-        /// <summary>Reset the blocked count (call on new navigation).</summary>
         public static void ResetBlockedCount() => Interlocked.Exchange(ref _blockedCount, 0);
 
-        /// <summary>Check if a URL should be blocked as a tracker.</summary>
         public static bool IsTracker(Uri uri, Uri pageOrigin = null)
         {
             if (uri == null || !IsEnabled) return false;
 
-            // Never block first-party requests for the active page, including same-site CDNs.
             if (pageOrigin != null && (IsSameOrigin(uri, pageOrigin) || IsSameSite(uri.Host, pageOrigin.Host)))
             {
                 return false;
@@ -109,6 +95,16 @@ namespace FenBrowser.Core.Network.Handlers
                     if (host.EndsWith("." + tracker, StringComparison.OrdinalIgnoreCase))
                         return true;
                 }
+            }
+
+            // Generic path names such as /log, /collect, and /beacon are common on
+            // perfectly legitimate first-party endpoints. They are only useful as a
+            // tracking heuristic when we actually know this request is cross-site.
+            // With no page context, fail open for the heuristic instead of blocking a
+            // top-level/first-party request based on its path alone.
+            if (pageOrigin == null)
+            {
+                return false;
             }
 
             var path = uri.AbsolutePath?.ToLowerInvariant() ?? "";
@@ -224,7 +220,6 @@ namespace FenBrowser.Core.Network.Handlers
             return string.Join(".", labels, labels.Length - registrableLabelCount, registrableLabelCount);
         }
 
-        // INetworkHandler implementation
         public Task HandleAsync(NetworkContext context, Func<Task> next, CancellationToken ct)
         {
             if (context?.Request?.RequestUri == null || !IsEnabled)
