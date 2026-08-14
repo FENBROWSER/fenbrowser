@@ -10,6 +10,8 @@ namespace FenBrowser.Host.Platform.Windows;
 /// </summary>
 internal sealed class WindowsClipboard : IClipboard
 {
+    private const int MaxClipboardChars = 16 * 1024 * 1024;
+
     #region Win32 Native Methods
 
     [DllImport("user32.dll")]
@@ -27,16 +29,19 @@ internal sealed class WindowsClipboard : IClipboard
     [DllImport("user32.dll")]
     private static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
 
-    [DllImport("kernel32.dll")]
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
 
-    [DllImport("kernel32.dll")]
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GlobalFree(IntPtr hMem);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr GlobalLock(IntPtr hMem);
 
-    [DllImport("kernel32.dll")]
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GlobalUnlock(IntPtr hMem);
 
-    [DllImport("kernel32.dll")]
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern UIntPtr GlobalSize(IntPtr hMem);
 
     private const uint CF_UNICODETEXT = 13;
@@ -47,42 +52,57 @@ internal sealed class WindowsClipboard : IClipboard
     /// <inheritdoc />
     public string GetText()
     {
-        string result = string.Empty;
+        if (!TryOpenClipboardWithRetry(() => OpenClipboard(IntPtr.Zero)))
+            return string.Empty;
 
-        if (TryOpenClipboardWithRetry(() => OpenClipboard(IntPtr.Zero)))
+        try
         {
+            IntPtr hData = GetClipboardData(CF_UNICODETEXT);
+            if (hData == IntPtr.Zero)
+                return string.Empty;
+
+            ulong byteSize = GlobalSize(hData).ToUInt64();
+            if (byteSize < sizeof(char))
+                return string.Empty;
+
+            // Do not trust another process to provide a well-formed null-terminated
+            // CF_UNICODETEXT block. Bound reads by the actual HGLOBAL size and by a
+            // browser admission limit before asking Marshal to construct the string.
+            ulong maxBytes = ((ulong)MaxClipboardChars + 1UL) * sizeof(char);
+            if (byteSize > maxBytes)
+                return string.Empty;
+
+            int charCapacity = checked((int)Math.Min(byteSize / sizeof(char), int.MaxValue));
+            if (charCapacity == 0)
+                return string.Empty;
+
+            IntPtr pData = GlobalLock(hData);
+            if (pData == IntPtr.Zero)
+                return string.Empty;
+
             try
             {
-                IntPtr hData = GetClipboardData(CF_UNICODETEXT);
-                if (hData != IntPtr.Zero)
-                {
-                    IntPtr pData = GlobalLock(hData);
-                    if (pData != IntPtr.Zero)
-                    {
-                        try
-                        {
-                            return Marshal.PtrToStringUni(pData) ?? string.Empty;
-                        }
-                        finally
-                        {
-                            GlobalUnlock(hData);
-                        }
-                    }
-                }
+                var value = Marshal.PtrToStringUni(pData, charCapacity) ?? string.Empty;
+                int nullIndex = value.IndexOf('\0');
+                return nullIndex >= 0 ? value.Substring(0, nullIndex) : value;
             }
             finally
             {
-                CloseClipboard();
+                GlobalUnlock(hData);
             }
         }
-
-        return string.Empty;
+        finally
+        {
+            CloseClipboard();
+        }
     }
 
     /// <inheritdoc />
     public bool SetText(string text)
     {
-        if (string.IsNullOrEmpty(text))
+        // Empty text is a valid clipboard payload and is how callers clear text.
+        text ??= string.Empty;
+        if (text.Length > MaxClipboardChars)
             return false;
 
         if (!TryOpenClipboardWithRetry(() => OpenClipboard(IntPtr.Zero)))
@@ -90,32 +110,62 @@ internal sealed class WindowsClipboard : IClipboard
 
         try
         {
-            EmptyClipboard();
+            if (!EmptyClipboard())
+                return false;
 
-            // Allocate global memory for the string
-            int bytes = (text.Length + 1) * sizeof(char);
+            ulong bytes = checked(((ulong)text.Length + 1UL) * sizeof(char));
             IntPtr hGlobal = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)bytes);
-
             if (hGlobal == IntPtr.Zero)
                 return false;
 
-            IntPtr pGlobal = GlobalLock(hGlobal);
-            if (pGlobal == IntPtr.Zero)
-                return false;
-
+            bool ownershipTransferred = false;
             try
             {
-                Marshal.Copy(text.ToCharArray(), 0, pGlobal, text.Length);
-                // Null terminate
-                Marshal.WriteInt16(pGlobal + text.Length * sizeof(char), 0);
+                IntPtr pGlobal = GlobalLock(hGlobal);
+                if (pGlobal == IntPtr.Zero)
+                    return false;
+
+                try
+                {
+                    if (text.Length > 0)
+                    {
+                        // Avoid ToCharArray() so large clipboard writes do not allocate a
+                        // second complete managed copy of the string.
+                        unsafe
+                        {
+                            fixed (char* source = text)
+                            {
+                                Buffer.MemoryCopy(
+                                    source,
+                                    pGlobal.ToPointer(),
+                                    bytes,
+                                    (long)text.Length * sizeof(char));
+                            }
+                        }
+                    }
+
+                    Marshal.WriteInt16(IntPtr.Add(pGlobal, checked(text.Length * sizeof(char))), 0);
+                }
+                finally
+                {
+                    GlobalUnlock(hGlobal);
+                }
+
+                if (SetClipboardData(CF_UNICODETEXT, hGlobal) == IntPtr.Zero)
+                    return false;
+
+                // On success Windows owns the HGLOBAL until the clipboard contents are
+                // replaced. The caller must not free it after SetClipboardData succeeds.
+                ownershipTransferred = true;
+                return true;
             }
             finally
             {
-                GlobalUnlock(hGlobal);
+                if (!ownershipTransferred)
+                {
+                    GlobalFree(hGlobal);
+                }
             }
-
-            SetClipboardData(CF_UNICODETEXT, hGlobal);
-            return true;
         }
         finally
         {
@@ -134,7 +184,7 @@ internal sealed class WindowsClipboard : IClipboard
             try
             {
                 IntPtr hData = GetClipboardData(CF_UNICODETEXT);
-                return hData != IntPtr.Zero;
+                return hData != IntPtr.Zero && GlobalSize(hData).ToUInt64() >= sizeof(char);
             }
             finally
             {
@@ -167,11 +217,10 @@ internal sealed class WindowsClipboard : IClipboard
 
     private static void ApplyClipboardRetryBackoff(int attempt)
     {
-        var spinner = new SpinWait();
-        var spins = Math.Min(8, attempt + 1);
-        for (int i = 0; i < spins; i++)
-        {
-            spinner.SpinOnce();
-        }
+        // OpenClipboard commonly fails briefly while another application owns the
+        // clipboard. SpinWait retries were effectively immediate and exhausted all
+        // attempts before the owner could release it. Keep total blocking bounded.
+        int delayMs = Math.Min(32, 1 << Math.Min(5, Math.Max(0, attempt - 1)));
+        Thread.Sleep(delayMs);
     }
 }
