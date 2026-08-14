@@ -14,14 +14,22 @@ internal static class WebDriverCommandDeadline
             throw new ArgumentOutOfRangeException(nameof(timeoutMs));
         }
 
-        if (!execution.IsCompleted &&
-            !((IAsyncResult)execution).AsyncWaitHandle.WaitOne(timeoutMs))
+        try
         {
-            ObserveLateFailure(execution);
-            throw new TimeoutException();
+            // Do not materialize Task.AsyncWaitHandle or block a worker thread just to
+            // enforce a WebDriver deadline. The runtime's Task.WaitAsync path remains
+            // fully asynchronous and preserves the original task's completion state.
+            return await execution
+                .WaitAsync(TimeSpan.FromMilliseconds(timeoutMs))
+                .ConfigureAwait(false);
         }
-
-        return await execution.ConfigureAwait(false);
+        catch (TimeoutException)
+        {
+            // The underlying browser operation is not necessarily cancellable. Ensure
+            // a fault that arrives after the WebDriver timeout is still observed.
+            ObserveLateFailure(execution);
+            throw;
+        }
     }
 
     private static void ObserveLateFailure(Task execution)
