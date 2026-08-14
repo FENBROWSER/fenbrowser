@@ -7,42 +7,20 @@ using System.Collections.Generic;
 
 namespace FenBrowser.Core.Dom.V2
 {
-    /// <summary>
-    /// DOM Living Standard: NodeList interface.
-    /// https://dom.spec.whatwg.org/#interface-nodelist
-    ///
-    /// Abstract base for collections of nodes.
-    /// </summary>
     public abstract class NodeList : IEnumerable<Node>
     {
-        /// <summary>
-        /// Returns the number of nodes in the collection.
-        /// </summary>
         public abstract int Length { get; }
 
-        /// <summary>
-        /// Returns the node at the specified index.
-        /// </summary>
         [System.Runtime.CompilerServices.IndexerName("ItemAt")]
         public abstract Node this[int index] { get; }
 
-        /// <summary>
-        /// Returns the node at the specified index (alias for indexer).
-        /// </summary>
         public Node Item(int index) => this[index];
 
-        /// <summary>
-        /// Returns an enumerator for the nodes.
-        /// </summary>
         public abstract IEnumerator<Node> GetEnumerator();
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
-    /// <summary>
-    /// Live NodeList that reflects current DOM state.
-    /// Used by Node.childNodes.
-    /// </summary>
     internal sealed class LiveChildNodeList : NodeList
     {
         private readonly ContainerNode _parent;
@@ -74,7 +52,6 @@ namespace FenBrowser.Core.Dom.V2
 
         public override IEnumerator<Node> GetEnumerator()
         {
-            // Take a snapshot to handle modifications during iteration
             var snapshot = new List<Node>();
             for (var child = _parent.FirstChild; child != null; child = child._nextSibling)
                 snapshot.Add(child);
@@ -82,10 +59,6 @@ namespace FenBrowser.Core.Dom.V2
         }
     }
 
-    /// <summary>
-    /// Live HTMLCollection of child elements only.
-    /// Used by ParentNode.children.
-    /// </summary>
     internal sealed class LiveElementChildList : NodeList
     {
         private readonly ContainerNode _parent;
@@ -130,10 +103,6 @@ namespace FenBrowser.Core.Dom.V2
         }
     }
 
-    /// <summary>
-    /// Static NodeList that does not reflect DOM changes.
-    /// Used by querySelectorAll.
-    /// </summary>
     internal sealed class StaticNodeList : NodeList
     {
         private readonly Node[] _nodes;
@@ -141,8 +110,6 @@ namespace FenBrowser.Core.Dom.V2
         public StaticNodeList(IEnumerable<Node> nodes)
         {
             ArgumentNullException.ThrowIfNull(nodes);
-            // A static NodeList is a snapshot. Never retain a caller-owned Node[];
-            // mutating that array after querySelectorAll must not mutate the result.
             _nodes = new List<Node>(nodes).ToArray();
         }
 
@@ -170,10 +137,6 @@ namespace FenBrowser.Core.Dom.V2
         }
     }
 
-    /// <summary>
-    /// Empty NodeList singleton.
-    /// Used when a node has no children.
-    /// </summary>
     internal sealed class EmptyNodeList : NodeList
     {
         public static readonly EmptyNodeList Instance = new EmptyNodeList();
@@ -189,48 +152,23 @@ namespace FenBrowser.Core.Dom.V2
         }
     }
 
-    /// <summary>
-    /// DOM Living Standard: HTMLCollection interface.
-    /// https://dom.spec.whatwg.org/#interface-htmlcollection
-    ///
-    /// A live collection of elements (Element nodes only).
-    /// </summary>
     public abstract class HTMLCollection : IEnumerable<Element>
     {
-        /// <summary>
-        /// Returns the number of elements in the collection.
-        /// </summary>
         public abstract int Length { get; }
 
-        /// <summary>
-        /// Returns the element at the specified index.
-        /// </summary>
         [System.Runtime.CompilerServices.IndexerName("ItemAt")]
         public abstract Element this[int index] { get; }
 
-        /// <summary>
-        /// Returns the element at the specified index.
-        /// </summary>
         public Element Item(int index) => this[index];
 
-        /// <summary>
-        /// Returns the first element with the given ID or name.
-        /// </summary>
         public abstract Element NamedItem(string name);
 
         public abstract IEnumerator<Element> GetEnumerator();
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-        /// <summary>
-        /// Empty HTMLCollection singleton.
-        /// </summary>
         public static readonly HTMLCollection Empty = new StaticHTMLCollection(Array.Empty<Element>());
     }
 
-    /// <summary>
-    /// Static (non-live) HTMLCollection.
-    /// More efficient for one-time queries.
-    /// </summary>
     internal sealed class StaticHTMLCollection : HTMLCollection
     {
         private readonly Element[] _elements;
@@ -238,7 +176,6 @@ namespace FenBrowser.Core.Dom.V2
         public StaticHTMLCollection(IEnumerable<Element> elements)
         {
             ArgumentNullException.ThrowIfNull(elements);
-            // Static collections are snapshots as well; do not alias caller arrays.
             _elements = new List<Element>(elements).ToArray();
         }
 
@@ -277,9 +214,6 @@ namespace FenBrowser.Core.Dom.V2
         }
     }
 
-    /// <summary>
-    /// Live HTMLCollection of all descendant elements with a given tag name.
-    /// </summary>
     internal sealed class TagNameHTMLCollection : HTMLCollection
     {
         private readonly ContainerNode _root;
@@ -351,9 +285,6 @@ namespace FenBrowser.Core.Dom.V2
         }
     }
 
-    /// <summary>
-    /// Live HTMLCollection of all descendant elements with a given class name.
-    /// </summary>
     internal sealed class ClassNameHTMLCollection : HTMLCollection
     {
         private readonly ContainerNode _root;
@@ -363,7 +294,7 @@ namespace FenBrowser.Core.Dom.V2
         {
             _root = root;
             _classNames = (classNames ?? "")
-                .Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                .Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
         }
 
         public override int Length
@@ -413,9 +344,6 @@ namespace FenBrowser.Core.Dom.V2
 
         private IEnumerable<Element> MatchingElements()
         {
-            // DOM's ordered-set parser produces no class tokens for an empty or
-            // whitespace-only input. That must match no elements, not every element
-            // via a vacuous "all zero classes are present" check.
             if (_classNames.Length == 0)
                 yield break;
 
