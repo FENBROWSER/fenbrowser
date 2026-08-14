@@ -167,7 +167,7 @@ public sealed class BrowserInputQueue
             if (_pending.Count >= _maxPendingEvents)
             {
                 var staleInput = FindOldestCoalescibleInput();
-                if (staleInput == null && IsButtonTransition(input))
+                if (staleInput == null && IsStateTransition(input))
                 {
                     staleInput = FindOldestNonTransitionInput();
                 }
@@ -188,12 +188,12 @@ public sealed class BrowserInputQueue
                     _droppedMouseMoveCount++;
                     return;
                 }
-                else if (IsButtonTransition(input))
+                else if (IsStateTransition(input))
                 {
-                    // Preserve physical button state even during an all-transition
-                    // burst. The configured capacity is a soft bound for this one
-                    // critical class; losing MouseUp can otherwise leave the page in
-                    // a permanently pressed state.
+                    // Preserve physical mouse/keyboard state transitions even during
+                    // an all-transition burst. The configured capacity is a soft bound
+                    // for this critical class; losing MouseUp or KeyUp can otherwise
+                    // leave the page in a permanently pressed state.
                 }
                 else
                 {
@@ -274,7 +274,7 @@ public sealed class BrowserInputQueue
     {
         for (var node = _pending.First; node != null; node = node.Next)
         {
-            if (!IsButtonTransition(node.Value))
+            if (!IsStateTransition(node.Value))
             {
                 return node;
             }
@@ -283,8 +283,9 @@ public sealed class BrowserInputQueue
         return null;
     }
 
-    private static bool IsButtonTransition(BrowserInputEvent input) =>
-        input.Type is BrowserInputType.MouseDown or BrowserInputType.MouseUp;
+    private static bool IsStateTransition(BrowserInputEvent input) =>
+        input.Type is BrowserInputType.MouseDown or BrowserInputType.MouseUp or
+            BrowserInputType.KeyDown or BrowserInputType.KeyUp;
 
     private static bool IsCoalescibleInput(BrowserInputEvent input) =>
         CanCoalesceMouseMove(input) ||
