@@ -85,25 +85,25 @@ namespace FenBrowser.Core.Network
         public static SocketsHttpHandler CreateHandler()
         {
             var config = NetworkConfiguration.Instance;
-            
+
             var handler = new SocketsHttpHandler
             {
                 // Enable all compression methods including Brotli
                 AutomaticDecompression = config.GetDecompressionMethods(),
-                
+
                 // Explicit proxy toggle (avoid inheriting dead localhost proxies in lab setups)
                 UseProxy = config.UseSystemProxy,
-                
+
                 // We handle redirects manually for better control
                 AllowAutoRedirect = false,
-                
+
                 // Connection pooling for HTTP/2 multiplexing
                 MaxConnectionsPerServer = config.MaxConnectionsPerServer,
 
                 // Connection establishment has its own deadline. Higher-level fetch
                 // code owns document/resource request deadlines.
                 ConnectTimeout = TimeSpan.FromSeconds(config.ConnectionTimeoutSeconds),
-                
+
                 // Keep-alive for connection reuse
                 UseCookies = false, // We handle cookies manually for privacy
             };
@@ -148,7 +148,7 @@ namespace FenBrowser.Core.Network
                 // Use HTTP/2 by default, fall back to HTTP/1.1 if server doesn't support
                 DefaultRequestVersion = config.GetPreferredHttpVersion(),
                 DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
-                
+
                 // Per-request/document deadlines are enforced by callers. Keeping the
                 // shared client timeout infinite avoids a second, unrelated global timer.
                 Timeout = System.Threading.Timeout.InfiniteTimeSpan
@@ -156,14 +156,14 @@ namespace FenBrowser.Core.Network
 
             // Set default headers
             client.DefaultRequestHeaders.ConnectionClose = false; // Keep-alive
-            
+
             // Set User-Agent from Settings
             var uaString = BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent);
             if (!string.IsNullOrEmpty(uaString))
             {
                 client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", uaString);
             }
-            
+
             // Log configuration if debugging enabled
             if (config.LogHttp2Details)
             {
@@ -183,11 +183,11 @@ namespace FenBrowser.Core.Network
         public static HttpClient CreatePrivateClient()
         {
             var handler = CreateHandler();
-            
+
             // Additional privacy settings
             handler.UseCookies = false;
             handler.Credentials = null;
-            
+
             // Private mode uses the same caller-owned document/resource deadlines as
             // normal browsing. Do not add a second whole-request HttpClient timeout.
             return CreateClient(handler);
@@ -293,24 +293,56 @@ namespace FenBrowser.Core.Network
             }
 
             using var raceCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            var attempts = new List<Task<System.IO.Stream>>(addresses.Count);
-            for (var i = 0; i < addresses.Count; i++)
+            var attempts = new List<Task<System.IO.Stream>>(Math.Min(addresses.Count, 4));
+            var nextAddressIndex = 0;
+            Exception lastError = null;
+
+            void StartNextAttempt()
             {
-                attempts.Add(ConnectResolvedAddressWithDelayAsync(
-                    addresses[i],
-                    port,
-                    i == 0 ? TimeSpan.Zero : TimeSpan.FromMilliseconds(SecureDnsAddressStagger.TotalMilliseconds * i),
+                if (nextAddressIndex >= addresses.Count)
+                    return;
+
+                attempts.Add(ConnectSocketAsync(
+                    new IPEndPoint(addresses[nextAddressIndex++], port),
                     raceCts.Token));
             }
 
-            Exception lastError = null;
+            // Start one candidate immediately. Additional candidates begin either when
+            // the stagger expires or as soon as an earlier candidate fails. The previous
+            // index*250ms schedule forced a full delay even after an immediate refusal.
+            StartNextAttempt();
+
             while (attempts.Count > 0)
             {
-                var completed = await Task.WhenAny(attempts).ConfigureAwait(false);
-                attempts.Remove(completed);
+                Task delayTask = null;
+                Task completed;
+                if (nextAddressIndex < addresses.Count)
+                {
+                    delayTask = Task.Delay(SecureDnsAddressStagger, raceCts.Token);
+                    var contenders = new Task[attempts.Count + 1];
+                    for (var i = 0; i < attempts.Count; i++)
+                    {
+                        contenders[i] = attempts[i];
+                    }
+                    contenders[^1] = delayTask;
+                    completed = await Task.WhenAny(contenders).ConfigureAwait(false);
+                }
+                else
+                {
+                    completed = await Task.WhenAny(attempts).ConfigureAwait(false);
+                }
+
+                if (ReferenceEquals(completed, delayTask))
+                {
+                    StartNextAttempt();
+                    continue;
+                }
+
+                var connectionTask = (Task<System.IO.Stream>)completed;
+                attempts.Remove(connectionTask);
                 try
                 {
-                    var winner = await completed.ConfigureAwait(false);
+                    var winner = await connectionTask.ConfigureAwait(false);
                     raceCts.Cancel();
                     await DisposeCompletedConnectionAttemptsAsync(attempts).ConfigureAwait(false);
                     return winner;
@@ -324,24 +356,13 @@ namespace FenBrowser.Core.Network
                 catch (Exception ex)
                 {
                     lastError = ex;
+                    // A definite failure is stronger evidence than the timer: launch the
+                    // next address immediately instead of waiting for the remaining stagger.
+                    StartNextAttempt();
                 }
             }
 
             throw lastError ?? new SocketException((int)SocketError.HostUnreachable);
-        }
-
-        private static async Task<System.IO.Stream> ConnectResolvedAddressWithDelayAsync(
-            IPAddress address,
-            int port,
-            TimeSpan delay,
-            CancellationToken ct)
-        {
-            if (delay > TimeSpan.Zero)
-            {
-                await Task.Delay(delay, ct).ConfigureAwait(false);
-            }
-
-            return await ConnectSocketAsync(new IPEndPoint(address, port), ct).ConfigureAwait(false);
         }
 
         private static async Task DisposeCompletedConnectionAttemptsAsync(
@@ -363,50 +384,43 @@ namespace FenBrowser.Core.Network
 
         private static async Task<System.IO.Stream> ConnectSocketAsync(EndPoint endPoint, CancellationToken ct)
         {
-            try
+            switch (endPoint)
             {
-                switch (endPoint)
+                case IPEndPoint ipEndPoint:
                 {
-                    case IPEndPoint ipEndPoint:
+                    var socket = new Socket(ipEndPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
                     {
-                        var socket = new Socket(ipEndPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
-                        {
-                            NoDelay = true
-                        };
+                        NoDelay = true
+                    };
 
-                        try
-                        {
-                            await socket.ConnectAsync(ipEndPoint, ct).ConfigureAwait(false);
-                            return new NetworkStream(socket, ownsSocket: true);
-                        }
-                        catch
-                        {
-                            socket.Dispose();
-                            throw;
-                        }
-                    }
-                    case DnsEndPoint dnsEndPoint:
+                    try
                     {
-                        var client = new TcpClient();
-                        client.NoDelay = true;
-                        try
-                        {
-                            await client.ConnectAsync(dnsEndPoint.Host, dnsEndPoint.Port, ct).ConfigureAwait(false);
-                            return client.GetStream();
-                        }
-                        catch
-                        {
-                            client.Dispose();
-                            throw;
-                        }
+                        await socket.ConnectAsync(ipEndPoint, ct).ConfigureAwait(false);
+                        return new NetworkStream(socket, ownsSocket: true);
                     }
-                    default:
-                        throw new NotSupportedException($"Unsupported endpoint type: {endPoint?.GetType().Name}");
+                    catch
+                    {
+                        socket.Dispose();
+                        throw;
+                    }
                 }
-            }
-            catch
-            {
-                throw;
+                case DnsEndPoint dnsEndPoint:
+                {
+                    var client = new TcpClient();
+                    client.NoDelay = true;
+                    try
+                    {
+                        await client.ConnectAsync(dnsEndPoint.Host, dnsEndPoint.Port, ct).ConfigureAwait(false);
+                        return client.GetStream();
+                    }
+                    catch
+                    {
+                        client.Dispose();
+                        throw;
+                    }
+                }
+                default:
+                    throw new NotSupportedException($"Unsupported endpoint type: {endPoint?.GetType().Name}");
             }
         }
 
