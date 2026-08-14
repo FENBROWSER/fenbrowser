@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Network;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -108,8 +109,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
 
                     var mime = sibling.GetAttribute("type");
-                    if (!string.IsNullOrEmpty(mime) &&
-                        !mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                    if (!IsSupportedPictureType(mime))
                     {
                         continue;
                     }
@@ -160,6 +160,40 @@ namespace FenBrowser.FenEngine.Rendering
                     imageSrcset,
                     viewportWidth,
                     devicePixelRatio));
+        }
+
+        private static bool IsSupportedPictureType(string mime)
+        {
+            if (string.IsNullOrWhiteSpace(mime))
+                return true;
+
+            var essence = mime.Trim();
+            int semicolon = essence.IndexOf(';');
+            if (semicolon >= 0)
+            {
+                essence = essence.Substring(0, semicolon).Trim();
+            }
+
+            essence = essence.ToLowerInvariant();
+            return essence switch
+            {
+                "image/webp" => BrowserNetworkCapabilities.SupportsWebP,
+                "image/avif" => BrowserNetworkCapabilities.SupportsAvif,
+                "image/png" or
+                "image/apng" or
+                "image/jpeg" or
+                "image/jpg" or
+                "image/gif" or
+                "image/bmp" or
+                "image/x-ms-bmp" or
+                "image/svg+xml" or
+                "image/x-icon" or
+                "image/vnd.microsoft.icon" => true,
+                // A declared type is a capability hint. Unknown image formats must be
+                // skipped so <picture> can continue to a later source or its <img>
+                // fallback instead of selecting bytes the decoder cannot consume.
+                _ => false
+            };
         }
 
         private static string ResolveAgainstDocumentBase(Element image, string candidate)
