@@ -91,21 +91,24 @@ namespace FenBrowser.Host.ProcessIsolation
         {
             if (MaxPoolSize < 1)
                 throw new ArgumentOutOfRangeException(nameof(MaxPoolSize), "Must be at least 1");
-            
+
             if (TargetWarmCount < 0)
                 throw new ArgumentOutOfRangeException(nameof(TargetWarmCount), "Must be non-negative");
-            
+
             if (TargetWarmCount > MaxPoolSize)
                 throw new ArgumentException("TargetWarmCount cannot exceed MaxPoolSize");
-            
+
             if (MaxConcurrentStartup < 1)
                 throw new ArgumentOutOfRangeException(nameof(MaxConcurrentStartup), "Must be at least 1");
-            
-            if (ProcessStartupTimeout.TotalMilliseconds < 1000)
+
+            if (ProcessStartupTimeout < TimeSpan.FromSeconds(1))
                 throw new ArgumentOutOfRangeException(nameof(ProcessStartupTimeout), "Must be at least 1 second");
-            
-            if (ProcessLifetimeMax.TotalMinutes < 1)
+
+            if (ProcessLifetimeMax < TimeSpan.FromMinutes(1))
                 throw new ArgumentOutOfRangeException(nameof(ProcessLifetimeMax), "Must be at least 1 minute");
+
+            if (HealthCheckInterval <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(HealthCheckInterval), "Must be positive");
         }
     }
 }
