@@ -113,7 +113,25 @@ public sealed class WindowsOsSandboxFactory : IOsSandboxFactory
                 };
 
                 using var probe = sandbox.SpawnProcess(psi);
-                probe.WaitForExit(3000);
+                if (!probe.WaitForExit(3000))
+                {
+                    try
+                    {
+                        probe.Kill(entireProcessTree: true);
+                    }
+                    catch
+                    {
+                    }
+
+                    throw new TimeoutException("AppContainer spawn probe did not exit within 3000 ms.");
+                }
+
+                if (probe.ExitCode != 0)
+                {
+                    throw new InvalidOperationException(
+                        $"AppContainer spawn probe exited with code {probe.ExitCode}.");
+                }
+
                 s_appContainerViable = true;
                 EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug,
                     $"[SandboxFactory] AppContainer spawn probe succeeded (pid={probe.Id}).");
