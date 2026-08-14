@@ -151,6 +151,7 @@ public sealed class ModuleNamespaceObject : JsObject
             JsValueTag.String => string.Equals(left.AsString(), right.AsString(), StringComparison.Ordinal),
             JsValueTag.Symbol => left.AsSymbolId() == right.AsSymbolId(),
             JsValueTag.Object => left.AsObjectHandle().Equals(right.AsObjectHandle()),
+            JsValueTag.HostObject => left.AsHostObjectHandle().Equals(right.AsHostObjectHandle()),
             _ => false,
         };
     }
