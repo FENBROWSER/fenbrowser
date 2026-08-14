@@ -1,3 +1,4 @@
+using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Environments;
@@ -5,12 +6,14 @@ namespace FenBrowser.Js.Environments;
 // ECMA-262 9.1.1.5 Module Environment Records.
 //
 // A module Environment Record is a declarative Environment Record that is used to
-// represent the outer scope of an ECMAScript Module. In additional to normal mutable
-// and immutable bindings, module Environment Records also provide immutable import
-// bindings which are bindings that provide indirect access to a target binding that
-// exists in another Environment Record.
+// represent the outer scope of an ECMAScript Module. In addition to normal mutable
+// and immutable bindings, module Environment Records provide immutable import
+// bindings which indirectly read a target binding in another environment.
 public sealed class ModuleEnvironmentRecord : DeclarativeEnvironmentRecord
 {
+    [ThreadStatic]
+    private static HashSet<ModuleEnvironmentRecord>? s_traceGuard;
+
     private readonly Dictionary<string, ImportBinding> _importBindings = new(StringComparer.Ordinal);
 
     public ModuleEnvironmentRecord(EnvironmentRecord? outerEnv, string? importMetaUrl = null)
@@ -74,8 +77,6 @@ public sealed class ModuleEnvironmentRecord : DeclarativeEnvironmentRecord
 
         if (_importBindings.ContainsKey(name))
         {
-            // Import bindings are immutable. Strict assignment becomes a TypeError;
-            // the interpreter translates ConstAssignment accordingly.
             return BindingOpResult.ConstAssignment;
         }
 
@@ -88,8 +89,6 @@ public sealed class ModuleEnvironmentRecord : DeclarativeEnvironmentRecord
 
         if (_importBindings.ContainsKey(name))
         {
-            // Imports are initialized as part of CreateImportBinding; calling
-            // InitializeBinding on one is an engine bug.
             return BindingOpResult.NotInitializable;
         }
 
@@ -100,15 +99,41 @@ public sealed class ModuleEnvironmentRecord : DeclarativeEnvironmentRecord
     {
         ArgumentNullException.ThrowIfNull(name);
 
-        // 9.1.1.5.2: "The DeleteBinding concrete method ... is never used within this
-        // specification." Module bindings are not deletable; surface NotInitializable
-        // as a defensive signal rather than silently succeeding.
         if (_importBindings.ContainsKey(name) || base.HasBinding(name))
         {
             return BindingOpResult.NotInitializable;
         }
 
         return BindingOpResult.NotFound;
+    }
+
+    /// <summary>
+    /// Module import bindings are CLR references to other EnvironmentRecord objects,
+    /// not ordinary FenJS heap edges. Trace those target environments explicitly so
+    /// object values reachable only through a live import are not reclaimed by JsHeap.
+    /// Cyclic module graphs are normal, so guard the whole module Trace call by
+    /// environment identity rather than recursing A -> B -> A indefinitely.
+    /// </summary>
+    public override void Trace(IHeapTracer tracer)
+    {
+        ArgumentNullException.ThrowIfNull(tracer);
+
+        var guard = s_traceGuard ??= new HashSet<ModuleEnvironmentRecord>();
+        if (!guard.Add(this))
+            return;
+
+        try
+        {
+            base.Trace(tracer);
+            foreach (var import in _importBindings.Values)
+            {
+                import.TargetEnv.Trace(tracer);
+            }
+        }
+        finally
+        {
+            guard.Remove(this);
+        }
     }
 
     public bool IsImportBindingForTest(string name) => _importBindings.ContainsKey(name);
