@@ -16,6 +16,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         {
             state.Deadline?.Check();
 
+            if (box.Store.TryGetCachedLayout(box.StoreId, state))
+            {
+                // Fast-path: constraints exactly match previous pass.
+                // Children retain their relative offsets, and the parent will safely position the root.
+                return;
+            }
+
             if (_layoutDepth >= MaxLayoutDepth)
             {
                 FenBrowser.Core.EngineLogCompat.Warn($"[Layout] Max depth {MaxLayoutDepth} exceeded for {box.SourceNode?.NodeName}. Skipping.", FenBrowser.Core.Logging.LogCategory.Layout);
@@ -26,6 +33,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 LayoutCore(box, state);
                 ArrangeOutsideListMarker(box, state);
+                box.Store.SetCachedLayout(box.StoreId, state);
             }
             finally { _layoutDepth--; }
         }

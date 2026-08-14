@@ -1,3 +1,4 @@
+using System;
 using SkiaSharp;
 using FenBrowser.FenEngine.Layout.Tree;
 
@@ -7,7 +8,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
     /// Represents the mutable state passed down during layout.
     /// Equivalent to 'Constraint' or 'AvailableSpace'.
     /// </summary>
-    public struct LayoutState
+    public struct LayoutState : IEquatable<LayoutState>
     {
         /// <summary>
         /// The containing block size available for children.
@@ -83,6 +84,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// </summary>
         public GridSubgridContext SubgridContext;
 
+        /// <summary>
+        /// True if this layout pass is a forced/synthetic probe (e.g. Flex box forcing widths).
+        /// Differentiates caches from normal layout passes.
+        /// </summary>
+        public bool IsForced;
+
         public LayoutState(SKSize available, float cbWidth, float cbHeight, float vpWidth, float vpHeight, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
             AvailableSize = available;
@@ -96,6 +103,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             FloatOriginY = 0f;
             ScrollOffsetX = 0f;
             ScrollOffsetY = 0f;
+            ScrollContainer = null;
+            SubgridContext = null;
+            IsForced = false;
         }
 
         public LayoutState Clone()
@@ -105,7 +115,44 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         public LayoutState CloneWithNewSize(SKSize newSize)
         {
-            return new LayoutState(newSize, ContainingBlockWidth, ContainingBlockHeight, ViewportWidth, ViewportHeight, Deadline);
+            return new LayoutState(newSize, ContainingBlockWidth, ContainingBlockHeight, ViewportWidth, ViewportHeight, Deadline)
+            {
+                FloatManager = this.FloatManager,
+                FloatOriginX = this.FloatOriginX,
+                FloatOriginY = this.FloatOriginY,
+                ScrollOffsetX = this.ScrollOffsetX,
+                ScrollOffsetY = this.ScrollOffsetY,
+                ScrollContainer = this.ScrollContainer,
+                SubgridContext = this.SubgridContext,
+                IsForced = this.IsForced
+            };
         }
+
+        public bool Equals(LayoutState other)
+        {
+            return this.IsForced == other.IsForced &&
+                   this.AvailableSize == other.AvailableSize &&
+                   this.ContainingBlockWidth == other.ContainingBlockWidth &&
+                   this.ContainingBlockHeight == other.ContainingBlockHeight &&
+                   this.ViewportWidth == other.ViewportWidth &&
+                   this.ViewportHeight == other.ViewportHeight &&
+                   this.FloatOriginX == other.FloatOriginX &&
+                   this.FloatOriginY == other.FloatOriginY &&
+                   this.ScrollOffsetX == other.ScrollOffsetX &&
+                   this.ScrollOffsetY == other.ScrollOffsetY &&
+                   object.ReferenceEquals(this.FloatManager, other.FloatManager) &&
+                   object.ReferenceEquals(this.ScrollContainer, other.ScrollContainer) &&
+                   object.ReferenceEquals(this.SubgridContext, other.SubgridContext);
+        }
+
+        public override bool Equals(object obj) => obj is LayoutState other && Equals(other);
+
+        public override int GetHashCode()
+        {
+            return HashCode.Combine(AvailableSize, ContainingBlockWidth, ContainingBlockHeight, IsForced);
+        }
+
+        public static bool operator ==(LayoutState left, LayoutState right) => left.Equals(right);
+        public static bool operator !=(LayoutState left, LayoutState right) => !left.Equals(right);
     }
 }

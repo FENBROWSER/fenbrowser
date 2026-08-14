@@ -4,6 +4,7 @@ using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Memory;
+using FenBrowser.FenEngine.Layout.Contexts;
 
 namespace FenBrowser.FenEngine.Layout.Tree
 {
@@ -26,6 +27,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
         private byte[] _boxTypes;
         private bool[] _isAnonymous;
         private LayoutBox[] _wrappers;
+        private LayoutState[] _cachedLayoutStates;
+        private bool[] _hasCachedLayout;
 
         private int _count;
         private int _generation = 1;
@@ -59,6 +62,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
             _childIds = new List<int>[capacity];
             _boxTypes = new byte[capacity];
             _isAnonymous = new bool[capacity];
+            _cachedLayoutStates = new LayoutState[capacity];
+            _hasCachedLayout = new bool[capacity];
             _wrappers = new LayoutBox[capacity];
         }
 
@@ -77,6 +82,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
             Array.Resize(ref _childIds, newCapacity);
             Array.Resize(ref _boxTypes, newCapacity);
             Array.Resize(ref _isAnonymous, newCapacity);
+            Array.Resize(ref _cachedLayoutStates, newCapacity);
+            Array.Resize(ref _hasCachedLayout, newCapacity);
             Array.Resize(ref _wrappers, newCapacity);
         }
 
@@ -93,6 +100,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
             Array.Clear(_sourceNodes, 0, _count);
             Array.Clear(_styles, 0, _count);
+            Array.Clear(_cachedLayoutStates, 0, _count);
+            Array.Clear(_hasCachedLayout, 0, _count);
             Array.Clear(_wrappers, 0, _count);
 
             // Keep allocated child buffers so repeated layout passes reuse their
@@ -141,6 +150,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             _childIds[id]?.Clear();
             _boxTypes[id] = (byte)type;
             _isAnonymous[id] = isAnonymous || source == null;
+            _hasCachedLayout[id] = false;
 
             return id;
         }
@@ -287,6 +297,24 @@ namespace FenBrowser.FenEngine.Layout.Tree
         public bool GetIsAnonymous(int id) => _isAnonymous[id];
         public int Count => _count;
         internal int Generation => _generation;
+
+        public bool TryGetCachedLayout(int id, LayoutState state)
+        {
+            if (_hasCachedLayout[id])
+            {
+                if (_cachedLayoutStates[id] == state)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public void SetCachedLayout(int id, LayoutState state)
+        {
+            _cachedLayoutStates[id] = state;
+            _hasCachedLayout[id] = true;
+        }
 
         internal void ValidateAccess(int id, int expectedGeneration)
         {

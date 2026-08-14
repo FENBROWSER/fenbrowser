@@ -203,10 +203,10 @@ namespace FenBrowser.FenEngine.Layout
             _cachedViewportHeight = availableHeight;
             _cachedResult = result;
 
-            // Clear dirty flags after a successful layout pass so the incremental
-            // cache can be skipped on the next frame when the DOM is quiescent.
-            // Style flags are cleared because the box tree was rebuilt; layout
-            // flags are cleared because geometry was recomputed.
+            // Layout owns layout invalidation. Style invalidation is consumed only
+            // for nodes represented by the current computed-style snapshot; leaving
+            // a newly inserted, unstyled node dirty lets the cascade worker discover
+            // it instead of silently freezing a default-style box into the cache.
             try { ClearSubtreeDirtyFlags(layoutRoot); }
             catch { /* non-critical */ }
 
@@ -304,6 +304,14 @@ namespace FenBrowser.FenEngine.Layout
                     continue;
                 }
 
+                // A frame may be inserted between style/layout snapshots before its
+                // child Document is attached. Do not reuse a result that predates the
+                // atomic iframe host box: paint and input both need that geometry.
+                if (!cachedResult.TryGetElementRect(frameElement, out _))
+                {
+                    return true;
+                }
+
                 var frameDocument = frameElement.ChildNodes?.OfType<Document>().FirstOrDefault();
                 var frameRoot = frameDocument?.DocumentElement;
                 if (frameRoot != null && !cachedResult.TryGetElementRect(frameRoot, out _))
@@ -315,17 +323,42 @@ namespace FenBrowser.FenEngine.Layout
             return false;
         }
 
-        private static void ClearSubtreeDirtyFlags(Node node)
+        private bool ClearSubtreeDirtyFlags(Node node)
         {
-            if (node == null) return;
-            node.ClearDirty(InvalidationKind.Style | InvalidationKind.Layout);
-            if (node.ChildNodes != null)
+            if (node == null)
+            {
+                return false;
+            }
+
+            bool hasUnresolvedDescendantStyle = false;
+            bool isFrameHost = node is Element element &&
+                               string.Equals(element.TagName, "iframe", StringComparison.OrdinalIgnoreCase);
+            if (!isFrameHost && node.ChildNodes != null)
             {
                 foreach (var child in node.ChildNodes)
                 {
-                    ClearSubtreeDirtyFlags(child);
+                    hasUnresolvedDescendantStyle |= ClearSubtreeDirtyFlags(child);
                 }
             }
+
+            node.ClearDirty(InvalidationKind.Layout);
+
+            bool hasResolvedStyle = node is not Element ||
+                                    _context.Styles.ContainsKey(node) ||
+                                    node.GetComputedStyle() != null;
+            if (hasResolvedStyle)
+            {
+                if (hasUnresolvedDescendantStyle)
+                {
+                    node.ClearStyleDirty();
+                }
+                else
+                {
+                    node.ClearDirty(InvalidationKind.Style);
+                }
+            }
+
+            return !hasResolvedStyle || hasUnresolvedDescendantStyle;
         }
         
         private Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel> _generatedBoxes;

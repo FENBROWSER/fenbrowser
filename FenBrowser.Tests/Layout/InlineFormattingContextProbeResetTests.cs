@@ -200,6 +200,37 @@ namespace FenBrowser.Tests.Layout
                 1);
         }
 
+        [Fact]
+        public void InlineBlock_FirstChildTopMargin_DoesNotCollapseThroughContainer()
+        {
+            var root = new Element("div");
+            var footer = new Element("div");
+            var logo = new Element("div");
+            footer.AppendChild(logo);
+            root.AppendChild(footer);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 300 },
+                [footer] = new CssComputed { Display = "inline-block", Width = 70, Height = 74 },
+                [logo] = new CssComputed
+                {
+                    Display = "block",
+                    Width = 58,
+                    Height = 32,
+                    Margin = new Thickness(26, 10, 0, 0)
+                }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 300, 100);
+            var footerBox = FindBox(rootBox, footer);
+            var logoBox = FindBox(rootBox, logo);
+
+            Assert.NotNull(footerBox);
+            Assert.NotNull(logoBox);
+            Assert.Equal(footerBox.Geometry.ContentBox.Top + 10f, logoBox.Geometry.BorderBox.Top, 1);
+        }
+
         private static LayoutBox LayoutRoot(Element root, Dictionary<Node, CssComputed> styles, float width, float height)
         {
             var builder = new BoxTreeBuilder(styles);

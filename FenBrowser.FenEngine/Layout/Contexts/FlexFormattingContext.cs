@@ -2272,6 +2272,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return;
             }
 
+            state.IsForced = true;
+
             var style = item.ComputedStyle;
             if (style == null)
             {
@@ -2300,6 +2302,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             {
                 return;
             }
+
+            state.IsForced = true;
 
             var style = item.ComputedStyle;
             if (style == null)

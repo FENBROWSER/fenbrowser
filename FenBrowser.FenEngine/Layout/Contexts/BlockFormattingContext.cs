@@ -80,8 +80,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float lastMarginBottom = 0;
             bool isFirstChild = true;
 
-            // Does parent prevent top margin collapse? (Padding/border/overflow etc)
-            bool parentPreventsTopCollapse = (blockBox.Geometry.Padding.Top > 0 || blockBox.Geometry.Border.Top > 0);
+            bool parentPreventsTopCollapse = PreventsChildTopMarginCollapse(blockBox);
             bool fragmentationEnabled = TryResolveFragmentainerHeight(state, out float fragmentHeight);
             
             foreach (var child in blockBox.Children)
@@ -854,6 +853,55 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     collapsePositioningMarginsInFinalGeometry: true,
                     staticPosition: outOfFlowCandidate.StaticPosition);
             }
+        }
+
+        private static bool PreventsChildTopMarginCollapse(LayoutBox box)
+        {
+            if (box.Geometry.Padding.Top > 0 || box.Geometry.Border.Top > 0)
+            {
+                return true;
+            }
+
+            var style = box.ComputedStyle;
+            if (style == null)
+            {
+                return false;
+            }
+
+            var display = style.Display?.Trim().ToLowerInvariant();
+            if (display == "inline-block" || display == "flow-root" ||
+                display == "table-cell" || display == "table-caption")
+            {
+                return true;
+            }
+
+            var position = LayoutStyleResolver.GetEffectivePosition(style);
+            if (string.Equals(position, "absolute", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(position, "fixed", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var floatValue = style.Float?.Trim();
+            if (string.Equals(floatValue, "left", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(floatValue, "right", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var overflowX = (style.OverflowX ?? style.Overflow)?.Trim().ToLowerInvariant();
+            var overflowY = (style.OverflowY ?? style.Overflow)?.Trim().ToLowerInvariant();
+            if (PreventsMarginCollapseByOverflow(overflowX) || PreventsMarginCollapseByOverflow(overflowY))
+            {
+                return true;
+            }
+
+            return ContainmentEvaluator.HasLayoutContainment(style);
+        }
+
+        private static bool PreventsMarginCollapseByOverflow(string overflow)
+        {
+            return !string.IsNullOrEmpty(overflow) && overflow != "visible" && overflow != "clip";
         }
 
         private readonly struct OutOfFlowLayoutCandidate

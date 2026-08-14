@@ -129,6 +129,61 @@ public sealed class IncrementalLayoutCacheTests
     }
 
     [Fact]
+    public void ComputeLayout_InvalidatesCache_WhenLateIframeHostWasNotMaterialized()
+    {
+        var root = new Element("div");
+        var styles = new Dictionary<Node, CssComputed>
+        {
+            [root] = new CssComputed { Display = "block", Width = 400, Height = 200 }
+        };
+        var engine = new LayoutEngine(styles, 800, 600);
+
+        var first = engine.ComputeLayout(root, 0, 0, 800);
+        Assert.NotNull(first);
+
+        var iframe = new Element("iframe");
+        iframe.SetAttribute("width", "304");
+        iframe.SetAttribute("height", "78");
+        root.AppendChild(iframe);
+
+        // Model a late DOM insertion observed between renderer snapshots. The
+        // materialization guard must still reject a cache entry with no host box.
+        root.ClearDirty(InvalidationKind.Style | InvalidationKind.Layout);
+        iframe.ClearDirty(InvalidationKind.Style | InvalidationKind.Layout);
+
+        var second = engine.ComputeLayout(root, 0, 0, 800);
+
+        Assert.NotNull(second);
+        Assert.NotSame(first, second);
+        Assert.True(second.TryGetElementRect(iframe, out var rect));
+        Assert.Equal(304f, rect.Width, 1f);
+        Assert.Equal(78f, rect.Height, 1f);
+    }
+
+    [Fact]
+    public void ComputeLayout_PreservesStyleInvalidationForUnstyledLateIframe()
+    {
+        var root = new Element("div");
+        var styles = new Dictionary<Node, CssComputed>
+        {
+            [root] = new CssComputed { Display = "block", Width = 400, Height = 200 }
+        };
+        var engine = new LayoutEngine(styles, 800, 600);
+        engine.ComputeLayout(root, 0, 0, 800);
+
+        var iframe = new Element("iframe");
+        iframe.SetAttribute("width", "304");
+        iframe.SetAttribute("height", "78");
+        root.AppendChild(iframe);
+
+        engine.ComputeLayout(root, 0, 0, 800);
+
+        Assert.True(iframe.StyleDirty);
+        Assert.True(root.ChildStyleDirty);
+        Assert.False(iframe.LayoutDirty);
+    }
+
+    [Fact]
     public void ComputeLayout_HandlesNullRoot_Gracefully()
     {
         var engine = new LayoutEngine(new Dictionary<Node, CssComputed>(), 800, 600);
