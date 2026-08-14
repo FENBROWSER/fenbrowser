@@ -26,16 +26,53 @@ public sealed class StringObject : JsObject
         if (base.TryGetOwnProperty(key, out descriptor)) return true;
 
         // ECMA-262 10.4.3.5 [[GetOwnProperty]] — synthesise indexed-char.
-        if (TryParseArrayIndex(key, out var index) && index < Value.Length)
-        {
-            descriptor = new JsPropertyDescriptor(
-                JsValue.FromString(Value[index].ToString(CultureInfo.InvariantCulture)),
-                Writable: false, Enumerable: true, Configurable: false);
+        if (TryGetStringIndexDescriptor(key, out descriptor))
             return true;
-        }
 
         descriptor = default;
         return false;
+    }
+
+    // ECMA-262 10.4.3.3 [[DefineOwnProperty]]. A character index denotes a
+    // permanently non-writable/non-configurable property. It may be redefined
+    // only with a descriptor compatible with that already-existing property;
+    // importantly, it must never fall through to the ordinary-object path and
+    // create a shadowing slot for "0", "1", ... .
+    public override bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor)
+    {
+        if (!TryGetStringIndexDescriptor(key, out var current))
+            return base.DefineOwnProperty(key, descriptor);
+
+        if (descriptor.IsAccessor)
+            return false;
+        if (descriptor.HasConfigurable && descriptor.Configurable)
+            return false;
+        if (descriptor.HasEnumerable && !descriptor.Enumerable)
+            return false;
+        if (descriptor.HasWritable && descriptor.Writable)
+            return false;
+        if (descriptor.HasValue && !SameStringIndexValue(descriptor.Value, current.Value))
+            return false;
+
+        return true;
+    }
+
+    // ECMA-262 10.4.3.4 [[Get]] ultimately observes the indexed property as
+    // non-writable, so assigning to an in-range character index must fail rather
+    // than creating an ordinary property with the same key.
+    public override bool SetProperty(string key, JsValue value)
+    {
+        if (TryParseArrayIndex(key, out var index) && index < Value.Length)
+            return false;
+        return base.SetProperty(key, value);
+    }
+
+    // The synthetic indexed properties are non-configurable.
+    public override bool DeleteProperty(string key)
+    {
+        if (TryParseArrayIndex(key, out var index) && index < Value.Length)
+            return false;
+        return base.DeleteProperty(key);
     }
 
     public override IEnumerable<KeyValuePair<string, JsPropertyDescriptor>> EnumerateOwnProperties()
@@ -46,14 +83,36 @@ public sealed class StringObject : JsObject
         {
             yield return new KeyValuePair<string, JsPropertyDescriptor>(
                 i.ToString(CultureInfo.InvariantCulture),
-                new JsPropertyDescriptor(
-                    JsValue.FromString(Value[i].ToString(CultureInfo.InvariantCulture)),
-                    Writable: false, Enumerable: true, Configurable: false));
+                CreateStringIndexDescriptor(i));
         }
 
         foreach (var pair in base.EnumerateOwnProperties())
             yield return pair;
     }
+
+    private bool TryGetStringIndexDescriptor(string key, out JsPropertyDescriptor descriptor)
+    {
+        if (TryParseArrayIndex(key, out var index) && index < Value.Length)
+        {
+            descriptor = CreateStringIndexDescriptor(index);
+            return true;
+        }
+
+        descriptor = default;
+        return false;
+    }
+
+    private JsPropertyDescriptor CreateStringIndexDescriptor(int index)
+        => new(
+            JsValue.FromString(Value[index].ToString(CultureInfo.InvariantCulture)),
+            Writable: false,
+            Enumerable: true,
+            Configurable: false);
+
+    private static bool SameStringIndexValue(JsValue left, JsValue right)
+        => left.Tag == JsValueTag.String &&
+           right.Tag == JsValueTag.String &&
+           string.Equals(left.AsString(), right.AsString(), StringComparison.Ordinal);
 
     private static bool TryParseArrayIndex(string key, out int index)
     {
