@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.Net;
+using System.Text;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -17,6 +20,7 @@ namespace FenBrowser.FenEngine.Rendering
 
     public class NavigationManager
     {
+        private const int MaxDecodedDataUrlBytes = 32 * 1024 * 1024;
         private readonly ResourceManager _resourceManager;
 
         public NavigationManager(ResourceManager resourceManager)
@@ -40,7 +44,7 @@ namespace FenBrowser.FenEngine.Rendering
             Uri referer = null)
         {
             // 1. Normalize URL
-            if (string.IsNullOrWhiteSpace(url)) 
+            if (string.IsNullOrWhiteSpace(url))
                 return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Empty URL" };
 
             url = NormalizeInternalFenUrl(url.Trim());
@@ -48,12 +52,12 @@ namespace FenBrowser.FenEngine.Rendering
             // Handle internal schemes
             if (url.Equals("about:blank", StringComparison.OrdinalIgnoreCase))
             {
-                 return new FetchResult { Status = FetchStatus.Success, Content = "", FinalUri = new Uri("about:blank"), ContentType = "text/html" };
+                return new FetchResult { Status = FetchStatus.Success, Content = "", FinalUri = new Uri("about:blank"), ContentType = "text/html" };
             }
-            
+
             if (url.Equals("fen://newtab", StringComparison.OrdinalIgnoreCase) || url.Equals("about:newtab", StringComparison.OrdinalIgnoreCase))
             {
-                 return new FetchResult { Status = FetchStatus.Success, Content = NewTabRenderer.Render(), FinalUri = new Uri("fen://newtab"), ContentType = "text/html" };
+                return new FetchResult { Status = FetchStatus.Success, Content = NewTabRenderer.Render(), FinalUri = new Uri("fen://newtab"), ContentType = "text/html" };
             }
 
             if (url.StartsWith("fen://performance", StringComparison.OrdinalIgnoreCase) &&
@@ -123,7 +127,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
             {
-                 return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Invalid URL format" };
+                return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Invalid URL format" };
             }
 
             var fileNavigationAllowed = IsFileNavigationAllowed(requestKind);
@@ -150,11 +154,20 @@ namespace FenBrowser.FenEngine.Rendering
                 navigationDecision.Log(LogCategory.Security, LogLevel.Info);
             }
 
+            // data: URLs are local URL payloads, not network requests. Sending them
+            // through ResourceManager would immediately fail its HTTP(S)-only network
+            // admission policy even though top-level navigation explicitly allows data:.
+            // A Document created from this FinalUri derives a fresh opaque Origin.
+            if (string.Equals(uri.Scheme, "data", StringComparison.OrdinalIgnoreCase))
+            {
+                return DecodeDataNavigation(uri);
+            }
+
             // Handle images
             var path = uri.AbsolutePath.ToLowerInvariant();
             if (path.EndsWith(".png", StringComparison.Ordinal) ||
                 path.EndsWith(".jpg", StringComparison.Ordinal) ||
-                path.EndsWith(".jpeg", StringComparison.Ordinal) || 
+                path.EndsWith(".jpeg", StringComparison.Ordinal) ||
                 path.EndsWith(".gif", StringComparison.Ordinal) ||
                 path.EndsWith(".bmp", StringComparison.Ordinal) ||
                 path.EndsWith(".webp", StringComparison.Ordinal) ||
@@ -188,6 +201,259 @@ namespace FenBrowser.FenEngine.Rendering
                     IsUserInitiated = requestKind == NavigationRequestKind.UserInput,
                     Method = "GET"
                 }).ConfigureAwait(false);
+        }
+
+        private static FetchResult DecodeDataNavigation(Uri uri)
+        {
+            try
+            {
+                var serialized = uri.OriginalString ?? uri.AbsoluteUri;
+                const string prefix = "data:";
+                if (!serialized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    return DataUrlError(uri, "Malformed data URL");
+                }
+
+                var body = serialized.Substring(prefix.Length);
+                int commaIndex = body.IndexOf(',');
+                if (commaIndex < 0)
+                {
+                    return DataUrlError(uri, "Malformed data URL: missing payload separator");
+                }
+
+                var metadata = body.Substring(0, commaIndex);
+                var payloadText = body.Substring(commaIndex + 1);
+
+                bool base64 = false;
+                string mediaTypeMetadata = metadata;
+                int lastSemicolon = metadata.LastIndexOf(';');
+                if (lastSemicolon >= 0 &&
+                    string.Equals(metadata.Substring(lastSemicolon + 1).Trim(), "base64", StringComparison.OrdinalIgnoreCase))
+                {
+                    base64 = true;
+                    mediaTypeMetadata = metadata.Substring(0, lastSemicolon);
+                }
+
+                var contentType = string.IsNullOrWhiteSpace(mediaTypeMetadata)
+                    ? "text/plain;charset=US-ASCII"
+                    : mediaTypeMetadata.Trim();
+
+                byte[] percentDecoded = PercentDecodeDataPayload(payloadText, MaxDecodedDataUrlBytes);
+                byte[] bytes;
+                if (base64)
+                {
+                    string encoded = Encoding.ASCII.GetString(percentDecoded);
+                    bytes = Convert.FromBase64String(RemoveAsciiWhitespace(encoded));
+                    if (bytes.Length > MaxDecodedDataUrlBytes)
+                    {
+                        return new FetchResult
+                        {
+                            Status = FetchStatus.LimitExceeded,
+                            FailureReason = FetchFailureReasonCode.LimitExceeded,
+                            LimitType = "data-url-bytes",
+                            ErrorDetail = "Decoded data URL exceeds browser limit",
+                            FinalUri = uri
+                        };
+                    }
+                }
+                else
+                {
+                    bytes = percentDecoded;
+                }
+
+                var mimeEssence = GetMimeEssence(contentType);
+                if (mimeEssence.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                {
+                    var encodedSrc = WebUtility.HtmlEncode(serialized);
+                    var syntheticHtml = $"<!DOCTYPE html><html style=\"width:100%;height:100%;background:#0e0e0e\"><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head><body style=\"margin:0;position:fixed;inset:0;background:#0e0e0e;overflow:hidden\"><img style=\"display:block;position:absolute;inset:0;margin:auto;max-width:100%;max-height:100%;object-fit:contain\" src=\"{encodedSrc}\" alt=\"\"></body></html>";
+                    return new FetchResult
+                    {
+                        Status = FetchStatus.Success,
+                        Content = syntheticHtml,
+                        FinalUri = uri,
+                        ContentType = "text/html"
+                    };
+                }
+
+                if (!IsTextualDataMime(mimeEssence))
+                {
+                    return DataUrlError(uri, $"Unsupported top-level data URL media type '{mimeEssence}'");
+                }
+
+                var textEncoding = ResolveDataTextEncoding(contentType);
+                return new FetchResult
+                {
+                    Status = FetchStatus.Success,
+                    Content = textEncoding.GetString(bytes),
+                    FinalUri = uri,
+                    ContentType = contentType,
+                    InputSizeBytes = bytes.Length
+                };
+            }
+            catch (FormatException)
+            {
+                return DataUrlError(uri, "Malformed base64 data URL payload");
+            }
+            catch (InvalidOperationException ex)
+            {
+                return new FetchResult
+                {
+                    Status = FetchStatus.LimitExceeded,
+                    FailureReason = FetchFailureReasonCode.LimitExceeded,
+                    LimitType = "data-url-bytes",
+                    ErrorDetail = ex.Message,
+                    FinalUri = uri
+                };
+            }
+            catch
+            {
+                return DataUrlError(uri, "Malformed data URL");
+            }
+        }
+
+        private static byte[] PercentDecodeDataPayload(string payload, int maxBytes)
+        {
+            using var stream = new System.IO.MemoryStream(Math.Min(payload?.Length ?? 0, maxBytes));
+            for (int i = 0; i < (payload?.Length ?? 0); i++)
+            {
+                char ch = payload[i];
+                if (ch == '%' && i + 2 < payload.Length &&
+                    TryParseHex(payload[i + 1], out int hi) &&
+                    TryParseHex(payload[i + 2], out int lo))
+                {
+                    stream.WriteByte((byte)((hi << 4) | lo));
+                    i += 2;
+                }
+                else if (ch <= 0x7F)
+                {
+                    stream.WriteByte((byte)ch);
+                }
+                else
+                {
+                    Span<char> chars = stackalloc char[2];
+                    int charCount = 1;
+                    chars[0] = ch;
+                    if (char.IsHighSurrogate(ch) && i + 1 < payload.Length && char.IsLowSurrogate(payload[i + 1]))
+                    {
+                        chars[1] = payload[++i];
+                        charCount = 2;
+                    }
+
+                    Span<byte> utf8 = stackalloc byte[4];
+                    int encoded = Encoding.UTF8.GetBytes(chars[..charCount], utf8);
+                    stream.Write(utf8[..encoded]);
+                }
+
+                if (stream.Length > maxBytes)
+                    throw new InvalidOperationException("Decoded data URL exceeds browser limit");
+            }
+
+            return stream.ToArray();
+        }
+
+        private static bool TryParseHex(char value, out int digit)
+        {
+            if (value >= '0' && value <= '9')
+            {
+                digit = value - '0';
+                return true;
+            }
+            if (value >= 'a' && value <= 'f')
+            {
+                digit = value - 'a' + 10;
+                return true;
+            }
+            if (value >= 'A' && value <= 'F')
+            {
+                digit = value - 'A' + 10;
+                return true;
+            }
+
+            digit = 0;
+            return false;
+        }
+
+        private static string RemoveAsciiWhitespace(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return string.Empty;
+
+            var builder = new StringBuilder(value.Length);
+            foreach (char ch in value)
+            {
+                if (ch is not (' ' or '\t' or '\r' or '\n' or '\f'))
+                    builder.Append(ch);
+            }
+            return builder.ToString();
+        }
+
+        private static string GetMimeEssence(string contentType)
+        {
+            int semicolon = contentType?.IndexOf(';') ?? -1;
+            return (semicolon >= 0 ? contentType.Substring(0, semicolon) : contentType ?? string.Empty)
+                .Trim()
+                .ToLowerInvariant();
+        }
+
+        private static bool IsTextualDataMime(string mimeEssence)
+        {
+            return mimeEssence.StartsWith("text/", StringComparison.OrdinalIgnoreCase) ||
+                   mimeEssence == "application/xhtml+xml" ||
+                   mimeEssence == "application/xml" ||
+                   mimeEssence.EndsWith("+xml", StringComparison.OrdinalIgnoreCase) ||
+                   mimeEssence == "application/json" ||
+                   mimeEssence.EndsWith("+json", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static Encoding ResolveDataTextEncoding(string contentType)
+        {
+            const string charsetMarker = "charset=";
+            int index = contentType?.IndexOf(charsetMarker, StringComparison.OrdinalIgnoreCase) ?? -1;
+            if (index >= 0)
+            {
+                var charset = contentType.Substring(index + charsetMarker.Length).Trim();
+                int semicolon = charset.IndexOf(';');
+                if (semicolon >= 0)
+                    charset = charset.Substring(0, semicolon).Trim();
+                charset = charset.Trim('"', '\'');
+
+                if (charset.Equals("utf-8", StringComparison.OrdinalIgnoreCase) ||
+                    charset.Equals("utf8", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Encoding.UTF8;
+                }
+                if (charset.Equals("us-ascii", StringComparison.OrdinalIgnoreCase) ||
+                    charset.Equals("ascii", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Encoding.ASCII;
+                }
+                if (charset.Equals("iso-8859-1", StringComparison.OrdinalIgnoreCase) ||
+                    charset.Equals("latin1", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Encoding.Latin1;
+                }
+                if (charset.Equals("utf-16le", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Encoding.Unicode;
+                }
+                if (charset.Equals("utf-16be", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Encoding.BigEndianUnicode;
+                }
+            }
+
+            return Encoding.UTF8;
+        }
+
+        private static FetchResult DataUrlError(Uri uri, string detail)
+        {
+            return new FetchResult
+            {
+                Status = FetchStatus.UnknownError,
+                FailureReason = FetchFailureReasonCode.MalformedInput,
+                ErrorDetail = detail,
+                FinalUri = uri
+            };
         }
 
         private static bool HasKnownNavigationSchemePrefix(string url)
