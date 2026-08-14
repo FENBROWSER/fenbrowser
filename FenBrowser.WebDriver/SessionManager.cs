@@ -40,10 +40,10 @@ namespace FenBrowser.WebDriver
         /// </summary>
         public Session CreateSession(Capabilities requestedCaps)
         {
-            ThrowIfDisposed();
-
             lock (_lock)
             {
+                ThrowIfDisposedLocked();
+
                 if (_sessions.Count >= _maxSessions)
                 {
                     throw new WebDriverException(
@@ -53,11 +53,11 @@ namespace FenBrowser.WebDriver
 
                 var sessionId = GenerateSessionId();
                 var capabilities = Capabilities.Merge(requestedCaps);
-
                 var session = new Session(sessionId, capabilities);
 
                 if (!_sessions.TryAdd(sessionId, session))
                 {
+                    session.Dispose();
                     throw new WebDriverException(
                         ErrorCodes.SessionNotCreated,
                         "Failed to create session");
@@ -72,23 +72,26 @@ namespace FenBrowser.WebDriver
         /// </summary>
         public Session GetSession(string sessionId)
         {
-            ThrowIfDisposed();
-
-            if (string.IsNullOrEmpty(sessionId))
+            lock (_lock)
             {
-                throw new WebDriverException(
-                    ErrorCodes.InvalidSessionId,
-                    "Session ID is required");
-            }
+                ThrowIfDisposedLocked();
 
-            if (!_sessions.TryGetValue(sessionId, out var session))
-            {
-                throw new WebDriverException(
-                    ErrorCodes.InvalidSessionId,
-                    $"Session not found: {sessionId}");
-            }
+                if (string.IsNullOrEmpty(sessionId))
+                {
+                    throw new WebDriverException(
+                        ErrorCodes.InvalidSessionId,
+                        "Session ID is required");
+                }
 
-            return session;
+                if (!_sessions.TryGetValue(sessionId, out var session))
+                {
+                    throw new WebDriverException(
+                        ErrorCodes.InvalidSessionId,
+                        $"Session not found: {sessionId}");
+                }
+
+                return session;
+            }
         }
 
         /// <summary>
@@ -96,12 +99,16 @@ namespace FenBrowser.WebDriver
         /// </summary>
         public void DeleteSession(string sessionId)
         {
-            ThrowIfDisposed();
-
-            if (_sessions.TryRemove(sessionId, out var session))
+            Session session = null;
+            lock (_lock)
             {
-                session.Dispose();
+                ThrowIfDisposedLocked();
+                _sessions.TryRemove(sessionId, out session);
             }
+
+            // Session cleanup can fan out into browser/driver resources. Never run it
+            // while holding the manager lifecycle lock.
+            session?.Dispose();
         }
 
         /// <summary>
@@ -109,14 +116,33 @@ namespace FenBrowser.WebDriver
         /// </summary>
         public IReadOnlyList<string> GetSessionIds()
         {
-            return new List<string>(_sessions.Keys);
+            lock (_lock)
+            {
+                ThrowIfDisposedLocked();
+                return new List<string>(_sessions.Keys);
+            }
         }
 
         /// <summary>
         /// Check if any sessions are active.
         /// </summary>
-        public bool HasActiveSessions => _sessions.Count > 0;
-        public int ActiveSessionCount => _sessions.Count;
+        public bool HasActiveSessions
+        {
+            get
+            {
+                lock (_lock)
+                    return !_disposed && _sessions.Count > 0;
+            }
+        }
+
+        public int ActiveSessionCount
+        {
+            get
+            {
+                lock (_lock)
+                    return _disposed ? 0 : _sessions.Count;
+            }
+        }
 
         /// <summary>
         /// Checks whether a session with the given id exists.
@@ -124,7 +150,11 @@ namespace FenBrowser.WebDriver
         /// </summary>
         public bool HasSession(string sessionId)
         {
-            return !string.IsNullOrEmpty(sessionId) && _sessions.ContainsKey(sessionId);
+            if (string.IsNullOrEmpty(sessionId))
+                return false;
+
+            lock (_lock)
+                return !_disposed && _sessions.ContainsKey(sessionId);
         }
 
         private static string GenerateSessionId()
@@ -132,7 +162,7 @@ namespace FenBrowser.WebDriver
             return Guid.NewGuid().ToString("N");
         }
 
-        private void ThrowIfDisposed()
+        private void ThrowIfDisposedLocked()
         {
             if (_disposed)
             {
@@ -142,19 +172,21 @@ namespace FenBrowser.WebDriver
 
         public void Dispose()
         {
-            if (_disposed)
+            Session[] sessions;
+            lock (_lock)
             {
-                return;
+                if (_disposed)
+                    return;
+
+                // Linearization point: once this flips under the same lock used by
+                // creation/lookup/deletion, no new session can escape the disposal set.
+                _disposed = true;
+                sessions = new List<Session>(_sessions.Values).ToArray();
+                _sessions.Clear();
             }
 
-            _disposed = true;
-
-            foreach (var session in _sessions.Values)
-            {
+            foreach (var session in sessions)
                 session.Dispose();
-            }
-
-            _sessions.Clear();
         }
     }
 
