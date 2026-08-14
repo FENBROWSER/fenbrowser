@@ -43,10 +43,13 @@ namespace FenBrowser.Core.Dom.V2
 
             lock (_listenerLock)
             {
-                _listeners ??= new EventListenerStorage();
+                var storage = _listeners ??= new EventListenerStorage();
+                added = storage.Add(type, callback, options, this);
 
-                added = _listeners.Add(type, callback, options);
-                if (!added && _listeners.IsEmpty)
+                // An AbortSignal can become aborted while Add() is registering its
+                // cleanup callback. In that case the listener may be removed
+                // synchronously before Add() returns; do not retain an empty storage.
+                if (storage.IsEmpty && ReferenceEquals(_listeners, storage))
                     _listeners = null;
             }
 
@@ -179,7 +182,11 @@ namespace FenBrowser.Core.Dom.V2
 
         public bool IsEmpty => _totalCount == 0;
 
-        public bool Add(string type, EventListener callback, AddEventListenerOptions options)
+        public bool Add(
+            string type,
+            EventListener callback,
+            AddEventListenerOptions options,
+            EventTarget owner)
         {
             if (options.Signal != null && options.Signal.Aborted)
                 return false;
@@ -208,17 +215,23 @@ namespace FenBrowser.Core.Dom.V2
                 Signal = options.Signal
             };
 
-            // Register abort signal listener if provided
+            // Put the entry in storage before subscribing to the signal. If the signal
+            // raced to the aborted state, its add accessor invokes the abort algorithm
+            // immediately and RemoveEventListener can now find this exact entry.
+            list.Add(newEntry);
+            _totalCount++;
+
             if (options.Signal != null)
             {
-                Action abortHandler = () => Remove(type, callback, options.Capture);
+                // Removal must go through EventTarget so the listener lock and target
+                // bookkeeping are honored. Mutating EventListenerStorage directly from
+                // an AbortSignal callback races dispatch/add/remove on other threads.
+                Action abortHandler = () => owner.RemoveEventListener(type, callback, options.Capture);
                 newEntry.AbortHandler = abortHandler;
                 options.Signal.OnAbort += abortHandler;
             }
 
-            list.Add(newEntry);
-            _totalCount++;
-            return true;
+            return !newEntry.Removed;
         }
 
         public bool Remove(string type, EventListener callback, bool capture)
@@ -231,13 +244,14 @@ namespace FenBrowser.Core.Dom.V2
                 var entry = list[i];
                 if (ReferenceEquals(entry.Callback, callback) && entry.Capture == capture)
                 {
-                    if (entry.Signal != null && entry.AbortHandler != null)
-                        entry.Signal.OnAbort -= entry.AbortHandler;
-
-                    // Mark as removed for iteration safety, then remove
+                    // Mark first so a dispatch copy observes removal immediately even if
+                    // signal cleanup invokes arbitrary code.
                     entry.Removed = true;
                     list.RemoveAt(i);
                     _totalCount--;
+
+                    if (entry.Signal != null && entry.AbortHandler != null)
+                        entry.Signal.OnAbort -= entry.AbortHandler;
 
                     if (list.Count == 0)
                         _listeners.Remove(type);
@@ -301,17 +315,22 @@ namespace FenBrowser.Core.Dom.V2
         {
             add
             {
+                bool invokeImmediately;
                 lock (_lock)
                 {
-                    if (_aborted)
-                    {
-                        // Already aborted, invoke immediately
-                        value?.Invoke();
-                    }
-                    else
+                    invokeImmediately = _aborted;
+                    if (!invokeImmediately)
                     {
                         _onAbort += value;
                     }
+                }
+
+                // Never invoke user/owner cleanup while holding the signal lock. Event
+                // listener cleanup takes EventTarget's listener lock and the reverse
+                // lock order occurs when listeners unsubscribe during removal.
+                if (invokeImmediately)
+                {
+                    value?.Invoke();
                 }
             }
             remove
@@ -573,7 +592,11 @@ namespace FenBrowser.Core.Dom.V2
             }
             finally
             {
-                // Cleanup
+                // Dispatch-scoped flags must not poison a later redispatch of the
+                // same Event object. defaultPrevented/canceled state remains intact.
+                evt.StopPropagationFlag = false;
+                evt.StopImmediatePropagationFlag = false;
+                evt.InPassiveListenerFlag = false;
                 evt.DispatchFlag = false;
                 evt.EventPhase = EventPhase.None;
                 evt.CurrentTarget = null;
@@ -656,13 +679,15 @@ namespace FenBrowser.Core.Dom.V2
                     continue;
                 if (phase == EventPhase.Bubbling && listener.Capture)
                     continue;
-                
-                // If AtTarget, both capture and bubble listeners map to AtTarget phase,
-                // but we should match the listener's registration type if we want to be strict, 
-                // However spec says AtTarget fires all of them.
 
                 if (evt.StopImmediatePropagationFlag)
                     break;
+
+                // `once` listeners are removed before callback invocation. A callback
+                // can synchronously redispatch the same event type; leaving the entry
+                // registered until after the callback makes a once-listener fire twice.
+                if (listener.Once)
+                    target.RemoveEventListener(evt.Type, listener.Callback, listener.Capture);
 
                 // Handle passive listeners
                 bool wasInPassive = evt.InPassiveListenerFlag;
@@ -682,10 +707,6 @@ namespace FenBrowser.Core.Dom.V2
                 {
                     evt.InPassiveListenerFlag = wasInPassive;
                 }
-
-                // Handle once option by removing the registered listener entry.
-                if (listener.Once)
-                    target.RemoveEventListener(evt.Type, listener.Callback, listener.Capture);
             }
         }
 
