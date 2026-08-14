@@ -14,6 +14,9 @@ namespace FenBrowser.Host.ProcessIsolation.Network
     /// </summary>
     public sealed class NetworkChildProcessHost : IDisposable
     {
+        private const int MinReadyTimeoutMs = 100;
+        private const int MaxReadyTimeoutMs = 60_000;
+
         private readonly int _parentPid = Environment.ProcessId;
         private readonly TimeSpan _readyTimeout;
         private NetworkProcessSession _session;
@@ -22,7 +25,11 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         public NetworkChildProcessHost()
         {
-            _readyTimeout = TimeSpan.FromMilliseconds(ParseIntEnv("FEN_NETWORK_READY_TIMEOUT_MS", 5000));
+            var timeoutMs = Math.Clamp(
+                ParseIntEnv("FEN_NETWORK_READY_TIMEOUT_MS", 5000),
+                MinReadyTimeoutMs,
+                MaxReadyTimeoutMs);
+            _readyTimeout = TimeSpan.FromMilliseconds(timeoutMs);
         }
 
         public NetworkProcessSession Session => _session;
@@ -57,6 +64,8 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             var pipeName = $"fen_network_{_parentPid}_{Guid.NewGuid():N}";
             var authToken = CreateAuthToken();
             var session = new NetworkProcessSession(pipeName, authToken);
+            Process spawnedChild = null;
+            ISandbox acquiredSandbox = null;
 
             try
             {
@@ -83,20 +92,19 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     OsSandboxProfile.NetworkProcess,
                     allowUnsandboxedFallback,
                     "FEN_NETWORK_ALLOW_UNSANDBOXED",
-                    out var sandbox))
+                    out acquiredSandbox))
                 {
                     session.Dispose();
                     return false;
                 }
-                
-                sandbox?.ApplyToProcessStartInfo(startInfo);
 
-                Process child;
-                if (sandbox != null && sandbox.RequiresCustomSpawn)
+                acquiredSandbox?.ApplyToProcessStartInfo(startInfo);
+
+                if (acquiredSandbox != null && acquiredSandbox.RequiresCustomSpawn)
                 {
                     try
                     {
-                        child = sandbox.SpawnProcess(startInfo);
+                        spawnedChild = acquiredSandbox.SpawnProcess(startInfo);
                     }
                     catch (Exception ex)
                     {
@@ -110,17 +118,17 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                             throw;
                         }
 
-                        child = Process.Start(startInfo);
-                        if (child != null && sandbox != null)
+                        spawnedChild = Process.Start(startInfo);
+                        if (spawnedChild != null)
                         {
                             try
                             {
-                                sandbox.AttachToProcess(child);
+                                acquiredSandbox.AttachToProcess(spawnedChild);
                             }
                             catch (Exception attachEx)
                             {
                                 EngineLogBridge.Warn(
-                                    $"[NetworkProcess] Job-only sandbox fallback attach failed for pid={child.Id}: {attachEx.Message}",
+                                    $"[NetworkProcess] Job-only sandbox fallback attach failed for pid={spawnedChild.Id}: {attachEx.Message}",
                                     LogCategory.ProcessIsolation);
                             }
                         }
@@ -128,45 +136,52 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 }
                 else
                 {
-                    child = Process.Start(startInfo);
-                    if (child != null && sandbox != null)
+                    spawnedChild = Process.Start(startInfo);
+                    if (spawnedChild != null && acquiredSandbox != null)
                     {
-                        sandbox.AttachToProcess(child);
+                        acquiredSandbox.AttachToProcess(spawnedChild);
                     }
                 }
 
-                if (child == null)
+                if (spawnedChild == null)
                 {
-                    sandbox?.Dispose();
+                    TryDispose(acquiredSandbox, "startup-sandbox");
+                    acquiredSandbox = null;
                     session.Dispose();
                     EngineLogBridge.Error("[NetworkProcess] Failed to spawn network child process.", LogCategory.ProcessIsolation);
                     return false;
                 }
 
-                session.Start(child);
+                session.Start(spawnedChild);
                 var ready = session.WaitForReadyAsync(_readyTimeout).GetAwaiter().GetResult();
                 if (!ready)
                 {
                     EngineLogBridge.Error(
-                        $"[NetworkProcess] Network child failed startup contract (pid={child.Id}, readyTimeoutMs={(int)_readyTimeout.TotalMilliseconds}).",
+                        $"[NetworkProcess] Network child failed startup contract (pid={spawnedChild.Id}, readyTimeoutMs={(int)_readyTimeout.TotalMilliseconds}).",
                         LogCategory.ProcessIsolation);
-                    TryKillProcess(child, "startup-contract-failed");
-                    sandbox?.Dispose();
+                    TryKillProcess(spawnedChild, "startup-contract-failed");
+                    TryDispose(spawnedChild, "startup-child-process");
+                    spawnedChild = null;
+                    TryDispose(acquiredSandbox, "startup-sandbox");
+                    acquiredSandbox = null;
                     session.Dispose();
                     return false;
                 }
 
-                _childProcess = child;
-                _sandbox = sandbox;
+                _childProcess = spawnedChild;
+                _sandbox = acquiredSandbox;
                 _session = session;
 
                 EngineLogBridge.Info(
-                    $"[NetworkProcess] Network child started (pid={child.Id}, pipe={pipeName}, sandbox={sandbox?.ProfileName ?? "unsandboxed"}).",
+                    $"[NetworkProcess] Network child started (pid={spawnedChild.Id}, pipe={pipeName}, sandbox={acquiredSandbox?.ProfileName ?? "unsandboxed"}).",
                     LogCategory.ProcessIsolation);
                 return true;
             }
             catch (Exception ex)
             {
+                TryKillProcess(spawnedChild, "startup-exception");
+                TryDispose(spawnedChild, "startup-child-process");
+                TryDispose(acquiredSandbox, "startup-sandbox");
                 session.Dispose();
                 EngineLogBridge.Error($"[NetworkProcess] Failed to start network child: {ex.Message}", LogCategory.ProcessIsolation);
                 return false;
@@ -189,14 +204,17 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         private static void TryKillProcess(Process process, string reason)
         {
-            if (process == null || process.HasExited)
+            if (process == null)
             {
                 return;
             }
 
             try
             {
-                process.Kill(entireProcessTree: true);
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
             }
             catch (Exception ex)
             {
@@ -235,4 +253,3 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         }
     }
 }
-
