@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
@@ -14,19 +15,23 @@ namespace FenBrowser.FenEngine.Scripting
     /// </summary>
     public sealed class FenWebSocketHost : IDisposable
     {
+        private const int ReceiveBufferBytes = 64 * 1024;
+        private const int MaxMessageBytes = 16 * 1024 * 1024;
+        private const long MaxQueuedIncomingBytes = 32L * 1024L * 1024L;
+
         private ClientWebSocket _socket;
         private CancellationTokenSource _cancelSource;
         private Task _receiveLoop;
         private readonly SemaphoreSlim _sendGate = new(1, 1);
         private readonly object _lock = new();
+        private int _closeEventQueued;
+        private long _queuedIncomingBytes;
 
         // Queued messages from the receive loop, consumed by the JS event polling.
-        private readonly ConcurrentQueue<WsMessage> _incomingMessages = new();
+        private readonly ConcurrentQueue<QueuedWsMessage> _incomingMessages = new();
         private readonly ConcurrentQueue<WsEvent> _incomingEvents = new();
 
-        public FenWebSocketHost()
-        {
-        }
+        private readonly record struct QueuedWsMessage(WsMessage Message, int EncodedBytes);
 
         public WebSocketState ReadyState
         {
@@ -46,7 +51,8 @@ namespace FenBrowser.FenEngine.Scripting
         public string Connect(string url, string[] protocols)
         {
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
-                (uri.Scheme != "ws" && uri.Scheme != "wss"))
+                (uri.Scheme != "ws" && uri.Scheme != "wss") ||
+                !string.IsNullOrEmpty(uri.Fragment))
             {
                 return "Invalid WebSocket URL";
             }
@@ -58,26 +64,45 @@ namespace FenBrowser.FenEngine.Scripting
 
                 try
                 {
+                    // Dispose completed/aborted state from a previous connection before
+                    // assigning the new socket. Receive loops are socket-bound below, so
+                    // an old loop can never start consuming from this replacement socket.
+                    _cancelSource?.Cancel();
+                    _cancelSource?.Dispose();
+                    _socket?.Dispose();
+
                     _cancelSource = new CancellationTokenSource();
                     _socket = new ClientWebSocket();
+                    Interlocked.Exchange(ref _closeEventQueued, 0);
+                    Interlocked.Exchange(ref _queuedIncomingBytes, 0);
+                    while (_incomingMessages.TryDequeue(out _)) { }
+                    while (_incomingEvents.TryDequeue(out _)) { }
 
                     if (protocols != null && protocols.Length > 0)
                     {
+                        var seenProtocols = new HashSet<string>(StringComparer.Ordinal);
                         foreach (var p in protocols)
                         {
-                            if (!string.IsNullOrWhiteSpace(p))
-                                _socket.Options.AddSubProtocol(p);
+                            if (string.IsNullOrWhiteSpace(p) || !seenProtocols.Add(p))
+                                return "Invalid WebSocket subprotocol";
+
+                            _socket.Options.AddSubProtocol(p);
                         }
                     }
 
                     Url = url;
                     Protocol = string.Empty;
 
-                    _ = ConnectAsync(_socket, uri, _cancelSource.Token);
+                    var socket = _socket;
+                    var token = _cancelSource.Token;
+                    _ = ConnectAsync(socket, uri, token);
                     return null;
                 }
                 catch (Exception ex)
                 {
+                    _cancelSource?.Cancel();
+                    _cancelSource?.Dispose();
+                    _cancelSource = null;
                     _socket?.Dispose();
                     _socket = null;
                     _incomingEvents.Enqueue(WsEvent.Error(ex.Message));
@@ -91,8 +116,18 @@ namespace FenBrowser.FenEngine.Scripting
             try
             {
                 await socket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
-                Protocol = socket.SubProtocol ?? string.Empty;
-                _receiveLoop = ReceiveLoopAsync(cancellationToken);
+
+                lock (_lock)
+                {
+                    if (!ReferenceEquals(_socket, socket))
+                    {
+                        socket.Abort();
+                        return;
+                    }
+                    Protocol = socket.SubProtocol ?? string.Empty;
+                }
+
+                _receiveLoop = ReceiveLoopAsync(socket, cancellationToken);
                 _incomingEvents.Enqueue(WsEvent.Open());
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -113,18 +148,19 @@ namespace FenBrowser.FenEngine.Scripting
         }
 
         /// <summary>
-        /// Send text or binary data. Returns null on success, or an error string.
+        /// Send text data. Returns null on successful queueing, or an error string.
         /// </summary>
         public string Send(string data)
         {
             var s = _socket;
-            if (s == null || s.State != WebSocketState.Open)
+            var cts = _cancelSource;
+            if (s == null || cts == null || s.State != WebSocketState.Open)
                 return "InvalidStateError";
 
             try
             {
                 var bytes = Encoding.UTF8.GetBytes(data ?? string.Empty);
-                _ = SendAsync(s, bytes, WebSocketMessageType.Text, _cancelSource.Token);
+                _ = SendAsync(s, bytes, WebSocketMessageType.Text, cts.Token);
                 return null;
             }
             catch (Exception ex)
@@ -134,18 +170,19 @@ namespace FenBrowser.FenEngine.Scripting
         }
 
         /// <summary>
-        /// Send binary data. Returns null on success, or an error string.
+        /// Send binary data. Returns null on successful queueing, or an error string.
         /// </summary>
         public string SendBinary(byte[] data)
         {
             var s = _socket;
-            if (s == null || s.State != WebSocketState.Open)
+            var cts = _cancelSource;
+            if (s == null || cts == null || s.State != WebSocketState.Open)
                 return "InvalidStateError";
 
             try
             {
                 var bytes = data == null ? Array.Empty<byte>() : (byte[])data.Clone();
-                _ = SendAsync(s, bytes, WebSocketMessageType.Binary, _cancelSource.Token);
+                _ = SendAsync(s, bytes, WebSocketMessageType.Binary, cts.Token);
                 return null;
             }
             catch (Exception ex)
@@ -165,6 +202,9 @@ namespace FenBrowser.FenEngine.Scripting
                 await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
                 try
                 {
+                    if (socket.State != WebSocketState.Open)
+                        return;
+
                     await socket.SendAsync(
                         new ArraySegment<byte>(data),
                         messageType,
@@ -186,29 +226,77 @@ namespace FenBrowser.FenEngine.Scripting
         }
 
         /// <summary>
-        /// Close the WebSocket connection.
+        /// Start a WebSocket close handshake.
         /// </summary>
         public void Close(int code = 1000, string reason = "")
         {
+            ClientWebSocket socket;
+            CancellationTokenSource cts;
             lock (_lock)
             {
-                var s = _socket;
-                if (s == null || s.State == WebSocketState.Closed || s.State == WebSocketState.Aborted)
-                    return;
+                socket = _socket;
+                cts = _cancelSource;
+            }
 
-                try
+            if (socket == null || cts == null ||
+                socket.State == WebSocketState.Closed || socket.State == WebSocketState.Aborted)
+            {
+                return;
+            }
+
+            reason ??= string.Empty;
+            if (!IsValidCloseCode(code) || Encoding.UTF8.GetByteCount(reason) > 123)
+            {
+                _incomingEvents.Enqueue(WsEvent.Error("Invalid WebSocket close code or reason"));
+                return;
+            }
+
+            _ = CloseAsync(socket, (WebSocketCloseStatus)code, reason, cts);
+        }
+
+        private async Task CloseAsync(
+            ClientWebSocket socket,
+            WebSocketCloseStatus closeStatus,
+            string reason,
+            CancellationTokenSource cts)
+        {
+            try
+            {
+                if (socket.State == WebSocketState.Connecting)
                 {
-                    _cancelSource?.Cancel();
-                    s.Abort();
+                    socket.Abort();
+                    QueueCloseOnce((int)closeStatus, reason);
+                    return;
                 }
-                catch
+
+                if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
                 {
-                    // Best effort close.
+                    await _sendGate.WaitAsync(cts.Token).ConfigureAwait(false);
+                    try
+                    {
+                        if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                        {
+                            await socket.CloseAsync(closeStatus, reason, cts.Token).ConfigureAwait(false);
+                        }
+                    }
+                    finally
+                    {
+                        _sendGate.Release();
+                    }
                 }
-                finally
-                {
-                    _incomingEvents.Enqueue(WsEvent.Close(code, reason ?? string.Empty));
-                }
+
+                QueueCloseOnce(
+                    (int)(socket.CloseStatus ?? closeStatus),
+                    socket.CloseStatusDescription ?? reason);
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                _incomingEvents.Enqueue(WsEvent.Error(ex.Message));
+                try { socket.Abort(); } catch { }
+                QueueCloseOnce((int)closeStatus, reason);
             }
         }
 
@@ -217,8 +305,11 @@ namespace FenBrowser.FenEngine.Scripting
         /// </summary>
         public WsMessage PollMessage()
         {
-            _incomingMessages.TryDequeue(out var msg);
-            return msg;
+            if (!_incomingMessages.TryDequeue(out var queued))
+                return null;
+
+            Interlocked.Add(ref _queuedIncomingBytes, -queued.EncodedBytes);
+            return queued.Message;
         }
 
         /// <summary>
@@ -230,49 +321,109 @@ namespace FenBrowser.FenEngine.Scripting
             return evt;
         }
 
-        private async Task ReceiveLoopAsync(CancellationToken cancel)
+        private async Task ReceiveLoopAsync(ClientWebSocket socket, CancellationToken cancel)
         {
-            var buffer = new byte[65536];
+            var buffer = new byte[ReceiveBufferBytes];
+            MemoryStream fragmentedMessage = null;
+            WebSocketMessageType fragmentedType = WebSocketMessageType.Text;
+
             try
             {
-                while (!cancel.IsCancellationRequested)
+                while (!cancel.IsCancellationRequested &&
+                       ReferenceEquals(_socket, socket) &&
+                       socket.State is WebSocketState.Open or WebSocketState.CloseSent)
                 {
-                    var s = _socket;
-                    if (s == null || s.State != WebSocketState.Open)
-                        break;
-
-                    var result = await s.ReceiveAsync(new ArraySegment<byte>(buffer), cancel).ConfigureAwait(false);
+                    var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), cancel).ConfigureAwait(false);
 
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        _incomingEvents.Enqueue(WsEvent.Close(
-                            (int)(result.CloseStatus ?? WebSocketCloseStatus.NormalClosure),
-                            result.CloseStatusDescription ?? string.Empty));
+                        fragmentedMessage?.Dispose();
+                        fragmentedMessage = null;
+
+                        var status = result.CloseStatus ?? WebSocketCloseStatus.NormalClosure;
+                        var description = result.CloseStatusDescription ?? string.Empty;
+
+                        if (socket.State == WebSocketState.CloseReceived)
+                        {
+                            try
+                            {
+                                await _sendGate.WaitAsync(cancel).ConfigureAwait(false);
+                                try
+                                {
+                                    if (socket.State == WebSocketState.CloseReceived)
+                                    {
+                                        await socket.CloseOutputAsync(status, description, cancel).ConfigureAwait(false);
+                                    }
+                                }
+                                finally
+                                {
+                                    _sendGate.Release();
+                                }
+                            }
+                            catch (OperationCanceledException) when (cancel.IsCancellationRequested)
+                            {
+                            }
+                            catch
+                            {
+                                try { socket.Abort(); } catch { }
+                            }
+                        }
+
+                        QueueCloseOnce((int)status, description);
                         break;
                     }
 
-                    var data = new byte[result.Count];
-                    Array.Copy(buffer, data, result.Count);
+                    if (fragmentedMessage == null && result.EndOfMessage)
+                    {
+                        if (result.Count > MaxMessageBytes)
+                        {
+                            await CloseForMessageTooBigAsync(socket, cancel).ConfigureAwait(false);
+                            break;
+                        }
 
-                    if (result.MessageType == WebSocketMessageType.Text)
-                    {
-                        var text = Encoding.UTF8.GetString(data);
-                        _incomingMessages.Enqueue(WsMessage.Text(text));
-                    }
-                    else if (result.MessageType == WebSocketMessageType.Binary)
-                    {
-                        _incomingMessages.Enqueue(WsMessage.Binary(data));
+                        if (!QueueCompletedMessage(result.MessageType, buffer.AsSpan(0, result.Count)))
+                        {
+                            await CloseForMessageTooBigAsync(socket, cancel).ConfigureAwait(false);
+                            break;
+                        }
+                        continue;
                     }
 
-                    if (result.EndOfMessage)
+                    if (fragmentedMessage == null)
                     {
-                        // Message complete — ready for next.
+                        fragmentedType = result.MessageType;
+                        fragmentedMessage = new MemoryStream(Math.Min(MaxMessageBytes, Math.Max(ReceiveBufferBytes, result.Count * 2)));
+                    }
+                    else if (result.MessageType != fragmentedType)
+                    {
+                        throw new WebSocketException("WebSocket message type changed mid-message");
+                    }
+
+                    if (fragmentedMessage.Length + result.Count > MaxMessageBytes)
+                    {
+                        fragmentedMessage.Dispose();
+                        fragmentedMessage = null;
+                        await CloseForMessageTooBigAsync(socket, cancel).ConfigureAwait(false);
+                        break;
+                    }
+
+                    fragmentedMessage.Write(buffer, 0, result.Count);
+                    if (!result.EndOfMessage)
+                        continue;
+
+                    var completed = fragmentedMessage.ToArray();
+                    fragmentedMessage.Dispose();
+                    fragmentedMessage = null;
+
+                    if (!QueueCompletedMessage(fragmentedType, completed))
+                    {
+                        await CloseForMessageTooBigAsync(socket, cancel).ConfigureAwait(false);
+                        break;
                     }
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (cancel.IsCancellationRequested)
             {
-                // Normal shutdown.
             }
             catch (WebSocketException)
             {
@@ -282,24 +433,110 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 _incomingEvents.Enqueue(WsEvent.Error("WebSocket receive error"));
             }
+            finally
+            {
+                fragmentedMessage?.Dispose();
+            }
         }
+
+        private bool QueueCompletedMessage(WebSocketMessageType messageType, ReadOnlySpan<byte> data)
+        {
+            int encodedBytes = data.Length;
+            long queuedBytes = Interlocked.Add(ref _queuedIncomingBytes, encodedBytes);
+            if (queuedBytes > MaxQueuedIncomingBytes)
+            {
+                Interlocked.Add(ref _queuedIncomingBytes, -encodedBytes);
+                return false;
+            }
+
+            byte[] bytes = data.ToArray();
+            WsMessage message;
+            if (messageType == WebSocketMessageType.Text)
+            {
+                // Decode only after the complete message has been assembled so a UTF-8
+                // code point split across WebSocket frames is never decoded separately.
+                message = WsMessage.Text(Encoding.UTF8.GetString(bytes));
+            }
+            else if (messageType == WebSocketMessageType.Binary)
+            {
+                message = WsMessage.Binary(bytes);
+            }
+            else
+            {
+                Interlocked.Add(ref _queuedIncomingBytes, -encodedBytes);
+                return true;
+            }
+
+            _incomingMessages.Enqueue(new QueuedWsMessage(message, encodedBytes));
+            return true;
+        }
+
+        private async Task CloseForMessageTooBigAsync(ClientWebSocket socket, CancellationToken cancel)
+        {
+            const string reason = "WebSocket message exceeds browser limit";
+            try
+            {
+                if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                {
+                    await _sendGate.WaitAsync(cancel).ConfigureAwait(false);
+                    try
+                    {
+                        if (socket.State == WebSocketState.Open)
+                        {
+                            await socket.CloseOutputAsync(WebSocketCloseStatus.MessageTooBig, reason, cancel).ConfigureAwait(false);
+                        }
+                        else if (socket.State == WebSocketState.CloseReceived)
+                        {
+                            await socket.CloseOutputAsync(WebSocketCloseStatus.MessageTooBig, reason, cancel).ConfigureAwait(false);
+                        }
+                    }
+                    finally
+                    {
+                        _sendGate.Release();
+                    }
+                }
+            }
+            catch
+            {
+                try { socket.Abort(); } catch { }
+            }
+
+            QueueCloseOnce((int)WebSocketCloseStatus.MessageTooBig, reason);
+        }
+
+        private void QueueCloseOnce(int code, string reason)
+        {
+            if (Interlocked.Exchange(ref _closeEventQueued, 1) == 0)
+            {
+                _incomingEvents.Enqueue(WsEvent.Close(code, reason ?? string.Empty));
+            }
+        }
+
+        private static bool IsValidCloseCode(int code) =>
+            code == 1000 || (code >= 3000 && code <= 4999);
 
         public void Dispose()
         {
+            ClientWebSocket socket;
+            CancellationTokenSource cts;
+
             lock (_lock)
             {
-                _cancelSource?.Cancel();
-                _cancelSource?.Dispose();
-                _cancelSource = null;
-
-                try
-                {
-                    _socket?.Dispose();
-                }
-                catch { }
-
+                socket = _socket;
+                cts = _cancelSource;
                 _socket = null;
+                _cancelSource = null;
             }
+
+            try { cts?.Cancel(); } catch { }
+            try { socket?.Abort(); } catch { }
+            try { socket?.Dispose(); } catch { }
+            cts?.Dispose();
+            _sendGate.Dispose();
+
+            while (_incomingMessages.TryDequeue(out _)) { }
+            while (_incomingEvents.TryDequeue(out _)) { }
+            Interlocked.Exchange(ref _queuedIncomingBytes, 0);
         }
     }
 
