@@ -138,7 +138,7 @@ internal sealed class WindowsClipboard : IClipboard
                                 Buffer.MemoryCopy(
                                     source,
                                     pGlobal.ToPointer(),
-                                    bytes,
+                                    checked((long)bytes),
                                     (long)text.Length * sizeof(char));
                             }
                         }
