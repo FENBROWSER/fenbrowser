@@ -1,10 +1,11 @@
 using System;
+using System.Runtime.CompilerServices;
 
 namespace FenBrowser.Core.Security
 {
     /// <summary>
     /// Represents a web origin per HTML spec §7.5.
-    /// An origin is (scheme, host, port) tuple, or "opaque" for sandboxed/data URLs.
+    /// An origin is (scheme, host, port) tuple, or an opaque origin with identity.
     /// </summary>
     public sealed class Origin : IEquatable<Origin>
     {
@@ -26,16 +27,41 @@ namespace FenBrowser.Core.Security
             IsOpaque = false;
         }
 
-        /// <summary>Create an opaque origin (for data: URLs, sandboxed iframes, etc.)</summary>
+        /// <summary>Create a fresh opaque origin (for data: URLs, sandboxed documents, etc.).</summary>
         public static Origin Opaque() => new Origin();
 
-        /// <summary>Derive origin from a URI.</summary>
+        /// <summary>Derive an origin from a URI when the URI itself carries enough origin information.</summary>
         public static Origin FromUri(Uri uri)
         {
             if (uri == null) return Opaque();
+
             var scheme = uri.Scheme?.ToLowerInvariant();
-            if (scheme == "data" || scheme == "blob" || scheme == "javascript" || scheme == "about")
+
+            // A blob URL inherits the origin encoded by its inner URL. Treating every
+            // blob: URL as opaque breaks same-origin blob fetches, workers, images and
+            // object URLs created by the current document.
+            if (scheme == "blob")
+            {
+                var serialized = uri.OriginalString ?? uri.AbsoluteUri;
+                const string blobPrefix = "blob:";
+                if (serialized.StartsWith(blobPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    var inner = serialized.Substring(blobPrefix.Length);
+                    if (Uri.TryCreate(inner, UriKind.Absolute, out var innerUri))
+                    {
+                        return FromUri(innerUri);
+                    }
+                }
+
                 return Opaque();
+            }
+
+            // These URLs either have a unique opaque origin or require a creator/base
+            // document to determine inheritance. FromUri has no creator context, so it
+            // must not manufacture a tuple origin for them.
+            if (scheme == "data" || scheme == "javascript" || scheme == "about")
+                return Opaque();
+
             int port = uri.Port;
             if (port == -1) port = GetDefaultPort(scheme);
             return new Origin(scheme, uri.Host, port);
@@ -43,13 +69,16 @@ namespace FenBrowser.Core.Security
 
         /// <summary>
         /// Same-origin check per HTML spec §7.5.
-        /// Two origins are same-origin if they have the same scheme, host, and port.
-        /// Opaque origins are never same-origin with anything (including themselves).
+        /// Tuple origins compare by scheme/host/port. Opaque origins carry identity:
+        /// the same opaque origin object is same-origin with itself, while a separately
+        /// created opaque origin is distinct.
         /// </summary>
         public bool IsSameOrigin(Origin other)
         {
             if (other == null) return false;
-            if (IsOpaque || other.IsOpaque) return false;
+            if (IsOpaque || other.IsOpaque)
+                return IsOpaque && other.IsOpaque && ReferenceEquals(this, other);
+
             return string.Equals(Scheme, other.Scheme, StringComparison.OrdinalIgnoreCase) &&
                    string.Equals(Host, other.Host, StringComparison.OrdinalIgnoreCase) &&
                    Port == other.Port;
@@ -66,9 +95,12 @@ namespace FenBrowser.Core.Security
 
         public bool Equals(Origin other) => IsSameOrigin(other);
         public override bool Equals(object obj) => obj is Origin o && IsSameOrigin(o);
+
         public override int GetHashCode()
         {
-            if (IsOpaque) return 0;
+            if (IsOpaque)
+                return RuntimeHelpers.GetHashCode(this);
+
             return HashCode.Combine(
                 Scheme?.GetHashCode(StringComparison.OrdinalIgnoreCase) ?? 0,
                 Host?.GetHashCode(StringComparison.OrdinalIgnoreCase) ?? 0,
@@ -78,10 +110,21 @@ namespace FenBrowser.Core.Security
         public override string ToString()
         {
             if (IsOpaque) return "null";
+
+            // Uri.Host exposes IPv6 literals without brackets. Origin serialization
+            // requires brackets so non-default ports remain unambiguous.
+            var serializedHost = Host ?? string.Empty;
+            if (serializedHost.IndexOf(':') >= 0 &&
+                !serializedHost.StartsWith("[", StringComparison.Ordinal) &&
+                !serializedHost.EndsWith("]", StringComparison.Ordinal))
+            {
+                serializedHost = $"[{serializedHost}]";
+            }
+
             int defaultPort = GetDefaultPort(Scheme);
             return Port == defaultPort || Port <= 0
-                ? $"{Scheme}://{Host}"
-                : $"{Scheme}://{Host}:{Port}";
+                ? $"{Scheme}://{serializedHost}"
+                : $"{Scheme}://{serializedHost}:{Port}";
         }
 
         public static bool operator ==(Origin a, Origin b) => a?.IsSameOrigin(b) ?? b is null;
