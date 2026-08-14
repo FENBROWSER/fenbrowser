@@ -28,6 +28,30 @@ public sealed class ImageLoaderCssFunctionTests
     }
 
     [Fact]
+    public void GetImage_NegativeCachesFailedDataUriDecode()
+    {
+        const string invalidDataUri = "data:image/png;base64,AAAA";
+        ImageLoader.ClearCache();
+
+        try
+        {
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                Assert.Null(ImageLoader.GetImage(invalidDataUri));
+            }
+
+            var snapshot = ImageLoader.GetCacheSnapshot();
+            Assert.Equal(1, snapshot.MissCount);
+            Assert.Equal(0, snapshot.StaticImageCount);
+            Assert.Equal(0, snapshot.PendingLoadCount);
+        }
+        finally
+        {
+            ImageLoader.ClearCache();
+        }
+    }
+
+    [Fact]
     public async Task GetImage_IgnoresCssImageFunctionsWithoutStartingAsyncLoad()
     {
         ImageLoader.ClearCache();

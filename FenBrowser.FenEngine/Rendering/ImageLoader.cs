@@ -132,6 +132,10 @@ namespace FenBrowser.FenEngine.Rendering
             new ConcurrentDictionary<string, ConcurrentDictionary<string, ImageLoaderRequestContext>>(StringComparer.Ordinal);
         private static readonly ConcurrentDictionary<string, BinaryFetchResult> _lastLoadResults =
             new ConcurrentDictionary<string, BinaryFetchResult>(StringComparer.Ordinal);
+        private static readonly ConcurrentDictionary<string, byte> _failedDataUriCache =
+            new ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+        private static readonly ConcurrentQueue<string> _failedDataUriOrder = new ConcurrentQueue<string>();
+        private const int MAX_FAILED_DATA_URI_CACHE_ENTRIES = 256;
 
         // Main cache with metadata for memory tracking
         private static readonly ConcurrentDictionary<string, ImageCacheEntry> _memoryCache = 
@@ -524,6 +528,8 @@ namespace FenBrowser.FenEngine.Rendering
             }
             _legacyCache.Clear();
             _lastLoadResults.Clear();
+            _failedDataUriCache.Clear();
+            while (_failedDataUriOrder.TryDequeue(out _)) { }
 
             foreach (var bitmap in disposalSet)
             {
@@ -1151,6 +1157,12 @@ namespace FenBrowser.FenEngine.Rendering
                 return bitmap;
             }
 
+            if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase) &&
+                _failedDataUriCache.ContainsKey(cacheKey))
+            {
+                return null;
+            }
+
             RegisterCacheMiss();
 
             // For lazy images, check if we should defer loading
@@ -1197,6 +1209,7 @@ namespace FenBrowser.FenEngine.Rendering
                     
                     return dataBitmap;
                 }
+                RememberFailedDataUri(cacheKey);
                 return null;
             }
 
@@ -1393,6 +1406,21 @@ namespace FenBrowser.FenEngine.Rendering
                  EngineLogCompat.Error($"[ImageLoader] Data URI Decode Error: {ex.Message}", LogCategory.Rendering);
                  return null;
              }
+        }
+
+        private static void RememberFailedDataUri(string cacheKey)
+        {
+            if (string.IsNullOrWhiteSpace(cacheKey) || !_failedDataUriCache.TryAdd(cacheKey, 0))
+            {
+                return;
+            }
+
+            _failedDataUriOrder.Enqueue(cacheKey);
+            while (_failedDataUriCache.Count > MAX_FAILED_DATA_URI_CACHE_ENTRIES &&
+                   _failedDataUriOrder.TryDequeue(out var oldestKey))
+            {
+                _failedDataUriCache.TryRemove(oldestKey, out _);
+            }
         }
 
         public static object GetImageTuple(string url, bool isLazy = false, SKRect? elementBounds = null, int? targetWidth = null, int? targetHeight = null)
