@@ -114,26 +114,23 @@ namespace FenBrowser.Core.Security
             // If no policy, everything allowed
             if (Directives.Count == 0) return true;
 
-            // Resolve directive (fallback to default-src)
+            // Resolve directive (fallback to default-src only for directives whose
+            // fetch algorithm defines that fallback chain).
             CspDirective directive = null;
             if (!Directives.TryGetValue(directiveName, out directive))
             {
-                if (!Directives.TryGetValue("default-src", out directive))
+                if (CspDirectiveNames.NoFallbackDirectives.Contains(directiveName))
                 {
-                    // No default-src fallback for base-uri, form-action, frame-ancestors
-                    var noFallback = new HashSet<string>(StringComparer.OrdinalIgnoreCase) 
-                    { 
-                        "base-uri", "form-action", "frame-ancestors", "sandbox" 
-                    };
+                    return true;
+                }
 
-                    if (noFallback.Contains(directiveName)) return true;
-
-                    // If default-src is missing, fallback directives are allowed
+                if (!Directives.TryGetValue(CspDirectiveNames.DefaultSrc, out directive))
+                {
                     return true;
                 }
             }
 
-            if (directive == null) return true; 
+            if (directive == null) return true;
 
             return directive.IsAllowed(url, nonce, isInline, isEval, origin, elementHash, elementTrustedType);
         }
@@ -171,22 +168,7 @@ namespace FenBrowser.Core.Security
         /// </summary>
         public bool HasUpgradeInsecureRequests()
         {
-            if (string.IsNullOrWhiteSpace(HeaderValue)) return false;
-            
-            var directives = HeaderValue.Split(';', StringSplitOptions.RemoveEmptyEntries);
-            foreach (var dir in directives)
-            {
-                var trimmed = dir.Trim();
-                if (trimmed.Equals("upgrade-insecure-requests", StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-                if (trimmed.StartsWith("upgrade-insecure-requests", StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-            }
-            return false;
+            return Directives.ContainsKey(CspDirectiveNames.UpgradeInsecureRequests);
         }
     }
 
@@ -205,6 +187,43 @@ namespace FenBrowser.Core.Security
         public CspDirective(string name, string[] sources)
         {
             Name = name;
+
+            // report-uri/report-to are directives, not source expressions. Preserve
+            // their first configured endpoint/group directly so report-only policy
+            // lookup does not depend on source-token parsing that can never match.
+            if (string.Equals(name, CspDirectiveNames.ReportUri, StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var source in sources)
+                {
+                    Sources.Add(source);
+                }
+                ReportUri = sources.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s));
+                return;
+            }
+
+            if (string.Equals(name, CspDirectiveNames.ReportTo, StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var source in sources)
+                {
+                    Sources.Add(source);
+                }
+                ReportTo = sources.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s));
+                return;
+            }
+
+            if (string.Equals(name, CspDirectiveNames.TrustedTypes, StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var source in sources)
+                {
+                    Sources.Add(source);
+                    if (!source.StartsWith("'", StringComparison.Ordinal))
+                    {
+                        TrustedTypes.Add(source);
+                    }
+                }
+                return;
+            }
+
             foreach (var s in sources) 
             {
                 if (s.StartsWith("'nonce-", StringComparison.OrdinalIgnoreCase) && s.EndsWith("'"))
@@ -245,19 +264,8 @@ namespace FenBrowser.Core.Security
                 }
                 else if (s.StartsWith("'trusted-types", StringComparison.OrdinalIgnoreCase) && s.EndsWith("'"))
                 {
-                    // 'trusted-types policyName'
                     var val = s.Substring(14, s.Length - 15);
                     TrustedTypes.Add(val);
-                    Sources.Add(s);
-                }
-                else if (s.StartsWith("report-uri", StringComparison.OrdinalIgnoreCase))
-                {
-                    ReportUri = ExtractReportUri(s);
-                    Sources.Add(s);
-                }
-                else if (s.StartsWith("report-to", StringComparison.OrdinalIgnoreCase))
-                {
-                    ReportTo = ExtractReportTo(s);
                     Sources.Add(s);
                 }
                 else
@@ -269,7 +277,7 @@ namespace FenBrowser.Core.Security
 
         private static string ExtractReportUri(string s)
         {
-            // report-uri <url> or report-uri(<url>)
+            // Kept for compatibility with older serialized directive tokens.
             var start = s.IndexOf(' ', StringComparison.Ordinal);
             if (start >= 0)
             {
@@ -285,7 +293,6 @@ namespace FenBrowser.Core.Security
 
         private static string ExtractReportTo(string s)
         {
-            // report-to <groupname>
             var start = s.IndexOf(' ', StringComparison.Ordinal);
             if (start >= 0)
             {
@@ -299,61 +306,49 @@ namespace FenBrowser.Core.Security
             if (Sources.Contains("'none'")) return false;
 
             // 1. Hash Check (for inline scripts/styles)
-            // If element has a hash attribute (integrity) that matches a hash in the policy, allow it
             if (!string.IsNullOrEmpty(elementHash))
             {
                 if (Hashes.Contains(elementHash)) return true;
             }
 
-            // 2. Nonce Check (Overrides inline checks if present)
+            // 2. Nonce Check
             if (!string.IsNullOrEmpty(nonce))
             {
                 if (Nonces.Contains(nonce)) return true;
-                // If nonce is provided but doesn't match, do we fail immediately?
-                // CSP Spec: "If 'nonce-source' is present in the list of allowed sources... 
-                // matches if the element has a nonce attribute..."
-                // If the element HAS a nonce, it MUST allow it. 
-                // But if the policy requires a nonce (contains 'nonce-...') and the element nonce is bad, is it blocked?
-                // Actually, CSP allows if ANY source matches.
             }
 
             // 3. Inline Check
             if (isInline) 
             {
-                // Hash-source check for inline content
                 if (!string.IsNullOrEmpty(elementHash) && Hashes.Contains(elementHash)) return true;
-
-                // Trusted-types check for inline scripts
                 if (!string.IsNullOrEmpty(elementTrustedType) && TrustedTypes.Contains(elementTrustedType)) return true;
 
-                // If 'unsafe-inline' is present, it's allowed UNLESS a nonce/hash is present in the policy (in modern CSP).
-                // "If a directive contains a nonce-source or hash-source... 'unsafe-inline' is ignored."
                 bool hasNoncesOrHashes = Nonces.Count > 0 || Hashes.Count > 0;
                 if (!hasNoncesOrHashes && Sources.Contains("'unsafe-inline'")) return true;
-                
-                // If we have nonces/hashes, we only allow if the nonce/hash matched above.
                 if (hasNoncesOrHashes) return false;
 
                 return false;
             }
 
-            // 3. Eval Check
-            if (isEval) return Sources.Contains("'unsafe-eval'");
+            // 4. Eval Check. Keep the entire decision in one branch so future
+            // Trusted Types integration cannot be accidentally placed after an
+            // unconditional return and become unreachable.
+            if (isEval)
+            {
+                if (!string.IsNullOrEmpty(elementTrustedType) && TrustedTypes.Contains(elementTrustedType))
+                {
+                    return true;
+                }
+                return Sources.Contains("'unsafe-eval'");
+            }
             
-            // Trusted-types check for eval (createPolicy)
-            if (isEval && !string.IsNullOrEmpty(elementTrustedType) && TrustedTypes.Contains(elementTrustedType)) return true;
-            
-            // 4. URL Check
+            // 5. URL Check
             if (url == null) return false; 
 
-            // strict-dynamic: if present, allow scripts loaded by trusted scripts
-            // This is a simplified implementation - full strict-dynamic requires tracking script provenance
-            if (HasStrictDynamic)
-            {
-                // In strict-dynamic mode, scripts loaded by trusted scripts are allowed
-                // For now, we'll just log that strict-dynamic is active
-                // Full implementation would track script chain provenance
-            }
+            // strict-dynamic requires script provenance tracking. Do not pretend the
+            // keyword itself authorizes a URL; nonce/hash checks above remain enforced
+            // while URL source matching continues for compatibility until provenance
+            // is represented by the caller.
 
             if (Sources.Contains("*") || (url.Scheme == "data" && Sources.Contains("data:")) || (url.Scheme == "blob" && Sources.Contains("blob:"))) return true;
 
@@ -368,14 +363,6 @@ namespace FenBrowser.Core.Security
                 if (src == "*") return true;
                 if (src.StartsWith("'")) continue; // keywords
 
-                // Scheme check
-                if (src.EndsWith(":"))
-                {
-                    if (string.Equals(url.Scheme + ":", src, StringComparison.OrdinalIgnoreCase)) return true;
-                    continue;
-                }
-
-                // Host matching logic (simplified)
                 string srcHost = src;
                 string srcScheme = null;
                 string srcPort = null;
@@ -387,15 +374,30 @@ namespace FenBrowser.Core.Security
                     srcHost = uriParts[1];
                 }
 
-                var portIdx = srcHost.IndexOf(':');
-                if (portIdx >= 0)
-                {
-                    srcPort = srcHost.Substring(portIdx + 1);
-                    srcHost = srcHost.Substring(0, portIdx);
-                }
-                
+                // Remove the path before interpreting an optional port. The previous
+                // order turned "example.com:443/path" into a non-numeric port and
+                // silently skipped the port restriction.
                 var slash = srcHost.IndexOf('/');
                 if (slash >= 0) srcHost = srcHost.Substring(0, slash);
+
+                if (srcHost.StartsWith("[", StringComparison.Ordinal))
+                {
+                    var closeBracket = srcHost.IndexOf(']');
+                    if (closeBracket > 0 && closeBracket + 1 < srcHost.Length && srcHost[closeBracket + 1] == ':')
+                    {
+                        srcPort = srcHost.Substring(closeBracket + 2);
+                        srcHost = srcHost.Substring(0, closeBracket + 1);
+                    }
+                }
+                else
+                {
+                    var portIdx = srcHost.LastIndexOf(':');
+                    if (portIdx >= 0)
+                    {
+                        srcPort = srcHost.Substring(portIdx + 1);
+                        srcHost = srcHost.Substring(0, portIdx);
+                    }
+                }
 
                 if (srcScheme != null && !string.Equals(url.Scheme, srcScheme, StringComparison.OrdinalIgnoreCase)) continue;
 
@@ -403,17 +405,25 @@ namespace FenBrowser.Core.Security
                 {
                     var uPort = url.Port;
                     if (uPort == -1) uPort = url.Scheme == "https" ? 443 : 80;
-                    if (srcPort != "*" && int.TryParse(srcPort, out int p) && p != uPort) continue;
+                    if (srcPort != "*")
+                    {
+                        if (!int.TryParse(srcPort, out int p) || p != uPort) continue;
+                    }
                 }
 
                 if (srcHost == "*") return true;
-                if (srcHost.StartsWith("*."))
+                if (srcHost.StartsWith("*.", StringComparison.Ordinal))
                 {
-                    if (url.Host.EndsWith(srcHost.Substring(2), StringComparison.OrdinalIgnoreCase)) return true;
+                    var suffix = srcHost.Substring(2).TrimEnd('.');
+                    if (!string.IsNullOrEmpty(suffix) &&
+                        url.Host.TrimEnd('.').EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
                 }
                 else
                 {
-                    if (string.Equals(url.Host, srcHost, StringComparison.OrdinalIgnoreCase)) return true;
+                    if (string.Equals(url.Host.TrimEnd('.'), srcHost.TrimEnd('.'), StringComparison.OrdinalIgnoreCase)) return true;
                 }
             }
 
@@ -473,7 +483,15 @@ namespace FenBrowser.Core.Security
         public bool WouldAllow(string directiveName, Uri url, string nonce = null, Uri origin = null, 
             bool isInline = false, bool isEval = false, string elementHash = null, string elementTrustedType = null)
         {
-            return Policy.IsAllowed(directiveName, url, nonce, origin, isInline, isEval, null, null);
+            return Policy.IsAllowed(
+                directiveName,
+                url,
+                nonce,
+                origin,
+                isInline,
+                isEval,
+                elementHash,
+                elementTrustedType);
         }
 
         /// <summary>
@@ -486,27 +504,26 @@ namespace FenBrowser.Core.Security
             var reportUri = GetReportUri();
             if (string.IsNullOrEmpty(reportUri)) return;
 
-            // In a real implementation, this would send an HTTP POST to the report URI
-            // For now, we log the violation
+            // Transport of reports is owned by the browser networking layer. Until a
+            // report dispatcher is wired, retain a security diagnostic rather than
+            // performing ad-hoc network I/O from the policy object.
             EngineLogCompat.Warn($"[CSP Report-Only] Violation: {report}", FenBrowser.Core.Logging.LogCategory.Security);
         }
 
         private string GetReportUri()
         {
-            // Check for report-to directive first
-            if (Policy.Directives.TryGetValue("report-to", out var reportToDirective))
+            if (Policy.Directives.TryGetValue(CspDirectiveNames.ReportTo, out var reportToDirective) &&
+                !string.IsNullOrWhiteSpace(reportToDirective.ReportTo))
             {
                 return reportToDirective.ReportTo;
             }
             
-            // Fall back to report-uri
-            foreach (var directive in Policy.Directives.Values)
+            if (Policy.Directives.TryGetValue(CspDirectiveNames.ReportUri, out var reportUriDirective) &&
+                !string.IsNullOrWhiteSpace(reportUriDirective.ReportUri))
             {
-                if (!string.IsNullOrEmpty(directive.ReportUri))
-                {
-                    return directive.ReportUri;
-                }
+                return reportUriDirective.ReportUri;
             }
+
             return null;
         }
     }
