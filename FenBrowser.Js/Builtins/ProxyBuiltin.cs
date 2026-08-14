@@ -24,7 +24,7 @@ public sealed class ProxyBuiltin : IBuiltinModule
             var targetHandle = args[0].AsObjectHandle();
             var handlerHandle = args[1].AsObjectHandle();
             var target = heap.GetObject(targetHandle);
-            var proxy = new ProxyObject(targetHandle, handlerHandle);
+            var proxy = new ProxyObject(targetHandle, handlerHandle, context.CreateTypeError);
             proxy.SetPrototype(target.PrototypeHandle);
             var proxyHandle = heap.AllocateObject(proxy, AllocationSite.Current());
             heap.WriteBarrier(proxyHandle, targetHandle);
@@ -60,7 +60,7 @@ public sealed class ProxyBuiltin : IBuiltinModule
                 throw new JsThrownException(context.CreateTypeError("Proxy.revocable: handler must be an object."));
             var targetHandle = args[0].AsObjectHandle();
             var handlerHandle = args[1].AsObjectHandle();
-            var proxy = new ProxyObject(targetHandle, handlerHandle);
+            var proxy = new ProxyObject(targetHandle, handlerHandle, context.CreateTypeError);
             var proxyHandle = heap.AllocateObject(proxy, AllocationSite.Current());
             heap.WriteBarrier(proxyHandle, targetHandle);
             heap.WriteBarrier(proxyHandle, handlerHandle);
