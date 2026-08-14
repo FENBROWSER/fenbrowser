@@ -18,6 +18,7 @@ namespace FenBrowser.FenEngine.Scripting
         private const int ReceiveBufferBytes = 64 * 1024;
         private const int MaxMessageBytes = 16 * 1024 * 1024;
         private const long MaxQueuedIncomingBytes = 32L * 1024L * 1024L;
+        private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
         private ClientWebSocket _socket;
         private CancellationTokenSource _cancelSource;
@@ -27,11 +28,17 @@ namespace FenBrowser.FenEngine.Scripting
         private int _closeEventQueued;
         private long _queuedIncomingBytes;
 
-        // Queued messages from the receive loop, consumed by the JS event polling.
         private readonly ConcurrentQueue<QueuedWsMessage> _incomingMessages = new();
         private readonly ConcurrentQueue<WsEvent> _incomingEvents = new();
 
         private readonly record struct QueuedWsMessage(WsMessage Message, int EncodedBytes);
+
+        private enum QueueMessageResult
+        {
+            Queued,
+            QueueLimitExceeded,
+            InvalidUtf8
+        }
 
         public WebSocketState ReadyState
         {
@@ -57,6 +64,9 @@ namespace FenBrowser.FenEngine.Scripting
                 return "Invalid WebSocket URL";
             }
 
+            if (!ValidateProtocolList(protocols))
+                return "Invalid WebSocket subprotocol";
+
             lock (_lock)
             {
                 if (_socket != null && _socket.State != WebSocketState.Closed && _socket.State != WebSocketState.Aborted)
@@ -64,9 +74,6 @@ namespace FenBrowser.FenEngine.Scripting
 
                 try
                 {
-                    // Dispose completed/aborted state from a previous connection before
-                    // assigning the new socket. Receive loops are socket-bound below, so
-                    // an old loop can never start consuming from this replacement socket.
                     _cancelSource?.Cancel();
                     _cancelSource?.Dispose();
                     _socket?.Dispose();
@@ -78,15 +85,13 @@ namespace FenBrowser.FenEngine.Scripting
                     while (_incomingMessages.TryDequeue(out _)) { }
                     while (_incomingEvents.TryDequeue(out _)) { }
 
-                    if (protocols != null && protocols.Length > 0)
+                    if (protocols != null)
                     {
-                        var seenProtocols = new HashSet<string>(StringComparer.Ordinal);
-                        foreach (var p in protocols)
+                        foreach (var protocol in protocols)
                         {
-                            if (string.IsNullOrWhiteSpace(p) || !seenProtocols.Add(p))
-                                return "Invalid WebSocket subprotocol";
-
-                            _socket.Options.AddSubProtocol(p);
+                            // AddSubProtocol performs the RFC token validation. Any invalid
+                            // token throws and the catch below tears the just-created socket down.
+                            _socket.Options.AddSubProtocol(protocol);
                         }
                     }
 
@@ -109,6 +114,21 @@ namespace FenBrowser.FenEngine.Scripting
                     return ex.Message;
                 }
             }
+        }
+
+        private static bool ValidateProtocolList(string[] protocols)
+        {
+            if (protocols == null || protocols.Length == 0)
+                return true;
+
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var protocol in protocols)
+            {
+                if (string.IsNullOrWhiteSpace(protocol) || !seen.Add(protocol))
+                    return false;
+            }
+
+            return true;
         }
 
         private async Task ConnectAsync(ClientWebSocket socket, Uri uri, CancellationToken cancellationToken)
@@ -251,10 +271,10 @@ namespace FenBrowser.FenEngine.Scripting
                 return;
             }
 
-            _ = CloseAsync(socket, (WebSocketCloseStatus)code, reason, cts);
+            _ = StartCloseHandshakeAsync(socket, (WebSocketCloseStatus)code, reason, cts);
         }
 
-        private async Task CloseAsync(
+        private async Task StartCloseHandshakeAsync(
             ClientWebSocket socket,
             WebSocketCloseStatus closeStatus,
             string reason,
@@ -265,29 +285,28 @@ namespace FenBrowser.FenEngine.Scripting
                 if (socket.State == WebSocketState.Connecting)
                 {
                     socket.Abort();
-                    QueueCloseOnce((int)closeStatus, reason);
+                    QueueCloseOnce(1006, string.Empty);
                     return;
                 }
 
-                if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                if (socket.State is not (WebSocketState.Open or WebSocketState.CloseReceived))
+                    return;
+
+                // Only send the close frame here. The dedicated receive loop remains the
+                // sole receiver and waits for the peer close frame, avoiding concurrent
+                // ReceiveAsync calls hidden inside ClientWebSocket.CloseAsync().
+                await _sendGate.WaitAsync(cts.Token).ConfigureAwait(false);
+                try
                 {
-                    await _sendGate.WaitAsync(cts.Token).ConfigureAwait(false);
-                    try
+                    if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
                     {
-                        if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
-                        {
-                            await socket.CloseAsync(closeStatus, reason, cts.Token).ConfigureAwait(false);
-                        }
-                    }
-                    finally
-                    {
-                        _sendGate.Release();
+                        await socket.CloseOutputAsync(closeStatus, reason, cts.Token).ConfigureAwait(false);
                     }
                 }
-
-                QueueCloseOnce(
-                    (int)(socket.CloseStatus ?? closeStatus),
-                    socket.CloseStatusDescription ?? reason);
+                finally
+                {
+                    _sendGate.Release();
+                }
             }
             catch (OperationCanceledException) when (cts.IsCancellationRequested)
             {
@@ -296,7 +315,7 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 _incomingEvents.Enqueue(WsEvent.Error(ex.Message));
                 try { socket.Abort(); } catch { }
-                QueueCloseOnce((int)closeStatus, reason);
+                QueueCloseOnce(1006, string.Empty);
             }
         }
 
@@ -340,7 +359,7 @@ namespace FenBrowser.FenEngine.Scripting
                         fragmentedMessage?.Dispose();
                         fragmentedMessage = null;
 
-                        var status = result.CloseStatus ?? WebSocketCloseStatus.NormalClosure;
+                        var status = result.CloseStatus ?? WebSocketCloseStatus.Empty;
                         var description = result.CloseStatusDescription ?? string.Empty;
 
                         if (socket.State == WebSocketState.CloseReceived)
@@ -352,7 +371,10 @@ namespace FenBrowser.FenEngine.Scripting
                                 {
                                     if (socket.State == WebSocketState.CloseReceived)
                                     {
-                                        await socket.CloseOutputAsync(status, description, cancel).ConfigureAwait(false);
+                                        await socket.CloseOutputAsync(
+                                            WebSocketCloseStatus.NormalClosure,
+                                            string.Empty,
+                                            cancel).ConfigureAwait(false);
                                     }
                                 }
                                 finally
@@ -377,13 +399,18 @@ namespace FenBrowser.FenEngine.Scripting
                     {
                         if (result.Count > MaxMessageBytes)
                         {
-                            await CloseForMessageTooBigAsync(socket, cancel).ConfigureAwait(false);
+                            await CloseForReceiveFailureAsync(
+                                socket,
+                                WebSocketCloseStatus.MessageTooBig,
+                                "WebSocket message exceeds browser limit",
+                                cancel).ConfigureAwait(false);
                             break;
                         }
 
-                        if (!QueueCompletedMessage(result.MessageType, buffer.AsSpan(0, result.Count)))
+                        var queueResult = QueueCompletedMessage(result.MessageType, buffer.AsSpan(0, result.Count));
+                        if (queueResult != QueueMessageResult.Queued)
                         {
-                            await CloseForMessageTooBigAsync(socket, cancel).ConfigureAwait(false);
+                            await CloseForQueueFailureAsync(socket, queueResult, cancel).ConfigureAwait(false);
                             break;
                         }
                         continue;
@@ -392,7 +419,8 @@ namespace FenBrowser.FenEngine.Scripting
                     if (fragmentedMessage == null)
                     {
                         fragmentedType = result.MessageType;
-                        fragmentedMessage = new MemoryStream(Math.Min(MaxMessageBytes, Math.Max(ReceiveBufferBytes, result.Count * 2)));
+                        fragmentedMessage = new MemoryStream(
+                            Math.Min(MaxMessageBytes, Math.Max(ReceiveBufferBytes, result.Count * 2)));
                     }
                     else if (result.MessageType != fragmentedType)
                     {
@@ -403,7 +431,11 @@ namespace FenBrowser.FenEngine.Scripting
                     {
                         fragmentedMessage.Dispose();
                         fragmentedMessage = null;
-                        await CloseForMessageTooBigAsync(socket, cancel).ConfigureAwait(false);
+                        await CloseForReceiveFailureAsync(
+                            socket,
+                            WebSocketCloseStatus.MessageTooBig,
+                            "WebSocket message exceeds browser limit",
+                            cancel).ConfigureAwait(false);
                         break;
                     }
 
@@ -415,9 +447,10 @@ namespace FenBrowser.FenEngine.Scripting
                     fragmentedMessage.Dispose();
                     fragmentedMessage = null;
 
-                    if (!QueueCompletedMessage(fragmentedType, completed))
+                    var completedResult = QueueCompletedMessage(fragmentedType, completed);
+                    if (completedResult != QueueMessageResult.Queued)
                     {
-                        await CloseForMessageTooBigAsync(socket, cancel).ConfigureAwait(false);
+                        await CloseForQueueFailureAsync(socket, completedResult, cancel).ConfigureAwait(false);
                         break;
                     }
                 }
@@ -439,23 +472,31 @@ namespace FenBrowser.FenEngine.Scripting
             }
         }
 
-        private bool QueueCompletedMessage(WebSocketMessageType messageType, ReadOnlySpan<byte> data)
+        private QueueMessageResult QueueCompletedMessage(WebSocketMessageType messageType, ReadOnlySpan<byte> data)
         {
             int encodedBytes = data.Length;
             long queuedBytes = Interlocked.Add(ref _queuedIncomingBytes, encodedBytes);
             if (queuedBytes > MaxQueuedIncomingBytes)
             {
                 Interlocked.Add(ref _queuedIncomingBytes, -encodedBytes);
-                return false;
+                return QueueMessageResult.QueueLimitExceeded;
             }
 
             byte[] bytes = data.ToArray();
             WsMessage message;
             if (messageType == WebSocketMessageType.Text)
             {
-                // Decode only after the complete message has been assembled so a UTF-8
-                // code point split across WebSocket frames is never decoded separately.
-                message = WsMessage.Text(Encoding.UTF8.GetString(bytes));
+                try
+                {
+                    // WebSocket text messages require valid UTF-8. Decode only after the
+                    // complete message is assembled so code points may span frames safely.
+                    message = WsMessage.Text(StrictUtf8.GetString(bytes));
+                }
+                catch (DecoderFallbackException)
+                {
+                    Interlocked.Add(ref _queuedIncomingBytes, -encodedBytes);
+                    return QueueMessageResult.InvalidUtf8;
+                }
             }
             else if (messageType == WebSocketMessageType.Binary)
             {
@@ -464,16 +505,39 @@ namespace FenBrowser.FenEngine.Scripting
             else
             {
                 Interlocked.Add(ref _queuedIncomingBytes, -encodedBytes);
-                return true;
+                return QueueMessageResult.Queued;
             }
 
             _incomingMessages.Enqueue(new QueuedWsMessage(message, encodedBytes));
-            return true;
+            return QueueMessageResult.Queued;
         }
 
-        private async Task CloseForMessageTooBigAsync(ClientWebSocket socket, CancellationToken cancel)
+        private Task CloseForQueueFailureAsync(
+            ClientWebSocket socket,
+            QueueMessageResult result,
+            CancellationToken cancel)
         {
-            const string reason = "WebSocket message exceeds browser limit";
+            return result switch
+            {
+                QueueMessageResult.InvalidUtf8 => CloseForReceiveFailureAsync(
+                    socket,
+                    WebSocketCloseStatus.InvalidPayloadData,
+                    "Invalid UTF-8 WebSocket text message",
+                    cancel),
+                _ => CloseForReceiveFailureAsync(
+                    socket,
+                    WebSocketCloseStatus.MessageTooBig,
+                    "WebSocket receive queue exceeds browser limit",
+                    cancel)
+            };
+        }
+
+        private async Task CloseForReceiveFailureAsync(
+            ClientWebSocket socket,
+            WebSocketCloseStatus status,
+            string reason,
+            CancellationToken cancel)
+        {
             try
             {
                 if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
@@ -481,13 +545,9 @@ namespace FenBrowser.FenEngine.Scripting
                     await _sendGate.WaitAsync(cancel).ConfigureAwait(false);
                     try
                     {
-                        if (socket.State == WebSocketState.Open)
+                        if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
                         {
-                            await socket.CloseOutputAsync(WebSocketCloseStatus.MessageTooBig, reason, cancel).ConfigureAwait(false);
-                        }
-                        else if (socket.State == WebSocketState.CloseReceived)
-                        {
-                            await socket.CloseOutputAsync(WebSocketCloseStatus.MessageTooBig, reason, cancel).ConfigureAwait(false);
+                            await socket.CloseOutputAsync(status, reason, cancel).ConfigureAwait(false);
                         }
                     }
                     finally
@@ -501,7 +561,7 @@ namespace FenBrowser.FenEngine.Scripting
                 try { socket.Abort(); } catch { }
             }
 
-            QueueCloseOnce((int)WebSocketCloseStatus.MessageTooBig, reason);
+            QueueCloseOnce((int)status, reason);
         }
 
         private void QueueCloseOnce(int code, string reason)
@@ -558,7 +618,7 @@ namespace FenBrowser.FenEngine.Scripting
     /// </summary>
     public sealed class WsEvent
     {
-        public string Type { get; private set; }  // "open", "error", "close"
+        public string Type { get; private set; }
         public int Code { get; private set; }
         public string Reason { get; private set; }
         public string ErrorMessage { get; private set; }
