@@ -31,15 +31,14 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         private readonly Queue<ScheduledMicrotask> _microtasks = new();
         private readonly object _lock = new();
         private bool _isDraining = false;
-        private int _drainDepth = 0;
-        private const int MaxDrainDepth = 1000; // Prevent infinite loops
+        private const int MaxMicrotasksPerDrainPass = 1000;
 
         /// <summary>
         /// Enqueue a microtask for execution at the next checkpoint
         /// </summary>
         public void Enqueue(Action microtask)
         {
-            if (microtask  == null) throw new ArgumentNullException(nameof(microtask));
+            if (microtask == null) throw new ArgumentNullException(nameof(microtask));
 
             var entry = new ScheduledMicrotask(microtask);
             int pendingCount;
@@ -62,15 +61,16 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         }
 
         /// <summary>
-        /// Drain ALL microtasks until the queue is empty.
-        /// Microtasks enqueued during draining are also processed (WHATWG HTML §8.1.7.3).
-        /// Re-entrant calls (e.g. from within a microtask callback) return immediately;
-        /// the outer drain loop will pick up any newly-enqueued items on its next iteration.
+        /// Drain a bounded pass of microtasks. Microtasks enqueued during draining
+        /// remain eligible in the same pass until the pass budget is reached.
+        /// Re-entrant calls return immediately; the outer checkpoint owns draining.
+        ///
+        /// The pass budget is a liveness guard, not a data-loss policy. Remaining
+        /// microtasks stay queued so EventLoopCoordinator can continue the checkpoint
+        /// or yield safely without silently dropping Promise/queueMicrotask work.
         /// </summary>
         public int DrainAll()
         {
-            // Guard check and set are atomic within the same lock acquisition so no
-            // other thread can slip between them.
             lock (_lock)
             {
                 if (_isDraining)
@@ -79,13 +79,13 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     return 0;
                 }
                 _isDraining = true;
-                _drainDepth = 0;
             }
 
             int processed = 0;
+            bool passBudgetReached = false;
             try
             {
-                while (true)
+                while (processed < MaxMicrotasksPerDrainPass)
                 {
                     ScheduledMicrotask microtask;
                     lock (_lock)
@@ -93,14 +93,6 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                         if (_microtasks.Count == 0)
                             break;
 
-                        if (_drainDepth >= MaxDrainDepth)
-                        {
-                            EngineLogCompat.Debug($"[MicrotaskQueue] Max drain depth ({MaxDrainDepth}) exceeded, clearing queue", LogCategory.Errors);
-                            _microtasks.Clear();
-                            break;
-                        }
-
-                        _drainDepth++;
                         microtask = _microtasks.Dequeue();
                     }
 
@@ -135,20 +127,30 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                             LogMarker.EngineBug);
                     }
                 }
+
+                lock (_lock)
+                {
+                    passBudgetReached = processed >= MaxMicrotasksPerDrainPass && _microtasks.Count > 0;
+                }
+
+                if (passBudgetReached)
+                {
+                    EngineLogCompat.Warn(
+                        $"[MicrotaskQueue] Drain pass budget ({MaxMicrotasksPerDrainPass}) reached; preserving remaining microtasks for the checkpoint",
+                        LogCategory.Errors);
+                }
             }
             finally
             {
-                // Reset _isDraining while holding the lock so that any producer thread
-                // that enqueued after the while-loop's empty check but before this reset
-                // is guaranteed to see _isDraining = false on its next DrainAll() call
-                // (or will have already enqueued into a queue the next checkpoint will drain).
                 lock (_lock)
                 {
                     _isDraining = false;
                 }
             }
 
-            EngineLogCompat.Debug($"[MicrotaskQueue] Drain complete (processed: {processed})", LogCategory.JavaScript);
+            EngineLogCompat.Debug(
+                $"[MicrotaskQueue] Drain pass complete (processed: {processed}, budgetReached: {passBudgetReached})",
+                LogCategory.JavaScript);
             return processed;
         }
 
