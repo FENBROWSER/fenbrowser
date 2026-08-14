@@ -110,9 +110,8 @@ namespace FenBrowser.Core.Compat
             if (resp == null || req?.RequestUri == null) return null;
             if (req.Method != HttpMethod.Get || req.Headers.Range != null) return null;
 
-            // Never place 206 into a bare-URL cache entry: it can poison a later full GET.
             var status = (int)resp.StatusCode;
-            if (status != 200 && status != 203 && status != 204) return null;
+            if (!IsSupportedFullResponseStatus(status)) return null;
 
             var cc = resp.Headers.CacheControl;
             if (cc?.NoStore == true) return null;
@@ -189,7 +188,7 @@ namespace FenBrowser.Core.Compat
                     return entry.BodyString;
                 }
 
-                if (resp.IsSuccessStatusCode)
+                if (IsSupportedFullResponseStatus((int)resp.StatusCode))
                 {
                     var body = await resp.Content.ReadAsStringAsync();
                     StoreString(original, resp, body);
@@ -219,7 +218,7 @@ namespace FenBrowser.Core.Compat
                     return entry.BodyBytes;
                 }
 
-                if (resp.IsSuccessStatusCode)
+                if (IsSupportedFullResponseStatus((int)resp.StatusCode))
                 {
                     var body = await resp.Content.ReadAsByteArrayAsync();
                     StoreBytes(original, resp, body);
@@ -236,11 +235,18 @@ namespace FenBrowser.Core.Compat
             }
         }
 
+        private static bool IsSupportedFullResponseStatus(int status)
+            => status is 200 or 203 or 204;
+
         private static HttpRequestMessage CreateRevalidationRequest(
             HttpRequestMessage original,
             CachedEntry entry)
         {
-            var req = new HttpRequestMessage(HttpMethod.Get, original.RequestUri);
+            var req = new HttpRequestMessage(HttpMethod.Get, original.RequestUri)
+            {
+                Version = original.Version,
+                VersionPolicy = original.VersionPolicy
+            };
 
             // Preserve request context such as Accept, Accept-Language,
             // Authorization, Cookie and Fetch metadata. A stripped revalidation
