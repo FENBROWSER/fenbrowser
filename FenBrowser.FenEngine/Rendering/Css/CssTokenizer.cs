@@ -5,7 +5,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
-using System.Globalization; // Added for NumberStyles
+using System.Globalization;
 
 namespace FenBrowser.FenEngine.Rendering.Css
 {
@@ -34,10 +34,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return token;
         }
 
-        public int SavePosition()
-        {
-            return _position;
-        }
+        public int SavePosition() => _position;
 
         public void RestorePosition(int position)
         {
@@ -46,13 +43,13 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static string Preprocess(string input)
         {
-            if (string.IsNullOrEmpty(input)) return "";
+            if (string.IsNullOrEmpty(input)) return string.Empty;
 
             int firstSpecialCharacter = 0;
             while (firstSpecialCharacter < input.Length)
             {
                 char c = input[firstSpecialCharacter];
-                if (c == '\r' || c == '\0')
+                if (c == '\r' || c == '\f' || c == '\0' || char.IsSurrogate(c))
                 {
                     break;
                 }
@@ -72,16 +69,37 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 char c = input[i];
                 if (c == '\r')
                 {
-                    // CRLF -> LF, CR -> LF
+                    // CSS input preprocessing: CRLF -> LF and CR -> LF.
                     if (i + 1 < input.Length && input[i + 1] == '\n')
                     {
                         i++;
                     }
                     sb.Append('\n');
                 }
+                else if (c == '\f')
+                {
+                    // Form-feed is normalized to LF by CSS Syntax preprocessing.
+                    sb.Append('\n');
+                }
                 else if (c == '\0')
                 {
-                    sb.Append('\uFFFD'); // Replacement character
+                    sb.Append('\uFFFD');
+                }
+                else if (char.IsHighSurrogate(c))
+                {
+                    if (i + 1 < input.Length && char.IsLowSurrogate(input[i + 1]))
+                    {
+                        sb.Append(c);
+                        sb.Append(input[++i]);
+                    }
+                    else
+                    {
+                        sb.Append('\uFFFD');
+                    }
+                }
+                else if (char.IsLowSurrogate(c))
+                {
+                    sb.Append('\uFFFD');
                 }
                 else
                 {
@@ -93,10 +111,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         public CssToken Consume()
         {
-            // Main processing loop
-            // https://www.w3.org/TR/css-syntax-3/#consume-token
-            
-            // Consume comments first
             ConsumeComments();
 
             if (_position >= _length)
@@ -104,63 +118,43 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             char code = _input[_position];
 
-            // Whitespace
             if (IsWhitespace(code))
             {
                 ConsumeWhitespace();
                 return new CssToken(CssTokenType.Whitespace);
             }
 
-            // String "
-            if (code == '"')
+            if (code == '"' || code == '\'')
             {
                 return ConsumeStringToken();
             }
 
-            // Hash #
             if (code == '#')
             {
-                if (IsNameChar(PeekAt(1)) || AreValidEscape(_input, _position + 1)) 
+                if (IsNameChar(PeekAt(1)) || AreValidEscape(_input, _position + 1))
                 {
                     _position++;
-                    bool isId = CheckThreeCodePoints(0, IsIdentifierStart); // heuristic, or follow strictly?
-                    // Spec: If the next 3 code points would start an identifier, set type flag to "id" 
-                    // Actually spec says: If the next input code point is a name code point or the next two input code points are a valid escape, then:
-                    // 1. Create a <hash-token>.
-                    // 2. If the next 3 code points would start an identifier, set the <hash-token>’s type flag to "id".
-                    // 3. Consume a name, and set the <hash-token>’s value to the returned string.
-                    // 4. Return the <hash-token>.
-                    
                     bool wouldStartIdent = WouldStartIdentifier(_input, _position);
                     string name = ConsumeName();
                     return new CssToken(CssTokenType.Hash, name, wouldStartIdent ? HashType.Id : HashType.Unrestricted);
                 }
-                
+
                 _position++;
                 return new CssToken(CssTokenType.Delim, '#');
             }
 
-            // String '
-            if (code == '\'')
-            {
-                 return ConsumeStringToken();
-            }
-
-            // Left Paren (
             if (code == '(')
             {
                 _position++;
                 return new CssToken(CssTokenType.LeftParen);
             }
 
-            // Right Paren )
             if (code == ')')
             {
                 _position++;
                 return new CssToken(CssTokenType.RightParen);
             }
 
-            // + (Number checks)
             if (code == '+')
             {
                 if (StartsWithNumber())
@@ -171,21 +165,19 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return new CssToken(CssTokenType.Delim, '+');
             }
 
-            // ,
             if (code == ',')
             {
                 _position++;
                 return new CssToken(CssTokenType.Comma);
             }
 
-            // - (Number, Ident, CDC)
             if (code == '-')
             {
                 if (StartsWithNumber())
                 {
                     return ConsumeNumericToken();
                 }
-                if (StartsWithIdentifier()) 
+                if (StartsWithIdentifier())
                 {
                     return ConsumeIdentLikeToken();
                 }
@@ -198,10 +190,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return new CssToken(CssTokenType.Delim, '-');
             }
 
-            // . (Number)
             if (code == '.')
             {
-                 if (StartsWithNumber())
+                if (StartsWithNumber())
                 {
                     return ConsumeNumericToken();
                 }
@@ -209,24 +200,21 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return new CssToken(CssTokenType.Delim, '.');
             }
 
-            // :
             if (code == ':')
             {
                 _position++;
                 return new CssToken(CssTokenType.Colon);
             }
 
-            // ;
             if (code == ';')
             {
                 _position++;
                 return new CssToken(CssTokenType.Semicolon);
             }
 
-            // < (CDO)
             if (code == '<')
             {
-                 if (_position + 3 < _length && _input[_position + 1] == '!' && _input[_position + 2] == '-' && _input[_position + 3] == '-')
+                if (_position + 3 < _length && _input[_position + 1] == '!' && _input[_position + 2] == '-' && _input[_position + 3] == '-')
                 {
                     _position += 4;
                     return new CssToken(CssTokenType.CDO);
@@ -235,7 +223,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return new CssToken(CssTokenType.Delim, '<');
             }
 
-            // @
             if (code == '@')
             {
                 if (WouldStartIdentifier(_input, _position + 1))
@@ -248,68 +235,59 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return new CssToken(CssTokenType.Delim, '@');
             }
 
-            // [
             if (code == '[')
             {
                 _position++;
                 return new CssToken(CssTokenType.LeftBracket);
             }
 
-            // \ (Escape -> Ident)
             if (code == '\\')
             {
-                 if (IsValidEscape(_position))
-                 {
-                     return ConsumeIdentLikeToken();
-                 }
-                 _position++;
-                 return new CssToken(CssTokenType.Delim, '\\');
+                if (IsValidEscape(_position))
+                {
+                    return ConsumeIdentLikeToken();
+                }
+                _position++;
+                return new CssToken(CssTokenType.Delim, '\\');
             }
 
-            // ]
             if (code == ']')
             {
                 _position++;
                 return new CssToken(CssTokenType.RightBracket);
             }
 
-            // {
             if (code == '{')
             {
                 _position++;
                 return new CssToken(CssTokenType.LeftBrace);
             }
 
-            // }
             if (code == '}')
             {
                 _position++;
                 return new CssToken(CssTokenType.RightBrace);
             }
 
-            // Digit
             if (IsDigit(code))
             {
                 return ConsumeNumericToken();
             }
 
-            // Name start
             if (IsNameStart(code))
             {
                 return ConsumeIdentLikeToken();
             }
 
-            // Anything else
             _position++;
             return new CssToken(CssTokenType.Delim, code);
         }
 
         private void ConsumeComments()
         {
-            // If /* consume until */
             while (_position + 1 < _length && _input[_position] == '/' && _input[_position + 1] == '*')
             {
-                _position += 2; // skip /*
+                _position += 2;
                 while (_position < _length)
                 {
                     if (_position + 1 < _length && _input[_position] == '*' && _input[_position + 1] == '/')
@@ -332,14 +310,14 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private CssToken ConsumeStringToken()
         {
-            char ending = _input[_position]; // " or '
+            char ending = _input[_position];
             _position++;
-            
+
             var sb = new StringBuilder();
             while (_position < _length)
             {
                 char c = _input[_position];
-                
+
                 if (c == ending)
                 {
                     _position++;
@@ -347,95 +325,93 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 }
                 if (c == '\n')
                 {
-                    // Bad string
-                    _position++; 
+                    // CSS Syntax says to reconsume the newline in the main tokenizer.
+                    // Do not advance here; the next Consume() will emit whitespace.
                     return new CssToken(CssTokenType.BadString);
                 }
                 if (c == '\\')
                 {
-                    // Escape
-                     _position++;
-                     if (_position >= _length) break; // EOF
-                     if (_input[_position] == '\n')
-                     {
-                         _position++; // Escaped newline, ignore
-                         continue;
-                     }
-                     sb.Append(ConsumeEscape());
-                     continue;
+                    _position++;
+                    if (_position >= _length) break;
+                    if (_input[_position] == '\n')
+                    {
+                        _position++;
+                        continue;
+                    }
+                    sb.Append(ConsumeEscape());
+                    continue;
                 }
-                
+
                 sb.Append(c);
                 _position++;
             }
-            
+
             return new CssToken(CssTokenType.String, sb.ToString());
         }
-        
+
         private CssToken ConsumeNumericToken()
         {
-             // Placeholder implementation of number consumption
-             // Spec says: Use numeric state machine. 
-             // Here we use a simplified version for Phase 3.1
-             string numberStr = ConsumeNumber();
-             double number = double.Parse(numberStr, CultureInfo.InvariantCulture);
-             
-             // Check % or identifier (Dimension)
-             if (CheckThreeCodePoints(0, IsIdentifierStart)) // Wait, check if next starts ident
-             {
-                 string unit = ConsumeName();
-                 return new CssToken(CssTokenType.Dimension, number, unit);
-             }
-             if (_position < _length && _input[_position] == '%')
-             {
-                 _position++;
-                 return new CssToken(CssTokenType.Percentage, number);
-             }
-             
-             return new CssToken(CssTokenType.Number, number);
+            string numberStr = ConsumeNumber();
+            if (!double.TryParse(numberStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
+            {
+                number = numberStr.StartsWith("-", StringComparison.Ordinal)
+                    ? double.NegativeInfinity
+                    : double.PositiveInfinity;
+            }
+
+            // A dimension is created when the next three code points would start an
+            // identifier, including hyphen-leading and escaped units.
+            if (WouldStartIdentifier(_input, _position))
+            {
+                string unit = ConsumeName();
+                return new CssToken(CssTokenType.Dimension, number, unit);
+            }
+            if (_position < _length && _input[_position] == '%')
+            {
+                _position++;
+                return new CssToken(CssTokenType.Percentage, number);
+            }
+
+            return new CssToken(CssTokenType.Number, number);
         }
 
         private CssToken ConsumeIdentLikeToken()
         {
-             string name = ConsumeName();
-             
-             if (name.Equals("url", StringComparison.OrdinalIgnoreCase) && 
-                 _position < _length && _input[_position] == '(')
-             {
-                 _position++; // (
-                 
-                 // Check if there is whitespace then quote
-                 int tempPos = _position;
-                 while(tempPos < _length && IsWhitespace(_input[tempPos])) tempPos++;
-                 if (tempPos >= _length) 
-                 {
-                     // EOF inside url( -> function
-                     return new CssToken(CssTokenType.Function, name);
-                 }
-                 if (_input[tempPos] == '"' || _input[tempPos] == '\'')
-                 {
-                     return new CssToken(CssTokenType.Function, name);
-                 }
-                 
-                 // Otherwise unquoted url
-                 return ConsumeUrlToken();
-             }
-             
-             if (_position < _length && _input[_position] == '(')
-             {
-                 _position++;
-                 return new CssToken(CssTokenType.Function, name);
-             }
-             
-             return new CssToken(CssTokenType.Ident, name);
+            string name = ConsumeName();
+
+            if (name.Equals("url", StringComparison.OrdinalIgnoreCase) &&
+                _position < _length && _input[_position] == '(')
+            {
+                _position++;
+
+                int tempPos = _position;
+                while (tempPos < _length && IsWhitespace(_input[tempPos])) tempPos++;
+                if (tempPos >= _length)
+                {
+                    return new CssToken(CssTokenType.Function, name);
+                }
+                if (_input[tempPos] == '"' || _input[tempPos] == '\'')
+                {
+                    return new CssToken(CssTokenType.Function, name);
+                }
+
+                return ConsumeUrlToken();
+            }
+
+            if (_position < _length && _input[_position] == '(')
+            {
+                _position++;
+                return new CssToken(CssTokenType.Function, name);
+            }
+
+            return new CssToken(CssTokenType.Ident, name);
         }
 
         private CssToken ConsumeUrlToken()
         {
-            // Consume as much whitespace as possible
             ConsumeWhitespace();
-            
-            if (_position >= _length) 
+
+            if (_position >= _length)
             {
                 return new CssToken(CssTokenType.Url, "");
             }
@@ -444,7 +420,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
             while (_position < _length)
             {
                 char c = _input[_position];
-                
+
                 if (c == ')')
                 {
                     _position++;
@@ -452,7 +428,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 }
                 if (c == '"' || c == '\'' || c == '(' || IsNonPrintable(c))
                 {
-                    // Parse error
                     ConsumeBadUrlRemnants();
                     return new CssToken(CssTokenType.BadUrl);
                 }
@@ -475,11 +450,10 @@ namespace FenBrowser.FenEngine.Rendering.Css
                         sb.Append(ConsumeEscape());
                         continue;
                     }
-                    // Parse error
                     ConsumeBadUrlRemnants();
                     return new CssToken(CssTokenType.BadUrl);
                 }
-                
+
                 sb.Append(c);
                 _position++;
             }
@@ -498,7 +472,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 if (IsValidEscape(_position))
                 {
                     _position++;
-                    ConsumeEscape(); // ignore result
+                    _ = ConsumeEscape();
                 }
                 else
                 {
@@ -541,21 +515,19 @@ namespace FenBrowser.FenEngine.Rendering.Css
             sb.Append(_input, segmentStart, _position - segmentStart);
             return sb.ToString();
         }
-        
+
         private string ConsumeNumber()
         {
             int start = _position;
-            // Consume [+-]? digit+ (. digit+)? ((e|E) [+-]? digit+)?
             if (_position < _length && (_input[_position] == '+' || _input[_position] == '-')) _position++;
             while (_position < _length && IsDigit(_input[_position])) _position++;
             if (_position + 1 < _length && _input[_position] == '.' && IsDigit(_input[_position + 1]))
             {
-                _position += 2; // . and digit
+                _position += 2;
                 while (_position < _length && IsDigit(_input[_position])) _position++;
             }
             if (_position + 1 < _length && (_input[_position] == 'e' || _input[_position] == 'E'))
             {
-                // Exponent
                 int savedPos = _position;
                 _position++;
                 if (_position < _length && (_input[_position] == '+' || _input[_position] == '-')) _position++;
@@ -565,40 +537,45 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 }
                 else
                 {
-                    _position = savedPos; // Backtrack
+                    _position = savedPos;
                 }
             }
-            
+
             return _input.Substring(start, _position - start);
         }
 
-        private char ConsumeEscape()
+        private string ConsumeEscape()
         {
-            if (_position >= _length) return '\uFFFD';
-            
+            if (_position >= _length) return "\uFFFD";
+
             char c = _input[_position];
             if (IsHexDigit(c))
             {
-                 int start = _position;
-                 int max = Math.Min(_length, _position + 6);
-                 while (_position < max && IsHexDigit(_input[_position])) _position++;
-                 
-                 string hex = _input.Substring(start, _position - start);
-                 int codePoint = int.Parse(hex, NumberStyles.HexNumber);
-                 
-                 if (_position < _length && IsWhitespace(_input[_position])) _position++;
-                 
-                 if (codePoint == 0 || (codePoint >= 0xD800 && codePoint <= 0xDFFF) || codePoint > 0x10FFFF)
-                    return '\uFFFD';
-                    
-                 return char.ConvertFromUtf32(codePoint)[0]; 
+                int start = _position;
+                int max = Math.Min(_length, _position + 6);
+                while (_position < max && IsHexDigit(_input[_position])) _position++;
+
+                string hex = _input.Substring(start, _position - start);
+                int codePoint = int.Parse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+
+                if (_position < _length && IsWhitespace(_input[_position])) _position++;
+
+                if (codePoint == 0 ||
+                    (codePoint >= 0xD800 && codePoint <= 0xDFFF) ||
+                    codePoint > 0x10FFFF)
+                {
+                    return "\uFFFD";
+                }
+
+                // Non-BMP escapes produce a surrogate pair. Returning string avoids
+                // truncating them to only the high surrogate.
+                return char.ConvertFromUtf32(codePoint);
             }
-            
-            _position++; // Spec says consume the char if not hex
-            return c;
+
+            _position++;
+            return c.ToString();
         }
 
-        // Helpers
         private static bool IsWhitespace(char c) => c == ' ' || c == '\t' || c == '\n' || c == '\f';
         private static bool IsDigit(char c) => c >= '0' && c <= '9';
         private static bool IsHexDigit(char c) => IsDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
@@ -610,23 +587,23 @@ namespace FenBrowser.FenEngine.Rendering.Css
         private static bool IsNameChar(char c) => IsNameStart(c) || IsDigit(c) || c == '-';
         private static bool IsNonPrintable(char c) => (c >= 0 && c <= 8) || c == 0x0B || (c >= 0x0E && c <= 0x1F) || c == 0x7F;
 
-        private static bool IsIdentifierStart(char c) => IsNameStart(c); 
-
         private bool StartsWithNumber()
         {
             if (_position >= _length) return false;
             char c = _input[_position];
             if (IsDigit(c)) return true;
-            if (c == '+' || c == '-') return _position + 1 < _length && (IsDigit(_input[_position + 1]) || (_input[_position + 1] == '.' && _position + 2 < _length && IsDigit(_input[_position + 2])));
+            if (c == '+' || c == '-')
+            {
+                return _position + 1 < _length &&
+                       (IsDigit(_input[_position + 1]) ||
+                        (_input[_position + 1] == '.' && _position + 2 < _length && IsDigit(_input[_position + 2])));
+            }
             if (c == '.') return _position + 1 < _length && IsDigit(_input[_position + 1]);
             return false;
         }
-        
-        private bool StartsWithIdentifier()
-        {
-             return WouldStartIdentifier(_input, _position);
-        }
-        
+
+        private bool StartsWithIdentifier() => WouldStartIdentifier(_input, _position);
+
         private static bool WouldStartIdentifier(string str, int index)
         {
             if (index >= str.Length) return false;
@@ -641,22 +618,16 @@ namespace FenBrowser.FenEngine.Rendering.Css
             if (c == '\\') return AreValidEscape(str, index);
             return false;
         }
-        
+
         private bool IsValidEscape(int pos) => AreValidEscape(_input, pos);
-        
+
         private static bool AreValidEscape(string str, int index)
         {
             if (index >= str.Length || str[index] != '\\') return false;
             if (index + 1 >= str.Length) return false;
             return str[index + 1] != '\n';
         }
-        
-        private bool CheckThreeCodePoints(int offset, Func<char, bool> check)
-        {
-             if (_position + offset >= _length) return false;
-             return check(_input[_position + offset]);
-        }
-        
+
         private char PeekAt(int offset)
         {
             if (_position + offset >= _length) return '\0';
