@@ -76,9 +76,20 @@ namespace FenBrowser.Core.Dom.V2
 
             _idIndex ??= new Dictionary<string, Element>(StringComparer.Ordinal);
 
-            // First element wins (per spec)
-            if (!_idIndex.ContainsKey(id))
+            if (!_idIndex.TryGetValue(id, out var existing))
+            {
                 _idIndex[id] = element;
+                return;
+            }
+
+            if (ReferenceEquals(existing, element))
+                return;
+
+            // getElementById returns the first matching element in tree order, not
+            // the element that happened to register the ID first. Once a duplicate
+            // appears we cannot determine that ordering from registration timing, so
+            // invalidate and let the next lookup rebuild by walking the actual tree.
+            _idIndexDirty = true;
         }
 
         /// <summary>
