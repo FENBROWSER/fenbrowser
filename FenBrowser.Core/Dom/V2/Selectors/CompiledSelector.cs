@@ -13,30 +13,39 @@ namespace FenBrowser.Core.Dom.V2.Selectors
     public sealed class CompiledSelector
     {
         private readonly SelectorChain[] _chains;
-        private readonly long _bloomHint;
+        private readonly long[] _chainBloomHints;
 
         internal CompiledSelector(List<SelectorChain> chains)
         {
+            ArgumentNullException.ThrowIfNull(chains);
             _chains = chains.ToArray();
-
-            // Compute bloom filter hint from all chains
-            long hint = 0;
-            foreach (var chain in _chains)
+            _chainBloomHints = new long[_chains.Length];
+            for (var i = 0; i < _chains.Length; i++)
             {
-                hint |= chain.ComputeBloomHint();
+                _chainBloomHints[i] = _chains[i].ComputeBloomHint();
             }
-            _bloomHint = hint;
         }
 
         /// <summary>
         /// Fast-path rejection using ancestor bloom filter.
-        /// Returns false if the selector definitely won't match.
+        /// Returns false only when no selector-list branch can possibly match.
         /// </summary>
         public bool MayMatch(long ancestorFilter)
         {
-            // If all required bits are in the ancestor filter, matching is possible
-            return (_bloomHint & ancestorFilter) == _bloomHint ||
-                   _bloomHint == 0; // Universal selectors have no hint
+            // Selector-list branches are alternatives. OR-ing every branch into one
+            // combined hint incorrectly required an element to satisfy ancestor hints
+            // from all branches at once (for example "#a, .b"), creating false
+            // negatives for any caller that uses this fast path.
+            for (var i = 0; i < _chainBloomHints.Length; i++)
+            {
+                var hint = _chainBloomHints[i];
+                if (hint == 0 || (hint & ancestorFilter) == hint)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -46,9 +55,9 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         {
             if (element == null) return false;
 
-            foreach (var chain in _chains)
+            for (var i = 0; i < _chains.Length; i++)
             {
-                if (chain.Matches(element))
+                if (_chains[i].Matches(element))
                     return true;
             }
             return false;
@@ -59,11 +68,10 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         /// </summary>
         public Specificity GetSpecificity()
         {
-            // Return the highest specificity among all chains
             var max = new Specificity(0, 0, 0);
-            foreach (var chain in _chains)
+            for (var i = 0; i < _chains.Length; i++)
             {
-                var spec = chain.GetSpecificity();
+                var spec = _chains[i].GetSpecificity();
                 if (spec.CompareTo(max) > 0)
                     max = spec;
             }
@@ -82,13 +90,13 @@ namespace FenBrowser.Core.Dom.V2.Selectors
     /// </summary>
     public sealed class SelectorChain
     {
-        // Each item: (compound selector, combinator to next)
         private readonly (CompoundSelector Compound, Combinator Combinator)[] _parts;
 
         internal SelectorChain(List<(List<SimpleSelector>, Combinator)> parts)
         {
+            ArgumentNullException.ThrowIfNull(parts);
             _parts = new (CompoundSelector, Combinator)[parts.Count];
-            for (int i = 0; i < parts.Count; i++)
+            for (var i = 0; i < parts.Count; i++)
             {
                 _parts[i] = (new CompoundSelector(parts[i].Item1), parts[i].Item2);
             }
@@ -99,12 +107,9 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         /// </summary>
         public long ComputeBloomHint()
         {
-            // Only the rightmost compound selector needs to match
-            // But ancestor requirements from descendant/child combinators should be hinted
             long hint = 0;
 
-            // Collect hints from all ancestor-requiring selectors
-            for (int i = 0; i < _parts.Length - 1; i++)
+            for (var i = 0; i < _parts.Length - 1; i++)
             {
                 var combinator = _parts[i].Combinator;
                 if (combinator == Combinator.Descendant || combinator == Combinator.Child)
@@ -118,77 +123,117 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         /// <summary>
         /// Tests if the element matches this chain.
-        /// Matching starts from the rightmost selector and works left.
+        /// Matching starts from the rightmost selector and uses explicit-stack
+        /// backtracking for non-unique combinators.
         /// </summary>
         public bool Matches(Element element)
         {
             if (element == null || _parts.Length == 0)
                 return false;
 
-            // Start from the rightmost compound selector
-            int partIndex = _parts.Length - 1;
-            var currentElement = element;
+            // Greedily selecting the nearest matching descendant/general sibling is
+            // incorrect when the selected candidate cannot satisfy the rest of the
+            // chain but an earlier candidate can. Example: A + B ~ C. Use an explicit
+            // DFS stack so all legal candidates can be tried without recursion/native
+            // stack growth on long generated selector chains.
+            var states = new Stack<MatchState>();
+            states.Push(new MatchState(_parts.Length - 1, element));
 
-            while (partIndex >= 0)
+            while (states.Count > 0)
             {
-                var (compound, combinator) = _parts[partIndex];
+                var state = states.Pop();
+                var partIndex = state.PartIndex;
+                var current = state.Element;
+                if (current == null || !_parts[partIndex].Compound.Matches(current))
+                {
+                    continue;
+                }
 
-                if (!compound.Matches(currentElement))
-                    return false;
+                if (partIndex == 0)
+                {
+                    return true;
+                }
 
-                partIndex--;
-                if (partIndex < 0)
-                    return true; // All parts matched
-
-                // Navigate based on previous combinator
-                var prevCombinator = _parts[partIndex].Combinator;
-                currentElement = FindMatchingAncestorOrSibling(
-                    currentElement, _parts[partIndex].Compound, prevCombinator);
-
-                if (currentElement == null)
-                    return false;
+                var previousPartIndex = partIndex - 1;
+                var combinator = _parts[previousPartIndex].Combinator;
+                PushCandidates(states, previousPartIndex, current, combinator);
             }
 
-            return true;
+            return false;
         }
 
-        private static Element FindMatchingAncestorOrSibling(
-            Element element, CompoundSelector compound, Combinator combinator)
+        private static void PushCandidates(
+            Stack<MatchState> states,
+            int previousPartIndex,
+            Element current,
+            Combinator combinator)
         {
             switch (combinator)
             {
-                case Combinator.Descendant:
-                    // Any ancestor
-                    for (var parent = element.ParentElement; parent != null; parent = parent.ParentElement)
-                    {
-                        if (compound.Matches(parent))
-                            return parent;
-                    }
-                    return null;
-
                 case Combinator.Child:
-                    // Direct parent only
-                    var directParent = element.ParentElement;
-                    return directParent != null && compound.Matches(directParent) ? directParent : null;
+                {
+                    var parent = current.ParentElement;
+                    if (parent != null)
+                    {
+                        states.Push(new MatchState(previousPartIndex, parent));
+                    }
+                    break;
+                }
 
                 case Combinator.AdjacentSibling:
-                    // Immediately preceding sibling
-                    var prevSibling = element.PreviousElementSibling;
-                    return prevSibling != null && compound.Matches(prevSibling) ? prevSibling : null;
+                {
+                    var sibling = current.PreviousElementSibling;
+                    if (sibling != null)
+                    {
+                        states.Push(new MatchState(previousPartIndex, sibling));
+                    }
+                    break;
+                }
+
+                case Combinator.Descendant:
+                {
+                    // Push farthest -> nearest so nearest is evaluated first while all
+                    // ancestors remain available for backtracking.
+                    var ancestors = new List<Element>();
+                    for (var parent = current.ParentElement; parent != null; parent = parent.ParentElement)
+                    {
+                        ancestors.Add(parent);
+                    }
+                    for (var i = ancestors.Count - 1; i >= 0; i--)
+                    {
+                        states.Push(new MatchState(previousPartIndex, ancestors[i]));
+                    }
+                    break;
+                }
 
                 case Combinator.GeneralSibling:
-                    // Any preceding sibling
-                    for (var sibling = element.PreviousElementSibling; sibling != null;
+                {
+                    var siblings = new List<Element>();
+                    for (var sibling = current.PreviousElementSibling;
+                         sibling != null;
                          sibling = sibling.PreviousElementSibling)
                     {
-                        if (compound.Matches(sibling))
-                            return sibling;
+                        siblings.Add(sibling);
                     }
-                    return null;
-
-                default:
-                    return null;
+                    for (var i = siblings.Count - 1; i >= 0; i--)
+                    {
+                        states.Push(new MatchState(previousPartIndex, siblings[i]));
+                    }
+                    break;
+                }
             }
+        }
+
+        private readonly struct MatchState
+        {
+            public MatchState(int partIndex, Element element)
+            {
+                PartIndex = partIndex;
+                Element = element;
+            }
+
+            public int PartIndex { get; }
+            public Element Element { get; }
         }
 
         /// <summary>
@@ -196,10 +241,12 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         /// </summary>
         public Specificity GetSpecificity()
         {
-            int a = 0, b = 0, c = 0;
-            foreach (var (compound, _) in _parts)
+            var a = 0;
+            var b = 0;
+            var c = 0;
+            for (var i = 0; i < _parts.Length; i++)
             {
-                var spec = compound.GetSpecificity();
+                var spec = _parts[i].Compound.GetSpecificity();
                 a += spec.A;
                 b += spec.B;
                 c += spec.C;
@@ -210,7 +257,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         public override string ToString()
         {
             var sb = new System.Text.StringBuilder();
-            for (int i = 0; i < _parts.Length; i++)
+            for (var i = 0; i < _parts.Length; i++)
             {
                 if (i > 0)
                 {
@@ -238,44 +285,38 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         internal CompoundSelector(List<SimpleSelector> selectors)
         {
+            ArgumentNullException.ThrowIfNull(selectors);
             _selectors = selectors.ToArray();
         }
 
-        /// <summary>
-        /// Computes a bloom filter hint.
-        /// </summary>
         public long ComputeBloomHint()
         {
             long hint = 0;
-            foreach (var selector in _selectors)
+            for (var i = 0; i < _selectors.Length; i++)
             {
-                hint |= selector.ComputeBloomHint();
+                hint |= _selectors[i].ComputeBloomHint();
             }
             return hint;
         }
 
-        /// <summary>
-        /// Tests if the element matches all simple selectors.
-        /// </summary>
         public bool Matches(Element element)
         {
-            foreach (var selector in _selectors)
+            for (var i = 0; i < _selectors.Length; i++)
             {
-                if (!selector.Matches(element))
+                if (!_selectors[i].Matches(element))
                     return false;
             }
             return true;
         }
 
-        /// <summary>
-        /// Gets the specificity.
-        /// </summary>
         public Specificity GetSpecificity()
         {
-            int a = 0, b = 0, c = 0;
-            foreach (var selector in _selectors)
+            var a = 0;
+            var b = 0;
+            var c = 0;
+            for (var i = 0; i < _selectors.Length; i++)
             {
-                var spec = selector.GetSpecificity();
+                var spec = _selectors[i].GetSpecificity();
                 a += spec.A;
                 b += spec.B;
                 c += spec.C;
@@ -285,7 +326,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         public override string ToString()
         {
-            return string.Join("", (System.Collections.Generic.IEnumerable<SimpleSelector>)_selectors);
+            return string.Join("", (IEnumerable<SimpleSelector>)_selectors);
         }
     }
 
@@ -294,9 +335,9 @@ namespace FenBrowser.Core.Dom.V2.Selectors
     /// </summary>
     public readonly struct Specificity : IComparable<Specificity>
     {
-        public readonly int A; // ID selectors
-        public readonly int B; // Class, attribute, pseudo-class selectors
-        public readonly int C; // Type, pseudo-element selectors
+        public readonly int A;
+        public readonly int B;
+        public readonly int C;
 
         public Specificity(int a, int b, int c)
         {
@@ -307,7 +348,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         public int CompareTo(Specificity other)
         {
-            int cmp = A.CompareTo(other.A);
+            var cmp = A.CompareTo(other.A);
             if (cmp != 0) return cmp;
             cmp = B.CompareTo(other.B);
             if (cmp != 0) return cmp;
