@@ -6,27 +6,16 @@ using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
 {
-    /// <summary>
-    /// Compositor-facing layer metadata derived from the immutable paint tree.
-    /// </summary>
     public sealed class CompositedLayer
     {
         public int LayerId { get; init; }
-
         public Node SourceNode { get; init; }
-
         public SKRect Bounds { get; init; }
-
         public float Opacity { get; init; } = 1f;
-
         public SKMatrix? Transform { get; init; }
-
         public IReadOnlyList<string> PromotionReasons { get; init; } = Array.Empty<string>();
     }
 
-    /// <summary>
-    /// Layerization output used by frame telemetry.
-    /// </summary>
     public sealed class LayerizationResult
     {
         public static readonly LayerizationResult Empty = new()
@@ -36,13 +25,11 @@ namespace FenBrowser.FenEngine.Rendering
         };
 
         public IReadOnlyList<CompositedLayer> Layers { get; init; } = Array.Empty<CompositedLayer>();
-
         public int PromotedLayerCount { get; init; }
     }
 
     /// <summary>
-    /// Converts paint-tree nodes into compositor-layer metadata and applies
-    /// promotion heuristics for transform/opacity/will-change paths.
+    /// Converts retained paint nodes into compositor-layer metadata.
     /// </summary>
     public sealed class PaintTreeLayerizer
     {
@@ -53,7 +40,9 @@ namespace FenBrowser.FenEngine.Rendering
             "scroll-position"
         };
 
-        public LayerizationResult Layerize(ImmutablePaintTree tree, IReadOnlyDictionary<Node, CssComputed> styles)
+        public LayerizationResult Layerize(
+            ImmutablePaintTree tree,
+            IReadOnlyDictionary<Node, CssComputed> styles)
         {
             if (tree == null || tree.NodeCount == 0 || tree.Roots == null || tree.Roots.Count == 0)
             {
@@ -71,15 +60,9 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var orderedLayers = new List<MutableLayer>((bySource?.Count ?? 0) + (synthetic?.Count ?? 0));
-            if (bySource != null)
-            {
-                orderedLayers.AddRange(bySource.Values);
-            }
+            if (bySource != null) orderedLayers.AddRange(bySource.Values);
+            if (synthetic != null) orderedLayers.AddRange(synthetic);
 
-            if (synthetic != null)
-            {
-                orderedLayers.AddRange(synthetic);
-            }
             orderedLayers.Sort(static (a, b) =>
             {
                 var top = a.Bounds.Top.CompareTo(b.Bounds.Top);
@@ -88,7 +71,13 @@ namespace FenBrowser.FenEngine.Rendering
                 var left = a.Bounds.Left.CompareTo(b.Bounds.Left);
                 if (left != 0) return left;
 
-                return string.CompareOrdinal(a.PrimaryReason, b.PrimaryReason);
+                var reason = string.CompareOrdinal(a.PrimaryReason, b.PrimaryReason);
+                if (reason != 0) return reason;
+
+                // Dictionary/HashSet enumeration order must never leak into layer IDs.
+                // Preserve the first paint-tree occurrence as the deterministic final
+                // tiebreak for geometrically identical promoted layers.
+                return a.FirstPaintOrder.CompareTo(b.FirstPaintOrder);
             });
 
             var layers = new List<CompositedLayer>(orderedLayers.Count);
@@ -96,11 +85,7 @@ namespace FenBrowser.FenEngine.Rendering
             for (var i = 0; i < orderedLayers.Count; i++)
             {
                 var layer = orderedLayers[i].ToImmutable(i + 1);
-                if (layer.PromotionReasons.Count > 0)
-                {
-                    promoted++;
-                }
-
+                if (layer.PromotionReasons.Count > 0) promoted++;
                 layers.Add(layer);
             }
 
@@ -117,75 +102,68 @@ namespace FenBrowser.FenEngine.Rendering
             ref Dictionary<Node, MutableLayer> bySource,
             ref List<MutableLayer> synthetic)
         {
-            if (nodes == null)
+            if (nodes == null || nodes.Count == 0) return;
+
+            // Layerization runs every rebuilt paint tree. Do not recurse on page depth;
+            // preserve paint pre-order using an explicit stack.
+            var stack = new Stack<PaintNodeBase>();
+            for (var i = nodes.Count - 1; i >= 0; i--)
             {
-                return;
+                if (nodes[i] != null) stack.Push(nodes[i]);
             }
 
-            for (var index = 0; index < nodes.Count; index++)
+            var paintOrder = 0;
+            while (stack.Count > 0)
             {
-                var node = nodes[index];
-                if (node == null)
-                {
-                    continue;
-                }
-
+                var node = stack.Pop();
+                var currentOrder = paintOrder++;
                 var reasons = CollectPromotionReasons(node, styles);
                 if (reasons != null)
                 {
                     var sourceNode = node.SourceNode;
                     if (sourceNode == null)
                     {
-                        (synthetic ??= new List<MutableLayer>()).Add(MutableLayer.FromNode(node, reasons));
+                        (synthetic ??= new List<MutableLayer>()).Add(
+                            MutableLayer.FromNode(node, reasons, currentOrder));
                     }
                     else
                     {
                         bySource ??= new Dictionary<Node, MutableLayer>();
                         if (!bySource.TryGetValue(sourceNode, out var layer))
                         {
-                            bySource[sourceNode] = MutableLayer.FromNode(node, reasons);
+                            bySource[sourceNode] = MutableLayer.FromNode(node, reasons, currentOrder);
                         }
                         else
                         {
-                            layer.Merge(node, reasons);
+                            layer.Merge(node, reasons, currentOrder);
                         }
                     }
                 }
 
-                CollectLayers(node.Children, styles, ref bySource, ref synthetic);
+                var children = node.Children;
+                if (children == null) continue;
+                for (var i = children.Count - 1; i >= 0; i--)
+                {
+                    if (children[i] != null) stack.Push(children[i]);
+                }
             }
         }
 
-        private static HashSet<string> CollectPromotionReasons(PaintNodeBase node, IReadOnlyDictionary<Node, CssComputed> styles)
+        private static HashSet<string> CollectPromotionReasons(
+            PaintNodeBase node,
+            IReadOnlyDictionary<Node, CssComputed> styles)
         {
             HashSet<string> reasons = null;
 
-            if (node.Transform.HasValue)
-            {
-                AddPromotionReason(ref reasons, "transform");
-            }
+            if (node.Transform.HasValue) AddPromotionReason(ref reasons, "transform");
+            if (node.Opacity < 0.999f) AddPromotionReason(ref reasons, "opacity");
+            if (node is StackingContextPaintNode) AddPromotionReason(ref reasons, "stacking-context");
+            if (node is OpacityGroupPaintNode) AddPromotionReason(ref reasons, "opacity-group");
+            if (node is ScrollPaintNode) AddPromotionReason(ref reasons, "scroll");
 
-            if (node.Opacity < 0.999f)
-            {
-                AddPromotionReason(ref reasons, "opacity");
-            }
-
-            if (node is StackingContextPaintNode)
-            {
-                AddPromotionReason(ref reasons, "stacking-context");
-            }
-
-            if (node is OpacityGroupPaintNode)
-            {
-                AddPromotionReason(ref reasons, "opacity-group");
-            }
-
-            if (node is ScrollPaintNode)
-            {
-                AddPromotionReason(ref reasons, "scroll");
-            }
-
-            if (node.SourceNode != null && styles != null && styles.TryGetValue(node.SourceNode, out var computed))
+            if (node.SourceNode != null &&
+                styles != null &&
+                styles.TryGetValue(node.SourceNode, out var computed))
             {
                 var willChange = computed?.WillChange;
                 if (!string.IsNullOrWhiteSpace(willChange) &&
@@ -197,7 +175,10 @@ namespace FenBrowser.FenEngine.Rendering
                         var normalized = token.Trim().ToLowerInvariant();
                         for (var i = 0; i < WillChangePromotionHints.Length; i++)
                         {
-                            if (normalized.Contains(WillChangePromotionHints[i], StringComparison.Ordinal))
+                            // will-change values are property/custom-ident tokens.
+                            // Substring matching promoted unrelated identifiers such as
+                            // "my-transform-state" as if they were the transform property.
+                            if (string.Equals(normalized, WillChangePromotionHints[i], StringComparison.Ordinal))
                             {
                                 AddPromotionReason(ref reasons, $"will-change:{WillChangePromotionHints[i]}");
                             }
@@ -218,51 +199,64 @@ namespace FenBrowser.FenEngine.Rendering
         {
             private readonly HashSet<string> _reasons;
 
-            private MutableLayer(Node sourceNode, SKRect bounds, float opacity, SKMatrix? transform, HashSet<string> reasons)
+            private MutableLayer(
+                Node sourceNode,
+                SKRect bounds,
+                float opacity,
+                SKMatrix? transform,
+                HashSet<string> reasons,
+                int firstPaintOrder)
             {
                 SourceNode = sourceNode;
                 Bounds = bounds;
                 Opacity = opacity;
                 Transform = transform;
                 _reasons = reasons;
+                FirstPaintOrder = firstPaintOrder;
             }
 
             public Node SourceNode { get; }
-
             public SKRect Bounds { get; private set; }
-
             public float Opacity { get; private set; }
-
             public SKMatrix? Transform { get; private set; }
+            public int FirstPaintOrder { get; private set; }
 
             public string PrimaryReason
             {
                 get
                 {
+                    string primary = null;
                     foreach (var reason in _reasons)
                     {
-                        return reason;
+                        if (primary == null || string.CompareOrdinal(reason, primary) < 0)
+                        {
+                            primary = reason;
+                        }
                     }
-
-                    return string.Empty;
+                    return primary ?? string.Empty;
                 }
             }
 
-            public static MutableLayer FromNode(PaintNodeBase node, HashSet<string> reasons)
+            public static MutableLayer FromNode(
+                PaintNodeBase node,
+                HashSet<string> reasons,
+                int paintOrder)
             {
                 return new MutableLayer(
                     node.SourceNode,
                     NormalizeBounds(node.Bounds),
                     Math.Clamp(node.Opacity, 0f, 1f),
                     node.Transform,
-                    reasons);
+                    reasons,
+                    paintOrder);
             }
 
-            public void Merge(PaintNodeBase node, HashSet<string> reasons)
+            public void Merge(PaintNodeBase node, HashSet<string> reasons, int paintOrder)
             {
                 Bounds = Union(Bounds, NormalizeBounds(node.Bounds));
                 Opacity = Math.Min(Opacity, Math.Clamp(node.Opacity, 0f, 1f));
                 Transform ??= node.Transform;
+                FirstPaintOrder = Math.Min(FirstPaintOrder, paintOrder);
                 _reasons.UnionWith(reasons);
             }
 
@@ -283,15 +277,8 @@ namespace FenBrowser.FenEngine.Rendering
 
             private static SKRect Union(SKRect a, SKRect b)
             {
-                if (a.Width <= 0 || a.Height <= 0)
-                {
-                    return b;
-                }
-
-                if (b.Width <= 0 || b.Height <= 0)
-                {
-                    return a;
-                }
+                if (a.Width <= 0 || a.Height <= 0) return b;
+                if (b.Width <= 0 || b.Height <= 0) return a;
 
                 return new SKRect(
                     Math.Min(a.Left, b.Left),
