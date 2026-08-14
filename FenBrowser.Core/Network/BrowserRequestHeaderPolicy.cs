@@ -20,9 +20,6 @@ internal static class BrowserRequestHeaderPolicy
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(context);
 
-        // Preserve Fetch credentials mode on the concrete HTTP request so
-        // post-response CORS validation and preflight checks use the same
-        // request semantics even after transport returns an HttpResponseMessage.
         CorsHandler.SetCredentialsMode(request, context.CredentialsMode);
 
         Add(request, "Accept", accept);
@@ -76,21 +73,39 @@ internal static class BrowserRequestHeaderPolicy
             return null;
         }
 
-        var sameOrigin = IsSameOrigin(candidate, requestUri);
-        var downgrade = string.Equals(candidate.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(requestUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase);
-        var origin = ExtractOrigin(candidate);
+        var referrerUrl = StripForReferrer(candidate);
+        if (referrerUrl == null)
+        {
+            return null;
+        }
+
+        var origin = ExtractOrigin(referrerUrl);
+        if (origin == null)
+        {
+            return null;
+        }
+
+        // Referrer Policy limits a full referrer URL to 4096 serialized characters.
+        // Collapse oversized values to the already-stripped origin before policy
+        // selection rather than sending an arbitrarily large path/query.
+        if (referrerUrl.AbsoluteUri.Length > 4096)
+        {
+            referrerUrl = origin;
+        }
+
+        var sameOrigin = IsSameOrigin(referrerUrl, requestUri);
+        var downgrade = IsPotentiallyTrustworthy(referrerUrl) && !IsPotentiallyTrustworthy(requestUri);
 
         return policy switch
         {
             ReferrerPolicyDirective.NoReferrer => null,
-            ReferrerPolicyDirective.NoReferrerWhenDowngrade => downgrade ? null : candidate,
-            ReferrerPolicyDirective.SameOrigin => sameOrigin ? candidate : null,
+            ReferrerPolicyDirective.NoReferrerWhenDowngrade => downgrade ? null : referrerUrl,
+            ReferrerPolicyDirective.SameOrigin => sameOrigin ? referrerUrl : null,
             ReferrerPolicyDirective.Origin => origin,
             ReferrerPolicyDirective.StrictOrigin => downgrade ? null : origin,
-            ReferrerPolicyDirective.OriginWhenCrossOrigin => sameOrigin ? candidate : origin,
-            ReferrerPolicyDirective.UnsafeUrl => candidate,
-            _ => sameOrigin ? candidate : downgrade ? null : origin
+            ReferrerPolicyDirective.OriginWhenCrossOrigin => sameOrigin ? referrerUrl : origin,
+            ReferrerPolicyDirective.UnsafeUrl => referrerUrl,
+            _ => sameOrigin ? referrerUrl : downgrade ? null : origin
         };
     }
 
@@ -100,18 +115,85 @@ internal static class BrowserRequestHeaderPolicy
         Uri requestUri,
         ReferrerPolicyDirective policy)
     {
-        var computed = ComputeReferrer(candidate, requestUri, policy);
-        if (computed != null)
+        // Always assign, including null. A no-referrer decision must clear any
+        // pre-existing Referer value instead of silently leaving it on the request.
+        request.Headers.Referrer = ComputeReferrer(candidate, requestUri, policy);
+    }
+
+    private static Uri StripForReferrer(Uri uri)
+    {
+        if (uri == null || !uri.IsAbsoluteUri)
         {
-            request.Headers.Referrer = computed;
+            return null;
+        }
+
+        // Fetch defines about:, blob:, and data: as local schemes; Referrer Policy
+        // requires local-scheme URLs to produce no referrer.
+        if (uri.Scheme.Equals("about", StringComparison.OrdinalIgnoreCase) ||
+            uri.Scheme.Equals("blob", StringComparison.OrdinalIgnoreCase) ||
+            uri.Scheme.Equals("data", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        try
+        {
+            var builder = new UriBuilder(uri)
+            {
+                UserName = string.Empty,
+                Password = string.Empty,
+                Fragment = string.Empty
+            };
+            return builder.Uri;
+        }
+        catch (UriFormatException)
+        {
+            return null;
         }
     }
 
     private static Uri ExtractOrigin(Uri uri)
     {
         if (uri == null || !uri.IsAbsoluteUri) return null;
-        var port = uri.IsDefaultPort ? -1 : uri.Port;
-        return new UriBuilder(uri.Scheme, uri.Host, port).Uri;
+
+        try
+        {
+            var port = uri.IsDefaultPort ? -1 : uri.Port;
+            return new UriBuilder(uri.Scheme, uri.Host, port).Uri;
+        }
+        catch (UriFormatException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsPotentiallyTrustworthy(Uri uri)
+    {
+        if (uri == null || !uri.IsAbsoluteUri)
+        {
+            return false;
+        }
+
+        if (uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            uri.Scheme.Equals("wss", StringComparison.OrdinalIgnoreCase) ||
+            uri.Scheme.Equals(Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var host = uri.Host?.TrimEnd('.');
+        if (string.IsNullOrEmpty(host))
+        {
+            return false;
+        }
+
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return IPAddress.TryParse(host, out var address) && IPAddress.IsLoopback(address);
     }
 
     private static bool IsSameOrigin(Uri left, Uri right) =>
