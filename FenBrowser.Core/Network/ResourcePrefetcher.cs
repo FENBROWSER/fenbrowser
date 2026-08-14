@@ -1,37 +1,24 @@
 using FenBrowser.Core.Dom.V2;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Network
 {
-    /// <summary>
-    /// Resource hint types per W3C Resource Hints spec.
-    /// </summary>
     public enum ResourceHint
     {
-        /// <summary>Fetch resource in background for future navigation</summary>
         Prefetch,
-        /// <summary>Fetch resource with high priority for current page</summary>
         Preload,
-        /// <summary>Establish early connection (TCP/TLS handshake)</summary>
         Preconnect,
-        /// <summary>Perform early DNS lookup</summary>
         DnsPrefetch,
-        /// <summary>Speculatively render page in background</summary>
         Prerender
     }
 
-    /// <summary>
-    /// Resource type hints for preload as attribute
-    /// </summary>
     public enum PreloadAs
     {
         Unknown,
@@ -47,10 +34,7 @@ namespace FenBrowser.Core.Network
         Worker
     }
 
-    /// <summary>
-    /// Represents a prefetch/preload request
-    /// </summary>
-    public class PrefetchRequest
+    public sealed class PrefetchRequest
     {
         public Uri Url { get; set; }
         public ResourceHint Hint { get; set; }
@@ -61,107 +45,169 @@ namespace FenBrowser.Core.Network
         public DateTimeOffset QueuedAt { get; set; }
         public bool Completed { get; set; }
         internal int Generation { get; set; }
+        internal string OperationKey { get; set; }
+        internal bool Started { get; set; }
     }
 
     /// <summary>
-    /// Handles resource prefetching, preloading, and connection hints.
-    /// Implements W3C Resource Hints and Preload specifications.
+    /// Schedules speculative network hints with bounded concurrency and priority.
+    /// The queue is broker-owned under one lock; execution is asynchronous and never
+    /// consumes a worker thread merely to wait on network I/O.
     /// </summary>
-    public class ResourcePrefetcher : IDisposable
+    public sealed class ResourcePrefetcher : IDisposable
     {
+        private const int DefaultMaxConcurrentPrefetches = 4;
+        private const int DefaultMaxQueueSize = 100;
+
         private readonly ResourceManager _resourceManager;
-        private readonly ConcurrentQueue<PrefetchRequest> _queue;
-        private readonly ConcurrentDictionary<string, PrefetchRequest> _pending;
-        private readonly HashSet<string> _completedUrls;
-        private readonly HashSet<string> _preconnectedHosts;
-        private readonly object _lock = new object();
-        private readonly SemaphoreSlim _throttle;
+        private readonly PriorityQueue<PrefetchRequest, (int negativePriority, long sequence)> _queue = new();
+        private readonly Dictionary<string, PrefetchRequest> _pending = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _completedOperations = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _preconnectedHosts = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _lock = new();
         private readonly List<CancellationTokenSource> _retiredCancellationSources = new();
+        private SemaphoreSlim _throttle;
         private CancellationTokenSource _cts;
+        private long _enqueueSequence;
         private int _generation;
         private int _activeOperations;
         private int _resourcesDisposed;
+        private int _processingFlag;
+        private int _maxConcurrentPrefetches = DefaultMaxConcurrentPrefetches;
+        private int _maxQueueSize = DefaultMaxQueueSize;
+        private TimeSpan _prefetchTimeout = TimeSpan.FromSeconds(30);
         private bool _disposed;
 
-        // Configuration
-        public int MaxConcurrentPrefetches { get; set; } = 4;
-        public int MaxQueueSize { get; set; } = 100;
-        public TimeSpan PrefetchTimeout { get; set; } = TimeSpan.FromSeconds(30);
+        public int MaxConcurrentPrefetches
+        {
+            get
+            {
+                lock (_lock) return _maxConcurrentPrefetches;
+            }
+            set
+            {
+                if (value < 1 || value > 64)
+                    throw new ArgumentOutOfRangeException(nameof(value), "Prefetch concurrency must be between 1 and 64.");
+
+                lock (_lock)
+                {
+                    ThrowIfDisposedLocked();
+                    if (_activeOperations != 0 || _processingFlag != 0 || _pending.Count != 0 || _queue.Count != 0)
+                    {
+                        throw new InvalidOperationException(
+                            "Prefetch concurrency can only be changed while the scheduler is idle.");
+                    }
+
+                    if (value == _maxConcurrentPrefetches) return;
+                    var oldThrottle = _throttle;
+                    _throttle = new SemaphoreSlim(value, value);
+                    _maxConcurrentPrefetches = value;
+                    oldThrottle.Dispose();
+                }
+            }
+        }
+
+        public int MaxQueueSize
+        {
+            get
+            {
+                lock (_lock) return _maxQueueSize;
+            }
+            set
+            {
+                if (value < 1 || value > 10_000)
+                    throw new ArgumentOutOfRangeException(nameof(value), "Prefetch queue size must be between 1 and 10000.");
+                lock (_lock)
+                {
+                    ThrowIfDisposedLocked();
+                    _maxQueueSize = value;
+                }
+            }
+        }
+
+        public TimeSpan PrefetchTimeout
+        {
+            get
+            {
+                lock (_lock) return _prefetchTimeout;
+            }
+            set
+            {
+                if (value <= TimeSpan.Zero || value > TimeSpan.FromMinutes(5))
+                    throw new ArgumentOutOfRangeException(nameof(value), "Prefetch timeout must be between zero and five minutes.");
+                lock (_lock)
+                {
+                    ThrowIfDisposedLocked();
+                    _prefetchTimeout = value;
+                }
+            }
+        }
+
         public bool EnablePrefetch { get; set; } = true;
         public bool EnablePreload { get; set; } = true;
         public bool EnablePreconnect { get; set; } = true;
         public bool EnableDnsPrefetch { get; set; } = true;
 
-        /// <summary>
-        /// Event fired when a prefetch completes
-        /// </summary>
         public event Action<Uri, bool> OnPrefetchComplete;
 
         public ResourcePrefetcher(ResourceManager resourceManager)
         {
             _resourceManager = resourceManager ?? throw new ArgumentNullException(nameof(resourceManager));
-            _queue = new ConcurrentQueue<PrefetchRequest>();
-            _pending = new ConcurrentDictionary<string, PrefetchRequest>();
-            _completedUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            _preconnectedHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            _throttle = new SemaphoreSlim(MaxConcurrentPrefetches);
+            _throttle = new SemaphoreSlim(DefaultMaxConcurrentPrefetches, DefaultMaxConcurrentPrefetches);
             _cts = new CancellationTokenSource();
         }
 
-        /// <summary>
-        /// Parse and queue prefetch hints from HTML document.
-        /// Looks for: <link rel="prefetch|preload|preconnect|dns-prefetch">
-        /// </summary>
         public async Task PrefetchFromDomAsync(Element document, Uri baseUri)
         {
             if (document == null || baseUri == null) return;
 
             try
             {
-                var linkElements = new List<Element>();
-                CollectLinkElements(document, linkElements);
-
+                var linkElements = CollectLinkElements(document);
+                var tasks = new List<Task>(linkElements.Count);
                 foreach (var link in linkElements)
                 {
-                    var rel = link.GetAttribute("rel")?.ToLowerInvariant();
+                    var relTokens = TokenizeRel(link.GetAttribute("rel"));
                     var href = link.GetAttribute("href");
-
-                    if (string.IsNullOrWhiteSpace(rel) || string.IsNullOrWhiteSpace(href))
+                    if (relTokens.Count == 0 || string.IsNullOrWhiteSpace(href) ||
+                        !Uri.TryCreate(baseUri, href, out var url))
+                    {
                         continue;
+                    }
 
-                    Uri url;
-                    if (!Uri.TryCreate(baseUri, href, out url))
+                    if (!TryResolveHint(relTokens, link.GetAttribute("as"), out var hint, out var asType))
+                    {
                         continue;
+                    }
 
-                    var hint = ParseRelToHint(rel);
-                    if (hint == null) continue;
+                    tasks.Add(QueueHintAsync(
+                        url,
+                        hint,
+                        asType,
+                        link.GetAttribute("crossorigin"),
+                        link.GetAttribute("type")));
+                }
 
-                    var asType = ParseAsType(link.GetAttribute("as"));
-                    var crossOrigin = link.GetAttribute("crossorigin");
-                    var mimeType = link.GetAttribute("type");
-
-                    await QueueHintAsync(url, hint.Value, asType, crossOrigin, mimeType);
+                if (tasks.Count > 0)
+                {
+                    await Task.WhenAll(tasks).ConfigureAwait(false);
                 }
             }
             catch (Exception ex)
             {
-                EngineLogCompat.Debug($"[ResourcePrefetcher] Error parsing DOM hints: {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Debug(
+                    $"[ResourcePrefetcher] DOM hint scan failed (type={ex.GetType().Name}).",
+                    LogCategory.Network);
             }
         }
 
-        /// <summary>
-        /// Parse Link headers from HTTP response for preload hints.
-        /// Format: Link: </style.css>; rel=preload; as=style
-        /// </summary>
         public async Task ProcessLinkHeadersAsync(HttpResponseHeaders headers, Uri baseUri)
         {
             if (headers == null || baseUri == null) return;
 
             try
             {
-                IEnumerable<string> linkValues;
-                if (!headers.TryGetValues("Link", out linkValues))
-                    return;
+                if (!headers.TryGetValues("Link", out var linkValues)) return;
 
                 var queueTasks = new List<Task>();
                 foreach (var linkValue in linkValues)
@@ -176,72 +222,96 @@ namespace FenBrowser.Core.Network
             }
             catch (Exception ex)
             {
-                EngineLogCompat.Debug($"[ResourcePrefetcher] Error parsing Link headers: {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Debug(
+                    $"[ResourcePrefetcher] Link header processing failed (type={ex.GetType().Name}).",
+                    LogCategory.Network);
             }
-
-            await Task.CompletedTask;
         }
 
-        /// <summary>
-        /// Queue a prefetch/preload request
-        /// </summary>
-        public async Task QueueHintAsync(Uri url, ResourceHint hint, PreloadAs asType = PreloadAs.Unknown,
-            string crossOrigin = null, string mimeType = null)
+        public Task QueueHintAsync(
+            Uri url,
+            ResourceHint hint,
+            PreloadAs asType = PreloadAs.Unknown,
+            string crossOrigin = null,
+            string mimeType = null)
         {
-            if (url == null) return;
+            if (url == null || !url.IsAbsoluteUri || !IsFetchableHintUrl(url) || !IsHintEnabled(hint))
+            {
+                return Task.CompletedTask;
+            }
 
-            var key = url.AbsoluteUri;
-            PrefetchRequest request;
+            // Prerender is deliberately not accepted until a separate browsing-context
+            // implementation exists. Queueing a hint with no execution path made the
+            // public scheduler claim work it could never perform.
+            if (hint == ResourceHint.Prerender)
+            {
+                return Task.CompletedTask;
+            }
+
+            var operationKey = BuildOperationKey(url, hint, asType, crossOrigin);
+            var priority = GetPriority(hint, asType);
+            var queued = false;
 
             lock (_lock)
             {
-                if (_disposed)
-                    return;
+                if (_disposed) return Task.CompletedTask;
+                if (_completedOperations.Contains(operationKey)) return Task.CompletedTask;
 
-                // Skip if already processed or pending
-                if (_completedUrls.Contains(key) || _pending.ContainsKey(key))
-                    return;
-
-                // Respect queue limit
-                if (_queue.Count >= MaxQueueSize)
-                    return;
-
-                request = new PrefetchRequest
+                if (_pending.TryGetValue(operationKey, out var existing))
                 {
-                    Url = url,
-                    Hint = hint,
-                    AsType = asType,
-                    CrossOrigin = crossOrigin,
-                    MimeType = mimeType,
-                    Priority = GetPriority(hint, asType),
-                    QueuedAt = DateTimeOffset.UtcNow,
-                    Generation = _generation
-                };
+                    // Preload supersedes a weaker prefetch for the same fetch identity.
+                    // Re-enqueue the same object at a better priority; stale queue entries
+                    // are ignored once the object is marked Started.
+                    if (!existing.Started && priority > existing.Priority)
+                    {
+                        existing.Priority = priority;
+                        existing.Hint = hint;
+                        existing.QueuedAt = DateTimeOffset.UtcNow;
+                        _queue.Enqueue(existing, (-priority, ++_enqueueSequence));
+                        queued = true;
+                    }
+                }
+                else
+                {
+                    if (CountQueuedUniqueLocked() >= _maxQueueSize)
+                    {
+                        return Task.CompletedTask;
+                    }
 
-                if (!_pending.TryAdd(key, request))
-                    return;
+                    var request = new PrefetchRequest
+                    {
+                        Url = url,
+                        Hint = hint,
+                        AsType = asType,
+                        CrossOrigin = crossOrigin,
+                        MimeType = mimeType,
+                        Priority = priority,
+                        QueuedAt = DateTimeOffset.UtcNow,
+                        Generation = _generation,
+                        OperationKey = operationKey
+                    };
 
-                _queue.Enqueue(request);
+                    _pending.Add(operationKey, request);
+                    _queue.Enqueue(request, (-priority, ++_enqueueSequence));
+                    queued = true;
+                }
             }
 
-            EngineLogCompat.Debug($"[ResourcePrefetcher] Queued {hint}: {url}", LogCategory.Network);
+            if (queued)
+            {
+                EngineLogCompat.Debug(
+                    $"[ResourcePrefetcher] Queued {hint} priority={priority} target={GetSafeUrlForLog(url)}",
+                    LogCategory.Network);
+                EnsureProcessing();
+            }
 
-            // PreloadScanner calls this directly during HTML parse and never
-            // touches PrefetchFromDomAsync, so every enqueue owns the processing kick.
-            EnsureProcessing();
-
-            await Task.CompletedTask;
+            return Task.CompletedTask;
         }
-
-        private int _processingFlag;
 
         private void EnsureProcessing()
         {
             if (_disposed) return;
-            if (Interlocked.CompareExchange(ref _processingFlag, 1, 0) != 0)
-            {
-                return;
-            }
+            if (Interlocked.CompareExchange(ref _processingFlag, 1, 0) != 0) return;
 
             CancellationToken token;
             int generation;
@@ -258,39 +328,72 @@ namespace FenBrowser.Core.Network
                 Interlocked.Increment(ref _activeOperations);
             }
 
+            _ = ProcessQueueWorkerAsync(token, generation);
+        }
+
+        private async Task ProcessQueueWorkerAsync(CancellationToken ct, int generation)
+        {
             try
             {
-                _ = Task.Run(async () =>
+                while (!ct.IsCancellationRequested)
                 {
                     try
                     {
-                        await ProcessQueueAsync(token, generation).ConfigureAwait(false);
+                        await _throttle.WaitAsync(ct).ConfigureAwait(false);
                     }
-                    finally
+                    catch (OperationCanceledException)
                     {
-                        Volatile.Write(ref _processingFlag, 0);
-                        EndOperation();
-
-                        // If new-generation items raced in while an old worker was
-                        // cancelling, kick one worker for the current generation.
-                        if (!_disposed && !_queue.IsEmpty)
-                        {
-                            EnsureProcessing();
-                        }
+                        break;
                     }
-                });
+
+                    PrefetchRequest request;
+                    lock (_lock)
+                    {
+                        if (!TryDequeueNextLocked(generation, out request))
+                        {
+                            _throttle.Release();
+                            break;
+                        }
+                        request.Started = true;
+                    }
+
+                    Interlocked.Increment(ref _activeOperations);
+                    _ = RunPrefetchOperationAsync(request, ct);
+                }
             }
-            catch
+            finally
             {
                 Volatile.Write(ref _processingFlag, 0);
                 EndOperation();
-                throw;
+
+                lock (_lock)
+                {
+                    if (!_disposed && HasRunnableQueuedRequestLocked(_generation))
+                    {
+                        // Kick outside the lock below.
+                        ThreadPool.QueueUserWorkItem(static state => ((ResourcePrefetcher)state).EnsureProcessing(), this);
+                    }
+                }
             }
         }
 
-        /// <summary>
-        /// Preconnect to an origin using the browser's configured transport.
-        /// </summary>
+        private async Task RunPrefetchOperationAsync(PrefetchRequest request, CancellationToken generationToken)
+        {
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(generationToken);
+                TimeSpan timeoutValue;
+                lock (_lock) timeoutValue = _prefetchTimeout;
+                timeout.CancelAfter(timeoutValue);
+                await ExecutePrefetchAsync(request, timeout.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _throttle.Release();
+                EndOperation();
+            }
+        }
+
         public async Task PreconnectAsync(Uri url)
         {
             _ = await TryPreconnectAsync(url, CancellationToken.None).ConfigureAwait(false);
@@ -298,41 +401,43 @@ namespace FenBrowser.Core.Network
 
         private async Task<bool> TryPreconnectAsync(Uri url, CancellationToken ct)
         {
-            if (url == null || !url.IsAbsoluteUri)
+            if (url == null || !url.IsAbsoluteUri ||
+                (!string.Equals(url.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                 !string.Equals(url.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+            {
                 return false;
-            if (!string.Equals(url.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(url.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
-                return false;
+            }
 
-            var originKey = url.GetLeftPart(UriPartial.Authority);
+            var originKey = GetOriginKey(url);
             lock (_lock)
             {
-                if (_preconnectedHosts.Contains(originKey))
-                    return true;
-
-                // Reserve the origin while the warm-up is in flight. On failure the
-                // reservation is removed so a later resource hint can retry.
+                if (_preconnectedHosts.Contains(originKey)) return true;
                 _preconnectedHosts.Add(originKey);
             }
 
             var success = false;
             try
             {
-                var originRoot = new Uri(originKey.TrimEnd('/') + "/", UriKind.Absolute);
+                var originRoot = new Uri(originKey + "/", UriKind.Absolute);
                 using var request = new HttpRequestMessage(HttpMethod.Head, originRoot);
                 request.Headers.ConnectionClose = false;
 
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeout.CancelAfter(TimeSpan.FromSeconds(5));
+                TimeSpan configuredTimeout;
+                lock (_lock) configuredTimeout = _prefetchTimeout;
+                timeout.CancelAfter(configuredTimeout < TimeSpan.FromSeconds(5)
+                    ? configuredTimeout
+                    : TimeSpan.FromSeconds(5));
+
                 using var response = await HttpClientFactory.GetSharedClient().SendAsync(
                     request,
                     HttpCompletionOption.ResponseHeadersRead,
                     timeout.Token).ConfigureAwait(false);
 
-                // Any HTTP response proves that DNS/connect/TLS completed. Status is
-                // irrelevant for a connection warm-up.
                 success = true;
-                EngineLogCompat.Debug($"[ResourcePrefetcher] Preconnect warmed: {originKey}", LogCategory.Network);
+                EngineLogCompat.Debug(
+                    $"[ResourcePrefetcher] Preconnect warmed: {GetSafeUrlForLog(url)}",
+                    LogCategory.Network);
                 return true;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -341,28 +446,24 @@ namespace FenBrowser.Core.Network
             }
             catch (Exception ex)
             {
-                EngineLogCompat.Debug($"[ResourcePrefetcher] Preconnect failed: {originKey} - {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Debug(
+                    $"[ResourcePrefetcher] Preconnect failed (type={ex.GetType().Name}).",
+                    LogCategory.Network);
                 return false;
             }
             finally
             {
                 if (!success)
                 {
-                    lock (_lock)
-                    {
-                        _preconnectedHosts.Remove(originKey);
-                    }
+                    lock (_lock) _preconnectedHosts.Remove(originKey);
                 }
             }
         }
 
         private static async Task<bool> PrefetchDnsAsync(Uri url, CancellationToken ct)
         {
-            if (url == null || !url.IsAbsoluteUri || string.IsNullOrWhiteSpace(url.DnsSafeHost))
-                return false;
-
-            if (IPAddress.TryParse(url.DnsSafeHost, out _))
-                return true;
+            if (url == null || !url.IsAbsoluteUri || string.IsNullOrWhiteSpace(url.DnsSafeHost)) return false;
+            if (IPAddress.TryParse(url.DnsSafeHost, out _)) return true;
 
             if (BrowserSettings.Instance.UseSecureDNS)
             {
@@ -374,151 +475,158 @@ namespace FenBrowser.Core.Network
             return systemAddresses.Length > 0;
         }
 
-        /// <summary>
-        /// Process the prefetch queue
-        /// </summary>
-        private async Task ProcessQueueAsync(CancellationToken ct, int generation)
-        {
-            while (!ct.IsCancellationRequested && _queue.TryDequeue(out var request))
-            {
-                if (request.Generation != generation)
-                {
-                    if (request.Generation < generation)
-                    {
-                        RemovePendingIfOwned(request);
-                        continue;
-                    }
-
-                    // A newer generation was queued while this worker was winding
-                    // down. Put it back for the worker that owns that generation.
-                    _queue.Enqueue(request);
-                    break;
-                }
-
-                if (request.Completed) continue;
-
-                try
-                {
-                    await _throttle.WaitAsync(ct).ConfigureAwait(false);
-                    Interlocked.Increment(ref _activeOperations);
-
-                    try
-                    {
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                await ExecutePrefetchAsync(request, ct).ConfigureAwait(false);
-                            }
-                            finally
-                            {
-                                _throttle.Release();
-                                EndOperation();
-                            }
-                        });
-                    }
-                    catch
-                    {
-                        _throttle.Release();
-                        EndOperation();
-                        throw;
-                    }
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Execute a single prefetch request
-        /// </summary>
         private async Task ExecutePrefetchAsync(PrefetchRequest request, CancellationToken ct)
         {
-            var key = request.Url.AbsoluteUri;
-            bool success = false;
-
+            var success = false;
             try
             {
+                if (!IsHintEnabled(request.Hint)) return;
+
                 switch (request.Hint)
                 {
                     case ResourceHint.Preload:
                     case ResourceHint.Prefetch:
-                        // Fetch the resource (it will be cached)
                         switch (request.AsType)
                         {
                             case PreloadAs.Image:
-                                await _resourceManager.FetchImageAsync(request.Url);
+                                await _resourceManager.FetchImageAsync(request.Url).ConfigureAwait(false);
+                                success = true;
                                 break;
                             case PreloadAs.Style:
                             case PreloadAs.Script:
                             case PreloadAs.Fetch:
                             case PreloadAs.Document:
+                            case PreloadAs.Worker:
+                            case PreloadAs.Unknown:
+                                await _resourceManager.FetchTextAsync(request.Url).ConfigureAwait(false);
+                                success = true;
+                                break;
                             default:
-                                await _resourceManager.FetchTextAsync(request.Url);
+                                // No binary cache API is currently shared by font/media
+                                // consumers. Do not waste bandwidth by decoding those
+                                // resources through the text cache and calling it a hit.
+                                success = false;
                                 break;
                         }
-                        success = true;
                         break;
-
                     case ResourceHint.Preconnect:
                         success = await TryPreconnectAsync(request.Url, ct).ConfigureAwait(false);
                         break;
-
                     case ResourceHint.DnsPrefetch:
                         success = await PrefetchDnsAsync(request.Url, ct).ConfigureAwait(false);
+                        break;
+                    case ResourceHint.Prerender:
+                        success = false;
                         break;
                 }
 
                 EngineLogCompat.Debug(
-                    $"[ResourcePrefetcher] {(success ? "Completed" : "Failed")} {request.Hint}: {request.Url}",
+                    $"[ResourcePrefetcher] {(success ? "Completed" : "Skipped/failed")} {request.Hint} target={GetSafeUrlForLog(request.Url)}",
+                    LogCategory.Network);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                EngineLogCompat.Debug(
+                    $"[ResourcePrefetcher] Cancelled {request.Hint}.",
                     LogCategory.Network);
             }
             catch (Exception ex)
             {
-                EngineLogCompat.Debug($"[ResourcePrefetcher] Failed {request.Hint}: {request.Url} - {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Debug(
+                    $"[ResourcePrefetcher] Failed {request.Hint} (type={ex.GetType().Name}).",
+                    LogCategory.Network);
             }
             finally
             {
-                bool notify;
+                var notify = false;
                 lock (_lock)
                 {
-                    notify = !_disposed && request.Generation == _generation;
-                    if (notify)
+                    if (!_disposed && request.Generation == _generation)
                     {
-                        RemovePendingIfOwnedLocked(key, request);
-                        if (success)
-                        {
-                            _completedUrls.Add(key);
-                        }
+                        RemovePendingIfOwnedLocked(request.OperationKey, request);
+                        if (success) _completedOperations.Add(request.OperationKey);
+                        notify = true;
                     }
                 }
 
                 request.Completed = success;
                 if (notify)
                 {
-                    OnPrefetchComplete?.Invoke(request.Url, success);
+                    try
+                    {
+                        OnPrefetchComplete?.Invoke(request.Url, success);
+                    }
+                    catch (Exception ex)
+                    {
+                        EngineLogCompat.Debug(
+                            $"[ResourcePrefetcher] Completion subscriber failed (type={ex.GetType().Name}).",
+                            LogCategory.Network);
+                    }
                 }
             }
         }
 
-        private void RemovePendingIfOwned(PrefetchRequest request)
+        private bool TryDequeueNextLocked(int generation, out PrefetchRequest request)
         {
-            if (request?.Url == null)
-                return;
-
-            lock (_lock)
+            request = null;
+            while (_queue.Count > 0)
             {
-                RemovePendingIfOwnedLocked(request.Url.AbsoluteUri, request);
+                var candidate = _queue.Dequeue();
+                if (candidate.Generation > generation)
+                {
+                    _queue.Enqueue(candidate, (-candidate.Priority, ++_enqueueSequence));
+                    return false;
+                }
+
+                if (candidate.Generation < generation)
+                {
+                    RemovePendingIfOwnedLocked(candidate.OperationKey, candidate);
+                    continue;
+                }
+
+                if (candidate.Started || candidate.Completed) continue;
+                if (!_pending.TryGetValue(candidate.OperationKey, out var current) || !ReferenceEquals(current, candidate))
+                {
+                    continue;
+                }
+
+                request = candidate;
+                return true;
             }
+
+            return false;
+        }
+
+        private bool HasRunnableQueuedRequestLocked(int generation)
+        {
+            foreach (var pair in _pending)
+            {
+                var request = pair.Value;
+                if (request.Generation == generation && !request.Started && !request.Completed)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private int CountQueuedUniqueLocked()
+        {
+            var count = 0;
+            foreach (var request in _pending.Values)
+            {
+                if (!request.Started && !request.Completed) count++;
+            }
+            return count;
         }
 
         private void RemovePendingIfOwnedLocked(string key, PrefetchRequest request)
         {
-            if (_pending.TryGetValue(key, out var current) && ReferenceEquals(current, request))
+            if (!string.IsNullOrEmpty(key) &&
+                _pending.TryGetValue(key, out var current) &&
+                ReferenceEquals(current, request))
             {
-                _pending.TryRemove(key, out _);
+                _pending.Remove(key);
             }
         }
 
@@ -532,108 +640,216 @@ namespace FenBrowser.Core.Network
 
         private void DisposeSynchronizationResources()
         {
-            if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0)
-            {
-                return;
-            }
+            if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0) return;
 
             List<CancellationTokenSource> cancellationSources;
+            SemaphoreSlim throttle;
             lock (_lock)
             {
                 cancellationSources = new List<CancellationTokenSource>(_retiredCancellationSources.Count + 1);
                 cancellationSources.AddRange(_retiredCancellationSources);
                 cancellationSources.Add(_cts);
                 _retiredCancellationSources.Clear();
+                throttle = _throttle;
             }
 
             foreach (var source in cancellationSources)
             {
                 source.Dispose();
             }
-
-            _throttle.Dispose();
+            throttle.Dispose();
         }
 
-        /// <summary>
-        /// Parse Link header value
-        /// </summary>
         private void ParseLinkHeader(string linkValue, Uri baseUri, List<Task> queueTasks)
         {
-            // Format: </path>; rel=preload; as=style, </other>; rel=prefetch
-            var parts = linkValue.Split(',');
-
-            foreach (var part in parts)
+            foreach (var segment in SplitLinkHeaderValues(linkValue))
             {
                 try
                 {
-                    var urlMatch = Regex.Match(part, @"<([^>]+)>");
-                    if (!urlMatch.Success) continue;
+                    var open = segment.IndexOf('<');
+                    var close = open >= 0 ? segment.IndexOf('>', open + 1) : -1;
+                    if (open < 0 || close <= open + 1) continue;
 
-                    var href = urlMatch.Groups[1].Value;
-                    Uri url;
-                    if (!Uri.TryCreate(baseUri, href, out url))
-                        continue;
+                    var href = segment.Substring(open + 1, close - open - 1).Trim();
+                    if (!Uri.TryCreate(baseUri, href, out var url)) continue;
 
-                    var relMatch = Regex.Match(part, @"rel\s*=\s*[""']?(\w+)[""']?", RegexOptions.IgnoreCase);
-                    var rel = relMatch.Success ? relMatch.Groups[1].Value.ToLowerInvariant() : null;
+                    var parameters = ParseLinkParameters(segment.AsSpan(close + 1));
+                    if (!parameters.TryGetValue("rel", out var relValue)) continue;
 
-                    var hint = ParseRelToHint(rel);
-                    if (hint == null) continue;
+                    var relTokens = TokenizeRel(relValue);
+                    parameters.TryGetValue("as", out var asValue);
+                    if (!TryResolveHint(relTokens, asValue, out var hint, out var asType)) continue;
 
-                    var asMatch = Regex.Match(part, @"\bas\s*=\s*[""']?(\w+)[""']?", RegexOptions.IgnoreCase);
-                    var asType = asMatch.Success ? ParseAsType(asMatch.Groups[1].Value) : PreloadAs.Unknown;
-
-                    queueTasks.Add(QueueHintAsync(url, hint.Value, asType));
+                    parameters.TryGetValue("crossorigin", out var crossOrigin);
+                    parameters.TryGetValue("type", out var mimeType);
+                    queueTasks.Add(QueueHintAsync(url, hint, asType, crossOrigin, mimeType));
                 }
                 catch (Exception ex)
                 {
-                    EngineLogCompat.Debug($"[ResourcePrefetcher] Error parsing Link header segment: {ex.Message}", LogCategory.Network);
+                    EngineLogCompat.Debug(
+                        $"[ResourcePrefetcher] Link header segment rejected (type={ex.GetType().Name}).",
+                        LogCategory.Network);
                 }
             }
         }
 
-        /// <summary>
-        /// Collect all link elements from document
-        /// </summary>
-        private void CollectLinkElements(Element element, List<Element> links)
+        private static List<string> SplitLinkHeaderValues(string value)
         {
-            if (element.TagName?.Equals("link", StringComparison.OrdinalIgnoreCase) == true)
+            var result = new List<string>();
+            if (string.IsNullOrWhiteSpace(value)) return result;
+
+            var start = 0;
+            var quote = '\0';
+            var inAngle = false;
+            for (var i = 0; i < value.Length; i++)
             {
-                links.Add(element);
+                var c = value[i];
+                if (quote != '\0')
+                {
+                    if (c == '\\' && i + 1 < value.Length)
+                    {
+                        i++;
+                        continue;
+                    }
+                    if (c == quote) quote = '\0';
+                    continue;
+                }
+
+                if (c is '\'' or '"') quote = c;
+                else if (c == '<') inAngle = true;
+                else if (c == '>') inAngle = false;
+                else if (c == ',' && !inAngle)
+                {
+                    var segment = value.Substring(start, i - start).Trim();
+                    if (segment.Length > 0) result.Add(segment);
+                    start = i + 1;
+                }
             }
 
-            foreach (var child in element.Children)
-            {
-                if (child is Element el) CollectLinkElements(el, links);
-            }
+            var finalSegment = value.Substring(start).Trim();
+            if (finalSegment.Length > 0) result.Add(finalSegment);
+            return result;
         }
 
-        /// <summary>
-        /// Parse rel attribute to ResourceHint
-        /// </summary>
-        private static ResourceHint? ParseRelToHint(string rel)
+        private static Dictionary<string, string> ParseLinkParameters(ReadOnlySpan<char> value)
         {
-            if (string.IsNullOrEmpty(rel)) return null;
-
-            return rel switch
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var i = 0;
+            while (i < value.Length)
             {
-                "prefetch" => ResourceHint.Prefetch,
-                "preload" => ResourceHint.Preload,
-                "preconnect" => ResourceHint.Preconnect,
-                "dns-prefetch" => ResourceHint.DnsPrefetch,
-                "prerender" => ResourceHint.Prerender,
-                _ => null
-            };
+                while (i < value.Length && (value[i] == ';' || char.IsWhiteSpace(value[i]))) i++;
+                if (i >= value.Length) break;
+
+                var nameStart = i;
+                while (i < value.Length && value[i] != '=' && value[i] != ';') i++;
+                var name = value.Slice(nameStart, i - nameStart).Trim().ToString();
+                var parameterValue = string.Empty;
+
+                if (i < value.Length && value[i] == '=')
+                {
+                    i++;
+                    while (i < value.Length && char.IsWhiteSpace(value[i])) i++;
+                    if (i < value.Length && value[i] is '\'' or '"')
+                    {
+                        var quote = value[i++];
+                        var builder = new System.Text.StringBuilder();
+                        while (i < value.Length && value[i] != quote)
+                        {
+                            if (value[i] == '\\' && i + 1 < value.Length)
+                            {
+                                i++;
+                            }
+                            builder.Append(value[i++]);
+                        }
+                        if (i < value.Length && value[i] == quote) i++;
+                        parameterValue = builder.ToString();
+                    }
+                    else
+                    {
+                        var valueStart = i;
+                        while (i < value.Length && value[i] != ';') i++;
+                        parameterValue = value.Slice(valueStart, i - valueStart).Trim().ToString();
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(name) && !result.ContainsKey(name))
+                {
+                    result[name] = parameterValue;
+                }
+
+                while (i < value.Length && value[i] != ';') i++;
+            }
+            return result;
         }
 
-        /// <summary>
-        /// Parse as attribute to PreloadAs
-        /// </summary>
+        private static List<Element> CollectLinkElements(Element root)
+        {
+            var result = new List<Element>();
+            var stack = new Stack<Element>();
+            stack.Push(root);
+
+            while (stack.Count > 0)
+            {
+                var element = stack.Pop();
+                if (element.TagName?.Equals("link", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    result.Add(element);
+                }
+
+                var children = new List<Element>();
+                foreach (var child in element.Children)
+                {
+                    if (child is Element el) children.Add(el);
+                }
+                for (var i = children.Count - 1; i >= 0; i--) stack.Push(children[i]);
+            }
+
+            return result;
+        }
+
+        private static HashSet<string> TokenizeRel(string rel)
+        {
+            var tokens = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(rel)) return tokens;
+            foreach (var token in rel.Split((char[])null, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (!string.IsNullOrWhiteSpace(token)) tokens.Add(token.Trim());
+            }
+            return tokens;
+        }
+
+        private static bool TryResolveHint(
+            HashSet<string> relTokens,
+            string asValue,
+            out ResourceHint hint,
+            out PreloadAs asType)
+        {
+            asType = ParseAsType(asValue);
+            if (relTokens.Contains("preload") || relTokens.Contains("modulepreload"))
+            {
+                hint = ResourceHint.Preload;
+                if (relTokens.Contains("modulepreload") && asType == PreloadAs.Unknown) asType = PreloadAs.Script;
+                return true;
+            }
+            if (relTokens.Contains("stylesheet"))
+            {
+                hint = ResourceHint.Preload;
+                asType = PreloadAs.Style;
+                return true;
+            }
+            if (relTokens.Contains("prefetch")) { hint = ResourceHint.Prefetch; return true; }
+            if (relTokens.Contains("preconnect")) { hint = ResourceHint.Preconnect; return true; }
+            if (relTokens.Contains("dns-prefetch")) { hint = ResourceHint.DnsPrefetch; return true; }
+            if (relTokens.Contains("prerender")) { hint = ResourceHint.Prerender; return true; }
+
+            hint = default;
+            return false;
+        }
+
         private static PreloadAs ParseAsType(string asValue)
         {
-            if (string.IsNullOrEmpty(asValue)) return PreloadAs.Unknown;
-
-            return asValue.ToLowerInvariant() switch
+            if (string.IsNullOrWhiteSpace(asValue)) return PreloadAs.Unknown;
+            return asValue.Trim().ToLowerInvariant() switch
             {
                 "script" => PreloadAs.Script,
                 "style" => PreloadAs.Style,
@@ -649,77 +865,122 @@ namespace FenBrowser.Core.Network
             };
         }
 
-        /// <summary>
-        /// Get priority for request ordering
-        /// </summary>
         private static int GetPriority(ResourceHint hint, PreloadAs asType)
         {
-            // Higher = more urgent
-            int basePriority = hint switch
+            var basePriority = hint switch
             {
                 ResourceHint.Preload => 100,
-                ResourceHint.Prefetch => 50,
-                ResourceHint.Preconnect => 80,
                 ResourceHint.DnsPrefetch => 90,
+                ResourceHint.Preconnect => 80,
+                ResourceHint.Prefetch => 50,
                 ResourceHint.Prerender => 30,
                 _ => 10
             };
 
-            int typePriority = asType switch
+            var typePriority = asType switch
             {
+                PreloadAs.Document => 25,
                 PreloadAs.Style => 20,
                 PreloadAs.Script => 15,
+                PreloadAs.Worker => 15,
                 PreloadAs.Font => 10,
-                PreloadAs.Document => 25,
                 _ => 0
             };
-
             return basePriority + typePriority;
         }
 
-        /// <summary>
-        /// Get statistics about prefetching
-        /// </summary>
+        private bool IsHintEnabled(ResourceHint hint)
+        {
+            return hint switch
+            {
+                ResourceHint.Prefetch => EnablePrefetch,
+                ResourceHint.Preload => EnablePreload,
+                ResourceHint.Preconnect => EnablePreconnect,
+                ResourceHint.DnsPrefetch => EnableDnsPrefetch,
+                ResourceHint.Prerender => false,
+                _ => false
+            };
+        }
+
+        private static bool IsFetchableHintUrl(Uri url)
+        {
+            return string.Equals(url.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(url.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string BuildOperationKey(
+            Uri url,
+            ResourceHint hint,
+            PreloadAs asType,
+            string crossOrigin)
+        {
+            if (hint is ResourceHint.Preload or ResourceHint.Prefetch)
+            {
+                return $"fetch|{asType}|{NormalizeCrossOrigin(crossOrigin)}|{url.AbsoluteUri}";
+            }
+            if (hint == ResourceHint.Preconnect)
+            {
+                return "preconnect|" + GetOriginKey(url);
+            }
+            if (hint == ResourceHint.DnsPrefetch)
+            {
+                return "dns|" + (url.IdnHost ?? string.Empty).TrimEnd('.').ToLowerInvariant();
+            }
+            return hint + "|" + url.AbsoluteUri;
+        }
+
+        private static string NormalizeCrossOrigin(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return "none";
+            var normalized = value.Trim().ToLowerInvariant();
+            return normalized == "use-credentials" ? "use-credentials" : "anonymous";
+        }
+
+        private static string GetOriginKey(Uri url)
+        {
+            var defaultPort = (url.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) && url.Port == 443) ||
+                              (url.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) && url.Port == 80);
+            return defaultPort
+                ? $"{url.Scheme.ToLowerInvariant()}://{url.IdnHost.ToLowerInvariant()}"
+                : $"{url.Scheme.ToLowerInvariant()}://{url.IdnHost.ToLowerInvariant()}:{url.Port}";
+        }
+
+        private static string GetSafeUrlForLog(Uri url)
+        {
+            if (url == null || !url.IsAbsoluteUri) return string.Empty;
+            try { return GetOriginKey(url); }
+            catch { return url.Scheme + ":"; }
+        }
+
         public (int pending, int completed, int queued) GetStats()
         {
             lock (_lock)
             {
-                int queued = _queue.Count;
-                int pendingActive = _pending.Count - queued;
+                var queued = CountQueuedUniqueLocked();
+                var pendingActive = _pending.Count - queued;
                 if (pendingActive < 0) pendingActive = 0;
-                return (pendingActive, _completedUrls.Count, queued);
+                return (pendingActive, _completedOperations.Count, queued);
             }
         }
 
-        /// <summary>
-        /// Clear current hint state and start a fresh cancellation generation.
-        /// </summary>
         public void Clear()
         {
             CancellationTokenSource previous;
             lock (_lock)
             {
-                if (_disposed)
-                    return;
-
+                if (_disposed) return;
                 previous = _cts;
                 _retiredCancellationSources.Add(previous);
                 _cts = new CancellationTokenSource();
                 _generation++;
-
-                _completedUrls.Clear();
+                _completedOperations.Clear();
                 _preconnectedHosts.Clear();
                 _pending.Clear();
-                while (_queue.TryDequeue(out _)) { }
+                _queue.Clear();
             }
 
-            try
-            {
-                previous.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
-            }
+            try { previous.Cancel(); }
+            catch (ObjectDisposedException) { }
         }
 
         public void Dispose()
@@ -727,33 +988,30 @@ namespace FenBrowser.Core.Network
             List<CancellationTokenSource> cancellationSources;
             lock (_lock)
             {
-                if (_disposed)
-                    return;
-
+                if (_disposed) return;
                 _disposed = true;
                 cancellationSources = new List<CancellationTokenSource>(_retiredCancellationSources.Count + 1);
                 cancellationSources.AddRange(_retiredCancellationSources);
                 cancellationSources.Add(_cts);
-
                 _pending.Clear();
-                while (_queue.TryDequeue(out _)) { }
+                _queue.Clear();
             }
 
             foreach (var source in cancellationSources)
             {
-                try
-                {
-                    source.Cancel();
-                }
-                catch (ObjectDisposedException)
-                {
-                }
+                try { source.Cancel(); }
+                catch (ObjectDisposedException) { }
             }
 
             if (Volatile.Read(ref _activeOperations) == 0)
             {
                 DisposeSynchronizationResources();
             }
+        }
+
+        private void ThrowIfDisposedLocked()
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(ResourcePrefetcher));
         }
     }
 }
