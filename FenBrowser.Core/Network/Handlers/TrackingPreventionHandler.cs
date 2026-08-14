@@ -80,12 +80,12 @@ namespace FenBrowser.Core.Network.Handlers
         {
             if (uri == null || !IsEnabled) return false;
 
-            if (pageOrigin != null && (IsSameOrigin(uri, pageOrigin) || IsSameSite(uri.Host, pageOrigin.Host)))
+            if (pageOrigin != null && (IsSameOrigin(uri, pageOrigin) || IsSameSite(uri.IdnHost, pageOrigin.IdnHost)))
             {
                 return false;
             }
 
-            var host = uri.Host?.ToLowerInvariant();
+            var host = NormalizeHost(uri.IdnHost);
             if (!string.IsNullOrEmpty(host))
             {
                 if (_trackerDomains.Contains(host)) return true;
@@ -120,7 +120,7 @@ namespace FenBrowser.Core.Network.Handlers
         {
             if (a == null || b == null) return false;
             return string.Equals(a.Scheme, b.Scheme, StringComparison.OrdinalIgnoreCase) &&
-                   string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(NormalizeHost(a.IdnHost), NormalizeHost(b.IdnHost), StringComparison.OrdinalIgnoreCase) &&
                    a.Port == b.Port;
         }
 
