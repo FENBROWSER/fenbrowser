@@ -57,7 +57,18 @@ if (!Directory.Exists(idlDir))
 
 idlDir = Path.GetFullPath(idlDir);
 outDir = Path.GetFullPath(outDir);
-Directory.CreateDirectory(outDir);
+if (verifyOnly)
+{
+    if (!Directory.Exists(outDir))
+    {
+        Console.Error.WriteLine($"VERIFY FAILED: output directory does not exist: {outDir}");
+        return 2;
+    }
+}
+else
+{
+    Directory.CreateDirectory(outDir);
+}
 
 var idlFiles = Directory
     .GetFiles(idlDir, "*.idl", SearchOption.AllDirectories)
