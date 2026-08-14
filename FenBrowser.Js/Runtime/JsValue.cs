@@ -107,8 +107,11 @@ public readonly struct JsValue
 
         lock (StringPoolLock)
         {
-            return StringPool.TryGetValue(_payload, out var value) ? value : string.Empty;
+            if (StringPool.TryGetValue(_payload, out var value))
+                return value;
         }
+
+        throw new InvalidOperationException($"Unknown or stale string pool id {_payload}.");
     }
 
     // ECMA-262 7.4 Symbol primitive. Allocates a fresh unique id; description is
@@ -152,8 +155,11 @@ public readonly struct JsValue
 
         lock (SymbolPoolLock)
         {
-            return SymbolPool.TryGetValue(_payload, out var d) ? d : null;
+            if (SymbolPool.TryGetValue(_payload, out var description))
+                return description;
         }
+
+        throw new InvalidOperationException($"Unknown or stale symbol pool id {_payload}.");
     }
 
     public static JsValue FromBigInt(System.Numerics.BigInteger value)
@@ -175,7 +181,10 @@ public readonly struct JsValue
 
         lock (BigIntPoolLock)
         {
-            return BigIntPool.TryGetValue(_payload, out var value) ? value : System.Numerics.BigInteger.Zero;
+            if (BigIntPool.TryGetValue(_payload, out var value))
+                return value;
         }
+
+        throw new InvalidOperationException($"Unknown or stale BigInt pool id {_payload}.");
     }
 }
