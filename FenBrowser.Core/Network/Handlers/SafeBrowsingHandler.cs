@@ -35,7 +35,7 @@ namespace FenBrowser.Core.Network.Handlers
             }
 
             var uri = context.Request.RequestUri;
-            var host = uri.Host ?? string.Empty;
+            var host = NormalizeHost(uri);
 
             if (DangerousHosts.Contains(host))
             {
@@ -49,6 +49,18 @@ namespace FenBrowser.Core.Network.Handlers
             }
 
             return next();
+        }
+
+        private static string NormalizeHost(Uri uri)
+        {
+            if (uri == null)
+            {
+                return string.Empty;
+            }
+
+            // Canonicalize Unicode/punycode spellings and the optional terminal DNS
+            // root dot before matching exact deny-list entries.
+            return (uri.IdnHost ?? string.Empty).Trim().TrimEnd('.').ToLowerInvariant();
         }
     }
 }
