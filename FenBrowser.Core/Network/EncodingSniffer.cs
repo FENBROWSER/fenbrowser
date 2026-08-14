@@ -157,11 +157,12 @@ namespace FenBrowser.Core.Network
                 case "latin-1":
                 case "windows-1252":
                 case "cp1252":
-                    return Windows1252;
-
                 case "ascii":
                 case "us-ascii":
-                    return Encoding.ASCII;
+                    // On the web, historical ASCII/Latin1 labels are aliases for
+                    // windows-1252. Using Encoding.ASCII would replace every byte
+                    // above 0x7F and corrupt legacy pages.
+                    return Windows1252;
 
                 default:
                     try
