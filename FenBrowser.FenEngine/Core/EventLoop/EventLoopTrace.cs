@@ -18,6 +18,9 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                    id.ToString(CultureInfo.InvariantCulture);
         }
 
+        public static bool IsEnabled(LogSeverity severity) =>
+            EngineLog.IsEnabled(LogSubsystem.Event, severity);
+
         public static void Write(
             string eventName,
             LogSeverity severity,
@@ -29,6 +32,13 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             [CallerLineNumber] int sourceLine = 0,
             [CallerMemberName] string sourceMember = "")
         {
+            // Event-loop tracing sits on task, microtask and animation-frame hot paths.
+            // Reject disabled events before allocating/copying the structured payload.
+            if (!EngineLog.IsEnabled(LogSubsystem.Event, severity))
+            {
+                return;
+            }
+
             var payload = fields != null
                 ? new Dictionary<string, object>(fields, StringComparer.OrdinalIgnoreCase)
                 : new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
