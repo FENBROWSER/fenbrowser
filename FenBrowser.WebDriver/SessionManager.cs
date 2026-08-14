@@ -203,6 +203,16 @@ namespace FenBrowser.WebDriver
             Window = 3
         }
 
+        private sealed class NativeReferenceHolder
+        {
+            public NativeReferenceHolder(string referenceId)
+            {
+                ReferenceId = referenceId;
+            }
+
+            public string ReferenceId { get; }
+        }
+
         public string Id { get; }
         public Capabilities Capabilities { get; }
         public DateTime CreatedAt { get; }
@@ -213,10 +223,12 @@ namespace FenBrowser.WebDriver
         public List<string> WindowHandles { get; } = new();
         public bool WindowStateInitialized { get; set; }
 
-        // Element cache and reference maps
+        // Element cache and reference maps. Object identity uses ConditionalWeakTable
+        // rather than RuntimeHelpers.GetHashCode(): identity hash codes can collide and
+        // must never cause two live DOM/driver objects to share one WebDriver reference.
         private readonly ConcurrentDictionary<string, WeakReference<object>> _elementCache = new();
         private readonly ConcurrentDictionary<string, ElementReferenceKind> _referenceKinds = new(StringComparer.Ordinal);
-        private readonly ConcurrentDictionary<string, string> _nativeReferenceMap = new(StringComparer.Ordinal);
+        private readonly ConditionalWeakTable<object, NativeReferenceHolder> _nativeObjectReferenceMap = new();
         private readonly ConcurrentDictionary<string, string> _nativeStringReferenceMap = new(StringComparer.Ordinal);
         private int _elementCounter;
 
@@ -265,20 +277,20 @@ namespace FenBrowser.WebDriver
             _elementCache[id] = new WeakReference<object>(referenceObject);
             _referenceKinds[id] = kind;
 
-            var nativeKey = BuildNativeReferenceKey(referenceObject);
-            if (!string.IsNullOrWhiteSpace(nativeKey))
+            if (referenceObject is string nativeString)
             {
-                _nativeReferenceMap[nativeKey] = id;
-            }
-
-            if (referenceObject is string nativeString && !string.IsNullOrWhiteSpace(nativeString))
-            {
-                _nativeStringReferenceMap[nativeString] = id;
-
-                if (kind == ElementReferenceKind.Window && !WindowHandles.Contains(nativeString))
+                if (!string.IsNullOrWhiteSpace(nativeString))
                 {
-                    WindowHandles.Add(nativeString);
+                    _nativeStringReferenceMap[nativeString] = id;
+
+                    if (kind == ElementReferenceKind.Window && !WindowHandles.Contains(nativeString))
+                        WindowHandles.Add(nativeString);
                 }
+            }
+            else
+            {
+                _nativeObjectReferenceMap.Remove(referenceObject);
+                _nativeObjectReferenceMap.Add(referenceObject, new NativeReferenceHolder(id));
             }
 
             return id;
@@ -326,24 +338,24 @@ namespace FenBrowser.WebDriver
         {
             referenceId = string.Empty;
             if (nativeReference == null)
+                return false;
+
+            if (nativeReference is string nativeString)
             {
+                if (_nativeStringReferenceMap.TryGetValue(nativeString, out var mappedStringRef) &&
+                    IsReferenceAlive(mappedStringRef))
+                {
+                    referenceId = mappedStringRef;
+                    return true;
+                }
+
                 return false;
             }
 
-            var nativeKey = BuildNativeReferenceKey(nativeReference);
-            if (!string.IsNullOrWhiteSpace(nativeKey) &&
-                _nativeReferenceMap.TryGetValue(nativeKey, out var mappedRef) &&
-                IsReferenceAlive(mappedRef))
+            if (_nativeObjectReferenceMap.TryGetValue(nativeReference, out var holder) &&
+                IsReferenceAlive(holder.ReferenceId))
             {
-                referenceId = mappedRef;
-                return true;
-            }
-
-            if (nativeReference is string nativeString &&
-                _nativeStringReferenceMap.TryGetValue(nativeString, out var mappedStringRef) &&
-                IsReferenceAlive(mappedStringRef))
-            {
-                referenceId = mappedStringRef;
+                referenceId = holder.ReferenceId;
                 return true;
             }
 
@@ -353,9 +365,7 @@ namespace FenBrowser.WebDriver
         public void AssociateNativeReference(object nativeReference, string referenceId)
         {
             if (nativeReference == null || string.IsNullOrWhiteSpace(referenceId))
-            {
                 return;
-            }
 
             if (!_elementCache.ContainsKey(referenceId))
             {
@@ -364,16 +374,15 @@ namespace FenBrowser.WebDriver
                     $"Cannot associate native reference with unknown reference id: {referenceId}");
             }
 
-            var nativeKey = BuildNativeReferenceKey(nativeReference);
-            if (!string.IsNullOrWhiteSpace(nativeKey))
+            if (nativeReference is string nativeString)
             {
-                _nativeReferenceMap[nativeKey] = referenceId;
+                if (!string.IsNullOrWhiteSpace(nativeString))
+                    _nativeStringReferenceMap[nativeString] = referenceId;
+                return;
             }
 
-            if (nativeReference is string nativeString && !string.IsNullOrWhiteSpace(nativeString))
-            {
-                _nativeStringReferenceMap[nativeString] = referenceId;
-            }
+            _nativeObjectReferenceMap.Remove(nativeReference);
+            _nativeObjectReferenceMap.Add(nativeReference, new NativeReferenceHolder(referenceId));
         }
 
         public bool TryGetReferenceKind(string referenceId, out ElementReferenceKind kind)
@@ -395,28 +404,14 @@ namespace FenBrowser.WebDriver
         private bool IsReferenceAlive(string referenceId)
         {
             if (!_elementCache.TryGetValue(referenceId, out var weakRef))
-            {
                 return false;
-            }
 
             if (weakRef.TryGetTarget(out _))
-            {
                 return true;
-            }
 
             _elementCache.TryRemove(referenceId, out _);
             _referenceKinds.TryRemove(referenceId, out _);
             return false;
-        }
-
-        private static string BuildNativeReferenceKey(object nativeReference)
-        {
-            return nativeReference switch
-            {
-                null => string.Empty,
-                string s => $"str:{s}",
-                _ => $"obj:{nativeReference.GetType().FullName}:{RuntimeHelpers.GetHashCode(nativeReference)}"
-            };
         }
 
         private static string GetKindErrorCode(ElementReferenceKind kind)
@@ -434,7 +429,7 @@ namespace FenBrowser.WebDriver
         {
             _elementCache.Clear();
             _referenceKinds.Clear();
-            _nativeReferenceMap.Clear();
+            _nativeObjectReferenceMap.Clear();
             _nativeStringReferenceMap.Clear();
             WindowHandles.Clear();
         }
