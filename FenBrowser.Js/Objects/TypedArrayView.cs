@@ -24,6 +24,18 @@ public abstract class TypedArrayView : JsObject
 
     protected TypedArrayView(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false)
     {
+        ArgumentNullException.ThrowIfNull(buffer);
+        if (buffer.IsDetached)
+            throw new InvalidOperationException("Cannot create a view over a detached ArrayBuffer.");
+        if (byteOffset < 0)
+            throw new ArgumentOutOfRangeException(nameof(byteOffset));
+        if (byteLength < 0)
+            throw new ArgumentOutOfRangeException(nameof(byteLength));
+        if (byteOffset > buffer.ByteLength)
+            throw new ArgumentOutOfRangeException(nameof(byteOffset), "View byte offset exceeds the ArrayBuffer bounds.");
+        if (!isLengthTracking && (long)byteOffset + byteLength > buffer.ByteLength)
+            throw new ArgumentOutOfRangeException(nameof(byteLength), "View byte range exceeds the ArrayBuffer bounds.");
+
         Buffer = buffer;
         ByteOffset = byteOffset;
         RequestedByteLength = byteLength;
