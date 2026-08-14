@@ -1,3 +1,4 @@
+using System;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,6 +13,7 @@ namespace FenBrowser.Host.ProcessIsolation
     /// </summary>
     public static class ProcessIsolationRuntime
     {
+        private static readonly object _transitionLock = new();
         private static Network.NetworkChildProcessHost _networkHost;
         private static Targets.TargetChildProcessHost _gpuHost;
         private static Targets.TargetChildProcessHost _utilityHost;
@@ -28,26 +30,31 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public static void SetCoordinator(IProcessIsolationCoordinator coordinator)
         {
-            ShutdownAuxiliaryTargets();
-            Current = coordinator;
-
-            var shouldStartAuxiliaryTargets =
-                coordinator?.UsesOutOfProcessRenderer == true &&
-                IsAuxiliaryTargetAutoStartEnabled();
-
-            // Once OOP isolation is selected, direct browser-process sockets must
-            // not become an accidental fallback while the network child starts.
-            // A successful authenticated session replaces this blocker below.
-            if (shouldStartAuxiliaryTargets)
+            lock (_transitionLock)
             {
-                HttpClientFactory.ConfigureRequestTransport(BlockNetworkRequestAsync);
-            }
+                var shouldStartAuxiliaryTargets =
+                    coordinator?.UsesOutOfProcessRenderer == true &&
+                    IsAuxiliaryTargetAutoStartEnabled();
 
-            CoordinatorChanged?.Invoke(Current);
+                // Install the blocker BEFORE retiring an existing OOP network stack.
+                // Clearing the old transport first creates a window where another
+                // thread can acquire a direct-socket shared client during an OOP->OOP
+                // coordinator transition.
+                if (shouldStartAuxiliaryTargets)
+                {
+                    HttpClientFactory.ConfigureRequestTransport(BlockNetworkRequestAsync);
+                }
 
-            if (coordinator?.UsesOutOfProcessRenderer == true)
-            {
-                StartAuxiliaryTargets();
+                ShutdownAuxiliaryTargets(
+                    restoreDirectTransport: !shouldStartAuxiliaryTargets);
+
+                Current = coordinator;
+                CoordinatorChanged?.Invoke(Current);
+
+                if (coordinator?.UsesOutOfProcessRenderer == true)
+                {
+                    StartAuxiliaryTargets();
+                }
             }
         }
 
@@ -71,17 +78,30 @@ namespace FenBrowser.Host.ProcessIsolation
             else
             {
                 var coordinator = new Network.NetworkProcessCoordinator();
-                coordinator.AttachSession(_networkHost.Session);
-                NetworkCoordinator = coordinator;
+                try
+                {
+                    coordinator.AttachSession(_networkHost.Session);
+                    NetworkCoordinator = coordinator;
 
-                // HttpClientFactory is the construction boundary used by BrowserHost
-                // and Core network services. Installing the coordinator here makes the
-                // sandboxed child authoritative for newly created browser clients.
-                HttpClientFactory.ConfigureRequestTransport(
-                    (request, cancellationToken) => coordinator.SendAsync(
-                        request,
-                        GetInitiatorOrigin(request),
-                        cancellationToken));
+                    // HttpClientFactory is the construction boundary used by BrowserHost
+                    // and Core network services. Installing the coordinator here makes the
+                    // sandboxed child authoritative for newly created browser clients.
+                    HttpClientFactory.ConfigureRequestTransport(
+                        (request, cancellationToken) => coordinator.SendAsync(
+                            request,
+                            GetInitiatorOrigin(request),
+                            cancellationToken));
+                }
+                catch
+                {
+                    coordinator.Dispose();
+                    NetworkCoordinator = null;
+                    _networkHost.Dispose();
+                    _networkHost = null;
+                    // The blocker installed by SetCoordinator remains authoritative.
+                    HttpClientFactory.ConfigureRequestTransport(BlockNetworkRequestAsync);
+                    throw;
+                }
             }
 
             _gpuHost = new Targets.TargetChildProcessHost(Targets.TargetProcessKind.Gpu);
@@ -104,10 +124,9 @@ namespace FenBrowser.Host.ProcessIsolation
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var target = request?.RequestUri?.AbsoluteUri ?? "unknown target";
             return Task.FromException<HttpResponseMessage>(
                 new HttpRequestException(
-                    $"Sandboxed network process is unavailable; request to {target} blocked by process-isolation policy."));
+                    $"Sandboxed network process is unavailable; request to {GetSafeUriForMessage(request?.RequestUri)} blocked by process-isolation policy."));
         }
 
         private static string GetInitiatorOrigin(HttpRequestMessage request)
@@ -131,12 +150,14 @@ namespace FenBrowser.Host.ProcessIsolation
             return string.Empty;
         }
 
-        private static void ShutdownAuxiliaryTargets()
+        private static void ShutdownAuxiliaryTargets(bool restoreDirectTransport)
         {
-            // Restore direct transport only as part of an explicit process-isolation
-            // transition/shutdown, before disposing the coordinator captured by the
-            // broker transport delegate.
-            HttpClientFactory.ClearRequestTransport();
+            if (restoreDirectTransport)
+            {
+                // Only explicit transitions to a mode that does not require the
+                // auxiliary OOP network target may restore direct transport.
+                HttpClientFactory.ClearRequestTransport();
+            }
 
             TryDispose(_utilityHost, "utility-target-host");
             _utilityHost = null;
@@ -163,17 +184,40 @@ namespace FenBrowser.Host.ProcessIsolation
             }
             catch (Exception ex)
             {
-                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug, $"[ProcessIsolationRuntime] Dispose failed for {resourceName}: {ex.Message}");
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Debug, $"[ProcessIsolationRuntime] Dispose failed for {resourceName}: {ex.GetType().Name}");
             }
         }
 
         private static bool IsAuxiliaryTargetAutoStartEnabled()
         {
-            var value = System.Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
+            var value = Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
             if (string.IsNullOrWhiteSpace(value))
                 return true;
 
-            return !string.Equals(value, "0", System.StringComparison.OrdinalIgnoreCase);
+            return !string.Equals(value, "0", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string GetSafeUriForMessage(Uri uri)
+        {
+            if (uri == null || !uri.IsAbsoluteUri)
+            {
+                return "unknown target";
+            }
+
+            if (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    return uri.GetLeftPart(UriPartial.Authority);
+                }
+                catch
+                {
+                    return uri.Scheme + ":";
+                }
+            }
+
+            return uri.Scheme + ":";
         }
     }
 }
