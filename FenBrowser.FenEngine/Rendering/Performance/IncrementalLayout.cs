@@ -31,7 +31,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         #region Dirty Tracking
 
         /// <summary>
-        /// Mark an element as needing re-layout.
+        /// Mark an element and its ancestors as needing re-layout.
         /// </summary>
         public void MarkDirty(Element element)
         {
@@ -40,7 +40,6 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             lock (_dirtyLock)
             {
                 _dirtyElements.Add(element);
-                // Also mark ancestors as needing partial re-layout
                 var parent = element.ParentElement;
                 while (parent != null)
                 {
@@ -57,9 +56,9 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// </summary>
         public void MarkFullLayoutRequired()
         {
-            _fullLayoutRequired = true;
             lock (_dirtyLock)
             {
+                _fullLayoutRequired = true;
                 _dirtyElements.Clear();
             }
         }
@@ -69,10 +68,9 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// </summary>
         public bool IsDirty(Element element)
         {
-            if (_fullLayoutRequired) return true;
             lock (_dirtyLock)
             {
-                return _dirtyElements.Contains(element);
+                return _fullLayoutRequired || _dirtyElements.Contains(element);
             }
         }
 
@@ -81,17 +79,30 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// </summary>
         public void ClearDirtyState()
         {
-            _fullLayoutRequired = false;
+            // Full-layout state and the dirty set are one logical invalidation state.
+            // Mutating them under separate synchronization allowed MarkDirty to race
+            // between the old flag write and HashSet.Clear, silently losing a fresh
+            // invalidation. Keep the transition atomic with MarkDirty/MarkFullLayout.
             lock (_dirtyLock)
             {
                 _dirtyElements.Clear();
+                _fullLayoutRequired = false;
             }
         }
 
         /// <summary>
         /// Check if any elements are dirty.
         /// </summary>
-        public bool HasDirtyElements => _fullLayoutRequired || _dirtyElements.Count > 0;
+        public bool HasDirtyElements
+        {
+            get
+            {
+                lock (_dirtyLock)
+                {
+                    return _fullLayoutRequired || _dirtyElements.Count > 0;
+                }
+            }
+        }
 
         #endregion
 
@@ -102,7 +113,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// </summary>
         public LayoutCache GetCachedLayout(Element element)
         {
-            return _layoutCache.TryGetValue(element, out var cache) ? cache : null;
+            return element != null && _layoutCache.TryGetValue(element, out var cache) ? cache : null;
         }
 
         /// <summary>
@@ -110,6 +121,8 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// </summary>
         public void CacheLayout(Element element, SKRect box, float contentHeight)
         {
+            if (element == null) return;
+
             var cache = new LayoutCache
             {
                 Box = box,
@@ -124,16 +137,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// </summary>
         public void InvalidateLayout(Element element)
         {
-            if (element == null) return;
-
-            _layoutCache.TryRemove(element, out _);
-            if (element.Children != null)
-            {
-                foreach (var child in element.Children.OfType<Element>())
-                {
-                    InvalidateLayout(child);
-                }
-            }
+            InvalidateSubtree(element, _layoutCache);
         }
 
         #endregion
@@ -145,7 +149,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// </summary>
         public CssComputed GetCachedStyle(Element element)
         {
-            return _styleCache.TryGetValue(element, out var style) ? style : null;
+            return element != null && _styleCache.TryGetValue(element, out var style) ? style : null;
         }
 
         /// <summary>
@@ -153,6 +157,7 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// </summary>
         public void CacheStyle(Element element, CssComputed style)
         {
+            if (element == null || style == null) return;
             _styleCache[element] = style;
         }
 
@@ -161,14 +166,33 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// </summary>
         public void InvalidateStyle(Element element)
         {
-            if (element == null) return;
+            InvalidateSubtree(element, _styleCache);
+        }
 
-            _styleCache.TryRemove(element, out _);
-            if (element.Children != null)
+        private static void InvalidateSubtree<T>(
+            Element root,
+            ConcurrentDictionary<Element, T> cache)
+        {
+            if (root == null || cache == null) return;
+
+            // Deep/generated DOMs can contain tens of thousands of nested elements.
+            // Cache invalidation must not recurse on the native stack just because the
+            // document is deep; use an explicit work stack instead.
+            var stack = new Stack<Element>();
+            stack.Push(root);
+
+            while (stack.Count > 0)
             {
-                foreach (var child in element.Children.OfType<Element>())
+                var current = stack.Pop();
+                cache.TryRemove(current, out _);
+
+                if (current.Children == null) continue;
+                foreach (var child in current.Children)
                 {
-                    InvalidateStyle(child);
+                    if (child is Element childElement)
+                    {
+                        stack.Push(childElement);
+                    }
                 }
             }
         }
@@ -182,53 +206,71 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// </summary>
         public CacheStats GetStats()
         {
+            int dirtyCount;
+            bool fullLayoutRequired;
+            lock (_dirtyLock)
+            {
+                dirtyCount = _dirtyElements.Count;
+                fullLayoutRequired = _fullLayoutRequired;
+            }
+
             return new CacheStats
             {
                 LayoutCacheSize = _layoutCache.Count,
                 StyleCacheSize = _styleCache.Count,
-                DirtyElementCount = _dirtyElements.Count,
-                FullLayoutRequired = _fullLayoutRequired
+                DirtyElementCount = dirtyCount,
+                FullLayoutRequired = fullLayoutRequired
             };
         }
 
         /// <summary>
-        /// <summary>
-        /// Bottleneck 3: removes cached layout and style entries for elements
-        /// that are no longer in the live DOM. Called after each full layout
-        /// to prevent unbounded cache growth over a tab's lifetime.
+        /// Removes cached layout and style entries for elements that are no longer in
+        /// the live DOM. Called after full layout to prevent cache retention over a
+        /// tab's lifetime.
         /// </summary>
         public void ClearOrphanedEntries(HashSet<Element> liveElements)
         {
-            if (liveElements == null || liveElements.Count == 0) return;
+            if (liveElements == null) return;
 
-            var orphanedLayoutKeys = new List<Element>();
+            // An empty live set means the document really has no live elements. The
+            // previous early return retained every old element strongly forever after
+            // navigating/clearing to an empty document.
+            if (liveElements.Count == 0)
+            {
+                _layoutCache.Clear();
+                _styleCache.Clear();
+                return;
+            }
+
             foreach (var key in _layoutCache.Keys)
             {
                 if (!liveElements.Contains(key))
-                    orphanedLayoutKeys.Add(key);
+                {
+                    _layoutCache.TryRemove(key, out _);
+                }
             }
-            foreach (var key in orphanedLayoutKeys)
-                _layoutCache.TryRemove(key, out _);
 
-            var orphanedStyleKeys = new List<Element>();
             foreach (var key in _styleCache.Keys)
             {
                 if (!liveElements.Contains(key))
-                    orphanedStyleKeys.Add(key);
+                {
+                    _styleCache.TryRemove(key, out _);
+                }
             }
-            foreach (var key in orphanedStyleKeys)
-                _styleCache.TryRemove(key, out _);
         }
 
         /// <summary>
-        /// Clear all caches.
+        /// Clear all caches and force the next layout to rebuild.
         /// </summary>
         public void ClearAll()
         {
             _layoutCache.Clear();
             _styleCache.Clear();
-            _dirtyElements.Clear();
-            _fullLayoutRequired = true;
+            lock (_dirtyLock)
+            {
+                _dirtyElements.Clear();
+                _fullLayoutRequired = true;
+            }
         }
 
         #endregion
@@ -258,7 +300,3 @@ namespace FenBrowser.FenEngine.Rendering.Performance
             $"Layout: {LayoutCacheSize}, Style: {StyleCacheSize}, Dirty: {DirtyElementCount}, Full: {FullLayoutRequired}";
     }
 }
-
-
-
-
