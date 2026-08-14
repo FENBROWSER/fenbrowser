@@ -47,6 +47,14 @@ namespace FenBrowser.Core
         /// </summary>
         public int ResourceTimeoutSeconds { get; set; } = 30;
 
+        /// <summary>
+        /// Maximum decoded source payload admitted by APIs that materialize an entire
+        /// textual network resource into memory. This is a per-resource limit, not a
+        /// cache budget, and is enforced before ReadAsStringAsync can allocate an
+        /// unbounded response body.
+        /// </summary>
+        public long MaxTextResourceBytes { get; set; } = 64L * 1024 * 1024;
+
         // ========== Compression Settings ==========
 
         /// <summary>
@@ -228,6 +236,8 @@ namespace FenBrowser.Core
                 throw new InvalidOperationException("NetworkConfiguration.DocumentTimeoutSeconds must be at least 1 second.");
             if (ResourceTimeoutSeconds < 1)
                 throw new InvalidOperationException("NetworkConfiguration.ResourceTimeoutSeconds must be at least 1 second.");
+            if (MaxTextResourceBytes < 1)
+                throw new InvalidOperationException("NetworkConfiguration.MaxTextResourceBytes must be at least 1 byte.");
             if (MaxImageCacheBytes < 0 || MaxTextCacheBytes < 0 || MaxDiskCacheBytes < 0)
                 throw new InvalidOperationException("Network cache limits cannot be negative.");
             if (MaxImageCacheCount < 0 || MaxTextCacheCount < 0)
@@ -257,6 +267,7 @@ namespace FenBrowser.Core
             ConnectionTimeoutSeconds = 30;
             DocumentTimeoutSeconds = 60;
             ResourceTimeoutSeconds = 30;
+            MaxTextResourceBytes = 64L * 1024 * 1024;
             EnableBrotli = true;
             EnableGzip = true;
             EnableDeflate = true;
