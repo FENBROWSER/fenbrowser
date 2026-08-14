@@ -44,6 +44,7 @@ public sealed class ServiceContainer : IServiceContainer
         if (instance == null) throw new ArgumentNullException(nameof(instance));
         lock (_lock)
         {
+            ThrowIfScopedContainerDisposed();
             _services[typeof(TService)] = new ServiceDescriptor(
                 ServiceLifetime.Singleton,
                 _ => instance,
@@ -57,6 +58,7 @@ public sealed class ServiceContainer : IServiceContainer
         if (factory == null) throw new ArgumentNullException(nameof(factory));
         lock (_lock)
         {
+            ThrowIfScopedContainerDisposed();
             _services[typeof(TService)] = new ServiceDescriptor(
                 ServiceLifetime.Singleton,
                 factory,
@@ -70,6 +72,7 @@ public sealed class ServiceContainer : IServiceContainer
         if (factory == null) throw new ArgumentNullException(nameof(factory));
         lock (_lock)
         {
+            ThrowIfScopedContainerDisposed();
             _services[typeof(TService)] = new ServiceDescriptor(
                 ServiceLifetime.Transient,
                 factory,
@@ -83,6 +86,7 @@ public sealed class ServiceContainer : IServiceContainer
         if (factory == null) throw new ArgumentNullException(nameof(factory));
         lock (_lock)
         {
+            ThrowIfScopedContainerDisposed();
             _services[typeof(TService)] = new ServiceDescriptor(
                 ServiceLifetime.Scoped,
                 factory,
@@ -103,6 +107,8 @@ public sealed class ServiceContainer : IServiceContainer
 
     public bool TryResolve<TService>(out TService? service) where TService : class
     {
+        ThrowIfScopedContainerDisposed();
+
         var serviceType = typeof(TService);
         var descriptor = FindDescriptor(serviceType);
         if (descriptor == null)
@@ -124,6 +130,7 @@ public sealed class ServiceContainer : IServiceContainer
 
     public IServiceScope CreateScope()
     {
+        ThrowIfScopedContainerDisposed();
         return new ServiceScope(this);
     }
 
@@ -151,6 +158,7 @@ public sealed class ServiceContainer : IServiceContainer
     {
         lock (_lock)
         {
+            ThrowIfScopedContainerDisposed();
             if (_services.TryGetValue(serviceType, out var descriptor))
             {
                 return descriptor;
@@ -173,6 +181,16 @@ public sealed class ServiceContainer : IServiceContainer
 
     private TService? CreateScopedInstance<TService>(ServiceDescriptor descriptor) where TService : class
     {
+        // Resolving a scoped registration from the root turns it into an accidental
+        // process-lifetime singleton because the root has no disposal boundary. Fail
+        // immediately instead. Singleton factories execute against their descriptor
+        // owner, so this also rejects singleton -> scoped captive dependencies.
+        if (_parent == null)
+        {
+            throw new InvalidOperationException(
+                $"Scoped service {typeof(TService).FullName} must be resolved from an IServiceScope.");
+        }
+
         lock (_lock)
         {
             ThrowIfScopedInstancesDisposed();
@@ -198,29 +216,51 @@ public sealed class ServiceContainer : IServiceContainer
                 $"Scoped factory registered for {typeof(TService).FullName} returned null or an incompatible service instance.");
         }
 
+        TService? result = null;
+        IDisposable? disposeAfterLock = null;
+        Exception? failure = null;
+
         lock (_lock)
         {
-            ThrowIfScopedInstancesDisposed();
-
-            if (_scopedInstances.TryGetValue(typeof(TService), out var existing))
+            if (_scopedInstancesDisposed)
             {
-                if (!ReferenceEquals(existing, newInstance) && newInstance is IDisposable disposable)
-                {
-                    disposable.Dispose();
-                }
-
+                disposeAfterLock = newInstance as IDisposable;
+                failure = new ObjectDisposedException(nameof(ServiceContainer));
+            }
+            else if (_scopedInstances.TryGetValue(typeof(TService), out var existing))
+            {
                 if (existing is not TService typedExisting)
                 {
-                    throw new InvalidOperationException(
+                    disposeAfterLock = newInstance as IDisposable;
+                    failure = new InvalidOperationException(
                         $"Cached scoped instance for {typeof(TService).FullName} is null or incompatible.");
                 }
-
-                return typedExisting;
+                else
+                {
+                    result = typedExisting;
+                    if (!ReferenceEquals(existing, newInstance))
+                    {
+                        disposeAfterLock = newInstance as IDisposable;
+                    }
+                }
             }
-
-            _scopedInstances[typeof(TService)] = newInstance;
-            return newInstance;
+            else
+            {
+                _scopedInstances[typeof(TService)] = newInstance;
+                result = newInstance;
+            }
         }
+
+        // User Dispose implementations are arbitrary/re-entrant code. Never invoke
+        // them while holding the container's structural lock.
+        disposeAfterLock?.Dispose();
+
+        if (failure != null)
+        {
+            throw failure;
+        }
+
+        return result;
     }
 
     private void DisposeScopedInstances()
@@ -251,6 +291,17 @@ public sealed class ServiceContainer : IServiceContainer
     private void ThrowIfScopedInstancesDisposed()
     {
         if (_scopedInstancesDisposed)
+        {
+            throw new ObjectDisposedException(nameof(ServiceContainer));
+        }
+    }
+
+    private void ThrowIfScopedContainerDisposed()
+    {
+        // The root container itself is not an IServiceScope and has no scope-dispose
+        // lifecycle. Child containers are owned by ServiceScope and become unusable
+        // after that scope is disposed.
+        if (_parent != null && _scopedInstancesDisposed)
         {
             throw new ObjectDisposedException(nameof(ServiceContainer));
         }
