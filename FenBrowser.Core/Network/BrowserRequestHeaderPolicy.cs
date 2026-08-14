@@ -29,21 +29,33 @@ internal static class BrowserRequestHeaderPolicy
 
         var destination = string.IsNullOrWhiteSpace(context.Destination) ? "empty" : context.Destination;
         var mode = string.IsNullOrWhiteSpace(context.Mode) ? DetermineMode(destination) : context.Mode;
-        Add(request, "Sec-Fetch-Dest", destination);
-        Add(request, "Sec-Fetch-Mode", mode);
+
+        // Fetch Metadata headers are user-agent controlled state. Never preserve a
+        // stale/caller-supplied value when a request is reused, cloned for a redirect,
+        // or passed in from an internal embedder; derive them from this FetchContext.
+        SetBrowserHeader(request, "Sec-Fetch-Dest", destination);
+        SetBrowserHeader(request, "Sec-Fetch-Mode", mode);
 
         var initiator = context.InitiatorUri ?? context.FrameDocumentUri;
-        Add(request, "Sec-Fetch-Site", DetermineSite(initiator, request.RequestUri));
+        SetBrowserHeader(request, "Sec-Fetch-Site", DetermineSite(initiator, request.RequestUri));
         ApplyReferrer(request, referrerCandidate ?? initiator, request.RequestUri, referrerPolicy);
+
+        if (context.IsTopLevelNavigation && context.IsUserInitiated)
+        {
+            SetBrowserHeader(request, "Sec-Fetch-User", "?1");
+        }
+        else
+        {
+            request.Headers.Remove("Sec-Fetch-User");
+        }
 
         if (context.IsTopLevelNavigation)
         {
-            if (context.IsUserInitiated)
-            {
-                Add(request, "Sec-Fetch-User", "?1");
-            }
-
-            Add(request, "Upgrade-Insecure-Requests", "1");
+            SetBrowserHeader(request, "Upgrade-Insecure-Requests", "1");
+        }
+        else
+        {
+            request.Headers.Remove("Upgrade-Insecure-Requests");
         }
     }
 
@@ -221,6 +233,15 @@ internal static class BrowserRequestHeaderPolicy
     private static void Add(HttpRequestMessage request, string name, string value)
     {
         if (!string.IsNullOrWhiteSpace(value) && !request.Headers.Contains(name))
+        {
+            request.Headers.TryAddWithoutValidation(name, value);
+        }
+    }
+
+    private static void SetBrowserHeader(HttpRequestMessage request, string name, string value)
+    {
+        request.Headers.Remove(name);
+        if (!string.IsNullOrWhiteSpace(value))
         {
             request.Headers.TryAddWithoutValidation(name, value);
         }
