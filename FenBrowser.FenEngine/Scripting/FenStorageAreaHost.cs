@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
 using FenBrowser.Core.Storage;
 
 namespace FenBrowser.FenEngine.Scripting
@@ -47,7 +46,10 @@ namespace FenBrowser.FenEngine.Scripting
 
         public string GetItem(string key)
         {
-            if (string.IsNullOrEmpty(key))
+            // The Storage API permits the empty string as a real key. Null is kept
+            // distinct here so callers that have not performed WebIDL DOMString
+            // conversion do not accidentally alias it to the empty-string entry.
+            if (key == null)
                 return null;
             return _storage.GetItem(_origin, _partitionKey, key);
         }
@@ -55,7 +57,7 @@ namespace FenBrowser.FenEngine.Scripting
         /// <summary>Returns null on success, or "QuotaExceededError" on failure.</summary>
         public string SetItem(string key, string value)
         {
-            if (string.IsNullOrEmpty(key))
+            if (key == null)
                 return null;
             if (!_storage.SetItem(_origin, _partitionKey, key, value ?? string.Empty))
                 return "QuotaExceededError";
@@ -64,7 +66,7 @@ namespace FenBrowser.FenEngine.Scripting
 
         public void RemoveItem(string key)
         {
-            if (string.IsNullOrEmpty(key))
+            if (key == null)
                 return;
             _storage.RemoveItem(_origin, _partitionKey, key);
         }
