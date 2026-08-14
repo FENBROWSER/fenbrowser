@@ -40,10 +40,35 @@ public sealed class AsyncContext : JsObject
 	public override void Trace(IHeapTracer tracer)
 	{
 		base.Trace(tracer);
+
+		TraceValues(tracer, Registers);
+		TraceValue(tracer, ThisValue);
+		TraceValue(tracer, SentValue);
+		if (PendingException is { } pendingException)
+			TraceValue(tracer, pendingException);
+
 		Environment?.Trace(tracer);
+		if (!ReferenceEquals(OuterEnvironment, Environment))
+			OuterEnvironment?.Trace(tracer);
+
+		foreach (var handlerEnvironment in SavedHandlerEnvironments)
+			handlerEnvironment?.Trace(tracer);
+
 		Parent?.Trace(tracer);
 		if (CapabilityPromise is { } p) tracer.Trace(p);
 		if (CapabilityResolve is { } r) tracer.Trace(r);
 		if (CapabilityReject is { } rj) tracer.Trace(rj);
+	}
+
+	private static void TraceValues(IHeapTracer tracer, JsValue[] values)
+	{
+		for (var i = 0; i < values.Length; i++)
+			TraceValue(tracer, values[i]);
+	}
+
+	private static void TraceValue(IHeapTracer tracer, JsValue value)
+	{
+		if (value.Tag == JsValueTag.Object)
+			tracer.Trace(value.AsObjectHandle());
 	}
 }
