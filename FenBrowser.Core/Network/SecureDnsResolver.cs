@@ -30,6 +30,7 @@ namespace FenBrowser.Core.Network
             new ConcurrentDictionary<string, CacheEntry>(StringComparer.OrdinalIgnoreCase);
 
         private static readonly HttpClient _dohClient = CreateClient();
+        private static readonly IdnMapping _idn = new();
 
         public static async Task<IPAddress> ResolveAsync(string host, CancellationToken ct)
         {
@@ -46,12 +47,21 @@ namespace FenBrowser.Core.Network
                 return Array.Empty<IPAddress>();
             }
 
-            if (IPAddress.TryParse(host, out var ipLiteral))
+            var trimmedHost = host.Trim().TrimEnd('.');
+            if (IPAddress.TryParse(trimmedHost, out var ipLiteral))
             {
                 return new[] { ipLiteral };
             }
 
-            if (IsLocalHost(host))
+            var normalizedHost = NormalizeDnsHost(trimmedHost);
+            if (string.IsNullOrEmpty(normalizedHost))
+            {
+                return Array.Empty<IPAddress>();
+            }
+
+            // localhost., foo.localhost, and mDNS .local names are local namespace
+            // inputs and must not be sent to an external DoH provider.
+            if (IsLocalHost(normalizedHost))
             {
                 return Array.Empty<IPAddress>();
             }
@@ -62,7 +72,6 @@ namespace FenBrowser.Core.Network
                 return Array.Empty<IPAddress>();
             }
 
-            var normalizedHost = host.Trim().ToLowerInvariant();
             var cacheKey = endpoint + "\n" + normalizedHost;
             if (_cache.TryGetValue(cacheKey, out var cached))
             {
@@ -111,7 +120,9 @@ namespace FenBrowser.Core.Network
                     throw;
                 }
 
-                EngineLogCompat.Warn($"[SecureDNS] DoH resolution failed for '{host}': {ex.Message}", LogCategory.Network);
+                EngineLogCompat.Warn(
+                    $"[SecureDNS] DoH resolution failed for host (type={ex.GetType().Name}).",
+                    LogCategory.Network);
                 return Array.Empty<IPAddress>();
             }
         }
@@ -136,7 +147,7 @@ namespace FenBrowser.Core.Network
                 // the other family. The aggregate resolver still fails only when both
                 // families produce no addresses.
                 EngineLogCompat.Debug(
-                    $"[SecureDNS] DoH {type} lookup failed for '{host}': {ex.Message}",
+                    $"[SecureDNS] DoH {type} lookup failed (type={ex.GetType().Name}).",
                     LogCategory.Network);
                 return new List<(IPAddress address, int ttlSeconds)>();
             }
@@ -329,19 +340,56 @@ namespace FenBrowser.Core.Network
             return endpoint.AbsoluteUri;
         }
 
+        private static string NormalizeDnsHost(string host)
+        {
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                return null;
+            }
+
+            var normalized = host.Trim().TrimEnd('.');
+            if (normalized.Length == 0)
+            {
+                return null;
+            }
+
+            try
+            {
+                normalized = _idn.GetAscii(normalized);
+            }
+            catch (ArgumentException)
+            {
+                return null;
+            }
+
+            normalized = normalized.ToLowerInvariant();
+            if (normalized.Length > 253)
+            {
+                return null;
+            }
+
+            var labels = normalized.Split('.', StringSplitOptions.None);
+            foreach (var label in labels)
+            {
+                if (label.Length == 0 || label.Length > 63)
+                {
+                    return null;
+                }
+            }
+
+            return normalized;
+        }
+
         private static bool IsLocalHost(string host)
         {
-            if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrEmpty(host))
             {
-                return true;
+                return false;
             }
 
-            if (host.EndsWith(".local", true, CultureInfo.InvariantCulture))
-            {
-                return true;
-            }
-
-            return false;
+            return string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+                   host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase) ||
+                   host.EndsWith(".local", StringComparison.OrdinalIgnoreCase);
         }
     }
 }
