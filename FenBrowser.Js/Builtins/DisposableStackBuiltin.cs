@@ -53,7 +53,15 @@ public sealed class DisposableStackBuiltin : IBuiltinModule
         DefinePrototypeMethod(context, heap, prototypeHandle, prototype, "use", Use, length: 1);
         DefinePrototypeMethod(context, heap, prototypeHandle, prototype, "adopt", Adopt, length: 2);
         DefinePrototypeMethod(context, heap, prototypeHandle, prototype, "defer", Defer, length: 1);
-        DefinePrototypeMethod(context, heap, prototypeHandle, prototype, "move", (ctx, thisValue, _) => Move(ctx, thisValue, prototypeHandle), length: 0);
+        DefinePrototypeMethod(
+            context,
+            heap,
+            prototypeHandle,
+            prototype,
+            "move",
+            (ctx, thisValue, _) => Move(ctx, thisValue, prototypeHandle),
+            length: 0,
+            capturedRoots: new[] { JsValue.FromObject(prototypeHandle) });
 
         var disposeSymbol = context.CreateWellKnownSymbol("dispose");
         _ = prototype.DefineOwnSymbolProperty(
@@ -140,9 +148,14 @@ public sealed class DisposableStackBuiltin : IBuiltinModule
         JsObject prototype,
         string name,
         PrototypeMethod method,
-        int length)
+        int length,
+        IReadOnlyList<JsValue>? capturedRoots = null)
     {
-        var fn = new NativeFunctionObject(name, (thisValue, args) => method(ctx, thisValue, args), length: length);
+        var fn = new NativeFunctionObject(
+            name,
+            (thisValue, args) => method(ctx, thisValue, args),
+            length: length,
+            capturedRoots: capturedRoots);
         var fnHandle = heap.AllocateObject(fn, AllocationSite.Current());
         var callHandle = ctx.GetFunctionCallMethod();
         fn.SetPrototype(ctx.GetObjectPrototype());
