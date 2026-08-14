@@ -160,7 +160,11 @@ public sealed class BrowserInputQueue
                 _pending.Last is { Value: var lastTick } &&
                 lastTick.Type == BrowserInputType.ScrollAnimationTick)
             {
-                _pending.Last.Value = input with { DeltaY = lastTick.DeltaY + input.DeltaY };
+                _pending.Last.Value = input with
+                {
+                    DeltaX = lastTick.DeltaX + input.DeltaX,
+                    DeltaY = lastTick.DeltaY + input.DeltaY
+                };
                 return;
             }
 
