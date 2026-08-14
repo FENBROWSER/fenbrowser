@@ -35,9 +35,6 @@ namespace FenBrowser.WebDriver
             _maxSessions = maxSessions;
         }
 
-        /// <summary>
-        /// Create a new session.
-        /// </summary>
         public Session CreateSession(Capabilities requestedCaps)
         {
             lock (_lock)
@@ -67,9 +64,6 @@ namespace FenBrowser.WebDriver
             }
         }
 
-        /// <summary>
-        /// Get a session by ID.
-        /// </summary>
         public Session GetSession(string sessionId)
         {
             lock (_lock)
@@ -94,9 +88,6 @@ namespace FenBrowser.WebDriver
             }
         }
 
-        /// <summary>
-        /// Delete a session.
-        /// </summary>
         public void DeleteSession(string sessionId)
         {
             Session session = null;
@@ -106,14 +97,9 @@ namespace FenBrowser.WebDriver
                 _sessions.TryRemove(sessionId, out session);
             }
 
-            // Session cleanup can fan out into browser/driver resources. Never run it
-            // while holding the manager lifecycle lock.
             session?.Dispose();
         }
 
-        /// <summary>
-        /// Get all active session IDs.
-        /// </summary>
         public IReadOnlyList<string> GetSessionIds()
         {
             lock (_lock)
@@ -123,9 +109,6 @@ namespace FenBrowser.WebDriver
             }
         }
 
-        /// <summary>
-        /// Check if any sessions are active.
-        /// </summary>
         public bool HasActiveSessions
         {
             get
@@ -144,10 +127,6 @@ namespace FenBrowser.WebDriver
             }
         }
 
-        /// <summary>
-        /// Checks whether a session with the given id exists.
-        /// Used by the BiDi transport to authenticate WebSocket upgrades.
-        /// </summary>
         public bool HasSession(string sessionId)
         {
             if (string.IsNullOrEmpty(sessionId))
@@ -157,17 +136,12 @@ namespace FenBrowser.WebDriver
                 return !_disposed && _sessions.ContainsKey(sessionId);
         }
 
-        private static string GenerateSessionId()
-        {
-            return Guid.NewGuid().ToString("N");
-        }
+        private static string GenerateSessionId() => Guid.NewGuid().ToString("N");
 
         private void ThrowIfDisposedLocked()
         {
             if (_disposed)
-            {
                 throw new ObjectDisposedException(nameof(SessionManager));
-            }
         }
 
         public void Dispose()
@@ -178,8 +152,6 @@ namespace FenBrowser.WebDriver
                 if (_disposed)
                     return;
 
-                // Linearization point: once this flips under the same lock used by
-                // creation/lookup/deletion, no new session can escape the disposal set.
                 _disposed = true;
                 sessions = new List<Session>(_sessions.Values).ToArray();
                 _sessions.Clear();
@@ -205,31 +177,51 @@ namespace FenBrowser.WebDriver
 
         private sealed class NativeReferenceHolder
         {
-            public NativeReferenceHolder(string referenceId)
+            private readonly object _gate = new();
+            private readonly Dictionary<ElementReferenceKind, string> _referenceIds = new();
+
+            public bool TryGet(ElementReferenceKind kind, out string referenceId)
             {
-                ReferenceId = referenceId;
+                lock (_gate)
+                    return _referenceIds.TryGetValue(kind, out referenceId);
             }
 
-            public string ReferenceId { get; }
+            public void Set(ElementReferenceKind kind, string referenceId)
+            {
+                lock (_gate)
+                    _referenceIds[kind] = referenceId;
+            }
+
+            public void RemoveIfMatches(ElementReferenceKind kind, string referenceId)
+            {
+                lock (_gate)
+                {
+                    if (_referenceIds.TryGetValue(kind, out var existing) &&
+                        string.Equals(existing, referenceId, StringComparison.Ordinal))
+                    {
+                        _referenceIds.Remove(kind);
+                    }
+                }
+            }
         }
+
+        private readonly record struct NativeStringReferenceKey(
+            ElementReferenceKind Kind,
+            string NativeReference);
 
         public string Id { get; }
         public Capabilities Capabilities { get; }
         public DateTime CreatedAt { get; }
         public Timeouts Timeouts { get; set; }
 
-        // Browser state
         public string? CurrentWindowHandle { get; set; }
         public List<string> WindowHandles { get; } = new();
         public bool WindowStateInitialized { get; set; }
 
-        // Element cache and reference maps. Object identity uses ConditionalWeakTable
-        // rather than RuntimeHelpers.GetHashCode(): identity hash codes can collide and
-        // must never cause two live DOM/driver objects to share one WebDriver reference.
         private readonly ConcurrentDictionary<string, WeakReference<object>> _elementCache = new();
         private readonly ConcurrentDictionary<string, ElementReferenceKind> _referenceKinds = new(StringComparer.Ordinal);
         private readonly ConditionalWeakTable<object, NativeReferenceHolder> _nativeObjectReferenceMap = new();
-        private readonly ConcurrentDictionary<string, string> _nativeStringReferenceMap = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<NativeStringReferenceKey, string> _nativeStringReferenceMap = new();
         private int _elementCounter;
 
         public Session(string id, Capabilities capabilities)
@@ -239,15 +231,11 @@ namespace FenBrowser.WebDriver
             CreatedAt = DateTime.UtcNow;
             Timeouts = capabilities.Timeouts ?? new Timeouts();
 
-            // Initialize with default window
             CurrentWindowHandle = Guid.NewGuid().ToString("N");
             WindowHandles.Add(CurrentWindowHandle);
             WindowStateInitialized = false;
         }
 
-        /// <summary>
-        /// Register an element and get its reference ID.
-        /// </summary>
         public string RegisterElement(object element)
             => RegisterReference(element, ElementReferenceKind.Element);
 
@@ -267,48 +255,33 @@ namespace FenBrowser.WebDriver
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Cannot register a null element reference");
             }
 
-            if (TryGetElementReferenceId(referenceObject, out var existingId))
-            {
-                _referenceKinds[existingId] = kind;
+            if (TryGetElementReferenceId(referenceObject, kind, out var existingId))
                 return existingId;
-            }
 
             var id = $"e{Interlocked.Increment(ref _elementCounter)}";
             _elementCache[id] = new WeakReference<object>(referenceObject);
             _referenceKinds[id] = kind;
 
-            if (referenceObject is string nativeString)
-            {
-                if (!string.IsNullOrWhiteSpace(nativeString))
-                {
-                    _nativeStringReferenceMap[nativeString] = id;
+            AssociateNativeReference(referenceObject, id, kind);
 
-                    if (kind == ElementReferenceKind.Window && !WindowHandles.Contains(nativeString))
-                        WindowHandles.Add(nativeString);
-                }
-            }
-            else
+            if (referenceObject is string nativeString &&
+                kind == ElementReferenceKind.Window &&
+                !string.IsNullOrWhiteSpace(nativeString) &&
+                !WindowHandles.Contains(nativeString))
             {
-                _nativeObjectReferenceMap.Remove(referenceObject);
-                _nativeObjectReferenceMap.Add(referenceObject, new NativeReferenceHolder(id));
+                WindowHandles.Add(nativeString);
             }
 
             return id;
         }
 
-        /// <summary>
-        /// Get a cached element by ID.
-        /// </summary>
         public object GetElement(string elementId)
         {
             if (_elementCache.TryGetValue(elementId, out var weakRef))
             {
                 if (weakRef.TryGetTarget(out var element))
-                {
                     return element;
-                }
 
-                // Stale reference
                 _elementCache.TryRemove(elementId, out _);
                 _referenceKinds.TryRemove(elementId, out _);
 
@@ -334,7 +307,14 @@ namespace FenBrowser.WebDriver
             return GetElement(elementId);
         }
 
+        // Backward-compatible element-specific lookup used by element command paths.
         public bool TryGetElementReferenceId(object nativeReference, out string referenceId)
+            => TryGetElementReferenceId(nativeReference, ElementReferenceKind.Element, out referenceId);
+
+        public bool TryGetElementReferenceId(
+            object nativeReference,
+            ElementReferenceKind kind,
+            out string referenceId)
         {
             referenceId = string.Empty;
             if (nativeReference == null)
@@ -342,27 +322,44 @@ namespace FenBrowser.WebDriver
 
             if (nativeReference is string nativeString)
             {
-                if (_nativeStringReferenceMap.TryGetValue(nativeString, out var mappedStringRef) &&
-                    IsReferenceAlive(mappedStringRef))
+                var key = new NativeStringReferenceKey(kind, nativeString);
+                if (_nativeStringReferenceMap.TryGetValue(key, out var mappedStringRef))
                 {
-                    referenceId = mappedStringRef;
-                    return true;
+                    if (IsReferenceAlive(mappedStringRef, kind))
+                    {
+                        referenceId = mappedStringRef;
+                        return true;
+                    }
+
+                    _nativeStringReferenceMap.TryRemove(key, out _);
                 }
 
                 return false;
             }
 
             if (_nativeObjectReferenceMap.TryGetValue(nativeReference, out var holder) &&
-                IsReferenceAlive(holder.ReferenceId))
+                holder.TryGet(kind, out var mappedRef))
             {
-                referenceId = holder.ReferenceId;
-                return true;
+                if (IsReferenceAlive(mappedRef, kind))
+                {
+                    referenceId = mappedRef;
+                    return true;
+                }
+
+                holder.RemoveIfMatches(kind, mappedRef);
             }
 
             return false;
         }
 
+        // Backward-compatible association for element references.
         public void AssociateNativeReference(object nativeReference, string referenceId)
+            => AssociateNativeReference(nativeReference, referenceId, ElementReferenceKind.Element);
+
+        public void AssociateNativeReference(
+            object nativeReference,
+            string referenceId,
+            ElementReferenceKind kind)
         {
             if (nativeReference == null || string.IsNullOrWhiteSpace(referenceId))
                 return;
@@ -374,36 +371,60 @@ namespace FenBrowser.WebDriver
                     $"Cannot associate native reference with unknown reference id: {referenceId}");
             }
 
+            if (_referenceKinds.TryGetValue(referenceId, out var actualKind) && actualKind != kind)
+            {
+                throw new WebDriverException(
+                    ErrorCodes.InvalidArgument,
+                    $"Cannot associate {kind} native reference with {actualKind} reference id: {referenceId}");
+            }
+
             if (nativeReference is string nativeString)
             {
                 if (!string.IsNullOrWhiteSpace(nativeString))
-                    _nativeStringReferenceMap[nativeString] = referenceId;
+                    _nativeStringReferenceMap[new NativeStringReferenceKey(kind, nativeString)] = referenceId;
                 return;
             }
 
-            _nativeObjectReferenceMap.Remove(nativeReference);
-            _nativeObjectReferenceMap.Add(nativeReference, new NativeReferenceHolder(referenceId));
+            var holder = _nativeObjectReferenceMap.GetValue(
+                nativeReference,
+                static _ => new NativeReferenceHolder());
+            holder.Set(kind, referenceId);
         }
 
         public bool TryGetReferenceKind(string referenceId, out ElementReferenceKind kind)
         {
             if (_referenceKinds.TryGetValue(referenceId, out kind))
-            {
                 return true;
-            }
 
             kind = ElementReferenceKind.Element;
             return false;
         }
 
+        /// <summary>
+        /// Element-only native string mapping snapshot used for element fingerprint
+        /// equivalence. Frame/window/shadow identifiers must never participate in it.
+        /// </summary>
         public IReadOnlyDictionary<string, string> GetNativeReferenceMapSnapshot()
         {
-            return new Dictionary<string, string>(_nativeStringReferenceMap, StringComparer.Ordinal);
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var pair in _nativeStringReferenceMap)
+            {
+                if (pair.Key.Kind == ElementReferenceKind.Element &&
+                    IsReferenceAlive(pair.Value, ElementReferenceKind.Element))
+                {
+                    result[pair.Key.NativeReference] = pair.Value;
+                }
+            }
+
+            return result;
         }
 
-        private bool IsReferenceAlive(string referenceId)
+        private bool IsReferenceAlive(string referenceId, ElementReferenceKind expectedKind)
         {
             if (!_elementCache.TryGetValue(referenceId, out var weakRef))
+                return false;
+
+            if (!_referenceKinds.TryGetValue(referenceId, out var actualKind) || actualKind != expectedKind)
                 return false;
 
             if (weakRef.TryGetTarget(out _))
@@ -435,9 +456,6 @@ namespace FenBrowser.WebDriver
         }
     }
 
-    /// <summary>
-    /// WebDriver exception with error code.
-    /// </summary>
     public class WebDriverException : Exception
     {
         public string ErrorCode { get; }
