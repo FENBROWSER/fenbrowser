@@ -1,3 +1,6 @@
+using FenBrowser.Js.Heap;
+using FenBrowser.Js.Runtime;
+
 namespace FenBrowser.Js.Promises;
 
 // 9.5 Jobs and Host Operations to Enqueue Jobs.
@@ -6,7 +9,11 @@ namespace FenBrowser.Js.Promises;
 // embedders may enqueue jobs from completion callbacks that are not running on the
 // JS thread, so queue mutation is synchronized. Jobs themselves are always executed
 // outside the queue lock.
-public sealed class JobQueue
+//
+// Pending jobs are also heap roots: they may be the only owners of a settled value,
+// reaction handler/capability, thenable, or promise while waiting for the next
+// microtask checkpoint. The interpreter/realm must register this queue with JsHeap.
+public sealed class JobQueue : IHeapRootSource
 {
     private readonly Queue<PromiseJob> _jobs = new();
     private readonly object _sync = new();
@@ -46,6 +53,31 @@ public sealed class JobQueue
         }
     }
 
+    public void TraceRoots(IHeapTracer tracer)
+    {
+        ArgumentNullException.ThrowIfNull(tracer);
+
+        lock (_sync)
+        {
+            foreach (var job in _jobs)
+            {
+                switch (job)
+                {
+                    case PromiseReactionJob reactionJob:
+                        reactionJob.Reaction.Trace(tracer);
+                        TraceValue(tracer, reactionJob.Argument);
+                        break;
+
+                    case PromiseResolveThenableJob thenableJob:
+                        TraceValue(tracer, thenableJob.PromiseToResolve);
+                        TraceValue(tracer, thenableJob.Thenable);
+                        TraceValue(tracer, thenableJob.Then);
+                        break;
+                }
+            }
+        }
+    }
+
     // 8.4 PerformMicrotaskCheckpoint: drain the queue, invoking the supplied runner
     // for each dequeued job. The runner returns false to abort the checkpoint (e.g.
     // a fatal error inside the interpreter); pending jobs remain in the queue for the
@@ -70,5 +102,13 @@ public sealed class JobQueue
         }
 
         return ran;
+    }
+
+    private static void TraceValue(IHeapTracer tracer, JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object)
+        {
+            tracer.Trace(value.AsObjectHandle());
+        }
     }
 }
