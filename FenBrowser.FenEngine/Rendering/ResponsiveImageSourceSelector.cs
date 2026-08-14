@@ -31,17 +31,40 @@ namespace FenBrowser.FenEngine.Rendering
                     return src;
                 }
 
-                var widthCandidates = candidates.Where(c => c.Width > 0).OrderBy(c => c.Width).ToList();
+                var widthCandidates = candidates
+                    .Where(static c => c.Width > 0)
+                    .OrderBy(static c => c.Width)
+                    .ToList();
                 if (widthCandidates.Count > 0)
                 {
-                    var requiredWidth = Math.Max(1.0, viewportWidth) * Math.Max(1.0, devicePixelRatio);
+                    // Width-descriptor srcsets require the CSS source size (`sizes`) for
+                    // exact selection. Until that source-size parser is wired, viewport
+                    // width is the conservative fallback used by the existing engine.
+                    var requiredWidth = Math.Max(1.0, viewportWidth) * NormalizeDevicePixelRatio(devicePixelRatio);
                     return (widthCandidates.FirstOrDefault(c => c.Width >= requiredWidth) ?? widthCandidates[^1]).Url;
                 }
 
-                var densityCandidates = candidates.Where(c => c.Density > 0).OrderBy(c => c.Density).ToList();
+                var densityCandidates = candidates
+                    .Where(static c => c.Density > 0 && double.IsFinite(c.Density))
+                    .ToList();
+
+                // In a density-descriptor source set, `src` participates as an implicit
+                // 1x candidate when the srcset did not already provide one.
+                if (!string.IsNullOrWhiteSpace(src) &&
+                    !densityCandidates.Any(static c => Math.Abs(c.Density - 1.0) < 0.000001))
+                {
+                    densityCandidates.Add(new Candidate
+                    {
+                        Url = src.Trim(),
+                        Width = 0,
+                        Density = 1.0
+                    });
+                }
+
                 if (densityCandidates.Count > 0)
                 {
-                    var requiredDensity = Math.Max(1.0, devicePixelRatio);
+                    densityCandidates.Sort(static (a, b) => a.Density.CompareTo(b.Density));
+                    var requiredDensity = NormalizeDevicePixelRatio(devicePixelRatio);
                     return (densityCandidates.FirstOrDefault(c => c.Density >= requiredDensity) ?? densityCandidates[^1]).Url;
                 }
 
@@ -71,6 +94,14 @@ namespace FenBrowser.FenEngine.Rendering
 
                 foreach (var sibling in pictureParent.ChildNodes.OfType<Element>())
                 {
+                    // Only <source> elements before the <img> participate in picture
+                    // source selection. A later <source> belongs after the fallback and
+                    // must not retroactively override it.
+                    if (ReferenceEquals(sibling, image))
+                    {
+                        break;
+                    }
+
                     if (!string.Equals(sibling.NodeName, "source", StringComparison.OrdinalIgnoreCase))
                     {
                         continue;
@@ -148,59 +179,162 @@ namespace FenBrowser.FenEngine.Rendering
             return null;
         }
 
+        /// <summary>
+        /// Parses the common srcset candidate grammar without splitting blindly on
+        /// commas. Commas are valid inside URL tokens (most visibly data: URLs), so a
+        /// raw string.Split(',') corrupts valid candidates before descriptors are read.
+        /// </summary>
         private static List<Candidate> ParseCandidates(string srcset)
         {
             var candidates = new List<Candidate>();
-            foreach (var rawCandidate in srcset.Split(','))
+            if (string.IsNullOrWhiteSpace(srcset))
             {
-                var candidateText = rawCandidate?.Trim();
-                if (string.IsNullOrWhiteSpace(candidateText))
+                return candidates;
+            }
+
+            var index = 0;
+            while (index < srcset.Length)
+            {
+                // Leading ASCII whitespace and separator commas are ignored.
+                while (index < srcset.Length &&
+                       (IsAsciiWhitespace(srcset[index]) || srcset[index] == ','))
+                {
+                    index++;
+                }
+
+                if (index >= srcset.Length)
+                {
+                    break;
+                }
+
+                var urlStart = index;
+                while (index < srcset.Length && !IsAsciiWhitespace(srcset[index]))
+                {
+                    index++;
+                }
+
+                if (index <= urlStart)
                 {
                     continue;
                 }
 
-                var parts = candidateText.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length == 0 || string.IsNullOrWhiteSpace(parts[0]))
+                var rawUrl = srcset.Substring(urlStart, index - urlStart);
+                var trailingCommaCount = 0;
+                for (var i = rawUrl.Length - 1; i >= 0 && rawUrl[i] == ','; i--)
                 {
-                    continue;
+                    trailingCommaCount++;
                 }
 
-                var candidate = new Candidate
+                if (trailingCommaCount > 0)
                 {
-                    Url = parts[0],
-                    Width = 0,
-                    Density = 0
-                };
-
-                if (parts.Length > 1)
-                {
-                    var descriptor = parts[1].Trim().ToLowerInvariant();
-                    if (descriptor.EndsWith("w", StringComparison.Ordinal) &&
-                        int.TryParse(descriptor[..^1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var width))
+                    var url = rawUrl[..^trailingCommaCount].Trim();
+                    if (url.Length > 0)
                     {
-                        candidate = new Candidate
+                        candidates.Add(new Candidate
                         {
-                            Url = candidate.Url,
-                            Width = width,
-                            Density = 0
-                        };
-                    }
-                    else if (descriptor.EndsWith("x", StringComparison.Ordinal) &&
-                             double.TryParse(descriptor[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var density))
-                    {
-                        candidate = new Candidate
-                        {
-                            Url = candidate.Url,
+                            Url = url,
                             Width = 0,
-                            Density = density
-                        };
+                            Density = 1.0
+                        });
                     }
+                    continue;
                 }
 
-                candidates.Add(candidate);
+                SkipAsciiWhitespace(srcset, ref index);
+                var descriptorStart = index;
+                while (index < srcset.Length && srcset[index] != ',')
+                {
+                    index++;
+                }
+
+                var descriptorText = srcset.Substring(descriptorStart, index - descriptorStart).Trim();
+                if (index < srcset.Length && srcset[index] == ',')
+                {
+                    index++;
+                }
+
+                var parsed = ParseCandidate(rawUrl.Trim(), descriptorText);
+                if (parsed != null)
+                {
+                    candidates.Add(parsed);
+                }
             }
 
             return candidates;
+        }
+
+        private static Candidate ParseCandidate(string url, string descriptorText)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return null;
+            }
+
+            if (string.IsNullOrWhiteSpace(descriptorText))
+            {
+                return new Candidate
+                {
+                    Url = url,
+                    Width = 0,
+                    Density = 1.0
+                };
+            }
+
+            var descriptors = descriptorText.Split(
+                (char[])null,
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (descriptors.Length != 1)
+            {
+                // This engine does not implement the `h` descriptor. Rather than
+                // accepting ambiguous multi-descriptor candidates incorrectly, drop
+                // them and let the fallback/source-set alternatives win.
+                return null;
+            }
+
+            var descriptor = descriptors[0].ToLowerInvariant();
+            if (descriptor.EndsWith("w", StringComparison.Ordinal) &&
+                int.TryParse(descriptor[..^1], NumberStyles.None, CultureInfo.InvariantCulture, out var width) &&
+                width > 0)
+            {
+                return new Candidate
+                {
+                    Url = url,
+                    Width = width,
+                    Density = 0
+                };
+            }
+
+            if (descriptor.EndsWith("x", StringComparison.Ordinal) &&
+                double.TryParse(descriptor[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var density) &&
+                density > 0 && double.IsFinite(density))
+            {
+                return new Candidate
+                {
+                    Url = url,
+                    Width = 0,
+                    Density = density
+                };
+            }
+
+            return null;
+        }
+
+        private static double NormalizeDevicePixelRatio(double devicePixelRatio)
+        {
+            return double.IsFinite(devicePixelRatio) && devicePixelRatio > 0
+                ? devicePixelRatio
+                : 1.0;
+        }
+
+        private static bool IsAsciiWhitespace(char c) =>
+            c is ' ' or '\t' or '\n' or '\r' or '\f';
+
+        private static void SkipAsciiWhitespace(string text, ref int index)
+        {
+            while (index < text.Length && IsAsciiWhitespace(text[index]))
+            {
+                index++;
+            }
         }
 
         private static bool IsPlaceholderOnlyPictureSource(Element sourceElement, string src, string srcset)
