@@ -16,7 +16,9 @@ public sealed class BoundFunctionObject : JsObject
     // [[BoundThis]] — the thisArg pinned by .bind().
     public JsValue BoundThis { get; }
 
-    // [[BoundArguments]] — the partial application args from .bind().
+    // [[BoundArguments]] — the partial application args from .bind(). The bound
+    // function owns this array: callers must not be able to mutate its internal
+    // argument list by retaining the array passed to the constructor.
     public JsValue[] BoundArgs { get; }
 
     // The target function's "name" for Function.prototype.toString output.
@@ -31,9 +33,13 @@ public sealed class BoundFunctionObject : JsObject
 
     public BoundFunctionObject(JsValue targetFunction, JsValue boundThis, JsValue[] boundArgs, int length, string? targetName = null)
     {
+        ArgumentNullException.ThrowIfNull(boundArgs);
+
         TargetFunction = targetFunction;
         BoundThis = boundThis;
-        BoundArgs = boundArgs;
+        BoundArgs = boundArgs.Length == 0
+            ? Array.Empty<JsValue>()
+            : (JsValue[])boundArgs.Clone();
         TargetName = targetName;
         _ = DefineOwnProperty(
             "length",
