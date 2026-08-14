@@ -118,8 +118,13 @@ namespace FenBrowser.WebDriver.Commands
 
         private static int ToRuntimeTimeoutMs(long? configuredTimeoutMs, int fallbackMs)
         {
-            var value = configuredTimeoutMs ?? fallbackMs;
-            if (value <= 0)
+            if (!configuredTimeoutMs.HasValue)
+            {
+                return fallbackMs;
+            }
+
+            var value = configuredTimeoutMs.Value;
+            if (value < 0)
             {
                 return fallbackMs;
             }
