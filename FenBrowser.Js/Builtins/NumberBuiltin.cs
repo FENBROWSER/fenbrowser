@@ -19,7 +19,6 @@ public sealed class NumberBuiltin : IBuiltinModule
         ArgumentNullException.ThrowIfNull(context);
         var heap = context.Heap;
 
-        // 21.1.3 Properties of the Number Prototype Object
         var prototype = new NumberObject(0d);
         prototype.SetPrototype(context.GetObjectPrototype());
         var prototypeHandle = heap.AllocateObject(prototype, AllocationSite.Current());
@@ -40,7 +39,6 @@ public sealed class NumberBuiltin : IBuiltinModule
             });
         constructor.SetPrototype(GetFunctionPrototypeHandle(context));
 
-        // 21.1.2 Properties of the Number Constructor
         _ = constructor.DefineOwnProperty("MAX_VALUE", new JsPropertyDescriptor(JsValue.FromNumber(double.MaxValue), Writable: false, Enumerable: false, Configurable: false));
         _ = constructor.DefineOwnProperty("MIN_VALUE", new JsPropertyDescriptor(JsValue.FromNumber(double.Epsilon), Writable: false, Enumerable: false, Configurable: false));
         _ = constructor.DefineOwnProperty("NaN", new JsPropertyDescriptor(JsValue.FromNumber(double.NaN), Writable: false, Enumerable: false, Configurable: false));
@@ -55,17 +53,15 @@ public sealed class NumberBuiltin : IBuiltinModule
         heap.PushRoot(constructorHandle);
         heap.WriteBarrier(constructorHandle, prototypeHandle);
 
-        // Number.isFinite / isNaN / isInteger / isSafeInteger (21.1.2.2-5)
         DefineStaticMethod(heap, constructorHandle, constructor, "isFinite", args =>
-            JsValue.FromBoolean(args.Count > 0 && args[0].Tag == JsValueTag.Number && !double.IsNaN(args[0].AsNumber()) && !double.IsInfinity(args[0].AsNumber())));
+            JsValue.FromBoolean(args.Count > 0 && IsNumberValue(args[0]) && !double.IsNaN(args[0].AsNumber()) && !double.IsInfinity(args[0].AsNumber())));
         DefineStaticMethod(heap, constructorHandle, constructor, "isNaN", args =>
-            JsValue.FromBoolean(args.Count > 0 && args[0].Tag == JsValueTag.Number && double.IsNaN(args[0].AsNumber())));
+            JsValue.FromBoolean(args.Count > 0 && IsNumberValue(args[0]) && double.IsNaN(args[0].AsNumber())));
         DefineStaticMethod(heap, constructorHandle, constructor, "isInteger", args =>
             JsValue.FromBoolean(IsIntegerNumber(args)));
         DefineStaticMethod(heap, constructorHandle, constructor, "isSafeInteger", args =>
             JsValue.FromBoolean(IsIntegerNumber(args) && Math.Abs(args[0].AsNumber()) <= 9007199254740991d));
 
-        // Number.parseInt / Number.parseFloat — same object as global (21.1.2.13-14)
         var parseIntHandle = context.GetParseIntFunction();
         _ = constructor.DefineOwnProperty("parseInt",
             new JsPropertyDescriptor(JsValue.FromObject(parseIntHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -81,7 +77,6 @@ public sealed class NumberBuiltin : IBuiltinModule
             new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         heap.WriteBarrier(prototypeHandle, constructorHandle);
 
-        // 21.1.3 prototype methods
         DefineProtoMethod(heap, capturedCtx, prototypeHandle, protoObj, "toString", NumberPrototypeToString, length: 1);
         DefineProtoMethod(heap, capturedCtx, prototypeHandle, protoObj, "toLocaleString", NumberPrototypeToLocaleString, length: 0);
         DefineProtoMethod(heap, capturedCtx, prototypeHandle, protoObj, "toFixed", NumberPrototypeToFixed, length: 1);
@@ -92,9 +87,12 @@ public sealed class NumberBuiltin : IBuiltinModule
         return new[] { BuiltinBinding.NonEnumerable("Number", JsValue.FromObject(constructorHandle)) };
     }
 
+    private static bool IsNumberValue(JsValue value)
+        => value.Tag is JsValueTag.Number or JsValueTag.Int32;
+
     private static bool IsIntegerNumber(IReadOnlyList<JsValue> args)
     {
-        if (args.Count == 0 || args[0].Tag != JsValueTag.Number) return false;
+        if (args.Count == 0 || !IsNumberValue(args[0])) return false;
         var value = args[0].AsNumber();
         if (double.IsNaN(value) || double.IsInfinity(value)) return false;
         return Math.Floor(value) == value;
@@ -182,7 +180,6 @@ public sealed class NumberBuiltin : IBuiltinModule
         throw new JsThrownException(ctx.CreateTypeError("Number.prototype method called on incompatible receiver."));
     }
 
-    // 21.1.3.6 Number.prototype.toString([radix])
     private static JsValue NumberPrototypeToString(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var value = NumberThisValue(ctx, thisValue);
@@ -203,7 +200,6 @@ public sealed class NumberBuiltin : IBuiltinModule
         if (fractionPart == 0d)
             return JsValue.FromString(negative ? "-" + intText : intText);
 
-        // Emit up to 52 fractional digits with rounding.
         var frac = new System.Text.StringBuilder();
         for (var i = 0; i < 52; i++)
         {
@@ -227,7 +223,6 @@ public sealed class NumberBuiltin : IBuiltinModule
         return ctx.FormatNumberToLocaleString(value, locales, options);
     }
 
-    // 21.1.3.3 toFixed
     private static JsValue NumberPrototypeToFixed(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var value = NumberThisValue(ctx, thisValue);
@@ -241,13 +236,10 @@ public sealed class NumberBuiltin : IBuiltinModule
             System.Globalization.CultureInfo.InvariantCulture));
     }
 
-    // 21.1.3.2 toExponential
     private static JsValue NumberPrototypeToExponential(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var value = NumberThisValue(ctx, thisValue);
 
-        // ECMA-262 21.1.3.2 step 10.b: fractionDigits undefined → use the fewest
-        // fraction digits whose exponential form still round-trips to x.
         if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
         {
             if (double.IsNaN(value)) return JsValue.FromString("NaN");
@@ -267,8 +259,6 @@ public sealed class NumberBuiltin : IBuiltinModule
             return JsValue.FromString(sign + MathHelpers.FormatToExponential(absValue, 17));
         }
 
-        // Step 2: ToInteger(fractionDigits) runs (and observes valueOf side effects)
-        // before the x-is-NaN/Infinity short-circuit at steps 5-6.
         var digits = (int)ctx.ToNumber(args[0]);
         if (double.IsNaN(value)) return JsValue.FromString("NaN");
         if (double.IsInfinity(value)) return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
@@ -280,16 +270,12 @@ public sealed class NumberBuiltin : IBuiltinModule
         return JsValue.FromString(sig2 + MathHelpers.FormatToExponential(abs2, digits));
     }
 
-    // 21.1.3.5 toPrecision
     private static JsValue NumberPrototypeToPrecision(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var value = NumberThisValue(ctx, thisValue);
-        // Step 2: precision undefined → ToString(x) (before any NaN handling).
         if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
             return JsValue.FromString(MathHelpers.FormatNumberForString(value));
 
-        // Step 3: ToInteger(precision) runs (observing valueOf side effects) before
-        // the x-is-NaN check at step 4.
         var precision = (int)ctx.ToNumber(args[0]);
         if (double.IsNaN(value)) return JsValue.FromString("NaN");
         if (double.IsInfinity(value)) return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
@@ -302,7 +288,6 @@ public sealed class NumberBuiltin : IBuiltinModule
         return JsValue.FromString(MathHelpers.FormatToPrecision(absValue, precision, negative));
     }
 
-    // 21.1.3.7 valueOf
     private static JsValue NumberPrototypeValueOf(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
