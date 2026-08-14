@@ -1,8 +1,6 @@
 // WHATWG DOM Living Standard compliant implementation
 // FenBrowser.Core.Dom.V2 - Production-grade DOM
 
-using System.Collections.Generic;
-
 namespace FenBrowser.Core.Dom.V2
 {
     /// <summary>
@@ -17,11 +15,8 @@ namespace FenBrowser.Core.Dom.V2
         public override NodeType NodeType => NodeType.DocumentFragment;
         public override string NodeName => "#document-fragment";
 
-        // --- ID Index (for getElementById within fragment) ---
-        private Dictionary<string, Element> _idIndex;
-
         /// <summary>
-        /// Returns the element with the given ID within this fragment.
+        /// Returns the first element with the given ID within this fragment, in tree order.
         /// https://dom.spec.whatwg.org/#dom-nonelementparentnode-getelementbyid
         /// </summary>
         public Element GetElementById(string elementId)
@@ -29,30 +24,30 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(elementId))
                 return null;
 
-            // Rebuild index lazily
-            if (_idIndex == null)
+            // Do not retain a fragment-local ID dictionary here. Child-list mutations
+            // can invalidate such a cache, but an element's `id` can change without
+            // changing the fragment's child list or tree scope. A stale dictionary
+            // would then return the old element indefinitely. DocumentFragments are
+            // transient and getElementById is not a layout hot path, so a tree-order
+            // scan is both correct and avoids cross-cutting attribute invalidation.
+            foreach (var node in Descendants())
             {
-                _idIndex = new Dictionary<string, Element>(System.StringComparer.Ordinal);
-                foreach (var node in Descendants())
+                if (node is Element element &&
+                    string.Equals(element.Id, elementId, System.StringComparison.Ordinal))
                 {
-                    if (node is Element el && !string.IsNullOrEmpty(el.Id))
-                    {
-                        if (!_idIndex.ContainsKey(el.Id))
-                            _idIndex[el.Id] = el;
-                    }
+                    return element;
                 }
             }
 
-            _idIndex.TryGetValue(elementId, out var element);
-            return element;
+            return null;
         }
 
         /// <summary>
-        /// Invalidates the ID index when children change.
+        /// Retained for mutation-call-site compatibility. ID lookup is live and has
+        /// no fragment-local cache to invalidate.
         /// </summary>
         internal void InvalidateIdIndex()
         {
-            _idIndex = null;
         }
 
         // --- Constructor ---
