@@ -60,6 +60,8 @@ public sealed class PosixCommandSandbox : ISandbox
 
         lock (_processLock)
         {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(PosixCommandSandbox));
             _activeProcesses.Add(process);
         }
     }
@@ -67,25 +69,8 @@ public sealed class PosixCommandSandbox : ISandbox
     public void Kill()
     {
         ThrowIfDisposed();
-
-        List<Process> processes;
-        lock (_processLock)
-        {
-            processes = _activeProcesses.ToList();
-            _activeProcesses.Clear();
-        }
-
-        foreach (var process in processes)
-        {
-            try
-            {
-                if (!process.HasExited)
-                    process.Kill(entireProcessTree: true);
-            }
-            catch
-            {
-            }
-        }
+        var processes = TakeTrackedProcesses(markDisposed: false);
+        TerminateAndDispose(processes);
     }
 
     public SandboxHealthStatus GetHealth()
@@ -132,7 +117,23 @@ public sealed class PosixCommandSandbox : ISandbox
         var process = Process.Start(wrapped);
         if (process != null)
         {
-            AttachToProcess(process);
+            try
+            {
+                AttachToProcess(process);
+            }
+            catch
+            {
+                try
+                {
+                    if (!process.HasExited)
+                        process.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                }
+                process.Dispose();
+                throw;
+            }
         }
 
         return process;
@@ -140,22 +141,64 @@ public sealed class PosixCommandSandbox : ISandbox
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        Kill();
+        var processes = TakeTrackedProcesses(markDisposed: true);
+        if (processes == null)
+            return;
 
+        // Do not call the public Kill() path after setting _disposed: Kill()
+        // intentionally rejects use-after-dispose. Disposal owns the tracked
+        // process list atomically and performs termination/handle cleanup directly.
+        TerminateAndDispose(processes);
+    }
+
+    private List<Process> TakeTrackedProcesses(bool markDisposed)
+    {
         lock (_processLock)
         {
-            foreach (var process in _activeProcesses)
+            if (markDisposed)
             {
-                try { process.Dispose(); }
+                if (_disposed)
+                    return null;
+                _disposed = true;
+            }
+            else if (_disposed)
+            {
+                throw new ObjectDisposedException(nameof(PosixCommandSandbox));
+            }
+
+            var processes = _activeProcesses.ToList();
+            _activeProcesses.Clear();
+            return processes;
+        }
+    }
+
+    private static void TerminateAndDispose(IEnumerable<Process> processes)
+    {
+        if (processes == null)
+            return;
+
+        foreach (var process in processes)
+        {
+            try
+            {
+                if (!process.HasExited)
+                    process.Kill(entireProcessTree: true);
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Debug($"[PosixSandbox] Failed to terminate tracked process: {ex.Message}", LogCategory.Security);
+            }
+            finally
+            {
+                try
+                {
+                    process.Dispose();
+                }
                 catch (Exception ex)
                 {
                     EngineLogCompat.Debug($"[PosixSandbox] Failed to dispose tracked process: {ex.Message}", LogCategory.Security);
                 }
             }
-
-            _activeProcesses.Clear();
         }
     }
 
@@ -499,7 +542,7 @@ public sealed class PosixCommandSandbox : ISandbox
     private static string QuoteArgument(string value)
     {
         if (string.IsNullOrEmpty(value))
-            return "\"\"";
+            return "\"\";
 
         if (!value.Contains(' ') && !value.Contains('"'))
             return value;
