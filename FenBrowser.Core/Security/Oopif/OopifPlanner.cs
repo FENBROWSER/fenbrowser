@@ -55,12 +55,12 @@ namespace FenBrowser.Core.Security.Oopif
         public bool Allows(string requestOrigin)
         {
             if (string.IsNullOrEmpty(requestOrigin)) return false;
-            if (IsStrict) return requestOrigin == Origin;
-            // eTLD+1 match
+            if (IsStrict) return string.Equals(requestOrigin, Origin, StringComparison.Ordinal);
+
             var parsed = WhatwgUrl.Parse(requestOrigin);
             if (parsed == null) return false;
-            return parsed.Scheme == Scheme &&
-                   (parsed.Hostname == RegistrableDomain ||
+            return string.Equals(parsed.Scheme, Scheme, StringComparison.OrdinalIgnoreCase) &&
+                   (string.Equals(parsed.Hostname, RegistrableDomain, StringComparison.OrdinalIgnoreCase) ||
                     parsed.Hostname.EndsWith("." + RegistrableDomain, StringComparison.OrdinalIgnoreCase));
         }
 
@@ -141,16 +141,16 @@ namespace FenBrowser.Core.Security.Oopif
     public sealed class FrameNode
     {
         public Guid FrameId { get; } = Guid.NewGuid();
-        public int RendererId { get; set; }     // which renderer process hosts this frame
+        public int RendererId { get; set; }
         public string Url { get; set; }
         public string Origin { get; set; }
         public SiteLock SiteLock { get; set; }
         public bool IsMainFrame { get; set; }
-        public bool IsOutOfProcess { get; set; }   // true = OOPIF
-        public FrameProxy LocalProxy { get; set; } // proxy in the parent renderer (if OOPIF)
+        public bool IsOutOfProcess { get; set; }
+        public FrameProxy LocalProxy { get; set; }
         public List<FrameNode> Children { get; } = new();
         public FrameNode Parent { get; set; }
-        public string Sandbox { get; set; }        // CSP sandbox flags
+        public string Sandbox { get; set; }
     }
 
     /// <summary>
@@ -226,7 +226,7 @@ namespace FenBrowser.Core.Security.Oopif
         {
             if (currentFrame == null) throw new ArgumentNullException(nameof(currentFrame));
             if (string.IsNullOrEmpty(newUrl))
-                return OopifDecision.SameProcess("Empty URL");
+                return OopifDecision.NewProcess("Missing target URL -> isolate for safety");
 
             if (_mode == SiteIsolationMode.Disabled)
                 return OopifDecision.SameProcess("OOPIF disabled");
@@ -234,9 +234,10 @@ namespace FenBrowser.Core.Security.Oopif
             if (_mode == SiteIsolationMode.PerFrameIsolation && !currentFrame.IsMainFrame)
                 return OopifDecision.NewProcess("Per-frame isolation mode");
 
-            // Cross-site isolation: compare current renderer's site lock with new URL
+            // A missing site lock means the broker cannot prove same-site. Never
+            // turn missing security metadata into permission to share a renderer.
             if (currentFrame.SiteLock == null)
-                return OopifDecision.SameProcess("No site lock on current frame");
+                return OopifDecision.NewProcess("No site lock on current frame -> isolate for safety");
 
             try
             {
@@ -245,7 +246,7 @@ namespace FenBrowser.Core.Security.Oopif
                     currentFrame.SiteLock.RegistrableDomain,
                     newLock.RegistrableDomain,
                     StringComparison.OrdinalIgnoreCase) &&
-                    currentFrame.SiteLock.Scheme == newLock.Scheme;
+                    string.Equals(currentFrame.SiteLock.Scheme, newLock.Scheme, StringComparison.OrdinalIgnoreCase);
 
                 if (sameSite)
                     return OopifDecision.SameProcess("Same site");
@@ -254,8 +255,7 @@ namespace FenBrowser.Core.Security.Oopif
             }
             catch
             {
-                // Unparseable URL or opaque origin: use separate process for safety
-                return OopifDecision.NewProcess("Unknown origin → isolated for safety");
+                return OopifDecision.NewProcess("Unknown origin -> isolated for safety");
             }
         }
 
@@ -305,6 +305,9 @@ namespace FenBrowser.Core.Security.Oopif
         /// <summary>Initialize the main frame with a URL.</summary>
         public FrameNode CreateMainFrame(string url, int rendererId)
         {
+            if (rendererId < 0)
+                throw new ArgumentOutOfRangeException(nameof(rendererId));
+
             var frame = new FrameNode
             {
                 Url = url,
@@ -313,11 +316,26 @@ namespace FenBrowser.Core.Security.Oopif
                 IsOutOfProcess = false,
             };
 
-            try { frame.SiteLock = _policy.ComputeSiteLock(url); }
+            try
+            {
+                frame.SiteLock = _policy.ComputeSiteLock(url);
+                frame.Origin = frame.SiteLock?.Origin;
+            }
             catch (Exception ex)
             {
                 EngineLogCompat.Warn($"[OOPIF] Failed to compute site lock for '{url}': {ex.Message}", LogCategory.Security);
             }
+
+            // Future OOPIF renderer ids must not collide with an externally-assigned
+            // main-renderer id.
+            int observed;
+            do
+            {
+                observed = Volatile.Read(ref _nextRendererId);
+                if (observed >= rendererId)
+                    break;
+            }
+            while (Interlocked.CompareExchange(ref _nextRendererId, rendererId, observed) != observed);
 
             _mainFrame = frame;
             _frames[frame.FrameId] = frame;
@@ -352,8 +370,9 @@ namespace FenBrowser.Core.Security.Oopif
                 frame.SiteLock = _policy.ComputeSiteLock(url);
                 frame.Origin = frame.SiteLock?.Origin;
             }
-            catch
+            catch (Exception ex)
             {
+                EngineLogCompat.Warn($"[OOPIF] Failed to compute child site lock for '{url}': {ex.Message}", LogCategory.Security);
             }
 
             if (decision.RequiresNewProcess)
@@ -374,6 +393,12 @@ namespace FenBrowser.Core.Security.Oopif
             if (!_frames.TryGetValue(frameId, out var frame) || !frame.IsOutOfProcess || frame.LocalProxy == null)
                 return null;
 
+            if (frame.SiteLock == null || string.IsNullOrWhiteSpace(frame.Origin))
+            {
+                EngineLogCompat.Warn($"[OOPIF] Refusing handoff for frame {frameId}: no established site lock.", LogCategory.Security);
+                return null;
+            }
+
             return new OopifHandoffTicket
             {
                 FrameId = frame.FrameId,
@@ -389,19 +414,40 @@ namespace FenBrowser.Core.Security.Oopif
         {
             if (!_frames.TryGetValue(frameId, out var frame) || !frame.IsOutOfProcess || frame.LocalProxy == null)
                 return false;
+            if (frame.SiteLock == null || string.IsNullOrWhiteSpace(committedUrl))
+                return false;
+            if (!float.IsFinite(surfaceWidth) || !float.IsFinite(surfaceHeight) || surfaceWidth < 0 || surfaceHeight < 0)
+                return false;
 
-            frame.Url = committedUrl ?? frame.Url;
+            SiteLock committedLock;
             try
             {
-                frame.SiteLock = _policy.ComputeSiteLock(frame.Url);
-                frame.Origin = frame.SiteLock?.Origin;
+                committedLock = _policy.ComputeSiteLock(committedUrl, frame.SiteLock.IsStrict);
             }
-            catch
+            catch (Exception ex)
             {
+                EngineLogCompat.Warn($"[OOPIF] Rejecting remote commit for frame {frameId}: invalid committed URL/site lock ({ex.Message}).", LogCategory.Security);
+                return false;
             }
 
+            // Redirects must never retarget an already-assigned renderer to a site
+            // outside its broker-issued lock. A cross-site redirect requires process
+            // reassignment before commit, not mutation of the existing lock.
+            if (!frame.SiteLock.Allows(committedLock.Origin))
+            {
+                EngineLogCompat.Warn(
+                    $"[OOPIF] Rejecting cross-site remote commit for frame {frameId}: " +
+                    $"rendererLock={frame.SiteLock}, committed={committedLock.Origin}",
+                    LogCategory.Security);
+                return false;
+            }
+
+            frame.Url = committedUrl;
+            frame.SiteLock = committedLock;
+            frame.Origin = committedLock.Origin;
+
             frame.LocalProxy.PresentationState.LastCommittedUrl = frame.Url;
-            frame.LocalProxy.PresentationState.LastCommittedOrigin = frame.Origin ?? string.Empty;
+            frame.LocalProxy.PresentationState.LastCommittedOrigin = frame.Origin;
             frame.LocalProxy.PresentationState.LastFrameSequenceNumber = frameSequenceNumber;
             frame.LocalProxy.PresentationState.SurfaceWidth = surfaceWidth;
             frame.LocalProxy.PresentationState.SurfaceHeight = surfaceHeight;
@@ -411,11 +457,28 @@ namespace FenBrowser.Core.Security.Oopif
 
         public void RemoveFrame(Guid frameId)
         {
-            if (_frames.TryGetValue(frameId, out var frame))
+            if (!_frames.TryGetValue(frameId, out var frame))
+                return;
+
+            frame.Parent?.Children.Remove(frame);
+            RemoveFrameSubtree(frame);
+            if (ReferenceEquals(_mainFrame, frame))
             {
-                frame.Parent?.Children.Remove(frame);
-                _frames.Remove(frameId);
+                _mainFrame = null;
             }
+        }
+
+        private void RemoveFrameSubtree(FrameNode frame)
+        {
+            for (int i = frame.Children.Count - 1; i >= 0; i--)
+            {
+                RemoveFrameSubtree(frame.Children[i]);
+            }
+
+            frame.Children.Clear();
+            frame.Parent = null;
+            frame.LocalProxy = null;
+            _frames.Remove(frame.FrameId);
         }
     }
 }
