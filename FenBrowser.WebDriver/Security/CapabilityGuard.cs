@@ -1,9 +1,8 @@
 // =============================================================================
 // CapabilityGuard.cs
 // WebDriver Security - Capability Enforcement
-// 
-// PURPOSE: Enforces capability restrictions to limit dangerous operations.
-// SECURITY: Block insecure certs, restrict file access, limit scripts.
+//
+// PURPOSE: Enforces capability restrictions at real browser/driver boundaries.
 // =============================================================================
 
 using System;
@@ -26,17 +25,17 @@ namespace FenBrowser.WebDriver.Security
             "--disable-web-security"
         };
         private const string RiskyCapabilityOptIn = "--webdriver-allow-risky-capabilities";
-        
+
         public CapabilityGuard(Session session)
         {
             _session = session;
         }
-        
+
         /// <summary>
         /// Check if insecure certificates are allowed.
         /// </summary>
         public bool AllowInsecureCerts => _session.Capabilities.AcceptInsecureCerts == true;
-        
+
         /// <summary>
         /// Check if a URL is allowed for navigation.
         /// </summary>
@@ -51,9 +50,9 @@ namespace FenBrowser.WebDriver.Security
             {
                 return SecurityDecision.Block(SecurityBlockReasons.NavigationUrlInvalid, "Navigation URL is empty");
             }
-            
+
             // Block file:// URLs by default for security
-            if (url.StartsWith("file://", System.StringComparison.OrdinalIgnoreCase))
+            if (url.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
             {
                 if (!AllowFileUrls())
                 {
@@ -64,30 +63,29 @@ namespace FenBrowser.WebDriver.Security
 
                 return SecurityDecision.Allow();
             }
-            
-            // Block javascript: URLs
-            if (url.StartsWith("javascript:", System.StringComparison.OrdinalIgnoreCase))
+
+            // Block javascript: URLs as top-level navigation in this driver surface.
+            if (url.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase))
             {
                 return SecurityDecision.Block(SecurityBlockReasons.NavigationUrlBlocked, "javascript: navigation is blocked");
             }
-            
-            // Block data: URLs with scripts
-            if (url.StartsWith("data:", System.StringComparison.OrdinalIgnoreCase))
+
+            // Keep the existing explicit data:-navigation restriction separate from
+            // Execute Script. Script execution itself is a WebDriver command and must
+            // not be authorized by scanning JavaScript source text for substrings.
+            if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
             {
-                if (url.Contains("script", System.StringComparison.OrdinalIgnoreCase))
+                if (url.Contains("script", StringComparison.OrdinalIgnoreCase))
                 {
                     return SecurityDecision.Block(SecurityBlockReasons.NavigationUrlBlocked, "data: navigation containing script is blocked");
                 }
 
                 return SecurityDecision.Allow();
             }
-            
+
             return SecurityDecision.Allow();
         }
-        
-        /// <summary>
-        /// Check if file:// URLs are allowed.
-        /// </summary>
+
         private bool AllowFileUrls()
         {
             var fenOptions = _session.Capabilities.FenOptions;
@@ -101,9 +99,11 @@ namespace FenBrowser.WebDriver.Security
             }
             return false;
         }
-        
+
         /// <summary>
-        /// Check if a script is allowed to execute.
+        /// WebDriver Execute Script accepts a JavaScript function body. Security must
+        /// be enforced by the browsing-context sandbox/capabilities, not by substring
+        /// matching source text such as "process.exit" or "eval(atob(".
         /// </summary>
         public bool IsScriptAllowed(string script)
         {
@@ -112,44 +112,19 @@ namespace FenBrowser.WebDriver.Security
 
         public SecurityDecision EvaluateScriptPolicy(string script)
         {
-            if (string.IsNullOrEmpty(script))
+            if (script == null)
             {
-                return SecurityDecision.Block(SecurityBlockReasons.ScriptBlocked, "Script source is empty");
+                return SecurityDecision.Block(SecurityBlockReasons.ScriptBlocked, "Script source is null");
             }
-            
-            // Block potentially dangerous patterns
-            var blockedPatterns = new[]
-            {
-                "process.exit",
-                "require('child_process')",
-                "eval(atob(",
-                "Function('return this')()"
-            };
-            
-            foreach (var pattern in blockedPatterns)
-            {
-                if (script.Contains(pattern, System.StringComparison.OrdinalIgnoreCase))
-                {
-                    return SecurityDecision.Block(
-                        SecurityBlockReasons.ScriptBlocked,
-                        $"Script contains blocked pattern: {pattern}");
-                }
-            }
-            
+
             return SecurityDecision.Allow();
         }
-        
-        /// <summary>
-        /// Get effective timeout for script.
-        /// </summary>
+
         public int GetScriptTimeout()
         {
             return ToRuntimeTimeoutMs(_session.Timeouts.Script, 30000);
         }
-        
-        /// <summary>
-        /// Get effective timeout for page load.
-        /// </summary>
+
         public int GetPageLoadTimeout()
         {
             return ToRuntimeTimeoutMs(_session.Timeouts.PageLoad, 300000);
