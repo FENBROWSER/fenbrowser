@@ -140,7 +140,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                     if (!string.IsNullOrWhiteSpace(candidate) && !IsKnownPlaceholderImageUrl(candidate))
                     {
-                        return candidate;
+                        return ResolveAgainstDocumentBase(image, candidate);
                     }
                 }
             }
@@ -153,11 +153,37 @@ namespace FenBrowser.FenEngine.Rendering
                 image.GetAttribute("srcset"),
                 image.GetAttribute("data-srcset"));
 
-            return PickBestImageCandidate(
-                imageSrc,
-                imageSrcset,
-                viewportWidth,
-                devicePixelRatio);
+            return ResolveAgainstDocumentBase(
+                image,
+                PickBestImageCandidate(
+                    imageSrc,
+                    imageSrcset,
+                    viewportWidth,
+                    devicePixelRatio));
+        }
+
+        private static string ResolveAgainstDocumentBase(Element image, string candidate)
+        {
+            if (string.IsNullOrWhiteSpace(candidate))
+                return candidate;
+
+            var trimmed = candidate.Trim();
+            if (Uri.TryCreate(trimmed, UriKind.Absolute, out _))
+                return trimmed;
+
+            var document = image?.OwnerDocument;
+            var baseText = !string.IsNullOrWhiteSpace(document?.BaseURI)
+                ? document.BaseURI
+                : document?.URL;
+
+            if (string.IsNullOrWhiteSpace(baseText) ||
+                !Uri.TryCreate(baseText, UriKind.Absolute, out var baseUri) ||
+                !Uri.TryCreate(baseUri, trimmed, out var resolved))
+            {
+                return trimmed;
+            }
+
+            return resolved.AbsoluteUri;
         }
 
         private static string FirstNonEmpty(params string[] candidates)
@@ -195,7 +221,6 @@ namespace FenBrowser.FenEngine.Rendering
             var index = 0;
             while (index < srcset.Length)
             {
-                // Leading ASCII whitespace and separator commas are ignored.
                 while (index < srcset.Length &&
                        (IsAsciiWhitespace(srcset[index]) || srcset[index] == ','))
                 {
@@ -285,9 +310,6 @@ namespace FenBrowser.FenEngine.Rendering
                 StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             if (descriptors.Length != 1)
             {
-                // This engine does not implement the `h` descriptor. Rather than
-                // accepting ambiguous multi-descriptor candidates incorrectly, drop
-                // them and let the fallback/source-set alternatives win.
                 return null;
             }
 
