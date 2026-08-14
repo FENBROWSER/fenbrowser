@@ -288,7 +288,10 @@ namespace FenBrowser.WebDriver.Commands
                 token.StartsWith(WebDriverElementTokenPrefix, StringComparison.Ordinal))
             {
                 var nativeElementId = token.Substring(WebDriverElementTokenPrefix.Length);
-                if (session.TryGetElementReferenceId(nativeElementId, out var existingFromToken))
+                if (session.TryGetElementReferenceId(
+                        nativeElementId,
+                        Session.ElementReferenceKind.Element,
+                        out var existingFromToken))
                 {
                     return new ElementReference(existingFromToken);
                 }
@@ -300,7 +303,10 @@ namespace FenBrowser.WebDriver.Commands
                 shadowToken.StartsWith(WebDriverShadowTokenPrefix, StringComparison.Ordinal))
             {
                 var nativeShadowId = shadowToken.Substring(WebDriverShadowTokenPrefix.Length);
-                if (session.TryGetElementReferenceId(nativeShadowId, out var existingShadowRef))
+                if (session.TryGetElementReferenceId(
+                        nativeShadowId,
+                        Session.ElementReferenceKind.ShadowRoot,
+                        out var existingShadowRef))
                 {
                     return new ShadowRootReference(existingShadowRef);
                 }
@@ -312,7 +318,10 @@ namespace FenBrowser.WebDriver.Commands
                 frameToken.StartsWith(WebDriverFrameTokenPrefix, StringComparison.Ordinal))
             {
                 var nativeFrameId = frameToken.Substring(WebDriverFrameTokenPrefix.Length);
-                if (session.TryGetElementReferenceId(nativeFrameId, out var existingFrameRef))
+                if (session.TryGetElementReferenceId(
+                        nativeFrameId,
+                        Session.ElementReferenceKind.Frame,
+                        out var existingFrameRef))
                 {
                     return new FrameReference(existingFrameRef);
                 }
@@ -324,7 +333,10 @@ namespace FenBrowser.WebDriver.Commands
                 windowToken.StartsWith(WebDriverWindowTokenPrefix, StringComparison.Ordinal))
             {
                 var nativeWindowId = windowToken.Substring(WebDriverWindowTokenPrefix.Length);
-                if (session.TryGetElementReferenceId(nativeWindowId, out var existingWindowRef))
+                if (session.TryGetElementReferenceId(
+                        nativeWindowId,
+                        Session.ElementReferenceKind.Window,
+                        out var existingWindowRef))
                 {
                     return new WindowReference(existingWindowRef);
                 }
