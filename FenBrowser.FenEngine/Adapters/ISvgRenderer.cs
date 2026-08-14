@@ -72,27 +72,41 @@ namespace FenBrowser.FenEngine.Adapters
     {
         /// <summary>
         /// Maximum recursion depth for nested elements.
-        /// Default: 32
         /// </summary>
         public int MaxRecursionDepth { get; set; }
         
         /// <summary>
         /// Maximum number of filter effects.
-        /// Default: 10
         /// </summary>
         public int MaxFilterCount { get; set; }
         
         /// <summary>
-        /// Maximum render time in milliseconds.
-        /// Default: 250ms
+        /// Maximum render time in milliseconds. This is an elapsed-time guard after
+        /// parsing; source/raster admission limits provide the pre-allocation boundary.
         /// </summary>
         public int MaxRenderTimeMs { get; set; }
         
         /// <summary>
         /// Maximum total element count.
-        /// Default: 10000
         /// </summary>
         public int MaxElementCount { get; set; }
+
+        /// <summary>
+        /// Maximum SVG source length in UTF-16 code units admitted to Svg.Skia.
+        /// </summary>
+        public int MaxSourceChars { get; set; }
+
+        /// <summary>
+        /// Maximum decoded raster width/height used for the pre-rendered bitmap.
+        /// </summary>
+        public int MaxRasterWidth { get; set; }
+        public int MaxRasterHeight { get; set; }
+
+        /// <summary>
+        /// Maximum decoded raster pixel count. This is the primary memory-bomb guard;
+        /// BGRA32 consumes roughly four bytes per admitted pixel before native overhead.
+        /// </summary>
+        public long MaxRasterPixels { get; set; }
         
         /// <summary>
         /// Whether to allow external references (xlink:href to external URLs).
@@ -109,6 +123,10 @@ namespace FenBrowser.FenEngine.Adapters
             MaxFilterCount = 10,
             MaxRenderTimeMs = 250,
             MaxElementCount = 50000,
+            MaxSourceChars = 8 * 1024 * 1024,
+            MaxRasterWidth = 8192,
+            MaxRasterHeight = 8192,
+            MaxRasterPixels = 16L * 1024 * 1024,
             AllowExternalReferences = false
         };
         
@@ -121,6 +139,10 @@ namespace FenBrowser.FenEngine.Adapters
             MaxFilterCount = 5,
             MaxRenderTimeMs = 50,
             MaxElementCount = 5000,
+            MaxSourceChars = 2 * 1024 * 1024,
+            MaxRasterWidth = 4096,
+            MaxRasterHeight = 4096,
+            MaxRasterPixels = 8L * 1024 * 1024,
             AllowExternalReferences = false
         };
     }
