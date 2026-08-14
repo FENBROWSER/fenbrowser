@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using FenBrowser.Host.Platform;
 
@@ -12,10 +11,9 @@ internal sealed class LinuxClipboard : IClipboard
 {
     public string GetText()
     {
-        // Try xclip first
         try
         {
-            var process = Process.Start(new ProcessStartInfo
+            using var process = Process.Start(new ProcessStartInfo
             {
                 FileName = "xclip",
                 Arguments = "-selection clipboard -o",
@@ -27,15 +25,17 @@ internal sealed class LinuxClipboard : IClipboard
             {
                 var output = process.StandardOutput.ReadToEnd();
                 process.WaitForExit();
-                return output.Trim();
+                if (process.ExitCode == 0)
+                {
+                    return output;
+                }
             }
         }
         catch { }
 
-        // Try xsel
         try
         {
-            var process = Process.Start(new ProcessStartInfo
+            using var process = Process.Start(new ProcessStartInfo
             {
                 FileName = "xsel",
                 Arguments = "-b",
@@ -47,7 +47,10 @@ internal sealed class LinuxClipboard : IClipboard
             {
                 var output = process.StandardOutput.ReadToEnd();
                 process.WaitForExit();
-                return output.Trim();
+                if (process.ExitCode == 0)
+                {
+                    return output;
+                }
             }
         }
         catch { }
@@ -60,10 +63,9 @@ internal sealed class LinuxClipboard : IClipboard
         if (string.IsNullOrEmpty(text))
             return false;
 
-        // Try xclip
         try
         {
-            var process = Process.Start(new ProcessStartInfo
+            using var process = Process.Start(new ProcessStartInfo
             {
                 FileName = "xclip",
                 Arguments = "-selection clipboard",
@@ -81,10 +83,9 @@ internal sealed class LinuxClipboard : IClipboard
         }
         catch { }
 
-        // Try xsel
         try
         {
-            var process = Process.Start(new ProcessStartInfo
+            using var process = Process.Start(new ProcessStartInfo
             {
                 FileName = "xsel",
                 Arguments = "-b -i",
