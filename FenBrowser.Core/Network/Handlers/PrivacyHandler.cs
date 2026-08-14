@@ -14,19 +14,21 @@ namespace FenBrowser.Core.Network.Handlers
             ArgumentNullException.ThrowIfNull(next);
 
             var req = context.Request;
+            if (req == null)
+            {
+                await next().ConfigureAwait(false);
+                return;
+            }
+
             var settings = BrowserSettings.Instance;
 
-            // DNT is explicitly controlled by the browser setting.
+            // DNT is browser-controlled state. Always remove a stale/caller-supplied
+            // value before applying the current browser preference so reused or cloned
+            // requests cannot override the user's setting with DNT: 0/invalid values.
+            req.Headers.Remove("DNT");
             if (settings.SendDoNotTrack)
             {
-                if (!req.Headers.Contains("DNT"))
-                {
-                    req.Headers.TryAddWithoutValidation("DNT", "1");
-                }
-            }
-            else
-            {
-                req.Headers.Remove("DNT");
+                req.Headers.TryAddWithoutValidation("DNT", "1");
             }
 
             // Referrer-Policy is applied centrally by BrowserRequestHeaderPolicy.
@@ -53,9 +55,6 @@ namespace FenBrowser.Core.Network.Handlers
             var fetchContext = context.FetchContext;
             if (fetchContext != null)
             {
-                // A top-level navigation establishes the new top-level browsing context;
-                // it is not a third-party subresource request merely because it crosses
-                // site boundaries from the previous document.
                 if (fetchContext.IsTopLevelNavigation)
                 {
                     return false;
@@ -94,8 +93,6 @@ namespace FenBrowser.Core.Network.Handlers
                     }
                 }
 
-                // A present Fetch Metadata header that does not say cross-site is not
-                // upgraded to third-party based on a different, weaker signal.
                 return false;
             }
 
