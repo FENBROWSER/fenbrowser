@@ -11,56 +11,20 @@ namespace FenBrowser.DependencyInjection;
 /// </summary>
 public interface IServiceContainer
 {
-    /// <summary>
-    /// Registers a singleton service instance.
-    /// </summary>
     void RegisterSingleton<TService>(TService instance) where TService : class;
-
-    /// <summary>
-    /// Registers a singleton service factory.
-    /// </summary>
     void RegisterSingleton<TService>(Func<IServiceContainer, TService> factory) where TService : class;
-
-    /// <summary>
-    /// Registers a transient service factory (new instance each resolution).
-    /// </summary>
     void RegisterTransient<TService>(Func<IServiceContainer, TService> factory) where TService : class;
-
-    /// <summary>
-    /// Registers a scoped service factory (same instance within a scope).
-    /// </summary>
     void RegisterScoped<TService>(Func<IServiceContainer, TService> factory) where TService : class;
-
-    /// <summary>
-    /// Resolves a service instance.
-    /// </summary>
     TService Resolve<TService>() where TService : class;
-
-    /// <summary>
-    /// Tries to resolve a service instance.
-    /// </summary>
     bool TryResolve<TService>(out TService? service) where TService : class;
-
-    /// <summary>
-    /// Creates a new scope for scoped services.
-    /// </summary>
     IServiceScope CreateScope();
 }
 
-/// <summary>
-/// Represents a scope for scoped service lifetimes.
-/// </summary>
 public interface IServiceScope : IDisposable
 {
-    /// <summary>
-    /// Gets the service provider for this scope.
-    /// </summary>
     IServiceContainer Services { get; }
 }
 
-/// <summary>
-/// Default implementation of a lightweight service container.
-/// </summary>
 public sealed class ServiceContainer : IServiceContainer
 {
     private static readonly AsyncLocal<Stack<Type>?> _resolutionStack = new();
@@ -149,6 +113,12 @@ public sealed class ServiceContainer : IServiceContainer
 
         using var resolution = EnterResolution(serviceType);
         service = CreateInstance<TService>(descriptor);
+        if (service == null)
+        {
+            throw new InvalidOperationException(
+                $"Factory registered for {serviceType.FullName} returned null or an incompatible service instance.");
+        }
+
         return true;
     }
 
@@ -209,13 +179,24 @@ public sealed class ServiceContainer : IServiceContainer
 
             if (_scopedInstances.TryGetValue(typeof(TService), out var instance))
             {
-                return (TService?)instance;
+                if (instance is not TService typedInstance)
+                {
+                    throw new InvalidOperationException(
+                        $"Cached scoped instance for {typeof(TService).FullName} is null or incompatible.");
+                }
+
+                return typedInstance;
             }
         }
 
         // Factories may resolve other services. Do not execute them while holding
         // the container lock or a dependency chain can deadlock on re-entry.
-        var newInstance = descriptor.Factory(this) as TService;
+        var created = descriptor.Factory(this);
+        if (created is not TService newInstance)
+        {
+            throw new InvalidOperationException(
+                $"Scoped factory registered for {typeof(TService).FullName} returned null or an incompatible service instance.");
+        }
 
         lock (_lock)
         {
@@ -228,7 +209,13 @@ public sealed class ServiceContainer : IServiceContainer
                     disposable.Dispose();
                 }
 
-                return (TService?)existing;
+                if (existing is not TService typedExisting)
+                {
+                    throw new InvalidOperationException(
+                        $"Cached scoped instance for {typeof(TService).FullName} is null or incompatible.");
+                }
+
+                return typedExisting;
             }
 
             _scopedInstances[typeof(TService)] = newInstance;
@@ -252,8 +239,6 @@ public sealed class ServiceContainer : IServiceContainer
             _scopedInstances.Clear();
         }
 
-        // Dispose outside the lock because Dispose implementations can call back
-        // into the container or other services.
         for (var i = instances.Length - 1; i >= 0; i--)
         {
             if (instances[i] is IDisposable disposable)
