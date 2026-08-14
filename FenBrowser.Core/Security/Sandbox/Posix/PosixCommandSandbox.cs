@@ -542,7 +542,7 @@ public sealed class PosixCommandSandbox : ISandbox
     private static string QuoteArgument(string value)
     {
         if (string.IsNullOrEmpty(value))
-            return "\"\";
+            return "\"\"";
 
         if (!value.Contains(' ') && !value.Contains('"'))
             return value;
