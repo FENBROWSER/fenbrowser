@@ -10,10 +10,13 @@ namespace FenBrowser.Core.Network.Handlers
 
         public async Task HandleAsync(NetworkContext context, Func<Task> next, CancellationToken ct)
         {
+            ArgumentNullException.ThrowIfNull(context);
+            ArgumentNullException.ThrowIfNull(next);
+
             var req = context.Request;
             var settings = BrowserSettings.Instance;
 
-            // 1. DNT Header
+            // DNT is explicitly controlled by the browser setting.
             if (settings.SendDoNotTrack)
             {
                 if (!req.Headers.Contains("DNT"))
@@ -23,86 +26,86 @@ namespace FenBrowser.Core.Network.Handlers
             }
             else
             {
-                // Explicitly remove DNT when user opts out.
                 req.Headers.Remove("DNT");
             }
 
-            // 2. Referer Trimming
-            // If Referer is present and cross-origin, trim to origin only.
-            if (req.Headers.Referrer != null && req.RequestUri != null)
+            // Referrer-Policy is applied centrally by BrowserRequestHeaderPolicy.
+            // Do not apply a second unconditional cross-origin trimming policy here;
+            // doing so changes the semantics of valid policies such as unsafe-url.
+
+            if (settings.BlockThirdPartyCookies && IsThirdPartyRequest(context))
             {
-                if (!IsSameOrigin(req.Headers.Referrer, req.RequestUri))
-                {
-                    // Cross-origin: strip path/query
-                    var trimmed = new Uri(req.Headers.Referrer.GetLeftPart(UriPartial.Authority));
-                    req.Headers.Referrer = trimmed;
-                }
+                req.Headers.Remove("Cookie");
             }
 
-            // 3. Third-Party Cookie Blocking
-            if (settings.BlockThirdPartyCookies)
-            {
-                // Check if Sec-Fetch-Site suggests cross-site/cross-origin
-                // Note: The ResourceManager sets up Sec-Fetch-Site headers *after* this handler usually, in FetchTextWithOptionsAsync, 
-                // but this handler runs in the pipeline. We might need to rely on host comparison.
-                
-                // We'll trust Sec-Fetch-Site if present, otherwise compare manually.
-                bool isThirdParty = false;
-                if (req.Headers.TryGetValues("Sec-Fetch-Site", out var values))
-                {
-                    foreach (var raw in values)
-                    {
-                        if (string.IsNullOrWhiteSpace(raw))
-                        {
-                            continue;
-                        }
-
-                        var parts = raw.Split(',');
-                        foreach (var part in parts)
-                        {
-                            var token = part.Trim();
-                            if (token.Equals("cross-site", StringComparison.OrdinalIgnoreCase) ||
-                                token.Equals("cross-origin", StringComparison.OrdinalIgnoreCase))
-                            {
-                                isThirdParty = true;
-                                break;
-                            }
-                        }
-
-                        if (isThirdParty)
-                        {
-                            break;
-                        }
-                    }
-                }
-                else if (req.Headers.Referrer != null && req.RequestUri != null)
-                {
-                    isThirdParty = !IsSameSite(req.Headers.Referrer, req.RequestUri);
-                }
-
-                if (isThirdParty)
-                {
-                    req.Headers.Remove("Cookie");
-                }
-            }
-
-            await next();
+            await next().ConfigureAwait(false);
         }
 
-        private static bool IsSameOrigin(Uri left, Uri right)
+        private static bool IsThirdPartyRequest(NetworkContext context)
         {
-            if (left is null || right is null)
+            var request = context.Request;
+            var requestUri = request?.RequestUri;
+            if (requestUri == null)
             {
                 return false;
             }
 
-            return string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(left.Host, right.Host, HostComparison)
-                && left.Port == right.Port;
+            var fetchContext = context.FetchContext;
+            if (fetchContext != null)
+            {
+                // A top-level navigation establishes the new top-level browsing context;
+                // it is not a third-party subresource request merely because it crosses
+                // site boundaries from the previous document.
+                if (fetchContext.IsTopLevelNavigation)
+                {
+                    return false;
+                }
+
+                var topLevelUri = fetchContext.TopLevelDocumentUri
+                    ?? fetchContext.FrameDocumentUri
+                    ?? fetchContext.InitiatorUri;
+
+                if (topLevelUri != null)
+                {
+                    return string.Equals(
+                        BrowserRequestHeaderPolicy.DetermineSite(topLevelUri, requestUri),
+                        "cross-site",
+                        StringComparison.Ordinal);
+                }
+            }
+
+            // Compatibility path for internal/embedder requests that bypass the normal
+            // BrowserRequestHeaderPolicy and therefore have no typed FetchContext.
+            if (request.Headers.TryGetValues("Sec-Fetch-Site", out var values))
+            {
+                foreach (var raw in values)
+                {
+                    if (string.IsNullOrWhiteSpace(raw))
+                    {
+                        continue;
+                    }
+
+                    foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        if (part.Trim().Equals("cross-site", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+                }
+
+                // A present Fetch Metadata header that does not say cross-site is not
+                // upgraded to third-party based on a different, weaker signal.
+                return false;
+            }
+
+            return request.Headers.Referrer != null &&
+                   !IsSameSite(request.Headers.Referrer, requestUri);
         }
 
-        // Heuristic site comparison without PSL dependency:
-        // equal hosts, sibling subdomains under the same registrable suffix, or exact IP match.
+        // Legacy fallback only. The normal browser path uses typed FetchContext above.
+        // This remains approximate until the shared PSL-backed SchemefulSite service is
+        // introduced; do not reuse it for new browser security decisions.
         private static bool IsSameSite(Uri left, Uri right)
         {
             if (left is null || right is null)
@@ -110,8 +113,8 @@ namespace FenBrowser.Core.Network.Handlers
                 return false;
             }
 
-            var leftHost = left.Host;
-            var rightHost = right.Host;
+            var leftHost = NormalizeHost(left);
+            var rightHost = NormalizeHost(right);
             if (string.IsNullOrWhiteSpace(leftHost) || string.IsNullOrWhiteSpace(rightHost))
             {
                 return false;
@@ -131,6 +134,11 @@ namespace FenBrowser.Core.Network.Handlers
             }
 
             return IsSubdomainOrSame(leftHost, rightHost) || IsSubdomainOrSame(rightHost, leftHost);
+        }
+
+        private static string NormalizeHost(Uri uri)
+        {
+            return (uri?.IdnHost ?? string.Empty).Trim().TrimEnd('.').ToLowerInvariant();
         }
 
         private static bool IsSubdomainOrSame(string host, string root)
