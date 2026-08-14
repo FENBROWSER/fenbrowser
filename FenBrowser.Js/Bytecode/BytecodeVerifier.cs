@@ -27,11 +27,6 @@ public sealed class BytecodeVerifier
                 throw new InvalidOperationException($"Invalid constant index {ins.B} at ip {ip}.");
             }
 
-            // Tier 5 #26: handler balance. Across the linear instruction
-            // stream, PushHandler and PopHandler must occur in matched
-            // counts. Per-path balance would require full CFG analysis;
-            // counting catches the common compiler bugs (forgotten Pop,
-            // duplicated Push) without false positives.
             if (ins.OpCode == OpCode.PushHandler) pushHandlerCount++;
             if (ins.OpCode == OpCode.PopHandler) popHandlerCount++;
         }
@@ -48,12 +43,6 @@ public sealed class BytecodeVerifier
         }
     }
 
-    // Tier 5 #26: reachability analysis. Returns the count of unreachable
-    // instructions from the function entry, following all jump and exception
-    // handler targets. Provided for diagnostics and fuzz harnesses; not
-    // currently invoked by Verify() because legitimate compiler output may
-    // emit dead instructions after a Return as a structural anchor for the
-    // exception handler tables.
     public int CountUnreachableInstructions(BytecodeFunction function)
     {
         if (function.Instructions.Count == 0) return 0;
@@ -116,9 +105,6 @@ public sealed class BytecodeVerifier
         switch (ins.OpCode)
         {
             case OpCode.LoadConst:
-                // LoadConst.A is the destination register; LoadConst.B is an index
-                // into the constant pool (the VM reads function.Constants[ins.B]),
-                // not a register, so it must be range-checked against the pool.
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateConstantIndex(function, ip, ins.B);
                 break;
@@ -158,11 +144,11 @@ public sealed class BytecodeVerifier
                 break;
             case OpCode.LoadFieldKey:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
-                // B is an index into ComputedFieldKeys (validated at runtime)
                 break;
             case OpCode.Add:
             case OpCode.Sub:
             case OpCode.Mul:
+            case OpCode.Mod:
             case OpCode.Div:
             case OpCode.Exp:
             case OpCode.BitAnd:
@@ -239,7 +225,6 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
             case OpCode.PrologueEnd:
-                // No operands.
                 break;
             case OpCode.DefineMethodByReg:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
@@ -380,7 +365,6 @@ public sealed class BytecodeVerifier
                 {
                     throw new InvalidOperationException($"Invalid nested function index {ins.B} at ip {ip}.");
                 }
-
                 break;
             case OpCode.Call0:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
@@ -398,12 +382,10 @@ public sealed class BytecodeVerifier
                 {
                     throw new InvalidOperationException($"Invalid CallN arg count {ins.D} at ip {ip}.");
                 }
-
                 if (ins.C < 0 || ins.C + Math.Max(0, ins.D - 1) >= function.RegisterCount)
                 {
                     throw new InvalidOperationException($"Invalid CallN arg register window start={ins.C} count={ins.D} at ip {ip}.");
                 }
-
                 break;
             case OpCode.TailCall0:
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
@@ -442,12 +424,10 @@ public sealed class BytecodeVerifier
                 {
                     throw new InvalidOperationException($"Invalid CallMethodN arg count {ins.E} at ip {ip}.");
                 }
-
                 if (ins.D < 0 || ins.D + Math.Max(0, ins.E - 1) >= function.RegisterCount)
                 {
                     throw new InvalidOperationException($"Invalid CallMethodN arg register window start={ins.D} count={ins.E} at ip {ip}.");
                 }
-
                 break;
             case OpCode.Construct0:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
@@ -465,12 +445,15 @@ public sealed class BytecodeVerifier
                 {
                     throw new InvalidOperationException($"Invalid ConstructN arg count {ins.D} at ip {ip}.");
                 }
-
                 if (ins.C < 0 || ins.C + Math.Max(0, ins.D - 1) >= function.RegisterCount)
                 {
                     throw new InvalidOperationException($"Invalid ConstructN arg register window start={ins.C} count={ins.D} at ip {ip}.");
                 }
-
+                break;
+            case OpCode.ConstructSpread:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
             case OpCode.Not:
             case OpCode.Pos:
@@ -480,6 +463,7 @@ public sealed class BytecodeVerifier
             case OpCode.TypeOf:
             case OpCode.Await:
             case OpCode.ToNumeric:
+            case OpCode.ToStringCoerce:
             case OpCode.Increment:
             case OpCode.Decrement:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
