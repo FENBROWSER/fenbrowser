@@ -107,9 +107,10 @@ namespace FenBrowser.Core.Storage
         public CookieSameSite SameSite { get; init; } = CookieSameSite.Lax;
         public DateTimeOffset? Expires { get; init; }
         public StoragePartitionKey? PartitionKey { get; init; }
+        public DateTimeOffset CreationTime { get; init; } = DateTimeOffset.UtcNow;
 
         public bool IsPartitioned => PartitionKey.HasValue;
-        public bool IsExpired => Expires.HasValue && Expires.Value < DateTimeOffset.UtcNow;
+        public bool IsExpired => Expires.HasValue && Expires.Value <= DateTimeOffset.UtcNow;
         public bool IsSession => !Expires.HasValue;
     }
 
@@ -129,6 +130,13 @@ namespace FenBrowser.Core.Storage
             }
 
             var storeKey = MakeKey(actualKey, cookie.Domain, cookie.Name, cookie.Path);
+            if (_cookies.TryGetValue(storeKey, out var existing))
+            {
+                // RFC cookie replacement preserves creation-time so duplicate-name
+                // Cookie header ordering remains stable across value refreshes.
+                cookie = cookie with { CreationTime = existing.CreationTime };
+            }
+
             _cookies[storeKey] = cookie with { PartitionKey = actualKey };
         }
 
@@ -167,7 +175,20 @@ namespace FenBrowser.Core.Storage
                 result.Add(cookie);
             }
 
-            result.Sort((a, b) => b.Path.Length.CompareTo(a.Path.Length));
+            // Cookie header order: longer paths first, then earlier creation time.
+            result.Sort(static (a, b) =>
+            {
+                var pathOrder = b.Path.Length.CompareTo(a.Path.Length);
+                if (pathOrder != 0) return pathOrder;
+
+                var creationOrder = a.CreationTime.CompareTo(b.CreationTime);
+                if (creationOrder != 0) return creationOrder;
+
+                // Deterministic final tie-breakers for same-tick creation.
+                var domainOrder = string.CompareOrdinal(a.Domain, b.Domain);
+                if (domainOrder != 0) return domainOrder;
+                return string.CompareOrdinal(a.Name, b.Name);
+            });
             return result;
         }
 
@@ -183,8 +204,9 @@ namespace FenBrowser.Core.Storage
         {
             if (string.IsNullOrWhiteSpace(domain) || string.IsNullOrWhiteSpace(name)) return;
 
+            var normalizedDomain = domain.Trim().TrimEnd('.').ToLowerInvariant();
             var partitionKeyText = partitionKey?.ToStorageKey() ?? "unpartitioned";
-            var prefix = $"pk:{partitionKeyText}:{domain}:{name}:";
+            var prefix = $"pk:{partitionKeyText}:{normalizedDomain}:{name}:";
             foreach (var key in _cookies.Keys)
             {
                 if (key.StartsWith(prefix, StringComparison.Ordinal))
@@ -272,6 +294,7 @@ namespace FenBrowser.Core.Storage
 
         public string GetItem(string origin, StoragePartitionKey partitionKey, string itemKey)
         {
+            if (itemKey == null) throw new ArgumentNullException(nameof(itemKey));
             if (!TryGetBucket(origin, partitionKey, out var bucket)) return null;
             lock (bucket.SyncRoot)
             {
@@ -281,9 +304,10 @@ namespace FenBrowser.Core.Storage
 
         public bool SetItem(string origin, StoragePartitionKey partitionKey, string itemKey, string value)
         {
+            if (itemKey == null) throw new ArgumentNullException(nameof(itemKey));
             var bucket = GetOrCreateBucket(origin, partitionKey);
             var normalizedValue = value ?? string.Empty;
-            var keyBytes = Encoding.UTF8.GetByteCount(itemKey ?? string.Empty);
+            var keyBytes = Encoding.UTF8.GetByteCount(itemKey);
             var newEntryBytes = keyBytes + Encoding.UTF8.GetByteCount(normalizedValue);
 
             lock (bucket.SyncRoot)
@@ -305,12 +329,13 @@ namespace FenBrowser.Core.Storage
 
         public void RemoveItem(string origin, StoragePartitionKey partitionKey, string itemKey)
         {
+            if (itemKey == null) throw new ArgumentNullException(nameof(itemKey));
             if (!TryGetBucket(origin, partitionKey, out var bucket)) return;
             lock (bucket.SyncRoot)
             {
                 if (bucket.Items.Remove(itemKey, out var removedValue))
                 {
-                    bucket.Bytes -= Encoding.UTF8.GetByteCount(itemKey ?? string.Empty) +
+                    bucket.Bytes -= Encoding.UTF8.GetByteCount(itemKey) +
                                     Encoding.UTF8.GetByteCount(removedValue ?? string.Empty);
                 }
             }
@@ -371,7 +396,7 @@ namespace FenBrowser.Core.Storage
         public string LastModified { get; init; }
         public StoragePartitionKey PartitionKey { get; init; }
 
-        public bool IsStale(DateTimeOffset now) => Expires.HasValue && Expires.Value < now;
+        public bool IsStale(DateTimeOffset now) => Expires.HasValue && Expires.Value <= now;
     }
 
     public sealed class PartitionedHttpCache
@@ -433,7 +458,7 @@ namespace FenBrowser.Core.Storage
 
         public void Invalidate(StoragePartitionKey partitionKey, string url)
         {
-            var prefix = $"pk:{partitionKey.ToStorageKey()}:url:{url}";
+            var prefix = MakeUrlPrefix(partitionKey, url);
             lock (_mutationLock)
             {
                 foreach (var key in _cache.Keys)
@@ -485,8 +510,18 @@ namespace FenBrowser.Core.Storage
 
         private static long GetBodyBytes(HttpCacheEntry entry) => entry?.Body?.LongLength ?? 0L;
 
-        private static string MakeKey(StoragePartitionKey pk, string url, string varyKey) =>
-            $"pk:{pk.ToStorageKey()}:url:{url}:{varyKey ?? ""}";
+        private static string MakeKey(StoragePartitionKey pk, string url, string varyKey)
+        {
+            var normalizedUrl = url ?? string.Empty;
+            var normalizedVary = varyKey ?? string.Empty;
+            return $"{MakeUrlPrefix(pk, normalizedUrl)}{normalizedVary.Length}:{normalizedVary}";
+        }
+
+        private static string MakeUrlPrefix(StoragePartitionKey pk, string url)
+        {
+            var normalizedUrl = url ?? string.Empty;
+            return $"pk:{pk.ToStorageKey()}:url:{normalizedUrl.Length}:{normalizedUrl}:vary:";
+        }
     }
 
     public sealed class StorageService
