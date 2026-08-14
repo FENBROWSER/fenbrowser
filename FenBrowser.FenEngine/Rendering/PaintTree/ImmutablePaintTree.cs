@@ -53,12 +53,6 @@ namespace FenBrowser.FenEngine.Rendering
             return count;
         }
 
-        /// <summary>
-        /// Returns a copy-on-write tree with the first paint node belonging to
-        /// <paramref name="sourceNode"/> replaced by <paramref name="newSubtreeNodes"/>.
-        /// Unchanged nodes/subtrees share references; every ancestor on the modified
-        /// path is shallow-cloned so the previously published tree is never mutated.
-        /// </summary>
         public ImmutablePaintTree WithReplacedSubtree(
             Node sourceNode,
             IReadOnlyList<PaintNodeBase> newSubtreeNodes)
@@ -209,24 +203,35 @@ namespace FenBrowser.FenEngine.Rendering
             while (work.Count > 0)
             {
                 var pair = work.Pop();
-                var previousByKey = new Dictionary<PaintNodeKey, PaintNodeBase>();
+                var previousByKey = new Dictionary<PaintNodeKey, Queue<PaintNodeBase>>();
 
+                // StableNodeId is assigned per DOM source, not per paint fragment. A
+                // source can therefore emit several nodes of the same subtype (e.g.
+                // multiple text fragments). Preserve sibling order within each key
+                // instead of overwriting all but the last previous node.
                 foreach (var node in pair.Previous)
                 {
-                    if (TryGetNodeKey(node, out var key))
+                    if (!TryGetNodeKey(node, out var key)) continue;
+                    if (!previousByKey.TryGetValue(key, out var bucket))
                     {
-                        previousByKey[key] = node;
+                        bucket = new Queue<PaintNodeBase>();
+                        previousByKey.Add(key, bucket);
                     }
+                    bucket.Enqueue(node);
                 }
 
                 foreach (var current in pair.Current)
                 {
                     if (!TryGetNodeKey(current, out var key) ||
-                        !previousByKey.TryGetValue(key, out var previous))
+                        !previousByKey.TryGetValue(key, out var bucket) ||
+                        bucket.Count == 0)
                     {
                         if (current != null) added.Add(current);
                         continue;
                     }
+
+                    var previous = bucket.Dequeue();
+                    if (bucket.Count == 0) previousByKey.Remove(key);
 
                     var geomChanged = previous.Bounds != current.Bounds || previous.Transform != current.Transform;
                     var styleChanged = previous.Opacity != current.Opacity
@@ -247,12 +252,14 @@ namespace FenBrowser.FenEngine.Rendering
                     work.Push((
                         current.Children ?? Array.Empty<PaintNodeBase>(),
                         previous.Children ?? Array.Empty<PaintNodeBase>()));
-                    previousByKey.Remove(key);
                 }
 
-                foreach (var node in previousByKey.Values)
+                foreach (var bucket in previousByKey.Values)
                 {
-                    removed.Add(node);
+                    while (bucket.Count > 0)
+                    {
+                        removed.Add(bucket.Dequeue());
+                    }
                 }
             }
         }
@@ -320,7 +327,7 @@ namespace FenBrowser.FenEngine.Rendering
             return (previous, current) switch
             {
                 (BackgroundPaintNode a, BackgroundPaintNode b) => Nullable.Equals(a.Color, b.Color)
-                    && (a.Gradient == null) == (b.Gradient == null)
+                    && ReferenceEquals(a.Gradient, b.Gradient)
                     && HaveEqualPoints(a.BorderRadius, b.BorderRadius),
                 (BorderPaintNode a, BorderPaintNode b) => HaveEqualFloats(a.Widths, b.Widths)
                     && HaveEqualColors(a.Colors, b.Colors)
@@ -332,7 +339,8 @@ namespace FenBrowser.FenEngine.Rendering
                     && string.Equals(a.FallbackText, b.FallbackText, StringComparison.Ordinal)
                     && string.Equals(a.WritingMode, b.WritingMode, StringComparison.Ordinal)
                     && string.Equals(a.Typeface?.FamilyName, b.Typeface?.FamilyName, StringComparison.Ordinal)
-                    && HaveEqualStrings(a.TextDecorations, b.TextDecorations),
+                    && HaveEqualStrings(a.TextDecorations, b.TextDecorations)
+                    && HaveEqualGlyphs(a.Glyphs, b.Glyphs),
                 (ImagePaintNode a, ImagePaintNode b) => ReferenceEquals(a.Bitmap, b.Bitmap)
                     && Nullable.Equals(a.SourceRect, b.SourceRect)
                     && string.Equals(a.ObjectFit, b.ObjectFit, StringComparison.Ordinal)
@@ -363,6 +371,20 @@ namespace FenBrowser.FenEngine.Rendering
                 (CustomPaintNode a, CustomPaintNode b) => ReferenceEquals(a.PaintAction, b.PaintAction),
                 _ => true
             };
+        }
+
+        private static bool HaveEqualGlyphs(IReadOnlyList<PositionedGlyph> left, IReadOnlyList<PositionedGlyph> right)
+        {
+            if (ReferenceEquals(left, right)) return true;
+            if (left == null || right == null || left.Count != right.Count) return false;
+
+            for (var i = 0; i < left.Count; i++)
+            {
+                var a = left[i];
+                var b = right[i];
+                if (a.GlyphId != b.GlyphId || !a.X.Equals(b.X) || !a.Y.Equals(b.Y)) return false;
+            }
+            return true;
         }
 
         private static bool HaveEqualFloats(IReadOnlyList<float> left, IReadOnlyList<float> right)
