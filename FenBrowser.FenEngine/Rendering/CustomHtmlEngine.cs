@@ -912,35 +912,48 @@ public void Dispose()
 
         private async Task DrainQueuedRenderUpdatesAsync()
         {
-            while (true)
+            lock (_queuedRenderUpdateLock)
+            {
+                if (!_queuedRenderUpdateRequested)
+                {
+                    _queuedRenderUpdateRunning = false;
+                    return;
+                }
+
+                // One render callback owns one frame. If another timer callback
+                // dirties the DOM while this work is in flight, the event loop
+                // will deliver it on a later frame; do not spin a second full
+                // visual-tree refresh immediately from this task.
+                _queuedRenderUpdateRequested = false;
+            }
+
+            try
+            {
+                var pendingRecascade = _pendingRecascade;
+                if (pendingRecascade != null && !pendingRecascade.IsCompleted)
+                {
+                    await pendingRecascade.ConfigureAwait(false);
+                }
+
+                var activeDom = GetActiveDom();
+                if (activeDom != null)
+                {
+                    OnRepaintReady(activeDom);
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Warn($"[CustomHtmlEngine] Queued render update failed: {ex.Message}", LogCategory.Rendering);
+            }
+            finally
             {
                 lock (_queuedRenderUpdateLock)
                 {
-                    if (!_queuedRenderUpdateRequested)
-                    {
-                        _queuedRenderUpdateRunning = false;
-                        return;
-                    }
-
-                    _queuedRenderUpdateRequested = false;
-                }
-
-                try
-                {
-                    await RefreshAsync(includeDiagnosticsBanner: false).ConfigureAwait(false);
-                }
-                catch (ObjectDisposedException)
-                {
-                    lock (_queuedRenderUpdateLock)
-                    {
-                        _queuedRenderUpdateRequested = false;
-                        _queuedRenderUpdateRunning = false;
-                    }
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Warn($"[CustomHtmlEngine] Queued render update failed: {ex.Message}", LogCategory.Rendering);
+                    _queuedRenderUpdateRunning = false;
                 }
             }
         }
@@ -2017,7 +2030,7 @@ public void Dispose()
             }
         }
 
-                private void ScheduleRepaintFromJs()
+        private void ScheduleRepaintFromJs()
         {
             // STRICT CONTROL FLOW:
             // JavaScript CANNOT push frames. It can only mark state as dirty.
@@ -2027,6 +2040,15 @@ public void Dispose()
             EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
 
             EngineLogCompat.Debug("[CustomHtmlEngine] ScheduleRepaintFromJs (Dirty Flag Set)", LogCategory.Rendering);
+
+            // Timer-heavy pages such as Kabutops insert one inline node per
+            // callback. Give incremental styling a frame-sized window to
+            // collect the burst instead of starting one CSS worker per tick.
+            var activeDom = GetActiveDom();
+            if (activeDom != null && (activeDom.StyleDirty || activeDom.ChildStyleDirty))
+            {
+                ScheduleRecascade(delayMs: 16);
+            }
 
             // 2. Mark dirty ONLY via the Coordinator.
             // The Event Loop or Host will check this flag at the appropriate checkpoint.
@@ -2327,6 +2349,7 @@ public void Dispose()
         private readonly object _recascadeScheduleLock = new object();
         private bool _recascadeWorkerRunning;
         private bool _recascadeRequested;
+        private int _recascadeDelayMs;
 
         /// <summary>
         /// Schedule a CSS re-cascade on the current DOM using cached render parameters.
@@ -2340,7 +2363,7 @@ public void Dispose()
         /// </summary>
         private volatile bool _fullRecascadeRequired;
 
-        public void ScheduleRecascade(bool fullRecascade = false)
+        public void ScheduleRecascade(bool fullRecascade = false, int delayMs = 0)
         {
             if (_activeDom == null || _activeBaseUri == null || _activeFetchCss == null)
                 return;
@@ -2352,6 +2375,7 @@ public void Dispose()
                 {
                     _fullRecascadeRequired = true;
                 }
+                _recascadeDelayMs = Math.Max(_recascadeDelayMs, Math.Max(0, delayMs));
 
                 if (_recascadeWorkerRunning)
                 {
@@ -2373,6 +2397,7 @@ public void Dispose()
             while (true)
             {
                 bool fullRecascade;
+                int delayMs;
                 lock (_recascadeScheduleLock)
                 {
                     if (!_recascadeRequested)
@@ -2384,6 +2409,13 @@ public void Dispose()
                     _recascadeRequested = false;
                     fullRecascade = _fullRecascadeRequired;
                     _fullRecascadeRequired = false;
+                    delayMs = _recascadeDelayMs;
+                    _recascadeDelayMs = 0;
+                }
+
+                if (delayMs > 0)
+                {
+                    await Task.Delay(delayMs).ConfigureAwait(false);
                 }
 
                 try
