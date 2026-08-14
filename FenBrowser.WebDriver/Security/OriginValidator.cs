@@ -1,8 +1,8 @@
 // =============================================================================
 // OriginValidator.cs
 // WebDriver Security - Origin Validation
-// 
-// PURPOSE: Validates request origins to prevent CSRF and unauthorized access.
+//
+// PURPOSE: Validates request origins to prevent browser-originated CSRF.
 // SECURITY: Whitelist-based origin checking, localhost enforcement.
 // =============================================================================
 
@@ -19,58 +19,51 @@ namespace FenBrowser.WebDriver.Security
     {
         private readonly HashSet<string> _allowedOrigins = new(StringComparer.OrdinalIgnoreCase);
         private readonly bool _allowLocalhostOnly;
-        
+
         public OriginValidator(bool allowLocalhostOnly = true)
         {
             _allowLocalhostOnly = allowLocalhostOnly;
-            
-            // Default allowed origins (localhost variants)
+
             _allowedOrigins.Add("localhost");
             _allowedOrigins.Add("127.0.0.1");
             _allowedOrigins.Add("::1");
         }
-        
+
         /// <summary>
-        /// Add an allowed origin.
+        /// Add an allowed host.
         /// </summary>
         public void AllowOrigin(string origin)
         {
-            if (!string.IsNullOrEmpty(origin))
-            {
-                _allowedOrigins.Add(origin);
-            }
+            if (!string.IsNullOrWhiteSpace(origin))
+                _allowedOrigins.Add(origin.Trim());
         }
-        
+
         /// <summary>
-        /// Validate that a request origin is allowed.
+        /// Validate that the transport peer is allowed.
         /// </summary>
         public bool ValidateOrigin(IPEndPoint remoteEndpoint)
         {
             if (remoteEndpoint == null)
                 return false;
-            
+
             var address = remoteEndpoint.Address;
-            
-            // Allow loopback
             if (IPAddress.IsLoopback(address))
                 return true;
-            
+
             if (_allowLocalhostOnly)
-            {
                 return false;
-            }
-            
-            // Check against whitelist
+
             return _allowedOrigins.Contains(address.ToString());
         }
-        
+
         /// <summary>
-        /// Validate Origin header if present.
+        /// Validate the HTTP Origin header if present. An Origin header is a
+        /// serialized origin (scheme + host + optional port), not an arbitrary URL.
         /// </summary>
         public bool ValidateOriginHeader(string originHeader)
         {
             if (string.IsNullOrEmpty(originHeader))
-                return true; // No origin header is ok for non-browser clients
+                return true; // Non-browser WebDriver clients normally omit Origin.
 
             var allowBrowserOrigins = string.Equals(
                 Environment.GetEnvironmentVariable("FEN_WEBDRIVER_ALLOW_BROWSER_ORIGINS"),
@@ -78,35 +71,40 @@ namespace FenBrowser.WebDriver.Security
                 StringComparison.OrdinalIgnoreCase);
             if (!allowBrowserOrigins)
                 return false;
-            
-            try
-            {
-                var uri = new Uri(originHeader);
-                if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
-                    !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
-                {
-                    return false;
-                }
 
-                var host = uri.Host;
+            if (!Uri.TryCreate(originHeader, UriKind.Absolute, out var uri))
+                return false;
 
-                if (_allowLocalhostOnly)
-                {
-                    if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
-                        return true;
-
-                    if (IPAddress.TryParse(host, out var ip))
-                        return IPAddress.IsLoopback(ip);
-
-                    return false;
-                }
-
-                return _allowedOrigins.Contains(host);
-            }
-            catch
+            if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
             {
                 return false;
             }
+
+            // The Origin header cannot contain credentials, query, fragment, or a
+            // non-root path. Accepting a full URL here broadens the parser surface
+            // and makes validation semantics depend on irrelevant URL components.
+            if (!string.IsNullOrEmpty(uri.UserInfo) ||
+                !string.IsNullOrEmpty(uri.Query) ||
+                !string.IsNullOrEmpty(uri.Fragment) ||
+                !string.Equals(uri.AbsolutePath, "/", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var host = uri.Host;
+            if (string.IsNullOrEmpty(host))
+                return false;
+
+            if (_allowLocalhostOnly)
+            {
+                if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                return IPAddress.TryParse(host, out var ip) && IPAddress.IsLoopback(ip);
+            }
+
+            return _allowedOrigins.Contains(host);
         }
     }
 }
