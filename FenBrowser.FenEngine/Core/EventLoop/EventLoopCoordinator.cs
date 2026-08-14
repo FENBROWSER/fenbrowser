@@ -36,30 +36,32 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
         private sealed class DelayedTaskEntry
         {
-            public DelayedTaskEntry(ScheduledTask task, long dueTimeMs, long sequence, string timerId)
+            private string _timerId;
+
+            public DelayedTaskEntry(ScheduledTask task, long dueTimeMs, long sequence)
             {
                 Task = task;
                 DueTimeMs = dueTimeMs;
                 Sequence = sequence;
-                TimerId = timerId;
             }
 
             public ScheduledTask Task { get; }
             public long DueTimeMs { get; }
             public long Sequence { get; }
-            public string TimerId { get; }
+            public string TimerId => _timerId ??= EventLoopTrace.NextId("timer");
         }
 
         private sealed class AnimationFrameEntry
         {
+            private string _traceId;
+
             public AnimationFrameEntry(Action callback)
             {
                 Callback = callback ?? throw new ArgumentNullException(nameof(callback));
-                TraceId = EventLoopTrace.NextId("raf");
             }
 
             public Action Callback { get; }
-            public string TraceId { get; }
+            public string TraceId => _traceId ??= EventLoopTrace.NextId("raf");
         }
 
         private readonly TaskQueue _taskQueue = new();
@@ -141,8 +143,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             var delayedTask = new DelayedTaskEntry(
                 new ScheduledTask(callback, source, description),
                 Environment.TickCount64 + safeDelay,
-                Interlocked.Increment(ref _nextDelayedTaskSequence),
-                EventLoopTrace.NextId("timer"));
+                Interlocked.Increment(ref _nextDelayedTaskSequence));
 
             lock (_delayedTaskLock)
             {
@@ -151,18 +152,21 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     (delayedTask.DueTimeMs, delayedTask.Sequence));
             }
 
-            EventLoopTrace.Write(
-                "TimerScheduled",
-                LogSeverity.Debug,
-                "[EventLoop] Timer scheduled",
-                delayedTask.TimerId,
-                new Dictionary<string, object>
-                {
-                    ["delayMs"] = safeDelay,
-                    ["source"] = source.ToString(),
-                    ["description"] = description ?? source.ToString(),
-                    ["taskId"] = delayedTask.Task.TraceId
-                });
+            if (EventLoopTrace.IsEnabled(LogSeverity.Debug))
+            {
+                EventLoopTrace.Write(
+                    "TimerScheduled",
+                    LogSeverity.Debug,
+                    "[EventLoop] Timer scheduled",
+                    delayedTask.TimerId,
+                    new Dictionary<string, object>
+                    {
+                        ["delayMs"] = safeDelay,
+                        ["source"] = source.ToString(),
+                        ["description"] = description ?? source.ToString(),
+                        ["taskId"] = delayedTask.Task.TraceId
+                    });
+            }
             OnWorkEnqueued?.Invoke();
         }
 
@@ -222,7 +226,10 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 }
                 catch (Exception ex)
                 {
-                    EngineLogCompat.Warn($"[EventLoop] MutationObserver callback error: {ex.Message}", LogCategory.DOM);
+                    EngineLogCompat.Log(
+                        LogCategory.DOM,
+                        LogLevel.Warn,
+                        $"[EventLoop] MutationObserver callback error: {ex.Message}");
                 }
             }
 
@@ -254,15 +261,18 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 _animationFrameCallbacks.Enqueue(entry);
                 pendingCount = _animationFrameCallbacks.Count;
             }
-            EventLoopTrace.Write(
-                "RequestAnimationFrameScheduled",
-                LogSeverity.Debug,
-                "[EventLoop] requestAnimationFrame scheduled",
-                entry.TraceId,
-                new Dictionary<string, object>
-                {
-                    ["pendingCount"] = pendingCount
-                });
+            if (EventLoopTrace.IsEnabled(LogSeverity.Debug))
+            {
+                EventLoopTrace.Write(
+                    "RequestAnimationFrameScheduled",
+                    LogSeverity.Debug,
+                    "[EventLoop] requestAnimationFrame scheduled",
+                    entry.TraceId,
+                    new Dictionary<string, object>
+                    {
+                        ["pendingCount"] = pendingCount
+                    });
+            }
             OnWorkEnqueued?.Invoke();
         }
 
@@ -315,63 +325,79 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             }
 
             EngineContext.Current.BeginPhase(EnginePhase.JSExecution);
-            EventLoopTrace.Write(
-                "TaskStarted",
-                LogSeverity.Debug,
-                "[EventLoop] Task started",
-                task.TraceId,
-                new Dictionary<string, object>
-                {
-                    ["source"] = task.Source.ToString(),
-                    ["priority"] = priorityGroup.ToString(),
-                    ["description"] = task.Description ?? string.Empty
-                });
+            if (EventLoopTrace.IsEnabled(LogSeverity.Debug))
+            {
+                EventLoopTrace.Write(
+                    "TaskStarted",
+                    LogSeverity.Debug,
+                    "[EventLoop] Task started",
+                    task.TraceId,
+                    new Dictionary<string, object>
+                    {
+                        ["source"] = task.Source.ToString(),
+                        ["priority"] = priorityGroup.ToString(),
+                        ["description"] = task.Description ?? string.Empty
+                    });
+            }
             bool taskFailed = false;
             string taskErrorType = string.Empty;
             string taskError = string.Empty;
             try
             {
-                EngineLogCompat.Debug($"[EventLoop] Executing task: {task.Description}", LogCategory.JavaScript);
+                EngineLogCompat.Log(
+                    LogCategory.JavaScript,
+                    LogLevel.Debug,
+                    $"[EventLoop] Executing task: {task.Description}");
                 task.Callback.Invoke();
             }
             catch (Exception ex)
             {
-                EngineLogCompat.Debug($"[EventLoop] Task Exception: {ex.Message}", LogCategory.Errors);
+                EngineLogCompat.Log(
+                    LogCategory.Errors,
+                    LogLevel.Debug,
+                    $"[EventLoop] Task Exception: {ex.Message}");
                 taskFailed = true;
                 taskErrorType = ex.GetType().Name;
                 taskError = ex.Message;
-                EventLoopTrace.Write(
-                    "TaskFailed",
-                    LogSeverity.Warn,
-                    "[EventLoop] Task failed",
-                    task.TraceId,
-                    new Dictionary<string, object>
-                    {
-                        ["source"] = task.Source.ToString(),
-                        ["priority"] = priorityGroup.ToString(),
-                        ["description"] = task.Description ?? string.Empty,
-                        ["errorType"] = taskErrorType,
-                        ["error"] = taskError
-                    },
-                    LogMarker.EngineBug);
+                if (EventLoopTrace.IsEnabled(LogSeverity.Warn))
+                {
+                    EventLoopTrace.Write(
+                        "TaskFailed",
+                        LogSeverity.Warn,
+                        "[EventLoop] Task failed",
+                        task.TraceId,
+                        new Dictionary<string, object>
+                        {
+                            ["source"] = task.Source.ToString(),
+                            ["priority"] = priorityGroup.ToString(),
+                            ["description"] = task.Description ?? string.Empty,
+                            ["errorType"] = taskErrorType,
+                            ["error"] = taskError
+                        },
+                        LogMarker.EngineBug);
+                }
             }
             finally
             {
                 EngineContext.Current.EndPhase();
-                EventLoopTrace.Write(
-                    "TaskCompleted",
-                    taskFailed ? LogSeverity.Warn : LogSeverity.Debug,
-                    "[EventLoop] Task completed",
-                    task.TraceId,
-                    new Dictionary<string, object>
-                    {
-                        ["source"] = task.Source.ToString(),
-                        ["priority"] = priorityGroup.ToString(),
-                        ["description"] = task.Description ?? string.Empty,
-                        ["success"] = !taskFailed,
-                        ["errorType"] = taskErrorType,
-                        ["error"] = taskError
-                    });
+                var completedSeverity = taskFailed ? LogSeverity.Warn : LogSeverity.Debug;
+                if (EventLoopTrace.IsEnabled(completedSeverity))
+                {
+                    EventLoopTrace.Write(
+                        "TaskCompleted",
+                        completedSeverity,
+                        "[EventLoop] Task completed",
+                        task.TraceId,
+                        new Dictionary<string, object>
+                        {
+                            ["source"] = task.Source.ToString(),
+                            ["priority"] = priorityGroup.ToString(),
+                            ["description"] = task.Description ?? string.Empty,
+                            ["success"] = !taskFailed,
+                            ["errorType"] = taskErrorType,
+                            ["error"] = taskError
+                        });
+                }
             }
 
             PerformMicrotaskCheckpoint(deadline);
@@ -384,21 +410,25 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         {
             EngineContext.Current.AssertNotInPhase(EnginePhase.Microtasks);
 
-            var checkpointId = EventLoopTrace.NextId("microtask-checkpoint");
+            var traceDebug = EventLoopTrace.IsEnabled(LogSeverity.Debug);
+            string checkpointId = traceDebug ? EventLoopTrace.NextId("microtask-checkpoint") : null;
             var processedMicrotasks = 0;
             var deliveredMutationObserverBatches = 0;
             var passes = 0;
             var forcedExit = false;
-            EventLoopTrace.Write(
-                "MicrotaskCheckpointStarted",
-                LogSeverity.Debug,
-                "[EventLoop] Microtask checkpoint started",
-                checkpointId,
-                new Dictionary<string, object>
-                {
-                    ["pendingMicrotasks"] = _microtaskQueue.Count,
-                    ["pendingMutationObservers"] = HasQueuedMutationObserverCallbacks
-                });
+            if (traceDebug)
+            {
+                EventLoopTrace.Write(
+                    "MicrotaskCheckpointStarted",
+                    LogSeverity.Debug,
+                    "[EventLoop] Microtask checkpoint started",
+                    checkpointId,
+                    new Dictionary<string, object>
+                    {
+                        ["pendingMicrotasks"] = _microtaskQueue.Count,
+                        ["pendingMutationObservers"] = HasQueuedMutationObserverCallbacks
+                    });
+            }
             EngineContext.Current.BeginPhase(EnginePhase.Microtasks);
             try
             {
@@ -422,9 +452,10 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     passes++;
                     if (passes >= MaxMicrotaskCheckpointPasses)
                     {
-                        EngineLogCompat.Warn(
-                            $"[EventLoop] Microtask checkpoint pass limit ({MaxMicrotaskCheckpointPasses}) exceeded; forcing checkpoint exit",
-                            LogCategory.Errors);
+                        EngineLogCompat.Log(
+                            LogCategory.Errors,
+                            LogLevel.Warn,
+                            $"[EventLoop] Microtask checkpoint pass limit ({MaxMicrotaskCheckpointPasses}) exceeded; forcing checkpoint exit");
                         forcedExit = true;
                         break;
                     }
@@ -433,20 +464,25 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             finally
             {
                 EngineContext.Current.EndPhase();
-                EventLoopTrace.Write(
-                    "MicrotaskCheckpointCompleted",
-                    forcedExit ? LogSeverity.Warn : LogSeverity.Debug,
-                    "[EventLoop] Microtask checkpoint completed",
-                    checkpointId,
-                    new Dictionary<string, object>
-                    {
-                        ["processedMicrotasks"] = processedMicrotasks,
-                        ["mutationObserverBatches"] = deliveredMutationObserverBatches,
-                        ["passes"] = passes,
-                        ["forcedExit"] = forcedExit,
-                        ["pendingMicrotasks"] = _microtaskQueue.Count,
-                        ["pendingMutationObservers"] = HasQueuedMutationObserverCallbacks
-                    });
+                var completedSeverity = forcedExit ? LogSeverity.Warn : LogSeverity.Debug;
+                if (EventLoopTrace.IsEnabled(completedSeverity))
+                {
+                    checkpointId ??= EventLoopTrace.NextId("microtask-checkpoint");
+                    EventLoopTrace.Write(
+                        "MicrotaskCheckpointCompleted",
+                        completedSeverity,
+                        "[EventLoop] Microtask checkpoint completed",
+                        checkpointId,
+                        new Dictionary<string, object>
+                        {
+                            ["processedMicrotasks"] = processedMicrotasks,
+                            ["mutationObserverBatches"] = deliveredMutationObserverBatches,
+                            ["passes"] = passes,
+                            ["forcedExit"] = forcedExit,
+                            ["pendingMicrotasks"] = _microtaskQueue.Count,
+                            ["pendingMutationObservers"] = HasQueuedMutationObserverCallbacks
+                        });
+                }
             }
         }
 
@@ -471,21 +507,25 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             // busy-spinning at event-loop speed when no layout was dirtied.
             Volatile.Write(ref _lastRenderTime, now);
 
-            var renderOpportunityId = EventLoopTrace.NextId("render-opportunity");
+            var traceDebug = EventLoopTrace.IsEnabled(LogSeverity.Debug);
+            string renderOpportunityId = traceDebug ? EventLoopTrace.NextId("render-opportunity") : null;
             var observerRan = false;
             var renderRan = false;
-            EventLoopTrace.Write(
-                "RenderOpportunityStarted",
-                LogSeverity.Debug,
-                "[EventLoop] Render opportunity started",
-                renderOpportunityId,
-                new Dictionary<string, object>
-                {
-                    ["layoutDirty"] = layoutDirty,
-                    ["hasObserverCallback"] = _observerCallback != null,
-                    ["pendingAnimationFrames"] = PendingAnimationFrameCount,
-                    ["hasRenderCallback"] = _renderCallback != null
-                });
+            if (traceDebug)
+            {
+                EventLoopTrace.Write(
+                    "RenderOpportunityStarted",
+                    LogSeverity.Debug,
+                    "[EventLoop] Render opportunity started",
+                    renderOpportunityId,
+                    new Dictionary<string, object>
+                    {
+                        ["layoutDirty"] = layoutDirty,
+                        ["hasObserverCallback"] = _observerCallback != null,
+                        ["pendingAnimationFrames"] = PendingAnimationFrameCount,
+                        ["hasRenderCallback"] = _renderCallback != null
+                    });
+            }
             try
             {
                 if (_observerCallback != null)
@@ -498,7 +538,10 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     }
                     catch (Exception ex)
                     {
-                        EngineLogCompat.Debug($"[EventLoop] Observer Exception: {ex.Message}", LogCategory.Errors);
+                        EngineLogCompat.Log(
+                            LogCategory.Errors,
+                            LogLevel.Debug,
+                            $"[EventLoop] Observer Exception: {ex.Message}");
                     }
                     finally
                     {
@@ -521,7 +564,10 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     }
                     catch (Exception ex)
                     {
-                        EngineLogCompat.Debug($"[EventLoop] Render Exception: {ex.Message}", LogCategory.Errors);
+                        EngineLogCompat.Log(
+                            LogCategory.Errors,
+                            LogLevel.Debug,
+                            $"[EventLoop] Render Exception: {ex.Message}");
                     }
                     finally
                     {
@@ -532,18 +578,21 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             }
             finally
             {
-                EventLoopTrace.Write(
-                    "RenderOpportunityCompleted",
-                    LogSeverity.Debug,
-                    "[EventLoop] Render opportunity completed",
-                    renderOpportunityId,
-                    new Dictionary<string, object>
-                    {
-                        ["observerRan"] = observerRan,
-                        ["renderRan"] = renderRan,
-                        ["layoutDirty"] = Volatile.Read(ref _layoutDirty),
-                        ["pendingAnimationFrames"] = PendingAnimationFrameCount
-                    });
+                if (traceDebug)
+                {
+                    EventLoopTrace.Write(
+                        "RenderOpportunityCompleted",
+                        LogSeverity.Debug,
+                        "[EventLoop] Render opportunity completed",
+                        renderOpportunityId,
+                        new Dictionary<string, object>
+                        {
+                            ["observerRan"] = observerRan,
+                            ["renderRan"] = renderRan,
+                            ["layoutDirty"] = Volatile.Read(ref _layoutDirty),
+                            ["pendingAnimationFrames"] = PendingAnimationFrameCount
+                        });
+                }
                 EnsureIdlePhase();
             }
         }
@@ -565,15 +614,18 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             while (callbacks.Count > 0)
             {
                 var callback = callbacks.Dequeue();
-                EventLoopTrace.Write(
-                    "RequestAnimationFrameFired",
-                    LogSeverity.Debug,
-                    "[EventLoop] requestAnimationFrame fired",
-                    callback.TraceId,
-                    new Dictionary<string, object>
-                    {
-                        ["remainingInBatch"] = callbacks.Count
-                    });
+                if (EventLoopTrace.IsEnabled(LogSeverity.Debug))
+                {
+                    EventLoopTrace.Write(
+                        "RequestAnimationFrameFired",
+                        LogSeverity.Debug,
+                        "[EventLoop] requestAnimationFrame fired",
+                        callback.TraceId,
+                        new Dictionary<string, object>
+                        {
+                            ["remainingInBatch"] = callbacks.Count
+                        });
+                }
                 EngineContext.Current.BeginPhase(EnginePhase.Animation);
                 try
                 {
@@ -581,7 +633,10 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 }
                 catch (Exception ex)
                 {
-                    EngineLogCompat.Debug($"[EventLoop] RAF Exception: {ex.Message}", LogCategory.Errors);
+                    EngineLogCompat.Log(
+                        LogCategory.Errors,
+                        LogLevel.Debug,
+                        $"[EventLoop] RAF Exception: {ex.Message}");
                 }
                 finally
                 {
@@ -596,9 +651,10 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         {
             if (EngineContext.Current.CurrentPhase != EnginePhase.Idle)
             {
-                EngineLogCompat.Warn(
-                    $"[EventLoop] Phase leak detected: {EngineContext.Current.CurrentPhase}. Forcing Idle recovery.",
-                    LogCategory.Errors);
+                EngineLogCompat.Log(
+                    LogCategory.Errors,
+                    LogLevel.Warn,
+                    $"[EventLoop] Phase leak detected: {EngineContext.Current.CurrentPhase}. Forcing Idle recovery.");
                 EngineContext.Current.EndPhase();
             }
         }
@@ -782,17 +838,20 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
             foreach (var delayedTask in dueTasks)
             {
-                EventLoopTrace.Write(
-                    "TimerFired",
-                    LogSeverity.Debug,
-                    "[EventLoop] Timer fired",
-                    delayedTask.TimerId,
-                    new Dictionary<string, object>
-                    {
-                        ["taskId"] = delayedTask.Task.TraceId,
-                        ["source"] = delayedTask.Task.Source.ToString(),
-                        ["description"] = delayedTask.Task.Description ?? string.Empty
-                    });
+                if (EventLoopTrace.IsEnabled(LogSeverity.Debug))
+                {
+                    EventLoopTrace.Write(
+                        "TimerFired",
+                        LogSeverity.Debug,
+                        "[EventLoop] Timer fired",
+                        delayedTask.TimerId,
+                        new Dictionary<string, object>
+                        {
+                            ["taskId"] = delayedTask.Task.TraceId,
+                            ["source"] = delayedTask.Task.Source.ToString(),
+                            ["description"] = delayedTask.Task.Description ?? string.Empty
+                        });
+                }
                 _taskQueue.Enqueue(delayedTask.Task);
             }
         }
