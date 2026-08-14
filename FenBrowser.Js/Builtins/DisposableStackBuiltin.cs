@@ -96,14 +96,16 @@ public sealed class DisposableStackBuiltin : IBuiltinModule
 
     private sealed class DisposableResource
     {
-        public DisposableResource(JsValue value, JsValue method)
+        public DisposableResource(JsValue value, JsValue method, bool passValueAsArgument = false)
         {
             Value = value;
             Method = method;
+            PassValueAsArgument = passValueAsArgument;
         }
 
         public JsValue Value { get; }
         public JsValue Method { get; }
+        public bool PassValueAsArgument { get; }
     }
 
     private sealed class DisposableStackObject : JsObject
@@ -324,18 +326,7 @@ public sealed class DisposableStackBuiltin : IBuiltinModule
             throw new JsThrownException(ctx.CreateTypeError("DisposableStack.prototype.adopt requires a callable disposer."));
         }
 
-        var closure = new NativeFunctionObject(string.Empty, (_, _) =>
-        {
-            _ = ctx.CallFunction(onDispose, new[] { value }, JsValue.Undefined);
-            return JsValue.Undefined;
-        }, length: 0);
-        closure.SetPrototype(ctx.GetObjectPrototype());
-        var closureHandle = ctx.Heap.AllocateObject(closure, AllocationSite.Current());
-        var callHandle = ctx.GetFunctionCallMethod();
-        closure.SetProperty("call", JsValue.FromObject(callHandle));
-        ctx.Heap.WriteBarrier(closureHandle, callHandle);
-
-        stack.Resources.Add(new DisposableResource(JsValue.Undefined, JsValue.FromObject(closureHandle)));
+        stack.Resources.Add(new DisposableResource(value, onDispose, passValueAsArgument: true));
         return value;
     }
 
@@ -391,7 +382,14 @@ public sealed class DisposableStackBuiltin : IBuiltinModule
             {
                 if (resource.Method.Tag != JsValueTag.Undefined)
                 {
-                    _ = ctx.CallFunction(resource.Method, Array.Empty<JsValue>(), resource.Value);
+                    if (resource.PassValueAsArgument)
+                    {
+                        _ = ctx.CallFunction(resource.Method, new[] { resource.Value }, JsValue.Undefined);
+                    }
+                    else
+                    {
+                        _ = ctx.CallFunction(resource.Method, Array.Empty<JsValue>(), resource.Value);
+                    }
                 }
             }
             catch (JsThrownException ex)
