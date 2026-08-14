@@ -145,8 +145,9 @@ namespace FenBrowser.Core.Dom.V2
                 return node;
             }
 
-            // Go to parent
-            return node.ParentNode == Root ? null : node.ParentNode;
+            // A direct child of Root is preceded by Root itself in pre-order.
+            // Returning null here used to make previousNode() stop one node early.
+            return node.ParentNode;
         }
 
         private NodeFilterResult AcceptNode(Node node)
