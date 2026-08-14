@@ -4,38 +4,36 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Threading;
 
 namespace FenBrowser.Core.Logging
 {
     /// <summary>
-    /// Performance profiler for timing operations and tracking resource usage.
-    /// Thread-safe and designed for use across async boundaries.
+    /// Lightweight performance profiler for timing operations. BeginScope uses only
+    /// Stopwatch timestamps on the hot path; managed-heap sampling is opt-in because
+    /// GC.GetTotalMemory itself is too expensive/noisy for every render or JS scope.
     /// </summary>
     public sealed class PerformanceProfiler
     {
-        private static readonly Lazy<PerformanceProfiler> _instance = 
-            new Lazy<PerformanceProfiler>(() => new PerformanceProfiler());
-        
+        private static readonly Lazy<PerformanceProfiler> _instance =
+            new(() => new PerformanceProfiler());
+
         public static PerformanceProfiler Instance => _instance.Value;
 
-        private readonly ConcurrentDictionary<string, OperationStats> _stats;
-        private readonly ConcurrentDictionary<string, Stopwatch> _activeScopes;
-        private readonly object _lock = new object();
-        
+        private readonly ConcurrentDictionary<string, OperationStats> _stats = new(StringComparer.Ordinal);
+
         public bool IsEnabled { get; set; } = true;
-        public bool LogToDebug { get; set; } = false;
+        public bool LogToDebug { get; set; }
+        public bool TrackMemoryDeltas { get; set; }
         public int MaxStatsEntries { get; set; } = 1000;
 
         private PerformanceProfiler()
         {
-            _stats = new ConcurrentDictionary<string, OperationStats>();
-            _activeScopes = new ConcurrentDictionary<string, Stopwatch>();
         }
 
         /// <summary>
-        /// Start a profiling scope. Returns IDisposable for automatic timing.
-        /// Usage: using (PerformanceProfiler.Instance.BeginScope("MyOperation")) { ... }
+        /// Start a profiling scope without allocating a Stopwatch, GUID, or active-scope
+        /// dictionary entry. The returned value type is intended for normal using-scope
+        /// ownership and should not be copied.
         /// </summary>
         public ProfileScope BeginScope(
             string operationName,
@@ -43,61 +41,57 @@ namespace FenBrowser.Core.Logging
             [CallerLineNumber] int sourceLineNumber = 0,
             [CallerMemberName] string memberName = "")
         {
-            if (!IsEnabled) return new ProfileScope(null, null, 0, false);
-            
-            var scopeId = $"{operationName}_{Guid.NewGuid():N}";
-            var sw = Stopwatch.StartNew();
-            _activeScopes[scopeId] = sw;
-            
-            var initialMemory = GC.GetTotalMemory(false);
-            
-            return new ProfileScope(this, operationName, initialMemory, true, scopeId, sourceFile, sourceLineNumber, memberName);
+            if (!IsEnabled)
+                return default;
+            if (string.IsNullOrWhiteSpace(operationName))
+                throw new ArgumentException("Operation name is required.", nameof(operationName));
+
+            var initialMemory = TrackMemoryDeltas ? GC.GetTotalMemory(false) : 0L;
+            return new ProfileScope(
+                this,
+                operationName,
+                Stopwatch.GetTimestamp(),
+                initialMemory,
+                TrackMemoryDeltas);
         }
 
-        /// <summary>
-        /// Manually record a timing measurement
-        /// </summary>
         public void RecordTiming(string operationName, long milliseconds, long? memoryDelta = null)
         {
-            if (!IsEnabled) return;
+            if (!IsEnabled)
+                return;
+            if (string.IsNullOrWhiteSpace(operationName))
+                throw new ArgumentException("Operation name is required.", nameof(operationName));
 
-            var stats = _stats.GetOrAdd(operationName, _ => new OperationStats { Name = operationName });
+            var stats = _stats.GetOrAdd(operationName, static name => new OperationStats { Name = name });
             stats.RecordCall(milliseconds, memoryDelta ?? 0);
 
             if (LogToDebug)
             {
-                LogManager.Log(LogCategory.Performance, LogLevel.Debug, 
-                    $"[PERF] {operationName}: {milliseconds}ms" + 
-                    (memoryDelta.HasValue ? $" (mem: {FormatBytes(memoryDelta.Value)})" : ""));
+                LogManager.Log(
+                    LogCategory.Performance,
+                    LogLevel.Debug,
+                    $"[PERF] {operationName}: {milliseconds}ms" +
+                    (memoryDelta.HasValue ? $" (mem: {FormatBytes(memoryDelta.Value)})" : string.Empty));
             }
 
-            // Cleanup if too many entries
-            if (_stats.Count > MaxStatsEntries)
-            {
-                CleanupOldStats();
-            }
+            var maxEntries = MaxStatsEntries;
+            if (maxEntries > 0 && _stats.Count > maxEntries)
+                CleanupOldStats(maxEntries);
         }
 
-        /// <summary>
-        /// Get statistics for an operation
-        /// </summary>
         public OperationStats GetStats(string operationName)
         {
+            if (operationName == null)
+                return null;
             _stats.TryGetValue(operationName, out var stats);
             return stats;
         }
 
-        /// <summary>
-        /// Get all recorded statistics
-        /// </summary>
         public IReadOnlyDictionary<string, OperationStats> GetAllStats()
         {
             return new Dictionary<string, OperationStats>(_stats);
         }
 
-        /// <summary>
-        /// Get a summary report of all profiled operations
-        /// </summary>
         public string GetSummaryReport()
         {
             var sb = new System.Text.StringBuilder();
@@ -107,28 +101,23 @@ namespace FenBrowser.Core.Logging
 
             foreach (var stat in _stats.Values.OrderByDescending(s => s.TotalMs))
             {
-                sb.AppendLine($"{stat.Name,-40} {stat.CallCount,8} {stat.MinMs,7}ms {stat.MaxMs,7}ms {stat.AverageMs,7:F1}ms {stat.TotalMs,9}ms");
+                sb.AppendLine(
+                    $"{stat.Name,-40} {stat.CallCount,8} {stat.MinMs,7}ms {stat.MaxMs,7}ms " +
+                    $"{stat.AverageMs,7:F1}ms {stat.TotalMs,9}ms");
             }
 
             return sb.ToString();
         }
 
-        /// <summary>
-        /// Reset all statistics
-        /// </summary>
         public void Reset()
         {
             _stats.Clear();
-            _activeScopes.Clear();
         }
 
-        /// <summary>
-        /// Get current memory usage
-        /// </summary>
         public static long GetCurrentMemory() => GC.GetTotalMemory(false);
 
         /// <summary>
-        /// Force garbage collection and get memory (useful for accurate measurements)
+        /// Explicit diagnostic helper. Never call this from a browser hot path.
         /// </summary>
         public static long GetMemoryAfterGC()
         {
@@ -138,35 +127,47 @@ namespace FenBrowser.Core.Logging
             return GC.GetTotalMemory(true);
         }
 
-        private void CleanupOldStats()
+        private void CleanupOldStats(int maxEntries)
         {
-            // Remove least-used entries
+            var currentCount = _stats.Count;
+            if (currentCount <= maxEntries)
+                return;
+
+            var removeCount = Math.Max(1, currentCount - maxEntries);
             var toRemove = _stats
                 .OrderBy(kvp => kvp.Value.LastAccess)
-                .Take(_stats.Count / 4)
+                .Take(removeCount)
                 .Select(kvp => kvp.Key)
-                .ToList();
+                .ToArray();
 
             foreach (var key in toRemove)
-            {
                 _stats.TryRemove(key, out _);
-            }
         }
 
-        internal void EndScope(string scopeId, string operationName, long initialMemory, 
-            string sourceFile, int sourceLineNumber, string memberName)
+        internal void EndScope(
+            string operationName,
+            long startTimestamp,
+            long initialMemory,
+            bool trackMemory)
         {
-            if (_activeScopes.TryRemove(scopeId, out var sw))
-            {
-                sw.Stop();
-                var memoryDelta = GC.GetTotalMemory(false) - initialMemory;
-                RecordTiming(operationName, sw.ElapsedMilliseconds, memoryDelta);
-            }
+            var elapsed = Stopwatch.GetElapsedTime(startTimestamp);
+            var elapsedMilliseconds = (long)elapsed.TotalMilliseconds;
+            long? memoryDelta = trackMemory
+                ? GC.GetTotalMemory(false) - initialMemory
+                : null;
+
+            RecordTiming(operationName, elapsedMilliseconds, memoryDelta);
         }
 
         private static string FormatBytes(long bytes)
         {
-            if (bytes < 0) return $"-{FormatBytes(-bytes)}";
+            if (bytes < 0)
+            {
+                // Avoid overflowing on long.MinValue.
+                if (bytes == long.MinValue)
+                    return "-8.0EB";
+                return $"-{FormatBytes(-bytes)}";
+            }
             if (bytes < 1024) return $"{bytes}B";
             if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1}KB";
             return $"{bytes / (1024.0 * 1024.0):F2}MB";
@@ -174,46 +175,44 @@ namespace FenBrowser.Core.Logging
     }
 
     /// <summary>
-    /// Disposable scope for automatic timing measurement
+    /// Allocation-free timing scope. Do not copy an active scope; Dispose is idempotent
+    /// for the original value used by a normal C# using statement.
     /// </summary>
-    public readonly struct ProfileScope : IDisposable
+    public struct ProfileScope : IDisposable
     {
-        private readonly PerformanceProfiler _profiler;
-        private readonly string _operationName;
-        private readonly long _initialMemory;
-        private readonly bool _isEnabled;
-        private readonly string _scopeId;
-        private readonly string _sourceFile;
-        private readonly int _sourceLineNumber;
-        private readonly string _memberName;
+        private PerformanceProfiler _profiler;
+        private string _operationName;
+        private long _startTimestamp;
+        private long _initialMemory;
+        private bool _trackMemory;
 
-        internal ProfileScope(PerformanceProfiler profiler, string operationName, 
-            long initialMemory, bool isEnabled, string scopeId = null,
-            string sourceFile = "", int sourceLineNumber = 0, string memberName = "")
+        internal ProfileScope(
+            PerformanceProfiler profiler,
+            string operationName,
+            long startTimestamp,
+            long initialMemory,
+            bool trackMemory)
         {
             _profiler = profiler;
             _operationName = operationName;
+            _startTimestamp = startTimestamp;
             _initialMemory = initialMemory;
-            _isEnabled = isEnabled;
-            _scopeId = scopeId;
-            _sourceFile = sourceFile;
-            _sourceLineNumber = sourceLineNumber;
-            _memberName = memberName;
+            _trackMemory = trackMemory;
         }
 
         public void Dispose()
         {
-            if (_isEnabled && _profiler != null && _scopeId != null)
-            {
-                _profiler.EndScope(_scopeId, _operationName, _initialMemory, 
-                    _sourceFile, _sourceLineNumber, _memberName);
-            }
+            var profiler = _profiler;
+            if (profiler == null)
+                return;
+
+            // Mark the owned value disposed before recording so the same local cannot
+            // double-record if Dispose is invoked explicitly and again by a using block.
+            _profiler = null;
+            profiler.EndScope(_operationName, _startTimestamp, _initialMemory, _trackMemory);
         }
     }
 
-    /// <summary>
-    /// Statistics for a profiled operation
-    /// </summary>
     public class OperationStats
     {
         public string Name { get; set; }
@@ -224,7 +223,7 @@ namespace FenBrowser.Core.Logging
         public long TotalMemoryDelta { get; private set; }
         public DateTime LastAccess { get; private set; }
 
-        private readonly object _lock = new object();
+        private readonly object _lock = new();
 
         public double AverageMs => CallCount > 0 ? (double)TotalMs / CallCount : 0;
 
@@ -235,10 +234,10 @@ namespace FenBrowser.Core.Logging
                 CallCount++;
                 TotalMs += milliseconds;
                 TotalMemoryDelta += memoryDelta;
-                
+
                 if (milliseconds < MinMs) MinMs = milliseconds;
                 if (milliseconds > MaxMs) MaxMs = milliseconds;
-                
+
                 LastAccess = DateTime.UtcNow;
             }
         }
