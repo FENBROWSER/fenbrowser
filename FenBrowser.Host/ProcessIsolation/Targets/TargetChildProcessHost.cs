@@ -12,6 +12,9 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
 {
     public sealed class TargetChildProcessHost : IDisposable
     {
+        private const int MinReadyTimeoutMs = 100;
+        private const int MaxReadyTimeoutMs = 60_000;
+
         private readonly int _parentPid = Environment.ProcessId;
         private readonly TargetProcessKind _targetKind;
         private readonly TargetProcessContract _contract;
@@ -32,7 +35,11 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
             _sandboxProfile = targetKind == TargetProcessKind.Gpu
                 ? OsSandboxProfile.GpuProcess
                 : OsSandboxProfile.UtilityProcess;
-            _readyTimeout = TimeSpan.FromMilliseconds(ParseIntEnv(_contract.ReadyTimeoutEnvKey, 5000));
+            var readyTimeoutMs = Math.Clamp(
+                ParseIntEnv(_contract.ReadyTimeoutEnvKey, 5000),
+                MinReadyTimeoutMs,
+                MaxReadyTimeoutMs);
+            _readyTimeout = TimeSpan.FromMilliseconds(readyTimeoutMs);
         }
 
         public TargetProcessSession Session => _session;
@@ -68,6 +75,8 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
             var pipeName = $"fen_{_targetKind.ToString().ToLowerInvariant()}_{_parentPid}_{Guid.NewGuid():N}";
             var authToken = CreateAuthToken();
             var session = new TargetProcessSession(_targetKind, pipeName, authToken);
+            Process spawnedChild = null;
+            ISandbox acquiredSandbox = null;
 
             try
             {
@@ -95,20 +104,19 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                     _sandboxProfile,
                     allowUnsandboxedFallback,
                     _contract.AllowUnsandboxedEnvKey,
-                    out var sandbox))
+                    out acquiredSandbox))
                 {
                     session.Dispose();
                     return false;
                 }
-                
-                sandbox?.ApplyToProcessStartInfo(startInfo);
 
-                Process child;
-                if (sandbox != null && sandbox.RequiresCustomSpawn)
+                acquiredSandbox?.ApplyToProcessStartInfo(startInfo);
+
+                if (acquiredSandbox != null && acquiredSandbox.RequiresCustomSpawn)
                 {
                     try
                     {
-                        child = sandbox.SpawnProcess(startInfo);
+                        spawnedChild = acquiredSandbox.SpawnProcess(startInfo);
                     }
                     catch (Exception ex)
                     {
@@ -122,17 +130,17 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                             throw;
                         }
 
-                        child = Process.Start(startInfo);
-                        if (child != null && sandbox != null)
+                        spawnedChild = Process.Start(startInfo);
+                        if (spawnedChild != null)
                         {
                             try
                             {
-                                sandbox.AttachToProcess(child);
+                                acquiredSandbox.AttachToProcess(spawnedChild);
                             }
                             catch (Exception attachEx)
                             {
                                 EngineLogBridge.Warn(
-                                    $"[{_targetKind}Process] Job-only sandbox fallback attach failed for pid={child.Id}: {attachEx.Message}",
+                                    $"[{_targetKind}Process] Job-only sandbox fallback attach failed for pid={spawnedChild.Id}: {attachEx.Message}",
                                     LogCategory.ProcessIsolation);
                             }
                         }
@@ -140,45 +148,52 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 }
                 else
                 {
-                    child = Process.Start(startInfo);
-                    if (child != null && sandbox != null)
+                    spawnedChild = Process.Start(startInfo);
+                    if (spawnedChild != null && acquiredSandbox != null)
                     {
-                        sandbox.AttachToProcess(child);
+                        acquiredSandbox.AttachToProcess(spawnedChild);
                     }
                 }
 
-                if (child == null)
+                if (spawnedChild == null)
                 {
-                    sandbox?.Dispose();
+                    TryDispose(acquiredSandbox, "startup-sandbox");
+                    acquiredSandbox = null;
                     session.Dispose();
                     EngineLogBridge.Error($"[{_targetKind}Process] Failed to spawn child process.", LogCategory.ProcessIsolation);
                     return false;
                 }
 
-                session.Start(child);
+                session.Start(spawnedChild);
                 var ready = session.WaitForReadyAsync(_readyTimeout).GetAwaiter().GetResult();
                 if (!ready)
                 {
                     EngineLogBridge.Error(
-                        $"[{_targetKind}Process] Child failed startup contract (pid={child.Id}, readyTimeoutMs={(int)_readyTimeout.TotalMilliseconds}).",
+                        $"[{_targetKind}Process] Child failed startup contract (pid={spawnedChild.Id}, readyTimeoutMs={(int)_readyTimeout.TotalMilliseconds}).",
                         LogCategory.ProcessIsolation);
-                    TryKillProcess(child, "startup-contract-failed");
-                    sandbox?.Dispose();
+                    TryKillProcess(spawnedChild, "startup-contract-failed");
+                    TryDispose(spawnedChild, "startup-child-process");
+                    spawnedChild = null;
+                    TryDispose(acquiredSandbox, "startup-sandbox");
+                    acquiredSandbox = null;
                     session.Dispose();
                     return false;
                 }
 
-                _childProcess = child;
-                _sandbox = sandbox;
+                _childProcess = spawnedChild;
+                _sandbox = acquiredSandbox;
                 _session = session;
 
                 EngineLogBridge.Info(
-                    $"[{_targetKind}Process] Child started (pid={child.Id}, pipe={pipeName}, sandbox={sandbox?.ProfileName ?? "unsandboxed"}).",
+                    $"[{_targetKind}Process] Child started (pid={spawnedChild.Id}, pipe={pipeName}, sandbox={acquiredSandbox?.ProfileName ?? "unsandboxed"}).",
                     LogCategory.ProcessIsolation);
                 return true;
             }
             catch (Exception ex)
             {
+                TryKillProcess(spawnedChild, "startup-exception");
+                TryDispose(spawnedChild, "startup-child-process");
+                TryDispose(acquiredSandbox, "startup-sandbox");
                 session.Dispose();
                 EngineLogBridge.Error($"[{_targetKind}Process] Failed to start child: {ex.Message}", LogCategory.ProcessIsolation);
                 return false;
@@ -201,14 +216,17 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
 
         private void TryKillProcess(Process process, string reason)
         {
-            if (process == null || process.HasExited)
+            if (process == null)
             {
                 return;
             }
 
             try
             {
-                process.Kill(entireProcessTree: true);
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
             }
             catch (Exception ex)
             {
@@ -247,4 +265,3 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         }
     }
 }
-
