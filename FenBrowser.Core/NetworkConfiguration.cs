@@ -55,6 +55,12 @@ namespace FenBrowser.Core
         /// </summary>
         public long MaxTextResourceBytes { get; set; } = 64L * 1024 * 1024;
 
+        /// <summary>
+        /// Maximum payload admitted by convenience APIs that materialize an entire
+        /// binary response in one managed byte array. Larger resources must be streamed.
+        /// </summary>
+        public long MaxMaterializedBinaryResourceBytes { get; set; } = 128L * 1024 * 1024;
+
         // ========== Compression Settings ==========
 
         /// <summary>
@@ -238,6 +244,8 @@ namespace FenBrowser.Core
                 throw new InvalidOperationException("NetworkConfiguration.ResourceTimeoutSeconds must be at least 1 second.");
             if (MaxTextResourceBytes < 1)
                 throw new InvalidOperationException("NetworkConfiguration.MaxTextResourceBytes must be at least 1 byte.");
+            if (MaxMaterializedBinaryResourceBytes < 1)
+                throw new InvalidOperationException("NetworkConfiguration.MaxMaterializedBinaryResourceBytes must be at least 1 byte.");
             if (MaxImageCacheBytes < 0 || MaxTextCacheBytes < 0 || MaxDiskCacheBytes < 0)
                 throw new InvalidOperationException("Network cache limits cannot be negative.");
             if (MaxImageCacheCount < 0 || MaxTextCacheCount < 0)
@@ -268,6 +276,7 @@ namespace FenBrowser.Core
             DocumentTimeoutSeconds = 60;
             ResourceTimeoutSeconds = 30;
             MaxTextResourceBytes = 64L * 1024 * 1024;
+            MaxMaterializedBinaryResourceBytes = 128L * 1024 * 1024;
             EnableBrotli = true;
             EnableGzip = true;
             EnableDeflate = true;

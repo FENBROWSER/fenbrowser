@@ -264,38 +264,72 @@ namespace FenBrowser.Core.Network
 
         public async Task<string> GetStringAsync(string url, CancellationToken ct = default)
         {
+            var configuration = NetworkConfiguration.Instance;
+            configuration.ValidateOrThrow();
+
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             using var resp = await SendAsync(req, ct).ConfigureAwait(false);
             resp.EnsureSuccessStatusCode();
-            return await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+            await BufferContentBoundedAsync(resp.Content, configuration.MaxTextResourceBytes, ct).ConfigureAwait(false);
+            return await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         }
 
         public async Task<Stream> GetStreamAsync(string url, CancellationToken ct = default)
         {
             var request = new HttpRequestMessage(HttpMethod.Get, url);
             HttpResponseMessage response = null;
+            CancellationTokenSource lifetimeTimeout = null;
 
             try
             {
-                response = await SendAsync(request, ct).ConfigureAwait(false);
+                lifetimeTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                var timeout = DefaultTimeout;
+                if (timeout != Timeout.InfiniteTimeSpan)
+                    lifetimeTimeout.CancelAfter(timeout);
+
+                response = await SendAsync(request, lifetimeTimeout.Token).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
-                var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-                return new ResponseOwnedStream(stream, response, request);
+                var stream = await response.Content.ReadAsStreamAsync(lifetimeTimeout.Token).ConfigureAwait(false);
+                return new ResponseOwnedStream(stream, response, request, lifetimeTimeout);
             }
             catch
             {
                 response?.Dispose();
                 request.Dispose();
+                lifetimeTimeout?.Dispose();
                 throw;
             }
         }
 
         public async Task<byte[]> GetByteArrayAsync(string url, CancellationToken ct = default)
         {
+            var configuration = NetworkConfiguration.Instance;
+            configuration.ValidateOrThrow();
+
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             using var resp = await SendAsync(req, ct).ConfigureAwait(false);
             resp.EnsureSuccessStatusCode();
-            return await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            await BufferContentBoundedAsync(resp.Content, configuration.MaxMaterializedBinaryResourceBytes, ct).ConfigureAwait(false);
+            return await resp.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        }
+
+        private static async Task BufferContentBoundedAsync(
+            HttpContent content,
+            long maxBytes,
+            CancellationToken cancellationToken)
+        {
+            ArgumentNullException.ThrowIfNull(content);
+            if (maxBytes < 1)
+                throw new ArgumentOutOfRangeException(nameof(maxBytes));
+
+            var declaredLength = content.Headers.ContentLength;
+            if (declaredLength.HasValue && declaredLength.Value > maxBytes)
+            {
+                throw new InvalidDataException(
+                    $"Network response exceeds the configured {maxBytes}-byte materialization limit.");
+            }
+
+            await content.LoadIntoBufferAsync(maxBytes, cancellationToken).ConfigureAwait(false);
         }
 
         private sealed class ResponseOwnedStream : Stream
@@ -303,13 +337,19 @@ namespace FenBrowser.Core.Network
             private readonly Stream _inner;
             private readonly HttpResponseMessage _response;
             private readonly HttpRequestMessage _request;
+            private readonly CancellationTokenSource _lifetimeTimeout;
             private int _disposed;
 
-            public ResponseOwnedStream(Stream inner, HttpResponseMessage response, HttpRequestMessage request)
+            public ResponseOwnedStream(
+                Stream inner,
+                HttpResponseMessage response,
+                HttpRequestMessage request,
+                CancellationTokenSource lifetimeTimeout)
             {
                 _inner = inner ?? throw new ArgumentNullException(nameof(inner));
                 _response = response ?? throw new ArgumentNullException(nameof(response));
                 _request = request ?? throw new ArgumentNullException(nameof(request));
+                _lifetimeTimeout = lifetimeTimeout ?? throw new ArgumentNullException(nameof(lifetimeTimeout));
             }
 
             public override bool CanRead => _inner.CanRead;
@@ -321,10 +361,16 @@ namespace FenBrowser.Core.Network
             public override Task FlushAsync(CancellationToken cancellationToken) => _inner.FlushAsync(cancellationToken);
             public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
             public override int Read(Span<byte> buffer) => _inner.Read(buffer);
-            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
-                _inner.ReadAsync(buffer, offset, count, cancellationToken);
-            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
-                _inner.ReadAsync(buffer, cancellationToken);
+            public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            {
+                using var linked = CreateOperationCancellation(cancellationToken);
+                return await _inner.ReadAsync(buffer, offset, count, linked.Token).ConfigureAwait(false);
+            }
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                using var linked = CreateOperationCancellation(cancellationToken);
+                return await _inner.ReadAsync(buffer, linked.Token).ConfigureAwait(false);
+            }
             public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
             public override void SetLength(long value) => _inner.SetLength(value);
             public override void Write(byte[] buffer, int offset, int count) => _inner.Write(buffer, offset, count);
@@ -333,6 +379,16 @@ namespace FenBrowser.Core.Network
                 _inner.WriteAsync(buffer, offset, count, cancellationToken);
             public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
                 _inner.WriteAsync(buffer, cancellationToken);
+
+            private CancellationTokenSource CreateOperationCancellation(CancellationToken cancellationToken)
+            {
+                if (Volatile.Read(ref _disposed) != 0)
+                    throw new ObjectDisposedException(nameof(ResponseOwnedStream));
+
+                return cancellationToken.CanBeCanceled
+                    ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetimeTimeout.Token)
+                    : CancellationTokenSource.CreateLinkedTokenSource(_lifetimeTimeout.Token);
+            }
 
             protected override void Dispose(bool disposing)
             {
@@ -343,6 +399,7 @@ namespace FenBrowser.Core.Network
                     {
                         _response.Dispose();
                         _request.Dispose();
+                        _lifetimeTimeout.Dispose();
                     }
                 }
                 base.Dispose(disposing);
@@ -358,6 +415,7 @@ namespace FenBrowser.Core.Network
                 {
                     _response.Dispose();
                     _request.Dispose();
+                    _lifetimeTimeout.Dispose();
                 }
                 GC.SuppressFinalize(this);
             }
