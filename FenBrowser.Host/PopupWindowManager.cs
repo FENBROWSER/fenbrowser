@@ -23,20 +23,18 @@ public sealed class PopupWindow : IDisposable
     private int _width;
     private int _height;
 
-    // GL + Skia. These resources are created, used, and destroyed exclusively on
-    // the popup window thread because their native graphics context is thread-bound.
     private GL _gl;
     private GRContext _grContext;
     private GRBackendRenderTarget _renderTarget;
     private SKSurface _surface;
 
-    // HTML content from document.write()/close(). State can be supplied by the host
-    // thread while the popup thread is rendering, so publication is synchronized.
     private string _htmlContent;
     private bool _contentReady;
     private SKPicture _renderedFrame;
     private bool _renderFailed;
     private FenBrowser.FenEngine.Rendering.CustomHtmlEngine _engine;
+    private int _contentVersion;
+    private int _renderedContentVersion = -1;
 
     private int _closeRequested;
     private int _cleanupCompleted;
@@ -139,6 +137,7 @@ public sealed class PopupWindow : IDisposable
                 _contentReady = true;
                 _renderFailed = true;
                 _engine = null;
+                unchecked { _contentVersion++; }
             }
 
             EngineLogBridge.Warn($"[PopupWindow] {_name}: LoadHtml failed: {ex.Message}", LogCategory.Rendering);
@@ -156,6 +155,7 @@ public sealed class PopupWindow : IDisposable
             _contentReady = true;
             _renderFailed = false;
             _engine = engine;
+            unchecked { _contentVersion++; }
         }
     }
 
@@ -255,12 +255,26 @@ public sealed class PopupWindow : IDisposable
             bool contentReady;
             bool renderFailed;
             string htmlContent;
+            int contentVersion;
             lock (_contentLock)
             {
                 engine = _engine;
                 contentReady = _contentReady;
                 renderFailed = _renderFailed;
                 htmlContent = _htmlContent;
+                contentVersion = _contentVersion;
+            }
+
+            // SKPicture belongs to the popup graphics/render thread. Content may be
+            // replaced from another thread, so invalidate by version here instead of
+            // disposing the previous picture in SetContent(). Previously a non-null
+            // _renderedFrame made every later document.write()/SetContent update show
+            // the first rendered document forever.
+            if (_renderedFrame != null && _renderedContentVersion != contentVersion)
+            {
+                _renderedFrame.Dispose();
+                _renderedFrame = null;
+                _renderedContentVersion = -1;
             }
 
             if (engine != null && _renderedFrame == null && contentReady && !renderFailed)
@@ -281,12 +295,13 @@ public sealed class PopupWindow : IDisposable
                             snapshot.Styles,
                             new SKRect(0, 0, _width, _height));
                         _renderedFrame = recorder.EndRecording();
+                        _renderedContentVersion = contentVersion;
                     }
                     catch (Exception ex)
                     {
                         lock (_contentLock)
                         {
-                            if (ReferenceEquals(_engine, engine))
+                            if (ReferenceEquals(_engine, engine) && _contentVersion == contentVersion)
                             {
                                 _renderFailed = true;
                             }
@@ -381,6 +396,7 @@ public sealed class PopupWindow : IDisposable
         _height = size.Y;
         _renderedFrame?.Dispose();
         _renderedFrame = null;
+        _renderedContentVersion = -1;
         CreateRenderTarget();
     }
 
@@ -431,6 +447,7 @@ public sealed class PopupWindow : IDisposable
 
         _renderedFrame?.Dispose();
         _renderedFrame = null;
+        _renderedContentVersion = -1;
         _surface?.Dispose();
         _surface = null;
         _renderTarget?.Dispose();
@@ -467,9 +484,6 @@ public static class PopupWindowManager
         var popup = new PopupWindow(name, width, height, OnPopupClosed);
         _popups.TryAdd(popup, 0);
 
-        // The popup thread starts in its constructor. It can fail/close before the
-        // manager publishes the instance, in which case its close callback removes
-        // nothing and a dead popup would otherwise be inserted afterwards forever.
         if (popup.IsClosed)
         {
             _popups.TryRemove(popup, out _);
