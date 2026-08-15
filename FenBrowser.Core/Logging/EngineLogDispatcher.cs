@@ -13,7 +13,6 @@ internal sealed class EngineLogDispatcher : IDisposable
     private readonly Thread _worker;
     private readonly ManualResetEventSlim _progress = new(false);
 
-    // Per-severity drop tracking.
     private long _droppedTrace;
     private long _droppedDebug;
     private long _droppedInfo;
@@ -25,12 +24,16 @@ internal sealed class EngineLogDispatcher : IDisposable
     private int _enqueueInProgress;
     private volatile bool _disposed;
 
-    // Per-sink failure tracking.
     private readonly SinkHealth[] _sinkHealth;
     private long _subscriberFailureCount;
 
     public EngineLogDispatcher(int capacity, List<ILogSink> sinks)
     {
+        if (capacity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(capacity));
+        }
+
         _queue = new BlockingCollection<EngineLogEvent>(capacity);
         _sinks = sinks ?? throw new ArgumentNullException(nameof(sinks));
         _sinkHealth = new SinkHealth[_sinks.Count];
@@ -67,38 +70,59 @@ internal sealed class EngineLogDispatcher : IDisposable
         Interlocked.Increment(ref _enqueueInProgress);
         try
         {
-            if (_queue.TryAdd(evt))
+            // Dispose can begin between the first check and this increment. Re-check
+            // while we are represented in _enqueueInProgress so CompleteAdding cannot
+            // turn a normal shutdown race into an exception at an arbitrary log caller.
+            if (_disposed || _queue.IsAddingCompleted)
             {
-                Interlocked.Increment(ref _acceptedCount);
-                return true;
+                return false;
             }
 
-            // Severity-aware drop tracking.
-            IncrementDropCounter(evt.Header.Severity);
-
-            // Emergency path for Error and Fatal: wait briefly and retry once.
-            if (evt.Header.Severity >= LogSeverity.Error)
+            try
             {
-                if (_queue.TryAdd(evt, millisecondsTimeout: 100))
+                if (_queue.TryAdd(evt))
                 {
                     Interlocked.Increment(ref _acceptedCount);
                     return true;
                 }
 
-                // Last resort: write minimal emergency message to debugger.
-                try
+                // Error/Fatal gets one short backpressure retry. It is not a dropped
+                // event unless that retry also fails; the old code incremented the
+                // drop counter before retry and therefore over-reported loss.
+                if (evt.Header.Severity >= LogSeverity.Error)
                 {
-                    Debug.WriteLine(
-                        $"[EngineLog EMERGENCY] Dropped {evt.Header.Severity} event: " +
-                        $"{evt.Header.Subsystem} {evt.Payload?.MessageTemplate ?? "?"}");
-                }
-                catch
-                {
-                    // absolute last resort
-                }
-            }
+                    if (!_disposed && !_queue.IsAddingCompleted &&
+                        _queue.TryAdd(evt, millisecondsTimeout: 100))
+                    {
+                        Interlocked.Increment(ref _acceptedCount);
+                        return true;
+                    }
 
-            return false;
+                    try
+                    {
+                        Debug.WriteLine(
+                            $"[EngineLog EMERGENCY] Dropped {evt.Header.Severity} event: " +
+                            $"{evt.Header.Subsystem} {evt.Payload?.MessageTemplate ?? "?"}");
+                    }
+                    catch
+                    {
+                        // absolute last resort
+                    }
+                }
+
+                IncrementDropCounter(evt.Header.Severity);
+                return false;
+            }
+            catch (InvalidOperationException) when (_disposed || _queue.IsAddingCompleted)
+            {
+                // BlockingCollection throws when CompleteAdding races TryAdd. Shutdown
+                // is an expected state transition, not a logging failure in the caller.
+                return false;
+            }
+            catch (ObjectDisposedException) when (_disposed)
+            {
+                return false;
+            }
         }
         finally
         {
@@ -129,7 +153,7 @@ internal sealed class EngineLogDispatcher : IDisposable
                 for (int i = 0; i < _sinks.Count; i++)
                 {
                     var health = _sinkHealth[i];
-                    if (health.Disabled)
+                    if (health.IsDisabled)
                     {
                         continue;
                     }
@@ -141,10 +165,9 @@ internal sealed class EngineLogDispatcher : IDisposable
                     }
                     catch (Exception ex)
                     {
-                        health.RecordFailure(ex);
-                        if (health.ConsecutiveFailures >= 3)
+                        var consecutiveFailures = health.RecordFailure(ex);
+                        if (consecutiveFailures >= 3 && health.TryDisable())
                         {
-                            health.Disable();
                             ReportSinkDisabled(health, ex);
                         }
                     }
@@ -154,9 +177,12 @@ internal sealed class EngineLogDispatcher : IDisposable
                 _progress.Set();
             }
         }
+        catch (ObjectDisposedException) when (_disposed)
+        {
+            // Normal only if shutdown had to abandon a stuck worker.
+        }
         catch (Exception ex)
         {
-            // Drain-loop failure is a last resort: report once via debugger.
             try
             {
                 Debug.WriteLine(
@@ -173,8 +199,9 @@ internal sealed class EngineLogDispatcher : IDisposable
     {
         try
         {
+            var snapshot = health.Snapshot();
             Debug.WriteLine(
-                $"[EngineLog] Sink '{health.Name}' disabled after {health.ConsecutiveFailures} " +
+                $"[EngineLog] Sink '{snapshot.Name}' disabled after {snapshot.ConsecutiveFailures} " +
                 $"consecutive failures. Last: {ex.GetType().Name}: {ex.Message}");
         }
         catch
@@ -194,10 +221,6 @@ internal sealed class EngineLogDispatcher : IDisposable
         return snapshots;
     }
 
-    /// <summary>
-    /// Records a subscriber (event handler) failure without breaking the dispatch loop.
-    /// Rate-limited: only the first few failures are counted.
-    /// </summary>
     public void RecordSubscriberFailure()
     {
         var count = Interlocked.Increment(ref _subscriberFailureCount);
@@ -216,13 +239,16 @@ internal sealed class EngineLogDispatcher : IDisposable
 
     public bool Flush(TimeSpan timeout)
     {
-        var deadlineTicks = Stopwatch.GetTimestamp() +
-            (long)(timeout.TotalSeconds * Stopwatch.Frequency);
+        if (timeout < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
 
-        // Wait for in-progress enqueues.
+        var started = Stopwatch.GetTimestamp();
+
         while (Volatile.Read(ref _enqueueInProgress) != 0)
         {
-            if (Stopwatch.GetTimestamp() >= deadlineTicks)
+            if (Stopwatch.GetElapsedTime(started) >= timeout)
             {
                 return false;
             }
@@ -230,15 +256,14 @@ internal sealed class EngineLogDispatcher : IDisposable
             _progress.Reset();
             if (Volatile.Read(ref _enqueueInProgress) != 0)
             {
-                _progress.Wait(TimeSpan.FromMilliseconds(10));
+                _progress.Wait(RemainingWait(started, timeout));
             }
         }
 
-        // Wait for all accepted events to be processed.
         var target = Interlocked.Read(ref _acceptedCount);
         while (Interlocked.Read(ref _processedCount) < target)
         {
-            if (Stopwatch.GetTimestamp() >= deadlineTicks)
+            if (Stopwatch.GetElapsedTime(started) >= timeout)
             {
                 return false;
             }
@@ -249,19 +274,36 @@ internal sealed class EngineLogDispatcher : IDisposable
                 break;
             }
 
-            _progress.Wait(TimeSpan.FromMilliseconds(10));
+            _progress.Wait(RemainingWait(started, timeout));
         }
 
-        // Flush buffered file sinks explicitly.
         foreach (var sink in _sinks)
         {
             if (sink is BufferedFileLogSink buffered)
             {
-                buffered.Flush(timeout);
+                var remaining = timeout - Stopwatch.GetElapsedTime(started);
+                if (remaining <= TimeSpan.Zero)
+                {
+                    return false;
+                }
+                buffered.Flush(remaining);
             }
         }
 
         return true;
+    }
+
+    private static TimeSpan RemainingWait(long started, TimeSpan timeout)
+    {
+        var remaining = timeout - Stopwatch.GetElapsedTime(started);
+        if (remaining <= TimeSpan.Zero)
+        {
+            return TimeSpan.Zero;
+        }
+
+        return remaining < TimeSpan.FromMilliseconds(10)
+            ? remaining
+            : TimeSpan.FromMilliseconds(10);
     }
 
     public void Dispose()
@@ -272,15 +314,46 @@ internal sealed class EngineLogDispatcher : IDisposable
         }
 
         _disposed = true;
-        _queue.CompleteAdding();
+
+        // Let in-flight producers leave TryEnqueue before closing the collection.
+        // This dramatically narrows the CompleteAdding/TryAdd race; TryEnqueue also
+        // catches the expected shutdown exception as a final guard.
+        var waitStarted = Stopwatch.GetTimestamp();
+        while (Volatile.Read(ref _enqueueInProgress) != 0 &&
+               Stopwatch.GetElapsedTime(waitStarted) < TimeSpan.FromMilliseconds(250))
+        {
+            _progress.Reset();
+            if (Volatile.Read(ref _enqueueInProgress) != 0)
+            {
+                _progress.Wait(TimeSpan.FromMilliseconds(5));
+            }
+        }
 
         try
         {
-            _worker.Join(2000);
+            _queue.CompleteAdding();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
+        bool workerStopped = false;
+        try
+        {
+            workerStopped = _worker.Join(2000);
         }
         catch
         {
-            // no-op
+            // best effort below
+        }
+
+        // Never dispose sinks/queue out from underneath a worker that is still
+        // executing a sink callback. A misbehaving sink can leak shutdown resources,
+        // but racing native/file sink disposal is more dangerous and can crash the
+        // process. The background worker can still finish after Dispose returns.
+        if (!workerStopped)
+        {
+            return;
         }
 
         for (int i = 0; i < _sinks.Count; i++)
@@ -301,43 +374,74 @@ internal sealed class EngineLogDispatcher : IDisposable
 
     internal sealed class SinkHealth
     {
+        private readonly object _sync = new();
         public string Name { get; set; }
-        public int ConsecutiveFailures { get; private set; }
-        public int TotalFailures { get; private set; }
-        public string LastFailureType { get; private set; }
-        public string LastFailureMessage { get; private set; }
-        public DateTimeOffset LastFailureTime { get; private set; }
-        public bool Disabled { get; private set; }
+        private int _consecutiveFailures;
+        private int _totalFailures;
+        private string _lastFailureType;
+        private string _lastFailureMessage;
+        private DateTimeOffset _lastFailureTime;
+        private bool _disabled;
 
-        public void RecordFailure(Exception ex)
+        public bool IsDisabled
         {
-            ConsecutiveFailures++;
-            TotalFailures++;
-            LastFailureType = ex.GetType().Name;
-            LastFailureMessage = ex.Message;
-            LastFailureTime = DateTimeOffset.UtcNow;
+            get
+            {
+                lock (_sync)
+                {
+                    return _disabled;
+                }
+            }
+        }
+
+        public int RecordFailure(Exception ex)
+        {
+            lock (_sync)
+            {
+                _consecutiveFailures++;
+                _totalFailures++;
+                _lastFailureType = ex.GetType().Name;
+                _lastFailureMessage = ex.Message;
+                _lastFailureTime = DateTimeOffset.UtcNow;
+                return _consecutiveFailures;
+            }
         }
 
         public void ResetFailures()
         {
-            ConsecutiveFailures = 0;
+            lock (_sync)
+            {
+                _consecutiveFailures = 0;
+            }
         }
 
-        public void Disable()
+        public bool TryDisable()
         {
-            Disabled = true;
+            lock (_sync)
+            {
+                if (_disabled)
+                {
+                    return false;
+                }
+
+                _disabled = true;
+                return true;
+            }
         }
 
         public SinkHealthSnapshot Snapshot()
         {
-            return new SinkHealthSnapshot(
-                Name ?? "?",
-                !Disabled,
-                ConsecutiveFailures,
-                TotalFailures,
-                LastFailureTime,
-                LastFailureType ?? string.Empty,
-                LastFailureMessage ?? string.Empty);
+            lock (_sync)
+            {
+                return new SinkHealthSnapshot(
+                    Name ?? "?",
+                    !_disabled,
+                    _consecutiveFailures,
+                    _totalFailures,
+                    _lastFailureTime,
+                    _lastFailureType ?? string.Empty,
+                    _lastFailureMessage ?? string.Empty);
+            }
         }
     }
 }
