@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
 
 namespace FenBrowser.Core.Logging
 {
@@ -11,10 +12,10 @@ namespace FenBrowser.Core.Logging
     /// </summary>
     public enum FeatureStatus
     {
-        Supported,       // Fully implemented
-        Partial,         // Partially implemented
-        Unsupported,     // Not implemented
-        Deprecated       // Was supported, now removed
+        Supported,
+        Partial,
+        Unsupported,
+        Deprecated
     }
 
     /// <summary>
@@ -32,58 +33,50 @@ namespace FenBrowser.Core.Logging
 
     /// <summary>
     /// Central registry for tracking HTML, CSS, and JavaScript feature support.
-    /// Follows FenBrowser motto: modularity, security, privacy, reliability.
+    /// Diagnostics are deliberately bounded because feature names/values can originate
+    /// in untrusted page content and this registry lives for the browser process.
     /// </summary>
     public static class EngineCapabilities
     {
-        // Thread-safe dictionaries for concurrent access
-        private static readonly ConcurrentDictionary<string, FeatureInfo> _htmlFeatures = new();
-        private static readonly ConcurrentDictionary<string, FeatureInfo> _cssFeatures = new();
-        private static readonly ConcurrentDictionary<string, FeatureInfo> _jsFeatures = new();
-        
-        // Logging control
-        private static bool _logOnFirstEncounter = true;
-        private static bool _logAllEncounters = false;
+        private const int MaxFeaturesPerCategory = 4096;
+        private const int MaxFeatureKeyLength = 512;
+        private const int MaxReasonLength = 1024;
+        private const int MaxSuggestionLength = 1024;
+
+        private static readonly ConcurrentDictionary<string, FeatureInfo> _htmlFeatures = new(StringComparer.Ordinal);
+        private static readonly ConcurrentDictionary<string, FeatureInfo> _cssFeatures = new(StringComparer.Ordinal);
+        private static readonly ConcurrentDictionary<string, FeatureInfo> _jsFeatures = new(StringComparer.Ordinal);
+
+        private static int _logOnFirstEncounter = 1;
+        private static int _logAllEncounters;
 
         #region Configuration
 
-        /// <summary>
-        /// Configure logging behavior for feature encounters.
-        /// </summary>
         public static void Configure(bool logOnFirstEncounter = true, bool logAllEncounters = false)
         {
-            _logOnFirstEncounter = logOnFirstEncounter;
-            _logAllEncounters = logAllEncounters;
+            Volatile.Write(ref _logOnFirstEncounter, logOnFirstEncounter ? 1 : 0);
+            Volatile.Write(ref _logAllEncounters, logAllEncounters ? 1 : 0);
         }
 
         #endregion
 
         #region HTML Features
 
-        /// <summary>
-        /// Log an unsupported HTML element.
-        /// </summary>
         public static void LogUnsupportedHtml(string tagName, string reason = null, string suggestion = null)
         {
-            LogFeature(_htmlFeatures, tagName?.ToUpperInvariant() ?? "UNKNOWN", 
+            LogFeature(_htmlFeatures, tagName?.ToUpperInvariant() ?? "UNKNOWN",
                 FeatureStatus.Unsupported, reason, suggestion, LogCategory.HtmlParsing);
         }
 
-        /// <summary>
-        /// Log a partially supported HTML element.
-        /// </summary>
         public static void LogPartialHtml(string tagName, string reason = null)
         {
-            LogFeature(_htmlFeatures, tagName?.ToUpperInvariant() ?? "UNKNOWN", 
+            LogFeature(_htmlFeatures, tagName?.ToUpperInvariant() ?? "UNKNOWN",
                 FeatureStatus.Partial, reason, null, LogCategory.HtmlParsing);
         }
 
-        /// <summary>
-        /// Check if an HTML element is tracked as unsupported.
-        /// </summary>
         public static bool IsHtmlUnsupported(string tagName)
         {
-            return _htmlFeatures.TryGetValue(tagName?.ToUpperInvariant() ?? "", out var info) 
+            return _htmlFeatures.TryGetValue(NormalizeKey(tagName?.ToUpperInvariant() ?? string.Empty), out var info)
                 && info.Status == FeatureStatus.Unsupported;
         }
 
@@ -91,31 +84,22 @@ namespace FenBrowser.Core.Logging
 
         #region CSS Features
 
-        /// <summary>
-        /// Log an unsupported CSS property.
-        /// </summary>
         public static void LogUnsupportedCss(string property, string value = null, string reason = null)
         {
             string key = string.IsNullOrEmpty(value) ? property : $"{property}: {value}";
-            LogFeature(_cssFeatures, key?.ToLowerInvariant() ?? "unknown", 
+            LogFeature(_cssFeatures, key?.ToLowerInvariant() ?? "unknown",
                 FeatureStatus.Unsupported, reason, null, LogCategory.CssParsing);
         }
 
-        /// <summary>
-        /// Log a partially supported CSS property.
-        /// </summary>
         public static void LogPartialCss(string property, string reason = null)
         {
-            LogFeature(_cssFeatures, property?.ToLowerInvariant() ?? "unknown", 
+            LogFeature(_cssFeatures, property?.ToLowerInvariant() ?? "unknown",
                 FeatureStatus.Partial, reason, null, LogCategory.CssParsing);
         }
 
-        /// <summary>
-        /// Check if a CSS property is tracked as unsupported.
-        /// </summary>
         public static bool IsCssUnsupported(string property)
         {
-            return _cssFeatures.TryGetValue(property?.ToLowerInvariant() ?? "", out var info) 
+            return _cssFeatures.TryGetValue(NormalizeKey(property?.ToLowerInvariant() ?? string.Empty), out var info)
                 && info.Status == FeatureStatus.Unsupported;
         }
 
@@ -123,45 +107,38 @@ namespace FenBrowser.Core.Logging
 
         #region JavaScript Features
 
-        /// <summary>
-        /// Log an unsupported JavaScript API or method.
-        /// </summary>
         public static void LogUnsupportedJs(string api, string method = null, string reason = null)
         {
             string key = string.IsNullOrEmpty(method) ? api : $"{api}.{method}";
+            var normalizedKey = NormalizeKey(key);
+            var normalizedReason = NormalizeDiagnosticText(reason, MaxReasonLength);
             LogFeature(
                 _jsFeatures,
-                key,
+                normalizedKey,
                 FeatureStatus.Unsupported,
-                reason,
+                normalizedReason,
                 null,
                 LogCategory.JsExecution,
                 new Dictionary<string, object>
                 {
                     ["traceCategory"] = "WebIDL",
                     ["featureCategory"] = "JavaScript",
-                    ["api"] = key ?? string.Empty,
-                    ["objectName"] = api ?? string.Empty,
-                    ["propertyName"] = method ?? string.Empty,
+                    ["api"] = normalizedKey,
+                    ["objectName"] = NormalizeDiagnosticText(api, MaxFeatureKeyLength),
+                    ["propertyName"] = NormalizeDiagnosticText(method, MaxFeatureKeyLength),
                     ["featureStatus"] = FeatureStatus.Unsupported.ToString(),
-                    ["reason"] = reason ?? string.Empty
+                    ["reason"] = normalizedReason
                 });
         }
 
-        /// <summary>
-        /// Log a partially supported JavaScript API.
-        /// </summary>
         public static void LogPartialJs(string api, string reason = null)
         {
             LogFeature(_jsFeatures, api, FeatureStatus.Partial, reason, null, LogCategory.JsExecution);
         }
 
-        /// <summary>
-        /// Check if a JS API is tracked as unsupported.
-        /// </summary>
         public static bool IsJsUnsupported(string api)
         {
-            return _jsFeatures.TryGetValue(api ?? "", out var info) 
+            return _jsFeatures.TryGetValue(NormalizeKey(api), out var info)
                 && info.Status == FeatureStatus.Unsupported;
         }
 
@@ -169,9 +146,6 @@ namespace FenBrowser.Core.Logging
 
         #region Reporting
 
-        /// <summary>
-        /// Get a summary of all unsupported features for debugging.
-        /// </summary>
         public static string GetFailureSummary()
         {
             var sb = new StringBuilder();
@@ -186,7 +160,7 @@ namespace FenBrowser.Core.Logging
             return sb.ToString();
         }
 
-        private static void AppendCategoryReport(StringBuilder sb, string categoryName, 
+        private static void AppendCategoryReport(StringBuilder sb, string categoryName,
             ConcurrentDictionary<string, FeatureInfo> features)
         {
             var unsupported = features.Values.Where(f => f.Status == FeatureStatus.Unsupported)
@@ -196,22 +170,19 @@ namespace FenBrowser.Core.Logging
 
             sb.AppendLine($"--- {categoryName} ---");
             sb.AppendLine($"Unsupported: {unsupported.Count}, Partial: {partial.Count}");
-            
+
             if (unsupported.Count > 0)
             {
                 sb.AppendLine("Top Unsupported:");
                 foreach (var f in unsupported.Take(10))
                 {
-                    sb.AppendLine($"  [{f.EncounterCount}x] {f.Name}" + 
+                    sb.AppendLine($"  [{f.EncounterCount}x] {f.Name}" +
                         (string.IsNullOrEmpty(f.Reason) ? "" : $" - {f.Reason}"));
                 }
             }
             sb.AppendLine();
         }
 
-        /// <summary>
-        /// Get counts of unsupported features by category.
-        /// </summary>
         public static (int html, int css, int js) GetUnsupportedCounts()
         {
             return (
@@ -221,30 +192,16 @@ namespace FenBrowser.Core.Logging
             );
         }
 
-        /// <summary>
-        /// Get a stable snapshot of unsupported JavaScript/WebIDL feature encounters.
-        /// </summary>
         public static IReadOnlyList<FeatureInfo> GetUnsupportedJsSnapshot()
         {
             return _jsFeatures.Values
                 .Where(f => f.Status == FeatureStatus.Unsupported)
                 .OrderByDescending(f => f.EncounterCount)
                 .ThenBy(f => f.Name, StringComparer.Ordinal)
-                .Select(f => new FeatureInfo
-                {
-                    Name = f.Name,
-                    Status = f.Status,
-                    Reason = f.Reason,
-                    Suggestion = f.Suggestion,
-                    EncounterCount = f.EncounterCount,
-                    LastEncountered = f.LastEncountered
-                })
+                .Select(CloneFeatureInfo)
                 .ToList();
         }
 
-        /// <summary>
-        /// Clear all tracked features. Useful for testing or resetting between pages.
-        /// </summary>
         public static void Reset()
         {
             _htmlFeatures.Clear();
@@ -265,45 +222,79 @@ namespace FenBrowser.Core.Logging
             LogCategory category,
             IReadOnlyDictionary<string, object> fields = null)
         {
-            bool isNewFeature = false;
-            
-            var info = dict.AddOrUpdate(key,
-                // Add new
-                _ =>
-                {
-                    isNewFeature = true;
-                    return new FeatureInfo
-                    {
-                        Name = key,
-                        Status = status,
-                        Reason = reason,
-                        Suggestion = suggestion,
-                        EncounterCount = 1,
-                        LastEncountered = DateTime.Now
-                    };
-                },
-                // Update existing
-                (_, existing) =>
-                {
-                    existing.EncounterCount++;
-                    existing.LastEncountered = DateTime.Now;
-                    if (!string.IsNullOrEmpty(reason)) existing.Reason = reason;
-                    return existing;
-                });
+            key = NormalizeKey(key);
+            reason = NormalizeDiagnosticText(reason, MaxReasonLength);
+            suggestion = NormalizeDiagnosticText(suggestion, MaxSuggestionLength);
 
-            // Log based on configuration
-            if ((_logOnFirstEncounter && isNewFeature) || _logAllEncounters)
+            bool isNewFeature = false;
+            FeatureInfo info;
+
+            while (true)
+            {
+                if (dict.TryGetValue(key, out var existing))
+                {
+                    // Replace instead of mutating a shared FeatureInfo instance. The old
+                    // in-place EncounterCount++ raced across AddOrUpdate callbacks and
+                    // could lose encounters or expose partially-updated diagnostics.
+                    var updated = new FeatureInfo
+                    {
+                        Name = existing.Name,
+                        Status = status,
+                        Reason = string.IsNullOrEmpty(reason) ? existing.Reason : reason,
+                        Suggestion = string.IsNullOrEmpty(suggestion) ? existing.Suggestion : suggestion,
+                        EncounterCount = existing.EncounterCount == int.MaxValue
+                            ? int.MaxValue
+                            : existing.EncounterCount + 1,
+                        LastEncountered = DateTime.UtcNow
+                    };
+
+                    if (dict.TryUpdate(key, updated, existing))
+                    {
+                        info = updated;
+                        break;
+                    }
+
+                    continue;
+                }
+
+                // Do not allow page-controlled unique CSS values/API names to turn a
+                // diagnostics registry into a process-lifetime memory sink.
+                if (dict.Count >= MaxFeaturesPerCategory)
+                {
+                    return;
+                }
+
+                var created = new FeatureInfo
+                {
+                    Name = key,
+                    Status = status,
+                    Reason = reason,
+                    Suggestion = suggestion,
+                    EncounterCount = 1,
+                    LastEncountered = DateTime.UtcNow
+                };
+
+                if (dict.TryAdd(key, created))
+                {
+                    info = created;
+                    isNewFeature = true;
+                    break;
+                }
+            }
+
+            if ((Volatile.Read(ref _logOnFirstEncounter) != 0 && isNewFeature) ||
+                Volatile.Read(ref _logAllEncounters) != 0)
             {
                 string statusStr = status switch
                 {
                     FeatureStatus.Unsupported => "UNSUPPORTED",
                     FeatureStatus.Partial => "PARTIAL",
-                    _ => status.ToString().ToUpper()
+                    _ => status.ToString().ToUpperInvariant()
                 };
 
-                string message = $"[{statusStr}] {key}";
-                if (!string.IsNullOrEmpty(reason)) message += $" | {reason}";
-                if (!string.IsNullOrEmpty(suggestion)) message += $" | Suggestion: {suggestion}";
+                string message = $"[{statusStr}] {info.Name}";
+                if (!string.IsNullOrEmpty(info.Reason)) message += $" | {info.Reason}";
+                if (!string.IsNullOrEmpty(info.Suggestion)) message += $" | Suggestion: {info.Suggestion}";
 
                 var marker = status switch
                 {
@@ -321,7 +312,45 @@ namespace FenBrowser.Core.Logging
             }
         }
 
+        private static FeatureInfo CloneFeatureInfo(FeatureInfo f) => new()
+        {
+            Name = f.Name,
+            Status = f.Status,
+            Reason = f.Reason,
+            Suggestion = f.Suggestion,
+            EncounterCount = f.EncounterCount,
+            LastEncountered = f.LastEncountered
+        };
+
+        private static string NormalizeKey(string value)
+        {
+            var normalized = NormalizeDiagnosticText(value, MaxFeatureKeyLength);
+            return normalized.Length == 0 ? "unknown" : normalized;
+        }
+
+        private static string NormalizeDiagnosticText(string value, int maxLength)
+        {
+            if (string.IsNullOrEmpty(value))
+                return string.Empty;
+
+            var length = Math.Min(value.Length, maxLength);
+            StringBuilder builder = null;
+            for (var i = 0; i < length; i++)
+            {
+                var ch = value[i];
+                var safe = char.IsControl(ch) ? ' ' : ch;
+                if (builder == null && safe != ch)
+                {
+                    builder = new StringBuilder(length);
+                    builder.Append(value, 0, i);
+                }
+                builder?.Append(safe);
+            }
+
+            var result = builder?.ToString() ?? value.Substring(0, length);
+            return value.Length > maxLength ? result + "…" : result;
+        }
+
         #endregion
     }
 }
-
