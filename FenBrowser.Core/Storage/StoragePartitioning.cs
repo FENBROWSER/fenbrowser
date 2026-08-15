@@ -11,6 +11,8 @@ namespace FenBrowser.Core.Storage
     /// <summary>Immutable storage partition key.</summary>
     public readonly struct StoragePartitionKey : IEquatable<StoragePartitionKey>
     {
+        private readonly string _storageKey;
+
         public string TopLevelSite { get; }
         public string FrameSite { get; }
         public bool IsThirdParty => !string.Equals(TopLevelSite, FrameSite, StringComparison.Ordinal);
@@ -19,6 +21,7 @@ namespace FenBrowser.Core.Storage
         {
             TopLevelSite = NormalizeSite(topLevelSite);
             FrameSite = NormalizeSite(frameSite);
+            _storageKey = ComputeStorageKey(TopLevelSite, FrameSite);
         }
 
         public static StoragePartitionKey FirstParty(string site) => new(site, site);
@@ -41,7 +44,12 @@ namespace FenBrowser.Core.Storage
         /// </summary>
         public string ToStorageKey()
         {
-            var combined = TopLevelSite + "\0" + FrameSite;
+            return _storageKey ?? ComputeStorageKey(TopLevelSite, FrameSite);
+        }
+
+        private static string ComputeStorageKey(string topLevelSite, string frameSite)
+        {
+            var combined = (topLevelSite ?? string.Empty) + "\0" + (frameSite ?? string.Empty);
             var hash = SHA256.HashData(Encoding.UTF8.GetBytes(combined));
             return Convert.ToHexString(hash);
         }
@@ -116,28 +124,30 @@ namespace FenBrowser.Core.Storage
 
     public sealed class PartitionedCookieStore
     {
-        private readonly ConcurrentDictionary<string, Cookie> _cookies = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, Cookie>> _cookiesByDomain
+            = new(StringComparer.OrdinalIgnoreCase);
 
         public void Set(Cookie cookie, StoragePartitionKey? partitionKey = null)
         {
             if (cookie == null) throw new ArgumentNullException(nameof(cookie));
-            var actualKey = partitionKey ?? (cookie.IsPartitioned ? cookie.PartitionKey : null);
+            var domain = NormalizeDomain(cookie.Domain);
+            if (domain.Length == 0) throw new ArgumentException("Cookie domain cannot be empty.", nameof(cookie));
 
+            var actualKey = partitionKey ?? (cookie.IsPartitioned ? cookie.PartitionKey : null);
             if (cookie.IsExpired)
             {
                 Delete(cookie, actualKey);
                 return;
             }
 
-            var storeKey = MakeKey(actualKey, cookie.Domain, cookie.Name, cookie.Path);
-            if (_cookies.TryGetValue(storeKey, out var existing))
-            {
-                // RFC cookie replacement preserves creation-time so duplicate-name
-                // Cookie header ordering remains stable across value refreshes.
+            var bucket = _cookiesByDomain.GetOrAdd(
+                domain,
+                static _ => new ConcurrentDictionary<string, Cookie>(StringComparer.Ordinal));
+            var storeKey = MakeKey(actualKey, cookie.Name, cookie.Path);
+            if (bucket.TryGetValue(storeKey, out var existing))
                 cookie = cookie with { CreationTime = existing.CreationTime };
-            }
 
-            _cookies[storeKey] = cookie with { PartitionKey = actualKey };
+            bucket[storeKey] = cookie with { Domain = domain, PartitionKey = actualKey };
         }
 
         public IReadOnlyList<Cookie> GetForUrl(
@@ -148,43 +158,43 @@ namespace FenBrowser.Core.Storage
             var parsed = WhatwgUrl.Parse(requestUrl);
             if (parsed == null) return Array.Empty<Cookie>();
 
-            var host = parsed.Hostname;
+            var host = NormalizeDomain(parsed.Hostname);
+            if (host.Length == 0) return Array.Empty<Cookie>();
+
             var path = parsed.Pathname;
             bool isSecure = parsed.Scheme == "https" || parsed.Scheme == "wss";
             var result = new List<Cookie>();
 
-            foreach (var pair in _cookies)
+            foreach (var candidateDomain in EnumerateCandidateDomains(host))
             {
-                var cookie = pair.Value;
-                if (cookie.IsExpired)
-                {
-                    _cookies.TryRemove(pair.Key, out _);
+                if (!_cookiesByDomain.TryGetValue(candidateDomain, out var bucket))
                     continue;
-                }
-                if (cookie.Secure && !isSecure) continue;
-                if (cookie.HttpOnly && !includeHttpOnly) continue;
-                if (!DomainMatches(host, cookie.Domain, cookie.HostOnly)) continue;
-                if (!PathMatches(path, cookie.Path)) continue;
 
-                if (cookie.IsPartitioned &&
-                    (!cookie.PartitionKey.HasValue || !cookie.PartitionKey.Value.Equals(partitionKey)))
+                foreach (var pair in bucket)
                 {
-                    continue;
+                    var cookie = pair.Value;
+                    if (cookie.IsExpired)
+                    {
+                        bucket.TryRemove(pair.Key, out _);
+                        continue;
+                    }
+                    if (cookie.Secure && !isSecure) continue;
+                    if (cookie.HttpOnly && !includeHttpOnly) continue;
+                    if (!DomainMatches(host, cookie.Domain, cookie.HostOnly)) continue;
+                    if (!PathMatches(path, cookie.Path)) continue;
+                    if (cookie.IsPartitioned &&
+                        (!cookie.PartitionKey.HasValue || !cookie.PartitionKey.Value.Equals(partitionKey)))
+                        continue;
+                    result.Add(cookie);
                 }
-
-                result.Add(cookie);
             }
 
-            // Cookie header order: longer paths first, then earlier creation time.
             result.Sort(static (a, b) =>
             {
                 var pathOrder = b.Path.Length.CompareTo(a.Path.Length);
                 if (pathOrder != 0) return pathOrder;
-
                 var creationOrder = a.CreationTime.CompareTo(b.CreationTime);
                 if (creationOrder != 0) return creationOrder;
-
-                // Deterministic final tie-breakers for same-tick creation.
                 var domainOrder = string.CompareOrdinal(a.Domain, b.Domain);
                 if (domainOrder != 0) return domainOrder;
                 return string.CompareOrdinal(a.Name, b.Name);
@@ -195,58 +205,72 @@ namespace FenBrowser.Core.Storage
         public void Delete(Cookie cookie, StoragePartitionKey? partitionKey = null)
         {
             if (cookie == null) return;
+            var domain = NormalizeDomain(cookie.Domain);
+            if (domain.Length == 0 || !_cookiesByDomain.TryGetValue(domain, out var bucket)) return;
             var actualKey = partitionKey ?? (cookie.IsPartitioned ? cookie.PartitionKey : null);
-            var key = MakeKey(actualKey, cookie.Domain, cookie.Name, cookie.Path);
-            _cookies.TryRemove(key, out _);
+            bucket.TryRemove(MakeKey(actualKey, cookie.Name, cookie.Path), out _);
         }
 
         public void DeleteByName(string domain, string name, StoragePartitionKey? partitionKey = null)
         {
             if (string.IsNullOrWhiteSpace(domain) || string.IsNullOrWhiteSpace(name)) return;
+            var normalizedDomain = NormalizeDomain(domain);
+            if (!_cookiesByDomain.TryGetValue(normalizedDomain, out var bucket)) return;
 
-            var normalizedDomain = domain.Trim().TrimEnd('.').ToLowerInvariant();
             var partitionKeyText = partitionKey?.ToStorageKey() ?? "unpartitioned";
-            var prefix = $"pk:{partitionKeyText}:{normalizedDomain}:{name}:";
-            foreach (var key in _cookies.Keys)
+            var prefix = $"pk:{partitionKeyText}:{name}:";
+            foreach (var key in bucket.Keys)
             {
                 if (key.StartsWith(prefix, StringComparison.Ordinal))
-                {
-                    _cookies.TryRemove(key, out _);
-                }
+                    bucket.TryRemove(key, out _);
             }
         }
 
         public void ClearPartition(StoragePartitionKey partitionKey)
         {
             var prefix = $"pk:{partitionKey.ToStorageKey()}:";
-            foreach (var key in _cookies.Keys)
+            foreach (var bucket in _cookiesByDomain.Values)
             {
-                if (key.StartsWith(prefix, StringComparison.Ordinal))
+                foreach (var key in bucket.Keys)
                 {
-                    _cookies.TryRemove(key, out _);
+                    if (key.StartsWith(prefix, StringComparison.Ordinal))
+                        bucket.TryRemove(key, out _);
                 }
             }
         }
 
-        public void ClearAll() => _cookies.Clear();
+        public void ClearAll() => _cookiesByDomain.Clear();
 
-        private static string MakeKey(StoragePartitionKey? pk, string domain, string name, string path) =>
-            $"pk:{pk?.ToStorageKey() ?? "unpartitioned"}:{domain}:{name}:{path}";
+        private static string MakeKey(StoragePartitionKey? pk, string name, string path) =>
+            $"pk:{pk?.ToStorageKey() ?? "unpartitioned"}:{name}:{path}";
+
+        private static string NormalizeDomain(string domain) =>
+            string.IsNullOrWhiteSpace(domain)
+                ? string.Empty
+                : domain.Trim().TrimStart('.').TrimEnd('.').ToLowerInvariant();
+
+        private static IEnumerable<string> EnumerateCandidateDomains(string host)
+        {
+            yield return host;
+            if (IPAddress.TryParse(host, out _)) yield break;
+
+            var offset = 0;
+            while (true)
+            {
+                var dot = host.IndexOf('.', offset);
+                if (dot < 0 || dot + 1 >= host.Length) yield break;
+                offset = dot + 1;
+                yield return host.Substring(offset);
+            }
+        }
 
         private static bool DomainMatches(string host, string cookieDomain, bool hostOnly)
         {
             if (string.IsNullOrEmpty(cookieDomain)) return false;
-
             if (hostOnly)
-            {
                 return string.Equals(host, cookieDomain, StringComparison.OrdinalIgnoreCase);
-            }
-
-            var suffix = cookieDomain.TrimStart('.');
-            if (string.IsNullOrEmpty(suffix)) return false;
-
-            return string.Equals(host, suffix, StringComparison.OrdinalIgnoreCase) ||
-                   host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase);
+            return string.Equals(host, cookieDomain, StringComparison.OrdinalIgnoreCase) ||
+                   host.EndsWith("." + cookieDomain, StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool PathMatches(string requestPath, string cookiePath)
@@ -255,11 +279,6 @@ namespace FenBrowser.Core.Storage
             if (string.IsNullOrEmpty(requestPath)) requestPath = "/";
             if (string.Equals(requestPath, cookiePath, StringComparison.Ordinal)) return true;
             if (!requestPath.StartsWith(cookiePath, StringComparison.Ordinal)) return false;
-
-            // RFC 6265 path-match: a prefix is sufficient when the cookie path
-            // itself ends in '/', otherwise the next request-path character must
-            // be '/'. Without the first condition, Path=/foo/ incorrectly fails
-            // to match /foo/bar.
             return cookiePath[^1] == '/' ||
                    (requestPath.Length > cookiePath.Length && requestPath[cookiePath.Length] == '/');
         }

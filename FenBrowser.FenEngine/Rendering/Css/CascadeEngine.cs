@@ -1,4 +1,4 @@
-﻿// SpecRef: CSS Cascading and Inheritance Level 4, Cascade order
+// SpecRef: CSS Cascading and Inheritance Level 4, Cascade order
 // CapabilityId: CSS-CASCADE-ORDER-01
 // Determinism: strict
 // FallbackPolicy: spec-defined
@@ -434,7 +434,7 @@ return computed;
 
         private static Dictionary<string, CssDeclaration> ConvertComputedMapToDeclarations(Dictionary<string, string> map)
         {
-            var declarations = new Dictionary<string, CssDeclaration>(StringComparer.OrdinalIgnoreCase);
+            var declarations = new Dictionary<string, CssDeclaration>(StringComparer.Ordinal);
             if (map == null)
             {
                 return declarations;

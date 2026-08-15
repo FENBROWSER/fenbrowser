@@ -114,7 +114,7 @@ namespace FenBrowser.Core
         public static System.Action<string> LogSink;
 
         // Phase 2.3: Sharded Caches
-        public sealed class TextEntry { public string Body; public string ContentType; }
+        public sealed class TextEntry { public string Body; public string ContentType; public Uri FinalUri; }
         private readonly FenBrowser.Core.Cache.ShardedCache<TextEntry> _textCache = new FenBrowser.Core.Cache.ShardedCache<TextEntry>(128);
 
         public sealed class ImgEntry { public byte[] Buffer; public string ContentType; }
@@ -1060,7 +1060,7 @@ public Uri LastTextResponseUri { get; private set; }
             // 1. Sharded Memory Lookup
             if (_textCache.TryGet(partition, key, out var memEntry))
             {
-                LastTextResponseUri = url;
+                LastTextResponseUri = memEntry.FinalUri ?? url;
                 return memEntry.Body;
             }
 
@@ -1196,8 +1196,7 @@ public Uri LastTextResponseUri { get; private set; }
 
                 if (resp != null)
                 {
-                    Console.WriteLine($"[FetchTextDebug] url={url} status={resp.StatusCode} type={ct} len={text?.Length ?? -1}");
-                    foreach (var h in resp.Headers) Console.WriteLine($"[FetchTextHeader] {h.Key}: {string.Join(",", h.Value)}");
+                    Console.WriteLine($"[FetchTextDebug] url={url} status={resp.StatusCode} type={ct} len={text?.Length ?? -1} headerCount={resp.Headers.Count()}");
                 }
 
                 if (LooksTextual(ct))
@@ -1212,7 +1211,7 @@ public Uri LastTextResponseUri { get; private set; }
                     }
 
                     // Phase 2.3: Sharded Memory Cache
-                    var entry = new TextEntry { Body = text ?? string.Empty, ContentType = ct ?? string.Empty };
+                    var entry = new TextEntry { Body = text ?? string.Empty, ContentType = ct ?? string.Empty, FinalUri = finalUri };
                     
                     // Partition by Referer Host (or default)
                     string partitionKey = SafePartition(refererOriginal?.Host);
@@ -1581,12 +1580,21 @@ public Uri LastTextResponseUri { get; private set; }
                 
                 if (!resp.IsSuccessStatusCode)
                 {
-                    // 404, 500, etc.
+                    // 404, 500, etc. Keep diagnostic bodies bounded.
                     string errBody = null;
-                    try { errBody = await resp.Content.ReadAsStringAsync().ConfigureAwait(false); }
+                    try
+                    {
+                        const int maxDiagnosticErrorBodyBytes = 64 * 1024;
+                        var errBytes = await ReadStreamingBodyBoundedAsync(
+                            resp,
+                            maxDiagnosticErrorBodyBytes,
+                            finalUri?.ToString(),
+                            "error_body_bytes").ConfigureAwait(false);
+                        errBody = DecodeTextResponse(errBytes, resp.Content?.Headers?.ContentType?.ToString());
+                    }
                     catch (Exception ex)
                     {
-                        EngineLogCompat.Debug($"[Network] Failed to read error body for {finalUri}: {ex.Message}", LogCategory.Network);
+                        EngineLogCompat.Debug($"[Network] Failed to read bounded error body for {finalUri}: {ex.Message}", LogCategory.Network);
                     }
                     
                     FetchStatus status = FetchStatus.UnknownError;
@@ -1765,7 +1773,7 @@ public Uri LastTextResponseUri { get; private set; }
                     try
                     {
                         _textCache.Put(cachePartition, cacheKey,
-                            new TextEntry { Body = text ?? string.Empty, ContentType = effectiveMime ?? string.Empty });
+                            new TextEntry { Body = text ?? string.Empty, ContentType = effectiveMime ?? string.Empty, FinalUri = finalUri });
                     }
                     catch (Exception cacheEx)
                     {
