@@ -330,8 +330,29 @@ public class CompositorLayer : IDisposable
             try
             {
                 canvas.Translate(Bounds.Left, Bounds.Top);
-                canvas.ClipRect(new SKRect(0, 0, Bounds.Width, Bounds.Height));
-                _renderCallback(canvas);
+                var localBounds = new SKRect(0, 0, Bounds.Width, Bounds.Height);
+                canvas.ClipRect(localBounds);
+
+                if (paint != null)
+                {
+                    // Callback-backed layers draw directly into the destination
+                    // canvas. Without a save-layer, their opacity paint was ignored
+                    // entirely while surface-backed layers respected it. Apply the
+                    // group alpha to the callback's whole rendered result.
+                    canvas.SaveLayer(localBounds, paint);
+                    try
+                    {
+                        _renderCallback(canvas);
+                    }
+                    finally
+                    {
+                        canvas.Restore();
+                    }
+                }
+                else
+                {
+                    _renderCallback(canvas);
+                }
             }
             finally
             {
