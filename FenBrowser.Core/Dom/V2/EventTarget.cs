@@ -8,18 +8,16 @@ namespace FenBrowser.Core.Dom.V2
 {
     /// <summary>
     /// DOM Living Standard EventTarget base.
-    /// Listener mutation is copy-on-write so the high-frequency dispatch path can
-    /// consume immutable snapshots without allocating one List per target/event.
+    /// Listener mutation is copy-on-write so high-frequency dispatch can consume
+    /// immutable snapshots without allocating a List for every target/event.
     /// </summary>
     public abstract class EventTarget
     {
         private EventListenerStorage _listeners;
         private readonly object _listenerLock = new();
 
-        public void AddEventListener(string type, EventListener callback, bool capture = false)
-        {
+        public void AddEventListener(string type, EventListener callback, bool capture = false) =>
             AddEventListener(type, callback, new AddEventListenerOptions { Capture = capture });
-        }
 
         public void AddEventListener(string type, EventListener callback, AddEventListenerOptions options)
         {
@@ -44,7 +42,7 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(type) || callback == null)
                 return;
 
-            bool removed = false;
+            bool removed;
             lock (_listenerLock)
             {
                 if (_listeners == null)
@@ -61,8 +59,7 @@ namespace FenBrowser.Core.Dom.V2
 
         public bool DispatchEvent(Event evt)
         {
-            if (evt == null)
-                throw new ArgumentNullException(nameof(evt));
+            ArgumentNullException.ThrowIfNull(evt);
             if (evt.DispatchFlag)
                 throw new DomException("InvalidStateError", "Event is already being dispatched");
             if (!evt.Initialized)
@@ -76,7 +73,7 @@ namespace FenBrowser.Core.Dom.V2
         {
             lock (_listenerLock)
             {
-                if (_listeners is not null)
+                if (_listeners != null)
                     return _listeners.TryGetSnapshot(type, out listeners);
 
                 listeners = null;
@@ -94,7 +91,6 @@ namespace FenBrowser.Core.Dom.V2
         }
 
         protected virtual void OnEventListenersChanged() { }
-
         internal virtual EventTarget GetParentForEventDispatch() => null;
     }
 
@@ -121,7 +117,7 @@ namespace FenBrowser.Core.Dom.V2
             AddEventListenerOptions options,
             EventTarget owner)
         {
-            if (options.Signal != null && options.Signal.Aborted)
+            if (options.Signal?.Aborted == true)
                 return false;
 
             _listeners ??= new Dictionary<string, EventListenerEntry[]>(StringComparer.Ordinal);
@@ -148,27 +144,26 @@ namespace FenBrowser.Core.Dom.V2
                 Signal = options.Signal
             };
 
+            var next = new EventListenerEntry[current.Length + 1];
+            Array.Copy(current, next, current.Length);
+            next[^1] = newEntry;
+
+            // Publish before subscribing to AbortSignal. If abort happened just before
+            // subscription, the signal's event adder invokes immediately and removal
+            // can now see this entry. If abort happens just after publication, the
+            // callback likewise removes an already-visible entry. This closes the
+            // publish/abort lost-removal window.
+            _listeners[type] = next;
+            _totalCount++;
+
             if (options.Signal != null)
             {
                 Action abortHandler = () => owner.RemoveEventListener(type, callback, options.Capture);
                 newEntry.AbortHandler = abortHandler;
                 options.Signal.OnAbort += abortHandler;
-
-                // AbortSignal invokes a just-added listener immediately if it raced an
-                // abort. Do not publish an entry that was removed by that callback.
-                if (options.Signal.Aborted)
-                {
-                    options.Signal.OnAbort -= abortHandler;
-                    return false;
-                }
             }
 
-            var next = new EventListenerEntry[current.Length + 1];
-            Array.Copy(current, next, current.Length);
-            next[^1] = newEntry;
-            _listeners[type] = next;
-            _totalCount++;
-            return true;
+            return !newEntry.Removed;
         }
 
         public bool Remove(string type, EventListener callback, bool capture)
@@ -282,7 +277,9 @@ namespace FenBrowser.Core.Dom.V2
             Action handlers;
             lock (_lock)
             {
-                if (_aborted) return;
+                if (_aborted)
+                    return;
+
                 _aborted = true;
                 handlers = _onAbort;
                 _onAbort = null;
@@ -294,12 +291,8 @@ namespace FenBrowser.Core.Dom.V2
 
     public sealed class AbortController
     {
-        public AbortSignal Signal { get; } = new AbortSignal();
-
-        public void Abort()
-        {
-            Signal.Abort();
-        }
+        public AbortSignal Signal { get; } = new();
+        public void Abort() => Signal.Abort();
     }
 
     public class Event
@@ -311,7 +304,6 @@ namespace FenBrowser.Core.Dom.V2
         internal bool ComposedFlag;
         internal bool Initialized = true;
         internal bool DispatchFlag;
-
         internal List<EventPathEntry> Path;
 
         public string Type { get; }
@@ -334,10 +326,7 @@ namespace FenBrowser.Core.Dom.V2
             TimeStamp = (DateTime.UtcNow - DateTime.UnixEpoch).TotalMilliseconds;
         }
 
-        public void StopPropagation()
-        {
-            StopPropagationFlag = true;
-        }
+        public void StopPropagation() => StopPropagationFlag = true;
 
         public void StopImmediatePropagation()
         {
@@ -356,16 +345,12 @@ namespace FenBrowser.Core.Dom.V2
             if (Path == null || Path.Count == 0)
                 return Array.Empty<EventTarget>();
 
-            // Closed-tree filtering remains intentionally conservative: entries that
-            // mark the crossing host are visible, while the closed root's internals
-            // are hidden from listeners whose current target is outside that root.
             var result = new List<EventTarget>(Path.Count);
-            var currentTarget = CurrentTarget;
             for (var i = 0; i < Path.Count; i++)
             {
                 var entry = Path[i];
                 if (entry.ClosedTreeRoot != null &&
-                    !IsInsideShadowTree(currentTarget, entry.ClosedTreeRoot))
+                    !IsInsideShadowTree(CurrentTarget, entry.ClosedTreeRoot))
                 {
                     continue;
                 }
@@ -384,10 +369,8 @@ namespace FenBrowser.Core.Dom.V2
 
         public EventTarget SrcElement => Target;
 
-        private static bool IsInsideShadowTree(EventTarget target, ShadowRoot shadowRoot)
-        {
-            return target is Node node && ReferenceEquals(node.GetRootNode(), shadowRoot);
-        }
+        private static bool IsInsideShadowTree(EventTarget target, ShadowRoot shadowRoot) =>
+            target is Node node && ReferenceEquals(node.GetRootNode(), shadowRoot);
     }
 
     public struct EventInit
@@ -420,16 +403,16 @@ namespace FenBrowser.Core.Dom.V2
             evt.DispatchFlag = true;
             var originalTarget = target;
             evt.Target = target;
-
             var path = BuildEventPath(target, evt.ComposedFlag);
             evt.Path = path;
 
             try
             {
                 evt.EventPhase = EventPhase.Capturing;
-                for (int i = path.Count - 1; i > 0; i--)
+                for (var i = path.Count - 1; i > 0; i--)
                 {
-                    if (evt.StopPropagationFlag) break;
+                    if (evt.StopPropagationFlag)
+                        break;
                     InvokePathEntry(evt, path[i], EventPhase.Capturing);
                 }
 
@@ -442,9 +425,10 @@ namespace FenBrowser.Core.Dom.V2
                 if (evt.Bubbles && !evt.StopPropagationFlag)
                 {
                     evt.EventPhase = EventPhase.Bubbling;
-                    for (int i = 1; i < path.Count; i++)
+                    for (var i = 1; i < path.Count; i++)
                     {
-                        if (evt.StopPropagationFlag) break;
+                        if (evt.StopPropagationFlag)
+                            break;
                         InvokePathEntry(evt, path[i], EventPhase.Bubbling);
                     }
                 }
@@ -475,7 +459,7 @@ namespace FenBrowser.Core.Dom.V2
         {
             var path = new List<EventPathEntry>(8)
             {
-                new EventPathEntry
+                new()
                 {
                     InvocationTarget = target,
                     ShadowAdjustedTarget = target
@@ -495,17 +479,11 @@ namespace FenBrowser.Core.Dom.V2
                     if (!composed)
                         break;
 
-                    // Retargeting: once traversal leaves a shadow tree, listeners on
-                    // the host and its ancestors observe the host as event.target. If
-                    // another outer shadow boundary is crossed later, the target is
-                    // retargeted again to that outer host.
                     parent = shadowRoot.Host;
                     adjustedTarget = parent;
 
                     if (shadowRoot.Mode == ShadowRootMode.Closed)
                     {
-                        // Entries accumulated so far are inside this closed root. Mark
-                        // them so composedPath() can hide them from outside listeners.
                         for (var i = 0; i < path.Count; i++)
                         {
                             if (path[i].ClosedTreeRoot == null)
@@ -530,12 +508,11 @@ namespace FenBrowser.Core.Dom.V2
             if (!target.TryGetEventListeners(evt.Type, out var listeners))
                 return;
 
-            for (var listenerIndex = 0; listenerIndex < listeners.Length; listenerIndex++)
+            for (var i = 0; i < listeners.Length; i++)
             {
-                var listener = listeners[listenerIndex];
+                var listener = listeners[i];
                 if (listener.Removed)
                     continue;
-
                 if (phase == EventPhase.Capturing && !listener.Capture)
                     continue;
                 if (phase == EventPhase.Bubbling && listener.Capture)
@@ -546,7 +523,7 @@ namespace FenBrowser.Core.Dom.V2
                 if (listener.Once)
                     target.RemoveEventListener(evt.Type, listener.Callback, listener.Capture);
 
-                bool wasInPassive = evt.InPassiveListenerFlag;
+                var wasInPassive = evt.InPassiveListenerFlag;
                 if (listener.Passive)
                     evt.InPassiveListenerFlag = true;
 
@@ -567,19 +544,15 @@ namespace FenBrowser.Core.Dom.V2
 
         private static void ReportError(Exception ex, EventTarget target, Event evt)
         {
-            var type = NormalizeLogField(evt.Type);
-            var message = NormalizeLogField(ex.Message);
             EngineLogCompat.Error(
-                $"[EventDispatcher] Error in listener for '{type}' on {target}: {message}",
+                $"[EventDispatcher] Error in listener for '{NormalizeLogField(evt.Type)}' on {target}: {NormalizeLogField(ex.Message)}",
                 FenBrowser.Core.Logging.LogCategory.Events);
         }
 
-        private static string NormalizeLogField(string value)
-        {
-            return (value ?? string.Empty)
+        private static string NormalizeLogField(string value) =>
+            (value ?? string.Empty)
                 .Replace("\r", "\\r", StringComparison.Ordinal)
                 .Replace("\n", "\\n", StringComparison.Ordinal)
                 .Replace("\0", "\\0", StringComparison.Ordinal);
-        }
     }
 }
