@@ -3,16 +3,19 @@
 
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace FenBrowser.Core.Dom.V2
 {
     /// <summary>
     /// DOM Living Standard: MutationObserver.
-    /// https://dom.spec.whatwg.org/#mutationobserver
     /// </summary>
     public sealed class MutationObserver
     {
+        private static readonly ConditionalWeakTable<Node, RegisteredObserverList>
+            DirectNodeObservers = new();
+
         private readonly Action<IReadOnlyList<MutationRecord>, MutationObserver> _callback;
         private readonly Action<Action> _deliveryScheduler;
         private readonly List<MutationRecord> _recordQueue = new();
@@ -21,21 +24,11 @@ namespace FenBrowser.Core.Dom.V2
         private int _deliveryScheduled;
         private int _isDelivering;
 
-        /// <summary>
-        /// Creates an observer with immediate delivery scheduling. Browser scripting
-        /// should use the scheduler overload so callbacks run at a mutation-observer
-        /// microtask checkpoint rather than during the mutating DOM operation.
-        /// </summary>
         public MutationObserver(Action<IReadOnlyList<MutationRecord>, MutationObserver> callback)
             : this(callback, null)
         {
         }
 
-        /// <summary>
-        /// Creates an observer whose delivery callback is enqueued by the supplied
-        /// scheduler. The scheduler must enqueue the action; it should not execute the
-        /// action inline when browser-spec microtask ordering is required.
-        /// </summary>
         public MutationObserver(
             Action<IReadOnlyList<MutationRecord>, MutationObserver> callback,
             Action<Action> deliveryScheduler)
@@ -51,27 +44,43 @@ namespace FenBrowser.Core.Dom.V2
 
             if (!options.ChildList && !options.Attributes && !options.CharacterData)
             {
-                throw new DomException("TypeError",
+                throw new DomException(
+                    "TypeError",
                     "At least one of childList, attributes, or characterData must be true");
             }
 
             if (options.AttributeOldValue && !options.Attributes)
                 throw new DomException("TypeError", "attributeOldValue requires attributes to be true");
 
-            if (options.AttributeFilter != null && options.AttributeFilter.Length > 0 && !options.Attributes)
+            if (options.AttributeFilter != null &&
+                options.AttributeFilter.Length > 0 &&
+                !options.Attributes)
+            {
                 throw new DomException("TypeError", "attributeFilter requires attributes to be true");
+            }
 
             if (options.CharacterDataOldValue && !options.CharacterData)
-                throw new DomException("TypeError", "characterDataOldValue requires characterData to be true");
+            {
+                throw new DomException(
+                    "TypeError",
+                    "characterDataOldValue requires characterData to be true");
+            }
 
-            // Current DOM registration storage lives on ContainerNode. CharacterData
-            // targets still require the planned node-level registration refactor.
             if (target is ContainerNode container)
+            {
                 container.RegisterObserver(this, options);
+            }
+            else
+            {
+                DirectNodeObservers
+                    .GetValue(target, static _ => new RegisteredObserverList())
+                    .Add(this, options);
+            }
 
             lock (_instanceLock)
             {
-                _observedNodes.RemoveAll(wr => wr.TryGetTarget(out var n) && ReferenceEquals(n, target));
+                _observedNodes.RemoveAll(
+                    wr => !wr.TryGetTarget(out var node) || ReferenceEquals(node, target));
                 _observedNodes.Add(new WeakReference<Node>(target));
             }
         }
@@ -84,12 +93,24 @@ namespace FenBrowser.Core.Dom.V2
                 nodesToUnregister = new List<WeakReference<Node>>(_observedNodes);
                 _observedNodes.Clear();
                 _recordQueue.Clear();
+                _deliveryScheduled = 0;
             }
 
             foreach (var weakRef in nodesToUnregister)
             {
-                if (weakRef.TryGetTarget(out var node) && node is ContainerNode container)
+                if (!weakRef.TryGetTarget(out var node))
+                {
+                    continue;
+                }
+
+                if (node is ContainerNode container)
+                {
                     container.UnregisterObserver(this);
+                }
+                else if (DirectNodeObservers.TryGetValue(node, out var registrations))
+                {
+                    registrations.Remove(this);
+                }
             }
         }
 
@@ -104,6 +125,26 @@ namespace FenBrowser.Core.Dom.V2
                 _recordQueue.Clear();
                 return records;
             }
+        }
+
+        internal static MutationRecord NotifyCharacterDataTarget(
+            CharacterData target,
+            string oldValue)
+        {
+            if (target == null ||
+                !DirectNodeObservers.TryGetValue(target, out var registrations))
+            {
+                return null;
+            }
+
+            var record = new MutationRecord
+            {
+                Type = MutationRecordType.CharacterData,
+                Target = target,
+                OldValue = oldValue
+            };
+            registrations.NotifyCharacterData(record);
+            return record;
         }
 
         internal void EnqueueRecord(MutationRecord record)
@@ -165,8 +206,8 @@ namespace FenBrowser.Core.Dom.V2
                 }
                 catch (Exception ex)
                 {
-                    // Observer exceptions are reported without aborting delivery state.
-                    System.Diagnostics.Debug.WriteLine($"MutationObserver callback error: {ex}");
+                    System.Diagnostics.Debug.WriteLine(
+                        $"MutationObserver callback error: {ex}");
                 }
             }
             finally
@@ -230,7 +271,9 @@ namespace FenBrowser.Core.Dom.V2
             _lock.EnterWriteLock();
             try
             {
-                _list.RemoveAll(x => x.Observer.TryGetTarget(out var o) && ReferenceEquals(o, observer));
+                _list.RemoveAll(
+                    x => !x.Observer.TryGetTarget(out var existing) ||
+                         ReferenceEquals(existing, observer));
                 _list.Add((new WeakReference<MutationObserver>(observer), options));
             }
             finally
@@ -244,7 +287,9 @@ namespace FenBrowser.Core.Dom.V2
             _lock.EnterWriteLock();
             try
             {
-                _list.RemoveAll(x => x.Observer.TryGetTarget(out var o) && ReferenceEquals(o, observer));
+                _list.RemoveAll(
+                    x => !x.Observer.TryGetTarget(out var existing) ||
+                         ReferenceEquals(existing, observer));
             }
             finally
             {
@@ -254,15 +299,20 @@ namespace FenBrowser.Core.Dom.V2
 
         public void NotifyChildList(MutationRecord record)
         {
-            var registrations = GetObserversForNotification((options, _) => options.ChildList);
+            var registrations = GetObserversForNotification(
+                (options, _) => options.ChildList);
             foreach (var registration in registrations)
+            {
                 registration.Observer.EnqueueRecord(record);
+            }
         }
 
         public void NotifyAttributes(MutationRecord record)
         {
             var registrations = GetObserversForNotification(
-                (options, attrName) => options.Attributes && MatchesAttributeFilter(options, attrName),
+                (options, attributeName) =>
+                    options.Attributes &&
+                    MatchesAttributeFilter(options, attributeName),
                 record.AttributeName);
 
             foreach (var registration in registrations)
@@ -276,7 +326,8 @@ namespace FenBrowser.Core.Dom.V2
 
         public void NotifyCharacterData(MutationRecord record)
         {
-            var registrations = GetObserversForNotification((options, _) => options.CharacterData);
+            var registrations = GetObserversForNotification(
+                (options, _) => options.CharacterData);
             foreach (var registration in registrations)
             {
                 registration.Observer.EnqueueRecord(
@@ -289,7 +340,7 @@ namespace FenBrowser.Core.Dom.V2
         public void NotifySubtree(MutationRecord record)
         {
             var registrations = GetObserversForNotification(
-                (options, attrName) =>
+                (options, attributeName) =>
                 {
                     if (!options.Subtree)
                         return false;
@@ -297,7 +348,9 @@ namespace FenBrowser.Core.Dom.V2
                     return record.Type switch
                     {
                         MutationRecordType.ChildList => options.ChildList,
-                        MutationRecordType.Attributes => options.Attributes && MatchesAttributeFilter(options, attrName),
+                        MutationRecordType.Attributes =>
+                            options.Attributes &&
+                            MatchesAttributeFilter(options, attributeName),
                         MutationRecordType.CharacterData => options.CharacterData,
                         _ => false
                     };
@@ -308,8 +361,10 @@ namespace FenBrowser.Core.Dom.V2
             {
                 string oldValue = record.Type switch
                 {
-                    MutationRecordType.Attributes when !registration.Options.AttributeOldValue => null,
-                    MutationRecordType.CharacterData when !registration.Options.CharacterDataOldValue => null,
+                    MutationRecordType.Attributes
+                        when !registration.Options.AttributeOldValue => null,
+                    MutationRecordType.CharacterData
+                        when !registration.Options.CharacterDataOldValue => null,
                     _ => record.OldValue
                 };
 
@@ -320,19 +375,21 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
-        private List<(MutationObserver Observer, MutationObserverInit Options)> GetObserversForNotification(
-            Func<MutationObserverInit, string, bool> filter,
-            string attributeName = null)
+        private List<(MutationObserver Observer, MutationObserverInit Options)>
+            GetObserversForNotification(
+                Func<MutationObserverInit, string, bool> filter,
+                string attributeName = null)
         {
-            var result = new List<(MutationObserver Observer, MutationObserverInit Options)>();
+            var result =
+                new List<(MutationObserver Observer, MutationObserverInit Options)>();
             bool foundDeadReference = false;
 
             _lock.EnterReadLock();
             try
             {
-                for (int i = 0; i < _list.Count; i++)
+                for (int index = 0; index < _list.Count; index++)
                 {
-                    var (weakRef, options) = _list[i];
+                    var (weakRef, options) = _list[index];
                     if (!weakRef.TryGetTarget(out var observer))
                     {
                         foundDeadReference = true;
@@ -340,7 +397,9 @@ namespace FenBrowser.Core.Dom.V2
                     }
 
                     if (filter(options, attributeName))
+                    {
                         result.Add((observer, options));
+                    }
                 }
             }
             finally
@@ -364,20 +423,30 @@ namespace FenBrowser.Core.Dom.V2
             return result;
         }
 
-        private static bool MatchesAttributeFilter(MutationObserverInit options, string attributeName)
+        private static bool MatchesAttributeFilter(
+            MutationObserverInit options,
+            string attributeName)
         {
-            if (options.AttributeFilter == null || options.AttributeFilter.Length == 0)
+            if (options.AttributeFilter == null ||
+                options.AttributeFilter.Length == 0)
+            {
                 return true;
+            }
 
             foreach (var filter in options.AttributeFilter)
             {
-                if (string.Equals(filter, attributeName, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(filter, attributeName, StringComparison.Ordinal))
+                {
                     return true;
+                }
             }
+
             return false;
         }
 
-        private static MutationRecord CopyRecord(MutationRecord record, string oldValue)
+        private static MutationRecord CopyRecord(
+            MutationRecord record,
+            string oldValue)
         {
             return new MutationRecord
             {

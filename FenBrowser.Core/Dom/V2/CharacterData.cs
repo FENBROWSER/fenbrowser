@@ -7,19 +7,13 @@ namespace FenBrowser.Core.Dom.V2
 {
     /// <summary>
     /// DOM Living Standard: CharacterData interface.
-    /// https://dom.spec.whatwg.org/#interface-characterdata
-    ///
     /// Base class for Text, Comment, ProcessingInstruction.
-    /// These nodes CANNOT have children per WHATWG spec.
+    /// These nodes cannot have children.
     /// </summary>
     public abstract class CharacterData : Node, IChildNode, INonDocumentTypeChildNode
     {
         private string _data;
 
-        /// <summary>
-        /// Gets or sets the character data of this node.
-        /// https://dom.spec.whatwg.org/#dom-characterdata-data
-        /// </summary>
         public string Data
         {
             get => _data ?? "";
@@ -35,24 +29,14 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
-        /// <summary>
-        /// Returns the number of code units in the data.
-        /// https://dom.spec.whatwg.org/#dom-characterdata-length
-        /// </summary>
         public int Length => _data?.Length ?? 0;
 
-        /// <summary>
-        /// NodeValue returns the character data.
-        /// </summary>
         public override string NodeValue
         {
             get => Data;
             set => Data = value;
         }
 
-        /// <summary>
-        /// TextContent returns the character data.
-        /// </summary>
         public override string TextContent
         {
             get => Data;
@@ -61,16 +45,14 @@ namespace FenBrowser.Core.Dom.V2
 
         public override string ToHtml()
         {
-            if (NodeType == NodeType.Comment) return $"<!--{Data}-->";
+            if (NodeType == NodeType.Comment)
+            {
+                return $"<!--{Data}-->";
+            }
+
             return System.Net.WebUtility.HtmlEncode(Data);
         }
 
-        // --- CharacterData Methods ---
-
-        /// <summary>
-        /// Returns a substring of the data.
-        /// https://dom.spec.whatwg.org/#dom-characterdata-substringdata
-        /// </summary>
         public string SubstringData(int offset, int count)
         {
             var data = Data;
@@ -83,19 +65,11 @@ namespace FenBrowser.Core.Dom.V2
             return data.Substring(offset, actualCount);
         }
 
-        /// <summary>
-        /// Appends data to the end.
-        /// https://dom.spec.whatwg.org/#dom-characterdata-appenddata
-        /// </summary>
         public void AppendData(string data)
         {
             Data += data ?? "";
         }
 
-        /// <summary>
-        /// Inserts data at the specified offset.
-        /// https://dom.spec.whatwg.org/#dom-characterdata-insertdata
-        /// </summary>
         public void InsertData(int offset, string data)
         {
             var current = Data;
@@ -105,10 +79,6 @@ namespace FenBrowser.Core.Dom.V2
             Data = current.Insert(offset, data ?? "");
         }
 
-        /// <summary>
-        /// Deletes data at the specified range.
-        /// https://dom.spec.whatwg.org/#dom-characterdata-deletedata
-        /// </summary>
         public void DeleteData(int offset, int count)
         {
             var current = Data;
@@ -121,10 +91,6 @@ namespace FenBrowser.Core.Dom.V2
             Data = current.Remove(offset, actualCount);
         }
 
-        /// <summary>
-        /// Replaces data at the specified range.
-        /// https://dom.spec.whatwg.org/#dom-characterdata-replacedata
-        /// </summary>
         public void ReplaceData(int offset, int count, string data)
         {
             var current = Data;
@@ -139,22 +105,14 @@ namespace FenBrowser.Core.Dom.V2
             Data = before + (data ?? "") + after;
         }
 
-        // --- IChildNode Implementation ---
-
-        /// <summary>
-        /// Removes this node from its parent.
-        /// https://dom.spec.whatwg.org/#dom-childnode-remove
-        /// </summary>
         public void Remove()
         {
             if (_parentNode is ContainerNode parent)
+            {
                 parent.RemoveChild(this);
+            }
         }
 
-        /// <summary>
-        /// Inserts nodes before this node.
-        /// https://dom.spec.whatwg.org/#dom-childnode-before
-        /// </summary>
         public void Before(params Node[] nodes)
         {
             if (_parentNode is not ContainerNode parent)
@@ -166,86 +124,81 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
-        /// <summary>
-        /// Inserts nodes after this node.
-        /// https://dom.spec.whatwg.org/#dom-childnode-after
-        /// </summary>
         public void After(params Node[] nodes)
         {
             if (_parentNode is not ContainerNode parent)
                 return;
 
-            var refNode = _nextSibling;
+            var referenceNode = _nextSibling;
             foreach (var node in nodes)
             {
-                if (refNode != null)
-                    parent.InsertBefore(node, refNode);
+                if (referenceNode != null)
+                {
+                    parent.InsertBefore(node, referenceNode);
+                }
                 else
+                {
                     parent.AppendChild(node);
+                }
             }
         }
 
-        /// <summary>
-        /// Replaces this node with other nodes.
-        /// https://dom.spec.whatwg.org/#dom-childnode-replacewith
-        /// </summary>
         public void ReplaceWith(params Node[] nodes)
         {
             if (_parentNode is not ContainerNode parent)
                 return;
 
-            var refNode = _nextSibling;
-
-            // Remove self first
+            var referenceNode = _nextSibling;
             parent.RemoveChild(this);
 
-            // Insert new nodes at the old position
             foreach (var node in nodes)
             {
-                if (refNode != null)
-                    parent.InsertBefore(node, refNode);
+                if (referenceNode != null)
+                {
+                    parent.InsertBefore(node, referenceNode);
+                }
                 else
+                {
                     parent.AppendChild(node);
+                }
             }
         }
 
-        // --- INonDocumentTypeChildNode Implementation ---
-
-        /// <summary>
-        /// Returns the previous sibling element.
-        /// https://dom.spec.whatwg.org/#dom-nondocumenttypechildnode-previouselementsibling
-        /// </summary>
         public Element PreviousElementSibling
         {
             get
             {
-                for (var node = _previousSibling; node != null; node = node._previousSibling)
+                for (var node = _previousSibling;
+                     node != null;
+                     node = node._previousSibling)
                 {
-                    if (node is Element el)
-                        return el;
+                    if (node is Element element)
+                    {
+                        return element;
+                    }
                 }
+
                 return null;
             }
         }
 
-        /// <summary>
-        /// Returns the next sibling element.
-        /// https://dom.spec.whatwg.org/#dom-nondocumenttypechildnode-nextelementsibling
-        /// </summary>
         public Element NextElementSibling
         {
             get
             {
-                for (var node = _nextSibling; node != null; node = node._nextSibling)
+                for (var node = _nextSibling;
+                     node != null;
+                     node = node._nextSibling)
                 {
-                    if (node is Element el)
-                        return el;
+                    if (node is Element element)
+                    {
+                        return element;
+                    }
                 }
+
                 return null;
             }
         }
-
-        // --- Protected ---
 
         protected CharacterData(string data, Document owner = null)
         {
@@ -255,25 +208,18 @@ namespace FenBrowser.Core.Dom.V2
 
         protected virtual void OnDataChanged(string oldValue)
         {
-            // Mark the node as needing repaint
             MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
-
-            // Notify mutation observers
             NotifyCharacterDataMutation(oldValue);
         }
 
-        /// <summary>
-        /// Notifies mutation observers of character data changes.
-        /// Propagates to parent's observers and ancestors with subtree option.
-        /// </summary>
         private void NotifyCharacterDataMutation(string oldValue)
         {
-            MutationRecord record = null;
+            MutationRecord record =
+                MutationObserver.NotifyCharacterDataTarget(this, oldValue);
 
-            // Notify observers registered on this node's ancestors
-            // CharacterData nodes can't have their own observers, but their parent
-            // ContainerNode can observe characterData on children
-            for (var ancestor = _parentNode; ancestor != null; ancestor = ancestor._parentNode)
+            for (var ancestor = _parentNode;
+                 ancestor != null;
+                 ancestor = ancestor._parentNode)
             {
                 if (ancestor is ContainerNode container)
                 {
@@ -281,7 +227,7 @@ namespace FenBrowser.Core.Dom.V2
                         record,
                         this,
                         oldValue,
-                        ancestor == _parentNode);
+                        isDirect: false);
                 }
             }
         }
