@@ -44,8 +44,9 @@ public static partial class FenLogger
     public static void Initialize(string logFilePath)
     {
         _enabled = true;
-        // Delegate to the shared preset pipeline — do NOT force-enable all sinks.
-        EngineLog.InitializeFromSettings();
+        // Preserve the caller contract: an explicit path must actually configure the
+        // NDJSON sink. The old implementation only logged the path and then ignored it.
+        ConfigureEngineLogging(enabled: true, LogLevel.Debug, logFilePath);
         Info($"FenLogger initialized with path: {logFilePath}", LogCategory.General);
     }
 
