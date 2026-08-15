@@ -36,11 +36,8 @@ public sealed class PosixCommandSandbox : ISandbox
     }
 
     public string ProfileName => $"Posix({_profile.Kind})";
-
     public OsSandboxCapabilities Capabilities => _profile.Capabilities;
-
     public bool IsActive => !_disposed;
-
     public bool RequiresCustomSpawn => true;
 
     public void ApplyToProcessStartInfo(ProcessStartInfo psi)
@@ -145,9 +142,6 @@ public sealed class PosixCommandSandbox : ISandbox
         if (processes == null)
             return;
 
-        // Do not call the public Kill() path after setting _disposed: Kill()
-        // intentionally rejects use-after-dispose. Disposal owns the tracked
-        // process list atomically and performs termination/handle cleanup directly.
         TerminateAndDispose(processes);
     }
 
@@ -232,13 +226,25 @@ public sealed class PosixCommandSandbox : ISandbox
             ? Environment.CurrentDirectory
             : childStartInfo.WorkingDirectory);
         var sandboxWorkingDirectory = ResolveSandboxWorkingDirectory(requestedWorkingDirectory);
+
         var wrapped = new ProcessStartInfo
         {
             FileName = _helperPath,
             UseShellExecute = false,
             CreateNoWindow = childStartInfo.CreateNoWindow,
-            WorkingDirectory = sandboxWorkingDirectory
+            WorkingDirectory = sandboxWorkingDirectory,
+            RedirectStandardInput = childStartInfo.RedirectStandardInput,
+            RedirectStandardOutput = childStartInfo.RedirectStandardOutput,
+            RedirectStandardError = childStartInfo.RedirectStandardError,
+            WindowStyle = childStartInfo.WindowStyle
         };
+
+        if (childStartInfo.StandardInputEncoding != null)
+            wrapped.StandardInputEncoding = childStartInfo.StandardInputEncoding;
+        if (childStartInfo.StandardOutputEncoding != null)
+            wrapped.StandardOutputEncoding = childStartInfo.StandardOutputEncoding;
+        if (childStartInfo.StandardErrorEncoding != null)
+            wrapped.StandardErrorEncoding = childStartInfo.StandardErrorEncoding;
 
         wrapped.Environment.Clear();
         foreach (var kvp in BuildSanitizedEnvironment(childStartInfo.Environment))
@@ -246,17 +252,25 @@ public sealed class PosixCommandSandbox : ISandbox
             wrapped.Environment[kvp.Key] = kvp.Value;
         }
 
-        wrapped.Arguments = _platform switch
+        var helperArguments = _platform switch
         {
             OSPlatformKind.Linux => BuildBubblewrapArguments(childStartInfo, resolvedExecutable, sandboxWorkingDirectory),
             OSPlatformKind.MacOS => BuildSandboxExecArguments(childStartInfo, resolvedExecutable, sandboxWorkingDirectory),
             _ => throw new PlatformNotSupportedException($"Unsupported POSIX sandbox platform '{_platform}'.")
         };
 
+        foreach (var argument in helperArguments)
+        {
+            wrapped.ArgumentList.Add(argument);
+        }
+
         return wrapped;
     }
 
-    private string BuildBubblewrapArguments(ProcessStartInfo childStartInfo, string resolvedExecutable, string sandboxWorkingDirectory)
+    private IReadOnlyList<string> BuildBubblewrapArguments(
+        ProcessStartInfo childStartInfo,
+        string resolvedExecutable,
+        string sandboxWorkingDirectory)
     {
         var args = new List<string>
         {
@@ -308,13 +322,14 @@ public sealed class PosixCommandSandbox : ISandbox
 
         args.Add("--");
         args.Add(resolvedExecutable);
-        if (!string.IsNullOrWhiteSpace(childStartInfo.Arguments))
-            args.Add(childStartInfo.Arguments);
-
-        return JoinArguments(args);
+        args.AddRange(GetChildArguments(childStartInfo));
+        return args;
     }
 
-    private string BuildSandboxExecArguments(ProcessStartInfo childStartInfo, string resolvedExecutable, string sandboxWorkingDirectory)
+    private IReadOnlyList<string> BuildSandboxExecArguments(
+        ProcessStartInfo childStartInfo,
+        string resolvedExecutable,
+        string sandboxWorkingDirectory)
     {
         var profile = new StringBuilder();
         profile.Append("(version 1) ");
@@ -366,11 +381,96 @@ public sealed class PosixCommandSandbox : ISandbox
             profile.ToString().Trim(),
             resolvedExecutable
         };
+        args.AddRange(GetChildArguments(childStartInfo));
+        return args;
+    }
 
-        if (!string.IsNullOrWhiteSpace(childStartInfo.Arguments))
-            args.Add(childStartInfo.Arguments);
+    private static IReadOnlyList<string> GetChildArguments(ProcessStartInfo childStartInfo)
+    {
+        if (childStartInfo.ArgumentList.Count > 0)
+        {
+            if (!string.IsNullOrWhiteSpace(childStartInfo.Arguments))
+            {
+                throw new InvalidOperationException(
+                    "ProcessStartInfo cannot safely specify both ArgumentList and Arguments for a sandboxed child.");
+            }
 
-        return JoinArguments(args);
+            return childStartInfo.ArgumentList.ToArray();
+        }
+
+        return SplitLegacyArguments(childStartInfo.Arguments);
+    }
+
+    private static IReadOnlyList<string> SplitLegacyArguments(string arguments)
+    {
+        if (string.IsNullOrWhiteSpace(arguments))
+        {
+            return Array.Empty<string>();
+        }
+
+        var result = new List<string>();
+        var current = new StringBuilder();
+        char quote = '\0';
+        var tokenStarted = false;
+
+        for (var i = 0; i < arguments.Length; i++)
+        {
+            var ch = arguments[i];
+
+            if (quote == '\0' && char.IsWhiteSpace(ch))
+            {
+                if (tokenStarted)
+                {
+                    result.Add(current.ToString());
+                    current.Clear();
+                    tokenStarted = false;
+                }
+                continue;
+            }
+
+            if (ch == '\'' || ch == '"')
+            {
+                if (quote == '\0')
+                {
+                    quote = ch;
+                    tokenStarted = true;
+                    continue;
+                }
+
+                if (quote == ch)
+                {
+                    quote = '\0';
+                    continue;
+                }
+            }
+
+            if (ch == '\\' && i + 1 < arguments.Length)
+            {
+                var next = arguments[i + 1];
+                if (next == '\\' || next == '\'' || next == '"' || char.IsWhiteSpace(next))
+                {
+                    current.Append(next);
+                    tokenStarted = true;
+                    i++;
+                    continue;
+                }
+            }
+
+            current.Append(ch);
+            tokenStarted = true;
+        }
+
+        if (quote != '\0')
+        {
+            throw new InvalidOperationException("Sandboxed child arguments contain an unterminated quoted argument.");
+        }
+
+        if (tokenStarted)
+        {
+            result.Add(current.ToString());
+        }
+
+        return result;
     }
 
     private IDictionary<string, string> BuildSanitizedEnvironment(IDictionary<string, string?> source)
@@ -532,22 +632,6 @@ public sealed class PosixCommandSandbox : ISandbox
         {
             return path;
         }
-    }
-
-    private static string JoinArguments(IEnumerable<string> args)
-    {
-        return string.Join(" ", args.Select(QuoteArgument));
-    }
-
-    private static string QuoteArgument(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-            return "\"\"";
-
-        if (!value.Contains(' ') && !value.Contains('"'))
-            return value;
-
-        return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
     }
 
     private void ThrowIfDisposed()
