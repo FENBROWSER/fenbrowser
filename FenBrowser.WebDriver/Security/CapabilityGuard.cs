@@ -46,44 +46,45 @@ namespace FenBrowser.WebDriver.Security
 
         public SecurityDecision EvaluateUrlPolicy(string url)
         {
-            if (string.IsNullOrEmpty(url))
+            if (string.IsNullOrWhiteSpace(url) ||
+                !Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+                string.IsNullOrWhiteSpace(uri.Scheme))
             {
-                return SecurityDecision.Block(SecurityBlockReasons.NavigationUrlInvalid, "Navigation URL is empty");
+                return SecurityDecision.Block(SecurityBlockReasons.NavigationUrlInvalid, "Navigation URL is not an absolute URI");
             }
 
-            // Block file:// URLs by default for security
-            if (url.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+            switch (uri.Scheme.ToLowerInvariant())
             {
-                if (!AllowFileUrls())
-                {
+                case "file":
+                    if (!AllowFileUrls())
+                    {
+                        return SecurityDecision.Block(
+                            SecurityBlockReasons.NavigationUrlBlocked,
+                            "file:// navigation requires explicit risky capability opt-in");
+                    }
+                    return SecurityDecision.Allow();
+
+                case "javascript":
                     return SecurityDecision.Block(
                         SecurityBlockReasons.NavigationUrlBlocked,
-                        "file:// navigation requires explicit risky capability opt-in");
-                }
+                        "javascript: navigation is blocked");
 
-                return SecurityDecision.Allow();
+                case "http":
+                case "https":
+                case "about":
+                case "data":
+                case "fen":
+                    // Do not inspect data: payload text for words such as "script".
+                    // Substring filtering both blocks harmless content and misses
+                    // encoded executable content. Navigation/content security belongs
+                    // to the browser's normal document policy pipeline.
+                    return SecurityDecision.Allow();
+
+                default:
+                    return SecurityDecision.Block(
+                        SecurityBlockReasons.NavigationUrlBlocked,
+                        $"Navigation scheme '{uri.Scheme}' is not supported by this WebDriver remote end");
             }
-
-            // Block javascript: URLs as top-level navigation in this driver surface.
-            if (url.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase))
-            {
-                return SecurityDecision.Block(SecurityBlockReasons.NavigationUrlBlocked, "javascript: navigation is blocked");
-            }
-
-            // Keep the existing explicit data:-navigation restriction separate from
-            // Execute Script. Script execution itself is a WebDriver command and must
-            // not be authorized by scanning JavaScript source text for substrings.
-            if (url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
-            {
-                if (url.Contains("script", StringComparison.OrdinalIgnoreCase))
-                {
-                    return SecurityDecision.Block(SecurityBlockReasons.NavigationUrlBlocked, "data: navigation containing script is blocked");
-                }
-
-                return SecurityDecision.Allow();
-            }
-
-            return SecurityDecision.Allow();
         }
 
         private bool AllowFileUrls()
@@ -93,7 +94,7 @@ namespace FenBrowser.WebDriver.Security
             {
                 foreach (var arg in fenOptions.Args)
                 {
-                    if (arg == "--allow-file-access")
+                    if (string.Equals(arg, "--allow-file-access", StringComparison.OrdinalIgnoreCase))
                         return true;
                 }
             }
