@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Text.RegularExpressions;
+using System.Globalization;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering.Css
@@ -11,9 +11,102 @@ namespace FenBrowser.FenEngine.Rendering.Css
     /// </summary>
     public static class CssFilterParser
     {
-        private static readonly Regex FunctionRegex = new Regex(
-            @"(\w+(?:-\w+)?)\s*\(\s*([^)]*)\s*\)",
-            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private readonly struct CssFunction
+        {
+            public CssFunction(string name, string arguments)
+            {
+                Name = name;
+                Arguments = arguments;
+            }
+
+            public string Name { get; }
+            public string Arguments { get; }
+        }
+
+        private static bool TryParseFunctions(string input, out List<CssFunction> functions)
+        {
+            functions = new List<CssFunction>();
+            if (string.IsNullOrWhiteSpace(input))
+                return false;
+
+            int i = 0;
+            while (i < input.Length)
+            {
+                while (i < input.Length && IsCssWhitespace(input[i])) i++;
+                if (i >= input.Length) break;
+
+                int nameStart = i;
+                while (i < input.Length && IsFunctionNameChar(input[i])) i++;
+                if (i == nameStart) return false;
+
+                string name = input.Substring(nameStart, i - nameStart).ToLowerInvariant();
+                while (i < input.Length && IsCssWhitespace(input[i])) i++;
+                if (i >= input.Length || input[i] != '(') return false;
+
+                int argumentsStart = ++i;
+                int depth = 1;
+                char quote = '\0';
+                bool escaped = false;
+                while (i < input.Length && depth > 0)
+                {
+                    char c = input[i];
+                    if (quote != '\0')
+                    {
+                        if (escaped)
+                            escaped = false;
+                        else if (c == '\\')
+                            escaped = true;
+                        else if (c == quote)
+                            quote = '\0';
+                        i++;
+                        continue;
+                    }
+
+                    if (c is '\'' or '"')
+                    {
+                        quote = c;
+                        i++;
+                        continue;
+                    }
+                    if (c == '\\')
+                    {
+                        i += Math.Min(2, input.Length - i);
+                        continue;
+                    }
+                    if (c == '(')
+                    {
+                        depth++;
+                        i++;
+                        continue;
+                    }
+                    if (c == ')')
+                    {
+                        depth--;
+                        if (depth == 0)
+                        {
+                            string arguments = input.Substring(argumentsStart, i - argumentsStart).Trim();
+                            functions.Add(new CssFunction(name, arguments));
+                            i++;
+                            break;
+                        }
+                    }
+                    i++;
+                }
+
+                if (depth != 0 || quote != '\0')
+                    return false;
+            }
+
+            return functions.Count > 0;
+        }
+
+        private static bool IsFunctionNameChar(char c) =>
+            (c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            c == '-';
+
+        private static bool IsCssWhitespace(char c) => c is ' ' or '\t' or '\n' or '\r' or '\f';
 
         /// <summary>
         /// Parse a CSS filter string and return a combined SKImageFilter
@@ -23,15 +116,13 @@ namespace FenBrowser.FenEngine.Rendering.Css
             if (string.IsNullOrWhiteSpace(filterString) || filterString == "none")
                 return null;
 
+            if (!TryParseFunctions(filterString, out var functions))
+                return null;
+
             SKImageFilter combined = null;
-            var matches = FunctionRegex.Matches(filterString);
-
-            foreach (Match match in matches)
+            foreach (var function in functions)
             {
-                string funcName = match.Groups[1].Value.ToLowerInvariant();
-                string argsStr = match.Groups[2].Value.Trim();
-
-                SKImageFilter filter = CreateFilter(funcName, argsStr);
+                SKImageFilter filter = CreateFilter(function.Name, function.Arguments);
                 if (filter == null)
                 {
                     continue;
@@ -74,17 +165,13 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return true;
             }
 
-            var matches = FunctionRegex.Matches(filterString);
-            if (matches.Count == 0)
-            {
+            if (!TryParseFunctions(filterString, out var functions))
                 return false;
-            }
 
-            foreach (Match match in matches)
+            foreach (var function in functions)
             {
-                var functionName = match.Groups[1].Value.ToLowerInvariant();
-                var arguments = match.Groups[2].Value.Trim();
-                switch (functionName)
+                var arguments = function.Arguments;
+                switch (function.Name)
                 {
                     case "blur":
                         // Skia's blur argument is sigma; three sigma contains the
@@ -267,13 +354,15 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             float dx = ParseLength(parts[0], 0);
             float dy = ParseLength(parts[1], 0);
-            float blur = parts.Count > 2 ? ParseLength(parts[2], 0) : 0;
+            float blur = Math.Max(0f, parts.Count > 2 ? ParseLength(parts[2], 0) : 0);
             SKColor color = SKColors.Black;
             
             if (parts.Count > 3)
             {
-                // Try to parse color (could be named color, hex, rgb, rgba)
-                color = CssColorParser.Parse(parts[3]) ?? SKColors.Black;
+                // Preserve any spaces inside newer color syntaxes instead of silently
+                // discarding everything after the first color token.
+                var colorText = string.Join(" ", parts.GetRange(3, parts.Count - 3));
+                color = CssColorParser.Parse(colorText) ?? SKColors.Black;
             }
 
             return SKImageFilter.CreateDropShadow(dx, dy, blur, blur, color);
@@ -281,71 +370,50 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static float ParseLength(string s, float defaultValue)
         {
-            if (string.IsNullOrEmpty(s)) return defaultValue;
-            s = s.Trim().ToLowerInvariant();
-            
-            if (s.EndsWith("px"))
-            {
-                if (float.TryParse(s.Replace("px", ""), out float px))
-                    return px;
-            }
-            else if (s.EndsWith("em"))
-            {
-                if (float.TryParse(s.Replace("em", ""), out float em))
-                    return em * 16; // Approximate
-            }
-            else if (float.TryParse(s, out float num))
-            {
-                return num;
-            }
-            
-            return defaultValue;
+            if (string.IsNullOrWhiteSpace(s)) return defaultValue;
+            s = s.Trim();
+
+            if (s.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+                return TryParseFiniteFloat(s.AsSpan(0, s.Length - 2), out var px) ? px : defaultValue;
+            if (s.EndsWith("em", StringComparison.OrdinalIgnoreCase))
+                return TryParseFiniteFloat(s.AsSpan(0, s.Length - 2), out var em) ? em * 16f : defaultValue;
+            return TryParseFiniteFloat(s.AsSpan(), out var number) ? number : defaultValue;
         }
 
         private static float ParseNumber(string s, float defaultValue)
         {
-            if (string.IsNullOrEmpty(s)) return defaultValue;
+            if (string.IsNullOrWhiteSpace(s)) return defaultValue;
             s = s.Trim();
-            
-            if (s.EndsWith("%"))
-            {
-                if (float.TryParse(s.Replace("%", ""), out float pct))
-                    return pct / 100;
-            }
-            else if (float.TryParse(s, out float num))
-            {
-                return num;
-            }
-            
-            return defaultValue;
+
+            if (s.EndsWith("%", StringComparison.Ordinal))
+                return TryParseFiniteFloat(s.AsSpan(0, s.Length - 1), out var percent) ? percent / 100f : defaultValue;
+            return TryParseFiniteFloat(s.AsSpan(), out var number) ? number : defaultValue;
         }
 
         private static float ParseAngle(string s, float defaultValue)
         {
-            if (string.IsNullOrEmpty(s)) return defaultValue;
-            s = s.Trim().ToLowerInvariant();
-            
-            if (s.EndsWith("deg"))
+            if (string.IsNullOrWhiteSpace(s)) return defaultValue;
+            s = s.Trim();
+
+            if (s.EndsWith("deg", StringComparison.OrdinalIgnoreCase))
+                return TryParseFiniteFloat(s.AsSpan(0, s.Length - 3), out var degrees) ? degrees : defaultValue;
+            if (s.EndsWith("rad", StringComparison.OrdinalIgnoreCase))
+                return TryParseFiniteFloat(s.AsSpan(0, s.Length - 3), out var radians) ? radians * 180f / (float)Math.PI : defaultValue;
+            if (s.EndsWith("turn", StringComparison.OrdinalIgnoreCase))
+                return TryParseFiniteFloat(s.AsSpan(0, s.Length - 4), out var turns) ? turns * 360f : defaultValue;
+            return TryParseFiniteFloat(s.AsSpan(), out var number) ? number : defaultValue;
+        }
+
+        private static bool TryParseFiniteFloat(ReadOnlySpan<char> text, out float value)
+        {
+            if (float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value) &&
+                float.IsFinite(value))
             {
-                if (float.TryParse(s.Replace("deg", ""), out float deg))
-                    return deg;
+                return true;
             }
-            else if (s.EndsWith("rad"))
-            {
-                if (float.TryParse(s.Replace("rad", ""), out float rad))
-                    return rad * 180 / (float)Math.PI;
-            }
-            else if (s.EndsWith("turn"))
-            {
-                if (float.TryParse(s.Replace("turn", ""), out float turn))
-                    return turn * 360;
-            }
-            else if (float.TryParse(s, out float num))
-            {
-                return num; // Assume degrees
-            }
-            
-            return defaultValue;
+
+            value = 0f;
+            return false;
         }
     }
 
@@ -382,9 +450,11 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     if (byte.TryParse(parts[0].Trim(), out byte r) &&
                         byte.TryParse(parts[1].Trim(), out byte g) &&
                         byte.TryParse(parts[2].Trim(), out byte b) &&
-                        float.TryParse(parts[3].Trim(), out float a))
+                        float.TryParse(parts[3].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float a) &&
+                        float.IsFinite(a))
                     {
-                        return new SKColor(r, g, b, (byte)(a * 255));
+                        a = Math.Clamp(a, 0f, 1f);
+                        return new SKColor(r, g, b, (byte)Math.Round(a * 255f));
                     }
                 }
             }

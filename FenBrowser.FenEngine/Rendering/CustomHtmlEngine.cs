@@ -140,14 +140,10 @@ namespace FenBrowser.FenEngine.Rendering
 
         private CspPolicy _activePolicy;
         /// <summary>Active Content Security Policy for this page. When set, subresource loads are checked against it.</summary>
-        public CspPolicy ActivePolicy 
-        { 
-            get => _activePolicy; 
-            set 
-            {
-                EngineLogCompat.Debug($"[ActivePolicy] SET to {(value == null ? "NULL" : "Instance hash=" + value.GetHashCode())} Stack={Environment.StackTrace}", LogCategory.Rendering);
-                _activePolicy = value; 
-            }
+        public CspPolicy ActivePolicy
+        {
+            get => _activePolicy;
+            set => _activePolicy = value;
         }
 
         // EXPOSED STYLES FOR SKIA RENDERER

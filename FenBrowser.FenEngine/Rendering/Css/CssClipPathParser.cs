@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Text.RegularExpressions;
+using System.Globalization;
 using FenBrowser.FenEngine.Rendering;
 using SkiaSharp;
 
@@ -12,23 +12,90 @@ namespace FenBrowser.FenEngine.Rendering.Css
     /// </summary>
     public static class CssClipPathParser
     {
-        private static readonly Regex FunctionRegex = new Regex(
-            @"(\w+)\s*\(\s*([^)]*)\s*\)",
-            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static bool TryParseOuterFunction(string input, out string name, out string arguments)
+        {
+            name = null;
+            arguments = null;
+            if (string.IsNullOrWhiteSpace(input)) return false;
+
+            int i = 0;
+            while (i < input.Length && IsCssWhitespace(input[i])) i++;
+            int nameStart = i;
+            while (i < input.Length &&
+                   ((input[i] >= 'a' && input[i] <= 'z') ||
+                    (input[i] >= 'A' && input[i] <= 'Z') ||
+                    input[i] == '-'))
+            {
+                i++;
+            }
+            if (i == nameStart) return false;
+
+            name = input.Substring(nameStart, i - nameStart).ToLowerInvariant();
+            while (i < input.Length && IsCssWhitespace(input[i])) i++;
+            if (i >= input.Length || input[i] != '(') return false;
+
+            int argumentStart = ++i;
+            int depth = 1;
+            char quote = '\0';
+            bool escaped = false;
+            while (i < input.Length && depth > 0)
+            {
+                char c = input[i];
+                if (quote != '\0')
+                {
+                    if (escaped) escaped = false;
+                    else if (c == '\\') escaped = true;
+                    else if (c == quote) quote = '\0';
+                    i++;
+                    continue;
+                }
+
+                if (c is '\'' or '"')
+                {
+                    quote = c;
+                    i++;
+                    continue;
+                }
+                if (c == '\\')
+                {
+                    i += Math.Min(2, input.Length - i);
+                    continue;
+                }
+                if (c == '(') depth++;
+                else if (c == ')') depth--;
+
+                if (depth == 0)
+                {
+                    arguments = input.Substring(argumentStart, i - argumentStart).Trim();
+                    i++;
+                    break;
+                }
+                i++;
+            }
+
+            if (depth != 0 || quote != '\0') return false;
+            while (i < input.Length && IsCssWhitespace(input[i])) i++;
+            return i == input.Length;
+        }
+
+        private static bool IsCssWhitespace(char c) => c is ' ' or '\t' or '\n' or '\r' or '\f';
 
         /// <summary>
         /// Parse a CSS clip-path value and return an SKPath for clipping
         /// </summary>
         public static SKPath Parse(string clipPath, SKRect bounds)
         {
-            if (string.IsNullOrWhiteSpace(clipPath) || clipPath == "none")
+            if (string.IsNullOrWhiteSpace(clipPath) ||
+                string.Equals(clipPath.Trim(), "none", StringComparison.OrdinalIgnoreCase) ||
+                !float.IsFinite(bounds.Left) || !float.IsFinite(bounds.Top) ||
+                !float.IsFinite(bounds.Right) || !float.IsFinite(bounds.Bottom) ||
+                bounds.Width < 0 || bounds.Height < 0)
+            {
                 return null;
+            }
 
-            var match = FunctionRegex.Match(clipPath);
-            if (!match.Success) return null;
-
-            string funcName = match.Groups[1].Value.ToLowerInvariant();
-            string argsStr = match.Groups[2].Value.Trim();
+            if (!TryParseOuterFunction(clipPath, out var funcName, out var argsStr))
+                return null;
 
             switch (funcName)
             {
@@ -63,7 +130,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     else if (radiusStr == "farthest-side")
                         radius = Math.Max(bounds.Width, bounds.Height) / 2;
                     else
-                        radius = ParseLength(radiusStr, bounds.Width, radius);
+                        radius = Math.Max(0f, ParseLength(radiusStr, bounds.Width, radius));
                 }
 
                 // Parse center position
@@ -99,9 +166,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 {
                     var radii = parts[0].Trim().Split(' ');
                     if (radii.Length >= 1)
-                        rx = ParseLength(radii[0], bounds.Width, rx);
+                        rx = Math.Max(0f, ParseLength(radii[0], bounds.Width, rx));
                     if (radii.Length >= 2)
-                        ry = ParseLength(radii[1], bounds.Height, ry);
+                        ry = Math.Max(0f, ParseLength(radii[1], bounds.Height, ry));
                 }
 
                 // Parse center
@@ -133,7 +200,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 var roundParts = args.Split(new[] { " round " }, StringSplitOptions.RemoveEmptyEntries);
                 if (roundParts.Length > 1)
                 {
-                    borderRadius = ParseLength(roundParts[1].Trim(), bounds.Width, 0);
+                    borderRadius = Math.Max(0f, ParseLength(roundParts[1].Trim(), bounds.Width, 0));
                     args = roundParts[0];
                 }
 
@@ -203,54 +270,51 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static float ParseLength(string s, float reference, float defaultValue)
         {
-            if (string.IsNullOrEmpty(s)) return defaultValue;
-            s = s.Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(s) || !float.IsFinite(reference)) return defaultValue;
+            s = s.Trim();
 
-            if (s.EndsWith("%"))
-            {
-                if (float.TryParse(s.Replace("%", ""), out float pct))
-                    return reference * pct / 100;
-            }
-            else if (s.EndsWith("px"))
-            {
-                if (float.TryParse(s.Replace("px", ""), out float px))
-                    return px;
-            }
-            else if (float.TryParse(s, out float num))
-            {
-                return num;
-            }
-
-            return defaultValue;
+            if (s.EndsWith("%", StringComparison.Ordinal))
+                return TryParseFiniteFloat(s.AsSpan(0, s.Length - 1), out var percent)
+                    ? reference * percent / 100f
+                    : defaultValue;
+            if (s.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+                return TryParseFiniteFloat(s.AsSpan(0, s.Length - 2), out var pixels) ? pixels : defaultValue;
+            return TryParseFiniteFloat(s.AsSpan(), out var number) ? number : defaultValue;
         }
 
         private static float ParsePosition(string s, float origin, float size, float defaultValue)
         {
-            if (string.IsNullOrEmpty(s)) return defaultValue;
-            s = s.Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(s) || !float.IsFinite(origin) || !float.IsFinite(size))
+                return defaultValue;
+            s = s.Trim();
 
-            // Named positions
-            if (s == "left" || s == "top") return origin;
-            if (s == "center") return origin + size / 2;
-            if (s == "right" || s == "bottom") return origin + size;
+            if (string.Equals(s, "left", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(s, "top", StringComparison.OrdinalIgnoreCase)) return origin;
+            if (string.Equals(s, "center", StringComparison.OrdinalIgnoreCase)) return origin + size / 2f;
+            if (string.Equals(s, "right", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(s, "bottom", StringComparison.OrdinalIgnoreCase)) return origin + size;
 
-            // Percentage or length
-            if (s.EndsWith("%"))
+            if (s.EndsWith("%", StringComparison.Ordinal))
+                return TryParseFiniteFloat(s.AsSpan(0, s.Length - 1), out var percent)
+                    ? origin + size * percent / 100f
+                    : defaultValue;
+            if (s.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+                return TryParseFiniteFloat(s.AsSpan(0, s.Length - 2), out var pixels)
+                    ? origin + pixels
+                    : defaultValue;
+            return TryParseFiniteFloat(s.AsSpan(), out var number) ? origin + number : defaultValue;
+        }
+
+        private static bool TryParseFiniteFloat(ReadOnlySpan<char> text, out float value)
+        {
+            if (float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value) &&
+                float.IsFinite(value))
             {
-                if (float.TryParse(s.Replace("%", ""), out float pct))
-                    return origin + size * pct / 100;
-            }
-            else if (s.EndsWith("px"))
-            {
-                if (float.TryParse(s.Replace("px", ""), out float px))
-                    return origin + px;
-            }
-            else if (float.TryParse(s, out float num))
-            {
-                return origin + num;
+                return true;
             }
 
-            return defaultValue;
+            value = 0f;
+            return false;
         }
     }
 }
