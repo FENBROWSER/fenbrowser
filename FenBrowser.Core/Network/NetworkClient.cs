@@ -201,6 +201,7 @@ namespace FenBrowser.Core.Network
                     ReferenceEquals(current, gate))
                 {
                     _hostRequestGates.Remove(hostKey);
+                    _activeConnections.TryRemove(hostKey, out _);
                     dispose = true;
                 }
             }
@@ -253,8 +254,13 @@ namespace FenBrowser.Core.Network
             await handler.HandleAsync(context, () => ExecutePipelineAsync(context, index + 1, ct), ct).ConfigureAwait(false);
         }
 
-        private static string GetHostKey(Uri uri) =>
-            uri != null ? $"{uri.Scheme}://{uri.Host}:{uri.Port}".ToLowerInvariant() : "unknown";
+        private static string GetHostKey(Uri uri)
+        {
+            if (uri == null || !uri.IsAbsoluteUri)
+                return "unknown";
+
+            return $"{uri.Scheme.ToLowerInvariant()}://{uri.IdnHost.ToLowerInvariant()}:{uri.Port}";
+        }
 
         public async Task<string> GetStringAsync(string url, CancellationToken ct = default)
         {
@@ -362,9 +368,11 @@ namespace FenBrowser.Core.Network
     {
         private long _totalRequests;
         private long _successfulRequests;
+        private const int MaxTrackedHostStats = 4096;
         private long _failedRequests;
         private long _totalLatencyMs;
-        private readonly ConcurrentDictionary<string, HostStats> _hostStats = new();
+        private readonly ConcurrentDictionary<string, HostStats> _hostStats = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _hostStatsAdmissionLock = new();
 
         public long TotalRequests => Interlocked.Read(ref _totalRequests);
         public long SuccessfulRequests => Interlocked.Read(ref _successfulRequests);
@@ -396,12 +404,37 @@ namespace FenBrowser.Core.Network
             if (success) Interlocked.Increment(ref _successfulRequests);
             else Interlocked.Increment(ref _failedRequests);
 
-            var hostStats = _hostStats.GetOrAdd(host, _ => new HostStats());
-            hostStats.RecordRequest(latencyMs, success);
+            var hostStats = GetOrAddHostStatsBounded(host);
+            hostStats?.RecordRequest(latencyMs, success);
+        }
+
+        private HostStats GetOrAddHostStatsBounded(string host)
+        {
+            if (string.IsNullOrWhiteSpace(host))
+                return null;
+
+            if (_hostStats.TryGetValue(host, out var existing))
+                return existing;
+
+            lock (_hostStatsAdmissionLock)
+            {
+                if (_hostStats.TryGetValue(host, out existing))
+                    return existing;
+
+                if (_hostStats.Count >= MaxTrackedHostStats)
+                    return null;
+
+                var created = new HostStats();
+                _hostStats[host] = created;
+                return created;
+            }
         }
 
         public HostStats GetHostStats(string host)
         {
+            if (string.IsNullOrWhiteSpace(host))
+                return null;
+
             _hostStats.TryGetValue(host, out var stats);
             return stats;
         }
@@ -415,7 +448,10 @@ namespace FenBrowser.Core.Network
             Interlocked.Exchange(ref _successfulRequests, 0);
             Interlocked.Exchange(ref _failedRequests, 0);
             Interlocked.Exchange(ref _totalLatencyMs, 0);
-            _hostStats.Clear();
+            lock (_hostStatsAdmissionLock)
+            {
+                _hostStats.Clear();
+            }
         }
 
         public string GetSummary() =>
