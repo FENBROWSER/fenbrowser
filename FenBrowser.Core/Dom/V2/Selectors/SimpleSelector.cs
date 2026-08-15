@@ -657,28 +657,104 @@ namespace FenBrowser.Core.Dom.V2.Selectors
     /// </summary>
     public sealed class HasSelector : SimpleSelector
     {
-        private readonly CompiledSelector _inner;
+        private readonly SelectorParser.RelativeSelectorBranch[] _branches;
+        private readonly string _source;
 
-        public HasSelector(CompiledSelector inner)
+        public HasSelector(string relativeSelectorList)
         {
-            _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+            _source = relativeSelectorList?.Trim() ?? string.Empty;
+            _branches = SelectorParser.ParseRelativeSelectorList(_source);
         }
 
         public override bool Matches(Element element)
         {
-            // Check if any descendant matches. Relative sibling/leading-combinator
-            // :has() arguments require a dedicated relative-selector representation
-            // and are intentionally not approximated here.
-            foreach (var node in element.Descendants())
+            if (element == null)
+                return false;
+
+            for (var i = 0; i < _branches.Length; i++)
             {
-                if (node is Element el && _inner.Matches(el))
-                    return true;
+                var branch = _branches[i];
+                foreach (var candidate in EnumerateCandidates(element, branch.LeadingCombinator))
+                {
+                    if (branch.Selector.MatchesRelative(candidate, element, branch.LeadingCombinator))
+                        return true;
+                }
             }
             return false;
         }
 
-        public override Specificity GetSpecificity() => _inner.GetSpecificity();
-        public override string ToString() => $":has({_inner})";
+        private static IEnumerable<Element> EnumerateCandidates(Element scope, Combinator leadingCombinator)
+        {
+            switch (leadingCombinator)
+            {
+                case Combinator.AdjacentSibling:
+                    if (scope.NextElementSibling is Element adjacent)
+                    {
+                        foreach (var candidate in EnumerateElementSubtree(adjacent, includeRoot: true))
+                            yield return candidate;
+                    }
+                    yield break;
+
+                case Combinator.GeneralSibling:
+                    for (var sibling = scope.NextElementSibling;
+                         sibling != null;
+                         sibling = sibling.NextElementSibling)
+                    {
+                        foreach (var candidate in EnumerateElementSubtree(sibling, includeRoot: true))
+                            yield return candidate;
+                    }
+                    yield break;
+
+                case Combinator.Child:
+                case Combinator.Descendant:
+                    foreach (var candidate in EnumerateElementSubtree(scope, includeRoot: false))
+                        yield return candidate;
+                    yield break;
+
+                default:
+                    yield break;
+            }
+        }
+
+        private static IEnumerable<Element> EnumerateElementSubtree(Element root, bool includeRoot)
+        {
+            var pending = new Stack<Node>();
+            if (includeRoot)
+            {
+                pending.Push(root);
+            }
+            else
+            {
+                for (var child = root.LastChild; child != null; child = child.PreviousSibling)
+                    pending.Push(child);
+            }
+
+            while (pending.Count > 0)
+            {
+                var node = pending.Pop();
+                if (node is Element element)
+                    yield return element;
+
+                if (node is not ContainerNode container)
+                    continue;
+                for (var child = container.LastChild; child != null; child = child.PreviousSibling)
+                    pending.Push(child);
+            }
+        }
+
+        public override Specificity GetSpecificity()
+        {
+            var max = new Specificity(0, 0, 0);
+            for (var i = 0; i < _branches.Length; i++)
+            {
+                var specificity = _branches[i].Selector.GetSpecificity();
+                if (specificity.CompareTo(max) > 0)
+                    max = specificity;
+            }
+            return max;
+        }
+
+        public override string ToString() => $":has({_source})";
     }
 
     /// <summary>

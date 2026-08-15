@@ -63,6 +63,18 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             return false;
         }
 
+        internal bool MatchesRelative(Element element, Element scope, Combinator leadingCombinator)
+        {
+            if (element == null || scope == null) return false;
+
+            for (var i = 0; i < _chains.Length; i++)
+            {
+                if (_chains[i].MatchesRelative(element, scope, leadingCombinator))
+                    return true;
+            }
+            return false;
+        }
+
         /// <summary>
         /// Gets the specificity of this selector.
         /// </summary>
@@ -128,14 +140,24 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         /// </summary>
         public bool Matches(Element element)
         {
+            return MatchesInternal(element, scope: null, Combinator.None);
+        }
+
+        internal bool MatchesRelative(Element element, Element scope, Combinator leadingCombinator)
+        {
+            if (scope == null || leadingCombinator == Combinator.None)
+                return false;
+            return MatchesInternal(element, scope, leadingCombinator);
+        }
+
+        private bool MatchesInternal(Element element, Element scope, Combinator leadingCombinator)
+        {
             if (element == null || _parts.Length == 0)
                 return false;
 
             // Greedily selecting the nearest matching descendant/general sibling is
             // incorrect when the selected candidate cannot satisfy the rest of the
-            // chain but an earlier candidate can. Example: A + B ~ C. Use an explicit
-            // DFS stack so all legal candidates can be tried without recursion/native
-            // stack growth on long generated selector chains.
+            // chain but an earlier candidate can. Use explicit-stack backtracking.
             var states = new Stack<MatchState>();
             states.Push(new MatchState(_parts.Length - 1, element));
 
@@ -145,13 +167,13 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 var partIndex = state.PartIndex;
                 var current = state.Element;
                 if (current == null || !_parts[partIndex].Compound.Matches(current))
-                {
                     continue;
-                }
 
                 if (partIndex == 0)
                 {
-                    return true;
+                    if (scope == null || IsRelativeAnchorMatch(current, scope, leadingCombinator))
+                        return true;
+                    continue;
                 }
 
                 var previousPartIndex = partIndex - 1;
@@ -160,6 +182,39 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             }
 
             return false;
+        }
+
+        private static bool IsRelativeAnchorMatch(Element leftMost, Element scope, Combinator leadingCombinator)
+        {
+            switch (leadingCombinator)
+            {
+                case Combinator.Child:
+                    return ReferenceEquals(leftMost.ParentElement, scope);
+
+                case Combinator.AdjacentSibling:
+                    return ReferenceEquals(leftMost.PreviousElementSibling, scope);
+
+                case Combinator.GeneralSibling:
+                    for (var sibling = leftMost.PreviousElementSibling;
+                         sibling != null;
+                         sibling = sibling.PreviousElementSibling)
+                    {
+                        if (ReferenceEquals(sibling, scope))
+                            return true;
+                    }
+                    return false;
+
+                case Combinator.Descendant:
+                    for (var parent = leftMost.ParentElement; parent != null; parent = parent.ParentElement)
+                    {
+                        if (ReferenceEquals(parent, scope))
+                            return true;
+                    }
+                    return false;
+
+                default:
+                    return false;
+            }
         }
 
         private static void PushCandidates(

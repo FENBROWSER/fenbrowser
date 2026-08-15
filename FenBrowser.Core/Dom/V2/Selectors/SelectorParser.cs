@@ -28,6 +28,116 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             return new CompiledSelector(chains);
         }
 
+        internal readonly struct RelativeSelectorBranch
+        {
+            public RelativeSelectorBranch(CompiledSelector selector, Combinator leadingCombinator, string source)
+            {
+                Selector = selector ?? throw new ArgumentNullException(nameof(selector));
+                LeadingCombinator = leadingCombinator;
+                Source = source ?? string.Empty;
+            }
+
+            public CompiledSelector Selector { get; }
+            public Combinator LeadingCombinator { get; }
+            public string Source { get; }
+        }
+
+        internal static RelativeSelectorBranch[] ParseRelativeSelectorList(string selectors)
+        {
+            if (string.IsNullOrWhiteSpace(selectors))
+                throw new DomException("SyntaxError", ":has() requires a relative selector");
+
+            var result = new List<RelativeSelectorBranch>();
+            foreach (var rawBranch in SplitTopLevelSelectorBranches(selectors))
+            {
+                var branch = rawBranch.Trim();
+                if (branch.Length == 0)
+                    continue;
+
+                var leading = Combinator.Descendant;
+                switch (branch[0])
+                {
+                    case '>': leading = Combinator.Child; break;
+                    case '+': leading = Combinator.AdjacentSibling; break;
+                    case '~': leading = Combinator.GeneralSibling; break;
+                }
+
+                if (branch[0] is '>' or '+' or '~')
+                    branch = branch.Substring(1).TrimStart();
+
+                if (branch.Length == 0)
+                    continue;
+
+                try
+                {
+                    result.Add(new RelativeSelectorBranch(Parse(branch), leading, rawBranch.Trim()));
+                }
+                catch (DomException)
+                {
+                    // :has() uses a forgiving relative-selector list. One invalid
+                    // branch must not invalidate otherwise usable alternatives.
+                }
+            }
+
+            if (result.Count == 0)
+                throw new DomException("SyntaxError", ":has() contains no valid relative selector");
+
+            return result.ToArray();
+        }
+
+        private static IEnumerable<string> SplitTopLevelSelectorBranches(string input)
+        {
+            int start = 0;
+            int parenDepth = 0;
+            int bracketDepth = 0;
+            char quote = '\0';
+            bool escaped = false;
+
+            for (int i = 0; i < input.Length; i++)
+            {
+                char c = input[i];
+                if (quote != '\0')
+                {
+                    if (escaped)
+                    {
+                        escaped = false;
+                    }
+                    else if (c == '\\')
+                    {
+                        escaped = true;
+                    }
+                    else if (c == quote)
+                    {
+                        quote = '\0';
+                    }
+                    continue;
+                }
+
+                if (c is '\'' or '"')
+                {
+                    quote = c;
+                    continue;
+                }
+                if (c == '\\')
+                {
+                    if (i + 1 < input.Length) i++;
+                    continue;
+                }
+                if (c == '(') { parenDepth++; continue; }
+                if (c == ')') { if (parenDepth > 0) parenDepth--; continue; }
+                if (c == '[') { bracketDepth++; continue; }
+                if (c == ']') { if (bracketDepth > 0) bracketDepth--; continue; }
+
+                if (c == ',' && parenDepth == 0 && bracketDepth == 0)
+                {
+                    yield return input.Substring(start, i - start);
+                    start = i + 1;
+                }
+            }
+
+            yield return input.Substring(start);
+        }
+
         // --- Tokenizer ---
 
         private static List<Token> Tokenize(string input)
@@ -563,7 +673,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             {
                 "not" => new NegationSelector(Parse(arg ?? "")),
                 "is" or "where" => new IsWhereSelector(name, Parse(arg ?? "")),
-                "has" => new HasSelector(Parse(arg ?? "")),
+                "has" => new HasSelector(arg ?? ""),
                 "nth-child" => new NthChildSelector(arg, false),
                 "nth-last-child" => new NthChildSelector(arg, true),
                 "nth-of-type" => new NthOfTypeSelector(arg, false),
