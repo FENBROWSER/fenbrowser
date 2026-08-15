@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 
 namespace FenBrowser.FenEngine.Security
@@ -14,6 +15,9 @@ namespace FenBrowser.FenEngine.Security
 
     public sealed class PermissionStore
     {
+        private const int MaxPermissionStoreBytes = 4 * 1024 * 1024;
+        private const int MaxJsonDepth = 32;
+
         private static readonly Lazy<PermissionStore> LazyInstance =
             new(() => new PermissionStore(), isThreadSafe: true);
 
@@ -60,8 +64,10 @@ namespace FenBrowser.FenEngine.Security
                     if (!File.Exists(_filePath))
                         return;
 
-                    var json = File.ReadAllText(_filePath);
-                    var loaded = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, PermissionState>>>(json);
+                    var json = ReadUtf8FileBounded(_filePath, MaxPermissionStoreBytes);
+                    var loaded = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, PermissionState>>>(
+                        json,
+                        new JsonSerializerOptions { MaxDepth = MaxJsonDepth });
                     if (loaded == null)
                         return;
 
@@ -84,15 +90,29 @@ namespace FenBrowser.FenEngine.Security
 
                         foreach (var permissionEntry in originEntry.Value)
                         {
-                            permissions[permissionEntry.Key] = permissionEntry.Value;
+                            // Persistent state is a security boundary. Unknown enum
+                            // values or invented permission names from a corrupt/older
+                            // file must never become an authorization decision.
+                            if (!Enum.IsDefined(permissionEntry.Value) ||
+                                !Enum.TryParse<JsPermissions>(permissionEntry.Key, out var parsedPermission) ||
+                                parsedPermission == JsPermissions.None)
+                            {
+                                continue;
+                            }
+
+                            permissions[parsedPermission.ToString()] = permissionEntry.Value;
                         }
+
+                        if (permissions.Count == 0)
+                            normalizedStore.Remove(normalizedOrigin);
                     }
 
                     _store = normalizedStore;
                 }
                 catch
                 {
-                    // Corrupt/unreadable state fails closed to the existing empty store.
+                    // Corrupt, oversized, or unreadable state fails closed to an empty
+                    // store. Never keep partially parsed authorization decisions.
                     _store = new Dictionary<string, Dictionary<string, PermissionState>>(StringComparer.Ordinal);
                 }
             }
@@ -106,9 +126,23 @@ namespace FenBrowser.FenEngine.Security
             var tempPath = _filePath + ".tmp";
             try
             {
-                var options = new JsonSerializerOptions { WriteIndented = true };
+                var options = new JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    MaxDepth = MaxJsonDepth
+                };
                 var json = JsonSerializer.Serialize(_store, options);
-                File.WriteAllText(tempPath, json);
+                if (Encoding.UTF8.GetByteCount(json) > MaxPermissionStoreBytes)
+                {
+                    // Do not leave an older grant-bearing file on disk when the new
+                    // authoritative state cannot be persisted. Removing it fails closed
+                    // on restart (Prompt) instead of resurrecting stale permissions.
+                    if (File.Exists(_filePath))
+                        File.Delete(_filePath);
+                    return;
+                }
+
+                File.WriteAllText(tempPath, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
                 File.Move(tempPath, _filePath, overwrite: true);
             }
             catch
@@ -147,7 +181,7 @@ namespace FenBrowser.FenEngine.Security
         public void SetState(string origin, JsPermissions permission, PermissionState state)
         {
             var normalizedOrigin = NormalizeOrigin(origin);
-            if (normalizedOrigin == null)
+            if (normalizedOrigin == null || permission == JsPermissions.None || !Enum.IsDefined(state))
                 return;
 
             lock (_lock)
@@ -194,6 +228,38 @@ namespace FenBrowser.FenEngine.Security
             return uri.IsDefaultPort || uri.Port <= 0
                 ? $"{scheme}://{host}"
                 : $"{scheme}://{host}:{uri.Port}";
+        }
+
+        private static string ReadUtf8FileBounded(string path, int maxBytes)
+        {
+            using var stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 16 * 1024,
+                options: FileOptions.SequentialScan);
+
+            if (stream.Length > maxBytes)
+                throw new InvalidDataException("Persisted permission store exceeds its admission limit.");
+
+            using var buffer = new MemoryStream(capacity: (int)Math.Min(stream.Length, maxBytes));
+            var chunk = new byte[16 * 1024];
+            while (true)
+            {
+                var read = stream.Read(chunk, 0, chunk.Length);
+                if (read == 0)
+                    break;
+
+                if (buffer.Length + read > maxBytes)
+                    throw new InvalidDataException("Persisted permission store exceeds its admission limit.");
+
+                buffer.Write(chunk, 0, read);
+            }
+
+            return new UTF8Encoding(
+                encoderShouldEmitUTF8Identifier: false,
+                throwOnInvalidBytes: true).GetString(buffer.GetBuffer(), 0, checked((int)buffer.Length));
         }
     }
 }
