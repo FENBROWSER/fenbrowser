@@ -18,6 +18,7 @@ namespace FenBrowser.WebDriver.Security
     public class OriginValidator
     {
         private readonly HashSet<string> _allowedOrigins = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _allowedOriginsLock = new();
         private readonly bool _allowLocalhostOnly;
 
         public OriginValidator(bool allowLocalhostOnly = true)
@@ -30,12 +31,19 @@ namespace FenBrowser.WebDriver.Security
         }
 
         /// <summary>
-        /// Add an allowed host.
+        /// Add an allowed host. The allowlist is shared by request-handler threads,
+        /// so mutation and lookup are serialized rather than racing a HashSet reader.
         /// </summary>
         public void AllowOrigin(string origin)
         {
-            if (!string.IsNullOrWhiteSpace(origin))
-                _allowedOrigins.Add(origin.Trim());
+            var normalized = NormalizeAllowedHost(origin);
+            if (normalized.Length == 0)
+                return;
+
+            lock (_allowedOriginsLock)
+            {
+                _allowedOrigins.Add(normalized);
+            }
         }
 
         /// <summary>
@@ -53,7 +61,7 @@ namespace FenBrowser.WebDriver.Security
             if (_allowLocalhostOnly)
                 return false;
 
-            return _allowedOrigins.Contains(address.ToString());
+            return IsAllowedHost(address.ToString());
         }
 
         /// <summary>
@@ -92,8 +100,8 @@ namespace FenBrowser.WebDriver.Security
                 return false;
             }
 
-            var host = uri.Host;
-            if (string.IsNullOrEmpty(host))
+            var host = NormalizeAllowedHost(uri.IdnHost);
+            if (host.Length == 0)
                 return false;
 
             if (_allowLocalhostOnly)
@@ -104,7 +112,44 @@ namespace FenBrowser.WebDriver.Security
                 return IPAddress.TryParse(host, out var ip) && IPAddress.IsLoopback(ip);
             }
 
-            return _allowedOrigins.Contains(host);
+            return IsAllowedHost(host);
+        }
+
+        private bool IsAllowedHost(string host)
+        {
+            var normalized = NormalizeAllowedHost(host);
+            if (normalized.Length == 0)
+                return false;
+
+            lock (_allowedOriginsLock)
+            {
+                return _allowedOrigins.Contains(normalized);
+            }
+        }
+
+        private static string NormalizeAllowedHost(string host)
+        {
+            if (string.IsNullOrWhiteSpace(host))
+                return string.Empty;
+
+            var normalized = host.Trim().TrimEnd('.').Trim('[', ']');
+            if (normalized.Length == 0 ||
+                normalized.IndexOfAny(new[] { '/', '\\', '@', '?', '#' }) >= 0)
+            {
+                return string.Empty;
+            }
+
+            if (IPAddress.TryParse(normalized, out var ip))
+                return ip.ToString();
+
+            try
+            {
+                return new IdnMapping().GetAscii(normalized).ToLowerInvariant();
+            }
+            catch (ArgumentException)
+            {
+                return string.Empty;
+            }
         }
     }
 }
