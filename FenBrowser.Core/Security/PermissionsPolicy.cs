@@ -226,11 +226,15 @@ namespace FenBrowser.Core.Security
             string documentOrigin,
             string iframeAllowAttribute)
         {
+            // The iframe allow attribute is an additional restriction. Its absence
+            // does not mean "deny every feature"; the inherited/header policy remains
+            // authoritative. The old behavior broke ordinary iframes that relied on
+            // the parent policy/default allowlist without an explicit allow= value.
             if (!IsFeatureAllowed(feature, frameOrigin, documentOrigin))
                 return false;
 
             if (string.IsNullOrWhiteSpace(iframeAllowAttribute))
-                return false;
+                return true;
 
             return IsIframeFeatureAllowed(
                 iframeAllowAttribute,
