@@ -1,6 +1,6 @@
 // =============================================================================
 // SessionManager.cs
-// W3C WebDriver Session Management (Spec-Compliant)
+// W3C WebDriver Session Management
 //
 // SPEC REFERENCE: W3C WebDriver §8 - Sessions
 //                 https://www.w3.org/TR/webdriver2/#sessions
@@ -167,6 +167,8 @@ namespace FenBrowser.WebDriver
     /// </summary>
     public class Session : IDisposable
     {
+        private const int ReferenceCleanupInterval = 256;
+
         public enum ElementReferenceKind
         {
             Element = 0,
@@ -222,12 +224,18 @@ namespace FenBrowser.WebDriver
         private readonly ConcurrentDictionary<string, ElementReferenceKind> _referenceKinds = new(StringComparer.Ordinal);
         private readonly ConditionalWeakTable<object, NativeReferenceHolder> _nativeObjectReferenceMap = new();
         private readonly ConcurrentDictionary<NativeStringReferenceKey, string> _nativeStringReferenceMap = new();
+        private readonly object _referenceRegistrationGate = new();
         private int _elementCounter;
+        private int _registrationsSinceCleanup;
+        private int _disposed;
 
         public Session(string id, Capabilities capabilities)
         {
+            if (string.IsNullOrWhiteSpace(id))
+                throw new ArgumentException("Session ID is required.", nameof(id));
+
             Id = id;
-            Capabilities = capabilities;
+            Capabilities = capabilities ?? throw new ArgumentNullException(nameof(capabilities));
             CreatedAt = DateTime.UtcNow;
             Timeouts = capabilities.Timeouts ?? new Timeouts();
 
@@ -250,41 +258,62 @@ namespace FenBrowser.WebDriver
 
         private string RegisterReference(object referenceObject, ElementReferenceKind kind)
         {
+            ThrowIfDisposed();
             if (referenceObject == null)
             {
                 throw new WebDriverException(ErrorCodes.InvalidArgument, "Cannot register a null element reference");
             }
 
-            if (TryGetElementReferenceId(referenceObject, kind, out var existingId))
-                return existingId;
-
-            var id = $"e{Interlocked.Increment(ref _elementCounter)}";
-            _elementCache[id] = new WeakReference<object>(referenceObject);
-            _referenceKinds[id] = kind;
-
-            AssociateNativeReference(referenceObject, id, kind);
-
-            if (referenceObject is string nativeString &&
-                kind == ElementReferenceKind.Window &&
-                !string.IsNullOrWhiteSpace(nativeString) &&
-                !WindowHandles.Contains(nativeString))
+            // Registration is a check-then-create transaction spanning several
+            // concurrent/weak maps. Without this gate, two command threads can both
+            // miss the same native object and publish different WebDriver IDs for it.
+            lock (_referenceRegistrationGate)
             {
-                WindowHandles.Add(nativeString);
-            }
+                ThrowIfDisposed();
+                if (TryGetElementReferenceId(referenceObject, kind, out var existingId))
+                    return existingId;
 
-            return id;
+                var next = Interlocked.Increment(ref _elementCounter);
+                if (next <= 0)
+                {
+                    throw new WebDriverException(
+                        ErrorCodes.UnknownError,
+                        "WebDriver element reference ID space is exhausted");
+                }
+
+                var id = $"e{next}";
+                _elementCache[id] = new WeakReference<object>(referenceObject);
+                _referenceKinds[id] = kind;
+
+                AssociateNativeReferenceCore(referenceObject, id, kind);
+
+                if (referenceObject is string nativeString &&
+                    kind == ElementReferenceKind.Window &&
+                    !string.IsNullOrWhiteSpace(nativeString) &&
+                    !WindowHandles.Contains(nativeString))
+                {
+                    WindowHandles.Add(nativeString);
+                }
+
+                if (++_registrationsSinceCleanup >= ReferenceCleanupInterval)
+                {
+                    _registrationsSinceCleanup = 0;
+                    CleanupDeadReferences();
+                }
+
+                return id;
+            }
         }
 
         public object GetElement(string elementId)
         {
+            ThrowIfDisposed();
             if (_elementCache.TryGetValue(elementId, out var weakRef))
             {
                 if (weakRef.TryGetTarget(out var element))
                     return element;
 
-                _elementCache.TryRemove(elementId, out _);
-                _referenceKinds.TryRemove(elementId, out _);
-
+                RemoveDeadReference(elementId);
                 throw new WebDriverException(
                     ErrorCodes.StaleElementReference,
                     "Element is no longer attached to the DOM");
@@ -297,6 +326,7 @@ namespace FenBrowser.WebDriver
 
         public object GetElement(string elementId, ElementReferenceKind expectedKind)
         {
+            ThrowIfDisposed();
             if (_referenceKinds.TryGetValue(elementId, out var actualKind) && actualKind != expectedKind)
             {
                 throw new WebDriverException(
@@ -317,7 +347,7 @@ namespace FenBrowser.WebDriver
             out string referenceId)
         {
             referenceId = string.Empty;
-            if (nativeReference == null)
+            if (Volatile.Read(ref _disposed) != 0 || nativeReference == null)
                 return false;
 
             if (nativeReference is string nativeString)
@@ -361,6 +391,19 @@ namespace FenBrowser.WebDriver
             string referenceId,
             ElementReferenceKind kind)
         {
+            ThrowIfDisposed();
+            lock (_referenceRegistrationGate)
+            {
+                ThrowIfDisposed();
+                AssociateNativeReferenceCore(nativeReference, referenceId, kind);
+            }
+        }
+
+        private void AssociateNativeReferenceCore(
+            object nativeReference,
+            string referenceId,
+            ElementReferenceKind kind)
+        {
             if (nativeReference == null || string.IsNullOrWhiteSpace(referenceId))
                 return;
 
@@ -393,7 +436,7 @@ namespace FenBrowser.WebDriver
 
         public bool TryGetReferenceKind(string referenceId, out ElementReferenceKind kind)
         {
-            if (_referenceKinds.TryGetValue(referenceId, out kind))
+            if (Volatile.Read(ref _disposed) == 0 && _referenceKinds.TryGetValue(referenceId, out kind))
                 return true;
 
             kind = ElementReferenceKind.Element;
@@ -406,13 +449,20 @@ namespace FenBrowser.WebDriver
         /// </summary>
         public IReadOnlyDictionary<string, string> GetNativeReferenceMapSnapshot()
         {
+            ThrowIfDisposed();
             var result = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var pair in _nativeStringReferenceMap)
             {
-                if (pair.Key.Kind == ElementReferenceKind.Element &&
-                    IsReferenceAlive(pair.Value, ElementReferenceKind.Element))
+                if (pair.Key.Kind != ElementReferenceKind.Element)
+                    continue;
+
+                if (IsReferenceAlive(pair.Value, ElementReferenceKind.Element))
                 {
                     result[pair.Key.NativeReference] = pair.Value;
+                }
+                else
+                {
+                    _nativeStringReferenceMap.TryRemove(pair.Key, out _);
                 }
             }
 
@@ -430,9 +480,38 @@ namespace FenBrowser.WebDriver
             if (weakRef.TryGetTarget(out _))
                 return true;
 
+            RemoveDeadReference(referenceId);
+            return false;
+        }
+
+        private void CleanupDeadReferences()
+        {
+            foreach (var pair in _elementCache)
+            {
+                if (!pair.Value.TryGetTarget(out _))
+                    RemoveDeadReference(pair.Key);
+            }
+
+            foreach (var pair in _nativeStringReferenceMap)
+            {
+                if (!IsReferenceAlive(pair.Value, pair.Key.Kind))
+                    _nativeStringReferenceMap.TryRemove(pair.Key, out _);
+            }
+        }
+
+        private void RemoveDeadReference(string referenceId)
+        {
             _elementCache.TryRemove(referenceId, out _);
             _referenceKinds.TryRemove(referenceId, out _);
-            return false;
+
+            // String native references are held strongly by their reverse-map keys.
+            // Weak element storage alone therefore did not prevent one historical key
+            // from accumulating per stale string-backed reference.
+            foreach (var pair in _nativeStringReferenceMap)
+            {
+                if (string.Equals(pair.Value, referenceId, StringComparison.Ordinal))
+                    _nativeStringReferenceMap.TryRemove(pair.Key, out _);
+            }
         }
 
         private static string GetKindErrorCode(ElementReferenceKind kind)
@@ -446,13 +525,26 @@ namespace FenBrowser.WebDriver
             };
         }
 
+        private void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(Session));
+        }
+
         public void Dispose()
         {
-            _elementCache.Clear();
-            _referenceKinds.Clear();
-            _nativeObjectReferenceMap.Clear();
-            _nativeStringReferenceMap.Clear();
-            WindowHandles.Clear();
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            lock (_referenceRegistrationGate)
+            {
+                _elementCache.Clear();
+                _referenceKinds.Clear();
+                _nativeObjectReferenceMap.Clear();
+                _nativeStringReferenceMap.Clear();
+                WindowHandles.Clear();
+                CurrentWindowHandle = null;
+            }
         }
     }
 
