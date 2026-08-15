@@ -263,8 +263,6 @@ public sealed class PopupWindow : IDisposable
                 htmlContent = _htmlContent;
             }
 
-            // Poll the current engine for a completed render. _renderedFrame is owned
-            // exclusively by this window thread.
             if (engine != null && _renderedFrame == null && contentReady && !renderFailed)
             {
                 var snapshot = engine.GetRenderSnapshot();
@@ -320,8 +318,6 @@ public sealed class PopupWindow : IDisposable
         }
         catch (Exception ex)
         {
-            // Frame failure is non-fatal, but do not hide recurring native/rendering
-            // faults entirely; they are otherwise almost impossible to diagnose.
             EngineLogBridge.Debug(
                 $"[PopupWindow] {_name}: dropped frame: {ex.GetType().Name}: {ex.Message}",
                 LogCategory.Rendering);
@@ -418,10 +414,6 @@ public sealed class PopupWindow : IDisposable
     {
         Close();
 
-        // Never destroy GL/Skia resources here: Dispose can be called from the host
-        // thread while the popup thread is inside OnRender. The window-thread finally
-        // block owns native teardown. Wait briefly only to make normal IDisposable use
-        // deterministic without introducing cross-thread graphics destruction.
         if (Thread.CurrentThread != _windowThread && _windowThread.IsAlive)
         {
             _windowThread.Join(TimeSpan.FromSeconds(2));
@@ -474,6 +466,15 @@ public static class PopupWindowManager
         height = Math.Clamp(height, 150, 1080);
         var popup = new PopupWindow(name, width, height, OnPopupClosed);
         _popups.TryAdd(popup, 0);
+
+        // The popup thread starts in its constructor. It can fail/close before the
+        // manager publishes the instance, in which case its close callback removes
+        // nothing and a dead popup would otherwise be inserted afterwards forever.
+        if (popup.IsClosed)
+        {
+            _popups.TryRemove(popup, out _);
+        }
+
         return popup;
     }
 
