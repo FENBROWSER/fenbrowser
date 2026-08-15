@@ -2,6 +2,11 @@ using System;
 
 namespace FenBrowser.Core
 {
+    /// <summary>
+    /// Parsed allow-* tokens from an iframe sandbox attribute.
+    /// These flags describe HTML browsing-context permissions; they are not interchangeable
+    /// with the host's generic <see cref="SandboxFeature"/> capability set.
+    /// </summary>
     [Flags]
     public enum IframeSandboxFlags
     {
@@ -35,15 +40,45 @@ namespace FenBrowser.Core
         SharedArrayBuffer = 1 << 8,
         CrossOriginIsolated = 1 << 9,
         DocumentDomain = 1 << 10,
-        All = Scripts | InlineScripts | ExternalScripts | Timers | Network | Storage | Navigation | DomMutation | SharedArrayBuffer | CrossOriginIsolated | DocumentDomain
+        All = Scripts | InlineScripts | ExternalScripts | Timers | Network | Storage |
+              Navigation | DomMutation | SharedArrayBuffer | CrossOriginIsolated | DocumentDomain
     }
 
     public sealed class SandboxPolicy
     {
-    public static SandboxPolicy AllowAll { get; } = new SandboxPolicy(SandboxFeature.All);
-    public static SandboxPolicy NoScripts { get; } = new SandboxPolicy(SandboxFeature.All & ~(SandboxFeature.Scripts | SandboxFeature.InlineScripts | SandboxFeature.ExternalScripts | SandboxFeature.Timers));
-    public static SandboxPolicy ReaderMode { get; } = new SandboxPolicy(SandboxFeature.All & ~(SandboxFeature.Scripts | SandboxFeature.InlineScripts | SandboxFeature.ExternalScripts | SandboxFeature.Timers | SandboxFeature.Network | SandboxFeature.Storage | SandboxFeature.Navigation));
-    public static SandboxPolicy UntrustedContent { get; } = new SandboxPolicy(SandboxFeature.All & ~(SandboxFeature.Scripts | SandboxFeature.InlineScripts | SandboxFeature.ExternalScripts | SandboxFeature.Timers | SandboxFeature.Network | SandboxFeature.Storage | SandboxFeature.Navigation | SandboxFeature.DomMutation));
+        public static SandboxPolicy AllowAll { get; } =
+            new SandboxPolicy(SandboxFeature.All);
+
+        public static SandboxPolicy NoScripts { get; } =
+            new SandboxPolicy(
+                SandboxFeature.All &
+                ~(SandboxFeature.Scripts |
+                  SandboxFeature.InlineScripts |
+                  SandboxFeature.ExternalScripts |
+                  SandboxFeature.Timers));
+
+        public static SandboxPolicy ReaderMode { get; } =
+            new SandboxPolicy(
+                SandboxFeature.All &
+                ~(SandboxFeature.Scripts |
+                  SandboxFeature.InlineScripts |
+                  SandboxFeature.ExternalScripts |
+                  SandboxFeature.Timers |
+                  SandboxFeature.Network |
+                  SandboxFeature.Storage |
+                  SandboxFeature.Navigation));
+
+        public static SandboxPolicy UntrustedContent { get; } =
+            new SandboxPolicy(
+                SandboxFeature.All &
+                ~(SandboxFeature.Scripts |
+                  SandboxFeature.InlineScripts |
+                  SandboxFeature.ExternalScripts |
+                  SandboxFeature.Timers |
+                  SandboxFeature.Network |
+                  SandboxFeature.Storage |
+                  SandboxFeature.Navigation |
+                  SandboxFeature.DomMutation));
 
         public SandboxPolicy(SandboxFeature allowedFeatures)
         {
@@ -70,11 +105,13 @@ namespace FenBrowser.Core
             }
 
             var flags = IframeSandboxFlags.None;
-            var tokens = attributeValue.Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
+            var tokens = attributeValue.Split(
+                new[] { ' ', '\t', '\r', '\n', '\f' },
+                StringSplitOptions.RemoveEmptyEntries);
+
             foreach (var rawToken in tokens)
             {
-                var token = rawToken.Trim().ToLowerInvariant();
-                switch (token)
+                switch (rawToken.Trim().ToLowerInvariant())
                 {
                     case "allow-scripts":
                         flags |= IframeSandboxFlags.Scripts;
@@ -118,6 +155,16 @@ namespace FenBrowser.Core
             return flags;
         }
 
+        /// <summary>
+        /// Produces the conservative generic capability subset that can be derived from
+        /// HTML sandbox tokens without changing unrelated browser behavior.
+        ///
+        /// The returned policy is intentionally NOT a complete implementation of HTML
+        /// iframe sandboxing. Browsing-context code must retain the parsed
+        /// <see cref="IframeSandboxFlags"/> and enforce forms, popups, top-level navigation,
+        /// downloads, modals, pointer lock, presentation, and sandboxed-origin semantics
+        /// at their owning algorithms.
+        /// </summary>
         public static SandboxPolicy FromIframeSandboxAttribute(string attributeValue)
         {
             if (!HasIframeSandboxAttribute(attributeValue))
@@ -128,44 +175,77 @@ namespace FenBrowser.Core
             var flags = ParseIframeSandboxFlags(attributeValue);
             var allowed = SandboxFeature.All;
 
-            allowed &= ~(SandboxFeature.DocumentDomain | SandboxFeature.CrossOriginIsolated | SandboxFeature.SharedArrayBuffer);
-
+            // A sandbox without allow-scripts blocks script execution. It does not make
+            // the document incapable of networking, DOM construction/mutation, or timers
+            // owned by other browser algorithms, so do not conflate those capabilities.
             if ((flags & IframeSandboxFlags.Scripts) == 0)
             {
                 allowed &= ~(SandboxFeature.Scripts |
                              SandboxFeature.InlineScripts |
-                             SandboxFeature.ExternalScripts |
-                             SandboxFeature.Timers |
-                             SandboxFeature.Network |
-                             SandboxFeature.DomMutation);
+                             SandboxFeature.ExternalScripts);
             }
 
+            // Without allow-same-origin the framed document gets a sandboxed/opaque origin.
+            // This generic capability policy cannot manufacture an opaque Origin object,
+            // but it can conservatively withhold origin-sensitive capabilities. The actual
+            // origin replacement still belongs to browsing-context/navigation code.
             if ((flags & IframeSandboxFlags.SameOrigin) == 0)
             {
-                allowed &= ~SandboxFeature.Storage;
+                allowed &= ~(SandboxFeature.Storage |
+                             SandboxFeature.DocumentDomain |
+                             SandboxFeature.SharedArrayBuffer |
+                             SandboxFeature.CrossOriginIsolated);
             }
-
-            if ((flags & (IframeSandboxFlags.TopNavigation | IframeSandboxFlags.TopNavigationByUserActivation)) == 0)
+            else
             {
-                allowed &= ~SandboxFeature.Navigation;
+                // A sandboxed document still cannot use document.domain to escape its
+                // sandbox boundary, even when same-origin identity is retained.
+                allowed &= ~SandboxFeature.DocumentDomain;
             }
 
+            // Do not remove generic Navigation here. HTML sandboxing restricts specific
+            // auxiliary/top-level navigation algorithms; it does not mean a framed
+            // document is unable to navigate its own browsing context.
             return new SandboxPolicy(allowed);
         }
 
+        /// <summary>
+        /// Resolve a named host security profile. Unknown or missing names fail closed
+        /// instead of silently becoming an allow-all policy.
+        /// </summary>
         public static SandboxPolicy FromName(string name)
         {
-            if (string.IsNullOrWhiteSpace(name)) return AllowAll;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                throw new ArgumentException("Sandbox policy name is required.", nameof(name));
+            }
+
             var token = name.Trim();
-            if (string.Equals(token, "allowall", StringComparison.OrdinalIgnoreCase) || string.Equals(token, "all", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(token, "allowall", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(token, "all", StringComparison.OrdinalIgnoreCase))
+            {
                 return AllowAll;
-            if (string.Equals(token, "noscripts", StringComparison.OrdinalIgnoreCase) || string.Equals(token, "no-scripts", StringComparison.OrdinalIgnoreCase))
+            }
+
+            if (string.Equals(token, "noscripts", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(token, "no-scripts", StringComparison.OrdinalIgnoreCase))
+            {
                 return NoScripts;
-            if (string.Equals(token, "reader", StringComparison.OrdinalIgnoreCase) || string.Equals(token, "reader-mode", StringComparison.OrdinalIgnoreCase))
+            }
+
+            if (string.Equals(token, "reader", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(token, "reader-mode", StringComparison.OrdinalIgnoreCase))
+            {
                 return ReaderMode;
-            if (string.Equals(token, "untrusted", StringComparison.OrdinalIgnoreCase) || string.Equals(token, "untrusted-content", StringComparison.OrdinalIgnoreCase))
+            }
+
+            if (string.Equals(token, "untrusted", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(token, "untrusted-content", StringComparison.OrdinalIgnoreCase))
+            {
                 return UntrustedContent;
-            return AllowAll;
+            }
+
+            throw new ArgumentException($"Unknown sandbox policy '{name}'.", nameof(name));
         }
 
         public SandboxPolicy WithFeature(SandboxFeature feature)
