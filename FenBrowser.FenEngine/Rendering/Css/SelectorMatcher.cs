@@ -207,7 +207,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 }
 
                 // Skip whitespace
-                while (i < selector.Length && char.IsWhiteSpace(selector[i])) i++;
+                while (i < selector.Length && IsCssWhitespace(selector[i])) i++;
                 if (i >= selector.Length) break;
 
                 // Check for combinators
@@ -268,7 +268,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 char c = selector[i];
 
                 // End of simple selector
-                if (char.IsWhiteSpace(c) || c == '>' || c == '+' || c == '~' || c == ',')
+                if (IsCssWhitespace(c) || c == '>' || c == '+' || c == '~' || c == ',')
                     break;
 
                 // Class
@@ -343,12 +343,46 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     {
                         int parenDepth = 1;
                         int argStart = ++i;
+                        bool inSingleQuote = false;
+                        bool inDoubleQuote = false;
+
                         while (i < selector.Length && parenDepth > 0)
                         {
-                            if (selector[i] == '(') parenDepth++;
-                            else if (selector[i] == ')') parenDepth--;
+                            char argumentChar = selector[i];
+                            if (argumentChar == '\\' && i + 1 < selector.Length)
+                            {
+                                i += 2;
+                                continue;
+                            }
+
+                            if (!inDoubleQuote && argumentChar == '\'')
+                            {
+                                inSingleQuote = !inSingleQuote;
+                                i++;
+                                continue;
+                            }
+
+                            if (!inSingleQuote && argumentChar == '"')
+                            {
+                                inDoubleQuote = !inDoubleQuote;
+                                i++;
+                                continue;
+                            }
+
+                            if (!inSingleQuote && !inDoubleQuote)
+                            {
+                                if (argumentChar == '(') parenDepth++;
+                                else if (argumentChar == ')') parenDepth--;
+                            }
                             i++;
                         }
+
+                        if (parenDepth != 0 || inSingleQuote || inDoubleQuote)
+                        {
+                            isInvalid = true;
+                            break;
+                        }
+
                         args = selector.Substring(argStart, i - argStart - 1);
                     }
 
@@ -504,14 +538,17 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 string hex = s.Substring(hexStart, hexLen);
                 if (int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out int codePoint))
                 {
-                    escaped = char.ConvertFromUtf32(Math.Clamp(codePoint, 0, 0x10FFFF));
+                    escaped = codePoint == 0 || codePoint > 0x10FFFF ||
+                              (codePoint >= 0xD800 && codePoint <= 0xDFFF)
+                        ? "\uFFFD"
+                        : char.ConvertFromUtf32(codePoint);
                 }
                 else
                 {
-                    escaped = s.Substring(hexStart, hexLen);
+                    escaped = "\uFFFD";
                 }
 
-                if (i < s.Length && char.IsWhiteSpace(s[i]))
+                if (i < s.Length && IsCssWhitespace(s[i]))
                 {
                     i++;
                 }
@@ -529,6 +566,29 @@ namespace FenBrowser.FenEngine.Rendering.Css
             return (c >= '0' && c <= '9') ||
                    (c >= 'a' && c <= 'f') ||
                    (c >= 'A' && c <= 'F');
+        }
+
+        private static bool IsCssWhitespace(char c)
+        {
+            return c is '\t' or '\n' or '\f' or '\r' or ' ';
+        }
+
+        private static bool MatchesTypeSelector(Element element, string selectorName)
+        {
+            if (element == null || string.IsNullOrEmpty(selectorName))
+                return false;
+
+            if (string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+                return string.Equals(element.LocalName, selectorName, StringComparison.OrdinalIgnoreCase);
+
+            return string.Equals(element.LocalName, selectorName, StringComparison.Ordinal);
+        }
+
+        private static bool IsSameElementType(Element left, Element right)
+        {
+            return left != null && right != null &&
+                   string.Equals(left.NamespaceUri, right.NamespaceUri, StringComparison.Ordinal) &&
+                   string.Equals(left.LocalName, right.LocalName, StringComparison.Ordinal);
         }
 
         private static (AttributeSelector attr, int endPos) ParseAttributeSelector(string s, int start)
@@ -698,7 +758,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                         continue;
                     }
 
-                    if (char.IsWhiteSpace(rhs[ws]))
+                    if (IsCssWhitespace(rhs[ws]))
                     {
                         break;
                     }
@@ -801,17 +861,20 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             if (el == null || depth > 64) return false;
 
-            // Tag
-            if (!string.IsNullOrEmpty(seg.TagName) && seg.TagName != "*")
-                if (!string.Equals(el.TagName, seg.TagName, StringComparison.OrdinalIgnoreCase)) // TagName
-                    return false;
+            // Type selector. HTML element names are ASCII case-insensitive; foreign
+            // namespace local names retain case and must match ordinally.
+            if (!string.IsNullOrEmpty(seg.TagName) && seg.TagName != "*" &&
+                !MatchesTypeSelector(el, seg.TagName))
+            {
+                return false;
+            }
 
 
             // ID
             if (!string.IsNullOrEmpty(seg.Id))
             {
                 string elId = el.Id; // Using V2 Property
-                if (!string.Equals(elId, seg.Id, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(elId, seg.Id, StringComparison.Ordinal))
                     return false;
             }
 
@@ -893,7 +956,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 case "only-of-type": return IsFirstOfType(el) && IsLastOfType(el);
                 case "empty": return IsEmptyElement(el);
                 case "scope": return IsScope(el);
-                case "root": return el.ParentElement == null || el.TagName?.ToUpperInvariant() == "HTML";
+                case "root": return el.OwnerDocument?.DocumentElement == el;
                 case "not": 
                 {
                     if (parsedArgs != null && parsedArgs.Count > 0)
@@ -1274,7 +1337,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             for (var sibling = el.PreviousElementSibling; sibling != null; sibling = sibling.PreviousElementSibling)
             {
-                if (string.Equals(sibling.TagName, el.TagName, StringComparison.OrdinalIgnoreCase))
+                if (IsSameElementType(sibling, el))
                     return false;
             }
 
@@ -1288,7 +1351,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
             for (var sibling = el.NextElementSibling; sibling != null; sibling = sibling.NextElementSibling)
             {
-                if (string.Equals(sibling.TagName, el.TagName, StringComparison.OrdinalIgnoreCase))
+                if (IsSameElementType(sibling, el))
                     return false;
             }
 
@@ -1343,7 +1406,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             var parent = el.ParentNode as ContainerNode;
             if (parent == null) return false;
-            var siblings = parent.ChildNodes.OfType<Element>().Where(c => string.Equals(c.TagName, el.TagName, StringComparison.OrdinalIgnoreCase)).ToList();
+            var siblings = parent.ChildNodes.OfType<Element>().Where(c => IsSameElementType(c, el)).ToList();
             int index = siblings.IndexOf(el) + 1;
             return MatchesNthFormula(index, args);
         }
@@ -1352,7 +1415,7 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             var parent = el.ParentNode as ContainerNode;
             if (parent == null) return false;
-            var siblings = parent.ChildNodes.OfType<Element>().Where(c => string.Equals(c.TagName, el.TagName, StringComparison.OrdinalIgnoreCase)).ToList();
+            var siblings = parent.ChildNodes.OfType<Element>().Where(c => IsSameElementType(c, el)).ToList();
             int index = siblings.Count - siblings.IndexOf(el);
             return MatchesNthFormula(index, args);
         }
@@ -1517,8 +1580,8 @@ namespace FenBrowser.FenEngine.Rendering.Css
             if (args[index] != 'o' && args[index] != 'O') return false;
             if (args[index + 1] != 'f' && args[index + 1] != 'F') return false;
 
-            bool beforeOk = index == 0 || char.IsWhiteSpace(args[index - 1]);
-            bool afterOk = index + 2 >= args.Length || char.IsWhiteSpace(args[index + 2]);
+            bool beforeOk = index == 0 || IsCssWhitespace(args[index - 1]);
+            bool afterOk = index + 2 >= args.Length || IsCssWhitespace(args[index + 2]);
             return beforeOk && afterOk;
         }
 
