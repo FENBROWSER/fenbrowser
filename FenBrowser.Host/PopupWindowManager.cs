@@ -18,32 +18,44 @@ public sealed class PopupWindow : IDisposable
     private readonly IWindow _window;
     private readonly Thread _windowThread;
     private readonly string _name;
-    private int _width, _height;
+    private readonly object _contentLock = new();
+    private readonly Action<PopupWindow> _closedCallback;
+    private int _width;
+    private int _height;
 
-    // GL + Skia
+    // GL + Skia. These resources are created, used, and destroyed exclusively on
+    // the popup window thread because their native graphics context is thread-bound.
     private GL _gl;
     private GRContext _grContext;
     private GRBackendRenderTarget _renderTarget;
     private SKSurface _surface;
 
-    // HTML content from document.write()/close()
+    // HTML content from document.write()/close(). State can be supplied by the host
+    // thread while the popup thread is rendering, so publication is synchronized.
     private string _htmlContent;
     private bool _contentReady;
     private SKPicture _renderedFrame;
     private bool _renderFailed;
     private FenBrowser.FenEngine.Rendering.CustomHtmlEngine _engine;
 
-    private bool _disposed;
+    private int _closeRequested;
+    private int _cleanupCompleted;
+    private int _isClosed;
     private bool _glReady;
 
     public string Name => _name;
-    public bool IsClosed { get; private set; }
+    public bool IsClosed => Volatile.Read(ref _isClosed) != 0;
 
-    internal PopupWindow(string name, int width, int height)
+    internal PopupWindow(
+        string name,
+        int width,
+        int height,
+        Action<PopupWindow> closedCallback = null)
     {
         _name = name;
         _width = width;
         _height = height;
+        _closedCallback = closedCallback;
 
         var options = WindowOptions.Default;
         options.Size = new Silk.NET.Maths.Vector2D<int>(width, height);
@@ -62,15 +74,7 @@ public sealed class PopupWindow : IDisposable
         _window.Resize += OnResize;
         _window.Closing += OnClose;
 
-        _windowThread = new Thread(() =>
-        {
-            try { _window.Run(); }
-            catch (Exception ex)
-            {
-                if (!_disposed)
-                    EngineLogBridge.Warn($"[PopupWindow] {_name}: {ex.Message}", LogCategory.General);
-            }
-        })
+        _windowThread = new Thread(WindowThreadMain)
         {
             Name = $"Popup-{name}",
             IsBackground = true
@@ -78,31 +82,80 @@ public sealed class PopupWindow : IDisposable
         _windowThread.Start();
     }
 
-    public void SetContent(string html)
+    private void WindowThreadMain()
     {
-        _htmlContent = html;
-        _contentReady = true;
-
-        // Kick off async HTML rendering.  The popup game loop will poll
-        // GetRenderSnapshot() each frame and draw the result once ready.
         try
         {
-            var engine = new FenBrowser.FenEngine.Rendering.CustomHtmlEngine();
+            _window.Run();
+        }
+        catch (Exception ex)
+        {
+            if (Volatile.Read(ref _closeRequested) == 0)
+            {
+                EngineLogBridge.Warn($"[PopupWindow] {_name}: {ex.Message}", LogCategory.General);
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref _isClosed, 1);
+            CleanupWindowThreadResources();
+            try
+            {
+                _closedCallback?.Invoke(this);
+            }
+            catch (Exception ex)
+            {
+                EngineLogBridge.Warn(
+                    $"[PopupWindow] {_name}: close callback failed: {ex.Message}",
+                    LogCategory.General);
+            }
+        }
+    }
+
+    public void SetContent(string html)
+    {
+        if (Volatile.Read(ref _closeRequested) != 0)
+        {
+            return;
+        }
+
+        FenBrowser.FenEngine.Rendering.CustomHtmlEngine engine;
+        try
+        {
+            engine = new FenBrowser.FenEngine.Rendering.CustomHtmlEngine();
             engine.LoadHtml(
                 html,
                 new Uri("fen://popup/" + (_name ?? "unnamed")),
                 _ => System.Threading.Tasks.Task.FromResult<string>(null),
                 _ => System.Threading.Tasks.Task.FromResult<System.IO.Stream>(null),
                 _ => { },
-                viewportWidth: _width);
-
-            // Store engine reference for polling
-            _engine = engine;
+                viewportWidth: Volatile.Read(ref _width));
         }
         catch (Exception ex)
         {
+            lock (_contentLock)
+            {
+                _htmlContent = html;
+                _contentReady = true;
+                _renderFailed = true;
+                _engine = null;
+            }
+
             EngineLogBridge.Warn($"[PopupWindow] {_name}: LoadHtml failed: {ex.Message}", LogCategory.Rendering);
-            _renderFailed = true;
+            return;
+        }
+
+        lock (_contentLock)
+        {
+            if (_closeRequested != 0)
+            {
+                return;
+            }
+
+            _htmlContent = html;
+            _contentReady = true;
+            _renderFailed = false;
+            _engine = engine;
         }
     }
 
@@ -122,12 +175,22 @@ public sealed class PopupWindow : IDisposable
                 EngineLogBridge.Warn($"[PopupWindow] {_name}: GRGlInterface.Create returned null", LogCategory.Rendering);
                 return;
             }
-            _grContext = GRContext.CreateGl(glInterface);
+
+            try
+            {
+                _grContext = GRContext.CreateGl(glInterface);
+            }
+            finally
+            {
+                glInterface.Dispose();
+            }
+
             if (_grContext == null)
             {
                 EngineLogBridge.Warn($"[PopupWindow] {_name}: GRContext.CreateGl returned null", LogCategory.Rendering);
                 return;
             }
+
             _glReady = true;
             CreateRenderTarget();
             EngineLogBridge.Debug($"[PopupWindow] {_name}: GL+Skia ready", LogCategory.Rendering);
@@ -141,14 +204,22 @@ public sealed class PopupWindow : IDisposable
     private void CreateRenderTarget()
     {
         _surface?.Dispose();
+        _surface = null;
         _renderTarget?.Dispose();
+        _renderTarget = null;
 
         if (_gl == null || _grContext == null || _width <= 0 || _height <= 0)
+        {
             return;
+        }
 
         var fbSize = _window.FramebufferSize;
-        int fw = fbSize.X, fh = fbSize.Y;
-        if (fw <= 0 || fh <= 0) return;
+        int fw = fbSize.X;
+        int fh = fbSize.Y;
+        if (fw <= 0 || fh <= 0)
+        {
+            return;
+        }
 
         _gl.GetInteger(GLEnum.FramebufferBinding, out int framebuffer);
         _gl.GetInteger(GLEnum.Stencil, out int stencil);
@@ -161,32 +232,51 @@ public sealed class PopupWindow : IDisposable
 
     private void OnRender(double deltaTime)
     {
-        if (_disposed || IsClosed || !_glReady) return;
-        if (_surface == null) CreateRenderTarget();
-        if (_surface == null) return;
+        if (IsClosed || Volatile.Read(ref _cleanupCompleted) != 0 || !_glReady)
+        {
+            return;
+        }
+
+        if (_surface == null)
+        {
+            CreateRenderTarget();
+        }
+        if (_surface == null)
+        {
+            return;
+        }
 
         try
         {
             var canvas = _surface.Canvas;
             canvas.Clear(SKColors.White);
 
-            // Poll the engine for a completed render
-            if (_engine != null && _renderedFrame == null && _contentReady && !_renderFailed)
+            FenBrowser.FenEngine.Rendering.CustomHtmlEngine engine;
+            bool contentReady;
+            bool renderFailed;
+            string htmlContent;
+            lock (_contentLock)
             {
-                var snapshot = _engine.GetRenderSnapshot();
+                engine = _engine;
+                contentReady = _contentReady;
+                renderFailed = _renderFailed;
+                htmlContent = _htmlContent;
+            }
+
+            // Poll the current engine for a completed render. _renderedFrame is owned
+            // exclusively by this window thread.
+            if (engine != null && _renderedFrame == null && contentReady && !renderFailed)
+            {
+                var snapshot = engine.GetRenderSnapshot();
                 if (snapshot.Root != null && snapshot.Styles != null && snapshot.Styles.Count > 0)
                 {
                     try
                     {
                         var renderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
-                        renderer.EnsureLayout(
-                            snapshot.Root,
-                            snapshot.Styles,
-                            _width, _height);
+                        renderer.EnsureLayout(snapshot.Root, snapshot.Styles, _width, _height);
 
                         using var recorder = new SKPictureRecorder();
-                        var recCanvas = recorder.BeginRecording(
-                            new SKRect(0, 0, _width, _height));
+                        var recCanvas = recorder.BeginRecording(new SKRect(0, 0, _width, _height));
                         renderer.Render(
                             snapshot.Root,
                             recCanvas,
@@ -196,10 +286,18 @@ public sealed class PopupWindow : IDisposable
                     }
                     catch (Exception ex)
                     {
+                        lock (_contentLock)
+                        {
+                            if (ReferenceEquals(_engine, engine))
+                            {
+                                _renderFailed = true;
+                            }
+                        }
+
+                        renderFailed = true;
                         EngineLogBridge.Warn(
                             $"[PopupWindow] {_name}: paint failed: {ex.Message}",
                             LogCategory.Rendering);
-                        _renderFailed = true;
                     }
                 }
             }
@@ -208,11 +306,11 @@ public sealed class PopupWindow : IDisposable
             {
                 canvas.DrawPicture(_renderedFrame);
             }
-            else if (_renderFailed)
+            else if (renderFailed)
             {
-                DrawFallback(canvas, _width, _height, _htmlContent);
+                DrawFallback(canvas, _width, _height, htmlContent);
             }
-            else if (_contentReady)
+            else if (contentReady)
             {
                 DrawLoading(canvas, _width, _height);
             }
@@ -220,12 +318,18 @@ public sealed class PopupWindow : IDisposable
             canvas.Flush();
             _grContext.Flush();
         }
-        catch { /* frame dropped */ }
+        catch (Exception ex)
+        {
+            // Frame failure is non-fatal, but do not hide recurring native/rendering
+            // faults entirely; they are otherwise almost impossible to diagnose.
+            EngineLogBridge.Debug(
+                $"[PopupWindow] {_name}: dropped frame: {ex.GetType().Name}: {ex.Message}",
+                LogCategory.Rendering);
+        }
     }
 
     private static void DrawFallback(SKCanvas canvas, int w, int h, string html)
     {
-        // Parse and render basic text from the HTML as a fallback
         using var bg = new SKPaint { Color = SKColors.White, IsAntialias = true };
         canvas.DrawRect(0, 0, w, h, bg);
 
@@ -236,17 +340,20 @@ public sealed class PopupWindow : IDisposable
             IsAntialias = true
         };
 
-        // Simple text extraction from HTML for fallback display
-        var plainText = System.Text.RegularExpressions.Regex.Replace(
-            html ?? "", "<[^>]+>", " ");
-        plainText = System.Text.RegularExpressions.Regex.Replace(
-            plainText, @"\s+", " ").Trim();
-        if (plainText.Length > 500) plainText = plainText.Substring(0, 500) + "...";
+        var plainText = System.Text.RegularExpressions.Regex.Replace(html ?? "", "<[^>]+>", " ");
+        plainText = System.Text.RegularExpressions.Regex.Replace(plainText, @"\s+", " ").Trim();
+        if (plainText.Length > 500)
+        {
+            plainText = plainText.Substring(0, 500) + "...";
+        }
 
         float y = 30;
         foreach (var line in plainText.Split('\n'))
         {
-            if (y > h - 20) break;
+            if (y > h - 20)
+            {
+                break;
+            }
             canvas.DrawText(line.Trim(), 20, y, SKTextAlign.Left, textFont, textPaint);
             y += 20;
         }
@@ -262,14 +369,17 @@ public sealed class PopupWindow : IDisposable
             Color = new SKColor(107, 114, 128),
             IsAntialias = true
         };
-        var msg = "Loading...";
+        const string msg = "Loading...";
         float tw = textFont.MeasureText(msg);
         canvas.DrawText(msg, (w - tw) / 2f, h / 2f, SKTextAlign.Left, textFont, textPaint);
     }
 
     private void OnResize(Silk.NET.Maths.Vector2D<int> size)
     {
-        if (size.X <= 0 || size.Y <= 0) return;
+        if (size.X <= 0 || size.Y <= 0 || IsClosed)
+        {
+            return;
+        }
 
         _width = size.X;
         _height = size.Y;
@@ -280,27 +390,74 @@ public sealed class PopupWindow : IDisposable
 
     private void OnClose()
     {
-        IsClosed = true;
-        Dispose();
+        Volatile.Write(ref _isClosed, 1);
+        Interlocked.Exchange(ref _closeRequested, 1);
     }
 
     public void Close()
     {
-        if (_disposed || IsClosed) return;
-        IsClosed = true;
-        try { _window?.Close(); } catch { }
-        Dispose();
+        if (Interlocked.Exchange(ref _closeRequested, 1) != 0)
+        {
+            return;
+        }
+
+        Volatile.Write(ref _isClosed, 1);
+        try
+        {
+            _window.Close();
+        }
+        catch (Exception ex)
+        {
+            EngineLogBridge.Debug(
+                $"[PopupWindow] {_name}: close request failed: {ex.GetType().Name}: {ex.Message}",
+                LogCategory.General);
+        }
     }
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        Close();
+
+        // Never destroy GL/Skia resources here: Dispose can be called from the host
+        // thread while the popup thread is inside OnRender. The window-thread finally
+        // block owns native teardown. Wait briefly only to make normal IDisposable use
+        // deterministic without introducing cross-thread graphics destruction.
+        if (Thread.CurrentThread != _windowThread && _windowThread.IsAlive)
+        {
+            _windowThread.Join(TimeSpan.FromSeconds(2));
+        }
+    }
+
+    private void CleanupWindowThreadResources()
+    {
+        if (Interlocked.Exchange(ref _cleanupCompleted, 1) != 0)
+        {
+            return;
+        }
+
+        _glReady = false;
+
         _renderedFrame?.Dispose();
+        _renderedFrame = null;
         _surface?.Dispose();
+        _surface = null;
         _renderTarget?.Dispose();
+        _renderTarget = null;
         _grContext?.Dispose();
+        _grContext = null;
         _gl?.Dispose();
+        _gl = null;
+
+        try
+        {
+            _window.Dispose();
+        }
+        catch (Exception ex)
+        {
+            EngineLogBridge.Debug(
+                $"[PopupWindow] {_name}: window dispose failed: {ex.GetType().Name}: {ex.Message}",
+                LogCategory.General);
+        }
     }
 }
 
@@ -309,23 +466,36 @@ public sealed class PopupWindow : IDisposable
 /// </summary>
 public static class PopupWindowManager
 {
-    private static readonly ConcurrentDictionary<PopupWindow, bool> _popups = new();
+    private static readonly ConcurrentDictionary<PopupWindow, byte> _popups = new();
 
     public static PopupWindow Create(string name, int width, int height)
     {
         width = Math.Clamp(width, 200, 1920);
         height = Math.Clamp(height, 150, 1080);
-        var popup = new PopupWindow(name, width, height);
-        _popups[popup] = true;
+        var popup = new PopupWindow(name, width, height, OnPopupClosed);
+        _popups.TryAdd(popup, 0);
         return popup;
     }
 
     public static void CloseAll()
     {
-        foreach (var kv in _popups)
+        foreach (var popup in _popups.Keys)
         {
-            try { kv.Key.Close(); } catch { }
+            try
+            {
+                popup.Close();
+            }
+            catch (Exception ex)
+            {
+                EngineLogBridge.Debug(
+                    $"[PopupWindowManager] close failed: {ex.GetType().Name}: {ex.Message}",
+                    LogCategory.General);
+            }
         }
-        _popups.Clear();
+    }
+
+    private static void OnPopupClosed(PopupWindow popup)
+    {
+        _popups.TryRemove(popup, out _);
     }
 }
