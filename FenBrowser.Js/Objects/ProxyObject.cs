@@ -6,14 +6,14 @@ namespace FenBrowser.Js.Objects;
 
 // ECMA-262 28.2 Proxy Exotic Objects.
 //
-// A ProxyObject wraps a target object and an optional handler object.
-// Internal methods are intercepted by the engine (BytecodeInterpreter)
-// which checks `IsRevoked` and then looks up the corresponding trap on
-// the handler. When no trap exists, the operation is forwarded directly
-// to the target.
+// Proxy internal methods are interpreter-owned because trap lookup, invocation,
+// receiver handling, and invariant enforcement all require the owning realm/heap.
+// A ProxyObject deliberately does not keep process-global trap delegates: those
+// delegates allowed one interpreter to redefine another interpreter's semantics
+// and, when left unwired, silently bypassed traps by forwarding to the target.
 //
-// After Revoke() is called, every internal operation on the proxy throws
-// a TypeError per ECMA-262 28.2.2.1.
+// After Revoke() is called, every internal operation on the proxy throws a
+// TypeError per ECMA-262 28.2.2.1.
 public sealed class ProxyObject : JsObject
 {
     private readonly Func<string, JsValue>? _createTypeError;
@@ -22,13 +22,6 @@ public sealed class ProxyObject : JsObject
     public ObjectHandle? HandlerHandle { get; private set; }
 
     public bool IsRevoked => HandlerHandle == null;
-
-    // Trap delegates set by the interpreter during engine init so that
-    // virtual methods (SetProperty/DeleteProperty) can dispatch through
-    // the Proxy [[Set]] / [[Delete]] internal methods.
-    internal static Func<ProxyObject, JsValue, string, JsValue, bool>? ProxySetTrap;
-    internal static Func<ProxyObject, string, bool>? ProxyDeleteTrap;
-    internal static Func<ProxyObject, List<System.Collections.Generic.KeyValuePair<string, JsPropertyDescriptor>>>? ProxyEnumerateTrap;
 
     public ProxyObject(ObjectHandle targetHandle, ObjectHandle handlerHandle)
         : this(targetHandle, handlerHandle, createTypeError: null)
@@ -50,43 +43,41 @@ public sealed class ProxyObject : JsObject
         HandlerHandle = null;
     }
 
-    // ECMA-262 10.5.12 [[Set]] — if the handler has a "set" trap, call it;
-    // otherwise forward to the target.
+    // Proxy [[Set]] must be dispatched through BytecodeInterpreter.ProxySet so
+    // the handler trap and invariants are evaluated in the owning interpreter.
+    // Silently forwarding here is observably wrong whenever a set trap exists.
     public override bool SetProperty(string key, JsValue value)
     {
-        if (IsRevoked) ThrowProxyError("Cannot perform 'set' on a revoked Proxy.");
-        if (ProxySetTrap is { } setter)
-            return setter(this, JsValue.FromObject(TargetHandle), key, value);
-        return GetTarget().SetProperty(key, value);
+        if (IsRevoked)
+            ThrowProxyError("Cannot perform 'set' on a revoked Proxy.");
+
+        throw ProxyDispatchRequired("set", key);
     }
 
-    // ECMA-262 10.5.10 [[Delete]] — if the handler has a "deleteProperty" trap,
-    // call it; otherwise forward to the target.
+    // Proxy [[Delete]] likewise needs interpreter-owned trap dispatch.
     public override bool DeleteProperty(string key)
     {
-        if (IsRevoked) ThrowProxyError("Cannot perform 'deleteProperty' on a revoked Proxy.");
-        if (ProxyDeleteTrap is { } deleter)
-            return deleter(this, key);
-        return GetTarget().DeleteProperty(key);
+        if (IsRevoked)
+            ThrowProxyError("Cannot perform 'deleteProperty' on a revoked Proxy.");
+
+        throw ProxyDispatchRequired("deleteProperty", key);
     }
 
-    // ECMA-262 10.5.11 [[OwnPropertyKeys]] — routes through the handler's "ownKeys"
-    // trap. Returns an enumerable of own string-keyed property descriptors for the
-    // target, filtered through the trap.
-    public override System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<string, JsPropertyDescriptor>> EnumerateOwnProperties()
+    // Proxy [[OwnPropertyKeys]] cannot be approximated by enumerating the target:
+    // the ownKeys trap has duplicate/non-configurable/non-extensible invariants.
+    public override IEnumerable<KeyValuePair<string, JsPropertyDescriptor>> EnumerateOwnProperties()
     {
-        if (IsRevoked) ThrowProxyError("Cannot enumerate own properties on a revoked Proxy.");
-        if (ProxyEnumerateTrap is { } en)
-            return en(this);
-        return GetTarget().EnumerateOwnProperties();
+        if (IsRevoked)
+            ThrowProxyError("Cannot enumerate own properties on a revoked Proxy.");
+
+        throw ProxyDispatchRequired("ownKeys", null);
     }
 
-    private JsObject GetTarget()
+    private static InvalidOperationException ProxyDispatchRequired(string operation, string? key)
     {
-        if (OwnerHeap is { } heap)
-            return heap.GetObject(TargetHandle);
-
-        throw new InvalidOperationException("Proxy is not attached to a JavaScript heap.");
+        var suffix = key == null ? string.Empty : $" for property '{key}'";
+        return new InvalidOperationException(
+            $"Proxy [[{operation}]]{suffix} must be dispatched through the owning JavaScript interpreter.");
     }
 
     private void ThrowProxyError(string message)
