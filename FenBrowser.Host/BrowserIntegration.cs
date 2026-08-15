@@ -185,7 +185,6 @@ public class BrowserIntegration : IDisposable
     private HashSet<Element> _pendingCompositeDirtyElements = new();
     private HashSet<Element> _pendingAnimationPaintDirtyElements = new();
     private long _pendingAnimationGeneration;
-    private long _lastRenderedAnimationGeneration;
     private long _lastRenderedImageGeneration;
     // Remote frame bitmap delivered from a brokered renderer child via shared memory.
     private SKBitmap _remoteFrameBitmap;
@@ -2204,6 +2203,7 @@ public class BrowserIntegration : IDisposable
 
             List<InputOverlayData> frameOverlays = new();
             RenderFrameResult frameResult;
+            long renderedImageGeneration = _lastRenderedImageGeneration;
             _rendererLock.EnterWriteLock();
             try
             {
@@ -2235,6 +2235,7 @@ public class BrowserIntegration : IDisposable
                         // Phase 7: use per-owner image generation.
                         var ownerId = _browser?.CurrentUri?.AbsoluteUri ?? "about:blank";
                         long currentImageGen = ImageLoader.GetCacheGeneration(ownerId);
+                        renderedImageGeneration = currentImageGen;
                         bool imageGenChanged = currentImageGen != _lastRenderedImageGeneration;
 
                         frameResult = _renderer.RenderFrame(new RenderFrameRequest
@@ -2360,6 +2361,7 @@ public class BrowserIntegration : IDisposable
 
             LogCommittedFrame(frameResult, viewportSize);
             _lastFrameTelemetry = frameResult?.Telemetry;
+            _lastRenderedImageGeneration = renderedImageGeneration;
             bool requestedFollowupFrame = TryApplyPendingFragmentNavigation();
 
             if (!requestedFollowupFrame)
@@ -3423,7 +3425,7 @@ public class BrowserIntegration : IDisposable
                     return href;
                 }
             }
-            current = current.Parent as Element;
+            current = current.ParentNode as Element;
         }
         return null;
     }

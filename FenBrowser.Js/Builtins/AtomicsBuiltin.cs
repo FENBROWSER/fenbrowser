@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Numerics;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
@@ -11,10 +10,9 @@ namespace FenBrowser.Js.Builtins;
 //
 // Atomics is a singleton ordinary object (not a constructor) exposing static
 // read-modify-write operations over integer TypedArrays. FenJS executes on a
-// single agent, so each operation is performed as an ordinary (non-interleaved)
-// read-modify-write — which is observably identical to a real atomic step in the
-// absence of concurrent agents. wait/notify degrade accordingly (no agent can
-// notify, so wait never blocks indefinitely and notify wakes zero agents).
+// single agent, so each read-modify-write operation is performed without interleaving.
+// Blocking wait is rejected because the browser agent cannot suspend; waitAsync is
+// withheld until the engine has real agent/waiter scheduling rather than fake state.
 //
 // All members are [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]:
 // true per the standard builtin shape; Atomics[ @@toStringTag ] = "Atomics".
@@ -44,7 +42,7 @@ public sealed class AtomicsBuiltin : IBuiltinModule
         Define(context, atomics, "store", 3, args => Store(context, args));
         Define(context, atomics, "isLockFree", 1, args => IsLockFree(context, args));
         Define(context, atomics, "wait", 4, args => Wait(context, args));
-        Define(context, atomics, "waitAsync", 4, args => WaitAsync(context, args));
+        // waitAsync is intentionally not exposed until FenJS has an agent-aware waiter scheduler.
         Define(context, atomics, "notify", 3, args => Notify(context, args));
         Define(context, atomics, "pause", 0, args => Pause(context, args));
 
@@ -120,8 +118,7 @@ public sealed class AtomicsBuiltin : IBuiltinModule
 
     private static JsValue RequireBigInt(IBuiltinContext context, JsValue value)
     {
-        if (value.Tag == JsValueTag.BigInt) return value;
-        throw new JsThrownException(context.CreateTypeError("Cannot convert value to a BigInt."));
+        return JsValue.FromBigInt(BigIntBuiltin.ToBigIntValue(context, value));
     }
 
     private static JsValue Rmw(IBuiltinContext context, IReadOnlyList<JsValue> args, AtomicOp op)
@@ -232,103 +229,51 @@ public sealed class AtomicsBuiltin : IBuiltinModule
         return JsValue.FromBoolean(n is 1 or 2 or 4 or 8);
     }
 
-    // 25.4.12 Atomics.wait ( typedArray, index, value, timeout )
-    // Single-agent simulation: a matching value with NaN/+∞ timeout tracks a pending
-    // waiter so Atomics.notify can report the woken count. Finite timeouts still
-    // return "timed-out" immediately (no other agent can wake them).
+    // ECMA-262 Atomics.wait. FenJS currently exposes only the browser/main agent,
+    // which is not allowed to suspend. Preserve the observable coercion/error order
+    // through AgentCanSuspend, then fail explicitly instead of fabricating waiter state.
     private static JsValue Wait(IBuiltinContext context, IReadOnlyList<JsValue> args)
     {
         var ta = ValidateIntegerTypedArray(context, Arg(args, 0), waitable: true);
-        var index = ValidateAtomicAccess(context, ta, Arg(args, 1));
-        var current = ta.GetElement(index);
+        if (!ta.Buffer.IsSharedArrayBuffer)
+        {
+            throw new JsThrownException(context.CreateTypeError(
+                "Atomics.wait requires a SharedArrayBuffer-backed TypedArray."));
+        }
 
-        bool equal;
+        _ = ValidateAtomicAccess(context, ta, Arg(args, 1));
         if (IsBig(ta))
         {
-            var v = RequireBigInt(context, Arg(args, 2));
-            equal = current.AsBigInt() == v.AsBigInt();
+            _ = BigIntBuiltin.ToBigIntValue(context, Arg(args, 2));
         }
         else
         {
-            var v = ToInteger(context, Arg(args, 2));
-            equal = current.AsNumber() == v;
+            _ = context.ToNumber(Arg(args, 2));
         }
 
-        // Coerce timeout for spec-observable side effects.
-        var t = context.ToNumber(Arg(args, 3));
-        // NaN timeout → +∞ per spec. Track a pending waiter so notify() reports it.
-        if (double.IsNaN(t) && equal)
-        {
-            var key = GetBufferIdentity(ta);
-            _pendingWaiters.AddOrUpdate(key, 1, (_, c) => c + 1);
-            return JsValue.FromString("ok");
-        }
-
-        // Finite timeout: actually sleep so wall-clock measurements see the
-        // expected delay (tests verify lapse >= TIMEOUT). Cap at 5s for safety.
-        if (equal && t > 0 && !double.IsInfinity(t))
-        {
-            var ms = (int)Math.Min(t, 5000);
-            if (ms > 0) System.Threading.Thread.Sleep(ms);
-        }
-
-        return JsValue.FromString(equal ? "timed-out" : "not-equal");
+        _ = context.ToNumber(Arg(args, 3));
+        throw new JsThrownException(context.CreateTypeError(
+            "Atomics.wait cannot suspend the current FenJS browser agent."));
     }
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<nint, int> _pendingWaiters = new();
+    // Atomics.waitAsync is not exposed while the runtime lacks an agent-aware waiter
+    // queue and promise-resolution scheduler. Returning an immediate fake timed-out
+    // record for positive/infinite waits was observably incorrect.
 
-    private static nint GetBufferIdentity(TypedArrayObject ta)
-    {
-        // Use the buffer object's hash as a key — sufficient for single-agent simulation.
-        return (nint)ta.Buffer.GetHashCode();
-    }
-
-    // 25.4.13 Atomics.waitAsync ( typedArray, index, value, timeout )
-    // Returns a Record exposed as { async, value }. In a single-agent realm the
-    // wait can never be satisfied by a notify, so a matching value reports an
-    // immediate synchronous "timed-out" rather than yielding a pending promise.
-    private static JsValue WaitAsync(IBuiltinContext context, IReadOnlyList<JsValue> args)
-    {
-        var ta = ValidateIntegerTypedArray(context, Arg(args, 0), waitable: true);
-        var index = ValidateAtomicAccess(context, ta, Arg(args, 1));
-        var current = ta.GetElement(index);
-
-        bool equal;
-        if (IsBig(ta))
-        {
-            var v = RequireBigInt(context, Arg(args, 2));
-            equal = current.AsBigInt() == v.AsBigInt();
-        }
-        else
-        {
-            var v = ToInteger(context, Arg(args, 2));
-            equal = current.AsNumber() == v;
-        }
-
-        _ = context.ToNumber(Arg(args, 3)); // coerce timeout for side effects.
-
-        var result = new JsObject();
-        var handle = context.Heap.AllocateObject(result, AllocationSite.Current());
-        result.DefineOwnProperty("async", new JsPropertyDescriptor(
-            JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
-        result.DefineOwnProperty("value", new JsPropertyDescriptor(
-            JsValue.FromString(equal ? "timed-out" : "not-equal"), Writable: true, Enumerable: true, Configurable: true));
-        return JsValue.FromObject(handle);
-    }
-
-    // 25.4.10 Atomics.notify ( typedArray, index, count )
+    // ECMA-262 Atomics.notify ( typedArray, index, count )
     private static JsValue Notify(IBuiltinContext context, IReadOnlyList<JsValue> args)
     {
         var ta = ValidateIntegerTypedArray(context, Arg(args, 0), waitable: true);
         _ = ValidateAtomicAccess(context, ta, Arg(args, 1));
-        if (args.Count > 2 && !(Arg(args, 2).Tag == JsValueTag.Undefined))
-            _ = ToInteger(context, Arg(args, 2)); // coerce count for side effects.
-        // Single-agent simulation: return the count of pending waiters from Atomics.wait
-        // with NaN timeout, so tests that use agent.start + receiveBroadcast + wait +
-        // notify observe the correct woken-agent count.
-        var key = GetBufferIdentity(ta);
-        var woken = _pendingWaiters.TryRemove(key, out var count) ? count : 0;
-        return JsValue.FromNumber(woken);
+        if (args.Count > 2 && Arg(args, 2).Tag != JsValueTag.Undefined)
+        {
+            _ = ToInteger(context, Arg(args, 2));
+        }
+
+        // Per ECMA-262, notify on a non-shared backing buffer returns +0. FenJS has
+        // no worker-agent waiter queues yet, so a shared buffer also has zero real
+        // waiters. Do not synthesize cross-agent state in a process-global dictionary.
+        return JsValue.FromNumber(0);
     }
 
     // 25.4.14 Atomics.pause ( [ iterationNumber ] ) — ES2024+.

@@ -507,7 +507,7 @@ namespace FenBrowser.Core.Security
             }
 
             var scheme = uri.Scheme.ToLowerInvariant();
-            var host = uri.Host.ToLowerInvariant();
+            var host = uri.IdnHost.ToLowerInvariant();
             if (host.IndexOf(':') >= 0 &&
                 !host.StartsWith("[", StringComparison.Ordinal) &&
                 !host.EndsWith("]", StringComparison.Ordinal))

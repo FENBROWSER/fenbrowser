@@ -156,6 +156,12 @@ public sealed class BigIntBuiltin : IBuiltinModule
         return negative ? "-" + result : result;
     }
 
+    internal static BigInteger ToBigIntValue(IBuiltinContext context, JsValue input)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return ToBigInt(context, input, allowNumber: false).AsBigInt();
+    }
+
     private static JsValue ToBigInt(IBuiltinContext context, JsValue input, bool allowNumber)
     {
         var primitive = ToPrimitive(context, input);
