@@ -9,34 +9,49 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.WebDriver.Protocol;
+using FenBrowser.WebDriver.Security;
 
 namespace FenBrowser.WebDriver.BiDi;
 
 /// <summary>
 /// W3C WebDriver BiDi WebSocket transport.
 ///
-/// Implements the transport layer of the BiDi specification: a WebSocket
-/// endpoint at /session/{sessionId}/bidi that accepts JSON-RPC-style messages
-/// and delivers responses. The command surface covers the session lifecycle
-/// (session.status, session.new, session.end, session.subscribe/unsubscribe)
-/// plus a ping used by conformance clients to validate the transport.
-///
-/// The endpoint authenticates purely by session id (the session id is the
-/// capability token) and binds to loopback, mirroring the HTTP listener.
+/// The transport is loopback-only and requires an already-created WebDriver
+/// session. The session id is treated as a capability and every upgrade is
+/// subjected to the same remote-endpoint and browser-Origin checks as the HTTP
+/// WebDriver endpoint.
 /// </summary>
 public sealed class BiDiWebSocketServer : IDisposable
 {
     private const int MaxMessageBytes = 16 * 1024 * 1024;
+    private const int MaxConcurrentConnections = 16;
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+    private static readonly Regex SessionPathRegex = new(
+        @"^/session/(?<sid>[0-9a-fA-F]{32})/bidi$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private readonly HttpListener _listener;
     private readonly SessionManager _sessionManager;
+    private readonly OriginValidator _originValidator;
     private readonly CancellationTokenSource _cts = new();
-    private readonly ConcurrentDictionary<string, WebSocket> _clients = new();
+    private readonly SemaphoreSlim _connectionAdmission = new(MaxConcurrentConnections, MaxConcurrentConnections);
+    private readonly ConcurrentDictionary<string, WebSocket> _clients = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _sessionReservations = new(StringComparer.Ordinal);
+    private readonly int _port;
     private Task? _listenTask;
-    private bool _started;
+    private int _started;
+    private int _disposed;
 
     public BiDiWebSocketServer(SessionManager sessionManager, int port)
     {
+        if (port is < IPEndPoint.MinPort or > IPEndPoint.MaxPort)
+        {
+            throw new ArgumentOutOfRangeException(nameof(port));
+        }
+
         _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
+        _port = port;
+        _originValidator = new OriginValidator(allowLocalhostOnly: true);
 
         _listener = new HttpListener();
         _listener.Prefixes.Add($"http://127.0.0.1:{port}/session/");
@@ -46,14 +61,22 @@ public sealed class BiDiWebSocketServer : IDisposable
 
     public void Start()
     {
-        if (_started)
+        ThrowIfDisposed();
+        if (Interlocked.CompareExchange(ref _started, 1, 0) != 0)
         {
             return;
         }
 
-        _started = true;
-        _listener.Start();
-        _listenTask = Task.Run(ListenLoopAsync);
+        try
+        {
+            _listener.Start();
+            _listenTask = Task.Run(ListenLoopAsync);
+        }
+        catch
+        {
+            Volatile.Write(ref _started, 0);
+            throw;
+        }
     }
 
     private async Task ListenLoopAsync()
@@ -63,81 +86,114 @@ public sealed class BiDiWebSocketServer : IDisposable
             HttpListenerContext context;
             try
             {
-                context = await _listener.GetContextAsync();
+                context = await _listener.GetContextAsync().ConfigureAwait(false);
             }
             catch (ObjectDisposedException)
             {
                 break;
             }
-            catch (HttpListenerException)
+            catch (HttpListenerException) when (_cts.IsCancellationRequested)
             {
                 break;
             }
-            catch
+            catch (HttpListenerException)
             {
+                if (!_listener.IsListening)
+                {
+                    break;
+                }
                 continue;
             }
 
-            _ = Task.Run(() => HandleContextAsync(context));
+            if (!_connectionAdmission.Wait(0))
+            {
+                TryReject(context, 503);
+                continue;
+            }
+
+            _ = HandleAdmittedContextAsync(context);
+        }
+    }
+
+    private async Task HandleAdmittedContextAsync(HttpListenerContext context)
+    {
+        try
+        {
+            await HandleContextAsync(context).ConfigureAwait(false);
+        }
+        finally
+        {
+            _connectionAdmission.Release();
         }
     }
 
     private async Task HandleContextAsync(HttpListenerContext context)
     {
+        string? reservedSessionId = null;
+        WebSocket? webSocket = null;
+
         try
         {
-            var path = context.Request.Url?.AbsolutePath ?? string.Empty;
+            var request = context.Request;
+            if (!_originValidator.ValidateOrigin(request.RemoteEndPoint) ||
+                !_originValidator.ValidateOriginHeader(request.Headers["Origin"]) ||
+                !ValidateLoopbackHostHeader(request.UserHostName))
+            {
+                TryReject(context, 403);
+                return;
+            }
 
-            // Expected: /session/{sessionId}/bidi
-            var match = Regex.Match(path, @"^/session/(?<sid>[^/]+)/bidi$", RegexOptions.IgnoreCase);
+            if (!request.IsWebSocketRequest)
+            {
+                TryReject(context, 400);
+                return;
+            }
+
+            var path = request.Url?.AbsolutePath ?? string.Empty;
+            var match = SessionPathRegex.Match(path);
             if (!match.Success)
             {
-                context.Response.StatusCode = 404;
-                context.Response.Close();
+                TryReject(context, 404);
                 return;
             }
 
-            var sessionId = Uri.UnescapeDataString(match.Groups["sid"].Value);
-
-            // The session id is the capability token: reject unknown sessions.
+            var sessionId = match.Groups["sid"].Value;
             if (!_sessionManager.HasSession(sessionId))
             {
-                context.Response.StatusCode = 401;
-                context.Response.Close();
+                TryReject(context, 401);
                 return;
             }
 
-            var socket = await context.AcceptWebSocketAsync(null).ConfigureAwait(false);
-            var webSocket = socket.WebSocket;
-            _clients[sessionId] = webSocket;
+            // Exactly one controller socket is permitted per session. The previous
+            // implementation overwrote the dictionary entry while leaving the old
+            // socket alive, allowing two independent controllers to issue commands.
+            if (!_sessionReservations.TryAdd(sessionId, 0))
+            {
+                TryReject(context, 409);
+                return;
+            }
+            reservedSessionId = sessionId;
 
-            try
+            var socketContext = await context.AcceptWebSocketAsync(null).ConfigureAwait(false);
+            webSocket = socketContext.WebSocket;
+            if (!_clients.TryAdd(sessionId, webSocket))
             {
-                await RunClientAsync(sessionId, webSocket, _cts.Token).ConfigureAwait(false);
+                await CloseBestEffortAsync(
+                    webSocket,
+                    WebSocketCloseStatus.PolicyViolation,
+                    "session already connected",
+                    _cts.Token).ConfigureAwait(false);
+                return;
             }
-            finally
-            {
-                _clients.TryRemove(sessionId, out _);
-                try
-                {
-                    webSocket.Dispose();
-                }
-                catch
-                {
-                }
-            }
+
+            await RunClientAsync(sessionId, webSocket, _cts.Token).ConfigureAwait(false);
         }
         catch (WebSocketException)
         {
-            // Upgrade rejected (e.g. not a WebSocket request).
-            try
-            {
-                context.Response.StatusCode = 400;
-                context.Response.Close();
-            }
-            catch
-            {
-            }
+            TryReject(context, 400);
+        }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+        {
         }
         catch
         {
@@ -149,13 +205,42 @@ public sealed class BiDiWebSocketServer : IDisposable
             {
             }
         }
+        finally
+        {
+            if (reservedSessionId != null)
+            {
+                _clients.TryRemove(reservedSessionId, out _);
+                _sessionReservations.TryRemove(reservedSessionId, out _);
+            }
+
+            if (webSocket != null)
+            {
+                try
+                {
+                    webSocket.Dispose();
+                }
+                catch
+                {
+                }
+            }
+        }
     }
 
-    private static async Task RunClientAsync(string sessionId, WebSocket socket, CancellationToken ct)
+    private async Task RunClientAsync(string sessionId, WebSocket socket, CancellationToken ct)
     {
         var buffer = new byte[8192];
         while (!ct.IsCancellationRequested && socket.State == WebSocketState.Open)
         {
+            if (!_sessionManager.HasSession(sessionId))
+            {
+                await CloseBestEffortAsync(
+                    socket,
+                    WebSocketCloseStatus.PolicyViolation,
+                    "session no longer exists",
+                    ct).ConfigureAwait(false);
+                return;
+            }
+
             WebSocketReceiveResult result;
             using var ms = new System.IO.MemoryStream();
             do
@@ -163,96 +248,161 @@ public sealed class BiDiWebSocketServer : IDisposable
                 result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), ct).ConfigureAwait(false);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    try
-                    {
-                        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", ct).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                    }
+                    await CloseBestEffortAsync(
+                        socket,
+                        WebSocketCloseStatus.NormalClosure,
+                        "bye",
+                        ct).ConfigureAwait(false);
+                    return;
+                }
 
+                if (result.MessageType != WebSocketMessageType.Text)
+                {
+                    await CloseBestEffortAsync(
+                        socket,
+                        WebSocketCloseStatus.InvalidMessageType,
+                        "text messages required",
+                        ct).ConfigureAwait(false);
+                    return;
+                }
+
+                if (ms.Length > MaxMessageBytes - result.Count)
+                {
+                    await CloseBestEffortAsync(
+                        socket,
+                        WebSocketCloseStatus.MessageTooBig,
+                        "message too large",
+                        ct).ConfigureAwait(false);
                     return;
                 }
 
                 ms.Write(buffer, 0, result.Count);
-                if (ms.Length > MaxMessageBytes)
-                {
-                    await socket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "message too large", ct).ConfigureAwait(false);
-                    return;
-                }
             }
             while (!result.EndOfMessage);
 
-            if (result.MessageType != WebSocketMessageType.Text)
+            string json;
+            try
             {
-                continue;
+                if (!ms.TryGetBuffer(out var segment) || segment.Array == null)
+                {
+                    json = StrictUtf8.GetString(ms.ToArray());
+                }
+                else
+                {
+                    json = StrictUtf8.GetString(segment.Array, segment.Offset, segment.Count);
+                }
+            }
+            catch (DecoderFallbackException)
+            {
+                await CloseBestEffortAsync(
+                    socket,
+                    WebSocketCloseStatus.InvalidPayloadData,
+                    "invalid UTF-8",
+                    ct).ConfigureAwait(false);
+                return;
             }
 
-            var json = Encoding.UTF8.GetString(ms.ToArray());
-            var response = ProcessMessage(json, sessionId);
-            if (response != null)
+            var processed = ProcessMessage(json, sessionId);
+            var bytes = Encoding.UTF8.GetBytes(processed.Response);
+            await socket.SendAsync(
+                new ArraySegment<byte>(bytes),
+                WebSocketMessageType.Text,
+                true,
+                ct).ConfigureAwait(false);
+
+            if (processed.CloseAfterResponse)
             {
-                var bytes = Encoding.UTF8.GetBytes(response);
-                await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                await CloseBestEffortAsync(
+                    socket,
+                    WebSocketCloseStatus.NormalClosure,
+                    "session ended",
+                    ct).ConfigureAwait(false);
+                return;
             }
         }
     }
 
-    private static string? ProcessMessage(string json, string sessionId)
+    private BiDiMessageResult ProcessMessage(string json, string sessionId)
     {
         try
         {
-            using var doc = JsonDocument.Parse(json);
+            using var doc = JsonDocument.Parse(
+                json,
+                new JsonDocumentOptions
+                {
+                    AllowTrailingCommas = false,
+                    CommentHandling = JsonCommentHandling.Disallow,
+                    MaxDepth = 64
+                });
             var root = doc.RootElement;
-
-            if (!root.TryGetProperty("id", out var idElement) ||
-                !root.TryGetProperty("method", out var methodElement))
+            if (root.ValueKind != JsonValueKind.Object)
             {
-                return BuildErrorResponse(-1, "invalid argument", "BiDi messages require 'id' and 'method'.");
+                return Error(-1, "invalid argument", "BiDi message must be a JSON object.");
             }
 
-            var id = idElement.GetInt64();
-            var method = methodElement.GetString() ?? string.Empty;
+            if (!root.TryGetProperty("id", out var idElement) ||
+                !idElement.TryGetInt64(out var id) ||
+                id < 0 ||
+                !root.TryGetProperty("method", out var methodElement) ||
+                methodElement.ValueKind != JsonValueKind.String)
+            {
+                return Error(-1, "invalid argument", "BiDi messages require a non-negative integer 'id' and string 'method'.");
+            }
+
+            var method = methodElement.GetString();
+            if (string.IsNullOrWhiteSpace(method))
+            {
+                return Error(id, "invalid argument", "BiDi method must not be empty.");
+            }
 
             switch (method)
             {
                 case "session.status":
-                    return BuildResultResponse(id, new Dictionary<string, object>
+                    return Success(id, new Dictionary<string, object>
                     {
                         ["ready"] = true,
                         ["message"] = "FenBrowser WebDriver BiDi ready"
                     });
 
-                case "session.new":
-                    return BuildResultResponse(id, new Dictionary<string, object>
-                    {
-                        ["sessionId"] = sessionId,
-                        ["capabilities"] = new Dictionary<string, object>()
-                    });
-
                 case "session.end":
-                    return BuildResultResponse(id, new Dictionary<string, object>());
+                    _sessionManager.DeleteSession(sessionId);
+                    return Success(id, new Dictionary<string, object>(), closeAfterResponse: true);
+
+                case "session.new":
+                    return Error(
+                        id,
+                        "unsupported operation",
+                        "session.new is not supported on an already-bound WebDriver session socket.");
 
                 case "session.subscribe":
                 case "session.unsubscribe":
-                    // Accept the subscription; event fan-out is minimal for now.
-                    return BuildResultResponse(id, new Dictionary<string, object>
-                    {
-                        ["subscription"] = Array.Empty<string>()
-                    });
+                    return Error(
+                        id,
+                        "unsupported operation",
+                        "BiDi event subscription delivery is not implemented yet.");
 
                 case "ping":
-                    return BuildResultResponse(id, new Dictionary<string, object> { ["pong"] = true });
+                    return Success(id, new Dictionary<string, object> { ["pong"] = true });
 
                 default:
-                    return BuildErrorResponse(id, "unknown command", $"Unknown BiDi method: {method}");
+                    return Error(id, "unknown command", $"Unknown BiDi method: {method}");
             }
         }
         catch (JsonException)
         {
-            return BuildErrorResponse(-1, "invalid argument", "Malformed BiDi message JSON.");
+            return Error(-1, "invalid argument", "Malformed BiDi message JSON.");
+        }
+        catch (InvalidOperationException)
+        {
+            return Error(-1, "invalid argument", "Invalid BiDi message shape.");
         }
     }
+
+    private static BiDiMessageResult Success(long id, object result, bool closeAfterResponse = false)
+        => new(BuildResultResponse(id, result), closeAfterResponse);
+
+    private static BiDiMessageResult Error(long id, string error, string message)
+        => new(BuildErrorResponse(id, error, message), false);
 
     private static string BuildResultResponse(long id, object result)
     {
@@ -279,8 +429,77 @@ public sealed class BiDiWebSocketServer : IDisposable
         });
     }
 
+    private bool ValidateLoopbackHostHeader(string? hostHeader)
+    {
+        if (string.IsNullOrWhiteSpace(hostHeader) ||
+            !Uri.TryCreate("http://" + hostHeader.Trim(), UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        if (uri.Port != _port)
+        {
+            return false;
+        }
+
+        if (string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return IPAddress.TryParse(uri.Host, out var address) && IPAddress.IsLoopback(address);
+    }
+
+    private static void TryReject(HttpListenerContext context, int statusCode)
+    {
+        try
+        {
+            context.Response.StatusCode = statusCode;
+            context.Response.Headers["Cache-Control"] = "no-store";
+            context.Response.Close();
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task CloseBestEffortAsync(
+        WebSocket socket,
+        WebSocketCloseStatus status,
+        string description,
+        CancellationToken ct)
+    {
+        if (socket.State is not (WebSocketState.Open or WebSocketState.CloseReceived))
+        {
+            return;
+        }
+
+        try
+        {
+            await socket.CloseAsync(status, description, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+    }
+
+    private void ThrowIfDisposed()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            throw new ObjectDisposedException(nameof(BiDiWebSocketServer));
+        }
+    }
+
+    private readonly record struct BiDiMessageResult(string Response, bool CloseAfterResponse);
+
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _cts.Cancel();
         try
         {
@@ -300,7 +519,11 @@ public sealed class BiDiWebSocketServer : IDisposable
             {
             }
         }
+
         _clients.Clear();
+        _sessionReservations.Clear();
+        _listener.Close();
+        _connectionAdmission.Dispose();
         _cts.Dispose();
     }
 }
