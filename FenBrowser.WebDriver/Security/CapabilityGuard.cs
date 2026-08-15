@@ -28,7 +28,7 @@ namespace FenBrowser.WebDriver.Security
 
         public CapabilityGuard(Session session)
         {
-            _session = session;
+            _session = session ?? throw new ArgumentNullException(nameof(session));
         }
 
         /// <summary>
@@ -89,16 +89,19 @@ namespace FenBrowser.WebDriver.Security
 
         private bool AllowFileUrls()
         {
-            var fenOptions = _session.Capabilities.FenOptions;
-            if (fenOptions?.Args != null)
-            {
-                foreach (var arg in fenOptions.Args)
-                {
-                    if (string.Equals(arg, "--allow-file-access", StringComparison.OrdinalIgnoreCase))
-                        return true;
-                }
-            }
-            return false;
+            var args = _session.Capabilities.FenOptions?.Args;
+            if (args == null || args.Count == 0)
+                return false;
+
+            // Capability negotiation validates this pair, but the operation boundary
+            // must enforce it again. Sessions can be constructed by embedders/tests or
+            // future protocol paths that accidentally bypass negotiation; a lone
+            // --allow-file-access flag must never become sufficient by itself.
+            var hasFileAccess = args.Any(arg =>
+                string.Equals(arg, "--allow-file-access", StringComparison.OrdinalIgnoreCase));
+            var hasRiskyOptIn = args.Any(arg =>
+                string.Equals(arg, RiskyCapabilityOptIn, StringComparison.OrdinalIgnoreCase));
+            return hasFileAccess && hasRiskyOptIn;
         }
 
         /// <summary>
@@ -168,7 +171,7 @@ namespace FenBrowser.WebDriver.Security
             }
 
             var hasRiskyOptIn = args.Any(arg => string.Equals(arg, RiskyCapabilityOptIn, StringComparison.OrdinalIgnoreCase));
-            var riskyArgs = args.Where(arg => RiskyCapabilityArgs.Contains(arg)).ToArray();
+            var riskyArgs = args.Where(IsRiskyCapabilityArgument).ToArray();
             if (riskyArgs.Length == 0)
             {
                 return SecurityDecision.Allow();
@@ -182,6 +185,23 @@ namespace FenBrowser.WebDriver.Security
             }
 
             return SecurityDecision.Allow();
+        }
+
+        private static bool IsRiskyCapabilityArgument(string argument)
+        {
+            if (string.IsNullOrWhiteSpace(argument))
+                return false;
+
+            foreach (var risky in RiskyCapabilityArgs)
+            {
+                if (string.Equals(argument, risky, StringComparison.OrdinalIgnoreCase) ||
+                    argument.StartsWith(risky + "=", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 
