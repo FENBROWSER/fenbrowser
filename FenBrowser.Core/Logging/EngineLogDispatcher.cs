@@ -70,9 +70,6 @@ internal sealed class EngineLogDispatcher : IDisposable
         Interlocked.Increment(ref _enqueueInProgress);
         try
         {
-            // Dispose can begin between the first check and this increment. Re-check
-            // while we are represented in _enqueueInProgress so CompleteAdding cannot
-            // turn a normal shutdown race into an exception at an arbitrary log caller.
             if (_disposed || _queue.IsAddingCompleted)
             {
                 return false;
@@ -86,9 +83,6 @@ internal sealed class EngineLogDispatcher : IDisposable
                     return true;
                 }
 
-                // Error/Fatal gets one short backpressure retry. It is not a dropped
-                // event unless that retry also fails; the old code incremented the
-                // drop counter before retry and therefore over-reported loss.
                 if (evt.Header.Severity >= LogSeverity.Error)
                 {
                     if (!_disposed && !_queue.IsAddingCompleted &&
@@ -106,7 +100,6 @@ internal sealed class EngineLogDispatcher : IDisposable
                     }
                     catch
                     {
-                        // absolute last resort
                     }
                 }
 
@@ -115,8 +108,6 @@ internal sealed class EngineLogDispatcher : IDisposable
             }
             catch (InvalidOperationException) when (_disposed || _queue.IsAddingCompleted)
             {
-                // BlockingCollection throws when CompleteAdding races TryAdd. Shutdown
-                // is an expected state transition, not a logging failure in the caller.
                 return false;
             }
             catch (ObjectDisposedException) when (_disposed)
@@ -179,7 +170,6 @@ internal sealed class EngineLogDispatcher : IDisposable
         }
         catch (ObjectDisposedException) when (_disposed)
         {
-            // Normal only if shutdown had to abandon a stuck worker.
         }
         catch (Exception ex)
         {
@@ -190,7 +180,6 @@ internal sealed class EngineLogDispatcher : IDisposable
             }
             catch
             {
-                // absolute last resort
             }
         }
     }
@@ -206,7 +195,6 @@ internal sealed class EngineLogDispatcher : IDisposable
         }
         catch
         {
-            // absolute last resort
         }
     }
 
@@ -232,7 +220,6 @@ internal sealed class EngineLogDispatcher : IDisposable
             }
             catch
             {
-                // absolute last resort
             }
         }
     }
@@ -286,7 +273,11 @@ internal sealed class EngineLogDispatcher : IDisposable
                 {
                     return false;
                 }
-                buffered.Flush(remaining);
+
+                if (!buffered.Flush(remaining))
+                {
+                    return false;
+                }
             }
         }
 
@@ -315,9 +306,6 @@ internal sealed class EngineLogDispatcher : IDisposable
 
         _disposed = true;
 
-        // Let in-flight producers leave TryEnqueue before closing the collection.
-        // This dramatically narrows the CompleteAdding/TryAdd race; TryEnqueue also
-        // catches the expected shutdown exception as a final guard.
         var waitStarted = Stopwatch.GetTimestamp();
         while (Volatile.Read(ref _enqueueInProgress) != 0 &&
                Stopwatch.GetElapsedTime(waitStarted) < TimeSpan.FromMilliseconds(250))
@@ -344,13 +332,8 @@ internal sealed class EngineLogDispatcher : IDisposable
         }
         catch
         {
-            // best effort below
         }
 
-        // Never dispose sinks/queue out from underneath a worker that is still
-        // executing a sink callback. A misbehaving sink can leak shutdown resources,
-        // but racing native/file sink disposal is more dangerous and can crash the
-        // process. The background worker can still finish after Dispose returns.
         if (!workerStopped)
         {
             return;
@@ -364,7 +347,6 @@ internal sealed class EngineLogDispatcher : IDisposable
             }
             catch
             {
-                // no-op
             }
         }
 
