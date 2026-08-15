@@ -8,6 +8,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Net;
 
 namespace FenBrowser.WebDriver.Security
@@ -17,6 +18,8 @@ namespace FenBrowser.WebDriver.Security
     /// </summary>
     public class OriginValidator
     {
+        private static readonly IdnMapping Idn = new();
+
         private readonly HashSet<string> _allowedOrigins = new(StringComparer.OrdinalIgnoreCase);
         private readonly object _allowedOriginsLock = new();
         private readonly bool _allowLocalhostOnly;
@@ -144,7 +147,7 @@ namespace FenBrowser.WebDriver.Security
 
             try
             {
-                return new IdnMapping().GetAscii(normalized).ToLowerInvariant();
+                return Idn.GetAscii(normalized).ToLowerInvariant();
             }
             catch (ArgumentException)
             {
