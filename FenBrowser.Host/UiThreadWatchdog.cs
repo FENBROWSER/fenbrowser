@@ -8,7 +8,7 @@ namespace FenBrowser.Host;
 
 /// <summary>
 /// Monitors the UI thread heartbeat and logs diagnostics when the UI becomes
-/// unresponsive.  Runs on a dedicated background thread so it survives UI-thread
+/// unresponsive. Runs on a dedicated background timer so it survives UI-thread
 /// stalls.
 ///
 /// Usage:
@@ -23,20 +23,20 @@ public sealed class UiThreadWatchdog : IDisposable
 
     private readonly object _lock = new();
     private readonly int _managedThreadId;
-    private long _heartbeatTicks;
-    private long _lastHealthyHeartbeatTicks;
-    private long _lastWarningTicks;
+    private long _heartbeatTimestamp;
+    private long _lastHealthyHeartbeatTimestamp;
+    private long _lastWarningTimestamp;
     private bool _running;
     private Timer _timer;
     private int _stallCount;
-    private long _totalStallTicks;
-    private long _maxStallTicks;
+    private long _totalStallTimeSpanTicks;
+    private long _maxStallTimeSpanTicks;
     private TimeSpan _stallThreshold;
     private TimeSpan _pollInterval;
     private TimeSpan _warningCooldown;
 
-    // Set via Initialize() — captured once so the watchdog can read them without
-    // touching any potentially-blocked UI-thread state.
+    // Set via Initialize() — captured once so the watchdog can read it without
+    // touching potentially-blocked UI-thread state.
     private Func<(string Status, int ActiveTabId, long CompositorFrameSeq, int TabCount)> _telemetryProvider;
 
     private UiThreadWatchdog()
@@ -48,7 +48,7 @@ public sealed class UiThreadWatchdog : IDisposable
     }
 
     /// <summary>
-    /// Start the watchdog.  Call once from the UI thread during host initialization.
+    /// Start the watchdog. Call once from the UI thread during host initialization.
     /// </summary>
     public void Initialize(
         TimeSpan? stallThreshold = null,
@@ -62,13 +62,18 @@ public sealed class UiThreadWatchdog : IDisposable
                 return;
             }
 
-            _stallThreshold = stallThreshold ?? TimeSpan.FromMilliseconds(100);
-            _pollInterval = pollInterval ?? TimeSpan.FromMilliseconds(50);
+            _stallThreshold = NormalizePositiveDuration(
+                stallThreshold ?? TimeSpan.FromMilliseconds(100),
+                TimeSpan.FromMilliseconds(100));
+            _pollInterval = NormalizePositiveDuration(
+                pollInterval ?? TimeSpan.FromMilliseconds(50),
+                TimeSpan.FromMilliseconds(50));
             _telemetryProvider = telemetryProvider;
 
             _running = true;
-            _heartbeatTicks = Stopwatch.GetTimestamp();
-            _lastHealthyHeartbeatTicks = _heartbeatTicks;
+            _heartbeatTimestamp = Stopwatch.GetTimestamp();
+            _lastHealthyHeartbeatTimestamp = _heartbeatTimestamp;
+            _lastWarningTimestamp = 0;
 
             _timer = new Timer(OnTimerTick, null, _pollInterval, _pollInterval);
             EngineLogBridge.Info(
@@ -78,12 +83,12 @@ public sealed class UiThreadWatchdog : IDisposable
     }
 
     /// <summary>
-    /// Called from the UI thread every frame render.  Extremely cheap —
-    /// just a single interlocked write.
+    /// Called from the UI thread every frame render. Extremely cheap —
+    /// just a monotonic timestamp plus a single interlocked write.
     /// </summary>
     public void Heartbeat()
     {
-        Interlocked.Exchange(ref _heartbeatTicks, Stopwatch.GetTimestamp());
+        Interlocked.Exchange(ref _heartbeatTimestamp, Stopwatch.GetTimestamp());
     }
 
     /// <summary>
@@ -94,27 +99,27 @@ public sealed class UiThreadWatchdog : IDisposable
         get
         {
             var now = Stopwatch.GetTimestamp();
-            var lastBeat = Interlocked.Read(ref _heartbeatTicks);
-            return (now - lastBeat) > _stallThreshold.Ticks;
+            var lastBeat = Interlocked.Read(ref _heartbeatTimestamp);
+            return Stopwatch.GetElapsedTime(lastBeat, now) > _stallThreshold;
         }
     }
 
     /// <summary>
-    /// Total number of stall episodes detected since startup.
+    /// Total number of stall observations detected since startup.
     /// </summary>
     public int StallCount => Volatile.Read(ref _stallCount);
 
     /// <summary>
-    /// Longest single stall duration in ticks.
+    /// Longest observed stall duration, stored in TimeSpan ticks.
     /// </summary>
-    public long MaxStallTicks => Interlocked.Read(ref _maxStallTicks);
+    public long MaxStallTicks => Interlocked.Read(ref _maxStallTimeSpanTicks);
 
     public UiThreadWatchdogTelemetry GetTelemetry()
     {
         return new UiThreadWatchdogTelemetry(
             StallCount,
-            new TimeSpan(Interlocked.Read(ref _maxStallTicks)),
-            new TimeSpan(Interlocked.Read(ref _totalStallTicks)),
+            new TimeSpan(Interlocked.Read(ref _maxStallTimeSpanTicks)),
+            new TimeSpan(Interlocked.Read(ref _totalStallTimeSpanTicks)),
             IsStalled);
     }
 
@@ -123,51 +128,58 @@ public sealed class UiThreadWatchdog : IDisposable
         try
         {
             var now = Stopwatch.GetTimestamp();
-            var lastBeat = Interlocked.Read(ref _heartbeatTicks);
-            var elapsed = now - lastBeat;
+            var lastBeat = Interlocked.Read(ref _heartbeatTimestamp);
+            var elapsed = Stopwatch.GetElapsedTime(lastBeat, now);
 
-            if (elapsed <= _stallThreshold.Ticks)
+            if (elapsed <= _stallThreshold)
             {
-                // Healthy — update the healthy heartbeat marker.
-                Interlocked.Exchange(ref _lastHealthyHeartbeatTicks, lastBeat);
+                Interlocked.Exchange(ref _lastHealthyHeartbeatTimestamp, lastBeat);
                 return;
             }
 
-            // UI thread is stalled.
-            var stallDuration = new TimeSpan(elapsed);
             Interlocked.Increment(ref _stallCount);
-            Interlocked.Add(ref _totalStallTicks, _pollInterval.Ticks);
+            Interlocked.Add(ref _totalStallTimeSpanTicks, _pollInterval.Ticks);
 
-            // Track max stall.
+            // Keep telemetry in TimeSpan ticks. Stopwatch timestamps use
+            // Stopwatch.Frequency, which is platform dependent and must never be
+            // interpreted directly as TimeSpan ticks.
+            var elapsedTicks = elapsed.Ticks;
             long prevMax;
             do
             {
-                prevMax = Interlocked.Read(ref _maxStallTicks);
-                if (elapsed <= prevMax) break;
+                prevMax = Interlocked.Read(ref _maxStallTimeSpanTicks);
+                if (elapsedTicks <= prevMax)
+                {
+                    break;
+                }
             }
-            while (Interlocked.CompareExchange(ref _maxStallTicks, elapsed, prevMax) != prevMax);
+            while (Interlocked.CompareExchange(
+                ref _maxStallTimeSpanTicks,
+                elapsedTicks,
+                prevMax) != prevMax);
 
-            // Rate-limit warnings so we don't flood the log during a sustained stall.
-            var lastWarn = Interlocked.Read(ref _lastWarningTicks);
-            if (now - lastWarn < _warningCooldown.Ticks)
+            // Rate-limit warnings against the same monotonic clock, converting its
+            // frequency explicitly through Stopwatch.GetElapsedTime().
+            var lastWarn = Interlocked.Read(ref _lastWarningTimestamp);
+            if (lastWarn != 0 && Stopwatch.GetElapsedTime(lastWarn, now) < _warningCooldown)
             {
                 return;
             }
 
-            Interlocked.Exchange(ref _lastWarningTicks, now);
+            Interlocked.Exchange(ref _lastWarningTimestamp, now);
 
             var telemetry = _telemetryProvider?.Invoke()
                 ?? ("unavailable", 0, 0L, 0);
 
             EngineLogBridge.Warn(
-                $"[UiThreadWatchdog] UI thread STALLED for {stallDuration.TotalMilliseconds:F0}ms " +
+                $"[UiThreadWatchdog] UI thread STALLED for {elapsed.TotalMilliseconds:F0}ms " +
                 $"(stallCount={_stallCount}, activeTab={telemetry.ActiveTabId}, " +
                 $"compositorFrame={telemetry.CompositorFrameSeq}, tabs={telemetry.TabCount}, " +
                 $"status={telemetry.Status})",
                 LogCategory.Performance);
 
             // On a prolonged stall (>2s), emit a full process diagnostic.
-            if (stallDuration.TotalMilliseconds > 2000 && _stallCount % 10 == 0)
+            if (elapsed > TimeSpan.FromSeconds(2) && _stallCount % 10 == 0)
             {
                 EmitProcessDiagnostic();
             }
@@ -178,11 +190,16 @@ public sealed class UiThreadWatchdog : IDisposable
         }
     }
 
+    private static TimeSpan NormalizePositiveDuration(TimeSpan value, TimeSpan fallback)
+    {
+        return value > TimeSpan.Zero ? value : fallback;
+    }
+
     private static void EmitProcessDiagnostic()
     {
         try
         {
-            var proc = Process.GetCurrentProcess();
+            using var proc = Process.GetCurrentProcess();
             EngineLogBridge.Warn(
                 $"[UiThreadWatchdog] Process diagnostic: " +
                 $"threads={proc.Threads.Count}, " +
