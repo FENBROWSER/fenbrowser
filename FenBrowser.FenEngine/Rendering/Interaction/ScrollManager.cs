@@ -2,6 +2,7 @@ using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -52,12 +53,15 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             var state = element == null ? _nullScrollState : GetScrollState(element);
             float previousX = state.ScrollX;
             float previousY = state.ScrollY;
-            var now = DateTime.UtcNow;
+            var nowUtc = DateTime.UtcNow;
+            var nowTimestamp = Stopwatch.GetTimestamp();
 
             state.ScrollX = ClampToKnownBounds(scrollX, state.MaxScrollX);
             state.ScrollY = ClampToKnownBounds(scrollY, state.MaxScrollY);
 
-            var dtSeconds = (now - state.LastScrollUpdateUtc).TotalSeconds;
+            var dtSeconds = state.LastScrollUpdateTimestamp != 0
+                ? Stopwatch.GetElapsedTime(state.LastScrollUpdateTimestamp, nowTimestamp).TotalSeconds
+                : (nowUtc - state.LastScrollUpdateUtc).TotalSeconds;
             if (dtSeconds > 0.0001 && dtSeconds < 0.5)
             {
                 state.LastVelocityX = (state.ScrollX - previousX) / (float)dtSeconds;
@@ -75,8 +79,8 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                 state.LastInputDeltaY = state.ScrollY - previousY;
             }
 
-            state.LastScrollUpdateUtc = now;
-
+            state.LastScrollUpdateUtc = nowUtc;
+            state.LastScrollUpdateTimestamp = nowTimestamp;
         }
 
         /// <summary>
@@ -85,16 +89,21 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         public void SetScrollBounds(Element element, float contentWidth, float contentHeight, float viewportWidth, float viewportHeight)
         {
             var state = element == null ? _nullScrollState : GetScrollState(element);
+            contentWidth = NormalizeDimension(contentWidth);
+            contentHeight = NormalizeDimension(contentHeight);
+            viewportWidth = NormalizeDimension(viewportWidth);
+            viewportHeight = NormalizeDimension(viewportHeight);
+
             state.ContentWidth = contentWidth;
             state.ContentHeight = contentHeight;
             state.ViewportWidth = viewportWidth;
             state.ViewportHeight = viewportHeight;
-            state.MaxScrollX = Math.Max(0, contentWidth - viewportWidth);
-            state.MaxScrollY = Math.Max(0, contentHeight - viewportHeight);
+            state.MaxScrollX = Math.Max(0f, contentWidth - viewportWidth);
+            state.MaxScrollY = Math.Max(0f, contentHeight - viewportHeight);
 
-            // Clamp current scroll to new bounds
-            state.ScrollX = Math.Min(state.ScrollX, state.MaxScrollX);
-            state.ScrollY = Math.Min(state.ScrollY, state.MaxScrollY);
+            // Bounds are known here, so a zero maximum means the axis cannot scroll.
+            state.ScrollX = Math.Clamp(float.IsFinite(state.ScrollX) ? state.ScrollX : 0f, 0f, state.MaxScrollX);
+            state.ScrollY = Math.Clamp(float.IsFinite(state.ScrollY) ? state.ScrollY : 0f, 0f, state.MaxScrollY);
         }
 
         /// <summary>
@@ -113,20 +122,14 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         {
             if (element == null)
             {
-                _nullScrollState.ScrollX = 0;
-                _nullScrollState.ScrollY = 0;
-                _nullScrollState.MaxScrollX = 0;
-                _nullScrollState.MaxScrollY = 0;
-                _nullScrollState.ContentWidth = 0;
-                _nullScrollState.ContentHeight = 0;
-                _nullScrollState.ViewportWidth = 0;
-                _nullScrollState.ViewportHeight = 0;
+                ResetScrollState(_nullScrollState);
                 return;
             }
 
             lock (_lock)
             {
                 _scrollStates.Remove(element);
+                _anchors.Remove(element);
             }
         }
 
@@ -138,6 +141,8 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             lock (_lock)
             {
                 _scrollStates.Clear();
+                _anchors.Clear();
+                ResetScrollState(_nullScrollState);
             }
         }
 
@@ -216,14 +221,18 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             var state = GetScrollState(element);
             targetX = ClampToKnownBounds(targetX, state.MaxScrollX);
             targetY = ClampToKnownBounds(targetY, state.MaxScrollY);
+            durationMs = Math.Clamp(durationMs, 1, 60_000);
 
             if (Math.Abs(targetX - state.ScrollX) < 0.5f && Math.Abs(targetY - state.ScrollY) < 0.5f)
             {
+                state.SmoothScrollStartTime = null;
+                state.SmoothScrollStartTimestamp = 0;
                 return;
             }
 
             state.SmoothScrollTarget = (targetX, targetY);
             state.SmoothScrollStartTime = DateTime.UtcNow;
+            state.SmoothScrollStartTimestamp = Stopwatch.GetTimestamp();
             state.SmoothScrollDurationMs = durationMs;
             state.SmoothScrollStart = (state.ScrollX, state.ScrollY);
         }
@@ -234,10 +243,15 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         public bool UpdateSmoothScroll(Element element)
         {
             var state = GetScrollState(element);
-            if (!state.SmoothScrollStartTime.HasValue) return false;
+            if (!state.IsAnimating) return false;
 
-            var elapsed = (DateTime.UtcNow - state.SmoothScrollStartTime.Value).TotalMilliseconds;
-            var progress = Math.Min(1.0, elapsed / state.SmoothScrollDurationMs);
+            var elapsed = state.SmoothScrollStartTimestamp != 0
+                ? Stopwatch.GetElapsedTime(state.SmoothScrollStartTimestamp, Stopwatch.GetTimestamp()).TotalMilliseconds
+                : state.SmoothScrollStartTime.HasValue
+                    ? Math.Max(0d, (DateTime.UtcNow - state.SmoothScrollStartTime.Value).TotalMilliseconds)
+                    : 0d;
+            var duration = Math.Max(1, state.SmoothScrollDurationMs);
+            var progress = Math.Clamp(elapsed / duration, 0d, 1d);
 
             // Ease out cubic
             var eased = 1 - Math.Pow(1 - progress, 3);
@@ -251,10 +265,11 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             if (progress >= 1.0)
             {
                 state.SmoothScrollStartTime = null;
-                return false; // Animation complete
+                state.SmoothScrollStartTimestamp = 0;
+                return false;
             }
 
-            return true; // Animation in progress
+            return true;
         }
 
         /// <summary>
@@ -342,19 +357,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             }
         }
 
-        public void PerformSnap(Element element)
-        {
-             // 1. Get computed style (need to fetch from Layout/Renderer or pass it in)
-            // For now, assuming we can get it via helper or cached
-            // We'll pass null to IsScrollable and check if we can retrieve it from layout engine?
-            // Actually, we need the style. 
-            // MinimalLayoutComputer keeps styles.
-            // But ScrollManager is in Rendering, separation of concerns?
-            // Let's rely on passed style or look it up if possible.
-            // For now, allow passing style?
-            // Or assume `element.ComputedStyle` if we add it?
-        }
-        
+
         public void PerformSnap(Element element, CssComputed style, Func<Element, SKRect> getBox, Func<Element, CssComputed> getStyle = null)
         {
             if (style == null || string.IsNullOrWhiteSpace(style.ScrollSnapType) || style.ScrollSnapType.Equals("none", StringComparison.OrdinalIgnoreCase)) return;
@@ -428,11 +431,45 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
 
         private static float ClampToKnownBounds(float value, float max)
         {
+            if (!float.IsFinite(value))
+                return 0f;
+
+            max = NormalizeDimension(max);
             if (max > 0.001f)
-            {
-                return Math.Max(0, Math.Min(value, max));
-            }
-            return Math.Max(0, value);
+                return Math.Clamp(value, 0f, max);
+
+            // A zero max can also mean bounds have not been measured yet; preserve the
+            // previous behavior in that case while refusing negative/non-finite offsets.
+            return Math.Max(0f, value);
+        }
+
+        private static float NormalizeDimension(float value)
+        {
+            return float.IsFinite(value) && value > 0f ? value : 0f;
+        }
+
+        private static void ResetScrollState(ScrollState state)
+        {
+            if (state == null) return;
+            state.ScrollX = 0f;
+            state.ScrollY = 0f;
+            state.MaxScrollX = 0f;
+            state.MaxScrollY = 0f;
+            state.ContentWidth = 0f;
+            state.ContentHeight = 0f;
+            state.ViewportWidth = 0f;
+            state.ViewportHeight = 0f;
+            state.SmoothScrollStartTime = null;
+            state.SmoothScrollStartTimestamp = 0;
+            state.SmoothScrollDurationMs = 0;
+            state.SmoothScrollStart = (0f, 0f);
+            state.SmoothScrollTarget = (0f, 0f);
+            state.LastVelocityX = 0f;
+            state.LastVelocityY = 0f;
+            state.LastInputDeltaX = 0f;
+            state.LastInputDeltaY = 0f;
+            state.LastScrollUpdateUtc = DateTime.UtcNow;
+            state.LastScrollUpdateTimestamp = Stopwatch.GetTimestamp();
         }
 
         private static float ResolveDirectionHint(float lastInputDelta, float lastVelocity)
@@ -444,52 +481,41 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
 
         private static float FindBestSnapPoint(float current, IReadOnlyList<float> points, float directionHint)
         {
-            if (points == null || points.Count == 0) return current;
+            if (points == null || points.Count == 0 || !float.IsFinite(current)) return current;
 
-            float nearest = points[0];
-            float nearestDist = Math.Abs(current - nearest);
+            float nearest = current;
+            float nearestDist = float.MaxValue;
+            float forward = float.MaxValue;
+            float backward = float.MinValue;
+            bool foundForward = false;
+            bool foundBackward = false;
 
-            for (int i = 1; i < points.Count; i++)
+            for (int i = 0; i < points.Count; i++)
             {
-                float dist = Math.Abs(current - points[i]);
+                float point = points[i];
+                if (!float.IsFinite(point)) continue;
+
+                float dist = Math.Abs(current - point);
                 if (dist < nearestDist)
                 {
                     nearestDist = dist;
-                    nearest = points[i];
+                    nearest = point;
+                }
+
+                if (point >= current + 0.5f && point < forward)
+                {
+                    forward = point;
+                    foundForward = true;
+                }
+                if (point <= current - 0.5f && point > backward)
+                {
+                    backward = point;
+                    foundBackward = true;
                 }
             }
 
-            if (directionHint > 0.001f)
-            {
-                float forward = float.MaxValue;
-                bool foundForward = false;
-                for (int i = 0; i < points.Count; i++)
-                {
-                    float p = points[i];
-                    if (p >= current + 0.5f && p < forward)
-                    {
-                        forward = p;
-                        foundForward = true;
-                    }
-                }
-                if (foundForward) return forward;
-            }
-            else if (directionHint < -0.001f)
-            {
-                float backward = float.MinValue;
-                bool foundBackward = false;
-                for (int i = 0; i < points.Count; i++)
-                {
-                    float p = points[i];
-                    if (p <= current - 0.5f && p > backward)
-                    {
-                        backward = p;
-                        foundBackward = true;
-                    }
-                }
-                if (foundBackward) return backward;
-            }
-
+            if (directionHint > 0.001f && foundForward) return forward;
+            if (directionHint < -0.001f && foundBackward) return backward;
             return nearest;
         }
 
@@ -604,6 +630,11 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             }
 
             value = parsed * multiplier;
+            if (!float.IsFinite(value))
+            {
+                value = 0f;
+                return false;
+            }
             return true;
         }
 
@@ -648,38 +679,34 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
 
         private Node FindAnchorRecursive(Node node, SKRect visibleRect, Func<Node, SKRect> getBox)
         {
-            if (node == null) return null;
+            if (node == null || getBox == null) return null;
 
-            // Check self
-            var box = getBox(node);
-            if (!box.IsEmpty)
+            // Preserve the old DFS pre-order semantics without consuming native stack
+            // proportional to adversarial DOM depth.
+            var pending = new Stack<Node>();
+            pending.Push(node);
+            while (pending.Count > 0)
             {
-                // Must be partially visible
-                if (box.Bottom > visibleRect.Top && box.Top < visibleRect.Bottom)
+                var current = pending.Pop();
+                var box = getBox(current);
+                if (!box.IsEmpty && box.Bottom > visibleRect.Top && box.Top < visibleRect.Bottom)
                 {
-                    // Heuristic: Prefer Elements / Text with actual content
-                    if (node is Element || (node is Text t && !string.IsNullOrWhiteSpace(t.Data)))
+                    if (current is Element ||
+                        (current is Text text && !string.IsNullOrWhiteSpace(text.Data)))
                     {
-                        // Found a candidate? 
-                        // TODO: Refine heuristic (e.g. skip massive containers, prefer leaf nodes or headers)
-                        // For now, take first match (DFS Pre-order). 
-                        // Actually, we want the top-most visible one. DFS pre-order does that efficiently.
-                        if (node is Element) return node;
-                        // If text, return parent? Or text itself if getBox supports it.
-                        return node;
+                        return current;
                     }
                 }
-            }
 
-            // Recurse
-            if (node.ChildNodes != null)
-            {
-                foreach (var child in node.ChildNodes)
+                var children = current.ChildNodes;
+                if (children == null) continue;
+                for (int i = children.Length - 1; i >= 0; i--)
                 {
-                    var result = FindAnchorRecursive(child, visibleRect, getBox);
-                    if (result != null) return result;
+                    if (children[i] != null)
+                        pending.Push(children[i]);
                 }
             }
+
             return null;
         }
 
@@ -742,10 +769,12 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
 
         // Smooth scroll animation
         public DateTime? SmoothScrollStartTime { get; set; }
+        public long SmoothScrollStartTimestamp { get; set; }
         public int SmoothScrollDurationMs { get; set; }
         public (float x, float y) SmoothScrollStart { get; set; }
         public (float x, float y) SmoothScrollTarget { get; set; }
         public DateTime LastScrollUpdateUtc { get; set; } = DateTime.UtcNow;
+        public long LastScrollUpdateTimestamp { get; set; } = Stopwatch.GetTimestamp();
         public float LastVelocityX { get; set; }
         public float LastVelocityY { get; set; }
         public float LastInputDeltaX { get; set; }
@@ -754,7 +783,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// <summary>
         /// Check if currently animating.
         /// </summary>
-        public bool IsAnimating => SmoothScrollStartTime.HasValue;
+        public bool IsAnimating => SmoothScrollStartTimestamp != 0 || SmoothScrollStartTime.HasValue;
     }
 }
 

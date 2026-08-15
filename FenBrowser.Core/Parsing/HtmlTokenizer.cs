@@ -216,9 +216,30 @@ namespace FenBrowser.Core.Parsing
         /// Hard safety cap for non-EOF token emissions to prevent pathological inputs
         /// from producing unbounded token streams.
         /// </summary>
-        public int MaxTokenEmissions { get; set; } = 2_000_000;
-        public int MaxInputLengthChars { get; set; } = 8_000_000;
-        public int MaxAttributesPerTag { get; set; } = 4096;
+        private const int HardMaxTokenEmissions = 2_000_000;
+        private const int HardMaxInputLengthChars = 8_000_000;
+        private const int HardMaxAttributesPerTag = 4096;
+        private int _maxTokenEmissions = HardMaxTokenEmissions;
+        private int _maxInputLengthChars = HardMaxInputLengthChars;
+        private int _maxAttributesPerTag = HardMaxAttributesPerTag;
+
+        public int MaxTokenEmissions
+        {
+            get => _maxTokenEmissions;
+            set => _maxTokenEmissions = Math.Clamp(value, 1, HardMaxTokenEmissions);
+        }
+
+        public int MaxInputLengthChars
+        {
+            get => _maxInputLengthChars;
+            set => _maxInputLengthChars = Math.Clamp(value, 1, HardMaxInputLengthChars);
+        }
+
+        public int MaxAttributesPerTag
+        {
+            get => _maxAttributesPerTag;
+            set => _maxAttributesPerTag = Math.Clamp(value, 1, HardMaxAttributesPerTag);
+        }
         public HtmlParsingReasonCode LastReasonCode { get; private set; } = HtmlParsingReasonCode.None;
         public string LastReasonDetail { get; private set; }
 
@@ -636,7 +657,7 @@ namespace FenBrowser.Core.Parsing
                         // Scan until we match the LastStartTagName or fail
                         bool isAppropriate = CurrentTagNameEquals(LastStartTagName);
                         
-                        if (char.IsWhiteSpace(c))
+                        if (IsHtmlWhitespace(c))
                         {
                             if (isAppropriate)
                             {
@@ -820,7 +841,7 @@ namespace FenBrowser.Core.Parsing
                         else
                         {
                             // Simplified whitespace/others handling
-                             if (isAppropriateRaw && char.IsWhiteSpace(c))
+                             if (isAppropriateRaw && IsHtmlWhitespace(c))
                              {
                                  Consume();
                                  SwitchTo(TokenizerState.BeforeAttributeName);
@@ -912,7 +933,7 @@ namespace FenBrowser.Core.Parsing
 
                      case TokenizerState.ScriptDataEndTagName:
                          bool isAppropriateScript = CurrentTagNameEquals(LastStartTagName); // Usually "script"
-                         if (char.IsWhiteSpace(c))
+                         if (IsHtmlWhitespace(c))
                         {
                             if (isAppropriateScript)
                             {
@@ -1394,11 +1415,11 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.TagName:
-                        if (char.IsWhiteSpace(c))
+                        if (IsHtmlWhitespace(c))
                         {
                             int whitespaceEnd = _position + 1;
                             while (whitespaceEnd < _length &&
-                                   char.IsWhiteSpace(_input[whitespaceEnd]))
+                                   IsHtmlWhitespace(_input[whitespaceEnd]))
                             {
                                 whitespaceEnd++;
                             }
@@ -1433,7 +1454,7 @@ namespace FenBrowser.Core.Parsing
                             while (runEnd < _length)
                             {
                                 char current = _input[runEnd];
-                                if (char.IsWhiteSpace(current) ||
+                                if (IsHtmlWhitespace(current) ||
                                     current == '/' ||
                                     current == '>' ||
                                     current == '\0')
@@ -1450,11 +1471,11 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.BeforeAttributeName:
-                        if (char.IsWhiteSpace(c))
+                        if (IsHtmlWhitespace(c))
                         {
                             int whitespaceEnd = _position + 1;
                             while (whitespaceEnd < _length &&
-                                   char.IsWhiteSpace(_input[whitespaceEnd]))
+                                   IsHtmlWhitespace(_input[whitespaceEnd]))
                             {
                                 whitespaceEnd++;
                             }
@@ -1483,7 +1504,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.AttributeName:
-                        if (char.IsWhiteSpace(c) || c == '/' || c == '>' || IsEof())
+                        if (IsHtmlWhitespace(c) || c == '/' || c == '>' || IsEof())
                         {
                             // End of attribute name
                             FinalizeAttributeName();
@@ -1519,7 +1540,7 @@ namespace FenBrowser.Core.Parsing
                              while (runEnd < _length)
                              {
                                  char current = _input[runEnd];
-                                 if (char.IsWhiteSpace(current) ||
+                                 if (IsHtmlWhitespace(current) ||
                                      current == '/' ||
                                      current == '>' ||
                                      current == '=' ||
@@ -1540,11 +1561,11 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.AfterAttributeName:
-                        if (char.IsWhiteSpace(c))
+                        if (IsHtmlWhitespace(c))
                         {
                             int whitespaceEnd = _position + 1;
                             while (whitespaceEnd < _length &&
-                                   char.IsWhiteSpace(_input[whitespaceEnd]))
+                                   IsHtmlWhitespace(_input[whitespaceEnd]))
                             {
                                 whitespaceEnd++;
                             }
@@ -1581,11 +1602,11 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.BeforeAttributeValue:
-                        if (char.IsWhiteSpace(c))
+                        if (IsHtmlWhitespace(c))
                         {
                             int whitespaceEnd = _position + 1;
                             while (whitespaceEnd < _length &&
-                                   char.IsWhiteSpace(_input[whitespaceEnd]))
+                                   IsHtmlWhitespace(_input[whitespaceEnd]))
                             {
                                 whitespaceEnd++;
                             }
@@ -1715,7 +1736,7 @@ namespace FenBrowser.Core.Parsing
                             SwitchTo(TokenizerState.CharacterReference);
                             continue;
                         }
-                        else if (char.IsWhiteSpace(c))
+                        else if (IsHtmlWhitespace(c))
                         {
                             Consume();
                             SetAttributeValue();
@@ -1747,7 +1768,7 @@ namespace FenBrowser.Core.Parsing
                                 if (current == '&' ||
                                     current == '>' ||
                                     current == '\0' ||
-                                    char.IsWhiteSpace(current))
+                                    IsHtmlWhitespace(current))
                                 {
                                     break;
                                 }
@@ -1763,7 +1784,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.AfterAttributeValueQuoted:
-                        if (char.IsWhiteSpace(c))
+                        if (IsHtmlWhitespace(c))
                         {
                             Consume();
                             SwitchTo(TokenizerState.BeforeAttributeName);
@@ -2053,7 +2074,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.Doctype:
-                        if (char.IsWhiteSpace(c))
+                        if (IsHtmlWhitespace(c))
                         {
                             Consume();
                             SwitchTo(TokenizerState.BeforeDoctypeName);
@@ -2073,7 +2094,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.BeforeDoctypeName:
-                        if (char.IsWhiteSpace(c))
+                        if (IsHtmlWhitespace(c))
                         {
                             Consume();
                         }
@@ -2111,7 +2132,7 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                     case TokenizerState.DoctypeName:
-                        if (char.IsWhiteSpace(c))
+                        if (IsHtmlWhitespace(c))
                         {
                             Consume();
                             SwitchTo(TokenizerState.AfterDoctypeName);
@@ -2143,7 +2164,7 @@ namespace FenBrowser.Core.Parsing
                         
                     // Simplified Doctype (skipping PUBLIC/SYSTEM specifics for brevity, just consuming until >)
                     case TokenizerState.AfterDoctypeName:
-                        if (char.IsWhiteSpace(c))
+                        if (IsHtmlWhitespace(c))
                         {
                             Consume();
                         }
@@ -2162,7 +2183,7 @@ namespace FenBrowser.Core.Parsing
                         else if (Matches("PUBLIC", ignoreCase: true))
                         {
                             Consume(6);
-                            while (!IsEof() && char.IsWhiteSpace(Peek()))
+                            while (!IsEof() && IsHtmlWhitespace(Peek()))
                             {
                                 Consume();
                             }
@@ -2194,7 +2215,7 @@ namespace FenBrowser.Core.Parsing
                                 _currentDoctype.ForceQuirks = true;
                                 return EmitCurrentDoctype();
                             }
-                            while (!IsEof() && char.IsWhiteSpace(Peek()))
+                            while (!IsEof() && IsHtmlWhitespace(Peek()))
                             {
                                 Consume();
                             }
@@ -2227,7 +2248,7 @@ namespace FenBrowser.Core.Parsing
                                     _currentDoctype.ForceQuirks = true;
                                     return EmitCurrentDoctype();
                                 }
-                                while (!IsEof() && char.IsWhiteSpace(Peek()))
+                                while (!IsEof() && IsHtmlWhitespace(Peek()))
                                 {
                                     Consume();
                                 }
@@ -2254,7 +2275,7 @@ namespace FenBrowser.Core.Parsing
                         else if (Matches("SYSTEM", ignoreCase: true))
                         {
                             Consume(6);
-                            while (!IsEof() && char.IsWhiteSpace(Peek()))
+                            while (!IsEof() && IsHtmlWhitespace(Peek()))
                             {
                                 Consume();
                             }
@@ -2286,7 +2307,7 @@ namespace FenBrowser.Core.Parsing
                                 _currentDoctype.ForceQuirks = true;
                                 return EmitCurrentDoctype();
                             }
-                            while (!IsEof() && char.IsWhiteSpace(Peek()))
+                            while (!IsEof() && IsHtmlWhitespace(Peek()))
                             {
                                 Consume();
                             }
@@ -2335,9 +2356,8 @@ namespace FenBrowser.Core.Parsing
                         break;
                         
                     default:
-                         // Fallback
-                         Consume();
-                         break;
+                        throw new InvalidOperationException(
+                            $"Unhandled HTML tokenizer state '{_state}' at input position {_position}.");
                 }
             }
             return new EofToken();
@@ -2678,6 +2698,11 @@ namespace FenBrowser.Core.Parsing
         private bool IsHexDigit(char c)
         {
             return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        }
+
+        private static bool IsHtmlWhitespace(char c)
+        {
+            return c is '\t' or '\n' or '\f' or '\r' or ' ';
         }
 
         private bool TryConsumeNamedCharacterReference(out string value)

@@ -37,6 +37,7 @@ namespace FenBrowser.Tooling
         internal const int DebugSiteViewportWidth = 1280;
         internal const int DebugSiteViewportHeight = 800;
         internal const int WebDriverMainStackBytes = 16 * 1024 * 1024;
+        internal const int JsTimeStackBytes = 16 * 1024 * 1024;
         internal const string WebDriverLargeStackEnvironmentVariable =
             "FEN_TOOLING_WEBDRIVER_LARGE_STACK";
 
@@ -171,12 +172,17 @@ namespace FenBrowser.Tooling
         {
             if (args.Length < 2)
             {
-                Console.WriteLine("usage: jstime <js_file> [phase=parse|compile|all]");
+                Console.WriteLine("usage: jstime <js_file> [phase=parse|compile|exec|all]");
                 return;
             }
 
             var path = args[1];
             var phase = args.Length >= 3 ? args[2].Trim().ToLowerInvariant() : "all";
+            if (phase != "parse" && phase != "compile" && phase != "exec" && phase != "run" && phase != "all")
+            {
+                Console.WriteLine($"[jstime] unknown phase '{phase}'. Expected parse, compile, exec, run, or all.");
+                return;
+            }
             var text = File.ReadAllText(path);
             Console.WriteLine($"[jstime] file={path} bytes={text.Length} phase={phase}");
 
@@ -203,7 +209,7 @@ namespace FenBrowser.Tooling
                     swCompile.Stop();
                     Console.WriteLine($"[jstime] COMPILE ok in {swCompile.ElapsedMilliseconds} ms (instructions={fn.Instructions.Count}, maxDepth={compiler.MaxObservedCompileDepth})");
 
-                    if (phase == "exec" || phase == "run")
+                    if (phase == "exec" || phase == "run" || phase == "all")
                     {
                         var interp = new FenBrowser.Js.Interpreter.BytecodeInterpreter();
                         var swExec = System.Diagnostics.Stopwatch.StartNew();
@@ -221,7 +227,7 @@ namespace FenBrowser.Tooling
                 {
                     failure = ex;
                 }
-            }, 256 * 1024 * 1024);
+            }, JsTimeStackBytes);
 
             worker.IsBackground = true;
             worker.Start();

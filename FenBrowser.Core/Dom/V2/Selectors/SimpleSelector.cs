@@ -307,9 +307,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             {
                 "root" => element.ParentElement == null &&
                           element.OwnerDocument?.DocumentElement == element,
-                "empty" => !element.HasChildNodes ||
-                           (element.ChildNodes.Length == 1 && element.FirstChild is Text t &&
-                            string.IsNullOrWhiteSpace(t.Data)),
+                "empty" => MatchesEmpty(element),
                 "first-child" => element.PreviousElementSibling == null,
                 "last-child" => element.NextElementSibling == null,
                 "only-child" => element.PreviousElementSibling == null &&
@@ -321,7 +319,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 "optional" => SupportsRequiredOptionalPseudoClass(element) && !HasAttribute(element, "required"),
                 "read-only" => !IsReadWrite(element),
                 "read-write" => IsReadWrite(element),
-                "link" => element.LocalName == "a" && element.HasAttribute("href"),
+                "link" => IsLinkElement(element),
                 // Dynamic states delegated to ElementStateManager (wired by FenEngine)
                 "hover" or "active" or "focus" or "focus-visible" or "focus-within" or
                 "target" or "valid" or "invalid" or "in-range" or
@@ -338,6 +336,39 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         private static bool HasAttribute(Element el, string name)
         {
             return el.HasAttribute(name);
+        }
+
+        private static bool MatchesEmpty(Element element)
+        {
+            if (element == null) return false;
+
+            foreach (var child in element.ChildNodes)
+            {
+                if (child is Element)
+                    return false;
+
+                if (child is Text text && text.Data?.Length > 0)
+                {
+                    foreach (var ch in text.Data)
+                    {
+                        if (ch is not (' ' or '\t' or '\n' or '\r' or '\f'))
+                            return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        private static bool IsLinkElement(Element element)
+        {
+            if (element == null || !element.HasAttribute("href"))
+                return false;
+            if (!string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+                return false;
+
+            return string.Equals(element.LocalName, "a", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(element.LocalName, "area", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool SupportsEnabledDisabledPseudoClass(Element element)

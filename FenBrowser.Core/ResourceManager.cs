@@ -127,30 +127,68 @@ public Uri LastTextResponseUri { get; private set; }
         /// </summary>
         public static ReferrerPolicyDirective ParseReferrerPolicy(string headerValue)
         {
-            if (string.IsNullOrWhiteSpace(headerValue))
+            ReferrerPolicyDirective? parsed = null;
+            if (!string.IsNullOrWhiteSpace(headerValue))
             {
-                return ReferrerPolicyDirective.StrictOriginWhenCrossOrigin; // Default per spec
-            }
-
-            var policies = headerValue.Split(',', StringSplitOptions.RemoveEmptyEntries);
-            foreach (var policy in policies)
-            {
-                var trimmed = policy.Trim();
-                if (Enum.TryParse<ReferrerPolicyDirective>(trimmed, true, out var parsed))
+                foreach (var policyGroup in headerValue.Split(',', StringSplitOptions.RemoveEmptyEntries))
                 {
-                    return parsed;
+                    foreach (var rawToken in policyGroup.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        if (TryParseReferrerPolicyToken(rawToken, out var candidate))
+                        {
+                            // Referrer-Policy uses the last recognized token from the
+                            // policy list, so keep scanning instead of returning early.
+                            parsed = candidate;
+                        }
+                    }
                 }
             }
 
-            // If no valid policy found, default to strict-origin-when-cross-origin
-            return ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
+            return parsed ?? ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
+        }
+
+        private static bool TryParseReferrerPolicyToken(
+            string rawToken,
+            out ReferrerPolicyDirective directive)
+        {
+            switch ((rawToken ?? string.Empty).Trim().ToLowerInvariant())
+            {
+                case "no-referrer":
+                    directive = ReferrerPolicyDirective.NoReferrer;
+                    return true;
+                case "no-referrer-when-downgrade":
+                    directive = ReferrerPolicyDirective.NoReferrerWhenDowngrade;
+                    return true;
+                case "same-origin":
+                    directive = ReferrerPolicyDirective.SameOrigin;
+                    return true;
+                case "origin":
+                    directive = ReferrerPolicyDirective.Origin;
+                    return true;
+                case "strict-origin":
+                    directive = ReferrerPolicyDirective.StrictOrigin;
+                    return true;
+                case "origin-when-cross-origin":
+                    directive = ReferrerPolicyDirective.OriginWhenCrossOrigin;
+                    return true;
+                case "unsafe-url":
+                    directive = ReferrerPolicyDirective.UnsafeUrl;
+                    return true;
+                case "strict-origin-when-cross-origin":
+                    directive = ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
+                    return true;
+                default:
+                    directive = default;
+                    return false;
+            }
         }
 
 
         private readonly string _cacheRoot;
         private readonly INetworkClient _client;
 
-        public int BlockedRequestCount { get; private set; }
+        private int _blockedRequestCount;
+        public int BlockedRequestCount => System.Threading.Volatile.Read(ref _blockedRequestCount);
         public event EventHandler<int> BlockedCountChanged;
         
         // DevTools Network Monitoring Events
@@ -160,8 +198,28 @@ public Uri LastTextResponseUri { get; private set; }
 
         public void ResetBlockedCount()
         {
-            BlockedRequestCount = 0;
-            BlockedCountChanged?.Invoke(this, 0);
+            System.Threading.Interlocked.Exchange(ref _blockedRequestCount, 0);
+            PublishBlockedCount(0);
+        }
+
+        private void IncrementBlockedRequestCount()
+        {
+            var count = System.Threading.Interlocked.Increment(ref _blockedRequestCount);
+            PublishBlockedCount(count);
+        }
+
+        private void PublishBlockedCount(int count)
+        {
+            try
+            {
+                BlockedCountChanged?.Invoke(this, count);
+            }
+            catch (Exception ex)
+            {
+                // A diagnostics/UI subscriber must never turn a blocked network request
+                // into a transport failure or corrupt the counter state.
+                EngineLogCompat.Debug($"[Network] Blocked-count subscriber failed: {ex.Message}", LogCategory.Network);
+            }
         }
 
         private readonly bool _isPrivate;
@@ -471,53 +529,83 @@ public Uri LastTextResponseUri { get; private set; }
                 return ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
             }
 
-            ReferrerPolicyDirective? parsed = null;
-            foreach (var headerValue in values)
-            {
-                if (string.IsNullOrWhiteSpace(headerValue))
-                {
-                    continue;
-                }
+            return ParseReferrerPolicy(string.Join(",", values));
+        }
 
-                var tokens = headerValue.Split(',');
-                foreach (var tokenGroup in tokens)
+        private static void ParseXFrameOptions(
+            HttpResponseMessage response,
+            out XFrameOptionsPolicy policy,
+            out string allowFromUri)
+        {
+            policy = XFrameOptionsPolicy.None;
+            allowFromUri = null;
+
+            if (response?.Headers == null ||
+                !response.Headers.TryGetValues("X-Frame-Options", out var values))
+            {
+                return;
+            }
+
+            XFrameOptionsPolicy? parsedPolicy = null;
+            string parsedAllowFrom = null;
+
+            foreach (var rawHeader in values)
+            {
+                if (string.IsNullOrWhiteSpace(rawHeader))
+                    continue;
+
+                foreach (var rawDirective in rawHeader.Split(',', StringSplitOptions.RemoveEmptyEntries))
                 {
-                    var tokenParts = tokenGroup.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var rawToken in tokenParts)
+                    var directive = rawDirective.Trim();
+                    XFrameOptionsPolicy candidate;
+                    string candidateAllowFrom = null;
+
+                    if (string.Equals(directive, "DENY", StringComparison.OrdinalIgnoreCase))
                     {
-                        var token = rawToken.Trim().ToLowerInvariant();
-                        switch (token)
-                        {
-                            case "no-referrer":
-                                parsed = ReferrerPolicyDirective.NoReferrer;
-                                break;
-                            case "no-referrer-when-downgrade":
-                                parsed = ReferrerPolicyDirective.NoReferrerWhenDowngrade;
-                                break;
-                            case "same-origin":
-                                parsed = ReferrerPolicyDirective.SameOrigin;
-                                break;
-                            case "origin":
-                                parsed = ReferrerPolicyDirective.Origin;
-                                break;
-                            case "strict-origin":
-                                parsed = ReferrerPolicyDirective.StrictOrigin;
-                                break;
-                            case "origin-when-cross-origin":
-                                parsed = ReferrerPolicyDirective.OriginWhenCrossOrigin;
-                                break;
-                            case "unsafe-url":
-                                parsed = ReferrerPolicyDirective.UnsafeUrl;
-                                break;
-                            case "strict-origin-when-cross-origin":
-                                parsed = ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
-                                break;
-                        }
+                        candidate = XFrameOptionsPolicy.Deny;
                     }
+                    else if (string.Equals(directive, "SAMEORIGIN", StringComparison.OrdinalIgnoreCase))
+                    {
+                        candidate = XFrameOptionsPolicy.SameOrigin;
+                    }
+                    else
+                    {
+                        const string allowFrom = "ALLOW-FROM";
+                        if (directive.Length <= allowFrom.Length ||
+                            !directive.StartsWith(allowFrom, StringComparison.OrdinalIgnoreCase) ||
+                            (directive[allowFrom.Length] != ' ' && directive[allowFrom.Length] != '\t'))
+                        {
+                            // Invalid/unknown directives are ignored rather than substring-matched.
+                            continue;
+                        }
+
+                        var candidateText = directive.Substring(allowFrom.Length).Trim();
+                        if (!Uri.TryCreate(candidateText, UriKind.Absolute, out var candidateUri))
+                        {
+                            continue;
+                        }
+
+                        candidate = XFrameOptionsPolicy.AllowFrom;
+                        candidateAllowFrom = candidateUri.AbsoluteUri;
+                    }
+
+                    if (parsedPolicy.HasValue &&
+                        (parsedPolicy.Value != candidate ||
+                         !string.Equals(parsedAllowFrom, candidateAllowFrom, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        // Conflicting valid XFO policies are ambiguous. Fail closed for framing.
+                        policy = XFrameOptionsPolicy.Deny;
+                        allowFromUri = null;
+                        return;
+                    }
+
+                    parsedPolicy = candidate;
+                    parsedAllowFrom = candidateAllowFrom;
                 }
             }
 
-            return parsed ?? ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
+            policy = parsedPolicy ?? XFrameOptionsPolicy.None;
+            allowFromUri = parsedAllowFrom;
         }
 
         private static bool IsFrameEmbeddingAllowed(
@@ -753,8 +841,7 @@ public Uri LastTextResponseUri { get; private set; }
                 return false;
             }
 
-            BlockedRequestCount++;
-            BlockedCountChanged?.Invoke(this, BlockedRequestCount);
+            IncrementBlockedRequestCount();
             blockReason = corbResult.Reason;
             EngineLogCompat.Warn(
                 $"[CORB] Blocked cross-origin {secFetchDest} response '{responseUri}' for origin '{requestOrigin}'. {corbResult.Reason}",
@@ -1039,8 +1126,7 @@ public Uri LastTextResponseUri { get; private set; }
                     
                     if (resp != null && resp.StatusCode == System.Net.HttpStatusCode.Forbidden && resp.ReasonPhrase == "Blocked by AdBlock")
                     {
-                        BlockedRequestCount++;
-                        BlockedCountChanged?.Invoke(this, BlockedRequestCount);
+                        IncrementBlockedRequestCount();
                     }
 
                     if (resp != null)
@@ -1602,25 +1688,8 @@ public Uri LastTextResponseUri { get; private set; }
                         authoritative: true);
                 }
 
-                // Parse X-Frame-Options header for frame-embedding enforcement
-                var xFramePolicy = XFrameOptionsPolicy.None;
-                string xFrameAllowFrom = null;
-                if (resp.Headers.TryGetValues("X-Frame-Options", out var xfoValues))
-                {
-                    var xfoRaw = string.Join(",", xfoValues).Trim().ToUpperInvariant();
-                    if (xfoRaw.Contains("DENY"))
-                        xFramePolicy = XFrameOptionsPolicy.Deny;
-                    else if (xfoRaw.Contains("SAMEORIGIN"))
-                        xFramePolicy = XFrameOptionsPolicy.SameOrigin;
-                    else if (xfoRaw.Contains("ALLOW-FROM"))
-                    {
-                        xFramePolicy = XFrameOptionsPolicy.AllowFrom;
-                        // Extract the URI after "ALLOW-FROM "
-                        var raw = string.Join(",", xfoValues).Trim();
-                        var idx = raw.IndexOf("ALLOW-FROM", StringComparison.OrdinalIgnoreCase);
-                        if (idx >= 0) xFrameAllowFrom = raw.Substring(idx + "ALLOW-FROM".Length).Trim();
-                    }
-                }
+                // Parse X-Frame-Options as directives, not substrings.
+                ParseXFrameOptions(resp, out var xFramePolicy, out var xFrameAllowFrom);
 
                 var referrerPolicy = ParseReferrerPolicy(resp);
                 AdoptResponseReferrerPolicy(resp, context);
@@ -1661,8 +1730,7 @@ public Uri LastTextResponseUri { get; private set; }
                 if (string.Equals(secFetchDest, "iframe", StringComparison.OrdinalIgnoreCase) &&
                     !IsFrameEmbeddingAllowed(xFramePolicy, xFrameAllowFrom, refererOriginal, finalUri))
                 {
-                    BlockedRequestCount++;
-                    BlockedCountChanged?.Invoke(this, BlockedRequestCount);
+                    IncrementBlockedRequestCount();
                     EngineLogCompat.Warn(
                         $"[XFO] Blocked frame embedding for '{finalUri}' due to policy '{xFramePolicy}'" +
                         $"{(string.IsNullOrWhiteSpace(xFrameAllowFrom) ? string.Empty : $" ({xFrameAllowFrom})")}",
@@ -1852,8 +1920,7 @@ public Uri LastTextResponseUri { get; private set; }
                 string.Equals(referer.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(url.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
             {
-                BlockedRequestCount++;
-                BlockedCountChanged?.Invoke(this, BlockedRequestCount);
+                IncrementBlockedRequestCount();
                 EngineLogCompat.Warn($"[MixedContent] Blocked insecure image '{url}' from secure document '{referer}'", LogCategory.Network);
                 return null;
             }
@@ -2109,8 +2176,7 @@ public Uri LastTextResponseUri { get; private set; }
                 string.Equals(referer.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(url.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
             {
-                BlockedRequestCount++;
-                BlockedCountChanged?.Invoke(this, BlockedRequestCount);
+                IncrementBlockedRequestCount();
                 EngineLogCompat.Warn($"[MixedContent] Blocked insecure image bytes fetch '{url}' from secure document '{referer}'", LogCategory.Network);
                 return BinaryFailure(BinaryFetchFailureReason.MixedContentBlocked, url, "Blocked mixed-content image request");
             }
