@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Net.Security;
 
 namespace FenBrowser.Core
@@ -25,7 +26,7 @@ namespace FenBrowser.Core
 
         public DateTime NotBefore { get; set; }
         public DateTime NotAfter { get; set; }
-        
+
         public string Thumbprint
         {
             get => _thumbprint;
@@ -61,9 +62,10 @@ namespace FenBrowser.Core
         {
             get
             {
+                var now = DateTime.Now;
                 if (!IsDateRangeValid) return "Invalid date range";
-                if (DateTime.Now < NotBefore) return "Not yet valid";
-                if (DateTime.Now > NotAfter) return "Expired";
+                if (now < NotBefore) return "Not yet valid";
+                if (now > NotAfter) return "Expired";
                 return "Valid";
             }
         }
@@ -129,7 +131,12 @@ namespace FenBrowser.Core
                 results.Add(normalized);
             }
 
-            return results.Count == 0 ? Array.Empty<string>() : results.ToArray();
+            // IReadOnlyList is only an interface: returning the raw array still let a
+            // caller cast it back to string[] and mutate certificate identity data after
+            // validation. Publish a read-only wrapper so this remains a snapshot.
+            return results.Count == 0
+                ? Array.Empty<string>()
+                : new ReadOnlyCollection<string>(results.ToArray());
         }
     }
 }
