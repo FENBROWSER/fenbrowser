@@ -82,19 +82,61 @@ public sealed class WasmEngine : IDisposable
         if (string.IsNullOrWhiteSpace(path))
             throw new ArgumentException("Path cannot be empty.", nameof(path));
 
-        var fileInfo = new FileInfo(path);
-        if (!fileInfo.Exists)
-            throw new FileNotFoundException("WASM module file was not found.", path);
-        if (fileInfo.Length <= 0)
+        // Do not validate one filesystem object and then ask Wasmtime to reopen the
+        // path. A replace/grow race between FileInfo.Length and Module.FromFile could
+        // bypass MaxModuleBytes. Compile exactly the bounded bytes read through this
+        // handle instead.
+        var bytes = ReadModuleFileBounded(path, _limits.MaxModuleBytes);
+        var module = Module.FromBytes(_engine, Path.GetFileName(path), bytes);
+        return new WasmModule(this, module, Path.GetFileName(path));
+    }
+
+    private static byte[] ReadModuleFileBounded(string path, long maxBytes)
+    {
+        if (maxBytes <= 0 || maxBytes > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(maxBytes));
+
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 64 * 1024,
+            options: FileOptions.SequentialScan);
+
+        if (stream.Length <= 0)
             throw new InvalidDataException("WASM module file is empty.");
-        if (fileInfo.Length > _limits.MaxModuleBytes)
+        if (stream.Length > maxBytes)
         {
             throw new InvalidDataException(
-                $"WASM module exceeds the configured compilation limit ({fileInfo.Length} > {_limits.MaxModuleBytes} bytes).");
+                $"WASM module exceeds the configured compilation limit ({stream.Length} > {maxBytes} bytes).");
         }
 
-        var module = Module.FromFile(_engine, path);
-        return new WasmModule(this, module, Path.GetFileName(path));
+        var capacity = checked((int)Math.Min(stream.Length, maxBytes));
+        using var output = new MemoryStream(capacity);
+        var buffer = new byte[64 * 1024];
+        long total = 0;
+
+        while (true)
+        {
+            var read = stream.Read(buffer, 0, buffer.Length);
+            if (read == 0)
+                break;
+
+            total += read;
+            if (total > maxBytes)
+            {
+                throw new InvalidDataException(
+                    $"WASM module exceeds the configured compilation limit ({total} > {maxBytes} bytes).");
+            }
+
+            output.Write(buffer, 0, read);
+        }
+
+        if (total == 0)
+            throw new InvalidDataException("WASM module file is empty.");
+
+        return output.ToArray();
     }
 
     internal Store CreateStore()
