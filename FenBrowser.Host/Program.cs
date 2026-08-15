@@ -1554,8 +1554,11 @@ namespace FenBrowser.Host
 
             try
             {
-                writer.WriteLine(NetworkIpc.Serialize(envelope));
-                writer.Flush();
+                lock (writer)
+                {
+                    writer.WriteLine(NetworkIpc.Serialize(envelope));
+                    writer.Flush();
+                }
             }
             catch
             {
@@ -1938,9 +1941,18 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                     if (dstW != srcW || dstH != srcH)
                     {
                         var info = new SKImageInfo(dstW, dstH, SKColorType.Bgra8888, SKAlphaType.Premul);
-                        using var resized = new SKBitmap(info);
-                        using var canvas = new SKCanvas(resized);
-                        canvas.DrawBitmap(bitmap, new SKRect(0, 0, dstW, dstH), SKSamplingOptions.Default);
+                        var resized = new SKBitmap(info);
+                        try
+                        {
+                            using var canvas = new SKCanvas(resized);
+                            canvas.DrawBitmap(bitmap, new SKRect(0, 0, dstW, dstH), SKSamplingOptions.Default);
+                        }
+                        catch
+                        {
+                            resized.Dispose();
+                            throw;
+                        }
+
                         bitmap.Dispose();
                         bitmap = resized;
                     }
@@ -1973,8 +1985,11 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
 
             try
             {
-                writer.WriteLine(TargetIpc.Serialize(envelope));
-                writer.Flush();
+                lock (writer)
+                {
+                    writer.WriteLine(TargetIpc.Serialize(envelope));
+                    writer.Flush();
+                }
             }
             catch
             {

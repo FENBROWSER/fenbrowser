@@ -468,11 +468,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _heap.DeferAutomaticCollectionUntilSafePoint = true;
         _heap.AddRootSource(this);
 
-        // Wire Proxy trap delegates so ProxyObject.SetProperty/DeleteProperty
-        // dispatch through the interpreter's trap handlers.
-        ProxyObject.ProxySetTrap = ProxyObjSet;
-        ProxyObject.ProxyDeleteTrap = ProxyObjDelete;
-        ProxyObject.ProxyEnumerateTrap = ProxyObjEnumerate;
     }
 
     private bool ProxyObjSet(ProxyObject proxy, JsValue receiver, string prop, JsValue value)
