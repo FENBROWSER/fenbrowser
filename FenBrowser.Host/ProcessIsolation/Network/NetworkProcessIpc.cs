@@ -104,7 +104,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
     internal static class NetworkIpc
     {
-        private const int MaxEnvelopeChars = 256 * 1024;
+        internal const int MaxEnvelopeChars = 256 * 1024;
         private const int MaxPayloadChars = 224 * 1024;
         private const int MaxTypeChars = 40;
         private const int MaxRequestIdChars = 96;
@@ -262,14 +262,17 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         private readonly NamedPipeServerStream _pipe;
         private readonly CancellationTokenSource _cts = new();
         private readonly TaskCompletionSource<bool> _readyTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly ConcurrentDictionary<string, TaskCompletionSource<NetworkFetchResponseHeadPayload>> _pending = new();
         private readonly ConcurrentDictionary<string, string> _requestCapabilityTokens = new();
         private readonly object _writeLock = new();
+        private readonly char[] _lineReadBuffer = new char[4096];
         private StreamReader _reader;
         private StreamWriter _writer;
         private Task _readLoop;
+        private int _lineReadOffset;
+        private int _lineReadCount;
         private bool _connected;
         private Process _childProcess;
+        private EventHandler _childExitedHandler;
         private int _crashNotified;
 
         public string PipeName { get; }
@@ -301,10 +304,8 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             if (_childProcess != null)
             {
                 _childProcess.EnableRaisingEvents = true;
-                _childProcess.Exited += (_, _) =>
-                {
-                    NotifyNetworkProcessCrashed("Child process exited.");
-                };
+                _childExitedHandler = (_, _) => NotifyNetworkProcessCrashed("Child process exited.");
+                _childProcess.Exited += _childExitedHandler;
             }
 
             _ = Task.Run(() => WaitForConnectionAsync(childProcess));
@@ -372,7 +373,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             {
                 while (!_cts.IsCancellationRequested && _pipe.IsConnected)
                 {
-                    var line = await _reader.ReadLineAsync().ConfigureAwait(false);
+                    var line = await ReadLineBoundedAsync().ConfigureAwait(false);
                     if (line == null) break;
                     if (!NetworkIpc.TryDeserialize(line, out var env)) continue;
                     if (!NetworkIpc.TryValidateInboundEnvelope(env, out var messageType, out var rejectionReason))
@@ -408,6 +409,49 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             }
         }
 
+        private async Task<string> ReadLineBoundedAsync()
+        {
+            var line = new StringBuilder(Math.Min(4096, NetworkIpc.MaxEnvelopeChars));
+            while (true)
+            {
+                if (_lineReadOffset >= _lineReadCount)
+                {
+                    _lineReadCount = await _reader
+                        .ReadAsync(_lineReadBuffer.AsMemory(0, _lineReadBuffer.Length), _cts.Token)
+                        .ConfigureAwait(false);
+                    _lineReadOffset = 0;
+                    if (_lineReadCount == 0)
+                    {
+                        if (line.Length == 0)
+                            return null;
+                        break;
+                    }
+                }
+
+                while (_lineReadOffset < _lineReadCount)
+                {
+                    var c = _lineReadBuffer[_lineReadOffset++];
+                    if (c == '\n')
+                    {
+                        if (line.Length > 0 && line[line.Length - 1] == '\r')
+                            line.Length--;
+                        return line.ToString();
+                    }
+
+                    if (line.Length >= NetworkIpc.MaxEnvelopeChars)
+                    {
+                        throw new InvalidDataException(
+                            $"Network-process IPC line exceeded {NetworkIpc.MaxEnvelopeChars} characters.");
+                    }
+                    line.Append(c);
+                }
+            }
+
+            if (line.Length > 0 && line[line.Length - 1] == '\r')
+                line.Length--;
+            return line.ToString();
+        }
+
         private void NotifyNetworkProcessCrashed(string reason)
         {
             if (_cts.IsCancellationRequested || Interlocked.Exchange(ref _crashNotified, 1) != 0)
@@ -417,7 +461,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
             _connected = false;
             _readyTcs.TrySetResult(false);
-            NetworkProcessCrashed?.Invoke();
+            InvokeSubscribers(NetworkProcessCrashed, nameof(NetworkProcessCrashed));
             EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] {reason}");
         }
 
@@ -447,7 +491,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                         RejectResponse(env.RequestId, "response-requestid-mismatch", "Response-head request ID did not match its envelope.");
                         break;
                     }
-                    ResponseHeadReceived?.Invoke(head);
+                    InvokeSubscribers(ResponseHeadReceived, head, nameof(ResponseHeadReceived));
                     break;
 
                 case NetworkIpcMessageType.FetchResponseBody:
@@ -457,7 +501,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                         RejectResponse(env.RequestId, "response-requestid-mismatch", "Response-body request ID did not match its envelope.");
                         break;
                     }
-                    ResponseBodyReceived?.Invoke(body);
+                    InvokeSubscribers(ResponseBodyReceived, body, nameof(ResponseBodyReceived));
                     if (body.IsComplete)
                     {
                         ReleaseCapabilityToken(env.RequestId);
@@ -471,7 +515,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                         RejectResponse(env.RequestId, "response-requestid-mismatch", "Failure-payload request ID did not match its envelope.");
                         break;
                     }
-                    RequestFailed?.Invoke(fail);
+                    InvokeSubscribers(RequestFailed, fail, nameof(RequestFailed));
                     ReleaseCapabilityToken(env.RequestId);
                     break;
 
@@ -489,7 +533,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                     break;
 
                 case NetworkIpcMessageType.Error:
-                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] Error from child: {env.Payload}");
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[NetworkProcess] Error from child: {BoundDiagnosticPayload(env.Payload)}");
                     break;
             }
         }
@@ -504,12 +548,12 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 LogSubsystem.ProcessIsolation,
                 LogSeverity.Warn,
                 $"[NetworkProcess] Rejected response for request {requestId}: {errorCode}.");
-            RequestFailed?.Invoke(new NetworkFetchFailedPayload
+            InvokeSubscribers(RequestFailed, new NetworkFetchFailedPayload
             {
                 RequestId = requestId,
                 ErrorCode = errorCode,
                 ErrorMessage = errorMessage
-            });
+            }, nameof(RequestFailed));
             ReleaseCapabilityToken(requestId);
         }
 
@@ -580,6 +624,55 @@ namespace FenBrowser.Host.ProcessIsolation.Network
             }
         }
 
+        private static string BoundDiagnosticPayload(string payload)
+        {
+            if (string.IsNullOrEmpty(payload)) return string.Empty;
+            const int maxChars = 4096;
+            var bounded = payload.Length <= maxChars ? payload : payload.Substring(0, maxChars) + "…";
+            return bounded
+                .Replace("\r", "\\r", StringComparison.Ordinal)
+                .Replace("\n", "\\n", StringComparison.Ordinal)
+                .Replace("\0", "\\0", StringComparison.Ordinal);
+        }
+
+        private static void InvokeSubscribers<T>(Action<T> subscribers, T value, string eventName)
+        {
+            if (subscribers == null) return;
+            foreach (var subscriber in subscribers.GetInvocationList())
+            {
+                try
+                {
+                    ((Action<T>)subscriber)(value);
+                }
+                catch (Exception ex)
+                {
+                    EngineLog.Write(
+                        LogSubsystem.ProcessIsolation,
+                        LogSeverity.Warn,
+                        $"[NetworkProcess] Subscriber for {eventName} failed: {ex.GetType().Name}: {BoundDiagnosticPayload(ex.Message)}");
+                }
+            }
+        }
+
+        private static void InvokeSubscribers(Action subscribers, string eventName)
+        {
+            if (subscribers == null) return;
+            foreach (var subscriber in subscribers.GetInvocationList())
+            {
+                try
+                {
+                    ((Action)subscriber)();
+                }
+                catch (Exception ex)
+                {
+                    EngineLog.Write(
+                        LogSubsystem.ProcessIsolation,
+                        LogSeverity.Warn,
+                        $"[NetworkProcess] Subscriber for {eventName} failed: {ex.GetType().Name}: {BoundDiagnosticPayload(ex.Message)}");
+                }
+            }
+        }
+
         private bool TrySend(NetworkIpcEnvelope env)
         {
             if (env == null) return false;
@@ -618,9 +711,19 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         public void Dispose()
         {
+            // Give an authenticated connected child a chance to exit cleanly before
+            // cancelling the broker read loop and tearing down its pipe.
+            SendShutdown();
             _cts.Cancel();
             _readyTcs.TrySetResult(false);
-            SendShutdown();
+            _connected = false;
+
+            if (_childProcess != null && _childExitedHandler != null)
+            {
+                try { _childProcess.Exited -= _childExitedHandler; } catch { }
+                _childExitedHandler = null;
+            }
+
             TryDispose(_writer, "writer");
             TryDispose(_reader, "reader");
             TryDispose(_pipe, "pipe");
