@@ -111,11 +111,7 @@ namespace FenBrowser.Core.Dom.V2
 
         public bool IsEmpty => _totalCount == 0;
 
-        public bool Add(
-            string type,
-            EventListener callback,
-            AddEventListenerOptions options,
-            EventTarget owner)
+        public bool Add(string type, EventListener callback, AddEventListenerOptions options, EventTarget owner)
         {
             if (options.Signal?.Aborted == true)
                 return false;
@@ -127,12 +123,8 @@ namespace FenBrowser.Core.Dom.V2
             for (var i = 0; i < current.Length; i++)
             {
                 var entry = current[i];
-                if (!entry.Removed &&
-                    ReferenceEquals(entry.Callback, callback) &&
-                    entry.Capture == options.Capture)
-                {
+                if (!entry.Removed && ReferenceEquals(entry.Callback, callback) && entry.Capture == options.Capture)
                     return false;
-                }
             }
 
             var newEntry = new EventListenerEntry
@@ -148,11 +140,8 @@ namespace FenBrowser.Core.Dom.V2
             Array.Copy(current, next, current.Length);
             next[^1] = newEntry;
 
-            // Publish before subscribing to AbortSignal. If abort happened just before
-            // subscription, the signal's event adder invokes immediately and removal
-            // can now see this entry. If abort happens just after publication, the
-            // callback likewise removes an already-visible entry. This closes the
-            // publish/abort lost-removal window.
+            // Publish before subscribing. An abort racing either side of this point
+            // therefore always removes an entry that is already visible to the owner.
             _listeners[type] = next;
             _totalCount++;
 
@@ -175,9 +164,7 @@ namespace FenBrowser.Core.Dom.V2
             for (var i = 0; i < current.Length; i++)
             {
                 var entry = current[i];
-                if (!entry.Removed &&
-                    ReferenceEquals(entry.Callback, callback) &&
-                    entry.Capture == capture)
+                if (!entry.Removed && ReferenceEquals(entry.Callback, callback) && entry.Capture == capture)
                 {
                     removeIndex = i;
                     break;
@@ -202,14 +189,7 @@ namespace FenBrowser.Core.Dom.V2
                 if (removeIndex > 0)
                     Array.Copy(current, 0, next, 0, removeIndex);
                 if (removeIndex + 1 < current.Length)
-                {
-                    Array.Copy(
-                        current,
-                        removeIndex + 1,
-                        next,
-                        removeIndex,
-                        current.Length - removeIndex - 1);
-                }
+                    Array.Copy(current, removeIndex + 1, next, removeIndex, current.Length - removeIndex - 1);
                 _listeners[type] = next;
             }
 
@@ -219,12 +199,8 @@ namespace FenBrowser.Core.Dom.V2
 
         public bool TryGetSnapshot(string type, out EventListenerEntry[] snapshot)
         {
-            if (_listeners != null &&
-                _listeners.TryGetValue(type, out snapshot) &&
-                snapshot.Length > 0)
-            {
+            if (_listeners != null && _listeners.TryGetValue(type, out snapshot) && snapshot.Length > 0)
                 return true;
-            }
 
             snapshot = null;
             return false;
@@ -349,12 +325,8 @@ namespace FenBrowser.Core.Dom.V2
             for (var i = 0; i < Path.Count; i++)
             {
                 var entry = Path[i];
-                if (entry.ClosedTreeRoot != null &&
-                    !IsInsideShadowTree(CurrentTarget, entry.ClosedTreeRoot))
-                {
+                if (entry.ClosedTreeRoot != null && !IsInsideShadowTree(CurrentTarget, entry.ClosedTreeRoot))
                     continue;
-                }
-
                 result.Add(entry.InvocationTarget);
             }
 
@@ -417,10 +389,7 @@ namespace FenBrowser.Core.Dom.V2
                 }
 
                 if (!evt.StopPropagationFlag && path.Count > 0)
-                {
-                    evt.EventPhase = EventPhase.AtTarget;
-                    InvokePathEntry(evt, path[0], EventPhase.AtTarget);
-                }
+                    InvokeAtTarget(evt, path[0]);
 
                 if (evt.Bubbles && !evt.StopPropagationFlag)
                 {
@@ -446,6 +415,19 @@ namespace FenBrowser.Core.Dom.V2
                 evt.CurrentTarget = null;
                 evt.Path = null;
             }
+        }
+
+        private static void InvokeAtTarget(Event evt, EventPathEntry entry)
+        {
+            evt.EventPhase = EventPhase.AtTarget;
+            evt.Target = entry.ShadowAdjustedTarget;
+            evt.CurrentTarget = entry.InvocationTarget;
+
+            // DOM invokes capture listeners at the target first, then non-capture
+            // listeners, while the observable eventPhase remains AT_TARGET for both.
+            InvokeEventListeners(evt, entry.InvocationTarget, EventPhase.Capturing);
+            if (!evt.StopImmediatePropagationFlag)
+                InvokeEventListeners(evt, entry.InvocationTarget, EventPhase.Bubbling);
         }
 
         private static void InvokePathEntry(Event evt, EventPathEntry entry, EventPhase phase)
@@ -503,7 +485,7 @@ namespace FenBrowser.Core.Dom.V2
             return path;
         }
 
-        private static void InvokeEventListeners(Event evt, EventTarget target, EventPhase phase)
+        private static void InvokeEventListeners(Event evt, EventTarget target, EventPhase invocationPhase)
         {
             if (!target.TryGetEventListeners(evt.Type, out var listeners))
                 return;
@@ -513,9 +495,9 @@ namespace FenBrowser.Core.Dom.V2
                 var listener = listeners[i];
                 if (listener.Removed)
                     continue;
-                if (phase == EventPhase.Capturing && !listener.Capture)
+                if (invocationPhase == EventPhase.Capturing && !listener.Capture)
                     continue;
-                if (phase == EventPhase.Bubbling && listener.Capture)
+                if (invocationPhase == EventPhase.Bubbling && listener.Capture)
                     continue;
                 if (evt.StopImmediatePropagationFlag)
                     break;
