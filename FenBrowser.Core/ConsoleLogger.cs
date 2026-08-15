@@ -12,23 +12,32 @@ public class ConsoleLogger : ILogger
         string normalizedMessage = NormalizeMessage(message);
         lock (Sync)
         {
-            var color = Console.ForegroundColor;
+            // Console color APIs can throw when no real console is attached, output is
+            // redirected, or the host has already torn the console down. Diagnostics
+            // must never become a browser crash path.
+            var hasOriginalColor = TryGetForegroundColor(out var originalColor);
             try
             {
-                Console.ForegroundColor = level switch
+                if (hasOriginalColor)
                 {
-                    LogLevel.Debug => ConsoleColor.Gray,
-                    LogLevel.Info => ConsoleColor.White,
-                    LogLevel.Warn => ConsoleColor.Yellow,
-                    LogLevel.Error => ConsoleColor.Red,
-                    _ => color
-                };
+                    TrySetForegroundColor(level switch
+                    {
+                        LogLevel.Debug => ConsoleColor.Gray,
+                        LogLevel.Info => ConsoleColor.White,
+                        LogLevel.Warn => ConsoleColor.Yellow,
+                        LogLevel.Error => ConsoleColor.Red,
+                        _ => originalColor
+                    });
+                }
 
-                Console.WriteLine($"{DateTime.UtcNow:O} [{level}] {normalizedMessage}");
+                TryWriteLine($"{DateTime.UtcNow:O} [{level}] {normalizedMessage}");
             }
             finally
             {
-                Console.ForegroundColor = color;
+                if (hasOriginalColor)
+                {
+                    TrySetForegroundColor(originalColor);
+                }
             }
         }
     }
@@ -51,7 +60,45 @@ public class ConsoleLogger : ILogger
             // Stack traces are intentionally multi-line engine-generated diagnostics.
             // User/page-controlled message fields are normalized above before they
             // can enter the structured prefix.
-            Console.WriteLine(ex.StackTrace);
+            TryWriteLine(ex.StackTrace);
+        }
+    }
+
+    private static bool TryGetForegroundColor(out ConsoleColor color)
+    {
+        try
+        {
+            color = Console.ForegroundColor;
+            return true;
+        }
+        catch
+        {
+            color = ConsoleColor.Gray;
+            return false;
+        }
+    }
+
+    private static void TrySetForegroundColor(ConsoleColor color)
+    {
+        try
+        {
+            Console.ForegroundColor = color;
+        }
+        catch
+        {
+            // Best-effort decoration only.
+        }
+    }
+
+    private static void TryWriteLine(string message)
+    {
+        try
+        {
+            Console.WriteLine(message);
+        }
+        catch
+        {
+            // Logging is best effort and must not take down a headless/closing host.
         }
     }
 
