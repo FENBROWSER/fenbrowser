@@ -9,7 +9,7 @@ namespace FenBrowser.Host;
 
 /// <summary>
 /// Dedicated compositor worker thread.
-/// Owns the off-screen raster surface and publishes a presentable frame snapshot.
+/// Owns the off-screen raster surface and publishes an immutable presentable frame snapshot.
 /// </summary>
 public sealed class CompositorThread : IDisposable
 {
@@ -35,7 +35,8 @@ public sealed class CompositorThread : IDisposable
     private int _logicalHeight;
     private float _dpiScale = 1f;
     private readonly TimeSpan _targetFrameInterval;
-    private DateTime _nextEligibleFrameUtc = DateTime.MinValue;
+    private readonly long _targetFrameIntervalTicks;
+    private long _nextEligibleFrameTimestamp;
 
     private SKSurface _outputSurface;
     private SKSizeI _outputPixelSize;
@@ -53,12 +54,14 @@ public sealed class CompositorThread : IDisposable
     {
         _compositor = compositor ?? throw new ArgumentNullException(nameof(compositor));
         _targetFrameInterval = ComputeFrameInterval(maxFramesPerSecond);
+        _targetFrameIntervalTicks = Math.Max(
+            1L,
+            (long)Math.Ceiling(_targetFrameInterval.TotalSeconds * Stopwatch.Frequency));
         _compositorWorkSubmitter = compositorWorkSubmitter ?? new GpuCompositorWorkSubmitter();
-        // 16 MB stack — matches the engine thread. Paint-tree walking on heavy
-        // SPAs (React/Vue/Angular) descends through deep composited-layer chains
-        // and the default 1 MB stack is the documented cause of silent process
-        // exits on x.com / youtube.com / similar. See BrowserIntegration's
-        // EngineThreadStackBytes comment for the same reasoning.
+
+        // Temporary resilience budget until the remaining recursive paint/layout walks
+        // are converted to explicit work stacks. Do not raise this further to solve
+        // site-specific failures; excessive logical depth belongs in engine limits.
         const int CompositorStackBytes = 16 * 1024 * 1024;
         _thread = new Thread(ThreadMain, CompositorStackBytes)
         {
@@ -93,12 +96,7 @@ public sealed class CompositorThread : IDisposable
     {
         lock (_stateLock)
         {
-            if (_running)
-            {
-                return;
-            }
-
-            if (_started)
+            if (_running || _started)
             {
                 return;
             }
@@ -189,7 +187,10 @@ public sealed class CompositorThread : IDisposable
                 return false;
             }
 
-            canvas.DrawImage(_latestFrame, new SKRect(0, 0, logicalSize.Width, logicalSize.Height), SKSamplingOptions.Default);
+            canvas.DrawImage(
+                _latestFrame,
+                new SKRect(0, 0, logicalSize.Width, logicalSize.Height),
+                SKSamplingOptions.Default);
             return true;
         }
     }
@@ -212,10 +213,6 @@ public sealed class CompositorThread : IDisposable
         long frameSequence;
         long renderedFrameCount;
         double lastFrameDurationMs;
-        long pointerMoveEventsReceived;
-        long coalescedPointerMoveEvents;
-        long pointerMoveDispatchCount;
-
         lock (_frameLock)
         {
             frameSequence = _frameSequence;
@@ -223,6 +220,9 @@ public sealed class CompositorThread : IDisposable
             lastFrameDurationMs = _lastFrameDurationMs;
         }
 
+        long pointerMoveEventsReceived;
+        long coalescedPointerMoveEvents;
+        long pointerMoveDispatchCount;
         lock (_stateLock)
         {
             pointerMoveEventsReceived = _pointerMoveEventsReceived;
@@ -285,29 +285,36 @@ public sealed class CompositorThread : IDisposable
                 lock (_compositor)
                 {
                     _compositor.DpiScale = dpiScale;
-                    _compositor.Composite(canvas, new SKSize(logicalWidth, logicalHeight));
+                    _compositor.Composite(
+                        canvas,
+                        new SKSize(logicalWidth, logicalHeight));
                 }
             });
 
-            using var snapshot = _outputSurface.Snapshot();
-            var rasterImage = snapshot?.ToRasterImage();
-            if (rasterImage == null)
+            // _outputSurface is created as a CPU/raster SKSurface. Snapshot() already
+            // returns an immutable image backed by that completed raster content.
+            // Calling ToRasterImage() here materialized a second full-size frame every
+            // commit, adding an O(viewport-pixels) copy/allocation before presentation.
+            var committedFrame = _outputSurface.Snapshot();
+            if (committedFrame == null)
             {
                 continue;
             }
 
             var frameDurationMs = Stopwatch.GetElapsedTime(frameStartTicks).TotalMilliseconds;
+            long committedSequence;
             lock (_frameLock)
             {
                 _latestFrame?.Dispose();
-                _latestFrame = rasterImage;
+                _latestFrame = committedFrame;
                 _frameSequence++;
+                committedSequence = _frameSequence;
                 _renderedFrameCount++;
                 _lastFrameDurationMs = frameDurationMs;
             }
 
             TrySubmitGpuCompositorWork(
-                _frameSequence,
+                committedSequence,
                 logicalWidth,
                 logicalHeight,
                 _outputPixelSize.Width,
@@ -317,7 +324,9 @@ public sealed class CompositorThread : IDisposable
 
             lock (_stateLock)
             {
-                _nextEligibleFrameUtc = DateTime.UtcNow + _targetFrameInterval;
+                _nextEligibleFrameTimestamp = SaturatingAdd(
+                    Stopwatch.GetTimestamp(),
+                    _targetFrameIntervalTicks);
             }
         }
     }
@@ -331,13 +340,14 @@ public sealed class CompositorThread : IDisposable
                 return 250;
             }
 
-            var remaining = _nextEligibleFrameUtc - DateTime.UtcNow;
-            if (remaining <= TimeSpan.Zero)
+            var remainingTicks = _nextEligibleFrameTimestamp - Stopwatch.GetTimestamp();
+            if (remainingTicks <= 0)
             {
                 return 0;
             }
 
-            return Math.Max(1, (int)Math.Ceiling(remaining.TotalMilliseconds));
+            var remainingMs = remainingTicks * 1000.0 / Stopwatch.Frequency;
+            return Math.Max(1, (int)Math.Ceiling(Math.Min(remainingMs, int.MaxValue)));
         }
     }
 
@@ -359,7 +369,7 @@ public sealed class CompositorThread : IDisposable
                 return false;
             }
 
-            if (_nextEligibleFrameUtc > DateTime.UtcNow)
+            if (_nextEligibleFrameTimestamp > Stopwatch.GetTimestamp())
             {
                 return false;
             }
@@ -386,6 +396,18 @@ public sealed class CompositorThread : IDisposable
         return TimeSpan.FromSeconds(1d / clamped);
     }
 
+    private static long SaturatingAdd(long value, long increment)
+    {
+        if (increment <= 0)
+        {
+            return value;
+        }
+
+        return value > long.MaxValue - increment
+            ? long.MaxValue
+            : value + increment;
+    }
+
     private void DispatchPendingPointerMove()
     {
         Action<CoalescedPointerMoveEvent> dispatcher;
@@ -409,7 +431,7 @@ public sealed class CompositorThread : IDisposable
         }
         catch
         {
-            // Pointer-move callback failures should not terminate the compositor thread.
+            // Pointer-move callback failures must not terminate the compositor thread.
         }
     }
 
@@ -458,7 +480,11 @@ public sealed class CompositorThread : IDisposable
         _outputSurface?.Dispose();
         _outputSurface = null;
 
-        var info = new SKImageInfo(targetSize.Width, targetSize.Height, SKColorType.Bgra8888, SKAlphaType.Premul);
+        var info = new SKImageInfo(
+            targetSize.Width,
+            targetSize.Height,
+            SKColorType.Bgra8888,
+            SKAlphaType.Premul);
         _outputSurface = SKSurface.Create(info);
         _outputPixelSize = targetSize;
     }
