@@ -13,10 +13,8 @@ namespace FenBrowser.Core.Security
     {
         /// <summary>
         /// Check if accessing a cross-origin Window property is allowed.
-        /// Per HTML spec §7.2.3.1, only certain properties are accessible cross-origin:
-        /// window.location (setter only), window.close, window.closed, window.focus, window.blur,
-        /// window.frames, window.length, window.top, window.opener, window.parent,
-        /// window.postMessage, window.self, window.window
+        /// Only the cross-origin Window surface is listed here; individual objects
+        /// such as Location still need their own operation-level checks.
         /// </summary>
         public static bool IsCrossOriginWindowPropertyAllowed(string propertyName)
         {
@@ -32,8 +30,8 @@ namespace FenBrowser.Core.Security
         }
 
         /// <summary>
-        /// Check if accessing a cross-origin Location property is allowed.
-        /// Per spec, only Location.href (setter) and Location.replace are allowed cross-origin.
+        /// Check if accessing a cross-origin Location member is potentially allowed.
+        /// Callers must still distinguish the href setter from the href getter.
         /// </summary>
         public static bool IsCrossOriginLocationPropertyAllowed(string propertyName)
         {
@@ -42,12 +40,29 @@ namespace FenBrowser.Core.Security
 
         /// <summary>
         /// Verify same-origin access between two documents.
-        /// Throws SecurityError if cross-origin access is not allowed.
+        /// Missing origin metadata must never turn into permission to cross a document
+        /// boundary: an uninitialized/opaque origin is a security principal, not a wildcard.
         /// </summary>
         public static void EnforceSameOrigin(Document accessor, Document target, string operation)
         {
-            if (accessor == null || target == null) return;
-            if (accessor.Origin == null || target.Origin == null) return;
+            if (accessor == null)
+            {
+                throw new ArgumentNullException(nameof(accessor));
+            }
+            if (target == null)
+            {
+                throw new ArgumentNullException(nameof(target));
+            }
+
+            if (accessor.Origin == null || target.Origin == null)
+            {
+                EngineLogCompat.Warn(
+                    $"[Security] Blocked document access with missing origin metadata ({operation})",
+                    LogCategory.Errors);
+                throw new DomException(
+                    "SecurityError",
+                    "Blocked cross-document access because an origin could not be established.");
+            }
 
             if (!accessor.Origin.IsSameOrigin(target.Origin))
             {
@@ -60,61 +75,111 @@ namespace FenBrowser.Core.Security
             }
         }
 
-        /// <summary>
-        /// Check if a script source is allowed by CSP.
-        /// Returns true if no CSP policy is active or the source is allowed.
-        /// </summary>
-        public static bool IsScriptAllowedByCsp(CspPolicy csp, Uri scriptUri, Uri documentOrigin,
-            bool isInline = false, bool isEval = false, string nonce = null, string elementHash = null, string elementTrustedType = null)
+        public static bool IsScriptAllowedByCsp(
+            CspPolicy csp,
+            Uri scriptUri,
+            Uri documentOrigin,
+            bool isInline = false,
+            bool isEval = false,
+            string nonce = null,
+            string elementHash = null,
+            string elementTrustedType = null)
         {
             if (csp == null) return true;
-            return csp.IsAllowed("script-src", scriptUri, nonce, documentOrigin, isInline, isEval, elementHash, elementTrustedType);
+            return csp.IsAllowed(
+                "script-src",
+                scriptUri,
+                nonce,
+                documentOrigin,
+                isInline,
+                isEval,
+                elementHash,
+                elementTrustedType);
         }
 
-        /// <summary>
-        /// Check if eval() / new Function() is allowed by CSP.
-        /// </summary>
         public static bool IsEvalAllowedByCsp(CspPolicy csp, Uri documentOrigin, string elementTrustedType = null)
         {
             if (csp == null) return true;
-            return csp.IsAllowed("script-src", url: null, nonce: null, origin: documentOrigin, isEval: true, elementTrustedType: elementTrustedType);
+            return csp.IsAllowed(
+                "script-src",
+                url: null,
+                nonce: null,
+                origin: documentOrigin,
+                isEval: true,
+                elementTrustedType: elementTrustedType);
         }
 
-        /// <summary>
-        /// Check if an inline script/event handler is allowed by CSP.
-        /// </summary>
-        public static bool IsInlineScriptAllowedByCsp(CspPolicy csp, Uri documentOrigin, string nonce = null, string elementHash = null, string elementTrustedType = null)
+        public static bool IsInlineScriptAllowedByCsp(
+            CspPolicy csp,
+            Uri documentOrigin,
+            string nonce = null,
+            string elementHash = null,
+            string elementTrustedType = null)
         {
             if (csp == null) return true;
-            return csp.IsAllowed("script-src", url: null, nonce: nonce, origin: documentOrigin, isInline: true, elementHash: elementHash, elementTrustedType: elementTrustedType);
+            return csp.IsAllowed(
+                "script-src",
+                url: null,
+                nonce: nonce,
+                origin: documentOrigin,
+                isInline: true,
+                elementHash: elementHash,
+                elementTrustedType: elementTrustedType);
         }
 
         /// <summary>
-        /// Validate the origin parameter for postMessage.
-        /// Returns true if the message should be delivered to the target.
+        /// Validate the targetOrigin argument for postMessage.
+        /// The two-argument overload cannot prove the '/' same-origin shorthand and
+        /// therefore fails closed for that form. Call the three-argument overload when
+        /// the incumbent/source origin is available.
         /// </summary>
         public static bool ValidatePostMessageOrigin(string targetOrigin, Origin actualOrigin)
-        {
-            if (targetOrigin == "*") return true;
-            if (targetOrigin == "/") return true; // Same origin shorthand
+            => ValidatePostMessageOrigin(targetOrigin, actualOrigin, sourceOrigin: null);
 
-            try
-            {
-                var targetUri = new Uri(targetOrigin);
-                var expected = Origin.FromUri(targetUri);
-                return actualOrigin.IsSameOrigin(expected);
-            }
-            catch
+        /// <summary>
+        /// Validate targetOrigin against the actual target and the incumbent/source
+        /// origin. '/' means the target must be same-origin with the source; it is not
+        /// an alias for '*'.
+        /// </summary>
+        public static bool ValidatePostMessageOrigin(
+            string targetOrigin,
+            Origin actualOrigin,
+            Origin sourceOrigin)
+        {
+            if (actualOrigin == null || string.IsNullOrWhiteSpace(targetOrigin))
             {
                 return false;
             }
+
+            if (targetOrigin == "*")
+            {
+                return true;
+            }
+
+            if (targetOrigin == "/")
+            {
+                return sourceOrigin != null && actualOrigin.IsSameOrigin(sourceOrigin);
+            }
+
+            if (!Uri.TryCreate(targetOrigin, UriKind.Absolute, out var targetUri))
+            {
+                return false;
+            }
+
+            var expected = Origin.FromUri(targetUri);
+            return !expected.IsOpaque && actualOrigin.IsSameOrigin(expected);
         }
 
         /// <summary>
-        /// Check if a cookie should be sent with a request based on SameSite attribute.
+        /// Check if a cookie should be sent based on SameSite context. The caller is
+        /// responsible for enforcing the cookie's Secure attribute before using a
+        /// SameSite=None result.
         /// </summary>
-        public static bool ShouldSendCookie(string sameSiteAttribute, bool isSameOriginRequest,
-            bool isTopLevelNavigation, string requestMethod)
+        public static bool ShouldSendCookie(
+            string sameSiteAttribute,
+            bool isSameOriginRequest,
+            bool isTopLevelNavigation,
+            string requestMethod)
         {
             switch (sameSiteAttribute?.ToLowerInvariant())
             {
@@ -124,9 +189,8 @@ namespace FenBrowser.Core.Security
                     return isSameOriginRequest ||
                            (isTopLevelNavigation && IsSafeMethod(requestMethod));
                 case "none":
-                    return true; // Requires Secure flag in modern browsers
+                    return true;
                 default:
-                    // Default to "Lax" per modern browser behavior
                     return isSameOriginRequest ||
                            (isTopLevelNavigation && IsSafeMethod(requestMethod));
             }
@@ -137,48 +201,83 @@ namespace FenBrowser.Core.Security
             string.Equals(method, "HEAD", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
-        /// Validate CORS preflight response.
-        /// Returns true if the actual request should proceed.
+        /// Validate the response fields needed by a CORS preflight. This helper is
+        /// intentionally conservative when it lacks enough information to prove that a
+        /// request header is CORS-safelisted.
         /// </summary>
         public static bool ValidateCorsPreflight(
-            string allowedOrigin, string allowedMethods, string allowedHeaders,
-            Origin requestOrigin, string requestMethod, string[] requestHeaders)
+            string allowedOrigin,
+            string allowedMethods,
+            string allowedHeaders,
+            Origin requestOrigin,
+            string requestMethod,
+            string[] requestHeaders)
         {
-            // Check origin
-            if (allowedOrigin != "*")
+            if (requestOrigin == null || requestOrigin.IsOpaque)
             {
-                if (!string.Equals(allowedOrigin, requestOrigin?.ToString(), StringComparison.OrdinalIgnoreCase))
-                    return false;
+                return false;
             }
 
-            // Check method
-            if (!string.IsNullOrEmpty(requestMethod) && !string.IsNullOrEmpty(allowedMethods))
+            if (allowedOrigin != "*")
             {
-                var methods = allowedMethods.Split(',', StringSplitOptions.TrimEntries);
-                bool methodOk = false;
-                foreach (var m in methods)
+                if (string.IsNullOrWhiteSpace(allowedOrigin) ||
+                    !string.Equals(allowedOrigin.Trim(), requestOrigin.ToString(), StringComparison.OrdinalIgnoreCase))
                 {
-                    if (string.Equals(m, requestMethod, StringComparison.OrdinalIgnoreCase) || m == "*")
+                    return false;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(requestMethod) && !string.IsNullOrWhiteSpace(allowedMethods))
+            {
+                var methods = allowedMethods.Split(
+                    ',',
+                    StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                var methodOk = false;
+                foreach (var method in methods)
+                {
+                    if (string.Equals(method, requestMethod, StringComparison.OrdinalIgnoreCase) || method == "*")
                     {
                         methodOk = true;
                         break;
                     }
                 }
-                if (!methodOk) return false;
+
+                if (!methodOk)
+                {
+                    return false;
+                }
             }
 
-            // Check headers
-            if (requestHeaders != null && requestHeaders.Length > 0 && !string.IsNullOrEmpty(allowedHeaders))
+            if (requestHeaders != null && requestHeaders.Length > 0)
             {
-                var allowed = new HashSet<string>(
-                    allowedHeaders.Split(',', StringSplitOptions.TrimEntries),
-                    StringComparer.OrdinalIgnoreCase);
-                if (!allowed.Contains("*"))
+                var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (!string.IsNullOrWhiteSpace(allowedHeaders))
                 {
-                    foreach (var h in requestHeaders)
+                    foreach (var header in allowedHeaders.Split(
+                                 ',',
+                                 StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
                     {
-                        if (!IsCorsSimpleHeader(h) && !allowed.Contains(h))
-                            return false;
+                        allowed.Add(header);
+                    }
+                }
+
+                var wildcard = allowed.Contains("*");
+                foreach (var rawHeader in requestHeaders)
+                {
+                    var header = rawHeader?.Trim();
+                    if (string.IsNullOrEmpty(header))
+                    {
+                        continue;
+                    }
+
+                    // content-type is only safelisted for a narrow MIME set, and this
+                    // API receives no header value. It therefore cannot safely waive
+                    // preflight authorization merely from the name "content-type".
+                    if (!IsCorsSafelistedHeaderNameWithoutValueCheck(header) &&
+                        !wildcard &&
+                        !allowed.Contains(header))
+                    {
+                        return false;
                     }
                 }
             }
@@ -186,15 +285,17 @@ namespace FenBrowser.Core.Security
             return true;
         }
 
-        /// <summary>CORS-safelisted request headers that don't need preflight.</summary>
-        private static bool IsCorsSimpleHeader(string header) => header?.ToLowerInvariant() switch
-        {
-            "accept" or "accept-language" or "content-language" => true,
-            "content-type" => true, // Additional value check would be needed
-            _ => false
-        };
+        /// <summary>
+        /// Header names that can be recognized as safelisted without inspecting a
+        /// MIME value. Content-Type deliberately is not in this helper.
+        /// </summary>
+        private static bool IsCorsSafelistedHeaderNameWithoutValueCheck(string header)
+            => header?.ToLowerInvariant() switch
+            {
+                "accept" or "accept-language" or "content-language" => true,
+                _ => false
+            };
 
-        /// <summary>Check if a request method is a CORS simple method.</summary>
         public static bool IsCorsSimpleMethod(string method) => method?.ToUpperInvariant() switch
         {
             "GET" or "HEAD" or "POST" => true,
