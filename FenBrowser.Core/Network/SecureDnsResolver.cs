@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
@@ -19,6 +20,7 @@ namespace FenBrowser.Core.Network
     internal static class SecureDnsResolver
     {
         private const int MaxDohResponseBytes = 64 * 1024;
+        private const int MaxCacheEntries = 2048;
         private const int DnsTypeA = 1;
         private const int DnsTypeCname = 5;
         private const int DnsTypeAaaa = 28;
@@ -36,6 +38,7 @@ namespace FenBrowser.Core.Network
 
         private static readonly HttpClient _dohClient = CreateClient();
         private static readonly IdnMapping _idn = new();
+        private static int _cacheTrimInProgress;
 
         public static async Task<IPAddress> ResolveAsync(string host, CancellationToken ct)
         {
@@ -116,6 +119,7 @@ namespace FenBrowser.Core.Network
                     Addresses = addresses,
                     ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(ttl)
                 };
+                TrimCacheIfNeeded();
                 return addresses;
             }
             catch (Exception ex)
@@ -129,6 +133,45 @@ namespace FenBrowser.Core.Network
                     $"[SecureDNS] DoH resolution failed for host (type={ex.GetType().Name}).",
                     LogCategory.Network);
                 return Array.Empty<IPAddress>();
+            }
+        }
+
+        private static void TrimCacheIfNeeded()
+        {
+            if (_cache.Count <= MaxCacheEntries ||
+                Interlocked.CompareExchange(ref _cacheTrimInProgress, 1, 0) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                var now = DateTimeOffset.UtcNow;
+                foreach (var pair in _cache)
+                {
+                    if (pair.Value.ExpiresAt <= now)
+                    {
+                        _cache.TryRemove(pair.Key, out _);
+                    }
+                }
+
+                var excess = _cache.Count - MaxCacheEntries;
+                if (excess <= 0)
+                    return;
+
+                // Prefer entries closest to expiry. ConcurrentDictionary enumeration is
+                // a safe point-in-time view; removals are best-effort and another thread
+                // may already have replaced an entry.
+                foreach (var pair in _cache
+                    .OrderBy(static pair => pair.Value.ExpiresAt)
+                    .Take(excess))
+                {
+                    _cache.TryRemove(pair.Key, out _);
+                }
+            }
+            finally
+            {
+                Volatile.Write(ref _cacheTrimInProgress, 0);
             }
         }
 
