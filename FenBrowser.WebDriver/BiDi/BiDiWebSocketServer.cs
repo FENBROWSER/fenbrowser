@@ -14,7 +14,9 @@ using FenBrowser.WebDriver.Security;
 namespace FenBrowser.WebDriver.BiDi;
 
 /// <summary>
-/// W3C WebDriver BiDi WebSocket transport.
+/// Experimental WebDriver BiDi WebSocket transport for the currently implemented
+/// session-control subset. Unsupported BiDi commands fail explicitly instead of being
+/// advertised as implemented.
 ///
 /// The transport is loopback-only and requires an already-created WebDriver
 /// session. The session id is treated as a capability and every upgrade is
@@ -24,6 +26,7 @@ namespace FenBrowser.WebDriver.BiDi;
 public sealed class BiDiWebSocketServer : IDisposable
 {
     private const int MaxMessageBytes = 16 * 1024 * 1024;
+    private const int MaxMethodChars = 256;
     private const int MaxConcurrentConnections = 16;
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private static readonly Regex SessionPathRegex = new(
@@ -44,9 +47,11 @@ public sealed class BiDiWebSocketServer : IDisposable
 
     public BiDiWebSocketServer(SessionManager sessionManager, int port)
     {
-        if (port is < IPEndPoint.MinPort or > IPEndPoint.MaxPort)
+        // HttpListener cannot use port 0 as an "ephemeral port" request. Accepting it
+        // here produced a server object that could never establish its advertised URL.
+        if (port <= IPEndPoint.MinPort || port > IPEndPoint.MaxPort)
         {
-            throw new ArgumentOutOfRangeException(nameof(port));
+            throw new ArgumentOutOfRangeException(nameof(port), "BiDi listener port must be between 1 and 65535.");
         }
 
         _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
@@ -123,7 +128,15 @@ public sealed class BiDiWebSocketServer : IDisposable
         }
         finally
         {
-            _connectionAdmission.Release();
+            try
+            {
+                _connectionAdmission.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Dispose may race a final admitted connection. Connection admission
+                // is already shutting down; releasing the disposed gate has no value.
+            }
         }
     }
 
@@ -350,9 +363,9 @@ public sealed class BiDiWebSocketServer : IDisposable
             }
 
             var method = methodElement.GetString();
-            if (string.IsNullOrWhiteSpace(method))
+            if (string.IsNullOrWhiteSpace(method) || method.Length > MaxMethodChars)
             {
-                return Error(id, "invalid argument", "BiDi method must not be empty.");
+                return Error(id, "invalid argument", $"BiDi method must contain 1-{MaxMethodChars} characters.");
             }
 
             switch (method)
@@ -361,7 +374,7 @@ public sealed class BiDiWebSocketServer : IDisposable
                     return Success(id, new Dictionary<string, object>
                     {
                         ["ready"] = true,
-                        ["message"] = "FenBrowser WebDriver BiDi ready"
+                        ["message"] = "FenBrowser WebDriver BiDi session-control subset ready"
                     });
 
                 case "session.end":
