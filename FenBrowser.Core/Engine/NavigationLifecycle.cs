@@ -241,14 +241,46 @@ namespace FenBrowser.Core.Engine
 
         private void PublishTransition(NavigationLifecycleTransition transition)
         {
-            try
+            var handlers = Transitioned;
+            if (handlers != null)
             {
-                Transitioned?.Invoke(transition);
+                foreach (Action<NavigationLifecycleTransition> handler in handlers.GetInvocationList())
+                {
+                    try
+                    {
+                        handler(transition);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Navigation observers are diagnostics/integration hooks, not
+                        // part of the navigation state machine. One faulty DevTools,
+                        // telemetry, or host subscriber must not abort a committed
+                        // lifecycle transition or prevent later subscribers from seeing it.
+                        try
+                        {
+                            EngineLog.Write(
+                                LogSubsystem.Nav,
+                                LogSeverity.Warn,
+                                "NavigationLifecycleObserverFailed",
+                                LogMarker.None,
+                                new EngineLogContext(NavigationId: transition.NavigationId.ToString()),
+                                new Dictionary<string, object>
+                                {
+                                    ["phase"] = transition.Phase.ToString(),
+                                    ["observer"] = handler.Method?.DeclaringType?.FullName ?? handler.Method?.Name ?? "unknown",
+                                    ["exceptionType"] = ex.GetType().FullName ?? ex.GetType().Name,
+                                    ["message"] = ex.Message
+                                });
+                        }
+                        catch
+                        {
+                            // Logging an observer failure is best-effort only.
+                        }
+                    }
+                }
             }
-            finally
-            {
-                EmitTrace(transition);
-            }
+
+            EmitTrace(transition);
         }
 
         private static void EmitTrace(NavigationLifecycleTransition transition)
