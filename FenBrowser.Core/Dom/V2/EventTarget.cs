@@ -1,24 +1,20 @@
-// WHATWG DOM Living Standard compliant implementation
-// FenBrowser.Core.Dom.V2 - Production-grade DOM
+// WHATWG DOM Living Standard implementation
+// FenBrowser.Core.Dom.V2
 
 using System;
 using System.Collections.Generic;
-using System.Threading;
 
 namespace FenBrowser.Core.Dom.V2
 {
     /// <summary>
-    /// DOM Living Standard: EventTarget interface.
-    /// https://dom.spec.whatwg.org/#interface-eventtarget
-    ///
-    /// Base class for all objects that can receive events.
-    /// Uses lazy initialization and compact storage for memory efficiency.
-    /// Thread-safe implementation.
+    /// DOM Living Standard EventTarget base.
+    /// Listener mutation is copy-on-write so the high-frequency dispatch path can
+    /// consume immutable snapshots without allocating one List per target/event.
     /// </summary>
     public abstract class EventTarget
     {
         private EventListenerStorage _listeners;
-        private readonly object _listenerLock = new object();
+        private readonly object _listenerLock = new();
 
         public void AddEventListener(string type, EventListener callback, bool capture = false)
         {
@@ -76,19 +72,12 @@ namespace FenBrowser.Core.Dom.V2
             return EventDispatcher.Dispatch(evt, this);
         }
 
-        internal List<EventListenerEntry> GetEventListeners(string type)
-        {
-            return TryGetEventListeners(type, out var listeners)
-                ? listeners
-                : new List<EventListenerEntry>();
-        }
-
-        internal bool TryGetEventListeners(string type, out List<EventListenerEntry> listeners)
+        internal bool TryGetEventListeners(string type, out EventListenerEntry[] listeners)
         {
             lock (_listenerLock)
             {
                 if (_listeners is not null)
-                    return _listeners.TryGetCopy(type, out listeners);
+                    return _listeners.TryGetSnapshot(type, out listeners);
 
                 listeners = null;
                 return false;
@@ -121,7 +110,7 @@ namespace FenBrowser.Core.Dom.V2
 
     internal sealed class EventListenerStorage
     {
-        private Dictionary<string, List<EventListenerEntry>> _listeners;
+        private Dictionary<string, EventListenerEntry[]> _listeners;
         private int _totalCount;
 
         public bool IsEmpty => _totalCount == 0;
@@ -135,18 +124,19 @@ namespace FenBrowser.Core.Dom.V2
             if (options.Signal != null && options.Signal.Aborted)
                 return false;
 
-            _listeners ??= new Dictionary<string, List<EventListenerEntry>>(StringComparer.Ordinal);
+            _listeners ??= new Dictionary<string, EventListenerEntry[]>(StringComparer.Ordinal);
+            _listeners.TryGetValue(type, out var current);
+            current ??= Array.Empty<EventListenerEntry>();
 
-            if (!_listeners.TryGetValue(type, out var list))
+            for (var i = 0; i < current.Length; i++)
             {
-                list = new List<EventListenerEntry>(2);
-                _listeners[type] = list;
-            }
-
-            foreach (var entry in list)
-            {
-                if (ReferenceEquals(entry.Callback, callback) && entry.Capture == options.Capture)
+                var entry = current[i];
+                if (!entry.Removed &&
+                    ReferenceEquals(entry.Callback, callback) &&
+                    entry.Capture == options.Capture)
+                {
                     return false;
+                }
             }
 
             var newEntry = new EventListenerEntry
@@ -158,59 +148,90 @@ namespace FenBrowser.Core.Dom.V2
                 Signal = options.Signal
             };
 
-            list.Add(newEntry);
-            _totalCount++;
-
             if (options.Signal != null)
             {
                 Action abortHandler = () => owner.RemoveEventListener(type, callback, options.Capture);
                 newEntry.AbortHandler = abortHandler;
                 options.Signal.OnAbort += abortHandler;
+
+                // AbortSignal invokes a just-added listener immediately if it raced an
+                // abort. Do not publish an entry that was removed by that callback.
+                if (options.Signal.Aborted)
+                {
+                    options.Signal.OnAbort -= abortHandler;
+                    return false;
+                }
             }
 
-            return !newEntry.Removed;
+            var next = new EventListenerEntry[current.Length + 1];
+            Array.Copy(current, next, current.Length);
+            next[^1] = newEntry;
+            _listeners[type] = next;
+            _totalCount++;
+            return true;
         }
 
         public bool Remove(string type, EventListener callback, bool capture)
         {
-            if (_listeners == null || !_listeners.TryGetValue(type, out var list))
+            if (_listeners == null || !_listeners.TryGetValue(type, out var current))
                 return false;
 
-            for (int i = list.Count - 1; i >= 0; i--)
+            var removeIndex = -1;
+            for (var i = 0; i < current.Length; i++)
             {
-                var entry = list[i];
-                if (ReferenceEquals(entry.Callback, callback) && entry.Capture == capture)
+                var entry = current[i];
+                if (!entry.Removed &&
+                    ReferenceEquals(entry.Callback, callback) &&
+                    entry.Capture == capture)
                 {
-                    entry.Removed = true;
-                    list.RemoveAt(i);
-                    _totalCount--;
-
-                    if (entry.Signal != null && entry.AbortHandler != null)
-                        entry.Signal.OnAbort -= entry.AbortHandler;
-
-                    if (list.Count == 0)
-                        _listeners.Remove(type);
-                    return true;
+                    removeIndex = i;
+                    break;
                 }
             }
 
-            return false;
+            if (removeIndex < 0)
+                return false;
+
+            var removed = current[removeIndex];
+            removed.Removed = true;
+            if (removed.Signal != null && removed.AbortHandler != null)
+                removed.Signal.OnAbort -= removed.AbortHandler;
+
+            if (current.Length == 1)
+            {
+                _listeners.Remove(type);
+            }
+            else
+            {
+                var next = new EventListenerEntry[current.Length - 1];
+                if (removeIndex > 0)
+                    Array.Copy(current, 0, next, 0, removeIndex);
+                if (removeIndex + 1 < current.Length)
+                {
+                    Array.Copy(
+                        current,
+                        removeIndex + 1,
+                        next,
+                        removeIndex,
+                        current.Length - removeIndex - 1);
+                }
+                _listeners[type] = next;
+            }
+
+            _totalCount--;
+            return true;
         }
 
-        public bool TryGetCopy(string type, out List<EventListenerEntry> copy)
+        public bool TryGetSnapshot(string type, out EventListenerEntry[] snapshot)
         {
-            if (_listeners != null && _listeners.TryGetValue(type, out var list))
+            if (_listeners != null &&
+                _listeners.TryGetValue(type, out snapshot) &&
+                snapshot.Length > 0)
             {
-                copy = new List<EventListenerEntry>(list.Count);
-                foreach (var entry in list)
-                {
-                    if (!entry.Removed)
-                        copy.Add(entry);
-                }
-                return copy.Count > 0;
+                return true;
             }
 
-            copy = null;
+            snapshot = null;
             return false;
         }
     }
@@ -229,7 +250,7 @@ namespace FenBrowser.Core.Dom.V2
     public sealed class AbortSignal
     {
         private volatile bool _aborted;
-        private readonly object _lock = new object();
+        private readonly object _lock = new();
         private event Action _onAbort;
 
         public bool Aborted => _aborted;
@@ -335,12 +356,19 @@ namespace FenBrowser.Core.Dom.V2
             if (Path == null || Path.Count == 0)
                 return Array.Empty<EventTarget>();
 
-            var result = new List<EventTarget>();
+            // Closed-tree filtering remains intentionally conservative: entries that
+            // mark the crossing host are visible, while the closed root's internals
+            // are hidden from listeners whose current target is outside that root.
+            var result = new List<EventTarget>(Path.Count);
             var currentTarget = CurrentTarget;
-            foreach (var entry in Path)
+            for (var i = 0; i < Path.Count; i++)
             {
-                if (entry.RootOfClosedTree && entry.InvocationTarget != currentTarget)
+                var entry = Path[i];
+                if (entry.ClosedTreeRoot != null &&
+                    !IsInsideShadowTree(currentTarget, entry.ClosedTreeRoot))
+                {
                     continue;
+                }
 
                 result.Add(entry.InvocationTarget);
             }
@@ -355,6 +383,11 @@ namespace FenBrowser.Core.Dom.V2
         }
 
         public EventTarget SrcElement => Target;
+
+        private static bool IsInsideShadowTree(EventTarget target, ShadowRoot shadowRoot)
+        {
+            return target is Node node && ReferenceEquals(node.GetRootNode(), shadowRoot);
+        }
     }
 
     public struct EventInit
@@ -377,8 +410,7 @@ namespace FenBrowser.Core.Dom.V2
         public EventTarget InvocationTarget;
         public EventTarget ShadowAdjustedTarget;
         public Node RelatedTarget;
-        public bool RootOfClosedTree;
-        public bool SlotInClosedTree;
+        public ShadowRoot ClosedTreeRoot;
     }
 
     internal static class EventDispatcher
@@ -386,6 +418,7 @@ namespace FenBrowser.Core.Dom.V2
         public static bool Dispatch(Event evt, EventTarget target)
         {
             evt.DispatchFlag = true;
+            var originalTarget = target;
             evt.Target = target;
 
             var path = BuildEventPath(target, evt.ComposedFlag);
@@ -397,18 +430,13 @@ namespace FenBrowser.Core.Dom.V2
                 for (int i = path.Count - 1; i > 0; i--)
                 {
                     if (evt.StopPropagationFlag) break;
-
-                    var entry = path[i];
-                    evt.CurrentTarget = entry.InvocationTarget;
-                    InvokeEventListeners(evt, entry.InvocationTarget, EventPhase.Capturing);
+                    InvokePathEntry(evt, path[i], EventPhase.Capturing);
                 }
 
                 if (!evt.StopPropagationFlag && path.Count > 0)
                 {
                     evt.EventPhase = EventPhase.AtTarget;
-                    var targetEntry = path[0];
-                    evt.CurrentTarget = targetEntry.InvocationTarget;
-                    InvokeEventListeners(evt, targetEntry.InvocationTarget, EventPhase.AtTarget);
+                    InvokePathEntry(evt, path[0], EventPhase.AtTarget);
                 }
 
                 if (evt.Bubbles && !evt.StopPropagationFlag)
@@ -417,10 +445,7 @@ namespace FenBrowser.Core.Dom.V2
                     for (int i = 1; i < path.Count; i++)
                     {
                         if (evt.StopPropagationFlag) break;
-
-                        var entry = path[i];
-                        evt.CurrentTarget = entry.InvocationTarget;
-                        InvokeEventListeners(evt, entry.InvocationTarget, EventPhase.Bubbling);
+                        InvokePathEntry(evt, path[i], EventPhase.Bubbling);
                     }
                 }
 
@@ -428,6 +453,7 @@ namespace FenBrowser.Core.Dom.V2
             }
             finally
             {
+                evt.Target = originalTarget;
                 evt.StopPropagationFlag = false;
                 evt.StopImmediatePropagationFlag = false;
                 evt.InPassiveListenerFlag = false;
@@ -438,9 +464,16 @@ namespace FenBrowser.Core.Dom.V2
             }
         }
 
+        private static void InvokePathEntry(Event evt, EventPathEntry entry, EventPhase phase)
+        {
+            evt.Target = entry.ShadowAdjustedTarget;
+            evt.CurrentTarget = entry.InvocationTarget;
+            InvokeEventListeners(evt, entry.InvocationTarget, phase);
+        }
+
         private static List<EventPathEntry> BuildEventPath(EventTarget target, bool composed)
         {
-            var path = new List<EventPathEntry>
+            var path = new List<EventPathEntry>(8)
             {
                 new EventPathEntry
                 {
@@ -450,6 +483,7 @@ namespace FenBrowser.Core.Dom.V2
             };
 
             var current = target;
+            var adjustedTarget = target;
             while (true)
             {
                 var parent = current.GetParentForEventDispatch();
@@ -458,29 +492,33 @@ namespace FenBrowser.Core.Dom.V2
 
                 if (current is ShadowRoot shadowRoot)
                 {
-                    // The `composed` flag controls whether an event crosses a shadow
-                    // boundary at all. Open/closed mode controls encapsulation and
-                    // composedPath/retargeting, not propagation for composed:false.
                     if (!composed)
                         break;
 
+                    // Retargeting: once traversal leaves a shadow tree, listeners on
+                    // the host and its ancestors observe the host as event.target. If
+                    // another outer shadow boundary is crossed later, the target is
+                    // retargeted again to that outer host.
                     parent = shadowRoot.Host;
-                    path.Add(new EventPathEntry
+                    adjustedTarget = parent;
+
+                    if (shadowRoot.Mode == ShadowRootMode.Closed)
                     {
-                        InvocationTarget = parent,
-                        ShadowAdjustedTarget = parent,
-                        RootOfClosedTree = shadowRoot.Mode == ShadowRootMode.Closed
-                    });
-                }
-                else
-                {
-                    path.Add(new EventPathEntry
-                    {
-                        InvocationTarget = parent,
-                        ShadowAdjustedTarget = parent
-                    });
+                        // Entries accumulated so far are inside this closed root. Mark
+                        // them so composedPath() can hide them from outside listeners.
+                        for (var i = 0; i < path.Count; i++)
+                        {
+                            if (path[i].ClosedTreeRoot == null)
+                                path[i].ClosedTreeRoot = shadowRoot;
+                        }
+                    }
                 }
 
+                path.Add(new EventPathEntry
+                {
+                    InvocationTarget = parent,
+                    ShadowAdjustedTarget = adjustedTarget
+                });
                 current = parent;
             }
 
@@ -492,7 +530,7 @@ namespace FenBrowser.Core.Dom.V2
             if (!target.TryGetEventListeners(evt.Type, out var listeners))
                 return;
 
-            for (var listenerIndex = 0; listenerIndex < listeners.Count; listenerIndex++)
+            for (var listenerIndex = 0; listenerIndex < listeners.Length; listenerIndex++)
             {
                 var listener = listeners[listenerIndex];
                 if (listener.Removed)
@@ -529,9 +567,19 @@ namespace FenBrowser.Core.Dom.V2
 
         private static void ReportError(Exception ex, EventTarget target, Event evt)
         {
+            var type = NormalizeLogField(evt.Type);
+            var message = NormalizeLogField(ex.Message);
             EngineLogCompat.Error(
-                $"[EventDispatcher] Error in listener for '{evt.Type}' on {target}: {ex.Message}",
+                $"[EventDispatcher] Error in listener for '{type}' on {target}: {message}",
                 FenBrowser.Core.Logging.LogCategory.Events);
+        }
+
+        private static string NormalizeLogField(string value)
+        {
+            return (value ?? string.Empty)
+                .Replace("\r", "\\r", StringComparison.Ordinal)
+                .Replace("\n", "\\n", StringComparison.Ordinal)
+                .Replace("\0", "\\0", StringComparison.Ordinal);
         }
     }
 }
