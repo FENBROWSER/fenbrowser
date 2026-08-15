@@ -13,17 +13,18 @@ namespace FenBrowser.Core.Platform;
 public sealed class PosixPlatformLayer : IPlatformLayer
 {
     private readonly OSPlatformKind _platform;
+    private readonly PosixOsSandboxFactory _sandboxFactory;
 
     public PosixPlatformLayer(OSPlatformKind platform)
     {
         _platform = platform;
+        _sandboxFactory = new PosixOsSandboxFactory(platform);
     }
 
     public OSPlatformKind Platform => _platform;
 
     public bool IsSupported =>
-        (_platform == OSPlatformKind.Linux && RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) ||
-        (_platform == OSPlatformKind.MacOS && RuntimeInformation.IsOSPlatform(OSPlatform.OSX));
+        IsRunningOnTargetPlatform() && _sandboxFactory.IsSandboxingSupported;
 
     public ISharedMemoryRegion CreateSharedMemory(string name, int sizeBytes)
     {
@@ -61,9 +62,20 @@ public sealed class PosixPlatformLayer : IPlatformLayer
     {
         if (profile == null) throw new ArgumentNullException(nameof(profile));
 
-        // Non-Windows self-restriction remains a separate OS-native hardening task.
-        // This PAL tranche removes unsupported-platform exceptions for baseline
-        // shared-memory/process operations only.
+        if (profile.Kind == OsSandboxProfileKind.BrokerFull)
+        {
+            // The broker is intentionally the capability-owning process.
+            return;
+        }
+
+        // Restricted POSIX children are launched through PosixCommandSandbox so the
+        // helper establishes namespaces / sandbox-exec policy before untrusted code
+        // runs. This PAL does not currently have an in-process one-way restriction
+        // primitive equivalent to that launcher. Silently returning here falsely
+        // advertised a security boundary that had not been established.
+        throw new PlatformNotSupportedException(
+            $"POSIX in-process self-restriction is unavailable for profile '{profile.Kind}'. " +
+            "Launch restricted children through the POSIX sandbox factory instead.");
     }
 
     public long GetProcessMemoryBytes(int pid)
@@ -90,6 +102,12 @@ public sealed class PosixPlatformLayer : IPlatformLayer
 
     public IOsSandboxFactory CreateSandboxFactory()
     {
-        return new PosixOsSandboxFactory(_platform);
+        return _sandboxFactory;
+    }
+
+    private bool IsRunningOnTargetPlatform()
+    {
+        return (_platform == OSPlatformKind.Linux && RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) ||
+               (_platform == OSPlatformKind.MacOS && RuntimeInformation.IsOSPlatform(OSPlatform.OSX));
     }
 }
