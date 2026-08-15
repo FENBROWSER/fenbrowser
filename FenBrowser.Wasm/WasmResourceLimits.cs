@@ -35,6 +35,23 @@ public sealed class WasmResourceLimits
     /// <summary>Maximum table elements.</summary>
     public uint MaxTableElements { get; set; } = 10_000_000;
 
+    /// <summary>
+    /// Creates a detached copy. Engines keep an owned snapshot rather than retaining
+    /// a caller-mutable policy object: changing the object used to construct one
+    /// engine must not silently change the admission limits of later Store instances.
+    /// </summary>
+    public WasmResourceLimits Clone() => new()
+    {
+        MaxMemoryBytes = MaxMemoryBytes,
+        MaxModuleBytes = MaxModuleBytes,
+        MaxInstances = MaxInstances,
+        MaxFuelPerInstance = MaxFuelPerInstance,
+        MaxExecutionTime = MaxExecutionTime,
+        MaxTables = MaxTables,
+        MaxMemories = MaxMemories,
+        MaxTableElements = MaxTableElements,
+    };
+
     /// <summary>Validates and normalizes the limits.</summary>
     public void Normalize()
     {
