@@ -301,6 +301,34 @@ public sealed class DisposableStackBuiltin : IBuiltinModule
         return method;
     }
 
+    private static void AddResource(
+        IBuiltinContext ctx,
+        JsValue ownerValue,
+        DisposableStackObject stack,
+        DisposableResource resource)
+    {
+        stack.Resources.Add(resource);
+        if (ownerValue.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        RegisterResourceEdges(ctx.Heap, ownerValue.AsObjectHandle(), resource);
+    }
+
+    private static void RegisterResourceEdges(JsHeap heap, ObjectHandle ownerHandle, DisposableResource resource)
+    {
+        if (resource.Value.Tag == JsValueTag.Object)
+        {
+            heap.WriteBarrier(ownerHandle, resource.Value.AsObjectHandle());
+        }
+
+        if (resource.Method.Tag == JsValueTag.Object)
+        {
+            heap.WriteBarrier(ownerHandle, resource.Method.AsObjectHandle());
+        }
+    }
+
     private static JsValue Use(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var stack = RequireDisposableStack(ctx, thisValue);
@@ -323,7 +351,7 @@ public sealed class DisposableStackBuiltin : IBuiltinModule
             throw new JsThrownException(ctx.CreateTypeError("DisposableStack.prototype.use requires a Symbol.dispose method."));
         }
 
-        stack.Resources.Add(new DisposableResource(value, method));
+        AddResource(ctx, thisValue, stack, new DisposableResource(value, method));
         return value;
     }
 
@@ -339,7 +367,7 @@ public sealed class DisposableStackBuiltin : IBuiltinModule
             throw new JsThrownException(ctx.CreateTypeError("DisposableStack.prototype.adopt requires a callable disposer."));
         }
 
-        stack.Resources.Add(new DisposableResource(value, onDispose, passValueAsArgument: true));
+        AddResource(ctx, thisValue, stack, new DisposableResource(value, onDispose, passValueAsArgument: true));
         return value;
     }
 
@@ -354,7 +382,7 @@ public sealed class DisposableStackBuiltin : IBuiltinModule
             throw new JsThrownException(ctx.CreateTypeError("DisposableStack.prototype.defer requires a callable disposer."));
         }
 
-        stack.Resources.Add(new DisposableResource(JsValue.Undefined, onDispose));
+        AddResource(ctx, thisValue, stack, new DisposableResource(JsValue.Undefined, onDispose));
         return JsValue.Undefined;
     }
 
@@ -370,6 +398,15 @@ public sealed class DisposableStackBuiltin : IBuiltinModule
         };
         newStack.SetPrototype(prototypeHandle);
         var newHandle = ctx.Heap.AllocateObject(newStack, AllocationSite.Current());
+
+        // The resource list is an internal GC-traced slot rather than a normal
+        // JsObject property. Register every transferred object edge explicitly so
+        // this stays correct even when the destination allocation is promoted or
+        // allocation policy changes.
+        foreach (var resource in newStack.Resources)
+        {
+            RegisterResourceEdges(ctx.Heap, newHandle, resource);
+        }
 
         stack.Resources = new List<DisposableResource>();
         stack.State = DisposableState.Disposed;
