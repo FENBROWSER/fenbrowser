@@ -1,4 +1,6 @@
 using System;
+using System.Globalization;
+using System.Net;
 using System.Runtime.CompilerServices;
 
 namespace FenBrowser.Core.Security
@@ -9,6 +11,8 @@ namespace FenBrowser.Core.Security
     /// </summary>
     public sealed class Origin : IEquatable<Origin>
     {
+        private static readonly IdnMapping Idn = new();
+
         public string Scheme { get; }
         public string Host { get; }
         public int Port { get; }
@@ -22,8 +26,20 @@ namespace FenBrowser.Core.Security
         public Origin(string scheme, string host, int port)
         {
             Scheme = NormalizeScheme(scheme);
+            if (Scheme.Length == 0 || !Uri.CheckSchemeName(Scheme))
+                throw new ArgumentException("Origin scheme is invalid.", nameof(scheme));
+
             Host = NormalizeHost(host);
-            Port = port;
+            if (RequiresHostTuple(Scheme) && Host.Length == 0)
+                throw new ArgumentException($"Origin scheme '{Scheme}' requires a host.", nameof(host));
+
+            if (port < -1 || port > 65535)
+                throw new ArgumentOutOfRangeException(nameof(port), "Origin port must be -1 or between 0 and 65535.");
+
+            // Callers historically passed -1 for a default/omitted port, while
+            // FromUri materialized 80/443/etc. Leaving the two representations
+            // different made equivalent origins fail same-origin checks.
+            Port = port < 0 ? GetDefaultPort(Scheme) : port;
             IsOpaque = false;
         }
 
@@ -86,7 +102,14 @@ namespace FenBrowser.Core.Security
             }
 
             var port = uri.IsDefaultPort ? GetDefaultPort(scheme) : uri.Port;
-            return new Origin(scheme, host, port);
+            try
+            {
+                return new Origin(scheme, host, port);
+            }
+            catch (ArgumentException)
+            {
+                return Opaque();
+            }
         }
 
         /// <summary>
@@ -169,7 +192,21 @@ namespace FenBrowser.Core.Security
                 return string.Empty;
             }
 
-            return host.Trim().TrimEnd('.').Trim('[', ']').ToLowerInvariant();
+            var normalized = host.Trim().TrimEnd('.').Trim('[', ']');
+            if (normalized.Length == 0)
+                return string.Empty;
+
+            if (IPAddress.TryParse(normalized, out var address))
+                return address.ToString().ToLowerInvariant();
+
+            try
+            {
+                return Idn.GetAscii(normalized).ToLowerInvariant();
+            }
+            catch (ArgumentException)
+            {
+                throw new ArgumentException("Origin host is not a valid IDN/DNS host.", nameof(host));
+            }
         }
 
         private static bool RequiresHostTuple(string scheme)
