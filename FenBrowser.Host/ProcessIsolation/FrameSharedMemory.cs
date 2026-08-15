@@ -1,6 +1,8 @@
 using System;
 using System.IO;
 using System.IO.MemoryMappedFiles;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
@@ -71,11 +73,27 @@ namespace FenBrowser.Host.ProcessIsolation
         public static string MakeEventName(int tabId, int parentPid) =>
             $"fen_frame_rdy_{tabId}_{parentPid}";
 
+        public static string MakeMmfName(int tabId, int parentPid, string capabilityToken) =>
+            $"fen_frame_{tabId}_{parentPid}_{MakeCapabilitySuffix(capabilityToken)}";
+
+        public static string MakeEventName(int tabId, int parentPid, string capabilityToken) =>
+            $"fen_frame_rdy_{tabId}_{parentPid}_{MakeCapabilitySuffix(capabilityToken)}";
+
+        private static string MakeCapabilitySuffix(string capabilityToken)
+        {
+            if (string.IsNullOrWhiteSpace(capabilityToken))
+                throw new ArgumentException("Frame shared-memory capability token is required.", nameof(capabilityToken));
+
+            var hash = SHA256.HashData(Encoding.UTF8.GetBytes(capabilityToken));
+            return Convert.ToHexString(hash.AsSpan(0, 12)).ToLowerInvariant();
+        }
+
         public static FrameSharedMemory CreateForWriter(
             int tabId,
             int parentPid,
             int windowWidth = MaxWidth,
-            int windowHeight = MaxHeight)
+            int windowHeight = MaxHeight,
+            string capabilityToken = null)
         {
             int regionCapacity = ComputeRegionCapacity(windowWidth, windowHeight);
             long totalSize = HeaderSize + (long)regionCapacity;
@@ -85,8 +103,19 @@ namespace FenBrowser.Host.ProcessIsolation
             // and can also require SeCreateGlobalPrivilege. Keep frame transport local to
             // the browser session; a future protocol revision should additionally derive
             // these names from the authenticated renderer capability token.
-            var mmfName = MakeMmfName(tabId, parentPid);
-            var eventName = MakeEventName(tabId, parentPid);
+            var mmfName = string.IsNullOrWhiteSpace(capabilityToken)
+                ? MakeMmfName(tabId, parentPid)
+                : MakeMmfName(tabId, parentPid, capabilityToken);
+            var eventName = string.IsNullOrWhiteSpace(capabilityToken)
+                ? MakeEventName(tabId, parentPid)
+                : MakeEventName(tabId, parentPid, capabilityToken);
+
+            if (string.IsNullOrWhiteSpace(capabilityToken))
+            {
+                EngineLogBridge.Warn(
+                    "[FrameSharedMemory] Creating a compatibility mapping without a capability-bound name.",
+                    LogCategory.General);
+            }
 
             MemoryMappedFile mmf;
             try
@@ -143,13 +172,17 @@ namespace FenBrowser.Host.ProcessIsolation
                 regionCapacity);
         }
 
-        public static FrameSharedMemory OpenForReader(int tabId, int parentPid)
+        public static FrameSharedMemory OpenForReader(int tabId, int parentPid, string capabilityToken = null)
         {
             if (!OperatingSystem.IsWindows())
                 return null;
 
-            var mmfName = MakeMmfName(tabId, parentPid);
-            var eventName = MakeEventName(tabId, parentPid);
+            var mmfName = string.IsNullOrWhiteSpace(capabilityToken)
+                ? MakeMmfName(tabId, parentPid)
+                : MakeMmfName(tabId, parentPid, capabilityToken);
+            var eventName = string.IsNullOrWhiteSpace(capabilityToken)
+                ? MakeEventName(tabId, parentPid)
+                : MakeEventName(tabId, parentPid, capabilityToken);
 
             MemoryMappedFile mmf;
             try

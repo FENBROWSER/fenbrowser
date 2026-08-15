@@ -1218,23 +1218,30 @@ public class BrowserIntegration : IDisposable
 
             int w = (int)payload.SurfaceWidth;
             int h = (int)payload.SurfaceHeight;
-            int expectedBytes = w * h * 4;
+            long expectedBytesLong = (long)w * h * FenBrowser.Host.ProcessIsolation.FrameSharedMemory.BytesPerPixel;
+            if (w <= 0 || h <= 0 ||
+                w > FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxWidth || h > FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxHeight ||
+                expectedBytesLong <= 0 || expectedBytesLong > int.MaxValue)
+            {
+                EngineLogBridge.Warn(
+                    $"[BrowserIntegration] Rejected invalid remote frame dimensions {w}x{h} for tab={tabId}",
+                    LogCategory.Rendering);
+                return;
+            }
 
+            int expectedBytes = (int)expectedBytesLong;
             if (payload.PixelData.Length >= expectedBytes)
             {
                 try
                 {
-                    // Wrap the raw BGRA bytes in a GCHandle so SkiaSharp can reference them
-                    // without an additional copy, then rasterize into an owned SKBitmap.
+                    // Shared-memory frame bytes are raw BGRA, not an encoded image.
+                    // Copy them directly into an owned bitmap and release the GC pin.
                     var imageInfo = new SKImageInfo(w, h, SKColorType.Bgra8888, SKAlphaType.Premul);
                     SKBitmap newBitmap;
                     var handle = System.Runtime.InteropServices.GCHandle.Alloc(payload.PixelData, System.Runtime.InteropServices.GCHandleType.Pinned);
                     try
                     {
-                        var ptr = handle.AddrOfPinnedObject();
-                        // FromPixels copies the data into an owned bitmap so we can free the pin immediately.
-                        newBitmap = SKBitmap.Decode(SKData.Create(ptr, expectedBytes))
-                            ?? InstallPixelsCopy(imageInfo, ptr);
+                        newBitmap = InstallPixelsCopy(imageInfo, handle.AddrOfPinnedObject());
                     }
                     finally
                     {
@@ -1267,7 +1274,7 @@ public class BrowserIntegration : IDisposable
 
                     if (acceptedRemoteFrame)
                     {
-                        EngineLogBridge.Debug($"[BrowserIntegration] Remote frame decoded: {w}x{h} seq={payload.FrameSequenceNumber} scrollY={payload.ScrollY:F1} for tab={tabId}", LogCategory.Rendering);
+                        EngineLogBridge.Debug($"[BrowserIntegration] Remote frame installed: {w}x{h} seq={payload.FrameSequenceNumber} scrollY={payload.ScrollY:F1} for tab={tabId}", LogCategory.Rendering);
                         if (Math.Abs(payload.ScrollY - _scrollY) <= 0.5f)
                         {
                             ResetCompositorScrollPreview();
@@ -1366,17 +1373,26 @@ public class BrowserIntegration : IDisposable
 
     /// <summary>
     /// Creates an owned SKBitmap by copying raw BGRA pixels from an unmanaged pointer.
-    /// Used as a fallback when SKBitmap.Decode cannot interpret raw pixel data.
     /// </summary>
     private static SKBitmap InstallPixelsCopy(SKImageInfo imageInfo, IntPtr src)
     {
-        var bm = new SKBitmap(imageInfo);
+        if (src == IntPtr.Zero)
+            throw new ArgumentException("Remote frame pixel pointer cannot be null.", nameof(src));
+
+        var bitmap = new SKBitmap(imageInfo);
+        var destination = bitmap.GetPixels();
+        if (destination == IntPtr.Zero)
+        {
+            bitmap.Dispose();
+            throw new InvalidOperationException("Skia could not allocate remote frame pixels.");
+        }
+
         unsafe
         {
             int bytes = imageInfo.BytesSize;
-            Buffer.MemoryCopy((void*)src, (void*)bm.GetPixels(), bytes, bytes);
+            Buffer.MemoryCopy((void*)src, (void*)destination, bytes, bytes);
         }
-        return bm;
+        return bitmap;
     }
 
     public void HighlightElement(Element? element)

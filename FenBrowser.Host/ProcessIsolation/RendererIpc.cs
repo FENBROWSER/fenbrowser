@@ -351,7 +351,7 @@ namespace FenBrowser.Host.ProcessIsolation
         private StreamReader _reader;
         private StreamWriter _writer;
         private Task _readLoop;
-        private DateTime _lastFrameRequestUtc = DateTime.MinValue;
+        private long _lastFrameRequestTimestamp;
         private const int MaxPendingOutboundMessages = 128;
         private const int OutboundQueueCapacity = 512;
         private readonly Channel<RendererIpcEnvelope> _outbound;
@@ -470,16 +470,19 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public void SendFrameRequest(float viewportWidth, float viewportHeight, float scrollY = 0f)
         {
-            var now = DateTime.UtcNow;
+            var now = Stopwatch.GetTimestamp();
             bool scrollChanged = Math.Abs(scrollY - _lastFrameRequestScrollY) > 0.5f;
-            // Rate limit only when neither viewport nor scroll changed.
+            // Rate limit only when neither viewport nor scroll changed. Use a
+            // monotonic clock so wall-clock adjustments cannot stall or flood frames.
             bool viewportChanged = Math.Abs(viewportWidth - _lastFrameRequestViewportWidth) > 0.5f ||
                                    Math.Abs(viewportHeight - _lastFrameRequestViewportHeight) > 0.5f;
-            if (!scrollChanged && !viewportChanged && (now - _lastFrameRequestUtc).TotalMilliseconds < 33)
+            if (!scrollChanged && !viewportChanged &&
+                _lastFrameRequestTimestamp != 0 &&
+                Stopwatch.GetElapsedTime(_lastFrameRequestTimestamp, now).TotalMilliseconds < 33)
             {
                 return;
             }
-            _lastFrameRequestUtc = now;
+            _lastFrameRequestTimestamp = now;
             _lastFrameRequestScrollY = scrollY;
             _lastFrameRequestViewportWidth = viewportWidth;
             _lastFrameRequestViewportHeight = viewportHeight;
@@ -614,7 +617,7 @@ namespace FenBrowser.Host.ProcessIsolation
                             {
                                 try
                                 {
-                                    _frameSharedMemory = FrameSharedMemory.OpenForReader(TabId, _parentPid);
+                                    _frameSharedMemory = FrameSharedMemory.OpenForReader(TabId, _parentPid, AuthToken);
                                 }
                                 catch (Exception ex)
                                 {
@@ -655,7 +658,7 @@ namespace FenBrowser.Host.ProcessIsolation
                     }
                     else if (messageType == RendererIpcMessageType.Error)
                     {
-                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Renderer child error tab={TabId}: {envelope.Payload}");
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Renderer child error tab={TabId}: {BoundDiagnosticPayload(envelope.Payload)}");
                     }
                     else if (messageType == RendererIpcMessageType.LogBatch)
                     {
@@ -710,6 +713,17 @@ namespace FenBrowser.Host.ProcessIsolation
                     EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] IPC read loop terminated for tab {TabId}: {ex.Message}");
                 }
             }
+        }
+
+        private static string BoundDiagnosticPayload(string payload)
+        {
+            if (string.IsNullOrEmpty(payload)) return string.Empty;
+            const int maxChars = 2048;
+            var bounded = payload.Length <= maxChars ? payload : payload.Substring(0, maxChars) + "…";
+            return bounded
+                .Replace("\r", "\\r", StringComparison.Ordinal)
+                .Replace("\n", "\\n", StringComparison.Ordinal)
+                .Replace("\0", "\\0", StringComparison.Ordinal);
         }
 
         private void Send(RendererIpcEnvelope envelope)

@@ -465,7 +465,7 @@ namespace FenBrowser.Host
                 // Lazily create the shared memory writer on first frame publication.
                 if (frameSharedMemory == null)
                 {
-                    frameSharedMemory = FenBrowser.Host.ProcessIsolation.FrameSharedMemory.CreateForWriter(tabId, parentPid);
+                    frameSharedMemory = FenBrowser.Host.ProcessIsolation.FrameSharedMemory.CreateForWriter(tabId, parentPid, capabilityToken: authToken);
                 }
 
                 if (frameSharedMemory != null)
