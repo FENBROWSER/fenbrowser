@@ -8,7 +8,7 @@ using FenBrowser.Core.Logging;
 namespace FenBrowser.Core
 {
     /// <summary>
-    /// Cache statistics for monitoring
+    /// Cache statistics for monitoring.
     /// </summary>
     public class CacheStatistics
     {
@@ -23,83 +23,66 @@ namespace FenBrowser.Core
     }
 
     /// <summary>
-    /// Centralized cache management for FenBrowser with memory limits, 
+    /// Centralized cache management for FenBrowser with memory limits,
     /// LRU eviction, and per-tab partitioning for suspension support.
     /// </summary>
     public sealed class CacheManager : IDisposable
     {
-        private static readonly Lazy<CacheManager> _instance = 
-            new Lazy<CacheManager>(() => new CacheManager());
-        
+        private static readonly Lazy<CacheManager> _instance =
+            new(() => new CacheManager());
+
         public static CacheManager Instance => _instance.Value;
 
-        // Tab partitioned caches
-        private readonly ConcurrentDictionary<int, TabCachePartition> _tabPartitions = 
-            new ConcurrentDictionary<int, TabCachePartition>();
-        
-        // Global tracking
+        private readonly ConcurrentDictionary<int, TabCachePartition> _tabPartitions = new();
         private long _totalMemoryBytes;
         private long _evictedBytesTotal;
-        private DateTime _lastEviction = DateTime.MinValue;
-        private bool _disposed;
+        private long _lastEvictionUtcTicks = DateTime.MinValue.Ticks;
+        private int _disposed;
 
-        // Eviction timer
-        private Timer _evictionTimer;
-        private readonly object _evictionLock = new object();
+        private readonly Timer _evictionTimer;
+        private readonly object _evictionLock = new();
 
         private CacheManager()
         {
-            // Run eviction check every 30 seconds
-            _evictionTimer = new Timer(EvictionTimerCallback, null, 
-                TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+            _evictionTimer = new Timer(
+                EvictionTimerCallback,
+                null,
+                TimeSpan.FromSeconds(30),
+                TimeSpan.FromSeconds(30));
         }
 
-        // ========== Public API ==========
+        public long CurrentMemoryUsage => Interlocked.Read(ref _totalMemoryBytes);
 
-        /// <summary>
-        /// Current total memory usage by all caches
-        /// </summary>
-        public long CurrentMemoryUsage => _totalMemoryBytes;
-
-        /// <summary>
-        /// Create or get a cache partition for a tab
-        /// </summary>
         public TabCachePartition GetOrCreateTabPartition(int tabId)
         {
+            ThrowIfDisposed();
             return _tabPartitions.GetOrAdd(tabId, id => new TabCachePartition(id, this));
         }
 
-        /// <summary>
-        /// Remove and dispose a tab's cache partition
-        /// </summary>
         public void DestroyTabPartition(int tabId)
         {
             if (_tabPartitions.TryRemove(tabId, out var partition))
             {
                 var bytes = partition.Clear();
-                Interlocked.Add(ref _totalMemoryBytes, -bytes);
-                EngineLogCompat.Debug($"[CacheManager] Destroyed partition for tab {tabId}, freed {bytes / 1024}KB", 
-                               LogCategory.General);
+                ReleaseTrackedMemory(bytes, "destroy partition");
+                EngineLogCompat.Debug(
+                    $"[CacheManager] Destroyed partition for tab {tabId}, freed {bytes / 1024}KB",
+                    LogCategory.General);
             }
         }
 
-        /// <summary>
-        /// Suspend a tab's cache (compact to essential state only)
-        /// </summary>
         public void SuspendTabPartition(int tabId)
         {
             if (_tabPartitions.TryGetValue(tabId, out var partition))
             {
                 var freedBytes = partition.Suspend();
-                Interlocked.Add(ref _totalMemoryBytes, -freedBytes);
-                EngineLogCompat.Info($"[CacheManager] Suspended tab {tabId}, freed {freedBytes / 1024}KB", 
-                              LogCategory.General);
+                ReleaseTrackedMemory(freedBytes, "suspend partition");
+                EngineLogCompat.Info(
+                    $"[CacheManager] Suspended tab {tabId}, freed {freedBytes / 1024}KB",
+                    LogCategory.General);
             }
         }
 
-        /// <summary>
-        /// Resume a suspended tab's cache
-        /// </summary>
         public void ResumeTabPartition(int tabId)
         {
             if (_tabPartitions.TryGetValue(tabId, out var partition))
@@ -109,87 +92,89 @@ namespace FenBrowser.Core
             }
         }
 
-        /// <summary>
-        /// Add bytes to memory tracking
-        /// </summary>
         public void TrackMemoryAllocation(long bytes)
         {
-            Interlocked.Add(ref _totalMemoryBytes, bytes);
-            
-            // Check if eviction is needed
+            if (bytes <= 0 || Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
+            var current = Interlocked.Add(ref _totalMemoryBytes, bytes);
             var config = NetworkConfiguration.Instance;
-            var total = config.MaxImageCacheBytes + config.MaxTextCacheBytes;
-            if (_totalMemoryBytes > total * 0.9) // 90% threshold
+            var total = SaturatingAdd(config.MaxImageCacheBytes, config.MaxTextCacheBytes);
+            if (total > 0 && current > total * 0.9)
             {
                 EnqueueEviction();
             }
         }
 
-        /// <summary>
-        /// Remove bytes from memory tracking
-        /// </summary>
         public void TrackMemoryDeallocation(long bytes)
         {
-            Interlocked.Add(ref _totalMemoryBytes, -bytes);
+            if (bytes <= 0)
+            {
+                return;
+            }
+
+            ReleaseTrackedMemory(bytes, "explicit deallocation");
         }
 
-        /// <summary>
-        /// Clear all caches
-        /// </summary>
         public void ClearAll()
         {
-            foreach (var partition in _tabPartitions.Values)
+            foreach (var pair in _tabPartitions)
             {
-                partition.Clear();
+                if (_tabPartitions.TryRemove(pair.Key, out var partition))
+                {
+                    partition.Clear();
+                }
             }
-            _tabPartitions.Clear();
+
             Interlocked.Exchange(ref _totalMemoryBytes, 0);
-            
             EngineLogCompat.Info("[CacheManager] All caches cleared", LogCategory.General);
         }
 
-        /// <summary>
-        /// Trim caches to target memory limit
-        /// </summary>
         public void Trim(long targetBytes)
         {
-            if (_totalMemoryBytes <= targetBytes) return;
+            targetBytes = Math.Max(0, targetBytes);
+            var current = CurrentMemoryUsage;
+            if (current <= targetBytes)
+            {
+                return;
+            }
 
-            var bytesToFree = _totalMemoryBytes - targetBytes;
+            var bytesToFree = current - targetBytes;
             var freedTotal = 0L;
-
-            // Evict from partitions starting with oldest
             var partitions = _tabPartitions.Values
                 .OrderBy(p => p.LastAccessTime)
                 .ToList();
 
             foreach (var partition in partitions)
             {
-                if (freedTotal >= bytesToFree) break;
-                
+                if (freedTotal >= bytesToFree)
+                {
+                    break;
+                }
+
                 var freed = partition.EvictOldest(bytesToFree - freedTotal);
-                freedTotal += freed;
+                freedTotal = SaturatingAdd(freedTotal, freed);
             }
 
-            Interlocked.Add(ref _totalMemoryBytes, -freedTotal);
+            ReleaseTrackedMemory(freedTotal, "trim");
             Interlocked.Add(ref _evictedBytesTotal, freedTotal);
-            _lastEviction = DateTime.UtcNow;
+            Interlocked.Exchange(ref _lastEvictionUtcTicks, DateTime.UtcNow.Ticks);
 
             EngineLogCompat.Info($"[CacheManager] Trimmed {freedTotal / 1024}KB", LogCategory.General);
         }
 
-        /// <summary>
-        /// Get cache statistics
-        /// </summary>
         public CacheStatistics GetStatistics()
         {
+            var lastEvictionTicks = Interlocked.Read(ref _lastEvictionUtcTicks);
             var stats = new CacheStatistics
             {
-                TotalMemoryBytes = _totalMemoryBytes,
+                TotalMemoryBytes = CurrentMemoryUsage,
                 TabPartitions = _tabPartitions.Count,
                 SuspendedTabs = _tabPartitions.Count(p => p.Value.IsSuspended),
-                LastEviction = _lastEviction,
-                EvictedBytesTotal = _evictedBytesTotal
+                LastEviction = new DateTime(lastEvictionTicks, DateTimeKind.Utc),
+                EvictedBytesTotal = Interlocked.Read(ref _evictedBytesTotal)
             };
 
             foreach (var partition in _tabPartitions.Values)
@@ -202,200 +187,374 @@ namespace FenBrowser.Core
             return stats;
         }
 
-        // ========== Private Methods ==========
-
         private void EnqueueEviction()
         {
-            if (Monitor.TryEnter(_evictionLock))
+            if (Volatile.Read(ref _disposed) != 0 || !Monitor.TryEnter(_evictionLock))
             {
-                try
+                return;
+            }
+
+            try
+            {
+                var config = NetworkConfiguration.Instance;
+                var configuredMaximum = SaturatingAdd(config.MaxImageCacheBytes, config.MaxTextCacheBytes);
+                if (configuredMaximum <= 0)
                 {
-                    var config = NetworkConfiguration.Instance;
-                    var target = (long)((config.MaxImageCacheBytes + config.MaxTextCacheBytes) * 0.75);
-                    Trim(target);
+                    return;
                 }
-                finally
-                {
-                    Monitor.Exit(_evictionLock);
-                }
+
+                var target = (long)(configuredMaximum * 0.75);
+                Trim(target);
+            }
+            finally
+            {
+                Monitor.Exit(_evictionLock);
             }
         }
 
         private void EvictionTimerCallback(object state)
         {
-            if (_disposed) return;
-            
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
             var config = NetworkConfiguration.Instance;
-            var maxMemory = config.MaxImageCacheBytes + config.MaxTextCacheBytes;
-            
-            if (_totalMemoryBytes > maxMemory * 0.8) // 80% threshold
+            var maxMemory = SaturatingAdd(config.MaxImageCacheBytes, config.MaxTextCacheBytes);
+            if (maxMemory > 0 && CurrentMemoryUsage > maxMemory * 0.8)
             {
                 EnqueueEviction();
             }
         }
 
+        private void ReleaseTrackedMemory(long bytes, string reason)
+        {
+            if (bytes <= 0)
+            {
+                return;
+            }
+
+            while (true)
+            {
+                var observed = Interlocked.Read(ref _totalMemoryBytes);
+                if (observed <= 0)
+                {
+                    if (observed < 0)
+                    {
+                        Interlocked.CompareExchange(ref _totalMemoryBytes, 0, observed);
+                    }
+                    return;
+                }
+
+                var next = bytes >= observed ? 0 : observed - bytes;
+                if (Interlocked.CompareExchange(ref _totalMemoryBytes, next, observed) == observed)
+                {
+                    if (bytes > observed)
+                    {
+                        EngineLogCompat.Warn(
+                            $"[CacheManager] Accounting over-release prevented during {reason}: requested={bytes}, tracked={observed}",
+                            LogCategory.General);
+                    }
+                    return;
+                }
+            }
+        }
+
+        private static long SaturatingAdd(long left, long right)
+        {
+            if (left <= 0)
+            {
+                return Math.Max(0, right);
+            }
+            if (right <= 0)
+            {
+                return left;
+            }
+            return left > long.MaxValue - right ? long.MaxValue : left + right;
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                throw new ObjectDisposedException(nameof(CacheManager));
+            }
+        }
+
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
-            
-            _evictionTimer?.Dispose();
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            _evictionTimer.Dispose();
             ClearAll();
         }
     }
 
     /// <summary>
-    /// Per-tab cache partition for isolation and suspension support
+    /// Per-tab cache partition for isolation and suspension support.
+    /// All accounting-changing operations are serialized by the partition gate so
+    /// clear/suspend cannot race an allocation and corrupt global memory totals.
     /// </summary>
     public class TabCachePartition
     {
         private readonly int _tabId;
         private readonly CacheManager _manager;
-        
-        // Text cache (HTML, CSS, JS)
-        private readonly ConcurrentDictionary<string, TextCacheEntry> _textCache = 
-            new ConcurrentDictionary<string, TextCacheEntry>();
-        
-        // Reference counts for cleanup
+        private readonly object _gate = new();
+        private readonly ConcurrentDictionary<string, TextCacheEntry> _textCache = new();
+
         private int _imageCount;
         private long _memoryBytes;
-        
-        public DateTime LastAccessTime { get; private set; } = DateTime.UtcNow;
-        public bool IsSuspended { get; private set; }
-        public string SuspendedUrl { get; private set; }
-        public double SuspendedScrollY { get; private set; }
+        private long _lastAccessUtcTicks = DateTime.UtcNow.Ticks;
+        private int _isSuspended;
+        private string _suspendedUrl;
+        private double _suspendedScrollY;
+
+        public DateTime LastAccessTime => new(
+            Interlocked.Read(ref _lastAccessUtcTicks),
+            DateTimeKind.Utc);
+
+        public bool IsSuspended => Volatile.Read(ref _isSuspended) != 0;
+
+        public string SuspendedUrl
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _suspendedUrl;
+                }
+            }
+        }
+
+        public double SuspendedScrollY
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _suspendedScrollY;
+                }
+            }
+        }
 
         public TabCachePartition(int tabId, CacheManager manager)
         {
             _tabId = tabId;
-            _manager = manager;
+            _manager = manager ?? throw new ArgumentNullException(nameof(manager));
         }
 
-        /// <summary>
-        /// Cache text content with memory tracking
-        /// </summary>
         public void CacheText(string url, string content)
         {
-            LastAccessTime = DateTime.UtcNow;
-            
-            var bytes = (long)content.Length * sizeof(char);
-            var entry = new TextCacheEntry
+            if (string.IsNullOrWhiteSpace(url) || content == null)
             {
-                Content = content,
-                ByteSize = bytes,
-                CachedAt = DateTime.UtcNow
-            };
+                return;
+            }
 
-            if (_textCache.TryAdd(url, entry))
+            var bytes = (long)content.Length * sizeof(char);
+            var nowTicks = DateTime.UtcNow.Ticks;
+            long delta;
+
+            lock (_gate)
             {
-                Interlocked.Add(ref _memoryBytes, bytes);
+                if (_isSuspended != 0)
+                {
+                    return;
+                }
+
+                delta = bytes;
+                if (_textCache.TryGetValue(url, out var previous))
+                {
+                    delta -= previous.ByteSize;
+                }
+
+                _textCache[url] = new TextCacheEntry
+                {
+                    Content = content,
+                    ByteSize = bytes,
+                    LastAccessUtcTicks = nowTicks
+                };
+                _memoryBytes = Math.Max(0, SaturatingAddSigned(_memoryBytes, delta));
+                _lastAccessUtcTicks = nowTicks;
+            }
+
+            if (delta > 0)
+            {
+                _manager.TrackMemoryAllocation(delta);
+            }
+            else if (delta < 0)
+            {
+                _manager.TrackMemoryDeallocation(-delta);
+            }
+        }
+
+        public string GetText(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return null;
+            }
+
+            lock (_gate)
+            {
+                if (_isSuspended != 0 || !_textCache.TryGetValue(url, out var entry))
+                {
+                    return null;
+                }
+
+                var nowTicks = DateTime.UtcNow.Ticks;
+                entry.LastAccessUtcTicks = nowTicks;
+                _lastAccessUtcTicks = nowTicks;
+                return entry.Content;
+            }
+        }
+
+        public void TrackImage(long bytes)
+        {
+            if (bytes <= 0)
+            {
+                return;
+            }
+
+            var accepted = false;
+            lock (_gate)
+            {
+                if (_isSuspended == 0)
+                {
+                    _imageCount++;
+                    _memoryBytes = SaturatingAddPositive(_memoryBytes, bytes);
+                    _lastAccessUtcTicks = DateTime.UtcNow.Ticks;
+                    accepted = true;
+                }
+            }
+
+            // Keep the manager callback outside the partition lock. Eviction takes
+            // manager -> partition locks; doing this callback under _gate would create
+            // the reverse order and a cross-thread deadlock opportunity.
+            if (accepted)
+            {
                 _manager.TrackMemoryAllocation(bytes);
             }
         }
 
-        /// <summary>
-        /// Get cached text content
-        /// </summary>
-        public string GetText(string url)
-        {
-            LastAccessTime = DateTime.UtcNow;
-            
-            if (_textCache.TryGetValue(url, out var entry))
-            {
-                entry.CachedAt = DateTime.UtcNow;
-                return entry.Content;
-            }
-            return null;
-        }
-
-        /// <summary>
-        /// Track an image allocation
-        /// </summary>
-        public void TrackImage(long bytes)
-        {
-            LastAccessTime = DateTime.UtcNow;
-            Interlocked.Increment(ref _imageCount);
-            Interlocked.Add(ref _memoryBytes, bytes);
-        }
-
-        /// <summary>
-        /// Suspend this partition (clear caches, keep minimal state)
-        /// </summary>
         public long Suspend()
         {
-            IsSuspended = true;
-            var freed = Clear();
-            return freed;
+            lock (_gate)
+            {
+                if (_isSuspended != 0)
+                {
+                    return 0;
+                }
+
+                _isSuspended = 1;
+                return ClearLocked();
+            }
         }
 
-        /// <summary>
-        /// Resume this partition
-        /// </summary>
         public void Resume()
         {
-            IsSuspended = false;
-            LastAccessTime = DateTime.UtcNow;
+            lock (_gate)
+            {
+                _isSuspended = 0;
+                _lastAccessUtcTicks = DateTime.UtcNow.Ticks;
+            }
         }
 
-        /// <summary>
-        /// Store suspension state
-        /// </summary>
         public void StoreSuspensionState(string url, double scrollY)
         {
-            SuspendedUrl = url;
-            SuspendedScrollY = scrollY;
+            lock (_gate)
+            {
+                _suspendedUrl = url;
+                _suspendedScrollY = scrollY;
+            }
         }
 
-        /// <summary>
-        /// Clear all cached content
-        /// </summary>
         public long Clear()
+        {
+            lock (_gate)
+            {
+                return ClearLocked();
+            }
+        }
+
+        public long EvictOldest(long targetBytes)
+        {
+            if (targetBytes <= 0)
+            {
+                return 0;
+            }
+
+            lock (_gate)
+            {
+                var freed = 0L;
+                var oldest = _textCache
+                    .OrderBy(x => x.Value.LastAccessUtcTicks)
+                    .ToList();
+
+                foreach (var item in oldest)
+                {
+                    if (freed >= targetBytes)
+                    {
+                        break;
+                    }
+
+                    if (_textCache.TryRemove(item.Key, out var entry))
+                    {
+                        freed = SaturatingAddPositive(freed, entry.ByteSize);
+                        _memoryBytes = Math.Max(0, _memoryBytes - entry.ByteSize);
+                    }
+                }
+
+                return freed;
+            }
+        }
+
+        public (int textCount, int imageCount, long memoryBytes) GetStats()
+        {
+            lock (_gate)
+            {
+                return (_textCache.Count, _imageCount, _memoryBytes);
+            }
+        }
+
+        private long ClearLocked()
         {
             var freed = _memoryBytes;
             _textCache.Clear();
-            Interlocked.Exchange(ref _memoryBytes, 0);
-            Interlocked.Exchange(ref _imageCount, 0);
+            _memoryBytes = 0;
+            _imageCount = 0;
             return freed;
         }
 
-        /// <summary>
-        /// Evict oldest entries
-        /// </summary>
-        public long EvictOldest(long targetBytes)
+        private static long SaturatingAddPositive(long left, long right)
         {
-            var freed = 0L;
-            
-            var oldest = _textCache
-                .OrderBy(x => x.Value.CachedAt)
-                .ToList();
-
-            foreach (var item in oldest)
+            if (right <= 0)
             {
-                if (freed >= targetBytes) break;
-                
-                if (_textCache.TryRemove(item.Key, out var entry))
-                {
-                    freed += entry.ByteSize;
-                    Interlocked.Add(ref _memoryBytes, -entry.ByteSize);
-                }
+                return left;
             }
-
-            return freed;
+            return left > long.MaxValue - right ? long.MaxValue : left + right;
         }
 
-        /// <summary>
-        /// Get partition statistics
-        /// </summary>
-        public (int textCount, int imageCount, long memoryBytes) GetStats()
+        private static long SaturatingAddSigned(long value, long delta)
         {
-            return (_textCache.Count, _imageCount, _memoryBytes);
+            if (delta > 0 && value > long.MaxValue - delta)
+            {
+                return long.MaxValue;
+            }
+            if (delta < 0 && value < -delta)
+            {
+                return 0;
+            }
+            return value + delta;
         }
 
-        private class TextCacheEntry
+        private sealed class TextCacheEntry
         {
             public string Content { get; set; }
             public long ByteSize { get; set; }
-            public DateTime CachedAt { get; set; }
+            public long LastAccessUtcTicks { get; set; }
         }
     }
 }
