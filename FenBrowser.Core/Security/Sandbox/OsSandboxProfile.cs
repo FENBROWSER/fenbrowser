@@ -68,7 +68,7 @@ public sealed class OsSandboxProfile
     /// <summary>Default profile for renderer processes (maximally restricted).</summary>
     public static OsSandboxProfile RendererMinimal { get; } = new OsSandboxProfile(
         kind: OsSandboxProfileKind.RendererMinimal,
-        maxMemoryBytes: 512L * 1024 * 1024,
+        maxMemoryBytes: 2048L * 1024 * 1024,
         maxCpuPercent: 80,
         denyDesktopAccess: true,
         denyWindowEnumeration: true,
