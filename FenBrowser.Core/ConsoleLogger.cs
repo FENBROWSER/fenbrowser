@@ -48,12 +48,26 @@ public class ConsoleLogger : ILogger
 
         lock (Sync)
         {
+            // Stack traces are intentionally multi-line engine-generated diagnostics.
+            // User/page-controlled message fields are normalized above before they
+            // can enter the structured prefix.
             Console.WriteLine(ex.StackTrace);
         }
     }
 
     private static string NormalizeMessage(string message)
     {
-        return string.IsNullOrWhiteSpace(message) ? string.Empty : message.Trim();
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return string.Empty;
+        }
+
+        // Browser logs routinely include attacker-controlled URL/header/DOM text.
+        // Do not let CR/LF/NUL characters manufacture additional timestamped-looking
+        // records or truncate downstream text consumers.
+        return message.Trim()
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal)
+            .Replace("\0", "\\0", StringComparison.Ordinal);
     }
 }
