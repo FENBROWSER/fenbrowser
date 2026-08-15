@@ -124,8 +124,13 @@ namespace FenBrowser.Core.Storage
 
     public sealed class PartitionedCookieStore
     {
+        private const int MaxCookiesPerDomain = 180;
+        private const int MaxCookiesTotal = 6000;
+
         private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, Cookie>> _cookiesByDomain
             = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _mutationLock = new();
+        private int _cookieCount;
 
         public void Set(Cookie cookie, StoragePartitionKey? partitionKey = null)
         {
@@ -134,20 +139,40 @@ namespace FenBrowser.Core.Storage
             if (domain.Length == 0) throw new ArgumentException("Cookie domain cannot be empty.", nameof(cookie));
 
             var actualKey = partitionKey ?? (cookie.IsPartitioned ? cookie.PartitionKey : null);
-            if (cookie.IsExpired)
-            {
-                Delete(cookie, actualKey);
-                return;
-            }
-
-            var bucket = _cookiesByDomain.GetOrAdd(
-                domain,
-                static _ => new ConcurrentDictionary<string, Cookie>(StringComparer.Ordinal));
             var storeKey = MakeKey(actualKey, cookie.Name, cookie.Path);
-            if (bucket.TryGetValue(storeKey, out var existing))
-                cookie = cookie with { CreationTime = existing.CreationTime };
 
-            bucket[storeKey] = cookie with { Domain = domain, PartitionKey = actualKey };
+            lock (_mutationLock)
+            {
+                if (cookie.IsExpired)
+                {
+                    DeleteLocked(domain, storeKey);
+                    return;
+                }
+
+                var bucket = _cookiesByDomain.GetOrAdd(
+                    domain,
+                    static _ => new ConcurrentDictionary<string, Cookie>(StringComparer.Ordinal));
+
+                if (bucket.TryGetValue(storeKey, out var existing))
+                {
+                    if (!existing.IsExpired)
+                    {
+                        cookie = cookie with { CreationTime = existing.CreationTime };
+                        bucket[storeKey] = cookie with { Domain = domain, PartitionKey = actualKey };
+                        return;
+                    }
+
+                    if (bucket.TryRemove(storeKey, out _))
+                        _cookieCount = Math.Max(0, _cookieCount - 1);
+                }
+
+                if (!EnsureCapacityForNewCookieLocked(domain, bucket))
+                    return;
+
+                _cookiesByDomain[domain] = bucket;
+                bucket[storeKey] = cookie with { Domain = domain, PartitionKey = actualKey };
+                _cookieCount++;
+            }
         }
 
         public IReadOnlyList<Cookie> GetForUrl(
@@ -175,7 +200,7 @@ namespace FenBrowser.Core.Storage
                     var cookie = pair.Value;
                     if (cookie.IsExpired)
                     {
-                        bucket.TryRemove(pair.Key, out _);
+                        RemoveExpiredCookie(candidateDomain, bucket, pair.Key);
                         continue;
                     }
                     if (cookie.Secure && !isSecure) continue;
@@ -206,40 +231,177 @@ namespace FenBrowser.Core.Storage
         {
             if (cookie == null) return;
             var domain = NormalizeDomain(cookie.Domain);
-            if (domain.Length == 0 || !_cookiesByDomain.TryGetValue(domain, out var bucket)) return;
+            if (domain.Length == 0) return;
             var actualKey = partitionKey ?? (cookie.IsPartitioned ? cookie.PartitionKey : null);
-            bucket.TryRemove(MakeKey(actualKey, cookie.Name, cookie.Path), out _);
+
+            lock (_mutationLock)
+            {
+                DeleteLocked(domain, MakeKey(actualKey, cookie.Name, cookie.Path));
+            }
         }
 
         public void DeleteByName(string domain, string name, StoragePartitionKey? partitionKey = null)
         {
             if (string.IsNullOrWhiteSpace(domain) || string.IsNullOrWhiteSpace(name)) return;
             var normalizedDomain = NormalizeDomain(domain);
-            if (!_cookiesByDomain.TryGetValue(normalizedDomain, out var bucket)) return;
-
             var partitionKeyText = partitionKey?.ToStorageKey() ?? "unpartitioned";
             var prefix = $"pk:{partitionKeyText}:{name}:";
-            foreach (var key in bucket.Keys)
+
+            lock (_mutationLock)
             {
-                if (key.StartsWith(prefix, StringComparison.Ordinal))
-                    bucket.TryRemove(key, out _);
+                if (!_cookiesByDomain.TryGetValue(normalizedDomain, out var bucket)) return;
+                foreach (var key in bucket.Keys)
+                {
+                    if (key.StartsWith(prefix, StringComparison.Ordinal) && bucket.TryRemove(key, out _))
+                        _cookieCount = Math.Max(0, _cookieCount - 1);
+                }
+                RemoveBucketIfEmptyLocked(normalizedDomain, bucket);
             }
         }
 
         public void ClearPartition(StoragePartitionKey partitionKey)
         {
             var prefix = $"pk:{partitionKey.ToStorageKey()}:";
-            foreach (var bucket in _cookiesByDomain.Values)
+            lock (_mutationLock)
             {
-                foreach (var key in bucket.Keys)
+                foreach (var domainPair in _cookiesByDomain)
                 {
-                    if (key.StartsWith(prefix, StringComparison.Ordinal))
-                        bucket.TryRemove(key, out _);
+                    var bucket = domainPair.Value;
+                    foreach (var key in bucket.Keys)
+                    {
+                        if (key.StartsWith(prefix, StringComparison.Ordinal) && bucket.TryRemove(key, out _))
+                            _cookieCount = Math.Max(0, _cookieCount - 1);
+                    }
+                    RemoveBucketIfEmptyLocked(domainPair.Key, bucket);
                 }
             }
         }
 
-        public void ClearAll() => _cookiesByDomain.Clear();
+        public void ClearAll()
+        {
+            lock (_mutationLock)
+            {
+                _cookiesByDomain.Clear();
+                _cookieCount = 0;
+            }
+        }
+
+        private bool EnsureCapacityForNewCookieLocked(
+            string targetDomain,
+            ConcurrentDictionary<string, Cookie> targetBucket)
+        {
+            while (targetBucket.Count >= MaxCookiesPerDomain)
+            {
+                if (!EvictOldestFromBucketLocked(targetDomain, targetBucket, removeEmptyBucket: false))
+                    return false;
+            }
+
+            while (_cookieCount >= MaxCookiesTotal)
+            {
+                if (!EvictOldestGlobalLocked())
+                    return false;
+            }
+
+            return true;
+        }
+
+        private bool EvictOldestGlobalLocked()
+        {
+            string oldestDomain = null;
+            string oldestKey = null;
+            Cookie oldestCookie = null;
+            ConcurrentDictionary<string, Cookie> oldestBucket = null;
+
+            foreach (var domainPair in _cookiesByDomain)
+            {
+                foreach (var pair in domainPair.Value)
+                {
+                    if (oldestCookie == null ||
+                        pair.Value.CreationTime < oldestCookie.CreationTime ||
+                        (pair.Value.CreationTime == oldestCookie.CreationTime &&
+                         string.CompareOrdinal(pair.Key, oldestKey) < 0))
+                    {
+                        oldestDomain = domainPair.Key;
+                        oldestKey = pair.Key;
+                        oldestCookie = pair.Value;
+                        oldestBucket = domainPair.Value;
+                    }
+                }
+            }
+
+            if (oldestBucket == null || oldestKey == null || !oldestBucket.TryRemove(oldestKey, out _))
+                return false;
+
+            _cookieCount = Math.Max(0, _cookieCount - 1);
+            RemoveBucketIfEmptyLocked(oldestDomain, oldestBucket);
+            return true;
+        }
+
+        private bool EvictOldestFromBucketLocked(
+            string domain,
+            ConcurrentDictionary<string, Cookie> bucket,
+            bool removeEmptyBucket)
+        {
+            string oldestKey = null;
+            Cookie oldestCookie = null;
+            foreach (var pair in bucket)
+            {
+                if (oldestCookie == null ||
+                    pair.Value.CreationTime < oldestCookie.CreationTime ||
+                    (pair.Value.CreationTime == oldestCookie.CreationTime &&
+                     string.CompareOrdinal(pair.Key, oldestKey) < 0))
+                {
+                    oldestKey = pair.Key;
+                    oldestCookie = pair.Value;
+                }
+            }
+
+            if (oldestKey == null || !bucket.TryRemove(oldestKey, out _))
+                return false;
+
+            _cookieCount = Math.Max(0, _cookieCount - 1);
+            if (removeEmptyBucket)
+                RemoveBucketIfEmptyLocked(domain, bucket);
+            return true;
+        }
+
+        private void RemoveExpiredCookie(
+            string domain,
+            ConcurrentDictionary<string, Cookie> bucket,
+            string key)
+        {
+            lock (_mutationLock)
+            {
+                if (!_cookiesByDomain.TryGetValue(domain, out var currentBucket) ||
+                    !ReferenceEquals(currentBucket, bucket) ||
+                    !bucket.TryGetValue(key, out var current) ||
+                    !current.IsExpired)
+                {
+                    return;
+                }
+
+                if (bucket.TryRemove(key, out _))
+                    _cookieCount = Math.Max(0, _cookieCount - 1);
+                RemoveBucketIfEmptyLocked(domain, bucket);
+            }
+        }
+
+        private void DeleteLocked(string domain, string storeKey)
+        {
+            if (!_cookiesByDomain.TryGetValue(domain, out var bucket)) return;
+            if (bucket.TryRemove(storeKey, out _))
+                _cookieCount = Math.Max(0, _cookieCount - 1);
+            RemoveBucketIfEmptyLocked(domain, bucket);
+        }
+
+        private void RemoveBucketIfEmptyLocked(
+            string domain,
+            ConcurrentDictionary<string, Cookie> bucket)
+        {
+            if (!bucket.IsEmpty) return;
+            if (_cookiesByDomain.TryGetValue(domain, out var current) && ReferenceEquals(current, bucket))
+                _cookiesByDomain.TryRemove(domain, out _);
+        }
 
         private static string MakeKey(StoragePartitionKey? pk, string name, string path) =>
             $"pk:{pk?.ToStorageKey() ?? "unpartitioned"}:{name}:{path}";
@@ -267,10 +429,13 @@ namespace FenBrowser.Core.Storage
         private static bool DomainMatches(string host, string cookieDomain, bool hostOnly)
         {
             if (string.IsNullOrEmpty(cookieDomain)) return false;
+            if (string.Equals(host, cookieDomain, StringComparison.OrdinalIgnoreCase))
+                return true;
             if (hostOnly)
-                return string.Equals(host, cookieDomain, StringComparison.OrdinalIgnoreCase);
-            return string.Equals(host, cookieDomain, StringComparison.OrdinalIgnoreCase) ||
-                   host.EndsWith("." + cookieDomain, StringComparison.OrdinalIgnoreCase);
+                return false;
+            if (IPAddress.TryParse(host, out _) || IPAddress.TryParse(cookieDomain, out _))
+                return false;
+            return host.EndsWith("." + cookieDomain, StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool PathMatches(string requestPath, string cookiePath)
@@ -283,7 +448,6 @@ namespace FenBrowser.Core.Storage
                    (requestPath.Length > cookiePath.Length && requestPath[cookiePath.Length] == '/');
         }
     }
-
     public sealed class PartitionedKeyValueStorage
     {
         private sealed class StorageBucket
