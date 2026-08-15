@@ -154,7 +154,7 @@ namespace FenBrowser.Core.Network
 
                     if (!string.IsNullOrWhiteSpace(charset))
                     {
-                        var encoding = GetEncodingByName(charset);
+                        var encoding = GetMetaEncodingByName(charset);
                         if (encoding != null)
                             return encoding;
                     }
@@ -163,7 +163,7 @@ namespace FenBrowser.Core.Network
                         !string.IsNullOrWhiteSpace(content))
                     {
                         var contentCharset = ExtractCharsetFromContentType(content);
-                        var encoding = GetEncodingByName(contentCharset);
+                        var encoding = GetMetaEncodingByName(contentCharset);
                         if (encoding != null)
                             return encoding;
                     }
@@ -374,6 +374,25 @@ namespace FenBrowser.Core.Network
 
         private static bool IsAsciiWhitespace(char c) =>
             c is ' ' or '\t' or '\r' or '\n' or '\f';
+
+        /// <summary>
+        /// HTML's meta prescan has two mandatory remappings after label lookup:
+        /// UTF-16 declarations become UTF-8 and x-user-defined becomes windows-1252.
+        /// These remappings apply to in-band meta declarations, not to BOM handling.
+        /// </summary>
+        private static Encoding GetMetaEncodingByName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return null;
+
+            var normalized = name.Trim().ToLowerInvariant();
+            if (normalized is "utf-16" or "utf-16le" or "utf-16be")
+                return Encoding.UTF8;
+            if (normalized == "x-user-defined")
+                return Windows1252;
+
+            return GetEncodingByName(name);
+        }
 
         /// <summary>
         /// Maps charset name to Encoding, normalizing common aliases.
