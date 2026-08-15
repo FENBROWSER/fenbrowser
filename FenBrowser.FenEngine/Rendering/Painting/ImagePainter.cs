@@ -1,66 +1,91 @@
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
-using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering.Painting
 {
     /// <summary>
-    /// Paints images and SVG content with object-fit support.
+    /// Paints images and SVG content with object-fit support. Cached native bitmaps
+    /// are owned by this painter and disposed deterministically.
     /// </summary>
-    public class ImagePainter
+    public sealed class ImagePainter : IDisposable
     {
-        private readonly ConcurrentDictionary<string, SKBitmap> _imageCache;
+        private const int MaxCachedImages = 512;
+        private const int MaxDataUriCharacters = 32 * 1024 * 1024;
 
-        public ImagePainter()
-        {
-            _imageCache = new ConcurrentDictionary<string, SKBitmap>();
-        }
+        private readonly object _cacheLock = new();
+        private readonly Dictionary<string, SKBitmap> _imageCache = new(StringComparer.Ordinal);
+        private bool _disposed;
 
-        /// <summary>
-        /// Paint an image element.
-        /// </summary>
         public void PaintImage(SKCanvas canvas, Element element, SKRect box, CssComputed style, SKBitmap bitmap = null)
         {
-            // Get image source
-            string src = null;
-            if (element.GetAttribute("src") is string srcAttr)
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ArgumentNullException.ThrowIfNull(canvas);
+            ArgumentNullException.ThrowIfNull(element);
+
+            string src = element.GetAttribute("src") as string;
+            if (bitmap != null)
             {
-                src = srcAttr;
-            }
-            if (bitmap == null && !string.IsNullOrEmpty(src))
-            {
-                bitmap = GetCachedImage(src);
+                PaintBitmap(canvas, element, box, style, bitmap);
+                return;
             }
 
-            if (bitmap == null)
+            if (string.IsNullOrEmpty(src))
             {
-                // Draw placeholder
                 PaintImagePlaceholder(canvas, box, element);
                 return;
             }
 
-            // Apply object-fit
-            var destRect = CalculateDestRect(box, bitmap.Width, bitmap.Height, style);
+            // Keep the cache lock through Skia's draw call. CacheImage/ClearCache own
+            // and dispose cached SKBitmap objects, so returning a bare reference and
+            // releasing the lock before painting allowed another thread to dispose the
+            // native bitmap while DrawBitmap was still consuming it.
+            lock (_cacheLock)
+            {
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(ImagePainter));
 
-            // Clip to box
-            canvas.Save();
-            canvas.ClipRect(box);
+                if (!_imageCache.TryGetValue(src, out var cached) || cached == null)
+                {
+                    PaintImagePlaceholder(canvas, box, element);
+                    return;
+                }
 
-            canvas.DrawBitmap(bitmap, destRect, SKSamplingOptions.Default);
-
-            canvas.Restore();
+                PaintBitmap(canvas, element, box, style, cached);
+            }
         }
 
-        /// <summary>
-        /// Calculate destination rectangle based on object-fit.
-        /// </summary>
-        private SKRect CalculateDestRect(SKRect box, int imgWidth, int imgHeight, CssComputed style)
+        private static void PaintBitmap(SKCanvas canvas, Element element, SKRect box, CssComputed style, SKBitmap bitmap)
         {
+            if (bitmap == null || bitmap.Width <= 0 || bitmap.Height <= 0 || box.Width <= 0 || box.Height <= 0)
+            {
+                PaintImagePlaceholder(canvas, box, element);
+                return;
+            }
+
+            var destRect = CalculateDestRect(box, bitmap.Width, bitmap.Height, style);
+            canvas.Save();
+            try
+            {
+                canvas.ClipRect(box);
+                canvas.DrawBitmap(bitmap, destRect, SKSamplingOptions.Default);
+            }
+            finally
+            {
+                canvas.Restore();
+            }
+        }
+
+        private static SKRect CalculateDestRect(SKRect box, int imgWidth, int imgHeight, CssComputed style)
+        {
+            if (imgWidth <= 0 || imgHeight <= 0 || box.Width <= 0 || box.Height <= 0)
+                return SKRect.Empty;
+
             var objectFit = style?.ObjectFit?.ToLowerInvariant() ?? "fill";
 
             float boxW = box.Width;
@@ -73,7 +98,6 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             switch (objectFit)
             {
                 case "contain":
-                    // Fit entire image, maintain aspect ratio
                     if (imgAspect > boxAspect)
                     {
                         destW = boxW;
@@ -89,7 +113,6 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                     break;
 
                 case "cover":
-                    // Cover entire box, maintain aspect ratio, may crop
                     if (imgAspect > boxAspect)
                     {
                         destH = boxH;
@@ -105,7 +128,6 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                     break;
 
                 case "none":
-                    // Natural size, centered
                     destW = imgWidth;
                     destH = imgHeight;
                     destX = box.Left + (boxW - destW) / 2;
@@ -113,7 +135,6 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                     break;
 
                 case "scale-down":
-                    // Like contain, but never upscale
                     if (imgWidth <= boxW && imgHeight <= boxH)
                     {
                         destW = imgWidth;
@@ -135,7 +156,6 @@ namespace FenBrowser.FenEngine.Rendering.Painting
 
                 case "fill":
                 default:
-                    // Stretch to fill
                     destX = box.Left;
                     destY = box.Top;
                     destW = boxW;
@@ -143,17 +163,17 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                     break;
             }
 
-            // Apply object-position
-            if (!string.IsNullOrEmpty(style?.ObjectPosition) && objectFit != "fill" && objectFit != "cover")
+            // object-position applies to replaced content for contain/cover/none/
+            // scale-down. The old cover exclusion forced every cropped image to center.
+            if (!string.IsNullOrWhiteSpace(style?.ObjectPosition) && objectFit != "fill")
             {
-                var parts = style.ObjectPosition.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                float posX = 0.5f; // center
-                float posY = 0.5f; // center
+                var parts = style.ObjectPosition.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                float posX = 0.5f;
+                float posY = 0.5f;
 
                 if (parts.Length > 0) posX = ParsePositionFraction(parts[0], 0.5f);
                 if (parts.Length > 1) posY = ParsePositionFraction(parts[1], 0.5f);
-                
-                // When we have custom object-position, override the centering logic above
+
                 destX = box.Left + (boxW - destW) * posX;
                 destY = box.Top + (boxH - destH) * posY;
             }
@@ -161,19 +181,24 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             return new SKRect(destX, destY, destX + destW, destY + destH);
         }
 
-        private float ParsePositionFraction(string part, float defaultValue)
+        private static float ParsePositionFraction(string part, float defaultValue)
         {
-            if (part == "left" || part == "top") return 0f;
-            if (part == "center") return 0.5f;
-            if (part == "right" || part == "bottom") return 1f;
-            if (part.EndsWith("%") && float.TryParse(part.TrimEnd('%'), out float pct)) return pct / 100f;
+            if (string.Equals(part, "left", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(part, "top", StringComparison.OrdinalIgnoreCase)) return 0f;
+            if (string.Equals(part, "center", StringComparison.OrdinalIgnoreCase)) return 0.5f;
+            if (string.Equals(part, "right", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(part, "bottom", StringComparison.OrdinalIgnoreCase)) return 1f;
+
+            if (part.EndsWith('%') &&
+                float.TryParse(part.AsSpan(0, part.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var pct))
+            {
+                return pct / 100f;
+            }
+
             return defaultValue;
         }
 
-        /// <summary>
-        /// Paint placeholder when image is not available.
-        /// </summary>
-        private void PaintImagePlaceholder(SKCanvas canvas, SKRect box, Element element)
+        private static void PaintImagePlaceholder(SKCanvas canvas, SKRect box, Element element)
         {
             using var bgPaint = new SKPaint
             {
@@ -190,12 +215,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             };
             canvas.DrawRect(box, borderPaint);
 
-            // Draw alt text if available
-            string alt = "[Image]";
-            if (element.GetAttribute("alt") is string altText)
-            {
-                alt = altText;
-            }
+            string alt = element.GetAttribute("alt") as string ?? "[Image]";
             using var font = new SKFont(SKTypeface.Default, 12);
             using var textPaint = new SKPaint
             {
@@ -209,59 +229,122 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             canvas.DrawText(alt, x, y, SKTextAlign.Left, font, textPaint);
         }
 
-        /// <summary>
-        /// Get cached image or null.
-        /// </summary>
         public SKBitmap GetCachedImage(string url)
         {
-            return _imageCache.TryGetValue(url, out var bitmap) ? bitmap : null;
+            if (string.IsNullOrEmpty(url))
+                return null;
+
+            lock (_cacheLock)
+            {
+                if (_disposed)
+                    return null;
+                return _imageCache.TryGetValue(url, out var bitmap) ? bitmap : null;
+            }
         }
 
         /// <summary>
-        /// Cache a loaded image.
+        /// Transfers ownership of <paramref name="bitmap"/> to this cache.
         /// </summary>
         public void CacheImage(string url, SKBitmap bitmap)
         {
-            _imageCache[url] = bitmap;
+            if (string.IsNullOrEmpty(url))
+                throw new ArgumentException("Image cache URL is required.", nameof(url));
+            ArgumentNullException.ThrowIfNull(bitmap);
+
+            lock (_cacheLock)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+
+                if (_imageCache.TryGetValue(url, out var existing))
+                {
+                    if (ReferenceEquals(existing, bitmap))
+                        return;
+                    existing?.Dispose();
+                    _imageCache[url] = bitmap;
+                    return;
+                }
+
+                if (_imageCache.Count >= MaxCachedImages)
+                {
+                    // This helper has no request-cache metadata/LRU clock. Prefer a
+                    // deterministic hard memory bound over unbounded native retention;
+                    // the higher-level resource cache is responsible for durable reuse.
+                    DisposeCacheLocked();
+                }
+
+                _imageCache.Add(url, bitmap);
+            }
         }
 
-        /// <summary>
-        /// Load image from data URI.
-        /// </summary>
         public SKBitmap LoadFromDataUri(string dataUri)
         {
+            if (string.IsNullOrWhiteSpace(dataUri) || dataUri.Length > MaxDataUriCharacters)
+                return null;
+            if (!dataUri.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
+                return null;
+
             try
             {
-                if (!dataUri.StartsWith("data:image")) return null;
-
                 int commaIndex = dataUri.IndexOf(',');
-                if (commaIndex < 0) return null;
+                if (commaIndex < 0)
+                    return null;
+
+                var metadata = dataUri.AsSpan(0, commaIndex);
+                if (metadata.IndexOf(";base64".AsSpan(), StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    // Do not reinterpret a percent-encoded data URL as base64. The
+                    // caller can route non-base64 data URLs through the canonical URL
+                    // decoder instead of silently decoding the wrong bytes here.
+                    return null;
+                }
 
                 string base64 = dataUri.Substring(commaIndex + 1);
-                byte[] imageData = Convert.FromBase64String(base64);
+                if (base64.Length > MaxDataUriCharacters)
+                    return null;
 
-                using var stream = new MemoryStream(imageData);
+                byte[] imageData = Convert.FromBase64String(base64);
+                using var stream = new MemoryStream(imageData, writable: false);
                 return SKBitmap.Decode(stream);
             }
-            catch
+            catch (FormatException)
+            {
+                return null;
+            }
+            catch (ArgumentException)
             {
                 return null;
             }
         }
 
-        /// <summary>
-        /// Clear image cache.
-        /// </summary>
         public void ClearCache()
         {
-            foreach (var kvp in _imageCache)
+            lock (_cacheLock)
             {
-                kvp.Value?.Dispose();
+                if (_disposed)
+                    return;
+                DisposeCacheLocked();
+            }
+        }
+
+        private void DisposeCacheLocked()
+        {
+            foreach (var bitmap in _imageCache.Values)
+            {
+                bitmap?.Dispose();
             }
             _imageCache.Clear();
         }
+
+        public void Dispose()
+        {
+            lock (_cacheLock)
+            {
+                if (_disposed)
+                    return;
+
+                _disposed = true;
+                DisposeCacheLocked();
+            }
+        }
     }
 }
-
-
-
