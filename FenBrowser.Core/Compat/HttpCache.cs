@@ -12,33 +12,31 @@ namespace FenBrowser.Core.Compat
     /// <summary>
     /// Conservative in-memory HTTP cache with Cache-Control, ETag, and
     /// Last-Modified revalidation. This compatibility cache intentionally
-    /// refuses request variants it cannot key correctly (Range/Vary/HEAD).
+    /// refuses request variants it cannot key correctly (credentials/Range/Vary/HEAD).
     /// </summary>
     public sealed class HttpCache
     {
         private static readonly HttpCache _instance = new HttpCache();
         public static HttpCache Instance => _instance;
 
-        // URL path/query components are case-sensitive. Never use an
-        // OrdinalIgnoreCase comparer for a complete serialized URL.
         private readonly ConcurrentDictionary<string, CachedEntry> _cache = new(StringComparer.Ordinal);
 
         private const int MaxBodyBytes = 4 * 1024 * 1024;
+        private const int MaxManagedStringChars = MaxBodyBytes / sizeof(char);
         private const int MaxEntries = 512;
 
         public async Task<string> GetStringAsync(HttpClient client, HttpRequestMessage req)
         {
             var key = CacheKey(req);
-            if (key == null) return null;
-            if (BypassesCache(req)) return null;
+            if (key == null || BypassesCache(req)) return null;
 
             if (!_cache.TryGetValue(key, out var entry)) return null;
 
             if (!entry.IsFresh())
             {
-                if (!string.IsNullOrEmpty(entry.ETag) || entry.LastModified.HasValue)
+                if (client != null && (!string.IsNullOrEmpty(entry.ETag) || entry.LastModified.HasValue))
                 {
-                    return await RevalidateStringAsync(client, req, entry);
+                    return await RevalidateStringAsync(client, req, entry).ConfigureAwait(false);
                 }
 
                 _cache.TryRemove(key, out _);
@@ -52,8 +50,7 @@ namespace FenBrowser.Core.Compat
         public async Task<byte[]> GetBufferAsync(HttpClient? client, HttpRequestMessage req)
         {
             var key = CacheKey(req);
-            if (key == null) return null;
-            if (BypassesCache(req)) return null;
+            if (key == null || BypassesCache(req)) return null;
 
             if (!_cache.TryGetValue(key, out var entry)) return null;
 
@@ -61,7 +58,7 @@ namespace FenBrowser.Core.Compat
             {
                 if (client != null && (!string.IsNullOrEmpty(entry.ETag) || entry.LastModified.HasValue))
                 {
-                    return await RevalidateBufferAsync(client, req, entry);
+                    return await RevalidateBufferAsync(client, req, entry).ConfigureAwait(false);
                 }
 
                 _cache.TryRemove(key, out _);
@@ -69,12 +66,14 @@ namespace FenBrowser.Core.Compat
             }
 
             entry.LastAccess = DateTimeOffset.UtcNow;
-            return entry.BodyBytes;
+            return CloneBytes(entry.BodyBytes);
         }
 
         public void StoreString(HttpRequestMessage req, HttpResponseMessage resp, string body)
         {
-            if (body == null || body.Length > MaxBodyBytes) return;
+            // Strings consume two bytes per UTF-16 code unit in managed memory before
+            // object/header overhead. Bound the representation we actually retain.
+            if (body == null || body.Length > MaxManagedStringChars) return;
             var entry = TryBuildEntry(req, resp);
             if (entry == null) return;
             entry.BodyString = body;
@@ -86,44 +85,45 @@ namespace FenBrowser.Core.Compat
             if (body == null || body.Length > MaxBodyBytes) return;
             var entry = TryBuildEntry(req, resp);
             if (entry == null) return;
-            entry.BodyBytes = body;
+
+            // The cache owns its representation. Retaining the caller's mutable array
+            // let later caller writes silently corrupt every future cache hit.
+            entry.BodyBytes = (byte[])body.Clone();
             Store(CacheKey(req), entry);
         }
 
         private static string? CacheKey(HttpRequestMessage req)
         {
             if (req?.RequestUri == null) return null;
-
-            // GET and HEAD are different cache methods. This compatibility cache has
-            // no method dimension, so cache GET only rather than aliasing the two.
             if (req.Method != HttpMethod.Get) return null;
-
-            // A range response requires the Range request state and Content-Range to
-            // participate in cache selection. Refuse it until that model exists.
             if (req.Headers.Range != null) return null;
-
+            if (HasCredentialContext(req)) return null;
             return req.RequestUri.AbsoluteUri;
         }
 
         private static CachedEntry? TryBuildEntry(HttpRequestMessage req, HttpResponseMessage resp)
         {
             if (resp == null || req?.RequestUri == null) return null;
-            if (req.Method != HttpMethod.Get || req.Headers.Range != null) return null;
+            if (req.Method != HttpMethod.Get || req.Headers.Range != null || HasCredentialContext(req)) return null;
 
             var status = (int)resp.StatusCode;
             if (!IsSupportedFullResponseStatus(status)) return null;
 
             var cc = resp.Headers.CacheControl;
             if (cc?.NoStore == true) return null;
-
-            // This cache does not maintain per-entry Vary request values. Any Vary
-            // therefore makes the response unsafe to reuse, not just Vary: *.
             if (HasAnyVary(resp)) return null;
 
+            var now = DateTimeOffset.UtcNow;
             DateTimeOffset? expires;
-            if (cc?.MaxAge != null)
+            if (cc?.NoCache == true)
             {
-                expires = SafeAdd(DateTimeOffset.UtcNow, cc.MaxAge.Value);
+                // Stored no-cache responses may only be reused after successful
+                // validation; representing them as immediately stale guarantees that.
+                expires = now;
+            }
+            else if (cc?.MaxAge != null)
+            {
+                expires = SafeAdd(now, cc.MaxAge.Value);
             }
             else if (resp.Content?.Headers?.Expires != null)
             {
@@ -131,7 +131,7 @@ namespace FenBrowser.Core.Compat
             }
             else
             {
-                expires = DateTimeOffset.UtcNow.AddSeconds(60);
+                expires = now.AddSeconds(60);
             }
 
             var entry = new CachedEntry
@@ -139,9 +139,9 @@ namespace FenBrowser.Core.Compat
                 Url = req.RequestUri.AbsoluteUri,
                 StatusCode = status,
                 Expires = expires,
-                CachedAt = DateTimeOffset.UtcNow,
-                LastAccess = DateTimeOffset.UtcNow,
-                MustRevalidate = cc?.MustRevalidate ?? false
+                CachedAt = now,
+                LastAccess = now,
+                MustRevalidate = (cc?.MustRevalidate ?? false) || (cc?.NoCache ?? false)
             };
 
             if (resp.Headers.ETag != null)
@@ -166,7 +166,7 @@ namespace FenBrowser.Core.Compat
         {
             var removeCount = Math.Max(1, MaxEntries / 10);
             var oldest = new List<KeyValuePair<string, CachedEntry>>(_cache);
-            oldest.Sort((a, b) => a.Value.LastAccess.CompareTo(b.Value.LastAccess));
+            oldest.Sort(static (a, b) => a.Value.LastAccess.CompareTo(b.Value.LastAccess));
 
             var capped = Math.Min(removeCount, oldest.Count);
             for (var i = 0; i < capped; i++)
@@ -180,7 +180,7 @@ namespace FenBrowser.Core.Compat
             try
             {
                 using var req = CreateRevalidationRequest(original, entry);
-                using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead);
+                using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
 
                 if (resp.StatusCode == System.Net.HttpStatusCode.NotModified)
                 {
@@ -190,7 +190,19 @@ namespace FenBrowser.Core.Compat
 
                 if (IsSupportedFullResponseStatus((int)resp.StatusCode))
                 {
-                    var body = await resp.Content.ReadAsStringAsync();
+                    if (!await BufferWithinLimitAsync(resp.Content).ConfigureAwait(false))
+                    {
+                        RemoveOriginal(original);
+                        return null;
+                    }
+
+                    var body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    if (body.Length > MaxManagedStringChars)
+                    {
+                        RemoveOriginal(original);
+                        return null;
+                    }
+
                     StoreString(original, resp, body);
                     return body;
                 }
@@ -210,17 +222,29 @@ namespace FenBrowser.Core.Compat
             try
             {
                 using var req = CreateRevalidationRequest(original, entry);
-                using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseContentRead);
+                using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
 
                 if (resp.StatusCode == System.Net.HttpStatusCode.NotModified)
                 {
                     RefreshEntry(entry, resp);
-                    return entry.BodyBytes;
+                    return CloneBytes(entry.BodyBytes);
                 }
 
                 if (IsSupportedFullResponseStatus((int)resp.StatusCode))
                 {
-                    var body = await resp.Content.ReadAsByteArrayAsync();
+                    if (!await BufferWithinLimitAsync(resp.Content).ConfigureAwait(false))
+                    {
+                        RemoveOriginal(original);
+                        return null;
+                    }
+
+                    var body = await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+                    if (body.Length > MaxBodyBytes)
+                    {
+                        RemoveOriginal(original);
+                        return null;
+                    }
+
                     StoreBytes(original, resp, body);
                     return body;
                 }
@@ -230,17 +254,34 @@ namespace FenBrowser.Core.Compat
             }
             catch
             {
-                if (!entry.MustRevalidate) return entry.BodyBytes;
+                if (!entry.MustRevalidate) return CloneBytes(entry.BodyBytes);
                 return null;
+            }
+        }
+
+        private static async Task<bool> BufferWithinLimitAsync(HttpContent content)
+        {
+            if (content == null)
+                return true;
+
+            if (content.Headers.ContentLength is long declaredLength && declaredLength > MaxBodyBytes)
+                return false;
+
+            try
+            {
+                await content.LoadIntoBufferAsync(MaxBodyBytes).ConfigureAwait(false);
+                return true;
+            }
+            catch (HttpRequestException)
+            {
+                return false;
             }
         }
 
         private static bool IsSupportedFullResponseStatus(int status)
             => status is 200 or 203 or 204;
 
-        private static HttpRequestMessage CreateRevalidationRequest(
-            HttpRequestMessage original,
-            CachedEntry entry)
+        private static HttpRequestMessage CreateRevalidationRequest(HttpRequestMessage original, CachedEntry entry)
         {
             var req = new HttpRequestMessage(HttpMethod.Get, original.RequestUri)
             {
@@ -248,9 +289,6 @@ namespace FenBrowser.Core.Compat
                 VersionPolicy = original.VersionPolicy
             };
 
-            // Preserve request context such as Accept, Accept-Language,
-            // Authorization, Cookie and Fetch metadata. A stripped revalidation
-            // request can validate a representation for a different request context.
             foreach (var header in original.Headers)
             {
                 req.Headers.TryAddWithoutValidation(header.Key, header.Value);
@@ -279,26 +317,31 @@ namespace FenBrowser.Core.Compat
         private static void RefreshEntry(CachedEntry entry, HttpResponseMessage resp)
         {
             var cc = resp.Headers.CacheControl;
-            if (cc?.MaxAge != null)
-                entry.Expires = SafeAdd(DateTimeOffset.UtcNow, cc.MaxAge.Value);
+            var now = DateTimeOffset.UtcNow;
+            entry.MustRevalidate = (cc?.MustRevalidate ?? entry.MustRevalidate) || (cc?.NoCache ?? false);
+
+            if (cc?.NoCache == true)
+                entry.Expires = now;
+            else if (cc?.MaxAge != null)
+                entry.Expires = SafeAdd(now, cc.MaxAge.Value);
             else if (resp.Content?.Headers?.Expires != null)
                 entry.Expires = resp.Content.Headers.Expires;
             else
-                entry.Expires = DateTimeOffset.UtcNow.AddSeconds(60);
+                entry.Expires = now.AddSeconds(60);
 
-            entry.CachedAt = DateTimeOffset.UtcNow;
-            entry.LastAccess = DateTimeOffset.UtcNow;
+            entry.CachedAt = now;
+            entry.LastAccess = now;
 
             if (resp.Headers.ETag != null)
                 entry.ETag = resp.Headers.ETag.Tag;
+            if (resp.Content?.Headers?.LastModified != null)
+                entry.LastModified = resp.Content.Headers.LastModified;
         }
 
         private static DateTimeOffset SafeAdd(DateTimeOffset now, TimeSpan delta)
         {
             if (delta <= TimeSpan.Zero)
-            {
                 return now;
-            }
 
             var maxDelta = DateTimeOffset.MaxValue - now;
             return delta >= maxDelta ? DateTimeOffset.MaxValue : now + delta;
@@ -306,34 +349,32 @@ namespace FenBrowser.Core.Compat
 
         private static bool BypassesCache(HttpRequestMessage req)
         {
-            if (req?.Headers.Range != null)
-            {
+            if (req == null || req.Headers.Range != null || HasCredentialContext(req))
                 return true;
-            }
 
-            var cc = req?.Headers?.CacheControl;
+            var cc = req.Headers.CacheControl;
             if (cc == null)
-            {
                 return false;
-            }
 
             if (cc.NoStore || cc.NoCache)
-            {
                 return true;
-            }
 
-            if (cc.MaxAge.HasValue && cc.MaxAge.Value <= TimeSpan.Zero)
-            {
-                return true;
-            }
+            return cc.MaxAge.HasValue && cc.MaxAge.Value <= TimeSpan.Zero;
+        }
 
-            return false;
+        private static bool HasCredentialContext(HttpRequestMessage req)
+        {
+            if (req?.Headers == null)
+                return false;
+
+            return req.Headers.Authorization != null || req.Headers.Contains("Cookie");
         }
 
         private static bool HasAnyVary(HttpResponseMessage resp)
-        {
-            return resp?.Headers?.Vary is { Count: > 0 };
-        }
+            => resp?.Headers?.Vary is { Count: > 0 };
+
+        private static byte[]? CloneBytes(byte[]? value)
+            => value == null ? null : (byte[])value.Clone();
 
         private sealed class CachedEntry
         {
