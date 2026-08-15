@@ -23,13 +23,23 @@ namespace FenBrowser.Core.Network
         private readonly Dictionary<string, HostRequestGate> _hostRequestGates;
         private readonly object _hostRequestGatesLock = new();
         private readonly SemaphoreSlim _connectionSemaphore;
-        
+        private long _defaultTimeoutTicks = TimeSpan.FromSeconds(30).Ticks;
+
         // Concurrency limits are construction-time invariants. The previous mutable
         // properties did not resize their semaphore and therefore advertised settings
         // that had no effect after construction.
         public int MaxConcurrentRequests { get; }
         public int MaxConnectionsPerHost { get; }
-        public TimeSpan DefaultTimeout { get; set; } = TimeSpan.FromSeconds(30);
+        public TimeSpan DefaultTimeout
+        {
+            get => TimeSpan.FromTicks(Interlocked.Read(ref _defaultTimeoutTicks));
+            set
+            {
+                if (value != Timeout.InfiniteTimeSpan && value <= TimeSpan.Zero)
+                    throw new ArgumentOutOfRangeException(nameof(value), "Timeout must be positive or Timeout.InfiniteTimeSpan.");
+                Interlocked.Exchange(ref _defaultTimeoutTicks, value.Ticks);
+            }
+        }
         public bool EnableConnectionReuse { get; set; } = true;
         public bool EnableKeepAlive { get; set; } = true;
         public bool LogConnectionStats { get; set; } = false;
@@ -73,78 +83,92 @@ namespace FenBrowser.Core.Network
             var hostKey = GetHostKey(request.RequestUri);
             var globalSemaphoreAcquired = false;
             var hostSemaphoreAcquired = false;
+            var requestCounted = false;
             HostRequestGate hostGate = null;
             ConnectionInfo connInfo = null;
-            
+
+            var timeout = DefaultTimeout;
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            if (timeout != Timeout.InfiniteTimeSpan)
+                timeoutCts.CancelAfter(timeout);
+            var effectiveToken = timeoutCts.Token;
+
             try
             {
                 // Lease the host gate before awaiting it. The lease count includes
                 // both waiters and holders, so a gate cannot be removed/disposed while
                 // another request is about to wait on it.
                 hostGate = LeaseHostRequestGate(hostKey);
-                await hostGate.Semaphore.WaitAsync(ct).ConfigureAwait(false);
+                await hostGate.Semaphore.WaitAsync(effectiveToken).ConfigureAwait(false);
                 hostSemaphoreAcquired = true;
 
                 // Acquire the per-host gate before the global gate. This prevents one
                 // hot origin from occupying every global slot while most of its own
                 // requests are merely waiting for the per-host limit.
-                await _connectionSemaphore.WaitAsync(ct).ConfigureAwait(false);
+                await _connectionSemaphore.WaitAsync(effectiveToken).ConfigureAwait(false);
                 globalSemaphoreAcquired = true;
-                
+
                 // Track connection only after this request owns both concurrency slots.
                 connInfo = _activeConnections.GetOrAdd(hostKey, _ => new ConnectionInfo(hostKey));
                 Interlocked.Increment(ref connInfo.ActiveRequests);
                 _stats.IncrementTotalRequests();
-                
-                // Add keep-alive headers for connection reuse
+                requestCounted = true;
+
                 if (EnableKeepAlive && !request.Headers.Connection.Contains("close"))
-                {
                     request.Headers.ConnectionClose = false;
-                }
-                
+
                 var context = new NetworkContext(request);
-                await ExecutePipelineAsync(context, 0, ct).ConfigureAwait(false);
-                
+                await ExecutePipelineAsync(context, 0, effectiveToken).ConfigureAwait(false);
+
+                if (context.Response == null)
+                {
+                    throw new InvalidOperationException(
+                        "Network handler pipeline completed without producing an HTTP response. " +
+                        "This is an engine pipeline configuration error, not an HTTP 500 response from the origin.");
+                }
+
                 sw.Stop();
-                
-                // Update stats
-                _stats.RecordRequest(hostKey, sw.ElapsedMilliseconds, context.Response?.IsSuccessStatusCode == true);
+                _stats.RecordRequest(hostKey, sw.ElapsedMilliseconds, context.Response.IsSuccessStatusCode);
+                requestCounted = false;
                 connInfo.LastUsed = DateTime.UtcNow;
                 Interlocked.Increment(ref connInfo.TotalRequests);
-                
+
                 if (LogConnectionStats && sw.ElapsedMilliseconds > 1000)
                 {
                     LogManager.Log(LogCategory.Network, LogLevel.Debug,
                         $"[NetworkClient] Slow request: {request.RequestUri} took {sw.ElapsedMilliseconds}ms");
                 }
-                
-                return context.Response ?? new HttpResponseMessage(System.Net.HttpStatusCode.InternalServerError) 
-                { 
-                    ReasonPhrase = "No response generated" 
-                };
+
+                return context.Response;
+            }
+            catch
+            {
+                sw.Stop();
+                if (requestCounted)
+                {
+                    _stats.RecordRequest(hostKey, sw.ElapsedMilliseconds, success: false);
+                    requestCounted = false;
+                    if (connInfo != null)
+                    {
+                        connInfo.LastUsed = DateTime.UtcNow;
+                        Interlocked.Increment(ref connInfo.TotalRequests);
+                    }
+                }
+                throw;
             }
             finally
             {
-                // Only undo resources that this request actually acquired/registered.
                 if (connInfo != null)
-                {
                     Interlocked.Decrement(ref connInfo.ActiveRequests);
-                }
 
                 if (globalSemaphoreAcquired)
-                {
                     _connectionSemaphore.Release();
-                }
 
                 if (hostSemaphoreAcquired)
-                {
                     hostGate.Semaphore.Release();
-                }
 
                 if (hostGate != null)
-                {
                     ReleaseHostRequestGate(hostKey, hostGate);
-                }
             }
         }
 
@@ -158,11 +182,7 @@ namespace FenBrowser.Core.Network
                     _hostRequestGates.Add(hostKey, gate);
                 }
 
-                checked
-                {
-                    gate.LeaseCount++;
-                }
-
+                checked { gate.LeaseCount++; }
                 return gate;
             }
         }
@@ -173,9 +193,7 @@ namespace FenBrowser.Core.Network
             lock (_hostRequestGatesLock)
             {
                 if (gate.LeaseCount <= 0)
-                {
                     throw new InvalidOperationException("Host request gate lease count underflow.");
-                }
 
                 gate.LeaseCount--;
                 if (gate.LeaseCount == 0 &&
@@ -188,97 +206,62 @@ namespace FenBrowser.Core.Network
             }
 
             if (dispose)
-            {
                 gate.Dispose();
-            }
         }
 
-        /// <summary>
-        /// Preconnect to a host to warm up connection pool
-        /// </summary>
+        /// <summary>Preconnect to a host to warm up connection pool.</summary>
         public async Task PreconnectAsync(Uri uri, CancellationToken ct = default)
         {
             if (uri == null) return;
-            
             var hostKey = GetHostKey(uri);
 
             try
             {
-                // ConnectionInfo records request history, not the lifetime of the
-                // underlying HttpClient socket pool. A host having been requested in
-                // the past is therefore not evidence that a reusable connection is
-                // still warm; always perform the explicit preconnect hint.
                 using var request = new HttpRequestMessage(HttpMethod.Head, new Uri(uri, "/"));
                 request.Headers.ConnectionClose = false;
-                
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(TimeSpan.FromSeconds(5));
-                
                 using var response = await SendAsync(request, cts.Token).ConfigureAwait(false);
-                
                 LogManager.Log(LogCategory.Network, LogLevel.Debug,
                     $"[NetworkClient] Preconnected to {hostKey}");
             }
             catch
             {
-                // Preconnect failure is not critical
+                // Preconnect failure is not critical.
             }
         }
 
-        /// <summary>
-        /// Get connection pool statistics
-        /// </summary>
         public ConnectionPoolStats GetStats() => _stats;
 
-        /// <summary>
-        /// Get active connection info for a host
-        /// </summary>
         public ConnectionInfo GetConnectionInfo(string host)
         {
             _activeConnections.TryGetValue(host?.ToLowerInvariant() ?? "", out var info);
             return info;
         }
 
-        /// <summary>
-        /// Get all active connections
-        /// </summary>
-        public IReadOnlyDictionary<string, ConnectionInfo> GetActiveConnections()
-        {
-            return new Dictionary<string, ConnectionInfo>(_activeConnections);
-        }
+        public IReadOnlyDictionary<string, ConnectionInfo> GetActiveConnections() =>
+            new Dictionary<string, ConnectionInfo>(_activeConnections);
 
-        /// <summary>
-        /// Reset statistics
-        /// </summary>
-        public void ResetStats()
-        {
-            _stats.Reset();
-        }
+        public void ResetStats() => _stats.Reset();
 
         private async Task ExecutePipelineAsync(NetworkContext context, int index, CancellationToken ct)
         {
             if (index >= _handlers.Count)
-            {
                 return;
-            }
 
             var handler = _handlers[index];
             await handler.HandleAsync(context, () => ExecutePipelineAsync(context, index + 1, ct), ct).ConfigureAwait(false);
         }
 
-        private static string GetHostKey(Uri uri)
-        {
-            return uri != null ? $"{uri.Scheme}://{uri.Host}:{uri.Port}".ToLowerInvariant() : "unknown";
-        }
+        private static string GetHostKey(Uri uri) =>
+            uri != null ? $"{uri.Scheme}://{uri.Host}:{uri.Port}".ToLowerInvariant() : "unknown";
 
         public async Task<string> GetStringAsync(string url, CancellationToken ct = default)
         {
-            using (var req = new HttpRequestMessage(HttpMethod.Get, url))
-            using (var resp = await SendAsync(req, ct).ConfigureAwait(false))
-            {
-                resp.EnsureSuccessStatusCode();
-                return await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
-            }
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            using var resp = await SendAsync(req, ct).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
+            return await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
         }
 
         public async Task<Stream> GetStreamAsync(string url, CancellationToken ct = default)
@@ -303,18 +286,12 @@ namespace FenBrowser.Core.Network
 
         public async Task<byte[]> GetByteArrayAsync(string url, CancellationToken ct = default)
         {
-            using (var req = new HttpRequestMessage(HttpMethod.Get, url))
-            using (var resp = await SendAsync(req, ct).ConfigureAwait(false))
-            {
-                resp.EnsureSuccessStatusCode();
-                return await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-            }
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            using var resp = await SendAsync(req, ct).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
+            return await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
         }
 
-        /// <summary>
-        /// Keeps the request/response alive for exactly as long as the returned content stream.
-        /// Disposing the wrapper deterministically releases the underlying HTTP resources.
-        /// </summary>
         private sealed class ResponseOwnedStream : Stream
         {
             private readonly Stream _inner;
@@ -333,12 +310,7 @@ namespace FenBrowser.Core.Network
             public override bool CanSeek => _inner.CanSeek;
             public override bool CanWrite => _inner.CanWrite;
             public override long Length => _inner.Length;
-            public override long Position
-            {
-                get => _inner.Position;
-                set => _inner.Position = value;
-            }
-
+            public override long Position { get => _inner.Position; set => _inner.Position = value; }
             public override void Flush() => _inner.Flush();
             public override Task FlushAsync(CancellationToken cancellationToken) => _inner.FlushAsync(cancellationToken);
             public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
@@ -360,45 +332,32 @@ namespace FenBrowser.Core.Network
             {
                 if (disposing && Interlocked.Exchange(ref _disposed, 1) == 0)
                 {
-                    try
-                    {
-                        _inner.Dispose();
-                    }
+                    try { _inner.Dispose(); }
                     finally
                     {
                         _response.Dispose();
                         _request.Dispose();
                     }
                 }
-
                 base.Dispose(disposing);
             }
 
             public override async ValueTask DisposeAsync()
             {
                 if (Interlocked.Exchange(ref _disposed, 1) != 0)
-                {
                     return;
-                }
 
-                try
-                {
-                    await _inner.DisposeAsync().ConfigureAwait(false);
-                }
+                try { await _inner.DisposeAsync().ConfigureAwait(false); }
                 finally
                 {
                     _response.Dispose();
                     _request.Dispose();
                 }
-
                 GC.SuppressFinalize(this);
             }
         }
     }
 
-    /// <summary>
-    /// Statistics for connection pool monitoring
-    /// </summary>
     public class ConnectionPoolStats
     {
         private long _totalRequests;
@@ -416,9 +375,7 @@ namespace FenBrowser.Core.Network
             get
             {
                 var completed = CompletedRequests;
-                return completed > 0
-                    ? (double)Interlocked.Read(ref _totalLatencyMs) / completed
-                    : 0;
+                return completed > 0 ? (double)Interlocked.Read(ref _totalLatencyMs) / completed : 0;
             }
         }
         public double SuccessRate
@@ -436,11 +393,8 @@ namespace FenBrowser.Core.Network
         public void RecordRequest(string host, long latencyMs, bool success)
         {
             Interlocked.Add(ref _totalLatencyMs, latencyMs);
-            
-            if (success)
-                Interlocked.Increment(ref _successfulRequests);
-            else
-                Interlocked.Increment(ref _failedRequests);
+            if (success) Interlocked.Increment(ref _successfulRequests);
+            else Interlocked.Increment(ref _failedRequests);
 
             var hostStats = _hostStats.GetOrAdd(host, _ => new HostStats());
             hostStats.RecordRequest(latencyMs, success);
@@ -452,10 +406,8 @@ namespace FenBrowser.Core.Network
             return stats;
         }
 
-        public IReadOnlyDictionary<string, HostStats> GetAllHostStats()
-        {
-            return new Dictionary<string, HostStats>(_hostStats);
-        }
+        public IReadOnlyDictionary<string, HostStats> GetAllHostStats() =>
+            new Dictionary<string, HostStats>(_hostStats);
 
         public void Reset()
         {
@@ -466,15 +418,10 @@ namespace FenBrowser.Core.Network
             _hostStats.Clear();
         }
 
-        public string GetSummary()
-        {
-            return $"Requests: {TotalRequests} | Success: {SuccessRate:F1}% | Avg Latency: {AverageLatencyMs:F1}ms";
-        }
+        public string GetSummary() =>
+            $"Requests: {TotalRequests} | Success: {SuccessRate:F1}% | Avg Latency: {AverageLatencyMs:F1}ms";
     }
 
-    /// <summary>
-    /// Per-host statistics
-    /// </summary>
     public class HostStats
     {
         private long _requests;
@@ -490,9 +437,7 @@ namespace FenBrowser.Core.Network
             get
             {
                 var requests = Interlocked.Read(ref _requests);
-                return requests > 0
-                    ? (double)Interlocked.Read(ref _totalLatencyMs) / requests
-                    : 0;
+                return requests > 0 ? (double)Interlocked.Read(ref _totalLatencyMs) / requests : 0;
             }
         }
         public long MinLatencyMs
@@ -520,11 +465,7 @@ namespace FenBrowser.Core.Network
             while (candidate < observed)
             {
                 var original = Interlocked.CompareExchange(ref target, candidate, observed);
-                if (original == observed)
-                {
-                    return;
-                }
-
+                if (original == observed) return;
                 observed = original;
             }
         }
@@ -535,19 +476,12 @@ namespace FenBrowser.Core.Network
             while (candidate > observed)
             {
                 var original = Interlocked.CompareExchange(ref target, candidate, observed);
-                if (original == observed)
-                {
-                    return;
-                }
-
+                if (original == observed) return;
                 observed = original;
             }
         }
     }
 
-    /// <summary>
-    /// Information about a connection to a host
-    /// </summary>
     public class ConnectionInfo
     {
         public string Host { get; }
