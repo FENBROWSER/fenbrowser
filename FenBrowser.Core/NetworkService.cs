@@ -6,7 +6,6 @@ using System.Threading.Tasks;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Security;
-using System.Linq;
 
 namespace FenBrowser.Core;
 
@@ -20,31 +19,23 @@ public class NetworkService : INetworkService
         _httpClient = HttpClientFactory.GetSharedClient();
     }
 
-    /// <summary>
-    /// Gets the current User-Agent from BrowserSettings
-    /// </summary>
-    private string GetCurrentUserAgent()
-    {
-        return BrowserSettings.GetUserAgentString(BrowserSettings.Instance.SelectedUserAgent);
-    }
-
     private void LogResponse(HttpResponseMessage response)
     {
         if (!DebugConfig.LogResourceLoader) return;
-        
+
         var contentType = response.Content.Headers.ContentType;
         var encoding = contentType?.CharSet ?? "utf-8 (implicit)";
         var mime = contentType?.MediaType ?? "unknown";
         var contentEncoding = string.Join(", ", response.Content.Headers.ContentEncoding);
         var requestUri = response.RequestMessage?.RequestUri;
-        
+
         EngineLogCompat.Log(
             $"[Loader] {response.RequestMessage?.Method?.Method ?? "?"} {GetSafeUriForLog(requestUri)}",
             LogCategory.Network);
         EngineLogCompat.Log($"[Loader] Status: {(int)response.StatusCode} {response.ReasonPhrase}", LogCategory.Network);
         EngineLogCompat.Log($"[Loader] MIME: {mime}", LogCategory.Network);
         EngineLogCompat.Log($"[Loader] Encoding: {encoding}", LogCategory.Network);
-        
+
         if (!string.IsNullOrEmpty(contentEncoding))
             EngineLogCompat.Log($"[Loader] Compression: {contentEncoding}", LogCategory.Network);
     }
@@ -89,7 +80,7 @@ public class NetworkService : INetworkService
             });
 
         using var request = CreateRequest(uri, configuration);
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(configuration.ResourceTimeoutSeconds));
 
         if (DebugConfig.LogResourceLoader)
@@ -107,14 +98,15 @@ public class NetworkService : INetworkService
             LogResponse(response);
             var stream = await response.Content.ReadAsStreamAsync(timeoutCts.Token).ConfigureAwait(false);
 
-            // The content stream is owned by HttpResponseMessage. Returning the raw
-            // stream would abandon that owner and retain response/content resources
-            // until finalization. Transfer response ownership to the returned stream.
-            return new ResponseOwnedStream(stream, response);
+            // Transfer both response and timeout ownership. Disposing the timeout CTS
+            // here used to disable ResourceTimeoutSeconds as soon as headers arrived,
+            // allowing a stalled response body to live forever.
+            return new ResponseOwnedStream(stream, response, timeoutCts);
         }
         catch
         {
             response?.Dispose();
+            timeoutCts.Dispose();
             throw;
         }
     }
@@ -223,12 +215,17 @@ public class NetworkService : INetworkService
     {
         private readonly Stream _inner;
         private readonly HttpResponseMessage _response;
+        private readonly CancellationTokenSource _lifetimeTimeout;
         private int _disposed;
 
-        public ResponseOwnedStream(Stream inner, HttpResponseMessage response)
+        public ResponseOwnedStream(
+            Stream inner,
+            HttpResponseMessage response,
+            CancellationTokenSource lifetimeTimeout)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
             _response = response ?? throw new ArgumentNullException(nameof(response));
+            _lifetimeTimeout = lifetimeTimeout ?? throw new ArgumentNullException(nameof(lifetimeTimeout));
         }
 
         public override bool CanRead => _inner.CanRead;
@@ -243,7 +240,7 @@ public class NetworkService : INetworkService
 
         public override void Flush() => _inner.Flush();
         public override Task FlushAsync(CancellationToken cancellationToken) =>
-            _inner.FlushAsync(cancellationToken);
+            FlushWithLifetimeTimeoutAsync(cancellationToken);
         public override int Read(byte[] buffer, int offset, int count) =>
             _inner.Read(buffer, offset, count);
         public override int Read(Span<byte> buffer) => _inner.Read(buffer);
@@ -252,11 +249,11 @@ public class NetworkService : INetworkService
             int offset,
             int count,
             CancellationToken cancellationToken) =>
-            _inner.ReadAsync(buffer, offset, count, cancellationToken);
+            ReadWithLifetimeTimeoutAsync(buffer, offset, count, cancellationToken);
         public override ValueTask<int> ReadAsync(
             Memory<byte> buffer,
             CancellationToken cancellationToken = default) =>
-            _inner.ReadAsync(buffer, cancellationToken);
+            ReadMemoryWithLifetimeTimeoutAsync(buffer, cancellationToken);
         public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
         public override void SetLength(long value) => _inner.SetLength(value);
         public override void Write(byte[] buffer, int offset, int count) =>
@@ -267,19 +264,76 @@ public class NetworkService : INetworkService
             int offset,
             int count,
             CancellationToken cancellationToken) =>
-            _inner.WriteAsync(buffer, offset, count, cancellationToken);
+            WriteWithLifetimeTimeoutAsync(buffer, offset, count, cancellationToken);
         public override ValueTask WriteAsync(
             ReadOnlyMemory<byte> buffer,
             CancellationToken cancellationToken = default) =>
-            _inner.WriteAsync(buffer, cancellationToken);
+            WriteMemoryWithLifetimeTimeoutAsync(buffer, cancellationToken);
+
+        private async Task<int> ReadWithLifetimeTimeoutAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken)
+        {
+            using var linked = CreateOperationCancellation(cancellationToken);
+            return await _inner.ReadAsync(buffer, offset, count, linked.Token).ConfigureAwait(false);
+        }
+
+        private async ValueTask<int> ReadMemoryWithLifetimeTimeoutAsync(
+            Memory<byte> buffer,
+            CancellationToken cancellationToken)
+        {
+            using var linked = CreateOperationCancellation(cancellationToken);
+            return await _inner.ReadAsync(buffer, linked.Token).ConfigureAwait(false);
+        }
+
+        private async Task FlushWithLifetimeTimeoutAsync(CancellationToken cancellationToken)
+        {
+            using var linked = CreateOperationCancellation(cancellationToken);
+            await _inner.FlushAsync(linked.Token).ConfigureAwait(false);
+        }
+
+        private async Task WriteWithLifetimeTimeoutAsync(
+            byte[] buffer,
+            int offset,
+            int count,
+            CancellationToken cancellationToken)
+        {
+            using var linked = CreateOperationCancellation(cancellationToken);
+            await _inner.WriteAsync(buffer, offset, count, linked.Token).ConfigureAwait(false);
+        }
+
+        private async ValueTask WriteMemoryWithLifetimeTimeoutAsync(
+            ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken)
+        {
+            using var linked = CreateOperationCancellation(cancellationToken);
+            await _inner.WriteAsync(buffer, linked.Token).ConfigureAwait(false);
+        }
+
+        private CancellationTokenSource CreateOperationCancellation(CancellationToken cancellationToken)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                throw new ObjectDisposedException(nameof(ResponseOwnedStream));
+
+            return cancellationToken.CanBeCanceled
+                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetimeTimeout.Token)
+                : CancellationTokenSource.CreateLinkedTokenSource(_lifetimeTimeout.Token);
+        }
 
         protected override void Dispose(bool disposing)
         {
             if (disposing && Interlocked.Exchange(ref _disposed, 1) == 0)
             {
-                // Disposing the response disposes its HttpContent and therefore the
-                // owned content stream. Keep one authoritative owner to avoid leaks.
-                _response.Dispose();
+                try
+                {
+                    _response.Dispose();
+                }
+                finally
+                {
+                    _lifetimeTimeout.Dispose();
+                }
             }
 
             base.Dispose(disposing);
@@ -295,7 +349,14 @@ public class NetworkService : INetworkService
                 }
                 finally
                 {
-                    _response.Dispose();
+                    try
+                    {
+                        _response.Dispose();
+                    }
+                    finally
+                    {
+                        _lifetimeTimeout.Dispose();
+                    }
                 }
             }
 
