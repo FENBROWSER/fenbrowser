@@ -4,8 +4,8 @@ using System.Runtime.CompilerServices;
 namespace FenBrowser.Core.Security
 {
     /// <summary>
-    /// Represents a web origin per HTML spec §7.5.
-    /// An origin is (scheme, host, port) tuple, or an opaque origin with identity.
+    /// Represents a web origin per HTML origin semantics.
+    /// An origin is a (scheme, host, port) tuple, or an opaque origin with identity.
     /// </summary>
     public sealed class Origin : IEquatable<Origin>
     {
@@ -21,25 +21,35 @@ namespace FenBrowser.Core.Security
 
         public Origin(string scheme, string host, int port)
         {
-            Scheme = scheme?.ToLowerInvariant() ?? "";
-            Host = host?.ToLowerInvariant() ?? "";
+            Scheme = NormalizeScheme(scheme);
+            Host = NormalizeHost(host);
             Port = port;
             IsOpaque = false;
         }
 
         /// <summary>Create a fresh opaque origin (for data: URLs, sandboxed documents, etc.).</summary>
-        public static Origin Opaque() => new Origin();
+        public static Origin Opaque() => new();
 
-        /// <summary>Derive an origin from a URI when the URI itself carries enough origin information.</summary>
+        /// <summary>
+        /// Derive an origin from a URI when the URI itself carries enough origin
+        /// information. URLs whose origin depends on creator/browsing-context state
+        /// deliberately become fresh opaque origins here; callers that possess creator
+        /// state must propagate that Origin object instead of reconstructing it from URL text.
+        /// </summary>
         public static Origin FromUri(Uri uri)
         {
-            if (uri == null) return Opaque();
+            if (uri == null || !uri.IsAbsoluteUri)
+            {
+                return Opaque();
+            }
 
-            var scheme = uri.Scheme?.ToLowerInvariant();
+            var scheme = NormalizeScheme(uri.Scheme);
 
             // A blob URL inherits the origin encoded by its inner URL. Treating every
             // blob: URL as opaque breaks same-origin blob fetches, workers, images and
-            // object URLs created by the current document.
+            // object URLs created by the current document. An inner opaque origin (for
+            // example blob:null/...) remains opaque because it cannot be reconstructed
+            // from URL text alone.
             if (scheme == "blob")
             {
                 var serialized = uri.OriginalString ?? uri.AbsoluteUri;
@@ -56,42 +66,56 @@ namespace FenBrowser.Core.Security
                 return Opaque();
             }
 
-            // These URLs either have a unique opaque origin or require a creator/base
-            // document to determine inheritance. FromUri has no creator context, so it
-            // must not manufacture a tuple origin for them.
-            if (scheme == "data" || scheme == "javascript" || scheme == "about")
+            // data: and javascript: are opaque. about: URLs such as about:blank and
+            // about:srcdoc may inherit a creator origin, but this method intentionally
+            // has no creator context and therefore must not manufacture one.
+            //
+            // file: origin comparison is implementation-defined. Treating all local
+            // files as the tuple (file, "", -1) made every file URL same-origin with
+            // every other file URL. FenBrowser chooses the safer unique-origin model;
+            // explicit file navigation permissions are handled separately.
+            if (scheme is "data" or "javascript" or "about" or "file")
+            {
                 return Opaque();
+            }
 
-            int port = uri.Port;
-            if (port == -1) port = GetDefaultPort(scheme);
-            return new Origin(scheme, uri.Host, port);
+            var host = NormalizeHost(uri.IdnHost);
+            if (string.IsNullOrEmpty(host) && RequiresHostTuple(scheme))
+            {
+                return Opaque();
+            }
+
+            var port = uri.IsDefaultPort ? GetDefaultPort(scheme) : uri.Port;
+            return new Origin(scheme, host, port);
         }
 
         /// <summary>
-        /// Same-origin check per HTML spec §7.5.
-        /// Tuple origins compare by scheme/host/port. Opaque origins carry identity:
-        /// the same opaque origin object is same-origin with itself, while a separately
-        /// created opaque origin is distinct.
+        /// Same-origin check. Tuple origins compare by canonical scheme/host/port.
+        /// Opaque origins carry identity: an opaque origin is same-origin only with
+        /// the exact same Origin object, never with a separately-created opaque origin.
         /// </summary>
         public bool IsSameOrigin(Origin other)
         {
-            if (other == null) return false;
-            if (IsOpaque || other.IsOpaque)
-                return IsOpaque && other.IsOpaque && ReferenceEquals(this, other);
+            if (other == null)
+            {
+                return false;
+            }
 
-            return string.Equals(Scheme, other.Scheme, StringComparison.OrdinalIgnoreCase) &&
-                   string.Equals(Host, other.Host, StringComparison.OrdinalIgnoreCase) &&
+            if (IsOpaque || other.IsOpaque)
+            {
+                return IsOpaque && other.IsOpaque && ReferenceEquals(this, other);
+            }
+
+            return string.Equals(Scheme, other.Scheme, StringComparison.Ordinal) &&
+                   string.Equals(Host, other.Host, StringComparison.Ordinal) &&
                    Port == other.Port;
         }
 
         /// <summary>
-        /// Same-origin-domain check (considers document.domain relaxation).
+        /// Same-origin-domain check. document.domain relaxation is intentionally not
+        /// implemented; until it is, this cannot be broader than same-origin.
         /// </summary>
-        public bool IsSameOriginDomain(Origin other)
-        {
-            // For now, same as IsSameOrigin (document.domain is deprecated)
-            return IsSameOrigin(other);
-        }
+        public bool IsSameOriginDomain(Origin other) => IsSameOrigin(other);
 
         public bool Equals(Origin other) => IsSameOrigin(other);
         public override bool Equals(object obj) => obj is Origin o && IsSameOrigin(o);
@@ -99,20 +123,25 @@ namespace FenBrowser.Core.Security
         public override int GetHashCode()
         {
             if (IsOpaque)
+            {
                 return RuntimeHelpers.GetHashCode(this);
+            }
 
             return HashCode.Combine(
-                Scheme?.GetHashCode(StringComparison.OrdinalIgnoreCase) ?? 0,
-                Host?.GetHashCode(StringComparison.OrdinalIgnoreCase) ?? 0,
+                StringComparer.Ordinal.GetHashCode(Scheme ?? string.Empty),
+                StringComparer.Ordinal.GetHashCode(Host ?? string.Empty),
                 Port);
         }
 
         public override string ToString()
         {
-            if (IsOpaque) return "null";
+            if (IsOpaque)
+            {
+                return "null";
+            }
 
-            // Uri.Host exposes IPv6 literals without brackets. Origin serialization
-            // requires brackets so non-default ports remain unambiguous.
+            // Canonical host storage keeps IPv6 literals bracketless. Origin
+            // serialization adds brackets so an explicit port remains unambiguous.
             var serializedHost = Host ?? string.Empty;
             if (serializedHost.IndexOf(':') >= 0 &&
                 !serializedHost.StartsWith("[", StringComparison.Ordinal) &&
@@ -121,14 +150,30 @@ namespace FenBrowser.Core.Security
                 serializedHost = $"[{serializedHost}]";
             }
 
-            int defaultPort = GetDefaultPort(Scheme);
-            return Port == defaultPort || Port <= 0
+            var defaultPort = GetDefaultPort(Scheme);
+            return Port == defaultPort || Port < 0
                 ? $"{Scheme}://{serializedHost}"
                 : $"{Scheme}://{serializedHost}:{Port}";
         }
 
         public static bool operator ==(Origin a, Origin b) => a?.IsSameOrigin(b) ?? b is null;
         public static bool operator !=(Origin a, Origin b) => !(a == b);
+
+        private static string NormalizeScheme(string scheme)
+            => (scheme ?? string.Empty).Trim().ToLowerInvariant();
+
+        private static string NormalizeHost(string host)
+        {
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                return string.Empty;
+            }
+
+            return host.Trim().TrimEnd('.').Trim('[', ']').ToLowerInvariant();
+        }
+
+        private static bool RequiresHostTuple(string scheme)
+            => scheme is "http" or "https" or "ws" or "wss" or "ftp";
 
         private static int GetDefaultPort(string scheme) => scheme switch
         {
