@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Security
@@ -31,7 +32,10 @@ namespace FenBrowser.Core.Security
 
         public string Message { get; }
 
-        public Dictionary<string, object> Data { get; }
+        // A security decision is a point-in-time result. Exposing the backing
+        // Dictionary allowed callers to mutate audit/context data after the policy
+        // had already been evaluated, making logs disagree with the original result.
+        public IReadOnlyDictionary<string, object> Data { get; }
 
         public static SecurityDecision Allow(
             string policy,
@@ -74,7 +78,7 @@ namespace FenBrowser.Core.Security
             LogManager.Log(entry);
         }
 
-        private static Dictionary<string, object> Clone(IReadOnlyDictionary<string, object> data)
+        private static IReadOnlyDictionary<string, object> Clone(IReadOnlyDictionary<string, object> data)
         {
             if (data == null || data.Count == 0)
             {
@@ -87,7 +91,7 @@ namespace FenBrowser.Core.Security
                 clone[pair.Key] = pair.Value;
             }
 
-            return clone;
+            return new ReadOnlyDictionary<string, object>(clone);
         }
     }
 }
