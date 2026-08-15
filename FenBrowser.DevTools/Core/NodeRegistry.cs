@@ -22,7 +22,10 @@ public interface INodeRegistry
 /// </summary>
 public sealed class NodeRegistry : INodeRegistry
 {
+    private const int OpportunisticCleanupInterval = 256;
+
     private int _nextId = 1;
+    private int _registrationsSinceCleanup;
     private readonly object _lock = new();
 
     // Forward lookup: Node -> ID. ConditionalWeakTable doesn't prevent GC of keys.
@@ -57,6 +60,18 @@ public sealed class NodeRegistry : INodeRegistry
 
             _nodeToId.Add(node, holder);
             _idToNode[id] = new WeakReference<Node>(node);
+
+            // Weak values prevent nodes from being retained, but the dictionary entry
+            // itself is strong. Without a caller of Cleanup(), a long DevTools session
+            // would therefore accumulate one dead WeakReference per inspected node.
+            // Amortize cleanup over registrations so the reverse index stays bounded by
+            // the live/actively-used population instead of total historical nodes.
+            if (++_registrationsSinceCleanup >= OpportunisticCleanupInterval)
+            {
+                _registrationsSinceCleanup = 0;
+                CleanupLocked();
+            }
+
             return id;
         }
     }
@@ -97,6 +112,7 @@ public sealed class NodeRegistry : INodeRegistry
         {
             _nodeToId.Clear();
             _idToNode.Clear();
+            _registrationsSinceCleanup = 0;
             // Do not reset _nextId. Reusing an old nodeId lets delayed/stale
             // DevTools commands accidentally target a node from a new document.
         }
@@ -114,21 +130,34 @@ public sealed class NodeRegistry : INodeRegistry
 
     /// <summary>
     /// Cleanup any stale WeakReferences (nodes that were GC'd).
-    /// Call periodically or when memory pressure is detected.
+    /// Safe to call explicitly under memory pressure; registration also invokes
+    /// the same cleanup periodically so correctness does not depend on a caller.
     /// </summary>
     public void Cleanup()
     {
         lock (_lock)
         {
-            var staleIds = new List<int>();
-            foreach (var kvp in _idToNode)
-            {
-                if (!kvp.Value.TryGetTarget(out _))
-                    staleIds.Add(kvp.Key);
-            }
-
-            foreach (var id in staleIds)
-                _idToNode.Remove(id);
+            CleanupLocked();
+            _registrationsSinceCleanup = 0;
         }
+    }
+
+    private void CleanupLocked()
+    {
+        List<int>? staleIds = null;
+        foreach (var kvp in _idToNode)
+        {
+            if (!kvp.Value.TryGetTarget(out _))
+            {
+                staleIds ??= new List<int>();
+                staleIds.Add(kvp.Key);
+            }
+        }
+
+        if (staleIds == null)
+            return;
+
+        foreach (var id in staleIds)
+            _idToNode.Remove(id);
     }
 }
