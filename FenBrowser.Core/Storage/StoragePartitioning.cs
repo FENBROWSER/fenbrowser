@@ -584,6 +584,10 @@ namespace FenBrowser.Core.Storage
 
     public sealed class PartitionedHttpCache
     {
+        private const int MaxEntries = 8192;
+        private const int MaxCacheKeyChars = 32 * 1024;
+        private const long MaxMetadataBytesPerEntry = 64 * 1024;
+
         private readonly ConcurrentDictionary<string, HttpCacheEntry> _cache = new(StringComparer.Ordinal);
         private readonly object _mutationLock = new();
         private readonly long _maxBytes;
@@ -597,21 +601,18 @@ namespace FenBrowser.Core.Storage
 
         public HttpCacheEntry Get(StoragePartitionKey partitionKey, string url, string varyKey = null)
         {
-            var key = MakeKey(partitionKey, url, varyKey);
+            if (!TryMakeKey(partitionKey, url, varyKey, out var key)) return null;
             if (!_cache.TryGetValue(key, out var entry)) return null;
 
             var now = DateTimeOffset.UtcNow;
-            if (!entry.IsStale(now)) return entry;
+            if (!entry.IsStale(now)) return CloneForCaller(entry);
 
             lock (_mutationLock)
             {
                 if (!_cache.TryGetValue(key, out var current)) return null;
-                if (!current.IsStale(now)) return current;
+                if (!current.IsStale(now)) return CloneForCaller(current);
 
-                if (_cache.TryRemove(key, out var removed))
-                {
-                    _currentBytes -= GetBodyBytes(removed);
-                }
+                RemoveLocked(key, current);
                 return null;
             }
         }
@@ -619,37 +620,50 @@ namespace FenBrowser.Core.Storage
         public bool Put(StoragePartitionKey partitionKey, string url, HttpCacheEntry entry, string varyKey = null)
         {
             if (entry == null) throw new ArgumentNullException(nameof(entry));
-            var entryBytes = GetBodyBytes(entry);
+            if (!TryMakeKey(partitionKey, url, varyKey, out var key)) return false;
+            if (!TryCloneForStorage(entry, partitionKey, out var ownedEntry, out var entryBytes)) return false;
             if (entryBytes > _maxBytes / 4) return false;
 
-            var key = MakeKey(partitionKey, url, varyKey);
             lock (_mutationLock)
             {
                 EvictStaleLocked(DateTimeOffset.UtcNow);
 
-                var existingBytes = _cache.TryGetValue(key, out var existing)
-                    ? GetBodyBytes(existing)
-                    : 0L;
-                var projectedBytes = _currentBytes - existingBytes + entryBytes;
-                if (projectedBytes > _maxBytes) return false;
+                var replacing = _cache.TryGetValue(key, out var existing);
+                var existingBytes = replacing ? GetAccountedBytes(existing) : 0L;
 
-                _cache[key] = entry with { PartitionKey = partitionKey };
-                _currentBytes = projectedBytes;
+                if (!replacing)
+                {
+                    while (_cache.Count >= MaxEntries)
+                    {
+                        if (!EvictOldestLocked()) return false;
+                    }
+                }
+
+                while (_currentBytes - existingBytes + entryBytes > _maxBytes)
+                {
+                    if (!EvictOldestLocked(key)) return false;
+                    replacing = _cache.TryGetValue(key, out existing);
+                    existingBytes = replacing ? GetAccountedBytes(existing) : 0L;
+                }
+
+                _cache[key] = ownedEntry;
+                _currentBytes = Math.Max(0L, _currentBytes - existingBytes + entryBytes);
                 return true;
             }
         }
 
         public void Invalidate(StoragePartitionKey partitionKey, string url)
         {
+            if (url == null || url.Length > MaxCacheKeyChars) return;
             var prefix = MakeUrlPrefix(partitionKey, url);
             lock (_mutationLock)
             {
                 foreach (var key in _cache.Keys)
                 {
                     if (key.StartsWith(prefix, StringComparison.Ordinal) &&
-                        _cache.TryRemove(key, out var entry))
+                        _cache.TryGetValue(key, out var entry))
                     {
-                        _currentBytes -= GetBodyBytes(entry);
+                        RemoveLocked(key, entry);
                     }
                 }
             }
@@ -663,9 +677,9 @@ namespace FenBrowser.Core.Storage
                 foreach (var key in _cache.Keys)
                 {
                     if (key.StartsWith(prefix, StringComparison.Ordinal) &&
-                        _cache.TryRemove(key, out var entry))
+                        _cache.TryGetValue(key, out var entry))
                     {
-                        _currentBytes -= GetBodyBytes(entry);
+                        RemoveLocked(key, entry);
                     }
                 }
             }
@@ -684,20 +698,120 @@ namespace FenBrowser.Core.Storage
         {
             foreach (var pair in _cache)
             {
-                if (pair.Value.IsStale(now) && _cache.TryRemove(pair.Key, out var removed))
-                {
-                    _currentBytes -= GetBodyBytes(removed);
-                }
+                if (pair.Value.IsStale(now))
+                    RemoveLocked(pair.Key, pair.Value);
             }
         }
 
-        private static long GetBodyBytes(HttpCacheEntry entry) => entry?.Body?.LongLength ?? 0L;
-
-        private static string MakeKey(StoragePartitionKey pk, string url, string varyKey)
+        private bool EvictOldestLocked(string protectedKey = null)
         {
+            string oldestKey = null;
+            HttpCacheEntry oldestEntry = null;
+            foreach (var pair in _cache)
+            {
+                if (protectedKey != null && string.Equals(pair.Key, protectedKey, StringComparison.Ordinal))
+                    continue;
+
+                if (oldestEntry == null ||
+                    pair.Value.CachedAt < oldestEntry.CachedAt ||
+                    (pair.Value.CachedAt == oldestEntry.CachedAt &&
+                     string.CompareOrdinal(pair.Key, oldestKey) < 0))
+                {
+                    oldestKey = pair.Key;
+                    oldestEntry = pair.Value;
+                }
+            }
+
+            if (oldestKey == null || oldestEntry == null) return false;
+            return RemoveLocked(oldestKey, oldestEntry);
+        }
+
+        private bool RemoveLocked(string key, HttpCacheEntry expected)
+        {
+            if (!_cache.TryGetValue(key, out var current) || !ReferenceEquals(current, expected))
+                return false;
+            if (!_cache.TryRemove(key, out var removed))
+                return false;
+
+            _currentBytes = Math.Max(0L, _currentBytes - GetAccountedBytes(removed));
+            return true;
+        }
+
+        private static bool TryCloneForStorage(
+            HttpCacheEntry source,
+            StoragePartitionKey partitionKey,
+            out HttpCacheEntry owned,
+            out long accountedBytes)
+        {
+            owned = null;
+            accountedBytes = 0;
+
+            var body = source.Body?.ToArray() ?? Array.Empty<byte>();
+            var headers = source.ResponseHeaders != null
+                ? new Dictionary<string, string>(source.ResponseHeaders, StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            long metadataBytes = EstimateMetadataBytes(source, headers);
+            if (metadataBytes > MaxMetadataBytesPerEntry) return false;
+
+            accountedBytes = body.LongLength + metadataBytes;
+            owned = source with
+            {
+                Body = body,
+                ResponseHeaders = headers,
+                PartitionKey = partitionKey
+            };
+            return true;
+        }
+
+        private static HttpCacheEntry CloneForCaller(HttpCacheEntry source)
+        {
+            return source with
+            {
+                Body = source.Body?.ToArray() ?? Array.Empty<byte>(),
+                ResponseHeaders = source.ResponseHeaders != null
+                    ? new Dictionary<string, string>(source.ResponseHeaders, StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            };
+        }
+
+        private static long EstimateMetadataBytes(
+            HttpCacheEntry entry,
+            IReadOnlyDictionary<string, string> headers)
+        {
+            long bytes = Encoding.UTF8.GetByteCount(entry.Url ?? string.Empty) +
+                         Encoding.UTF8.GetByteCount(entry.ETag ?? string.Empty) +
+                         Encoding.UTF8.GetByteCount(entry.LastModified ?? string.Empty);
+            foreach (var pair in headers)
+            {
+                bytes += Encoding.UTF8.GetByteCount(pair.Key ?? string.Empty);
+                bytes += Encoding.UTF8.GetByteCount(pair.Value ?? string.Empty);
+                if (bytes > MaxMetadataBytesPerEntry) return bytes;
+            }
+            return bytes;
+        }
+
+        private static long GetAccountedBytes(HttpCacheEntry entry)
+        {
+            if (entry == null) return 0L;
+            var headers = entry.ResponseHeaders ?? new Dictionary<string, string>();
+            return (entry.Body?.LongLength ?? 0L) + EstimateMetadataBytes(entry, headers);
+        }
+
+        private static bool TryMakeKey(StoragePartitionKey pk, string url, string varyKey, out string key)
+        {
+            key = null;
             var normalizedUrl = url ?? string.Empty;
             var normalizedVary = varyKey ?? string.Empty;
-            return $"{MakeUrlPrefix(pk, normalizedUrl)}{normalizedVary.Length}:{normalizedVary}";
+            if (normalizedUrl.Length > MaxCacheKeyChars || normalizedVary.Length > MaxCacheKeyChars)
+                return false;
+
+            var prefix = MakeUrlPrefix(pk, normalizedUrl);
+            if (prefix.Length + normalizedVary.Length > MaxCacheKeyChars * 2)
+                return false;
+
+            key = $"{prefix}{normalizedVary.Length}:{normalizedVary}";
+            return true;
         }
 
         private static string MakeUrlPrefix(StoragePartitionKey pk, string url)
@@ -706,7 +820,6 @@ namespace FenBrowser.Core.Storage
             return $"pk:{pk.ToStorageKey()}:url:{normalizedUrl.Length}:{normalizedUrl}:vary:";
         }
     }
-
     public sealed class StorageService
     {
         public PartitionedCookieStore Cookies { get; } = new();
