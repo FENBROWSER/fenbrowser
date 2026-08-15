@@ -46,8 +46,9 @@ public enum OsSandboxProfileKind
 /// <remarks>
 /// Static factory properties (<see cref="BrokerFull"/>, <see cref="RendererMinimal"/>,
 /// <see cref="NetworkProcess"/>, <see cref="GpuProcess"/>, <see cref="UtilityProcess"/>)
-/// return immutable default profiles.  Callers that need non-default limits may construct
-/// a new <see cref="OsSandboxProfile"/> directly.
+/// return immutable default profiles. Callers that need non-default resource limits may
+/// construct a new <see cref="OsSandboxProfile"/> directly, but a named restricted
+/// profile cannot be widened beyond that process type's capability ceiling.
 /// </remarks>
 public sealed class OsSandboxProfile
 {
@@ -67,7 +68,7 @@ public sealed class OsSandboxProfile
     /// <summary>Default profile for renderer processes (maximally restricted).</summary>
     public static OsSandboxProfile RendererMinimal { get; } = new OsSandboxProfile(
         kind: OsSandboxProfileKind.RendererMinimal,
-        maxMemoryBytes: 512L * 1024 * 1024,          // 512 MiB
+        maxMemoryBytes: 512L * 1024 * 1024,
         maxCpuPercent: 80,
         denyDesktopAccess: true,
         denyWindowEnumeration: true,
@@ -76,7 +77,7 @@ public sealed class OsSandboxProfile
     /// <summary>Default profile for the network process.</summary>
     public static OsSandboxProfile NetworkProcess { get; } = new OsSandboxProfile(
         kind: OsSandboxProfileKind.NetworkProcess,
-        maxMemoryBytes: 256L * 1024 * 1024,          // 256 MiB
+        maxMemoryBytes: 256L * 1024 * 1024,
         maxCpuPercent: 50,
         denyDesktopAccess: true,
         denyWindowEnumeration: true,
@@ -85,7 +86,7 @@ public sealed class OsSandboxProfile
     /// <summary>Default profile for the GPU process.</summary>
     public static OsSandboxProfile GpuProcess { get; } = new OsSandboxProfile(
         kind: OsSandboxProfileKind.GpuProcess,
-        maxMemoryBytes: 1024L * 1024 * 1024,         // 1 GiB (GPU buffers can be large)
+        maxMemoryBytes: 1024L * 1024 * 1024,
         maxCpuPercent: 60,
         denyDesktopAccess: true,
         denyWindowEnumeration: true,
@@ -94,7 +95,7 @@ public sealed class OsSandboxProfile
     /// <summary>Default profile for utility processes (maximally restricted).</summary>
     public static OsSandboxProfile UtilityProcess { get; } = new OsSandboxProfile(
         kind: OsSandboxProfileKind.UtilityProcess,
-        maxMemoryBytes: 256L * 1024 * 1024,          // 256 MiB
+        maxMemoryBytes: 256L * 1024 * 1024,
         maxCpuPercent: 25,
         denyDesktopAccess: true,
         denyWindowEnumeration: true,
@@ -104,29 +105,6 @@ public sealed class OsSandboxProfile
     // Constructor
     // -------------------------------------------------------------------------
 
-    /// <summary>
-    /// Initialises a new <see cref="OsSandboxProfile"/> with explicit parameters.
-    /// </summary>
-    /// <param name="kind">The logical profile kind that identifies the process type.</param>
-    /// <param name="maxMemoryBytes">
-    /// Maximum private working-set memory the process may consume, in bytes.
-    /// Use <see cref="long.MaxValue"/> to indicate no limit (broker only).
-    /// </param>
-    /// <param name="maxCpuPercent">
-    /// Soft CPU usage ceiling expressed as a percentage (0–100).
-    /// Enforcement is best-effort via Job Object CPU rate control on Windows.
-    /// </param>
-    /// <param name="denyDesktopAccess">
-    /// When <c>true</c>, the process is prevented from creating, opening, or
-    /// enumerating desktops (Windows: <c>JOB_OBJECT_UILIMIT_DESKTOP</c>).
-    /// </param>
-    /// <param name="denyWindowEnumeration">
-    /// When <c>true</c>, the process is prevented from enumerating top-level windows
-    /// belonging to other processes or sessions.
-    /// </param>
-    /// <param name="capabilities">
-    /// The bitfield of OS-level capabilities granted to this process type.
-    /// </param>
     public OsSandboxProfile(
         OsSandboxProfileKind kind,
         long maxMemoryBytes,
@@ -135,8 +113,25 @@ public sealed class OsSandboxProfile
         bool denyWindowEnumeration,
         OsSandboxCapabilities capabilities)
     {
+        if (!Enum.IsDefined(kind))
+            throw new ArgumentOutOfRangeException(nameof(kind), "Unknown sandbox profile kind.");
+        if (maxMemoryBytes <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxMemoryBytes), "Memory limit must be positive.");
         if (maxCpuPercent < 0 || maxCpuPercent > 100)
             throw new ArgumentOutOfRangeException(nameof(maxCpuPercent), "Must be 0–100.");
+
+        var knownCapabilities = OsSandboxCapabilities.BrokerFull;
+        if ((capabilities & ~knownCapabilities) != 0)
+            throw new ArgumentOutOfRangeException(nameof(capabilities), "Sandbox profile contains unknown capability bits.");
+
+        var capabilityCeiling = GetCapabilityCeiling(kind);
+        if ((capabilities & ~capabilityCeiling) != 0)
+        {
+            throw new ArgumentException(
+                $"Profile '{kind}' cannot be widened to capabilities '{capabilities}'. " +
+                $"Maximum allowed capabilities: '{capabilityCeiling}'.",
+                nameof(capabilities));
+        }
 
         Kind = kind;
         MaxMemoryBytes = maxMemoryBytes;
@@ -150,38 +145,23 @@ public sealed class OsSandboxProfile
     // Properties
     // -------------------------------------------------------------------------
 
-    /// <summary>Gets the logical kind (process type) this profile represents.</summary>
     public OsSandboxProfileKind Kind { get; }
-
-    /// <summary>
-    /// Gets the maximum private working-set memory in bytes.
-    /// <see cref="long.MaxValue"/> means unlimited (broker process only).
-    /// </summary>
     public long MaxMemoryBytes { get; }
-
-    /// <summary>
-    /// Gets the maximum CPU usage as a whole-number percentage (0–100).
-    /// </summary>
     public int MaxCpuPercent { get; }
-
-    /// <summary>
-    /// Gets a value indicating whether the process should be denied access to desktop
-    /// objects (windows, message queues belonging to other sessions).
-    /// </summary>
     public bool DenyDesktopAccess { get; }
-
-    /// <summary>
-    /// Gets a value indicating whether the process should be denied the ability to
-    /// enumerate top-level windows of other processes.
-    /// </summary>
     public bool DenyWindowEnumeration { get; }
-
-    /// <summary>Gets the set of OS-level capabilities granted to this profile.</summary>
     public OsSandboxCapabilities Capabilities { get; }
 
-    /// <summary>
-    /// Returns a human-readable summary of the profile for logging and diagnostics.
-    /// </summary>
     public override string ToString() =>
         $"OsSandboxProfile({Kind}, mem={MaxMemoryBytes / (1024 * 1024)} MiB, cpu={MaxCpuPercent}%, caps={Capabilities})";
+
+    private static OsSandboxCapabilities GetCapabilityCeiling(OsSandboxProfileKind kind) => kind switch
+    {
+        OsSandboxProfileKind.BrokerFull => OsSandboxCapabilities.BrokerFull,
+        OsSandboxProfileKind.RendererMinimal => OsSandboxCapabilities.RendererMinimal,
+        OsSandboxProfileKind.NetworkProcess => OsSandboxCapabilities.NetworkProcess,
+        OsSandboxProfileKind.GpuProcess => OsSandboxCapabilities.GpuProcess,
+        OsSandboxProfileKind.UtilityProcess => OsSandboxCapabilities.None,
+        _ => OsSandboxCapabilities.None
+    };
 }
