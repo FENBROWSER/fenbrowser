@@ -30,11 +30,6 @@ namespace FenBrowser.Core.Logging
         {
         }
 
-        /// <summary>
-        /// Start a profiling scope without allocating a Stopwatch, GUID, or active-scope
-        /// dictionary entry. The returned value type is intended for normal using-scope
-        /// ownership and should not be copied.
-        /// </summary>
         public ProfileScope BeginScope(
             string operationName,
             [CallerFilePath] string sourceFile = "",
@@ -62,7 +57,7 @@ namespace FenBrowser.Core.Logging
             if (string.IsNullOrWhiteSpace(operationName))
                 throw new ArgumentException("Operation name is required.", nameof(operationName));
 
-            var stats = _stats.GetOrAdd(operationName, static name => new OperationStats { Name = name });
+            var stats = _stats.GetOrAdd(operationName, static name => new OperationStats(name));
             stats.RecordCall(milliseconds, memoryDelta ?? 0);
 
             if (LogToDebug)
@@ -79,27 +74,42 @@ namespace FenBrowser.Core.Logging
                 CleanupOldStats(maxEntries);
         }
 
+        /// <summary>
+        /// Returns an immutable-by-convention point-in-time copy rather than the live
+        /// mutable counter object that RecordTiming is updating on other threads.
+        /// </summary>
         public OperationStats GetStats(string operationName)
         {
             if (operationName == null)
                 return null;
-            _stats.TryGetValue(operationName, out var stats);
-            return stats;
+            return _stats.TryGetValue(operationName, out var stats)
+                ? stats.SnapshotCopy()
+                : null;
         }
 
         public IReadOnlyDictionary<string, OperationStats> GetAllStats()
         {
-            return new Dictionary<string, OperationStats>(_stats);
+            var snapshot = new Dictionary<string, OperationStats>(_stats.Count, StringComparer.Ordinal);
+            foreach (var pair in _stats)
+            {
+                snapshot[pair.Key] = pair.Value.SnapshotCopy();
+            }
+            return snapshot;
         }
 
         public string GetSummaryReport()
         {
+            var snapshots = _stats.Values
+                .Select(static stats => stats.GetSnapshot())
+                .OrderByDescending(static stats => stats.TotalMs)
+                .ToArray();
+
             var sb = new System.Text.StringBuilder();
             sb.AppendLine("=== Performance Summary ===");
             sb.AppendLine($"{"Operation",-40} {"Calls",8} {"Min",8} {"Max",8} {"Avg",8} {"Total",10}");
             sb.AppendLine(new string('-', 90));
 
-            foreach (var stat in _stats.Values.OrderByDescending(s => s.TotalMs))
+            foreach (var stat in snapshots)
             {
                 sb.AppendLine(
                     $"{stat.Name,-40} {stat.CallCount,8} {stat.MinMs,7}ms {stat.MaxMs,7}ms " +
@@ -116,9 +126,6 @@ namespace FenBrowser.Core.Logging
 
         public static long GetCurrentMemory() => GC.GetTotalMemory(false);
 
-        /// <summary>
-        /// Explicit diagnostic helper. Never call this from a browser hot path.
-        /// </summary>
         public static long GetMemoryAfterGC()
         {
             GC.Collect();
@@ -135,9 +142,10 @@ namespace FenBrowser.Core.Logging
 
             var removeCount = Math.Max(1, currentCount - maxEntries);
             var toRemove = _stats
-                .OrderBy(kvp => kvp.Value.LastAccess)
+                .Select(static kvp => (kvp.Key, Snapshot: kvp.Value.GetSnapshot()))
+                .OrderBy(static item => item.Snapshot.LastAccess)
                 .Take(removeCount)
-                .Select(kvp => kvp.Key)
+                .Select(static item => item.Key)
                 .ToArray();
 
             foreach (var key in toRemove)
@@ -163,7 +171,6 @@ namespace FenBrowser.Core.Logging
         {
             if (bytes < 0)
             {
-                // Avoid overflowing on long.MinValue.
                 if (bytes == long.MinValue)
                     return "-8.0EB";
                 return $"-{FormatBytes(-bytes)}";
@@ -174,10 +181,6 @@ namespace FenBrowser.Core.Logging
         }
     }
 
-    /// <summary>
-    /// Allocation-free timing scope. Do not copy an active scope; Dispose is idempotent
-    /// for the original value used by a normal C# using statement.
-    /// </summary>
     public struct ProfileScope : IDisposable
     {
         private PerformanceProfiler _profiler;
@@ -206,40 +209,98 @@ namespace FenBrowser.Core.Logging
             if (profiler == null)
                 return;
 
-            // Mark the owned value disposed before recording so the same local cannot
-            // double-record if Dispose is invoked explicitly and again by a using block.
             _profiler = null;
             profiler.EndScope(_operationName, _startTimestamp, _initialMemory, _trackMemory);
         }
     }
 
-    public class OperationStats
+    public sealed class OperationStats
     {
-        public string Name { get; set; }
-        public int CallCount { get; private set; }
-        public long TotalMs { get; private set; }
-        public long MinMs { get; private set; } = long.MaxValue;
-        public long MaxMs { get; private set; }
-        public long TotalMemoryDelta { get; private set; }
-        public DateTime LastAccess { get; private set; }
-
         private readonly object _lock = new();
+        private int _callCount;
+        private long _totalMs;
+        private long _minMs = long.MaxValue;
+        private long _maxMs;
+        private long _totalMemoryDelta;
+        private DateTime _lastAccess;
 
-        public double AverageMs => CallCount > 0 ? (double)TotalMs / CallCount : 0;
+        public OperationStats(string name)
+        {
+            Name = name ?? throw new ArgumentNullException(nameof(name));
+        }
+
+        private OperationStats(OperationStatsSnapshot snapshot)
+        {
+            Name = snapshot.Name;
+            _callCount = snapshot.CallCount;
+            _totalMs = snapshot.TotalMs;
+            _minMs = snapshot.MinMs;
+            _maxMs = snapshot.MaxMs;
+            _totalMemoryDelta = snapshot.TotalMemoryDelta;
+            _lastAccess = snapshot.LastAccess;
+        }
+
+        public string Name { get; }
+        public int CallCount { get { lock (_lock) return _callCount; } }
+        public long TotalMs { get { lock (_lock) return _totalMs; } }
+        public long MinMs { get { lock (_lock) return _callCount == 0 ? 0 : _minMs; } }
+        public long MaxMs { get { lock (_lock) return _maxMs; } }
+        public long TotalMemoryDelta { get { lock (_lock) return _totalMemoryDelta; } }
+        public DateTime LastAccess { get { lock (_lock) return _lastAccess; } }
+        public double AverageMs
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _callCount > 0 ? (double)_totalMs / _callCount : 0;
+                }
+            }
+        }
 
         public void RecordCall(long milliseconds, long memoryDelta)
         {
             lock (_lock)
             {
-                CallCount++;
-                TotalMs += milliseconds;
-                TotalMemoryDelta += memoryDelta;
+                _callCount++;
+                _totalMs += milliseconds;
+                _totalMemoryDelta += memoryDelta;
 
-                if (milliseconds < MinMs) MinMs = milliseconds;
-                if (milliseconds > MaxMs) MaxMs = milliseconds;
+                if (milliseconds < _minMs) _minMs = milliseconds;
+                if (milliseconds > _maxMs) _maxMs = milliseconds;
 
-                LastAccess = DateTime.UtcNow;
+                _lastAccess = DateTime.UtcNow;
             }
         }
+
+        internal OperationStatsSnapshot GetSnapshot()
+        {
+            lock (_lock)
+            {
+                var minMs = _callCount == 0 ? 0 : _minMs;
+                return new OperationStatsSnapshot(
+                    Name,
+                    _callCount,
+                    _totalMs,
+                    minMs,
+                    _maxMs,
+                    _totalMemoryDelta,
+                    _lastAccess);
+            }
+        }
+
+        internal OperationStats SnapshotCopy() => new(GetSnapshot());
+    }
+
+    internal readonly record struct OperationStatsSnapshot(
+        string Name,
+        int CallCount,
+        long TotalMs,
+        long MinMs,
+        long MaxMs,
+        long TotalMemoryDelta,
+        DateTime LastAccess)
+    {
+        public double AverageMs => CallCount > 0 ? (double)TotalMs / CallCount : 0;
     }
 }
