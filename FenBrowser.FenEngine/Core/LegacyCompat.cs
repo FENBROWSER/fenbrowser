@@ -1,6 +1,7 @@
-// Legacy compatibility stubs — minimal types needed by remaining code after
+// Legacy compatibility types — minimal surface needed by remaining code after
 // the legacy JS engine (Bytecode/, JavaScriptEngine, etc.) was removed.
-// These are thin facades; full implementations will be rebuilt against FenJS.
+// Live compatibility bridges must delegate to the current engine rather than
+// silently reporting success or dropping state.
 
 using System;
 using System.Collections.Generic;
@@ -181,10 +182,72 @@ namespace FenBrowser.FenEngine.Scripting
 {
     public static class JavaScriptEngine
     {
-        public static Core.FenValue Evaluate(string script) => Core.FenValue.Undefined;
-        public static bool TryGetVisualRect(FenBrowser.Core.Dom.V2.Element element, out double x, out double y, out double w, out double h) { x = y = w = h = 0; return false; }
-        public static void SetVisualRectProvider(Func<FenBrowser.Core.Dom.V2.Element, SkiaSharp.SKRect?> provider) { }
-        public static void SetScrollToElementProvider(Action<FenBrowser.Core.Dom.V2.Element> provider) { }
+        private static Func<FenBrowser.Core.Dom.V2.Element, SkiaSharp.SKRect?> _visualRectProvider;
+        private static Action<FenBrowser.Core.Dom.V2.Element> _scrollToElementProvider;
+
+        public static Core.FenValue Evaluate(string script)
+        {
+            throw new NotSupportedException(
+                "The removed legacy JavaScriptEngine cannot evaluate script. Route evaluation through FenJS instead.");
+        }
+
+        public static bool TryGetVisualRect(
+            FenBrowser.Core.Dom.V2.Element element,
+            out double x,
+            out double y,
+            out double w,
+            out double h)
+        {
+            x = y = w = h = 0;
+            if (element == null)
+                return false;
+
+            var provider = System.Threading.Volatile.Read(ref _visualRectProvider);
+            if (provider == null)
+                return false;
+
+            var rect = provider(element);
+            if (!rect.HasValue)
+                return false;
+
+            var value = rect.Value;
+            if (!float.IsFinite(value.Left) || !float.IsFinite(value.Top) ||
+                !float.IsFinite(value.Right) || !float.IsFinite(value.Bottom) ||
+                value.Width < 0f || value.Height < 0f)
+            {
+                return false;
+            }
+
+            x = value.Left;
+            y = value.Top;
+            w = value.Width;
+            h = value.Height;
+            return true;
+        }
+
+        public static void SetVisualRectProvider(
+            Func<FenBrowser.Core.Dom.V2.Element, SkiaSharp.SKRect?> provider)
+        {
+            System.Threading.Volatile.Write(ref _visualRectProvider, provider);
+        }
+
+        public static void SetScrollToElementProvider(Action<FenBrowser.Core.Dom.V2.Element> provider)
+        {
+            System.Threading.Volatile.Write(ref _scrollToElementProvider, provider);
+        }
+
+        public static bool TryScrollToElement(FenBrowser.Core.Dom.V2.Element element)
+        {
+            if (element == null)
+                return false;
+
+            var provider = System.Threading.Volatile.Read(ref _scrollToElementProvider);
+            if (provider == null)
+                return false;
+
+            provider(element);
+            return true;
+        }
     }
 }
 
@@ -192,7 +255,7 @@ namespace FenBrowser.FenEngine.Scripting
 {
     using FenBrowser.Core.Dom.V2;
 
-    // Stub — full replacement will be rebuilt on FenJS
+    // Compatibility interface retained for current host adapters while FenJS owns JS execution.
     public interface IJsHost
     {
         void Navigate(Uri target);
@@ -274,7 +337,7 @@ namespace FenBrowser.FenEngine.Scripting
 
 namespace FenBrowser.FenEngine.Core
 {
-    // Minimal stubs — will be rebuilt on FenJS
+    // Compatibility shell retained for callers not yet migrated to EventLoopCoordinator.
     public sealed class EngineLoop
     {
         public void Pulse() { }
@@ -356,7 +419,11 @@ namespace FenBrowser.FenEngine
 
     public static class EnginePhaseManager
     {
-        public static void AssertNotInPhase(params FenBrowser.Core.Engine.EnginePhase[] phases) { }
+        public static void AssertNotInPhase(params FenBrowser.Core.Engine.EnginePhase[] phases)
+        {
+            ArgumentNullException.ThrowIfNull(phases);
+            FenBrowser.Core.Engine.EngineContext.Current.AssertNotInPhase(phases);
+        }
     }
 }
 
@@ -385,7 +452,7 @@ namespace FenBrowser.FenEngine.DOM
 
 namespace FenBrowser.FenEngine.Core
 {
-    // Minimal stub for FenObject — used by BrowserApi WebDriver converter
+    // Minimal compatibility object — used by BrowserApi WebDriver converter.
     public sealed class FenObject : Interfaces.IObject
     {
         private readonly Dictionary<string, Interfaces.IValue> _props = new(StringComparer.Ordinal);
