@@ -104,8 +104,6 @@ namespace FenBrowser.FenEngine.Layout.Tree
             Array.Clear(_hasCachedLayout, 0, _count);
             Array.Clear(_wrappers, 0, _count);
 
-            // Keep allocated child buffers so repeated layout passes reuse their
-            // capacity, but clear logical contents and parent links.
             for (int i = 0; i < _count; i++)
             {
                 _childIds[i]?.Clear();
@@ -300,12 +298,9 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
         public bool TryGetCachedLayout(int id, LayoutState state)
         {
-            if (_hasCachedLayout[id])
+            if (_hasCachedLayout[id] && _cachedLayoutStates[id] == state)
             {
-                if (_cachedLayoutStates[id] == state)
-                {
-                    return true;
-                }
+                return true;
             }
             return false;
         }
@@ -366,6 +361,16 @@ namespace FenBrowser.FenEngine.Layout.Tree
             if (parentId == childId)
             {
                 throw new InvalidOperationException("A layout box cannot be its own parent.");
+            }
+
+            // The proposed child can only already be an ancestor of parentId if it
+            // has at least one descendant. Freshly-created layout boxes and ordinary
+            // leaf boxes dominate tree construction, so avoid an O(depth) walk for
+            // the common case while retaining full cycle validation for subtree moves.
+            var childChildren = _childIds[childId];
+            if (childChildren == null || childChildren.Count == 0)
+            {
+                return;
             }
 
             var ancestorId = parentId;
