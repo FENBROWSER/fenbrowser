@@ -9,7 +9,7 @@ namespace FenBrowser.Core;
 
 public static partial class FenLogger
 {
-    private static bool _enabled = true;
+    private static volatile bool _enabled = true;
 
     public static bool StructuredOutputEnabled { get; set; }
 
@@ -74,6 +74,11 @@ public static partial class FenLogger
         [CallerFilePath] string sourceFile = "",
         [CallerLineNumber] int sourceLine = 0)
     {
+        if (!_enabled)
+        {
+            return;
+        }
+
         var entry = new LogEntry
         {
             Category = category,
@@ -158,6 +163,11 @@ public static partial class FenLogger
 
     public static void LogMetric(string name, double value, string unit = "ms", LogCategory category = LogCategory.Performance)
     {
+        if (!_enabled)
+        {
+            return;
+        }
+
         var entry = new LogEntry
         {
             Category = category,
@@ -189,7 +199,7 @@ public static partial class FenLogger
 
     private static void EmitStructured(LogEntry entry)
     {
-        if (!StructuredOutputEnabled && OnStructuredLog == null)
+        if (!_enabled || (!StructuredOutputEnabled && OnStructuredLog == null))
         {
             return;
         }
@@ -206,13 +216,21 @@ public static partial class FenLogger
             MetricUnit = entry.Data != null && entry.Data.TryGetValue("metricUnit", out var metricUnit) ? metricUnit?.ToString() : null
         };
 
-        try
+        var handlers = OnStructuredLog;
+        if (handlers != null)
         {
-            OnStructuredLog?.Invoke(structured);
-        }
-        catch
-        {
-            // no-op
+            foreach (Action<StructuredLogEntry> handler in handlers.GetInvocationList())
+            {
+                try
+                {
+                    handler(structured);
+                }
+                catch
+                {
+                    // A diagnostics subscriber must not prevent later subscribers
+                    // or the engine logging path from making progress.
+                }
+            }
         }
 
         if (!StructuredOutputEnabled)
