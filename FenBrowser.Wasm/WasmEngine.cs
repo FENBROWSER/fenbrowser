@@ -23,7 +23,11 @@ public sealed class WasmEngine : IDisposable
 
     public WasmEngine(WasmResourceLimits? limits = null)
     {
-        _limits = limits ?? new WasmResourceLimits();
+        // Keep an engine-owned snapshot. Retaining a caller-supplied mutable limits
+        // object allowed policy to change after Engine configuration, producing a
+        // split policy where Wasmtime's static memory maximum and per-Store limits
+        // no longer described the same security envelope.
+        _limits = (limits ?? new WasmResourceLimits()).Clone();
         _limits.Normalize();
 
         var config = new Config();
@@ -50,7 +54,9 @@ public sealed class WasmEngine : IDisposable
             EpochTickMilliseconds);
     }
 
-    public WasmResourceLimits Limits => _limits;
+    // Do not expose the mutable engine-owned policy object. Callers may inspect and
+    // modify this detached snapshot without changing the live engine's limits.
+    public WasmResourceLimits Limits => _limits.Clone();
     public int ActiveInstanceCount => Volatile.Read(ref _activeInstanceCount);
 
     internal Engine InnerEngine => _engine;
