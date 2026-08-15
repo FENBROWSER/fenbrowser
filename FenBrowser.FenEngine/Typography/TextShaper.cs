@@ -2,48 +2,32 @@ using SkiaSharp;
 using FenBrowser.Core.Logging;
 using System;
 using System.Collections.Concurrent;
+using System.Threading;
 
 namespace FenBrowser.FenEngine.Typography
 {
-    /// <summary>
-    /// Text metrics returned by the TextShaper.
-    /// </summary>
     public struct TextMetrics
     {
-        /// <summary>Total width of the measured text.</summary>
         public float Width { get; set; }
-        
-        /// <summary>Height (typically line height).</summary>
         public float Height { get; set; }
-        
-        /// <summary>Distance from top to baseline.</summary>
         public float Ascent { get; set; }
-        
-        /// <summary>Distance from baseline to bottom.</summary>
         public float Descent { get; set; }
-        
-        /// <summary>Extra vertical space between lines (leading).</summary>
         public float Leading { get; set; }
-        
-        /// <summary>Computed line height (Ascent + Descent + Leading).</summary>
         public float LineHeight => Ascent + Descent + Leading;
     }
 
-    /// <summary>
-    /// Simplified font descriptor for text shaping.
-    /// </summary>
     public struct FontDescriptor
     {
         public string Family { get; set; }
         public float Size { get; set; }
         public bool Bold { get; set; }
         public bool Italic { get; set; }
-        
+
         public override int GetHashCode()
         {
             return HashCode.Combine(Family?.ToLowerInvariant() ?? "", Size, Bold, Italic);
         }
-        
+
         public override bool Equals(object obj)
         {
             if (obj is FontDescriptor other)
@@ -59,35 +43,26 @@ namespace FenBrowser.FenEngine.Typography
 
     /// <summary>
     /// Text shaping and measurement abstraction.
-    /// Wraps Skia's text measurement with caching for performance.
-    /// 
-    /// Phase 3: Layout Truth - Accurate text metrics for layout.
+    /// Wraps Skia text measurement with caching for performance.
     /// </summary>
     public sealed class TextShaper : IDisposable
     {
-        // Font cache for reusing SKFont objects
         private readonly ConcurrentDictionary<FontDescriptor, SKFont> _fontCache = new();
-        
-        // Metrics cache for repeated measurements
         private readonly ConcurrentDictionary<(FontDescriptor, string), TextMetrics> _metricsCache = new();
-        
-        private const int MaxCacheSize = 1000;
-        private bool _disposed;
 
-        /// <summary>
-        /// Measures the given text with the specified font.
-        /// Uses caching for performance.
-        /// </summary>
+        private const int MaxCacheSize = 1000;
+        private int _disposed;
+
         public TextMetrics Measure(string text, FontDescriptor font)
         {
+            ThrowIfDisposed();
+
             if (string.IsNullOrEmpty(text))
             {
                 return new TextMetrics { Width = 0, Height = font.Size, Ascent = font.Size * 0.8f, Descent = font.Size * 0.2f };
             }
 
             var cacheKey = (font, text);
-            
-            // Check cache first
             if (_metricsCache.TryGetValue(cacheKey, out var cached))
             {
                 return cached;
@@ -95,8 +70,7 @@ namespace FenBrowser.FenEngine.Typography
 
             var skFont = GetOrCreateFont(font);
             var metrics = MeasureCore(text, skFont);
-            
-            // Cache if not too large
+
             if (_metricsCache.Count < MaxCacheSize)
             {
                 _metricsCache.TryAdd(cacheKey, metrics);
@@ -105,30 +79,26 @@ namespace FenBrowser.FenEngine.Typography
             return metrics;
         }
 
-        /// <summary>
-        /// Measures text width only (faster than full Measure).
-        /// </summary>
         public float MeasureWidth(string text, FontDescriptor font)
         {
+            ThrowIfDisposed();
             if (string.IsNullOrEmpty(text)) return 0;
-            
+
             var skFont = GetOrCreateFont(font);
             return skFont.MeasureText(text);
         }
 
-        /// <summary>
-        /// Gets font metrics without measuring specific text.
-        /// </summary>
         public TextMetrics GetFontMetrics(FontDescriptor font)
         {
+            ThrowIfDisposed();
             var skFont = GetOrCreateFont(font);
             var skMetrics = skFont.Metrics;
-            
+
             return new TextMetrics
             {
                 Width = 0,
                 Height = skMetrics.Descent - skMetrics.Ascent + skMetrics.Leading,
-                Ascent = -skMetrics.Ascent, // Skia ascent is negative
+                Ascent = -skMetrics.Ascent,
                 Descent = skMetrics.Descent,
                 Leading = skMetrics.Leading
             };
@@ -136,28 +106,29 @@ namespace FenBrowser.FenEngine.Typography
 
         private SKFont GetOrCreateFont(FontDescriptor descriptor)
         {
+            ThrowIfDisposed();
             if (_fontCache.TryGetValue(descriptor, out var cached))
             {
                 return cached;
             }
 
-            if (FenBrowser.Core.Logging.DebugConfig.LogTextShaping)
-                 global::FenBrowser.Core.EngineLogCompat.Log($"[Text] Resolving Font: '{descriptor.Family}' Size={descriptor.Size} B={descriptor.Bold} I={descriptor.Italic}", LogCategory.Text);
+            if (DebugConfig.LogTextShaping)
+            {
+                global::FenBrowser.Core.EngineLogCompat.Log(
+                    $"[Text] Resolving Font: '{descriptor.Family}' Size={descriptor.Size} B={descriptor.Bold} I={descriptor.Italic}",
+                    LogCategory.Text);
+            }
 
-            // Find typeface
             var weight = descriptor.Bold ? SKFontStyleWeight.Bold : SKFontStyleWeight.Normal;
             var slant = descriptor.Italic ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright;
             var style = new SKFontStyle(weight, SKFontStyleWidth.Normal, slant);
 
             SKTypeface typeface = null;
-            
-            // Try exact family match
             if (!string.IsNullOrEmpty(descriptor.Family))
             {
                 typeface = SKTypeface.FromFamilyName(descriptor.Family, style);
             }
-            
-            // Fallback to default
+
             if (typeface == null)
             {
                 typeface = SKTypeface.FromFamilyName("Arial", style) ??
@@ -165,13 +136,32 @@ namespace FenBrowser.FenEngine.Typography
                            SKTypeface.Default;
             }
 
-            var font = new SKFont(typeface, descriptor.Size);
-            
-            // Enable subpixel rendering for better measurement accuracy
-            font.Subpixel = true;
-            
-            _fontCache.TryAdd(descriptor, font);
-            return font;
+            var candidate = new SKFont(typeface, descriptor.Size)
+            {
+                Subpixel = true
+            };
+
+            // ConcurrentDictionary.TryAdd followed by `return candidate` leaked a
+            // native SKFont whenever another thread won the same descriptor race.
+            // Publish one winner and deterministically dispose every losing candidate.
+            var winner = _fontCache.GetOrAdd(descriptor, candidate);
+            if (!ReferenceEquals(winner, candidate))
+            {
+                candidate.Dispose();
+            }
+
+            // Dispose can race font construction. Never return a newly published native
+            // resource after this shaper has transitioned to disposed state.
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                if (_fontCache.TryRemove(new KeyValuePair<FontDescriptor, SKFont>(descriptor, winner)))
+                {
+                    winner.Dispose();
+                }
+                throw new ObjectDisposedException(nameof(TextShaper));
+            }
+
+            return winner;
         }
 
         private TextMetrics MeasureCore(string text, SKFont font)
@@ -179,12 +169,14 @@ namespace FenBrowser.FenEngine.Typography
             var width = font.MeasureText(text);
             var metrics = font.Metrics;
 
-            if (FenBrowser.Core.Logging.DebugConfig.LogTextShaping)
+            if (DebugConfig.LogTextShaping)
             {
-                 var shortText = text.Length > 20 ? text.Substring(0, 20) + "..." : text;
-                 global::FenBrowser.Core.EngineLogCompat.Log($"[Text] Method:Measure '{shortText}' (Length: {text.Length}) -> W={width:F2}", LogCategory.Text);
+                var shortText = text.Length > 20 ? text.Substring(0, 20) + "..." : text;
+                global::FenBrowser.Core.EngineLogCompat.Log(
+                    $"[Text] Method:Measure '{shortText}' (Length: {text.Length}) -> W={width:F2}",
+                    LogCategory.Text);
             }
-            
+
             return new TextMetrics
             {
                 Width = width,
@@ -195,33 +187,33 @@ namespace FenBrowser.FenEngine.Typography
             };
         }
 
-        /// <summary>
-        /// Clears all caches. Call when significant font changes occur.
-        /// </summary>
         public void ClearCache()
         {
-            _metricsCache.Clear();
-            
-            foreach (var font in _fontCache.Values)
-            {
-                font.Dispose();
-            }
-            _fontCache.Clear();
+            ThrowIfDisposed();
+            ClearCacheCore();
         }
 
-        /// <summary>
-        /// Find a fallback font that supports the given text.
-        /// Returns the primary font if it supports the text, otherwise tries fallback chain.
-        /// </summary>
+        private void ClearCacheCore()
+        {
+            _metricsCache.Clear();
+
+            foreach (var pair in _fontCache)
+            {
+                if (_fontCache.TryRemove(pair.Key, out var font))
+                {
+                    font.Dispose();
+                }
+            }
+        }
+
         public FontDescriptor FindFallbackFont(string text, FontDescriptor primaryFont)
         {
+            ThrowIfDisposed();
             if (string.IsNullOrEmpty(text)) return primaryFont;
 
-            // Try primary font first
             if (FontSupportsText(primaryFont, text))
                 return primaryFont;
 
-            // Fallback chain: Arial → Segoe UI → System default
             var fallbacks = new[] { "Arial", "Segoe UI", "Segoe UI Symbol", "Microsoft Sans Serif" };
 
             foreach (var fallbackFamily in fallbacks)
@@ -237,30 +229,29 @@ namespace FenBrowser.FenEngine.Typography
                 if (FontSupportsText(fallbackFont, text))
                 {
                     if (DebugConfig.LogTextShaping)
+                    {
                         global::FenBrowser.Core.EngineLogCompat.Debug(
                             $"[Text] Font fallback: '{primaryFont.Family}' → '{fallbackFamily}' for text '{text.Substring(0, Math.Min(20, text.Length))}'",
-                            LogCategory.Text
-                        );
+                            LogCategory.Text);
+                    }
                     return fallbackFont;
                 }
             }
 
-            // Last resort: return primary font anyway
             return primaryFont;
         }
 
-        /// <summary>
-        /// Check if a font supports the given text (has glyphs for all characters).
-        /// </summary>
         private bool FontSupportsText(FontDescriptor font, string text)
         {
             try
             {
                 var skFont = GetOrCreateFont(font);
                 using var skFontInstance = new SKFont(skFont.Typeface);
-
-                // Check if the font contains glyphs for all characters.
                 return skFontInstance.ContainsGlyphs(text);
+            }
+            catch (ObjectDisposedException)
+            {
+                throw;
             }
             catch
             {
@@ -268,12 +259,20 @@ namespace FenBrowser.FenEngine.Typography
             }
         }
 
+        private void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                throw new ObjectDisposedException(nameof(TextShaper));
+            }
+        }
+
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
-            
-            ClearCache();
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            ClearCacheCore();
         }
     }
 }
