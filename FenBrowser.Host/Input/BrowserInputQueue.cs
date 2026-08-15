@@ -53,6 +53,7 @@ public sealed class BrowserInputQueue
     private readonly object _sync = new();
     private readonly LinkedList<BrowserInputEvent> _pending = new();
     private readonly int _maxPendingEvents;
+    private readonly int _hardMaxPendingEvents;
     private long _coalescedMouseMoveCount;
     private long _coalescedMouseWheelCount;
     private long _droppedMouseMoveCount;
@@ -66,6 +67,7 @@ public sealed class BrowserInputQueue
         }
 
         _maxPendingEvents = maxPendingEvents;
+        _hardMaxPendingEvents = checked(Math.Max(64, maxPendingEvents * 4));
     }
 
     public int Count
@@ -175,16 +177,10 @@ public sealed class BrowserInputQueue
                 {
                     staleInput = FindOldestNonTransitionInput();
                 }
+
                 if (staleInput != null)
                 {
-                    if (CanCoalesceMouseMove(staleInput.Value))
-                    {
-                        _droppedMouseMoveCount++;
-                    }
-                    else if (!IsCoalescibleInput(staleInput.Value))
-                    {
-                        _droppedOverflowCount++;
-                    }
+                    RecordDrop(staleInput.Value);
                     _pending.Remove(staleInput);
                 }
                 else if (CanCoalesceMouseMove(input))
@@ -192,17 +188,38 @@ public sealed class BrowserInputQueue
                     _droppedMouseMoveCount++;
                     return;
                 }
-                else if (IsStateTransition(input))
-                {
-                    // Preserve physical mouse/keyboard state transitions even during
-                    // an all-transition burst. The configured capacity is a soft bound
-                    // for this critical class; losing MouseUp or KeyUp can otherwise
-                    // leave the page in a permanently pressed state.
-                }
-                else
+                else if (!IsStateTransition(input))
                 {
                     _droppedOverflowCount++;
                     return;
+                }
+                else if (_pending.Count >= _hardMaxPendingEvents)
+                {
+                    // The soft limit deliberately lets press/release transitions through
+                    // so a delayed MouseUp/KeyUp cannot leave page state permanently
+                    // pressed. That must not become an unbounded-memory promise under an
+                    // event flood, however. At the hard ceiling, preserve release events
+                    // by sacrificing the oldest queued press; new press events can be
+                    // dropped safely because no new pressed state has reached the page.
+                    if (IsReleaseTransition(input))
+                    {
+                        var queuedPress = FindOldestPressTransition();
+                        if (queuedPress != null)
+                        {
+                            RecordDrop(queuedPress.Value);
+                            _pending.Remove(queuedPress);
+                        }
+                        else
+                        {
+                            _droppedOverflowCount++;
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        _droppedOverflowCount++;
+                        return;
+                    }
                 }
             }
 
@@ -261,6 +278,20 @@ public sealed class BrowserInputQueue
             remaining > 0 && elapsed >= timeBudget);
     }
 
+    private void RecordDrop(BrowserInputEvent input)
+    {
+        if (CanCoalesceMouseMove(input))
+        {
+            _droppedMouseMoveCount++;
+        }
+        else
+        {
+            // Wheel/scroll/tick coalescible events were previously removed here
+            // without incrementing any drop counter, making overload invisible.
+            _droppedOverflowCount++;
+        }
+    }
+
     private LinkedListNode<BrowserInputEvent> FindOldestCoalescibleInput()
     {
         for (var node = _pending.First; node != null; node = node.Next)
@@ -287,9 +318,28 @@ public sealed class BrowserInputQueue
         return null;
     }
 
+    private LinkedListNode<BrowserInputEvent> FindOldestPressTransition()
+    {
+        for (var node = _pending.First; node != null; node = node.Next)
+        {
+            if (IsPressTransition(node.Value))
+            {
+                return node;
+            }
+        }
+
+        return null;
+    }
+
     private static bool IsStateTransition(BrowserInputEvent input) =>
         input.Type is BrowserInputType.MouseDown or BrowserInputType.MouseUp or
             BrowserInputType.KeyDown or BrowserInputType.KeyUp;
+
+    private static bool IsPressTransition(BrowserInputEvent input) =>
+        input.Type is BrowserInputType.MouseDown or BrowserInputType.KeyDown;
+
+    private static bool IsReleaseTransition(BrowserInputEvent input) =>
+        input.Type is BrowserInputType.MouseUp or BrowserInputType.KeyUp;
 
     private static bool IsCoalescibleInput(BrowserInputEvent input) =>
         CanCoalesceMouseMove(input) ||
