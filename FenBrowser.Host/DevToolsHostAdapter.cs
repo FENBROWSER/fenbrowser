@@ -19,10 +19,18 @@ namespace FenBrowser.Host;
 /// </summary>
 public class DevToolsHostAdapter : IDevToolsHost, IDisposable
 {
+    private const int MaxConsoleMessages = 2000;
+    private const int MaxConsoleMessageChars = 64 * 1024;
+    private const int MaxNetworkRequests = 2000;
+    private const int MaxNetworkBodyCharsPerDirection = 256 * 1024;
+    private const long MaxRetainedNetworkBodyChars = 8L * 1024 * 1024;
+
     private readonly BrowserIntegration _browser;
     private readonly DevToolsServer _server;
     private readonly List<ConsoleMessageInfo> _consoleMessages = new();
     private readonly List<NetworkRequestInfo> _networkRequests = new();
+    private readonly object _historyLock = new();
+    private long _retainedNetworkBodyChars;
     private readonly Action _needsRepaintHandler;
     private readonly Action<string> _jsonOutputHandler;
     private readonly Action<FenBrowser.FenEngine.DevTools.NetworkRequest> _networkRequestHandler;
@@ -117,8 +125,17 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
 
     public int GetNodeId(Node node) => _server.Registry.GetId(node);
 
-    public IEnumerable<NetworkRequestInfo> GetNetworkRequests() => _networkRequests;
-    public IEnumerable<ConsoleMessageInfo> GetConsoleMessages() => _consoleMessages;
+    public IEnumerable<NetworkRequestInfo> GetNetworkRequests()
+    {
+        lock (_historyLock)
+            return _networkRequests.ToArray();
+    }
+
+    public IEnumerable<ConsoleMessageInfo> GetConsoleMessages()
+    {
+        lock (_historyLock)
+            return _consoleMessages.ToArray();
+    }
 
     public NodeDiagnosticsInfo? GetNodeDiagnostics(int nodeId)
     {
@@ -209,7 +226,7 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
     }
     
     /// <summary>
-    /// Copy text to system clipboard. (10/10)
+    /// Copy text to the system clipboard.
     /// </summary>
     public void CopyToClipboard(string text)
     {
@@ -240,29 +257,29 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
     /// </summary>
     public void AddConsoleMessage(string message, ConsoleLevel level = ConsoleLevel.Log)
     {
-        // Assumes called on MainThread now (wrapper above)
-        var msg = new ConsoleMessageInfo(
-            message,
-            level,
-            DateTime.Now,
-            null,
-            null,
-            null
-        );
-        _consoleMessages.Add(msg);
+        var retainedMessage = BoundHistoryText(message, MaxConsoleMessageChars) ?? string.Empty;
+        var now = DateTime.UtcNow;
+        var msg = new ConsoleMessageInfo(retainedMessage, level, now, null, null, null);
+
+        lock (_historyLock)
+        {
+            _consoleMessages.Add(msg);
+            if (_consoleMessages.Count > MaxConsoleMessages)
+                _consoleMessages.RemoveRange(0, _consoleMessages.Count - MaxConsoleMessages);
+        }
+
         ConsoleMessageAdded?.Invoke(msg);
-        
-        // Broadcast protocol event
+
         var evt = new ConsoleAPICalledEvent
         {
-            Type = level.ToString().ToLower(),
-            Timestamp = (DateTime.Now - DateTime.UnixEpoch).TotalSeconds,
-            Args = new[] { 
-                new RemoteObject { 
-                    Type = "string", 
-                    Value = message, 
-                    Description = message 
-                } 
+            Type = level.ToString().ToLowerInvariant(),
+            Timestamp = (now - DateTime.UnixEpoch).TotalSeconds,
+            Args = new[] {
+                new RemoteObject {
+                    Type = "string",
+                    Value = message,
+                    Description = message
+                }
             }
         };
         _server.BroadcastEvent("Runtime.consoleAPICalled", evt);
@@ -314,8 +331,6 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
             _server.BroadcastEvent("Network.loadingFinished", finishEvt);
         }
 
-        // Update local list for initial state
-        var existing = _networkRequests.FirstOrDefault(n => n.Id == req.Id);
         var info = new NetworkRequestInfo(
             req.Id,
             req.Url,
@@ -326,19 +341,64 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
             req.Size,
             (req.EndTime - req.StartTime).TotalMilliseconds,
             req.StartTime,
-            req.RequestHeaders ?? new(),
-            req.ResponseHeaders ?? new(),
-            req.RequestBody,
-            req.ResponseBody,
+            SnapshotHeaders(req.RequestHeaders),
+            SnapshotHeaders(req.ResponseHeaders),
+            BoundHistoryText(req.RequestBody, MaxNetworkBodyCharsPerDirection),
+            BoundHistoryText(req.ResponseBody, MaxNetworkBodyCharsPerDirection),
             req.Status != "pending"
         );
 
-        if (existing != null)
+        lock (_historyLock)
         {
-            _networkRequests.Remove(existing);
+            var existingIndex = _networkRequests.FindIndex(n => string.Equals(n.Id, req.Id, StringComparison.Ordinal));
+            if (existingIndex >= 0)
+            {
+                _retainedNetworkBodyChars -= GetRetainedBodyChars(_networkRequests[existingIndex]);
+                _networkRequests[existingIndex] = info;
+            }
+            else
+            {
+                _networkRequests.Add(info);
+            }
+
+            _retainedNetworkBodyChars += GetRetainedBodyChars(info);
+            TrimNetworkHistoryLocked();
         }
-        _networkRequests.Add(info);
+
         NetworkRequestUpdated?.Invoke(info);
+    }
+
+    private static string? BoundHistoryText(string? value, int maxChars)
+    {
+        if (value == null || value.Length <= maxChars)
+            return value;
+        return value[..maxChars] + "…";
+    }
+
+    private static Dictionary<string, string> SnapshotHeaders(IReadOnlyDictionary<string, string>? headers)
+    {
+        var snapshot = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (headers != null)
+        {
+            foreach (var pair in headers)
+                snapshot[pair.Key] = pair.Value;
+        }
+        return snapshot;
+    }
+
+    private static long GetRetainedBodyChars(NetworkRequestInfo info) =>
+        (info.RequestBody?.Length ?? 0) + (long)(info.ResponseBody?.Length ?? 0);
+
+    private void TrimNetworkHistoryLocked()
+    {
+        while (_networkRequests.Count > 0 &&
+               (_networkRequests.Count > MaxNetworkRequests ||
+                _retainedNetworkBodyChars > MaxRetainedNetworkBodyChars))
+        {
+            var oldest = _networkRequests[0];
+            _retainedNetworkBodyChars = Math.Max(0, _retainedNetworkBodyChars - GetRetainedBodyChars(oldest));
+            _networkRequests.RemoveAt(0);
+        }
     }
 
     private static NodeBoxModelInfo ToBoxModelInfo(BoxModel box)
@@ -598,13 +658,22 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
 
     private static IEnumerable<Node> EnumerateNodes(Node root)
     {
-        yield return root;
+        if (root == null)
+            yield break;
 
-        foreach (var child in root.ChildNodes)
+        var stack = new Stack<Node>();
+        stack.Push(root);
+        while (stack.Count > 0)
         {
-            foreach (var descendant in EnumerateNodes(child))
+            var node = stack.Pop();
+            yield return node;
+
+            var children = node.ChildNodes;
+            for (var i = children.Length - 1; i >= 0; i--)
             {
-                yield return descendant;
+                var child = children[i];
+                if (child != null)
+                    stack.Push(child);
             }
         }
     }
@@ -656,7 +725,11 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
         DomChanged = null;
         ConsoleMessageAdded = null;
         NetworkRequestUpdated = null;
-        _consoleMessages.Clear();
-        _networkRequests.Clear();
+        lock (_historyLock)
+        {
+            _consoleMessages.Clear();
+            _networkRequests.Clear();
+            _retainedNetworkBodyChars = 0;
+        }
     }
 }

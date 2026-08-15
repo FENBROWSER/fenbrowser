@@ -125,7 +125,10 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
     private int _eventsSinceFlush;
     private long _lastFlushTicks;
 
+    private static readonly long RecoveryBackoffTicks = Math.Max(1L, Stopwatch.Frequency);
+
     private int _failureCount;
+    private long _nextRecoveryTicks;
     private volatile string _lastFailureType;
     private volatile string _lastFailureMessage;
 
@@ -160,11 +163,6 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
 
     public void Write(in EngineLogEvent evt)
     {
-        if (!IsHealthy)
-        {
-            return;
-        }
-
         var json = FormatEvent(evt);
         if (json == null)
         {
@@ -175,7 +173,13 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
         {
             if (_writer == null)
             {
-                return;
+                var nowTicks = Stopwatch.GetTimestamp();
+                if (nowTicks < Interlocked.Read(ref _nextRecoveryTicks))
+                    return;
+
+                EnsureStreamLocked();
+                if (_writer == null)
+                    return;
             }
 
             try
@@ -282,6 +286,10 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
             _currentFileSize = _stream.Length;
             _eventsSinceFlush = 0;
             _lastFlushTicks = Stopwatch.GetTimestamp();
+            Interlocked.Exchange(ref _nextRecoveryTicks, 0);
+            Volatile.Write(ref _failureCount, 0);
+            _lastFailureType = null;
+            _lastFailureMessage = null;
         }
         catch (Exception ex)
         {
@@ -358,6 +366,11 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
     private void MarkFailure(Exception ex)
     {
         var failureCount = Interlocked.Increment(ref _failureCount);
+        var nowTicks = Stopwatch.GetTimestamp();
+        var retryAt = nowTicks > long.MaxValue - RecoveryBackoffTicks
+            ? long.MaxValue
+            : nowTicks + RecoveryBackoffTicks;
+        Interlocked.Exchange(ref _nextRecoveryTicks, retryAt);
         _lastFailureType = ex.GetType().Name;
         _lastFailureMessage = ex.Message;
 

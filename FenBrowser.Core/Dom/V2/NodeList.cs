@@ -234,7 +234,7 @@ namespace FenBrowser.Core.Dom.V2
                 int count = 0;
                 foreach (var node in _root.Descendants())
                 {
-                    if (node is Element el && (_matchAll || string.Equals(el.TagName, _tagName, StringComparison.OrdinalIgnoreCase) || string.Equals(el.LocalName, _tagName, StringComparison.OrdinalIgnoreCase)))
+                    if (node is Element el && MatchesTag(el))
                         count++;
                 }
                 return count;
@@ -249,7 +249,7 @@ namespace FenBrowser.Core.Dom.V2
                 int i = 0;
                 foreach (var node in _root.Descendants())
                 {
-                    if (node is Element el && (_matchAll || string.Equals(el.TagName, _tagName, StringComparison.OrdinalIgnoreCase) || string.Equals(el.LocalName, _tagName, StringComparison.OrdinalIgnoreCase)))
+                    if (node is Element el && MatchesTag(el))
                     {
                         if (i == index) return el;
                         i++;
@@ -264,7 +264,7 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(name)) return null;
             foreach (var node in _root.Descendants())
             {
-                if (node is Element el && (_matchAll || string.Equals(el.TagName, _tagName, StringComparison.OrdinalIgnoreCase) || string.Equals(el.LocalName, _tagName, StringComparison.OrdinalIgnoreCase)))
+                if (node is Element el && MatchesTag(el))
                 {
                     if (el.Id == name || el.GetAttribute("name") == name)
                         return el;
@@ -278,10 +278,24 @@ namespace FenBrowser.Core.Dom.V2
             var snapshot = new List<Element>();
             foreach (var node in _root.Descendants())
             {
-                if (node is Element el && (_matchAll || string.Equals(el.TagName, _tagName, StringComparison.OrdinalIgnoreCase) || string.Equals(el.LocalName, _tagName, StringComparison.OrdinalIgnoreCase)))
+                if (node is Element el && MatchesTag(el))
                     snapshot.Add(el);
             }
             return snapshot.GetEnumerator();
+        }
+
+        private bool MatchesTag(Element element)
+        {
+            if (_matchAll)
+                return true;
+
+            if (string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+            {
+                return string.Equals(element.TagName, _tagName, StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(element.LocalName, _tagName, StringComparison.OrdinalIgnoreCase);
+            }
+
+            return string.Equals(element.LocalName, _tagName, StringComparison.Ordinal);
         }
     }
 

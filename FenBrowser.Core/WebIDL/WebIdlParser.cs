@@ -196,7 +196,15 @@ namespace FenBrowser.Core.WebIDL
             var result = new IdlParseResult();
             _errors = result.Errors;
 
-            _tokens = Tokenize(idl);
+            try
+            {
+                _tokens = Tokenize(idl ?? string.Empty);
+            }
+            catch (WebIdlParseException ex)
+            {
+                result.Errors.Add($"Tokenization error: {ex.Message}");
+                return result;
+            }
             _pos = 0;
 
             while (!IsEof())
@@ -220,65 +228,131 @@ namespace FenBrowser.Core.WebIDL
 
         private static List<Token> Tokenize(string input)
         {
+            input ??= string.Empty;
             var tokens = new List<Token>();
             int i = 0, line = 1;
+
+            static bool IsHexDigit(char value) =>
+                value is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F';
+
             while (i < input.Length)
             {
                 char c = input[i];
-
-                // Whitespace
                 if (c == '\n') { line++; i++; continue; }
                 if (char.IsWhiteSpace(c)) { i++; continue; }
 
-                // Single-line comment
                 if (c == '/' && i + 1 < input.Length && input[i + 1] == '/')
                 {
+                    i += 2;
                     while (i < input.Length && input[i] != '\n') i++;
                     continue;
                 }
 
-                // Multi-line comment
                 if (c == '/' && i + 1 < input.Length && input[i + 1] == '*')
                 {
+                    var startLine = line;
                     i += 2;
-                    while (i + 1 < input.Length && !(input[i] == '*' && input[i + 1] == '/')) i++;
-                    i += 2;
+                    var terminated = false;
+                    while (i < input.Length)
+                    {
+                        if (i + 1 < input.Length && input[i] == '*' && input[i + 1] == '/')
+                        {
+                            i += 2;
+                            terminated = true;
+                            break;
+                        }
+                        if (input[i] == '\n') line++;
+                        i++;
+                    }
+                    if (!terminated)
+                        throw new WebIdlParseException($"Unterminated block comment starting on line {startLine}.");
                     continue;
                 }
 
-                // String literal
                 if (c == '"')
                 {
-                    int start = i + 1;
+                    var startLine = line;
                     i++;
-                    while (i < input.Length && input[i] != '"') i++;
-                    tokens.Add(new Token { Type = Token.Kind.String, Value = input.Substring(start, i - start), Line = line });
-                    i++; // skip closing "
+                    var value = new StringBuilder();
+                    var terminated = false;
+                    while (i < input.Length)
+                    {
+                        c = input[i];
+                        if (c == '"')
+                        {
+                            i++;
+                            terminated = true;
+                            break;
+                        }
+                        if (c == '\n' || c == '\r')
+                            throw new WebIdlParseException($"Unterminated string literal starting on line {startLine}.");
+                        if (c == '\\')
+                        {
+                            if (i + 1 >= input.Length)
+                                throw new WebIdlParseException($"Unterminated string escape starting on line {startLine}.");
+                            value.Append(c);
+                            value.Append(input[i + 1]);
+                            i += 2;
+                            continue;
+                        }
+                        value.Append(c);
+                        i++;
+                    }
+                    if (!terminated)
+                        throw new WebIdlParseException($"Unterminated string literal starting on line {startLine}.");
+                    tokens.Add(new Token { Type = Token.Kind.String, Value = value.ToString(), Line = startLine });
                     continue;
                 }
 
-                // Identifier or keyword
                 if (char.IsLetter(c) || c == '_')
                 {
-                    int start = i;
-                    while (i < input.Length && (char.IsLetterOrDigit(input[i]) || input[i] == '_' || input[i] == '-'))
-                        i++;
+                    int start = i++;
+                    while (i < input.Length &&
+                           (char.IsLetterOrDigit(input[i]) || input[i] == '_' || input[i] == '-')) i++;
                     tokens.Add(new Token { Type = Token.Kind.Ident, Value = input.Substring(start, i - start), Line = line });
                     continue;
                 }
 
-                // Number
-                if (char.IsDigit(c) || (c == '-' && i + 1 < input.Length && char.IsDigit(input[i + 1])))
+                var negativeNumber = c == '-' && i + 1 < input.Length &&
+                    (char.IsDigit(input[i + 1]) ||
+                     (input[i + 1] == '.' && i + 2 < input.Length && char.IsDigit(input[i + 2])));
+                if (char.IsDigit(c) ||
+                    (c == '.' && i + 1 < input.Length && char.IsDigit(input[i + 1])) ||
+                    negativeNumber)
                 {
                     int start = i;
-                    if (c == '-') i++;
-                    while (i < input.Length && (char.IsDigit(input[i]) || input[i] == '.' || input[i] == 'e' || input[i] == 'E' || input[i] == '+' || input[i] == '-' || input[i] == 'x' || input[i] == 'X'))
-                        i++;
+                    if (input[i] == '-') i++;
+
+                    if (i + 1 < input.Length && input[i] == '0' && (input[i + 1] == 'x' || input[i + 1] == 'X'))
+                    {
+                        i += 2;
+                        int hexStart = i;
+                        while (i < input.Length && IsHexDigit(input[i])) i++;
+                        if (i == hexStart)
+                            throw new WebIdlParseException($"Invalid hexadecimal literal on line {line}.");
+                    }
+                    else
+                    {
+                        while (i < input.Length && char.IsDigit(input[i])) i++;
+                        if (i < input.Length && input[i] == '.')
+                        {
+                            i++;
+                            while (i < input.Length && char.IsDigit(input[i])) i++;
+                        }
+                        if (i < input.Length && (input[i] == 'e' || input[i] == 'E'))
+                        {
+                            int marker = i;
+                            int exponent = i + 1;
+                            if (exponent < input.Length && (input[exponent] == '+' || input[exponent] == '-')) exponent++;
+                            int digits = exponent;
+                            while (exponent < input.Length && char.IsDigit(input[exponent])) exponent++;
+                            i = exponent > digits ? exponent : marker;
+                        }
+                    }
                     tokens.Add(new Token { Type = Token.Kind.Number, Value = input.Substring(start, i - start), Line = line });
                     continue;
                 }
 
-                // Symbols
                 tokens.Add(new Token { Type = Token.Kind.Symbol, Value = c.ToString(), Line = line });
                 i++;
             }

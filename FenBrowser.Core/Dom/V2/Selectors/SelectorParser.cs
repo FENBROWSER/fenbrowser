@@ -540,7 +540,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         {
             return token.Type switch
             {
-                TokenType.TypeSelector => new TypeSelector(token.Value.ToUpperInvariant()),
+                TokenType.TypeSelector => new TypeSelector(token.Value),
                 TokenType.UniversalSelector => new UniversalSelector(),
                 TokenType.IdSelector => new IdSelector(token.Value),
                 TokenType.ClassSelector => new ClassSelector(token.Value),
