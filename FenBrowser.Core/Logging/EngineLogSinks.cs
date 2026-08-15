@@ -10,42 +10,60 @@ using System.Threading;
 
 namespace FenBrowser.Core.Logging;
 
+internal static class EngineLogSinkText
+{
+    public static string SingleLine(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        // URLs, headers and page-controlled strings routinely enter engine logs.
+        // Console/debug sinks are line-oriented, so CR/LF/NUL must never be able to
+        // forge an extra record or truncate downstream consumers.
+        return value
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal)
+            .Replace("\0", "\\0", StringComparison.Ordinal);
+    }
+}
+
 internal sealed class ConsoleEngineLogSink : ILogSink
 {
-    // Throttle: skip console output if we're emitting faster than ~100 events/sec.
-    // Console.WriteLine on Windows is synchronous and slow — flooding it during
-    // animations/scroll can compete with the render thread and cause frame drops.
+    // Console.WriteLine is synchronous and slow. Stopwatch.Frequency is explicitly
+    // platform dependent, so derive the 10 ms interval from it rather than assuming
+    // Windows' historical 10 MHz performance-counter frequency.
     private long _lastWriteTicks;
     private int _burstCount;
     private const int MaxBurst = 20;
-    private const long ThrottleIntervalTicks = 10_000_000 / 100; // 100 events/sec = 10ms between
+    private static readonly long ThrottleIntervalTicks = Math.Max(1L, Stopwatch.Frequency / 100L);
 
     public void Write(in EngineLogEvent evt)
     {
         var nowTicks = Stopwatch.GetTimestamp();
 
-        // Burst: allow up to MaxBurst events at any rate.
-        if (_burstCount >= MaxBurst)
+        if (Volatile.Read(ref _burstCount) >= MaxBurst)
         {
             var elapsed = nowTicks - Interlocked.Read(ref _lastWriteTicks);
             if (elapsed < ThrottleIntervalTicks)
             {
-                return; // throttle — don't write to console
+                return;
             }
         }
 
         var marker = evt.Header.Marker == LogMarker.None ? string.Empty : $"[{evt.Header.Marker}]";
         var ctx = string.IsNullOrWhiteSpace(evt.Header.Context.Url) ? string.Empty : $" | url={evt.Header.Context.Url}";
         var source = string.IsNullOrWhiteSpace(evt.Payload?.SourceFile) ? string.Empty : $" | source={evt.Payload.SourceFile}:{evt.Payload.SourceLine}";
-        var line = $"{evt.Header.TimestampUtc:HH:mm:ss.fff} [{evt.Header.Subsystem}][{evt.Header.Severity}]{marker} {evt.Payload?.MessageTemplate ?? string.Empty}{ctx}{source}";
+        var line = EngineLogSinkText.SingleLine(
+            $"{evt.Header.TimestampUtc:HH:mm:ss.fff} [{evt.Header.Subsystem}][{evt.Header.Severity}]{marker} {evt.Payload?.MessageTemplate ?? string.Empty}{ctx}{source}");
 
         try
         {
             Console.WriteLine(line);
             Interlocked.Exchange(ref _lastWriteTicks, nowTicks);
-            var bc = Interlocked.Increment(ref _burstCount);
-            // Reset burst counter every ~1 second of quiet.
-            if (bc > MaxBurst * 10)
+            var burstCount = Interlocked.Increment(ref _burstCount);
+            if (burstCount > MaxBurst * 10)
             {
                 Interlocked.Exchange(ref _burstCount, 0);
             }
@@ -68,7 +86,8 @@ internal sealed class DebugEngineLogSink : ILogSink
         var marker = evt.Header.Marker == LogMarker.None ? string.Empty : $"[{evt.Header.Marker}]";
         var ctx = string.IsNullOrWhiteSpace(evt.Header.Context.Url) ? string.Empty : $" | url={evt.Header.Context.Url}";
         var source = string.IsNullOrWhiteSpace(evt.Payload?.SourceFile) ? string.Empty : $" | source={evt.Payload.SourceFile}:{evt.Payload.SourceLine}";
-        var line = $"{evt.Header.TimestampUtc:HH:mm:ss.fff} [{evt.Header.Subsystem}][{evt.Header.Severity}]{marker} {evt.Payload?.MessageTemplate ?? string.Empty}{ctx}{source}";
+        var line = EngineLogSinkText.SingleLine(
+            $"{evt.Header.TimestampUtc:HH:mm:ss.fff} [{evt.Header.Subsystem}][{evt.Header.Severity}]{marker} {evt.Payload?.MessageTemplate ?? string.Empty}{ctx}{source}");
 
         try
         {
@@ -76,7 +95,7 @@ internal sealed class DebugEngineLogSink : ILogSink
         }
         catch
         {
-            // no-op — debugger output must not crash the engine
+            // debugger output must not crash the engine
         }
     }
 
@@ -86,10 +105,7 @@ internal sealed class DebugEngineLogSink : ILogSink
 }
 
 /// <summary>
-/// Base class for rotating file sinks. Opens the file only for the
-/// duration of each write — no persistent file handle is held, so
-/// external readers (tests, log viewers, failure-bundle exporters)
-/// can always access the file between events.
+/// Base class for rotating file sinks.
 /// </summary>
 internal abstract class BufferedFileLogSink : ILogSink, IDisposable
 {
@@ -136,8 +152,8 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
         EnsureStreamLocked();
     }
 
-    public bool IsHealthy => _failureCount < 3;
-    public int FailureCount => _failureCount;
+    public bool IsHealthy => Volatile.Read(ref _failureCount) < 3;
+    public int FailureCount => Volatile.Read(ref _failureCount);
     public string LastFailureType => _lastFailureType;
     public string LastFailureMessage => _lastFailureMessage;
     public string CurrentPath => _currentPath;
@@ -170,7 +186,7 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
                 _eventsSinceFlush++;
 
                 var nowTicks = Stopwatch.GetTimestamp();
-                var elapsedMs = (nowTicks - _lastFlushTicks) * 1000L / Stopwatch.Frequency;
+                var elapsedMs = Stopwatch.GetElapsedTime(_lastFlushTicks, nowTicks).TotalMilliseconds;
                 var isHighSeverity = evt.Header.Severity >= LogSeverity.Error;
 
                 if (isHighSeverity || _eventsSinceFlush >= _flushEveryN || elapsedMs >= _flushIntervalMs)
@@ -184,7 +200,7 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
                     RotateLocked();
                 }
 
-                _failureCount = 0;
+                Volatile.Write(ref _failureCount, 0);
             }
             catch (Exception ex)
             {
@@ -205,11 +221,46 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
 
     public bool Flush(TimeSpan timeout)
     {
-        lock (_lock)
+        if (timeout < TimeSpan.Zero)
         {
-            if (_writer == null) return true;
-            try { FlushLocked(); return true; }
-            catch { return false; }
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
+
+        var timeoutMilliseconds = timeout.TotalMilliseconds >= int.MaxValue
+            ? int.MaxValue
+            : (int)Math.Ceiling(timeout.TotalMilliseconds);
+
+        var lockTaken = false;
+        try
+        {
+            Monitor.TryEnter(_lock, timeoutMilliseconds, ref lockTaken);
+            if (!lockTaken)
+            {
+                return false;
+            }
+
+            if (_writer == null)
+            {
+                return true;
+            }
+
+            try
+            {
+                FlushLocked();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MarkFailure(ex);
+                return false;
+            }
+        }
+        finally
+        {
+            if (lockTaken)
+            {
+                Monitor.Exit(_lock);
+            }
         }
     }
 
@@ -306,17 +357,16 @@ internal abstract class BufferedFileLogSink : ILogSink, IDisposable
 
     private void MarkFailure(Exception ex)
     {
-        Interlocked.Increment(ref _failureCount);
+        var failureCount = Interlocked.Increment(ref _failureCount);
         _lastFailureType = ex.GetType().Name;
         _lastFailureMessage = ex.Message;
 
-        var fc = _failureCount;
-        if (fc == 1 || fc == 3)
+        if (failureCount == 1 || failureCount == 3)
         {
             try
             {
                 Debug.WriteLine(
-                    $"[EngineLog] File sink failure #{fc} (path={_currentPath ?? "?"}): " +
+                    $"[EngineLog] File sink failure #{failureCount} (path={_currentPath ?? "?"}): " +
                     $"{ex.GetType().Name}: {ex.Message}");
             }
             catch { }
@@ -508,24 +558,24 @@ internal sealed class RingBufferEngineLogSink : ILogSink
     public void Write(in EngineLogEvent evt)
     {
         _events.Enqueue(evt);
-        var c = Interlocked.Increment(ref _count);
+        var count = Interlocked.Increment(ref _count);
 
-        if (c > _capacity + 256)
+        if (count > _capacity + 256)
         {
             TrimExcess();
         }
         else
         {
-            while (c > _capacity && _events.TryDequeue(out _))
+            while (count > _capacity && _events.TryDequeue(out _))
             {
-                c = Interlocked.Decrement(ref _count);
+                count = Interlocked.Decrement(ref _count);
             }
         }
     }
 
     private void TrimExcess()
     {
-        var excess = Math.Max(0, _count - _capacity + 128);
+        var excess = Math.Max(0, Volatile.Read(ref _count) - _capacity + 128);
         for (var i = 0; i < excess; i++)
         {
             if (_events.TryDequeue(out _))
