@@ -195,8 +195,6 @@ namespace FenBrowser.Host
                     canvas.DrawBitmap(sourceBitmap, srcRect, destRect, SKSamplingOptions.Default, paint);
                     canvas.Flush();
 
-                    // SKBitmap.Bytes materializes managed storage, so the RawImage
-                    // remains valid after the temporary SKBitmap is disposed.
                     var pixels = scaledBitmap.Bytes;
                     icons.Add(new Silk.NET.Core.RawImage(size, size, new Memory<byte>(pixels)));
                 }
@@ -417,18 +415,17 @@ namespace FenBrowser.Host
             }
 
             var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var workItem = new MainThreadWorkItem(
+            _mainThreadQueue.Enqueue(new MainThreadWorkItem(
                 execute: () =>
                 {
                     try { tcs.TrySetResult(func()); }
                     catch (Exception ex) { tcs.TrySetException(ex); }
                 },
-                reject: ex => tcs.TrySetException(ex));
+                reject: ex => tcs.TrySetException(ex)));
 
-            _mainThreadQueue.Enqueue(workItem);
-            if (Volatile.Read(ref _disposed) != 0 && _mainThreadQueue.TryDequeue(out var stranded))
+            if (Volatile.Read(ref _disposed) != 0)
             {
-                stranded.Reject(new ObjectDisposedException(nameof(WindowManager)));
+                FailPendingMainThreadWork(new ObjectDisposedException(nameof(WindowManager)));
             }
             return tcs.Task;
         }
@@ -455,18 +452,17 @@ namespace FenBrowser.Host
             }
 
             var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var workItem = new MainThreadWorkItem(
+            _mainThreadQueue.Enqueue(new MainThreadWorkItem(
                 execute: () =>
                 {
                     try { action(); tcs.TrySetResult(); }
                     catch (Exception ex) { tcs.TrySetException(ex); }
                 },
-                reject: ex => tcs.TrySetException(ex));
+                reject: ex => tcs.TrySetException(ex)));
 
-            _mainThreadQueue.Enqueue(workItem);
-            if (Volatile.Read(ref _disposed) != 0 && _mainThreadQueue.TryDequeue(out var stranded))
+            if (Volatile.Read(ref _disposed) != 0)
             {
-                stranded.Reject(new ObjectDisposedException(nameof(WindowManager)));
+                FailPendingMainThreadWork(new ObjectDisposedException(nameof(WindowManager)));
             }
             return tcs.Task;
         }
