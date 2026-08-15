@@ -33,6 +33,10 @@ namespace FenBrowser.Core.Memory
 
     public sealed class EngineMetrics
     {
+        private const int MaxCrashKeys = 128;
+        private const int MaxCrashKeyNameChars = 128;
+        private const int MaxCrashKeyValueChars = 2048;
+
         public static readonly EngineMetrics Instance = new();
 
         private readonly long[] _counters = new long[(int)MetricCounter._Count];
@@ -43,12 +47,21 @@ namespace FenBrowser.Core.Memory
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public void Increment(MetricCounter counter, long amount = 1)
         {
-            Interlocked.Add(ref _counters[(int)counter], amount);
+            var index = ValidateCounter(counter);
+            Interlocked.Add(ref _counters[index], amount);
         }
 
-        public long Get(MetricCounter counter) => Interlocked.Read(ref _counters[(int)counter]);
+        public long Get(MetricCounter counter)
+        {
+            var index = ValidateCounter(counter);
+            return Interlocked.Read(ref _counters[index]);
+        }
 
-        public void Reset(MetricCounter counter) => Interlocked.Exchange(ref _counters[(int)counter], 0);
+        public void Reset(MetricCounter counter)
+        {
+            var index = ValidateCounter(counter);
+            Interlocked.Exchange(ref _counters[index], 0);
+        }
 
         public void ResetAll()
         {
@@ -60,13 +73,41 @@ namespace FenBrowser.Core.Memory
 
         public void SetCrashKey(string key, string value)
         {
-            if (key != null)
+            if (string.IsNullOrWhiteSpace(key))
             {
-                _crashKeys[key] = value ?? string.Empty;
+                return;
+            }
+
+            var normalizedKey = BoundText(key.Trim(), MaxCrashKeyNameChars);
+            var normalizedValue = BoundText(value ?? string.Empty, MaxCrashKeyValueChars);
+
+            if (_crashKeys.ContainsKey(normalizedKey))
+            {
+                _crashKeys[normalizedKey] = normalizedValue;
+                return;
+            }
+
+            // Crash keys are process-lifetime diagnostics. They must never become an
+            // attacker-controlled unbounded dictionary merely because a caller uses a
+            // page/URL-derived key name. Existing keys remain updateable after saturation.
+            if (_crashKeys.Count >= MaxCrashKeys)
+            {
+                return;
+            }
+
+            _crashKeys.TryAdd(normalizedKey, normalizedValue);
+        }
+
+        public void RemoveCrashKey(string key)
+        {
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                _crashKeys.TryRemove(BoundText(key.Trim(), MaxCrashKeyNameChars), out _);
             }
         }
 
-        public IReadOnlyDictionary<string, string> CrashKeys => _crashKeys;
+        public IReadOnlyDictionary<string, string> CrashKeys =>
+            new Dictionary<string, string>(_crashKeys, StringComparer.Ordinal);
 
         public Dictionary<string, long> Snapshot()
         {
@@ -76,6 +117,27 @@ namespace FenBrowser.Core.Memory
                 snapshot[((MetricCounter)i).ToString()] = Interlocked.Read(ref _counters[i]);
             }
             return snapshot;
+        }
+
+        private static int ValidateCounter(MetricCounter counter)
+        {
+            var index = (int)counter;
+            if ((uint)index >= (uint)(int)MetricCounter._Count)
+            {
+                throw new ArgumentOutOfRangeException(nameof(counter), counter, "Unknown engine metric counter.");
+            }
+
+            return index;
+        }
+
+        private static string BoundText(string value, int maxChars)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length <= maxChars)
+            {
+                return value ?? string.Empty;
+            }
+
+            return value[..maxChars];
         }
     }
 
@@ -114,6 +176,10 @@ namespace FenBrowser.Core.Memory
     public sealed class TimelineTracer
     {
         private const int RingSize = 4096;
+        private const int MaxPendingSpans = 16_384;
+        private const int MaxTraceNameChars = 256;
+        private const int MaxTraceCategoryChars = 64;
+
         private readonly TraceEvent[] _ring = new TraceEvent[RingSize];
         private int _head;
         private int _nextSpanId;
@@ -125,36 +191,53 @@ namespace FenBrowser.Core.Memory
         public bool Enabled
         {
             get => _enabled;
-            set => _enabled = value;
+            set
+            {
+                _enabled = value;
+                if (!value)
+                {
+                    // Spans that are still outstanding when tracing is disabled are
+                    // diagnostic state, not engine work. Drop them instead of retaining
+                    // forgotten scopes indefinitely across enable/disable cycles.
+                    _pending.Clear();
+                }
+            }
         }
 
         public TimelineSpan Begin(string name, string category = "engine")
         {
-            if (!_enabled)
+            if (!_enabled || _pending.Count >= MaxPendingSpans)
             {
                 return default;
             }
 
-            var id = Interlocked.Increment(ref _nextSpanId);
+            var id = NextSpanId();
             var traceEvent = new TraceEvent
             {
-                Name = name,
-                Category = category,
+                Name = BoundTraceText(name, MaxTraceNameChars, "unnamed"),
+                Category = BoundTraceText(category, MaxTraceCategoryChars, "engine"),
                 StartTicks = Stopwatch.GetTimestamp(),
                 ThreadId = Environment.CurrentManagedThreadId,
             };
-            _pending[id] = traceEvent;
+
+            if (!_pending.TryAdd(id, traceEvent))
+            {
+                return default;
+            }
+
             return new TimelineSpan(this, id, traceEvent.StartTicks);
         }
 
         internal void EndSpan(int spanId, long startTicks, long endTicks)
         {
-            if (!_pending.TryRemove(spanId, out var traceEvent))
+            if (spanId <= 0 || !_pending.TryRemove(spanId, out var traceEvent))
             {
                 return;
             }
 
-            traceEvent.EndTicks = endTicks;
+            // A copied/default scope or a clock misuse must not manufacture negative
+            // duration telemetry. Stopwatch timestamps are monotonic within a process.
+            traceEvent.EndTicks = Math.Max(startTicks, endTicks);
             var slot = (Interlocked.Increment(ref _head) & int.MaxValue) % RingSize;
             Volatile.Write(ref _ring[slot], traceEvent);
 
@@ -163,7 +246,7 @@ namespace FenBrowser.Core.Memory
             {
                 EngineMetrics.Instance.Increment(MetricCounter.LongTaskCount);
                 EngineLogCompat.Warn(
-                    $"[LongTask] '{traceEvent.Name}' took {ms:F1} ms (thread={traceEvent.ThreadId})",
+                    $"[LongTask] '{NormalizeLogField(traceEvent.Name)}' took {ms:F1} ms (thread={traceEvent.ThreadId})",
                     LogCategory.General);
             }
         }
@@ -183,6 +266,42 @@ namespace FenBrowser.Core.Memory
                 }
             }
             return result;
+        }
+
+        private int NextSpanId()
+        {
+            while (true)
+            {
+                var id = Interlocked.Increment(ref _nextSpanId) & int.MaxValue;
+                if (id == 0)
+                {
+                    continue;
+                }
+
+                if (!_pending.ContainsKey(id))
+                {
+                    return id;
+                }
+            }
+        }
+
+        private static string BoundTraceText(string value, int maxChars, string fallback)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return fallback;
+            }
+
+            var trimmed = value.Trim();
+            return trimmed.Length <= maxChars ? trimmed : trimmed[..maxChars];
+        }
+
+        private static string NormalizeLogField(string value)
+        {
+            return (value ?? string.Empty)
+                .Replace("\r", "\\r", StringComparison.Ordinal)
+                .Replace("\n", "\\n", StringComparison.Ordinal)
+                .Replace("\0", "\\0", StringComparison.Ordinal);
         }
     }
 
@@ -228,7 +347,7 @@ namespace FenBrowser.Core.Memory
 
         public bool EndFrame()
         {
-            var startTicks = Interlocked.Read(ref _frameStartTicks);
+            var startTicks = Interlocked.Exchange(ref _frameStartTicks, 0);
             if (startTicks == 0)
             {
                 return true;
@@ -269,6 +388,8 @@ namespace FenBrowser.Core.Memory
     /// </summary>
     public sealed class JankDetector
     {
+        private const int MaxTaskNameChars = 256;
+
         private readonly double _thresholdMs;
         private readonly long _warningCooldownTicks;
         private long _taskStartTicks;
@@ -288,7 +409,13 @@ namespace FenBrowser.Core.Memory
 
         public void TaskStart(string taskName)
         {
-            Volatile.Write(ref _currentTaskName, taskName);
+            var boundedTaskName = string.IsNullOrWhiteSpace(taskName)
+                ? "unknown"
+                : taskName.Length <= MaxTaskNameChars
+                    ? taskName
+                    : taskName[..MaxTaskNameChars];
+
+            Volatile.Write(ref _currentTaskName, boundedTaskName);
             Interlocked.Exchange(ref _lastStuckWarningTicks, 0);
             Interlocked.Exchange(ref _taskStartTicks, Stopwatch.GetTimestamp());
             Volatile.Write(ref _monitoring, 1);
@@ -316,7 +443,7 @@ namespace FenBrowser.Core.Memory
             {
                 EngineMetrics.Instance.Increment(MetricCounter.LongTaskCount);
                 EngineLogCompat.Warn(
-                    $"[JankDetector] Long task '{taskName ?? "unknown"}': {ms:F1} ms",
+                    $"[JankDetector] Long task '{NormalizeLogField(taskName)}': {ms:F1} ms",
                     LogCategory.General);
             }
         }
@@ -357,8 +484,16 @@ namespace FenBrowser.Core.Memory
 
             var taskName = Volatile.Read(ref _currentTaskName);
             EngineLogCompat.Warn(
-                $"[JankDetector] STUCK task '{taskName ?? "unknown"}': {ms:F0} ms elapsed",
+                $"[JankDetector] STUCK task '{NormalizeLogField(taskName)}': {ms:F0} ms elapsed",
                 LogCategory.General);
+        }
+
+        private static string NormalizeLogField(string value)
+        {
+            return (value ?? "unknown")
+                .Replace("\r", "\\r", StringComparison.Ordinal)
+                .Replace("\n", "\\n", StringComparison.Ordinal)
+                .Replace("\0", "\\0", StringComparison.Ordinal);
         }
     }
 
