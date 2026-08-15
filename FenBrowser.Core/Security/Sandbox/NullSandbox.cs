@@ -4,33 +4,21 @@ using System.Diagnostics;
 namespace FenBrowser.Core.Security.Sandbox;
 
 /// <summary>
-/// A no-op <see cref="ISandbox"/> implementation used when:
-/// <list type="bullet">
-///   <item>The browser is running in-process (single-process mode for testing).</item>
-///   <item>The host OS does not support the required sandboxing primitives.</item>
-///   <item><see cref="IOsSandboxFactory.IsSandboxingSupported"/> returns <c>false</c>.</item>
-/// </list>
+/// A no-op <see cref="ISandbox"/> implementation used only when an explicitly
+/// authorized unsandboxed fallback is required (or by tests).
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="NullSandbox"/> applies <em>no OS-level constraints whatsoever</em>.
-/// A warning is emitted via the console the first time an instance is created in a
-/// non-test context.  Production deployments should ensure that a real sandbox
-/// implementation is in use for all renderer and utility processes.
+/// <see cref="NullSandbox"/> applies no OS-level constraints whatsoever. Its
+/// <see cref="Capabilities"/> therefore reports the effective unrestricted process
+/// surface rather than echoing the requested profile and pretending those restrictions
+/// were enforced.
 /// </para>
 /// </remarks>
 public sealed class NullSandbox : ISandbox
 {
     private readonly OsSandboxProfile _profile;
 
-    /// <summary>
-    /// Initialises a new <see cref="NullSandbox"/> for the given profile.
-    /// </summary>
-    /// <param name="profile">The profile this sandbox nominally represents.</param>
-    /// <param name="suppressWarning">
-    /// Pass <c>true</c> to suppress the console warning.
-    /// Useful in unit tests that deliberately use a null sandbox.
-    /// </param>
     public NullSandbox(OsSandboxProfile profile, bool suppressWarning = false)
     {
         _profile = profile ?? throw new ArgumentNullException(nameof(profile));
@@ -44,84 +32,55 @@ public sealed class NullSandbox : ISandbox
         }
     }
 
-    // =========================================================================
-    //  ISandbox
-    // =========================================================================
-
-    /// <inheritdoc/>
     public string ProfileName => $"Null({_profile.Kind})";
 
-    /// <inheritdoc/>
-    public OsSandboxCapabilities Capabilities => _profile.Capabilities;
+    /// <summary>
+    /// A no-op sandbox grants no restrictions. Report the effective unrestricted
+    /// process surface instead of the desired profile's capability set; consumers must
+    /// never infer that RendererMinimal/NetworkProcess restrictions are active here.
+    /// </summary>
+    public OsSandboxCapabilities Capabilities => OsSandboxCapabilities.BrokerFull;
 
-    /// <inheritdoc/>
-    /// <remarks>
-    /// Always returns <c>false</c> for <see cref="NullSandbox"/>: the sandbox has no
-    /// active OS constructs and therefore no active enforcement.
-    /// </remarks>
     public bool IsActive => false;
 
-    /// <inheritdoc/>
-    /// <remarks>No-op: the <see cref="ProcessStartInfo"/> is not modified.</remarks>
     public void ApplyToProcessStartInfo(ProcessStartInfo psi)
     {
-        // Intentionally a no-op: NullSandbox cannot enforce any constraints.
+        ArgumentNullException.ThrowIfNull(psi);
+        // Intentionally no-op: NullSandbox cannot enforce any constraints.
     }
 
-    /// <inheritdoc/>
-    /// <remarks>No-op: the process is not assigned to any Job Object or cgroup.</remarks>
     public void AttachToProcess(Process process)
     {
-        // Intentionally a no-op.
+        ArgumentNullException.ThrowIfNull(process);
+        // Intentionally no-op.
     }
 
-    /// <inheritdoc/>
-    /// <remarks>No-op: there is no underlying OS primitive to terminate.</remarks>
     public void Kill()
     {
-        // Intentionally a no-op.
+        // Intentionally no-op: there is no sandbox-owned process group to terminate.
     }
 
-    /// <inheritdoc/>
-    /// <remarks>
-    /// Always <c>false</c> for <see cref="NullSandbox"/>: no custom process spawning
-    /// is required because no OS sandbox is applied.
-    /// </remarks>
     public bool RequiresCustomSpawn => false;
 
-    /// <inheritdoc/>
-    /// <remarks>
-    /// Always throws <see cref="NotSupportedException"/> because <see cref="NullSandbox"/>
-    /// does not perform custom process spawning.
-    /// </remarks>
     public Process SpawnProcess(ProcessStartInfo psi)
     {
+        ArgumentNullException.ThrowIfNull(psi);
         throw new NotSupportedException(
             "NullSandbox does not support custom process spawning. " +
             "Use Process.Start directly when RequiresCustomSpawn is false.");
     }
 
-    /// <inheritdoc/>
-    /// <remarks>
-    /// Returns a <see cref="SandboxHealthStatus"/> indicating that the sandbox is
-    /// unhealthy (because it is not enforcing any constraints).
-    /// </remarks>
     public SandboxHealthStatus GetHealth()
     {
         return new SandboxHealthStatus
         {
             IsHealthy = false,
-            Reason = "NullSandbox: no OS-level isolation is active.",
+            Reason = "NullSandbox: no OS-level isolation is active; effective process capabilities are unrestricted.",
             MemoryUsageBytes = 0,
             ActiveProcessCount = 0
         };
     }
 
-    // =========================================================================
-    //  IDisposable
-    // =========================================================================
-
-    /// <inheritdoc/>
     public void Dispose()
     {
         // Intentionally no-op: NullSandbox owns no native resources.
