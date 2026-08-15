@@ -71,7 +71,11 @@ namespace FenBrowser.Core.Security
         public bool DefaultAllowsAll { get; set; }
         public string RawHeader { get; set; }
 
-        public static readonly PermissionsPolicy None = new PermissionsPolicy();
+        // Never expose a process-wide mutable policy instance. Callers historically
+        // treated None as an empty sentinel, but the policy object itself is mutable.
+        // Returning a fresh empty policy prevents one document from mutating the
+        // effective baseline of every later document.
+        public static PermissionsPolicy None => new PermissionsPolicy();
 
         public static PermissionsPolicy Parse(string headerValue)
         {
@@ -185,11 +189,11 @@ namespace FenBrowser.Core.Security
                     }
                     else if (string.Equals(token, "src", StringComparison.OrdinalIgnoreCase))
                     {
-                        // Feature-Policy's src keyword is source-origin scoped, but this
-                        // legacy policy object has no iframe source context. Preserve the
-                        // existing permissive behavior here; iframe allow= is evaluated
-                        // origin-aware below.
-                        allowlist.AllowsAll = true;
+                        // Feature-Policy's src keyword is source-origin scoped. This
+                        // header-only parser has no iframe source origin, so treating
+                        // it as '*' is a privilege escalation. Leave the directive
+                        // empty and let origin-aware iframe evaluation decide it.
+                        continue;
                     }
                     else
                     {
