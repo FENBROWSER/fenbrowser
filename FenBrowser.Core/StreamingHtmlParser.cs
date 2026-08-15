@@ -26,6 +26,8 @@ namespace FenBrowser.Core
 
         private const int ChunkSize = 8192;
         private const int MaxBufferSize = 1024 * 1024;
+        private const int MaxFullDocumentChars = 8 * 1024 * 1024;
+        private const int BufferCompactionThreshold = 256 * 1024;
 
 #pragma warning disable CS0067
         public event Action<Element> OnElementParsed;
@@ -54,7 +56,8 @@ namespace FenBrowser.Core
         {
             try
             {
-                var content = await _reader.ReadToEndAsync(ct).ConfigureAwait(false);
+                ThrowIfDisposed();
+                var content = await ReadAllBoundedAsync(ct).ConfigureAwait(false);
                 var doc = HtmlParser.ParseDocument(content, out _);
                 OnDocumentComplete?.Invoke(doc);
                 EngineLogCompat.Debug(
@@ -78,15 +81,16 @@ namespace FenBrowser.Core
 
         public Document Parse()
         {
-            var content = _reader.ReadToEnd();
-            using var reader = new StringReader(content);
-            return HtmlParser.ParseStream(reader, options: null, out _);
+            ThrowIfDisposed();
+            var content = ReadAllBounded();
+            return HtmlParser.ParseDocument(content, out _);
         }
 
         public async Task ParseIncrementallyAsync(
             Action<Document> onProgress = null,
             CancellationToken ct = default)
         {
+            ThrowIfDisposed();
             var document = new Document();
             var state = new IncrementalParseState(document);
             var chunk = new char[ChunkSize];
@@ -102,7 +106,7 @@ namespace FenBrowser.Core
                 ParseBufferedContent(state, isFinalChunk: false);
                 TrimBuffer();
 
-                if (_buffer.Length > MaxBufferSize)
+                if (_buffer.Length - _bufferPos > MaxBufferSize)
                 {
                     throw new InvalidOperationException(
                         $"Streaming parser buffer exceeded {MaxBufferSize} characters while waiting for a complete token.");
@@ -121,8 +125,18 @@ namespace FenBrowser.Core
 
         public void FeedData(string data)
         {
-            if (!string.IsNullOrEmpty(data))
-                _buffer.Append(data);
+            ThrowIfDisposed();
+            if (string.IsNullOrEmpty(data))
+                return;
+
+            var unconsumed = _buffer.Length - _bufferPos;
+            if (data.Length > MaxBufferSize - unconsumed)
+            {
+                throw new InvalidOperationException(
+                    $"Streaming parser buffer would exceed {MaxBufferSize} characters.");
+            }
+
+            _buffer.Append(data);
         }
 
         public int BufferPosition => _bufferPos;
@@ -131,6 +145,37 @@ namespace FenBrowser.Core
         private ValueTask<int> ReadChunkAsync(char[] buffer, CancellationToken ct)
         {
             return _reader.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+        }
+
+        private async Task<string> ReadAllBoundedAsync(CancellationToken ct)
+        {
+            var builder = new StringBuilder(Math.Min(ChunkSize * 4, MaxFullDocumentChars));
+            var chunk = new char[ChunkSize];
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                var read = await _reader.ReadAsync(chunk.AsMemory(), ct).ConfigureAwait(false);
+                if (read <= 0) break;
+                if (builder.Length > MaxFullDocumentChars - read)
+                    throw new InvalidOperationException($"HTML input exceeded {MaxFullDocumentChars} characters.");
+                builder.Append(chunk, 0, read);
+            }
+            return builder.ToString();
+        }
+
+        private string ReadAllBounded()
+        {
+            var builder = new StringBuilder(Math.Min(ChunkSize * 4, MaxFullDocumentChars));
+            var chunk = new char[ChunkSize];
+            while (true)
+            {
+                var read = _reader.Read(chunk, 0, chunk.Length);
+                if (read <= 0) break;
+                if (builder.Length > MaxFullDocumentChars - read)
+                    throw new InvalidOperationException($"HTML input exceeded {MaxFullDocumentChars} characters.");
+                builder.Append(chunk, 0, read);
+            }
+            return builder.ToString();
         }
 
         private void ParseBufferedContent(IncrementalParseState state, bool isFinalChunk)
@@ -313,6 +358,19 @@ namespace FenBrowser.Core
             if (_bufferPos <= 0)
                 return;
 
+            if (_bufferPos >= _buffer.Length)
+            {
+                _buffer.Clear();
+                _bufferPos = 0;
+                return;
+            }
+
+            // Avoid repeatedly shifting a large StringBuilder for small consumed
+            // prefixes. Compact only when the dead prefix is substantial or dominates
+            // the buffer; all scanners already honor _bufferPos.
+            if (_bufferPos < BufferCompactionThreshold && _bufferPos * 2 < _buffer.Length)
+                return;
+
             _buffer.Remove(0, _bufferPos);
             _bufferPos = 0;
         }
@@ -322,13 +380,30 @@ namespace FenBrowser.Core
 
         private static int CountElements(Node root)
         {
-            var count = 1;
-            if (root is ContainerNode container)
+            if (root == null) return 0;
+
+            var count = 0;
+            var pending = new Stack<Node>();
+            pending.Push(root);
+            while (pending.Count > 0)
             {
-                foreach (var child in container.ChildNodes)
-                    count += CountElements(child);
+                var current = pending.Pop();
+                if (current is Element)
+                    count++;
+
+                if (current is not ContainerNode container)
+                    continue;
+
+                for (var child = container.LastChild; child != null; child = child.PreviousSibling)
+                    pending.Push(child);
             }
             return count;
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(StreamingHtmlParser));
         }
 
         public void Dispose()

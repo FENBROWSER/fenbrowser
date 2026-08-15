@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 
 namespace FenBrowser.Core.Dom.V2.Selectors
 {
@@ -25,6 +26,123 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         /// Gets the specificity contribution of this selector.
         /// </summary>
         public abstract Specificity GetSpecificity();
+    }
+
+    internal static class SiblingIndexCache
+    {
+        private sealed class CacheEntry
+        {
+            public object SyncRoot { get; } = new();
+            public Snapshot Value;
+        }
+
+        private sealed class Snapshot
+        {
+            public uint Version;
+            public Dictionary<Element, int> Forward = new();
+            public Dictionary<Element, int> Reverse = new();
+            public Dictionary<Element, int> TypeForward = new();
+            public Dictionary<Element, int> TypeReverse = new();
+        }
+
+        private readonly struct ElementTypeKey : IEquatable<ElementTypeKey>
+        {
+            private readonly string _namespaceUri;
+            private readonly string _localName;
+
+            public ElementTypeKey(Element element)
+            {
+                _namespaceUri = element?.NamespaceUri ?? string.Empty;
+                _localName = element?.LocalName ?? string.Empty;
+                if (string.Equals(_namespaceUri, Namespaces.Html, StringComparison.Ordinal))
+                    _localName = _localName.ToLowerInvariant();
+            }
+
+            public bool Equals(ElementTypeKey other) =>
+                string.Equals(_namespaceUri, other._namespaceUri, StringComparison.Ordinal) &&
+                string.Equals(_localName, other._localName, StringComparison.Ordinal);
+
+            public override bool Equals(object obj) => obj is ElementTypeKey other && Equals(other);
+            public override int GetHashCode() => HashCode.Combine(_namespaceUri, _localName);
+        }
+
+        private static readonly ConditionalWeakTable<ContainerNode, CacheEntry> Cache = new();
+
+        public static int GetChildIndex(Element element, bool fromEnd)
+        {
+            if (element?.ParentNode is not ContainerNode parent) return 0;
+            var snapshot = GetSnapshot(parent);
+            var source = fromEnd ? snapshot.Reverse : snapshot.Forward;
+            return source.TryGetValue(element, out var index) ? index : 0;
+        }
+
+        public static int GetTypeIndex(Element element, bool fromEnd)
+        {
+            if (element?.ParentNode is not ContainerNode parent) return 0;
+            var snapshot = GetSnapshot(parent);
+            var source = fromEnd ? snapshot.TypeReverse : snapshot.TypeForward;
+            return source.TryGetValue(element, out var index) ? index : 0;
+        }
+
+        private static Snapshot GetSnapshot(ContainerNode parent)
+        {
+            var entry = Cache.GetValue(parent, static _ => new CacheEntry());
+            var version = parent.ChildListVersion;
+            var current = entry.Value;
+            if (current != null && current.Version == version)
+                return current;
+
+            lock (entry.SyncRoot)
+            {
+                version = parent.ChildListVersion;
+                current = entry.Value;
+                if (current != null && current.Version == version)
+                    return current;
+
+                var rebuilt = Build(parent, version);
+                entry.Value = rebuilt;
+                return rebuilt;
+            }
+        }
+
+        private static Snapshot Build(ContainerNode parent, uint version)
+        {
+            var elements = new List<Element>(Math.Max(0, parent.ChildElementCount));
+            for (var node = parent.FirstChild; node != null; node = node.NextSibling)
+            {
+                if (node is Element element)
+                    elements.Add(element);
+            }
+
+            var snapshot = new Snapshot { Version = version };
+            var forwardTypeCounts = new Dictionary<ElementTypeKey, int>();
+            for (var i = 0; i < elements.Count; i++)
+            {
+                var element = elements[i];
+                snapshot.Forward[element] = i + 1;
+
+                var key = new ElementTypeKey(element);
+                forwardTypeCounts.TryGetValue(key, out var count);
+                count++;
+                forwardTypeCounts[key] = count;
+                snapshot.TypeForward[element] = count;
+            }
+
+            var reverseTypeCounts = new Dictionary<ElementTypeKey, int>();
+            for (var i = elements.Count - 1; i >= 0; i--)
+            {
+                var element = elements[i];
+                snapshot.Reverse[element] = elements.Count - i;
+
+                var key = new ElementTypeKey(element);
+                reverseTypeCounts.TryGetValue(key, out var count);
+                count++;
+                reverseTypeCounts[key] = count;
+                snapshot.TypeReverse[element] = count;
+            }
+
+            return snapshot;
+        }
     }
 
     /// <summary>
@@ -763,18 +881,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 return filteredIndex;
             }
 
-            int index = 0;
-            if (_fromEnd)
-            {
-                for (var sibling = element; sibling != null; sibling = sibling.NextElementSibling)
-                    index++;
-            }
-            else
-            {
-                for (var sibling = element; sibling != null; sibling = sibling.PreviousElementSibling)
-                    index++;
-            }
-            return index;
+            return SiblingIndexCache.GetChildIndex(element, _fromEnd);
         }
 
         public override Specificity GetSpecificity()
@@ -875,29 +982,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         private int GetTypeIndex(Element element)
         {
-            var parent = element.ParentElement;
-            if (parent == null) return 0;
-
-            var tagName = element.TagName;
-            int index = 0;
-
-            if (_fromEnd)
-            {
-                for (var sibling = element; sibling != null; sibling = sibling.NextElementSibling)
-                {
-                    if (sibling.TagName == tagName)
-                        index++;
-                }
-            }
-            else
-            {
-                for (var sibling = element; sibling != null; sibling = sibling.PreviousElementSibling)
-                {
-                    if (sibling.TagName == tagName)
-                        index++;
-                }
-            }
-            return index;
+            return SiblingIndexCache.GetTypeIndex(element, _fromEnd);
         }
 
         public override Specificity GetSpecificity() => new Specificity(0, 1, 0);
