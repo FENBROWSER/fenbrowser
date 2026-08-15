@@ -108,9 +108,25 @@ public readonly struct JsValue
         };
     }
 
-    public ObjectHandle AsObjectHandle() => ObjectHandle.FromInt64(_payload);
+    public ObjectHandle AsObjectHandle()
+    {
+        if (Tag != JsValueTag.Object)
+        {
+            throw new InvalidOperationException($"Value is not an object (tag={Tag}).");
+        }
 
-    public HostObjectHandle AsHostObjectHandle() => HostObjectHandle.FromInt64(_payload);
+        return ObjectHandle.FromInt64(_payload);
+    }
+
+    public HostObjectHandle AsHostObjectHandle()
+    {
+        if (Tag != JsValueTag.HostObject)
+        {
+            throw new InvalidOperationException($"Value is not a host object (tag={Tag}).");
+        }
+
+        return HostObjectHandle.FromInt64(_payload);
+    }
 
     public string AsString()
     {
@@ -137,10 +153,16 @@ public readonly struct JsValue
     }
 
     // Construct a Symbol value from an existing id; used to expose well-known
-    // symbols (Symbol.iterator etc.) that the runtime mints exactly once at
-    // startup and then hands the same id out repeatedly.
+    // symbols and boxed Symbol primitives. Rejecting unknown ids prevents a stale
+    // or fabricated SymbolObject payload from becoming a primitive that only fails
+    // much later during description/registry operations.
     public static JsValue SymbolFromId(long id)
     {
+        if (id <= 0 || !SymbolPool.ContainsKey(id))
+        {
+            throw new InvalidOperationException($"Unknown or stale symbol pool id {id}.");
+        }
+
         return new JsValue(JsValueTag.Symbol, id, 0);
     }
 
