@@ -13,6 +13,7 @@ on:
   push:
     branches:
       - main
+      - new
     paths-ignore:
       - "docs/**"
       - "Results/**"
