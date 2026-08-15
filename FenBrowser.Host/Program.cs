@@ -114,9 +114,10 @@ namespace FenBrowser.Host
             // 16 MB stack. Keep the original main thread blocked on the worker
             // so the process lifetime, console handlers, and CTRL-C semantics
             // continue to be owned by it.
-            if (Environment.GetEnvironmentVariable(LargeStackEnvVar) != "1")
+            string pidEnvVar = LargeStackEnvVar + "_" + System.Diagnostics.Process.GetCurrentProcess().Id;
+            if (Environment.GetEnvironmentVariable(pidEnvVar) != "1")
             {
-                Environment.SetEnvironmentVariable(LargeStackEnvVar, "1");
+                Environment.SetEnvironmentVariable(pidEnvVar, "1");
                 int exitCode = 0;
                 Exception capturedException = null;
                 var worker = new Thread(
