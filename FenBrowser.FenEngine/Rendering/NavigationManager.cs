@@ -314,6 +314,8 @@ namespace FenBrowser.FenEngine.Rendering
         private static byte[] PercentDecodeDataPayload(string payload, int maxBytes)
         {
             using var stream = new System.IO.MemoryStream(Math.Min(payload?.Length ?? 0, maxBytes));
+            Span<char> chars = stackalloc char[2];
+            Span<byte> utf8 = stackalloc byte[4];
             for (int i = 0; i < (payload?.Length ?? 0); i++)
             {
                 char ch = payload[i];
@@ -330,7 +332,6 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 else
                 {
-                    Span<char> chars = stackalloc char[2];
                     int charCount = 1;
                     chars[0] = ch;
                     if (char.IsHighSurrogate(ch) && i + 1 < payload.Length && char.IsLowSurrogate(payload[i + 1]))
@@ -339,7 +340,6 @@ namespace FenBrowser.FenEngine.Rendering
                         charCount = 2;
                     }
 
-                    Span<byte> utf8 = stackalloc byte[4];
                     int encoded = Encoding.UTF8.GetBytes(chars[..charCount], utf8);
                     stream.Write(utf8[..encoded]);
                 }

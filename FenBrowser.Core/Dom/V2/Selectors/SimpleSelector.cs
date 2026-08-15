@@ -32,21 +32,35 @@ namespace FenBrowser.Core.Dom.V2.Selectors
     /// </summary>
     public sealed class TypeSelector : SimpleSelector
     {
-        private readonly string _tagName; // Uppercase
+        private readonly string _tagName;
 
         public TypeSelector(string tagName)
         {
-            _tagName = tagName?.ToUpperInvariant() ?? "*";
+            _tagName = string.IsNullOrEmpty(tagName) ? "*" : tagName;
         }
 
         public override bool Matches(Element element)
         {
-            return element.TagName == _tagName;
+            if (element == null)
+                return false;
+
+            if (string.Equals(
+                    element.NamespaceUri,
+                    global::FenBrowser.Core.Dom.V2.Namespaces.Html,
+                    StringComparison.Ordinal))
+            {
+                return string.Equals(element.TagName, _tagName, StringComparison.OrdinalIgnoreCase);
+            }
+
+            return string.Equals(element.LocalName, _tagName, StringComparison.Ordinal);
         }
 
-        public override long ComputeBloomHint() => BloomFilter.Hash(_tagName);
+        // Ancestor bloom hints are only a prefilter. Canonicalizing the hint keeps it
+        // compatible with the existing element bloom construction while exact matching
+        // above retains foreign-namespace case sensitivity.
+        public override long ComputeBloomHint() => BloomFilter.Hash(_tagName.ToUpperInvariant());
         public override Specificity GetSpecificity() => new Specificity(0, 0, 1);
-        public override string ToString() => _tagName.ToLowerInvariant();
+        public override string ToString() => _tagName;
     }
 
     /// <summary>

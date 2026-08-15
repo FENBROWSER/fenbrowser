@@ -156,10 +156,12 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(localName))
                 throw new ArgumentException("Element name cannot be null or empty", nameof(localName));
 
-            LocalName = localName.ToLowerInvariant();
+            var isHtmlElement = namespaceUri == null || namespaceUri == Namespaces.Html;
+            LocalName = isHtmlElement ? localName.ToLowerInvariant() : localName;
 
-            // HTML elements have uppercase TagName, others preserve case
-            if (namespaceUri == null || namespaceUri == Namespaces.Html)
+            // HTML element names are ASCII case-insensitive and expose an uppercase
+            // HTML tagName. Foreign namespace names preserve their source/local case.
+            if (isHtmlElement)
             {
                 TagName = localName.ToUpperInvariant();
                 NamespaceUri = Namespaces.Html;

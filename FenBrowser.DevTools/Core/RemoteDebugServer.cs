@@ -402,7 +402,7 @@ public sealed class RemoteDebugServer : IDisposable
                 new
                 {
                     description = "FenBrowser Active Tab",
-                    devtoolsFrontendUrl,
+                    devtoolsFrontendUrl = devToolsFrontendUrl,
                     id = "1",
                     title = "FenBrowser Tab",
                     type = "page",

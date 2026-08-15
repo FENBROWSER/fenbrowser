@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Text;
@@ -198,6 +198,7 @@ namespace FenBrowser.Core.Parsing
             [0x9F] = 0x0178
         };
 
+        private const int MaxNamedCharacterReferenceDecodeCacheEntries = 4096;
         private static readonly Dictionary<string, string?> NamedCharacterReferenceDecodeCache = new(StringComparer.Ordinal);
         private static readonly object NamedCharacterReferenceDecodeCacheLock = new();
 
@@ -2760,7 +2761,11 @@ namespace FenBrowser.Core.Parsing
 
             lock (NamedCharacterReferenceDecodeCacheLock)
             {
-                NamedCharacterReferenceDecodeCache[name] = success ? decoded : null;
+                if (NamedCharacterReferenceDecodeCache.ContainsKey(name) ||
+                    NamedCharacterReferenceDecodeCache.Count < MaxNamedCharacterReferenceDecodeCacheEntries)
+                {
+                    NamedCharacterReferenceDecodeCache[name] = success ? decoded : null;
+                }
             }
 
             if (success)
