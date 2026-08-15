@@ -40,9 +40,9 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 char c = input[i];
 
                 // Whitespace
-                if (char.IsWhiteSpace(c))
+                if (IsCssWhitespace(c))
                 {
-                    while (i < input.Length && char.IsWhiteSpace(input[i]))
+                    while (i < input.Length && IsCssWhitespace(input[i]))
                         i++;
                     tokens.Add(new Token(TokenType.Whitespace, " "));
                     continue;
@@ -362,7 +362,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         private static void SkipWhitespace(string input, ref int i)
         {
-            while (i < input.Length && char.IsWhiteSpace(input[i]))
+            while (i < input.Length && IsCssWhitespace(input[i]))
                 i++;
         }
 
@@ -414,7 +414,7 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                     escaped = "\uFFFD";
                 }
 
-                if (i < input.Length && char.IsWhiteSpace(input[i]))
+                if (i < input.Length && IsCssWhitespace(input[i]))
                     i++;
 
                 return true;
@@ -430,6 +430,11 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             return (c >= '0' && c <= '9') ||
                    (c >= 'a' && c <= 'f') ||
                    (c >= 'A' && c <= 'F');
+        }
+
+        private static bool IsCssWhitespace(char c)
+        {
+            return c is '\t' or '\n' or '\f' or '\r' or ' ';
         }
 
         // --- Parser ---

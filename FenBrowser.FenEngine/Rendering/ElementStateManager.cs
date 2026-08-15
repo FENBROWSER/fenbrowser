@@ -567,7 +567,7 @@ namespace FenBrowser.FenEngine.Rendering
             id = element.GetAttribute("id");
             if (id != null)
             {
-                return string.Equals(id, _targetFragment, StringComparison.OrdinalIgnoreCase);
+                return string.Equals(id, _targetFragment, StringComparison.Ordinal);
             }
             return false;
         }
@@ -629,11 +629,28 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     try
                     {
-                        var regex = new System.Text.RegularExpressions.Regex($"^{pattern}$");
+                        var regex = new Regex(
+                            $"^(?:{pattern})$",
+                            RegexOptions.CultureInvariant,
+                            TimeSpan.FromMilliseconds(100));
                         if (!string.IsNullOrEmpty(value) && !regex.IsMatch(value))
                             return false;
                     }
-                    catch (Exception ex) { EngineLogCompat.Warn($"[ElementStateManager] Pattern validation failed: {ex.Message}", LogCategory.Rendering); }
+                    catch (RegexMatchTimeoutException)
+                    {
+                        EngineLogCompat.Warn(
+                            "[ElementStateManager] Pattern validation exceeded the regex execution budget.",
+                            LogCategory.Rendering);
+                        return false;
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        // Invalid HTML pattern syntax disables that constraint rather than
+                        // turning the control permanently invalid.
+                        EngineLogCompat.Debug(
+                            $"[ElementStateManager] Ignoring invalid pattern constraint: {ex.Message}",
+                            LogCategory.Rendering);
+                    }
                 }
                 
                 // Min/max for number types

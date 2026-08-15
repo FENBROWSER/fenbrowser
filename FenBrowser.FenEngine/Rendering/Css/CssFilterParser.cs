@@ -32,10 +32,29 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 string argsStr = match.Groups[2].Value.Trim();
 
                 SKImageFilter filter = CreateFilter(funcName, argsStr);
-                if (filter != null)
+                if (filter == null)
                 {
-                    // Chain filters (each filter takes the previous as input)
-                    combined = combined == null ? filter : SKImageFilter.CreateCompose(filter, combined);
+                    continue;
+                }
+
+                if (combined == null)
+                {
+                    combined = filter;
+                    continue;
+                }
+
+                // CreateCompose retains the native filter graph. Dispose the two
+                // temporary managed/native wrappers after constructing the next link.
+                var previous = combined;
+                combined = null;
+                try
+                {
+                    combined = SKImageFilter.CreateCompose(filter, previous);
+                }
+                finally
+                {
+                    filter.Dispose();
+                    previous.Dispose();
                 }
             }
 
@@ -199,9 +218,9 @@ namespace FenBrowser.FenEngine.Rendering.Css
 
         private static SKImageFilter CreateColorMatrixFilter(float[] matrix)
         {
-            if (matrix.Length != 20) return null;
-            var colorFilter = SKColorFilter.CreateColorMatrix(matrix);
-            return SKImageFilter.CreateColorFilter(colorFilter);
+            if (matrix == null || matrix.Length != 20) return null;
+            using var colorFilter = SKColorFilter.CreateColorMatrix(matrix);
+            return colorFilter == null ? null : SKImageFilter.CreateColorFilter(colorFilter);
         }
 
         private static SKImageFilter CreateHueRotateFilter(float degrees)

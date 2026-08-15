@@ -464,15 +464,8 @@ namespace FenBrowser.Core.Dom.V2.Selectors
             {
                 if (child is Element)
                     return false;
-
-                if (child is Text text && text.Data?.Length > 0)
-                {
-                    foreach (var ch in text.Data)
-                    {
-                        if (ch is not (' ' or '\t' or '\n' or '\r' or '\f'))
-                            return false;
-                    }
-                }
+                if (child is Text text && !string.IsNullOrEmpty(text.Data))
+                    return false;
             }
 
             return true;
@@ -1011,24 +1004,12 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         {
             if (_ofType)
             {
-                var tagName = element.TagName;
-                for (var sibling = element.PreviousElementSibling; sibling != null;
-                     sibling = sibling.PreviousElementSibling)
-                {
-                    if (sibling.TagName == tagName) return false;
-                }
-                for (var sibling = element.NextElementSibling; sibling != null;
-                     sibling = sibling.NextElementSibling)
-                {
-                    if (sibling.TagName == tagName) return false;
-                }
-                return true;
+                return SiblingIndexCache.GetTypeIndex(element, fromEnd: false) == 1 &&
+                       SiblingIndexCache.GetTypeIndex(element, fromEnd: true) == 1;
             }
-            else
-            {
-                return element.PreviousElementSibling == null &&
-                       element.NextElementSibling == null;
-            }
+
+            return element.PreviousElementSibling == null &&
+                   element.NextElementSibling == null;
         }
 
         public override Specificity GetSpecificity() => new Specificity(0, 1, 0);

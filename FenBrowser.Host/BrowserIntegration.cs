@@ -77,6 +77,7 @@ public class BrowserIntegration : IDisposable
     private int _engineThreadId;
     private int _lastInputDispatchThreadId;
     private readonly AutoResetEvent _wakeEvent = new AutoResetEvent(false);
+    private readonly Action _eventLoopWakeHandler;
     private bool _running = true;
     private long _inputSequence;
     private readonly int _maxInputEventsPerFrame;
@@ -312,6 +313,7 @@ public class BrowserIntegration : IDisposable
             ReadPositiveIntEnvironment("FEN_INPUT_DRAIN_BUDGET_MS", 2));
         _slowInputThresholdMs = ReadPositiveIntEnvironment("FEN_INPUT_SLOW_THRESHOLD_MS", 50);
         OwnerTab = ownerTab;
+        _eventLoopWakeHandler = () => _wakeEvent.Set();
         _browser = new BrowserHost(options: BrowserIntegrationRuntime.CreateBrowserHostOptions());
         _renderer = new SkiaDomRenderer();
 
@@ -899,7 +901,7 @@ public class BrowserIntegration : IDisposable
 
         if (_browser?.Engine?.EventLoopCoordinator != null)
         {
-            _browser.Engine.EventLoopCoordinator.OnWorkEnqueued -= () => _wakeEvent.Set();
+            _browser.Engine.EventLoopCoordinator.OnWorkEnqueued -= _eventLoopWakeHandler;
         }
 
         // 5. Dispose rendering resources in safe order.
@@ -1476,7 +1478,7 @@ public class BrowserIntegration : IDisposable
     {
         Volatile.Write(ref _engineThreadId, Environment.CurrentManagedThreadId);
         var coordinator = _browser.Engine.EventLoopCoordinator;
-        coordinator.OnWorkEnqueued += () => _wakeEvent.Set();
+        coordinator.OnWorkEnqueued += _eventLoopWakeHandler;
 
         while (_running)
         {
