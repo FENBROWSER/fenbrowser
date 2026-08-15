@@ -10,6 +10,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Globalization;
 using System.Text.Json;
 using System.Threading.Tasks;
 using FenBrowser.WebDriver.Protocol;
@@ -543,7 +544,7 @@ namespace FenBrowser.WebDriver.Commands
             }
 
             if (!string.IsNullOrWhiteSpace(cookie.Domain) &&
-                !CookieDomainMatches(currentUri.Host, cookie.Domain))
+                !CookieDomainMatches(currentUri.IdnHost, cookie.Domain))
             {
                 throw new WebDriverException(ErrorCodes.InvalidCookieDomain, "Cookie domain does not match the current document domain");
             }
@@ -577,15 +578,52 @@ namespace FenBrowser.WebDriver.Commands
 
         private static bool CookieDomainMatches(string host, string domain)
         {
-            if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(domain))
+            if (!TryCanonicalizeCookieDomain(host, trimLeadingDot: false, out var normalizedHost) ||
+                !TryCanonicalizeCookieDomain(domain, trimLeadingDot: true, out var normalizedDomain))
             {
                 return false;
             }
 
-            var normalizedHost = host.TrimEnd('.').ToLowerInvariant();
-            var normalizedDomain = domain.Trim().TrimStart('.').TrimEnd('.').ToLowerInvariant();
-            return normalizedHost.Equals(normalizedDomain, StringComparison.Ordinal) ||
-                   normalizedHost.EndsWith("." + normalizedDomain, StringComparison.Ordinal);
+            if (normalizedHost.Equals(normalizedDomain, StringComparison.Ordinal))
+                return true;
+
+            if (System.Net.IPAddress.TryParse(normalizedHost, out _) ||
+                System.Net.IPAddress.TryParse(normalizedDomain, out _))
+            {
+                return false;
+            }
+
+            return normalizedHost.EndsWith("." + normalizedDomain, StringComparison.Ordinal);
+        }
+
+        private static bool TryCanonicalizeCookieDomain(
+            string value,
+            bool trimLeadingDot,
+            out string canonicalDomain)
+        {
+            canonicalDomain = string.Empty;
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            var candidate = value.Trim();
+            if (trimLeadingDot)
+                candidate = candidate.TrimStart('.');
+            candidate = candidate.TrimEnd('.');
+            if (candidate.Length == 0)
+                return false;
+
+            try
+            {
+                if (!System.Net.IPAddress.TryParse(candidate, out _))
+                    candidate = new IdnMapping().GetAscii(candidate);
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+
+            canonicalDomain = candidate.ToLowerInvariant();
+            return true;
         }
 
         private async Task<WebDriverResponse> DeleteCookieAsync(string sessionId, string name)

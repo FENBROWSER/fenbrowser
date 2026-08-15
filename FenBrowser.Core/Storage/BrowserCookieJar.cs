@@ -19,6 +19,8 @@ namespace FenBrowser.Core.Storage
     /// </summary>
     public sealed class BrowserCookieJar
     {
+        private const int MaxCookieLineChars = 16 * 1024;
+        private const int MaxCookieAttributes = 64;
         private readonly StorageService _storage;
 
         public BrowserCookieJar(StorageService storage = null)
@@ -186,8 +188,9 @@ namespace FenBrowser.Core.Storage
                 return;
 
             var context = BuildContext(documentUri, topLevelDocumentUri);
-            _storage.Cookies.DeleteByName(documentUri.Host, name, context.PartitionKey);
-            _storage.Cookies.DeleteByName(documentUri.Host, name, null);
+            var canonicalHost = documentUri.IdnHost;
+            _storage.Cookies.DeleteByName(canonicalHost, name, context.PartitionKey);
+            _storage.Cookies.DeleteByName(canonicalHost, name, null);
         }
 
         private string BuildCookieString(
@@ -335,6 +338,16 @@ namespace FenBrowser.Core.Storage
                 return false;
             }
 
+            if (cookieString.Length > MaxCookieLineChars)
+                return false;
+
+            var attributeSeparators = 0;
+            for (var i = 0; i < cookieString.Length; i++)
+            {
+                if (cookieString[i] == ';' && ++attributeSeparators > MaxCookieAttributes)
+                    return false;
+            }
+
             var segments = cookieString.Split(';');
             if (segments.Length == 0)
                 return false;
@@ -398,8 +411,7 @@ namespace FenBrowser.Core.Storage
                         // attributes, matching the cookie attribute-list algorithm.
                         if (!string.IsNullOrEmpty(attributeValue))
                         {
-                            var candidate = attributeValue.TrimStart('.').ToLowerInvariant();
-                            if (!IsAsciiCookieDomain(candidate))
+                            if (!TryCanonicalizeCookieDomain(attributeValue, out var candidate))
                                 return false;
                             lastDomainAttribute = candidate;
                         }
@@ -560,6 +572,31 @@ namespace FenBrowser.Core.Storage
             {
                 if (char.IsControl(c) || c == ';') return false;
             }
+            return true;
+        }
+
+        private static bool TryCanonicalizeCookieDomain(string value, out string canonicalDomain)
+        {
+            canonicalDomain = string.Empty;
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            var candidate = value.Trim().TrimStart('.');
+            try
+            {
+                if (!System.Net.IPAddress.TryParse(candidate, out _))
+                    candidate = new IdnMapping().GetAscii(candidate);
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+
+            candidate = candidate.ToLowerInvariant();
+            if (!IsAsciiCookieDomain(candidate))
+                return false;
+
+            canonicalDomain = candidate;
             return true;
         }
 

@@ -21,6 +21,7 @@ namespace FenBrowser.Core.Storage
     public static class CookieDiagnostics
     {
         private const string EnvVar = "FEN_LOG_COOKIES";
+        private const int MaxDiagnosticCookieNameChars = 256;
 
         private static readonly bool _envEnabled =
             string.Equals(
@@ -89,12 +90,12 @@ namespace FenBrowser.Core.Storage
                 }
                 if (responseUri != null)
                 {
-                    entry.WithData("responseHost", responseUri.Host);
+                    entry.WithData("responseHost", responseUri.IdnHost);
                     entry.WithData("responsePath", responseUri.AbsolutePath);
                 }
                 if (topLevelDocumentUri != null)
                 {
-                    entry.WithData("topLevelHost", topLevelDocumentUri.Host);
+                    entry.WithData("topLevelHost", topLevelDocumentUri.IdnHost);
                 }
 
                 LogManager.Log(entry);
@@ -135,12 +136,12 @@ namespace FenBrowser.Core.Storage
                 entry.WithData("reason", reason ?? "unknown");
                 if (responseUri != null)
                 {
-                    entry.WithData("responseHost", responseUri.Host);
+                    entry.WithData("responseHost", responseUri.IdnHost);
                     entry.WithData("responsePath", responseUri.AbsolutePath);
                 }
                 if (topLevelDocumentUri != null)
                 {
-                    entry.WithData("topLevelHost", topLevelDocumentUri.Host);
+                    entry.WithData("topLevelHost", topLevelDocumentUri.IdnHost);
                 }
 
                 LogManager.Log(entry);
@@ -181,7 +182,7 @@ namespace FenBrowser.Core.Storage
                 };
 
                 entry.WithData("event", "outbound-cookie-header");
-                entry.WithData("requestHost", requestUri?.Host ?? string.Empty);
+                entry.WithData("requestHost", requestUri?.IdnHost ?? string.Empty);
                 entry.WithData("requestPath", requestUri?.AbsolutePath ?? string.Empty);
                 entry.WithData("requestMethod", requestMethod ?? string.Empty);
                 entry.WithData("cookieCount", cookies.Count);
@@ -189,7 +190,7 @@ namespace FenBrowser.Core.Storage
                 entry.WithData("topLevelNavigation", isTopLevelNavigation);
                 if (topLevelDocumentUri != null)
                 {
-                    entry.WithData("topLevelHost", topLevelDocumentUri.Host);
+                    entry.WithData("topLevelHost", topLevelDocumentUri.IdnHost);
                 }
 
                 LogManager.Log(entry);
@@ -205,7 +206,11 @@ namespace FenBrowser.Core.Storage
             if (string.IsNullOrEmpty(rawHeader)) return "<empty>";
             var eq = rawHeader.IndexOf('=');
             if (eq <= 0) return "<malformed>";
-            return rawHeader.Substring(0, eq).Trim();
+
+            var name = rawHeader.Substring(0, eq).Trim();
+            return name.Length <= MaxDiagnosticCookieNameChars
+                ? name
+                : name.Substring(0, MaxDiagnosticCookieNameChars) + "…";
         }
     }
 }
