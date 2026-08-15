@@ -13,12 +13,10 @@ namespace FenBrowser.Js.Objects;
 // weak entries are removed opportunistically so their string keys do not turn
 // the process-global root transition table into an unbounded name registry.
 //
-// Name→slot lookup uses a chain map shared by every shape along a linear
-// transition chain. Appending a property extends the shared map in place
-// (O(1)); only branch points copy. A shape sharing a map of N entries owns
-// exactly the entries with slot < PropertyCount — entries past that belong to
-// deeper shapes on the chain — so lookups validate the slot against
-// PropertyCount.
+// Name→slot lookup uses a chain map shared by shapes along one live linear
+// transition chain. The immortal root shape never lends out its own chain map:
+// doing so would make page-controlled property names added to the first chain
+// process-lifetime roots even after all of the corresponding shapes died.
 public class Shape
 {
     private const int TransitionPruneInterval = 64;
@@ -65,22 +63,28 @@ public class Shape
 
         // Extending a shared chain is a compound operation: Tail must still point
         // exactly at the parent depth, the property must claim that one slot, and
-        // Tail must advance as one atomic decision. Without this gate two sibling
-        // transitions can both observe Tail=N and insert different names at slot N,
-        // after which each sibling incorrectly sees the other's property.
-        lock (parentChain.ExtensionGate)
+        // Tail must advance as one atomic decision. The process-lifetime root is
+        // intentionally excluded: otherwise the first property of every linear
+        // chain would be inserted into an immortal dictionary and could never be
+        // reclaimed even though root transitions themselves are weak.
+        if (!ReferenceEquals(parent, _root))
         {
-            if (parentChain.Tail == parent.PropertyCount &&
-                parentChain.Map.TryAdd(property, _addedSlot))
+            lock (parentChain.ExtensionGate)
             {
-                parentChain.Tail++;
-                _chain = parentChain;
-                return;
+                if (parentChain.Tail == parent.PropertyCount &&
+                    parentChain.Map.TryAdd(property, _addedSlot))
+                {
+                    parentChain.Tail++;
+                    _chain = parentChain;
+                    return;
+                }
             }
         }
 
-        // Branch point (or a stale entry from a dead sibling chain): build a
-        // private map for this new chain by walking the lineage once.
+        // Branch point, first child of the immortal root, or a stale entry from a
+        // dead sibling chain: build a private map for this new live chain by
+        // walking the lineage once. Once the chain's shapes die, this map and all
+        // of its page-controlled strings can die with them.
         var chain = new ChainMap { Tail = PropertyCount };
         chain.Map[property] = _addedSlot;
         for (Shape? s = parent; s != null && s != _root; s = s._parent)
