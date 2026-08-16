@@ -1301,12 +1301,13 @@ public Uri LastTextResponseUri { get; private set; }
             var cachePartition = SafePartition(referer?.Host);
             if (_textCache.TryGet(cachePartition, cacheKey, out var cachedDetailed))
             {
-                LastTextResponseUri = url;
+                var cachedFinalUri = cachedDetailed.FinalUri ?? url;
+                LastTextResponseUri = cachedFinalUri;
                 return new FetchResult
                 {
                     Status = FetchStatus.Success,
                     Content = cachedDetailed.Body,
-                    FinalUri = url,
+                    FinalUri = cachedFinalUri,
                     ContentType = cachedDetailed.ContentType
                 };
             }
