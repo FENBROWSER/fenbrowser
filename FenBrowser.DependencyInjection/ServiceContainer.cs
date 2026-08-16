@@ -30,7 +30,7 @@ public interface IServiceScope : IDisposable
 
 public sealed class ServiceContainer : IServiceContainer, IDisposable
 {
-    private static readonly AsyncLocal<Stack<Type>?> ResolutionStack = new();
+    private static readonly AsyncLocal<Stack<ResolutionFrame>?> ResolutionStack = new();
     private static readonly object SingletonWaitGraphLock = new();
     private static readonly Dictionary<int, int> SingletonWaitGraph = new();
 
@@ -160,23 +160,27 @@ public sealed class ServiceContainer : IServiceContainer, IDisposable
         }
     }
 
-    private static ResolutionGuard EnterResolution(Type serviceType)
+    private ResolutionGuard EnterResolution(Type serviceType)
     {
         var stack = ResolutionStack.Value;
         if (stack == null)
         {
-            stack = new Stack<Type>();
+            stack = new Stack<ResolutionFrame>();
             ResolutionStack.Value = stack;
         }
 
-        if (stack.Contains(serviceType))
+        var frame = new ResolutionFrame(this, serviceType);
+        if (stack.Contains(frame))
         {
-            var chain = stack.Reverse().Append(serviceType).Select(type => type.Name);
+            var chain = stack
+                .Reverse()
+                .Append(frame)
+                .Select(entry => entry.ServiceType.Name);
             throw new InvalidOperationException(
                 $"Circular service dependency detected: {string.Join(" -> ", chain)}");
         }
 
-        stack.Push(serviceType);
+        stack.Push(frame);
         return new ResolutionGuard(stack);
     }
 
@@ -426,11 +430,13 @@ public sealed class ServiceContainer : IServiceContainer, IDisposable
         }
     }
 
+    private readonly record struct ResolutionFrame(ServiceContainer Container, Type ServiceType);
+
     private readonly struct ResolutionGuard : IDisposable
     {
-        private readonly Stack<Type>? _stack;
+        private readonly Stack<ResolutionFrame>? _stack;
 
-        public ResolutionGuard(Stack<Type> stack)
+        public ResolutionGuard(Stack<ResolutionFrame> stack)
         {
             _stack = stack;
         }
