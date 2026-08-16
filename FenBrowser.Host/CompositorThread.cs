@@ -111,18 +111,33 @@ public sealed class CompositorThread : IDisposable
 
     public void Stop()
     {
+        bool started;
         lock (_stateLock)
         {
-            if (!_running)
-            {
-                return;
-            }
-
+            started = _started;
             _running = false;
         }
 
+        if (!started)
+        {
+            return;
+        }
+
+        if (ReferenceEquals(Thread.CurrentThread, _thread))
+        {
+            throw new InvalidOperationException(
+                "The compositor thread cannot synchronously stop itself.");
+        }
+
         _wakeEvent.Set();
-        _thread.Join(TimeSpan.FromSeconds(2));
+        if (!_thread.Join(TimeSpan.FromSeconds(2)))
+        {
+            // Do not let Dispose continue after this point. The worker still owns
+            // _outputSurface/_latestFrame/_wakeEvent and disposing them underneath
+            // a live native/render callback creates a use-after-dispose race.
+            throw new TimeoutException(
+                "Compositor thread did not terminate within the shutdown deadline; owned resources were left intact.");
+        }
     }
 
     public void UpdateViewport(int logicalWidth, int logicalHeight, float dpiScale)
