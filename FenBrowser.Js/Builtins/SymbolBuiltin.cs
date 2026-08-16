@@ -80,7 +80,7 @@ public sealed class SymbolBuiltin : IBuiltinModule
             if (thisValue.Tag == JsValueTag.Object &&
                 context.Heap.GetObject(thisValue.AsObjectHandle()) is SymbolObject symbolObject)
             {
-                return JsValue.SymbolFromId(symbolObject.SymbolId);
+                return symbolObject.SymbolValue;
             }
 
             throw new JsThrownException(context.CreateTypeError("Symbol.prototype.valueOf called on incompatible receiver."));
@@ -91,7 +91,7 @@ public sealed class SymbolBuiltin : IBuiltinModule
             var symbol = thisValue.Tag == JsValueTag.Symbol
                 ? thisValue
                 : thisValue.Tag == JsValueTag.Object && context.Heap.GetObject(thisValue.AsObjectHandle()) is SymbolObject symbolObject
-                    ? JsValue.SymbolFromId(symbolObject.SymbolId)
+                    ? symbolObject.SymbolValue
                     : throw new JsThrownException(context.CreateTypeError("Symbol.prototype.toString called on incompatible receiver."));
             return JsValue.FromString("Symbol(" + (symbol.AsSymbolDescription() ?? string.Empty) + ")");
         }, length: 0);
@@ -102,7 +102,7 @@ public sealed class SymbolBuiltin : IBuiltinModule
             var symbol = thisValue.Tag == JsValueTag.Symbol
                 ? thisValue
                 : thisValue.Tag == JsValueTag.Object && context.Heap.GetObject(thisValue.AsObjectHandle()) is SymbolObject symbolObject
-                    ? JsValue.SymbolFromId(symbolObject.SymbolId)
+                    ? symbolObject.SymbolValue
                     : throw new JsThrownException(context.CreateTypeError("Symbol.prototype.description called on incompatible receiver."));
             var desc = symbol.AsSymbolDescription();
             return desc is null ? JsValue.Undefined : JsValue.FromString(desc);
@@ -119,7 +119,7 @@ public sealed class SymbolBuiltin : IBuiltinModule
             {
                 if (thisValue.Tag == JsValueTag.Symbol) return thisValue;
                 if (thisValue.Tag == JsValueTag.Object && heap.GetObject(thisValue.AsObjectHandle()) is SymbolObject so)
-                    return JsValue.SymbolFromId(so.SymbolId);
+                    return so.SymbolValue;
                 throw new JsThrownException(context.CreateTypeError("Symbol.prototype[@@toPrimitive] called on incompatible receiver."));
             }, length: 1);
         var toPrimitiveFnHandle = heap.AllocateObject(toPrimitiveFn, AllocationSite.Current());

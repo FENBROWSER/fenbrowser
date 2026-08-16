@@ -1,4 +1,4 @@
-﻿using FenBrowser.Js.Bytecode;
+using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;

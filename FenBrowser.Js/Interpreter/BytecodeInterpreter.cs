@@ -189,7 +189,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     ObjectHandle IBuiltinContext.GetParseIntFunction() => EnsureParseIntFunction();
     ObjectHandle IBuiltinContext.GetFunctionCallMethod() => EnsureFunctionCallMethod();
     ObjectHandle IBuiltinContext.GetParseFloatFunction() => EnsureParseFloatFunction();
-    JsValue IBuiltinContext.CreateSymbol(string? description) => JsValue.FromSymbol(description);
+    JsValue IBuiltinContext.CreateSymbol(string? description) => CreateSymbolValue(description);
     JsValue IBuiltinContext.CreateWellKnownSymbol(string name) => GetWellKnownSymbol(name);
     JsValue IBuiltinContext.SymbolFor(string key) => SymbolFor(key);
     JsValue IBuiltinContext.SymbolKeyFor(long id) => SymbolKeyFor(id);
@@ -363,15 +363,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Well-known symbol ids cached at first Symbol-constructor materialisation. JS
     // code that reads Symbol.iterator twice must get === values; a single id per
     // well-known symbol guarantees that.
-    private readonly Dictionary<string, long> _wellKnownSymbols = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, JsValue> _wellKnownSymbols = new(StringComparer.Ordinal);
 
-    // ECMA-262 20.4.2.2 the GlobalSymbolRegistry: a globally-shared String-keyed map
-    // of Symbol values. Symbol.for(k) returns the existing one if k is registered,
-    // otherwise mints a fresh symbol with description=k and registers it. Symbol.
-    // keyFor(s) returns the key under which s was registered, or undefined.
-    // GlobalSymbolRegistry is shared by ALL realms per spec (cross-realm).
-    private static readonly Dictionary<string, long> _symbolRegistryByKey = new(StringComparer.Ordinal);
-    private static readonly Dictionary<long, string> _symbolRegistryById = new();
+    // ECMA-262 GlobalSymbolRegistry is agent-scoped, not process-scoped. A
+    // BytecodeInterpreter is the current FenJS agent owner, so registry lifetime and
+    // symbol metadata end with that interpreter instead of leaking across tabs/sites.
+    private readonly Dictionary<string, JsValue> _symbolRegistryByKey = new(StringComparer.Ordinal);
+    private readonly Dictionary<long, string> _symbolRegistryById = new();
+    private readonly Dictionary<long, JsValue> _symbolsById = new();
 
     // Plan §14.2: instruction budget. Zero = no limit.
     public int InstructionBudget { get; set; }
@@ -3401,7 +3400,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var desc = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
                     ? ToStringValue(args[0])
                     : null;
-                return JsValue.FromSymbol(desc);
+                return CreateSymbolValue(desc);
             },
             _ => throw new JsThrownException(CreateTypeError("Symbol is not a constructor.")),
             length: 0);
@@ -3432,13 +3431,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         DefineIntrinsicFunction(handle, constructor, "for", (_, args) =>
         {
             var key = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
-            if (_symbolRegistryByKey.TryGetValue(key, out var existingId))
+            if (_symbolRegistryByKey.TryGetValue(key, out var existing))
             {
-                return JsValue.SymbolFromId(existingId);
+                return existing;
             }
-            var fresh = JsValue.FromSymbol(key);
+            var fresh = CreateSymbolValue(key);
             var id = fresh.AsSymbolId();
-            _symbolRegistryByKey[key] = id;
+            _symbolRegistryByKey[key] = fresh;
             _symbolRegistryById[id] = key;
             return fresh;
         }, length: 1);
@@ -3460,10 +3459,26 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return handle;
     }
 
+    private JsValue CreateSymbolValue(string? description)
+    {
+        var symbol = JsValue.FromSymbol(description);
+        _symbolsById[symbol.AsSymbolId()] = symbol;
+        return symbol;
+    }
+
+    private JsValue ResolveSymbol(long symbolId)
+    {
+        if (_symbolsById.TryGetValue(symbolId, out var symbol))
+            return symbol;
+
+        throw new InvalidOperationException(
+            $"Unknown Symbol identity {symbolId}; symbol keys must be owned by this FenJS agent.");
+    }
+
     private void InstallWellKnownSymbol(NativeFunctionObject constructor, string name)
     {
-        var symbol = JsValue.FromSymbol("Symbol." + name);
-        _wellKnownSymbols[name] = symbol.AsSymbolId();
+        var symbol = CreateSymbolValue("Symbol." + name);
+        _wellKnownSymbols[name] = symbol;
         constructor.DefineOwnProperty(name, new JsPropertyDescriptor(
             symbol, Writable: false, Enumerable: false, Configurable: false));
     }
@@ -3471,17 +3486,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue GetWellKnownSymbol(string name)
     {
         if (_wellKnownSymbols.Count == 0) _ = EnsureSymbolConstructor();
-        return _wellKnownSymbols.TryGetValue(name, out var id)
-            ? JsValue.SymbolFromId(id) : JsValue.Undefined;
+        return _wellKnownSymbols.TryGetValue(name, out var symbol)
+            ? symbol : JsValue.Undefined;
     }
 
     private JsValue SymbolFor(string key)
     {
-        if (_symbolRegistryByKey.TryGetValue(key, out var existingId))
-            return JsValue.SymbolFromId(existingId);
-        var fresh = JsValue.FromSymbol(key);
+        if (_symbolRegistryByKey.TryGetValue(key, out var existing))
+            return existing;
+        var fresh = CreateSymbolValue(key);
         var id = fresh.AsSymbolId();
-        _symbolRegistryByKey[key] = id;
+        _symbolRegistryByKey[key] = fresh;
         _symbolRegistryById[id] = key;
         return fresh;
     }
@@ -3503,7 +3518,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _ = EnsureSymbolConstructor();
         }
 
-        return _wellKnownSymbols.TryGetValue(name, out var id) ? id : 0;
+        return _wellKnownSymbols.TryGetValue(name, out var symbol) ? symbol.AsSymbolId() : 0;
     }
 
     // ECMA-262 24.2 Set. Backed by a List<JsValue> per instance for SameValueZero
@@ -5083,7 +5098,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 foreach (var p in obj.EnumerateOwnSymbolProperties())
                 {
-                    items.Add(JsValue.SymbolFromId(p.Key));
+                    items.Add(ResolveSymbol(p.Key));
                 }
             }
 
@@ -8791,7 +8806,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (trap is not null)
         {
             var target = JsValue.FromObject(proxy.TargetHandle);
-            var propVal = JsValue.SymbolFromId(symbolId);
+            var propVal = ResolveSymbol(symbolId);
             return CallFunction(trap.Value, new[] { target, propVal, receiver },
                 JsValue.FromObject(proxy.HandlerHandle!.Value));
         }
@@ -9228,7 +9243,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         foreach (var p in targetObj.EnumerateOwnSymbolProperties())
         {
-            fallback.Add(JsValue.SymbolFromId(p.Key));
+            fallback.Add(ResolveSymbol(p.Key));
         }
         return fallback;
     }
@@ -12213,7 +12228,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 foreach (var pair in obj.EnumerateOwnSymbolProperties())
                 {
-                    symbols.Add(JsValue.SymbolFromId(pair.Key));
+                    symbols.Add(ResolveSymbol(pair.Key));
                 }
             }
 
@@ -21345,7 +21360,7 @@ fallbackArraySpecies:
 
     private JsValue CreateSymbolObject(long symbolId)
     {
-        var obj = new SymbolObject(symbolId);
+        var obj = new SymbolObject(ResolveSymbol(symbolId));
         obj.SetPrototype(GetGlobalPrototype("Symbol"));
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
@@ -22173,7 +22188,7 @@ fallbackArraySpecies:
                     primitive = JsValue.FromString(stringObject.Value);
                     return true;
                 case SymbolObject symbolObject:
-                    primitive = JsValue.SymbolFromId(symbolObject.SymbolId);
+                    primitive = symbolObject.SymbolValue;
                     return true;
             }
 

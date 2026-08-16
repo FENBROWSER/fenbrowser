@@ -144,7 +144,7 @@ public sealed partial class BytecodeInterpreter
     {
         if (_intlFallbackSymbol.Tag == JsValueTag.Undefined)
         {
-            _intlFallbackSymbol = JsValue.FromSymbol("IntlLegacyConstructedSymbol");
+            _intlFallbackSymbol = CreateSymbolValue("IntlLegacyConstructedSymbol");
         }
 
         return _intlFallbackSymbol;
