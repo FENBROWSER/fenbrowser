@@ -363,9 +363,13 @@ public Uri LastTextResponseUri { get; private set; }
             return Math.Max(1, resilience.RequestTimeoutSeconds);
         }
 
-        private static string SafePartition(string origin)
+        private static string ComputeLegacyNetworkPartition(Uri requestUri, Uri initiatorUri)
         {
-            return string.IsNullOrWhiteSpace(origin) ? "default" : origin.ToLowerInvariant();
+            var frame = initiatorUri ?? requestUri;
+            var topLevel = frame ?? requestUri;
+            return StoragePartitionKeyFactory
+                .Compute(topLevel?.AbsoluteUri, frame?.AbsoluteUri)
+                .ToStorageKey();
         }
 
         private static Uri ExtractOrigin(Uri candidate)
@@ -960,7 +964,7 @@ public Uri LastTextResponseUri { get; private set; }
             // Direct Send via NetworkClient
             // Cache Setup
             var key = url.ToString();
-            string partition = SafePartition(referer?.Host);
+            string partition = ComputeLegacyNetworkPartition(url, referer);
             
             // 1. Sharded Memory Lookup
             if (_textCache.TryGet(partition, key, out var memEntry))
@@ -1118,8 +1122,8 @@ public Uri LastTextResponseUri { get; private set; }
                     // Phase 2.3: Sharded Memory Cache
                     var entry = new TextEntry { Body = text ?? string.Empty, ContentType = ct ?? string.Empty, FinalUri = finalUri };
                     
-                    // Partition by Referer Host (or default)
-                    string partitionKey = SafePartition(refererOriginal?.Host);
+                    // Partition by immutable browsing-context network partition
+                    string partitionKey = ComputeLegacyNetworkPartition(url, refererOriginal);
                     _textCache.Put(partitionKey, key, entry);
 
                     // disk cache (skip if private)
@@ -1298,7 +1302,7 @@ public Uri LastTextResponseUri { get; private set; }
             // speculative preload fetch was wasted because nothing else
             // consulted the cache it warmed.
             var cacheKey = url.ToString();
-            var cachePartition = SafePartition(referer?.Host);
+            var cachePartition = context.NetworkPartitionKey.ToStorageKey();
             if (_textCache.TryGet(cachePartition, cacheKey, out var cachedDetailed))
             {
                 var cachedFinalUri = cachedDetailed.FinalUri ?? url;
@@ -1924,7 +1928,7 @@ public Uri LastTextResponseUri { get; private set; }
             var key = url.AbsoluteUri;
 
             // Sharded Lookup
-            string partition = SafePartition(topLevelDocumentUri?.Host);
+            string partition = context.NetworkPartitionKey.ToStorageKey();
             if (_imgCache.TryGet(partition, key, out var imgEntry))
             {
                 if (imgEntry.Buffer != null)
@@ -2019,7 +2023,7 @@ public Uri LastTextResponseUri { get; private set; }
                 var entry = new ImgEntry { Buffer = buf, ContentType = resp.Content != null && resp.Content.Headers != null && resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : null };
                 
                 // Phase 2.3: Sharded Image Cache
-                string partitionKey = SafePartition(topLevelDocumentUri?.Host);
+                string partitionKey = context.NetworkPartitionKey.ToStorageKey();
                 _imgCache.Put(partitionKey, key, entry);
 
                 return new MemoryStream(buf);

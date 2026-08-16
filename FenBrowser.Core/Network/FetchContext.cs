@@ -1,5 +1,6 @@
 using System;
 using System.Net.Http;
+using FenBrowser.Core.Storage;
 
 namespace FenBrowser.Core.Network;
 
@@ -20,6 +21,20 @@ public sealed record FetchContext
     public bool IsTopLevelNavigation { get; init; }
     public bool IsUserInitiated { get; init; }
     public string Method { get; init; } = "GET";
+
+    /// <summary>
+    /// Immutable network/storage partition identity derived from the browsing
+    /// context, never from the Referer header. Redirects do not change it.
+    /// </summary>
+    public StoragePartitionKey NetworkPartitionKey
+    {
+        get
+        {
+            var topLevel = TopLevelDocumentUri ?? FrameDocumentUri ?? InitiatorUri ?? RequestUri;
+            var frame = FrameDocumentUri ?? InitiatorUri ?? RequestUri;
+            return StoragePartitionKeyFactory.Compute(topLevel?.AbsoluteUri, frame?.AbsoluteUri);
+        }
+    }
 }
 
 /// <summary>
