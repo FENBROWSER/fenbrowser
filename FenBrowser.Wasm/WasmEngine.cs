@@ -162,7 +162,8 @@ public sealed class WasmEngine : IDisposable
             tables: _limits.MaxTables,
             memories: _limits.MaxMemories);
 
-        // Set initial fuel budget.
+        // Seed the store with a valid budget before instantiation. Each guest call
+        // receives a fresh per-invocation budget in ResetExecutionDeadline().
         store.Fuel = _limits.MaxFuelPerInstance;
 
         ResetExecutionDeadline(store);
@@ -170,15 +171,16 @@ public sealed class WasmEngine : IDisposable
     }
 
     /// <summary>
-    /// Refreshes the Wasmtime epoch deadline for one guest invocation. Epoch
-    /// deadlines are relative to the engine's current epoch, so installing the
-    /// deadline only when the Store is created would make later calls inherit a
-    /// stale/expired timeout.
+    /// Refreshes the per-invocation Wasmtime execution budget. Fuel must be
+    /// replenished for every guest call; otherwise a long-lived instance permanently
+    /// exhausts an instance-lifetime allowance even when each individual call stays
+    /// within policy. Epoch deadlines are also relative to the engine's current epoch.
     /// </summary>
     internal void ResetExecutionDeadline(Store store)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(store);
+        store.Fuel = _limits.MaxFuelPerInstance;
         store.SetEpochDeadline(ComputeExecutionDeadlineTicks());
     }
 
