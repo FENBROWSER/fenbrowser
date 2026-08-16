@@ -42,29 +42,7 @@ namespace FenBrowser.Core.Dom.V2
             if (target == null)
                 throw new ArgumentNullException(nameof(target));
 
-            if (!options.ChildList && !options.Attributes && !options.CharacterData)
-            {
-                throw new DomException(
-                    "TypeError",
-                    "At least one of childList, attributes, or characterData must be true");
-            }
-
-            if (options.AttributeOldValue && !options.Attributes)
-                throw new DomException("TypeError", "attributeOldValue requires attributes to be true");
-
-            if (options.AttributeFilter != null &&
-                options.AttributeFilter.Length > 0 &&
-                !options.Attributes)
-            {
-                throw new DomException("TypeError", "attributeFilter requires attributes to be true");
-            }
-
-            if (options.CharacterDataOldValue && !options.CharacterData)
-            {
-                throw new DomException(
-                    "TypeError",
-                    "characterDataOldValue requires characterData to be true");
-            }
+            options = NormalizeOptions(options);
 
             if (target is ContainerNode container)
             {
@@ -83,6 +61,59 @@ namespace FenBrowser.Core.Dom.V2
                     wr => !wr.TryGetTarget(out var node) || ReferenceEquals(node, target));
                 _observedNodes.Add(new WeakReference<Node>(target));
             }
+        }
+
+        private static MutationObserverInit NormalizeOptions(MutationObserverInit options)
+        {
+            // DOM's observe() algorithm distinguishes an omitted dictionary member
+            // from an explicitly supplied false value. attributeOldValue/
+            // attributeFilter and characterDataOldValue implicitly enable their
+            // corresponding observation type only when that type was omitted.
+            if (options.AttributeOldValue && options.Attributes == false)
+            {
+                throw new DomException(
+                    "TypeError",
+                    "attributeOldValue cannot be true when attributes is explicitly false");
+            }
+
+            if (options.AttributeFilter != null && options.Attributes == false)
+            {
+                throw new DomException(
+                    "TypeError",
+                    "attributeFilter cannot be present when attributes is explicitly false");
+            }
+
+            if (options.CharacterDataOldValue && options.CharacterData == false)
+            {
+                throw new DomException(
+                    "TypeError",
+                    "characterDataOldValue cannot be true when characterData is explicitly false");
+            }
+
+            if (!options.Attributes.HasValue &&
+                (options.AttributeOldValue || options.AttributeFilter != null))
+            {
+                options.Attributes = true;
+            }
+
+            if (!options.CharacterData.HasValue && options.CharacterDataOldValue)
+            {
+                options.CharacterData = true;
+            }
+
+            options.Attributes ??= false;
+            options.CharacterData ??= false;
+
+            if (!options.ChildList &&
+                options.Attributes != true &&
+                options.CharacterData != true)
+            {
+                throw new DomException(
+                    "TypeError",
+                    "At least one of childList, attributes, or characterData must be true");
+            }
+
+            return options;
         }
 
         public void Disconnect()
@@ -233,8 +264,8 @@ namespace FenBrowser.Core.Dom.V2
     public struct MutationObserverInit
     {
         public bool ChildList;
-        public bool Attributes;
-        public bool CharacterData;
+        public bool? Attributes;
+        public bool? CharacterData;
         public bool Subtree;
         public bool AttributeOldValue;
         public bool CharacterDataOldValue;
@@ -311,7 +342,7 @@ namespace FenBrowser.Core.Dom.V2
         {
             var registrations = GetObserversForNotification(
                 (options, attributeName) =>
-                    options.Attributes &&
+                    options.Attributes == true &&
                     MatchesAttributeFilter(options, attributeName),
                 record.AttributeName);
 
@@ -327,7 +358,7 @@ namespace FenBrowser.Core.Dom.V2
         public void NotifyCharacterData(MutationRecord record)
         {
             var registrations = GetObserversForNotification(
-                (options, _) => options.CharacterData);
+                (options, _) => options.CharacterData == true);
             foreach (var registration in registrations)
             {
                 registration.Observer.EnqueueRecord(
@@ -349,9 +380,9 @@ namespace FenBrowser.Core.Dom.V2
                     {
                         MutationRecordType.ChildList => options.ChildList,
                         MutationRecordType.Attributes =>
-                            options.Attributes &&
+                            options.Attributes == true &&
                             MatchesAttributeFilter(options, attributeName),
-                        MutationRecordType.CharacterData => options.CharacterData,
+                        MutationRecordType.CharacterData => options.CharacterData == true,
                         _ => false
                     };
                 },
