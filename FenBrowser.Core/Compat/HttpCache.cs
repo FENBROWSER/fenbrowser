@@ -131,7 +131,10 @@ namespace FenBrowser.Core.Compat
             }
             else
             {
-                expires = now.AddSeconds(60);
+                // Do not manufacture freshness when the origin supplied no usable
+                // freshness metadata. The compatibility cache may retain validators,
+                // but reuse must revalidate (or miss when no validator is available).
+                expires = now;
             }
 
             var entry = new CachedEntry
@@ -327,7 +330,7 @@ namespace FenBrowser.Core.Compat
             else if (resp.Content?.Headers?.Expires != null)
                 entry.Expires = resp.Content.Headers.Expires;
             else
-                entry.Expires = now.AddSeconds(60);
+                entry.Expires = now;
 
             entry.CachedAt = now;
             entry.LastAccess = now;
