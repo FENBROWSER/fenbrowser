@@ -826,62 +826,7 @@ public Uri LastTextResponseUri { get; private set; }
                 decoded = Encoding.UTF8.GetString(buffer);
             }
 
-            // Some navigation responses incorrectly declare Latin-1/Windows-1252 while
-            // serving UTF-8 bytes. Preserve UTF-8 in that case to avoid mojibake.
-            if (ShouldPreferUtf8ForLegacyDeclaredCharset(contentTypeHeader, buffer))
-            {
-                try
-                {
-                    return Encoding.UTF8.GetString(buffer);
-                }
-                catch
-                {
-                }
-            }
-
             return decoded;
-        }
-
-        private static bool ShouldPreferUtf8ForLegacyDeclaredCharset(string contentTypeHeader, byte[] buffer)
-        {
-            if (buffer == null || buffer.Length == 0 || string.IsNullOrWhiteSpace(contentTypeHeader))
-            {
-                return false;
-            }
-
-            string normalized = contentTypeHeader.ToLowerInvariant();
-            bool declaresLegacySingleByte =
-                normalized.Contains("charset=iso-8859-1", StringComparison.Ordinal) ||
-                normalized.Contains("charset=latin1", StringComparison.Ordinal) ||
-                normalized.Contains("charset=latin-1", StringComparison.Ordinal) ||
-                normalized.Contains("charset=windows-1252", StringComparison.Ordinal) ||
-                normalized.Contains("charset=cp1252", StringComparison.Ordinal);
-
-            if (!declaresLegacySingleByte)
-            {
-                return false;
-            }
-
-            return IsValidUtf8(buffer);
-        }
-
-        private static bool IsValidUtf8(byte[] bytes)
-        {
-            if (bytes == null)
-            {
-                return false;
-            }
-
-            try
-            {
-                var strictUtf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
-                strictUtf8.GetString(bytes);
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
         }
 
         private void AdoptResponseReferrerPolicy(HttpResponseMessage response, FetchContext context)
