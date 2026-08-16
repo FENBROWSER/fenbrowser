@@ -856,42 +856,24 @@ public Uri LastTextResponseUri { get; private set; }
                 return null;
             }
 
-            // Handle data: URI scheme (e.g., data:text/css,.picture%20%7B%20background%3A%20none%3B%20%7D)
             if (string.Equals(url.Scheme, "data", StringComparison.OrdinalIgnoreCase))
             {
+                var maxTextBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxTextBodyBytes);
+                if (!DataUrlParser.TryParse(url, maxTextBodyBytes, out var dataUrl, out var dataUrlError))
+                {
+                    EngineLogCompat.Debug($"[FetchText] data URL rejected: {dataUrlError}", LogCategory.Network);
+                    return null;
+                }
+
                 try
                 {
-                    var dataUri = url.AbsoluteUri;
-                    var commaIndex = dataUri.IndexOf(',');
-                    if (commaIndex > 0)
-                    {
-                        var dataMeta = dataUri.Substring(5, commaIndex - 5); // Skip "data:" prefix
-                        var content = dataUri.Substring(commaIndex + 1);
-                        
-                        // Check if base64 encoded
-                        bool isBase64 = dataMeta.Contains("base64", StringComparison.OrdinalIgnoreCase);
-                        
-                        if (isBase64)
-                        {
-                            // Remove base64 marker and decode
-                            var cleanMeta = dataMeta.Replace(";base64", "").Replace("base64", "");
-                            // Fix: URL-decode before base64 decode because data URIs can be URL-encoded
-                            var decodedContent = Uri.UnescapeDataString(content);
-                            var bytes = Convert.FromBase64String(decodedContent);
-                            return System.Text.Encoding.UTF8.GetString(bytes);
-                        }
-                        else
-                        {
-                            // URL-decode the content
-                            return Uri.UnescapeDataString(content);
-                        }
-                    }
+                    return dataUrl.DecodeText();
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine($"[FetchText] data URI failed: {ex.Message}");
+                    EngineLogCompat.Debug($"[FetchText] data URL decode failed: {ex.Message}", LogCategory.Network);
+                    return null;
                 }
-                return null;
             }
 
             // CSP Check
@@ -1203,46 +1185,44 @@ public Uri LastTextResponseUri { get; private set; }
             
             /* [PERF-REMOVED] */
 
-            // Handle data: URI scheme (e.g., data:text/html,<div>Hello</div>)
             if (string.Equals(url.Scheme, "data", StringComparison.OrdinalIgnoreCase))
             {
+                var maxTextBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxTextBodyBytes);
+                if (!DataUrlParser.TryParse(url, maxTextBodyBytes, out var dataUrl, out var dataUrlError))
+                {
+                    return new FetchResult
+                    {
+                        Status = FetchStatus.UnknownError,
+                        ErrorDetail = dataUrlError,
+                        FinalUri = url,
+                        FailureReason = FetchFailureReasonCode.MalformedInput,
+                        IsRetryable = false
+                    };
+                }
+
                 try
                 {
-                    var dataUri = url.OriginalString;
-                    var commaIndex = dataUri.IndexOf(',');
-                    if (commaIndex > 5)
+                    return new FetchResult
                     {
-                        var dataMeta = dataUri.Substring(5, commaIndex - 5); // Skip "data:" prefix
-                        var content = dataUri.Substring(commaIndex + 1);
-                        
-                        // Determine content type from meta
-                        string contentType = "text/plain";
-                        if (dataMeta.Contains("text/html")) contentType = "text/html";
-                        else if (dataMeta.Contains("text/css")) contentType = "text/css";
-                        else if (dataMeta.Contains("application/javascript")) contentType = "application/javascript";
-                        
-                        // Check if base64 encoded
-                        bool isBase64 = dataMeta.Contains("base64", StringComparison.OrdinalIgnoreCase);
-                        string decodedContent;
-                        
-                        if (isBase64)
-                        {
-                            var cleanContent = Uri.UnescapeDataString(content);
-                            var bytes = Convert.FromBase64String(cleanContent);
-                            decodedContent = System.Text.Encoding.UTF8.GetString(bytes);
-                        }
-                        else
-                        {
-                            decodedContent = Uri.UnescapeDataString(content);
-                        }
-                        
-                        return new FetchResult { Status = FetchStatus.Success, Content = decodedContent, FinalUri = url, ContentType = contentType };
-                    }
-                    return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "Invalid data URI format", FinalUri = url };
+                        Status = FetchStatus.Success,
+                        Content = dataUrl.DecodeText(),
+                        FinalUri = url,
+                        ContentType = dataUrl.ContentType,
+                        InputSizeBytes = dataUrl.Bytes.Length,
+                        IsRetryable = false
+                    };
                 }
                 catch (Exception ex)
                 {
-                    return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = $"Data URI parsing failed: {ex.Message}", FinalUri = url };
+                    return new FetchResult
+                    {
+                        Status = FetchStatus.UnknownError,
+                        ErrorDetail = $"Data URL text decode failed: {ex.Message}",
+                        FinalUri = url,
+                        ContentType = dataUrl.ContentType,
+                        FailureReason = FetchFailureReasonCode.MalformedInput,
+                        IsRetryable = false
+                    };
                 }
             }
 
@@ -1862,50 +1842,16 @@ public Uri LastTextResponseUri { get; private set; }
                 return null;
             }
 
-            // Handle data URIs
             if (string.Equals(url.Scheme, "data", StringComparison.OrdinalIgnoreCase))
             {
-                try
+                var maxImageBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxImageBodyBytes);
+                if (!DataUrlParser.TryParse(url, maxImageBodyBytes, out var dataUrl, out var dataUrlError))
                 {
-                    var dataUri = url.OriginalString;
-                    var commaIndex = dataUri.IndexOf(',');
-                    if (commaIndex > 5)
-                    {
-                        var header = dataUri.Substring(5, commaIndex - 5);
-                        var data = dataUri.Substring(commaIndex + 1);
-                        
-                        bool isBase64 = header.IndexOf("base64", StringComparison.OrdinalIgnoreCase) >= 0;
-                        byte[] bytes;
-                        
-                        if (isBase64)
-                        {
-                            try 
-                            { 
-                                // Fix: URL-decode before base64 decode
-                                var decodedData = Uri.UnescapeDataString(data);
-                                bytes = Convert.FromBase64String(decodedData); 
-                            }
-                            catch (Exception ex)
-                            {
-                                EngineLogCompat.Debug($"[FetchImage] Invalid base64 data URI for {url}: {ex.Message}", LogCategory.Network);
-                                return null;
-                            }
-                        }
-                        else
-                        {
-                            var decoded = Uri.UnescapeDataString(data);
-                            bytes = Encoding.UTF8.GetBytes(decoded);
-                        }
-                        
-                        return new MemoryStream(bytes);
-                    }
+                    EngineLogCompat.Debug($"[FetchImage] data URL rejected: {dataUrlError}", LogCategory.Network);
                     return null;
                 }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Debug($"[FetchImage] Data URI decode failed for {url}: {ex.Message}", LogCategory.Network);
-                    return null;
-                }
+
+                return new MemoryStream(dataUrl.Bytes, writable: false);
             }
 
             // url = UpgradeIfHsts(url); // Handled by HstsHandler
@@ -2070,6 +2016,26 @@ public Uri LastTextResponseUri { get; private set; }
             {
                 EngineLogCompat.Warn($"[FetchBytes] Blocked unsupported scheme '{url.Scheme}' for {url}", LogCategory.Security);
                 return BinaryFailure(BinaryFetchFailureReason.UnsupportedScheme, url, $"Unsupported scheme: {url.Scheme}");
+            }
+            if (string.Equals(url.Scheme, "data", StringComparison.OrdinalIgnoreCase))
+            {
+                var maxDataBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxImageBodyBytes);
+                if (!DataUrlParser.TryParse(url, maxDataBodyBytes, out var dataUrl, out var dataUrlError))
+                {
+                    return BinaryFailure(
+                        BinaryFetchFailureReason.InvalidRequest,
+                        url,
+                        dataUrlError,
+                        bodySizeAllowed: !dataUrlError.Contains("limit", StringComparison.OrdinalIgnoreCase));
+                }
+
+                return new BinaryFetchResult
+                {
+                    Body = dataUrl.Bytes,
+                    FinalUri = url,
+                    RedirectChain = new[] { url },
+                    ContentType = dataUrl.ContentType
+                };
             }
             if (string.Equals(secFetchDest, "image", StringComparison.OrdinalIgnoreCase) &&
                 referer != null &&
