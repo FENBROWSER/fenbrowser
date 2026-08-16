@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using FenBrowser.Core.Security;
 
 namespace FenBrowser.Core.ProcessIsolation
 {
@@ -14,232 +15,31 @@ namespace FenBrowser.Core.ProcessIsolation
     /// </summary>
     public static class OriginIsolationPolicy
     {
-        public static bool TryGetAssignmentKey(string url, out string key)
-        {
-            key = null;
-            if (string.IsNullOrWhiteSpace(url))
-            {
-                return false;
-            }
-
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-            {
-                return false;
-            }
-
-            if (IsSupportedNetworkScheme(uri))
-            {
-                var host = uri.Host?.ToLowerInvariant();
-                if (string.IsNullOrWhiteSpace(host))
-                {
-                    return false;
-                }
-
-                var port = uri.IsDefaultPort ? GetDefaultPort(uri.Scheme) : uri.Port;
-                key = $"{uri.Scheme.ToLowerInvariant()}://{host}:{port}";
-                return true;
-            }
-
-            if (uri.Scheme.Equals(Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase))
-            {
-                key = "file://local";
-                return true;
-            }
-
-            if (uri.Scheme.Equals("about", StringComparison.OrdinalIgnoreCase))
-            {
-                var aboutToken = GetAboutToken(url);
-                key = $"about://{aboutToken}";
-                return true;
-            }
-
-            if (uri.IsAbsoluteUri && !string.IsNullOrWhiteSpace(uri.Scheme))
-            {
-                key = $"opaque://{uri.Scheme.ToLowerInvariant()}";
-                return true;
-            }
-
-            return false;
-        }
+        public static bool TryGetAssignmentKey(string url, out string key) =>
+            SiteIdentityService.Default.TryCreateRendererAssignmentKey(url, strictOrigin: true, out key);
 
         public static bool RequiresReassignment(string currentAssignmentKey, string requestedUrl)
         {
-            if (!TryGetAssignmentKey(requestedUrl, out var requestedKey))
-            {
-                return false;
-            }
-
-            if (string.IsNullOrWhiteSpace(currentAssignmentKey))
-            {
-                return false;
-            }
-
-            return !string.Equals(currentAssignmentKey, requestedKey, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool IsSupportedNetworkScheme(Uri uri)
-        {
-            if (uri == null)
-            {
-                return false;
-            }
-
-            return uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
-                   uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static int GetDefaultPort(string scheme)
-        {
-            if (string.Equals(scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
-            {
-                return 443;
-            }
-
-            return 80;
-        }
-
-        private static string GetAboutToken(string rawUrl)
-        {
-            if (string.IsNullOrWhiteSpace(rawUrl))
-            {
-                return "blank";
-            }
-
-            const string prefix = "about:";
-            if (!rawUrl.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            {
-                return "blank";
-            }
-
-            var token = rawUrl.Substring(prefix.Length);
-            var marker = token.IndexOfAny(new[] { '?', '#' });
-            if (marker >= 0)
-            {
-                token = token.Substring(0, marker);
-            }
-
-            token = token.Trim().ToLowerInvariant();
-            return string.IsNullOrWhiteSpace(token) ? "blank" : token;
+            if (!TryGetAssignmentKey(requestedUrl, out var requestedKey)) return true;
+            if (string.IsNullOrWhiteSpace(currentAssignmentKey)) return false;
+            return !string.Equals(currentAssignmentKey, requestedKey, StringComparison.Ordinal);
         }
     }
 
     /// <summary>
-    /// Site-per-process-lite policy.
-    /// Uses scheme + registrable-host approximation so sibling subdomains can share
-    /// a renderer while still forcing cross-site process reassignment.
+    /// Site-per-process policy backed by the same authoritative schemeful-site
+    /// implementation as cookies, storage and Fetch Metadata.
     /// </summary>
     public static class SiteIsolationPolicy
     {
-        public static bool TryGetAssignmentKey(string url, out string key)
-        {
-            key = null;
-            if (string.IsNullOrWhiteSpace(url))
-            {
-                return false;
-            }
-
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-            {
-                return false;
-            }
-
-            if (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
-                uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
-            {
-                var host = uri.Host?.ToLowerInvariant();
-                if (string.IsNullOrWhiteSpace(host))
-                {
-                    return false;
-                }
-
-                var siteHost = ToRegistrableHostApproximation(host);
-                key = $"{uri.Scheme.ToLowerInvariant()}://{siteHost}";
-                return true;
-            }
-
-            if (uri.Scheme.Equals(Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase))
-            {
-                key = "file://local";
-                return true;
-            }
-
-            if (uri.Scheme.Equals("about", StringComparison.OrdinalIgnoreCase))
-            {
-                var token = GetAboutToken(url);
-                key = $"about://{token}";
-                return true;
-            }
-
-            if (!string.IsNullOrWhiteSpace(uri.Scheme))
-            {
-                key = $"opaque://{uri.Scheme.ToLowerInvariant()}";
-                return true;
-            }
-
-            return false;
-        }
+        public static bool TryGetAssignmentKey(string url, out string key) =>
+            SiteIdentityService.Default.TryCreateRendererAssignmentKey(url, strictOrigin: false, out key);
 
         public static bool RequiresReassignment(string currentAssignmentKey, string requestedUrl)
         {
-            if (!TryGetAssignmentKey(requestedUrl, out var requestedKey))
-            {
-                return false;
-            }
-
-            if (string.IsNullOrWhiteSpace(currentAssignmentKey))
-            {
-                return false;
-            }
-
-            return !string.Equals(currentAssignmentKey, requestedKey, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string ToRegistrableHostApproximation(string host)
-        {
-            // Lightweight production heuristic: preserve IPv4/IPv6/localhost and
-            // collapse DNS names to the last two labels.
-            if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
-            {
-                return "localhost";
-            }
-
-            if (Uri.CheckHostName(host) == UriHostNameType.IPv4 ||
-                Uri.CheckHostName(host) == UriHostNameType.IPv6)
-            {
-                return host;
-            }
-
-            var labels = host.Split('.', StringSplitOptions.RemoveEmptyEntries);
-            if (labels.Length < 3)
-            {
-                return host;
-            }
-
-            return $"{labels[^2]}.{labels[^1]}";
-        }
-
-        private static string GetAboutToken(string rawUrl)
-        {
-            if (string.IsNullOrWhiteSpace(rawUrl))
-            {
-                return "blank";
-            }
-
-            const string prefix = "about:";
-            if (!rawUrl.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            {
-                return "blank";
-            }
-
-            var token = rawUrl.Substring(prefix.Length);
-            var marker = token.IndexOfAny(new[] { '?', '#' });
-            if (marker >= 0)
-            {
-                token = token.Substring(0, marker);
-            }
-
-            token = token.Trim().ToLowerInvariant();
-            return string.IsNullOrWhiteSpace(token) ? "blank" : token;
+            if (!TryGetAssignmentKey(requestedUrl, out var requestedKey)) return true;
+            if (string.IsNullOrWhiteSpace(currentAssignmentKey)) return false;
+            return !string.Equals(currentAssignmentKey, requestedKey, StringComparison.Ordinal);
         }
     }
 

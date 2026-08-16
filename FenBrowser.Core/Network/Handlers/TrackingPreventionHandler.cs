@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using FenBrowser.Core.Security;
 
 namespace FenBrowser.Core.Network.Handlers
 {
@@ -63,11 +64,6 @@ namespace FenBrowser.Core.Network.Handlers
             "/1x1", "/blank.gif", "/spacer.gif", "/pixel.gif", "/t.gif", "/p.gif"
         };
 
-        private static readonly HashSet<string> _commonCountryCodeSecondLevelDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "ac", "co", "com", "edu", "gov", "net", "org"
-        };
-
         private static int _blockedCount;
 
         public static bool IsEnabled { get; set; } = true;
@@ -80,7 +76,7 @@ namespace FenBrowser.Core.Network.Handlers
         {
             if (uri == null || !IsEnabled) return false;
 
-            if (pageOrigin != null && (IsSameOrigin(uri, pageOrigin) || IsSameSite(uri.IdnHost, pageOrigin.IdnHost)))
+            if (pageOrigin != null && (IsSameOrigin(uri, pageOrigin) || SiteIdentityService.Default.CompareSameSite(uri, pageOrigin)))
             {
                 return false;
             }
@@ -124,30 +120,6 @@ namespace FenBrowser.Core.Network.Handlers
                    a.Port == b.Port;
         }
 
-        private static bool IsSameSite(string hostA, string hostB)
-        {
-            if (string.IsNullOrWhiteSpace(hostA) || string.IsNullOrWhiteSpace(hostB))
-            {
-                return false;
-            }
-
-            var normalizedA = NormalizeHost(hostA);
-            var normalizedB = NormalizeHost(hostB);
-            if (string.IsNullOrEmpty(normalizedA) || string.IsNullOrEmpty(normalizedB))
-            {
-                return false;
-            }
-
-            if (string.Equals(normalizedA, normalizedB, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
-            var siteKeyA = GetSiteKey(normalizedA);
-            var siteKeyB = GetSiteKey(normalizedB);
-            return string.Equals(siteKeyA, siteKeyB, StringComparison.OrdinalIgnoreCase);
-        }
-
         private static bool MatchesTrackingPixelPattern(string path, string pattern)
         {
             if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(pattern))
@@ -185,39 +157,6 @@ namespace FenBrowser.Core.Network.Handlers
         private static string NormalizeHost(string host)
         {
             return host?.Trim().TrimEnd('.').ToLowerInvariant();
-        }
-
-        private static string GetSiteKey(string host)
-        {
-            if (string.IsNullOrWhiteSpace(host))
-            {
-                return string.Empty;
-            }
-
-            if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase) ||
-                Uri.CheckHostName(host) == UriHostNameType.IPv4 ||
-                Uri.CheckHostName(host) == UriHostNameType.IPv6)
-            {
-                return host;
-            }
-
-            var labels = host.Split('.', StringSplitOptions.RemoveEmptyEntries);
-            if (labels.Length <= 2)
-            {
-                return host;
-            }
-
-            var registrableLabelCount = 2;
-            var topLevelLabel = labels[^1];
-            var secondLevelLabel = labels[^2];
-            if (topLevelLabel.Length == 2 &&
-                labels.Length >= 3 &&
-                _commonCountryCodeSecondLevelDomains.Contains(secondLevelLabel))
-            {
-                registrableLabelCount = 3;
-            }
-
-            return string.Join(".", labels, labels.Length - registrableLabelCount, registrableLabelCount);
         }
 
         public Task HandleAsync(NetworkContext context, Func<Task> next, CancellationToken ct)

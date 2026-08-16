@@ -72,67 +72,11 @@ namespace FenBrowser.Core.Security.Oopif
             if (origin.Kind == UrlOriginKind.Opaque)
                 throw new ArgumentException("Cannot create SiteLock for opaque origin URL.", nameof(url));
             var host = parsed.Hostname;
-            var domain = GetEtldPlusOne(host) ?? host;
+            var domain = global::FenBrowser.Core.Security.SiteIdentityService.Default.ComputeRegistrableDomain(host);
+            if (string.IsNullOrEmpty(domain))
+                domain = global::FenBrowser.Core.Security.SiteIdentityService.Default.CanonicalizeHost(host);
             return new SiteLock(parsed.Scheme, domain, origin.Serialize(), strict);
         }
-
-        private static string GetEtldPlusOne(string host)
-        {
-            if (string.IsNullOrWhiteSpace(host))
-            {
-                return host ?? string.Empty;
-            }
-
-            var normalized = host.Trim().TrimEnd('.').ToLowerInvariant();
-            if (normalized.Length == 0)
-            {
-                return host;
-            }
-
-            // IP literals and single-label hosts do not have a registrable-domain decomposition.
-            if (IPAddress.TryParse(normalized, out _))
-            {
-                return normalized;
-            }
-
-            var parts = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length < 2)
-            {
-                return normalized;
-            }
-
-            var suffix2 = parts[^2] + "." + parts[^1];
-            if (KnownMultiLabelPublicSuffixes.Contains(suffix2))
-            {
-                if (parts.Length >= 3)
-                {
-                    return parts[^3] + "." + suffix2;
-                }
-
-                return suffix2;
-            }
-
-            return suffix2;
-        }
-
-        private static readonly HashSet<string> KnownMultiLabelPublicSuffixes =
-            new(StringComparer.OrdinalIgnoreCase)
-            {
-                "co.uk",
-                "org.uk",
-                "gov.uk",
-                "ac.uk",
-                "co.jp",
-                "com.au",
-                "net.au",
-                "org.au",
-                "co.nz",
-                "com.br",
-                "com.mx",
-                "co.in",
-                "com.cn",
-                "com.sg",
-            };
 
         public override string ToString() => IsStrict ? $"SiteLock(strict:{Origin})" : $"SiteLock({Scheme}://{RegistrableDomain})";
     }

@@ -2,6 +2,7 @@ using System;
 using System.Net;
 using System.Net.Http;
 using FenBrowser.Core.Network.Handlers;
+using FenBrowser.Core.Security;
 
 namespace FenBrowser.Core.Network;
 
@@ -76,7 +77,7 @@ internal static class BrowserRequestHeaderPolicy
 
         // Fetch Metadata uses a schemeful site boundary. A host-only comparison
         // incorrectly labels http↔https transitions as same-site.
-        return IsSameSite(initiator, request) ? "same-site" : "cross-site";
+        return SiteIdentityService.Default.CompareSameSite(initiator, request) ? "same-site" : "cross-site";
     }
 
     internal static Uri ComputeReferrer(
@@ -210,33 +211,6 @@ internal static class BrowserRequestHeaderPolicy
         string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(left.Host, right.Host, StringComparison.OrdinalIgnoreCase) &&
         left.Port == right.Port;
-
-    private static bool IsSameSite(Uri left, Uri right)
-    {
-        if (left == null || right == null || !left.IsAbsoluteUri || !right.IsAbsoluteUri)
-            return false;
-
-        if (!string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase))
-            return false;
-
-        return IsSameSiteHost(left.Host, right.Host);
-    }
-
-    private static bool IsSameSiteHost(string left, string right)
-    {
-        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
-        if (string.Equals(left, right, StringComparison.OrdinalIgnoreCase)) return true;
-        if (IPAddress.TryParse(left.Trim('[', ']'), out _) || IPAddress.TryParse(right.Trim('[', ']'), out _)) return false;
-        return string.Equals(SiteKey(left), SiteKey(right), StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string SiteKey(string host)
-    {
-        var labels = host.Trim().TrimEnd('.').Split('.', StringSplitOptions.RemoveEmptyEntries);
-        return labels.Length < 2
-            ? host.ToLowerInvariant()
-            : $"{labels[^2]}.{labels[^1]}".ToLowerInvariant();
-    }
 
     private static void Add(HttpRequestMessage request, string name, string value)
     {

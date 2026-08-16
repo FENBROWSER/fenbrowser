@@ -5,6 +5,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using FenBrowser.Core.Network;
+using FenBrowser.Core.Security;
 
 namespace FenBrowser.Core.Storage
 {
@@ -74,30 +75,9 @@ namespace FenBrowser.Core.Storage
 
         private static string GetSite(string url)
         {
-            if (string.IsNullOrEmpty(url)) return "null";
-            var parsed = WhatwgUrl.Parse(url);
-            if (parsed == null) return "null";
-            var origin = parsed.ComputeOrigin();
-            if (origin.Kind == Network.UrlOriginKind.Opaque) return "null";
-
-            var host = parsed.Hostname;
-            var domain = GetApproximateRegistrableDomain(host);
-            return $"{parsed.Scheme}://{domain}";
-        }
-
-        private static string GetApproximateRegistrableDomain(string host)
-        {
-            if (string.IsNullOrWhiteSpace(host))
-                return "null";
-
-            var normalized = host.Trim().TrimEnd('.').ToLowerInvariant();
-            if (IPAddress.TryParse(normalized, out _))
-                return normalized;
-
-            var parts = normalized.Split('.', StringSplitOptions.RemoveEmptyEntries);
-            return parts.Length >= 2
-                ? parts[^2] + "." + parts[^1]
-                : normalized;
+            if (string.IsNullOrWhiteSpace(url)) return "null";
+            var site = SiteIdentityService.Default.CreateSchemefulSite(url);
+            return site.IsOpaque ? "null" : site.SerializedPartitionKey;
         }
     }
 
@@ -112,7 +92,7 @@ namespace FenBrowser.Core.Storage
         public bool HostOnly { get; init; } = true;
         public bool Secure { get; init; }
         public bool HttpOnly { get; init; }
-        public CookieSameSite SameSite { get; init; } = CookieSameSite.Lax;
+        public CookieSameSite SameSite { get; init; } = CookieSameSite.Unspecified;
         public DateTimeOffset? Expires { get; init; }
         public StoragePartitionKey? PartitionKey { get; init; }
         public DateTimeOffset CreationTime { get; init; } = DateTimeOffset.UtcNow;

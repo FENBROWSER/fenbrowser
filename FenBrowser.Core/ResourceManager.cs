@@ -397,56 +397,16 @@ public Uri LastTextResponseUri { get; private set; }
         {
             try
             {
-                if (request == null) return "none";
-                if (referer == null) return "none";
-                var refHost = referer.Host ?? string.Empty;
-                var reqHost = request.Host ?? string.Empty;
-                if (string.Equals(refHost, reqHost, StringComparison.OrdinalIgnoreCase))
-                    return "same-origin";
-                if (IsSameSite(refHost, reqHost))
-                    return "same-site";
-                return "cross-site";
+                if (request == null || referer == null) return "none";
+                if (IsSameOrigin(referer, request)) return "same-origin";
+                return SiteIdentityService.Default.CompareSameSite(referer, request)
+                    ? "same-site"
+                    : "cross-site";
             }
-            catch { return "none"; }
-        }
-
-        private static bool IsSameSite(string hostA, string hostB)
-        {
-            if (string.IsNullOrEmpty(hostA) || string.IsNullOrEmpty(hostB)) return false;
-            if (hostA.EndsWith("." + hostB, StringComparison.OrdinalIgnoreCase)) return true;
-            if (hostB.EndsWith("." + hostA, StringComparison.OrdinalIgnoreCase)) return true;
-            var siteA = GetApproximateSiteKey(hostA);
-            var siteB = GetApproximateSiteKey(hostB);
-            return !string.IsNullOrEmpty(siteA) &&
-                   !string.IsNullOrEmpty(siteB) &&
-                   string.Equals(siteA, siteB, StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string GetApproximateSiteKey(string host)
-        {
-            if (string.IsNullOrWhiteSpace(host))
+            catch
             {
-                return null;
+                return "none";
             }
-
-            var trimmed = host.Trim().TrimEnd('.').ToLowerInvariant();
-            if (trimmed.Length == 0)
-            {
-                return null;
-            }
-
-            if (System.Net.IPAddress.TryParse(trimmed, out _))
-            {
-                return trimmed;
-            }
-
-            var labels = trimmed.Split('.', StringSplitOptions.RemoveEmptyEntries);
-            if (labels.Length < 2)
-            {
-                return trimmed;
-            }
-
-            return labels[labels.Length - 2] + "." + labels[labels.Length - 1];
         }
 
         private static bool IsSameOrigin(Uri left, Uri right)
