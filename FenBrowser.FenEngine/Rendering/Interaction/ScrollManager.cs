@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using SkiaSharp;
@@ -16,14 +17,9 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
     /// </summary>
     public class ScrollManager
     {
-        private readonly Dictionary<Element, ScrollState> _scrollStates;
+        private readonly ConditionalWeakTable<Element, ScrollState> _scrollStates = new();
         private readonly ScrollState _nullScrollState = new();
         private readonly object _lock = new();
-
-        public ScrollManager()
-        {
-            _scrollStates = new Dictionary<Element, ScrollState>();
-        }
 
         #region Scroll State Management
 
@@ -36,12 +32,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
 
             lock (_lock)
             {
-                if (!_scrollStates.TryGetValue(element, out var state))
-                {
-                    state = new ScrollState();
-                    _scrollStates[element] = state;
-                }
-                return state;
+                return _scrollStates.GetValue(element, static _ => new ScrollState());
             }
         }
 
@@ -199,7 +190,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         {
             lock (_lock)
             {
-                var snapshot = new Dictionary<Element, SKPoint>(_scrollStates.Count);
+                var snapshot = new Dictionary<Element, SKPoint>();
                 foreach (var pair in _scrollStates)
                 {
                     snapshot[pair.Key] = new SKPoint(pair.Value.ScrollX, pair.Value.ScrollY);
@@ -648,7 +639,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             public float OffsetY { get; set; } // Distance from Scroll Top to Node Top
         }
 
-        private readonly Dictionary<Element, AnchorData> _anchors = new();
+        private readonly ConditionalWeakTable<Element, AnchorData> _anchors = new();
 
         /// <summary>
         /// Selects a candidate node to anchor to before layout changes.
@@ -668,7 +659,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                 // Offset = Box.Top - ScrollY (Distance from visual top)
                 float offset = box.Top - state.ScrollY;
                 
-                _anchors[container] = new AnchorData { Node = candidate, OffsetY = offset };
+                _anchors.AddOrUpdate(container, new AnchorData { Node = candidate, OffsetY = offset });
                 EngineLogCompat.Debug($"[ScrollManager] Selected Anchor: {candidate.GetType().Name} (Tag: {(candidate as Element)?.TagName}) @ Offset {offset}", LogCategory.Rendering);
             }
             else
@@ -786,7 +777,3 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         public bool IsAnimating => SmoothScrollStartTimestamp != 0 || SmoothScrollStartTime.HasValue;
     }
 }
-
-
-
-
