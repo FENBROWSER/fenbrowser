@@ -7,6 +7,10 @@ using System.Text;
 using System.Text.Json;
 using FenBrowser.Core.WebIDL;
 
+const int MaxIdlFiles = 4096;
+const long MaxSingleIdlBytes = 4L * 1024 * 1024;
+const long MaxTotalIdlBytes = 64L * 1024 * 1024;
+
 if (args.Length == 0 || args[0] is "-h" or "--help")
 {
     Console.Error.WriteLine("Usage: webidlgen --idl <idl-dir> --out <output-dir> [--ns <namespace>] [--verify]");
@@ -81,14 +85,51 @@ if (idlFiles.Length == 0)
     return 0;
 }
 
+if (idlFiles.Length > MaxIdlFiles)
+{
+    Console.Error.WriteLine($"ERROR: IDL input contains {idlFiles.Length} files; limit is {MaxIdlFiles}.");
+    return 1;
+}
+
+long declaredInputBytes = 0;
+foreach (var file in idlFiles)
+{
+    var length = new FileInfo(file).Length;
+    if (length > MaxSingleIdlBytes)
+    {
+        Console.Error.WriteLine($"ERROR: IDL file exceeds the {MaxSingleIdlBytes}-byte limit: {NormalizePath(Path.GetRelativePath(idlDir, file))}");
+        return 1;
+    }
+
+    if (declaredInputBytes > MaxTotalIdlBytes - length)
+    {
+        Console.Error.WriteLine($"ERROR: Total IDL input exceeds the {MaxTotalIdlBytes}-byte limit.");
+        return 1;
+    }
+
+    declaredInputBytes += length;
+}
+
 Console.WriteLine($"[webidlgen] Found {idlFiles.Length} IDL file(s) in {idlDir}");
 
 var parser = new WebIdlParser();
 var merged = new IdlParseResult();
+var idlSources = new Dictionary<string, string>(idlFiles.Length, StringComparer.Ordinal);
+long actualInputBytes = 0;
 
 foreach (var file in idlFiles)
 {
     var source = File.ReadAllText(file);
+    var sourceBytes = Encoding.UTF8.GetByteCount(source);
+    if (sourceBytes > MaxSingleIdlBytes || actualInputBytes > MaxTotalIdlBytes - sourceBytes)
+    {
+        Console.Error.WriteLine($"ERROR: IDL input changed while being read or exceeds configured input limits: {NormalizePath(Path.GetRelativePath(idlDir, file))}");
+        return 1;
+    }
+
+    actualInputBytes += sourceBytes;
+    idlSources[file] = source;
+
     var parseResult = parser.Parse(source);
     var relativePath = NormalizePath(Path.GetRelativePath(idlDir, file));
 
@@ -185,7 +226,7 @@ var manifest = new WebIdlManifest
     Inputs = idlFiles.Select(path => new ManifestInput
     {
         RelativePath = NormalizePath(Path.GetRelativePath(idlDir, path)),
-        Sha256 = ComputeSha256(File.ReadAllText(path))
+        Sha256 = ComputeSha256(idlSources[path])
     }).ToList(),
     Outputs = files.Select(file => new ManifestOutput
     {
