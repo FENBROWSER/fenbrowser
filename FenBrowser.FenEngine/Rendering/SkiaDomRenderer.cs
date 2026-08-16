@@ -28,6 +28,9 @@ namespace FenBrowser.FenEngine.Rendering
     /// </summary>
     public class SkiaDomRenderer : IRenderFramePipeline, Core.ILayoutEngine
     {
+        private readonly CssAnimationEngine _animationEngine = new();
+        public CssAnimationEngine AnimationEngine => _animationEngine;
+
         private const double DefaultLayoutDeadlineMs = 3000d;
         private const int AdaptiveLayoutDeadlineNodeThreshold = 1000;
         private const double AdaptiveLayoutDeadlinePerNodeMs = 12d;
@@ -538,18 +541,18 @@ namespace FenBrowser.FenEngine.Rendering
                     // OR we just iterate over all elements but avoid the Keys.ToList() allocation.
 
                     // 2. Update existing animations (O(N_active) instead of O(N_total))
-                    var activeElements = CssAnimationEngine.Instance.GetAllActiveAnimationElements();
+                    var activeElements = _animationEngine.GetAllActiveAnimationElements();
                     foreach (var elem in activeElements)
                     {
                         if (!styles.TryGetValue(elem, out var style)) continue;
 
                         // Check for transitions/animations start (needed even for active ones to handle interruptions)
-                        CssAnimationEngine.Instance.CheckTransitions(elem, style);
-                        CssAnimationEngine.Instance.StartAnimation(elem, style);
+                        _animationEngine.CheckTransitions(elem, style);
+                        _animationEngine.StartAnimation(elem, style);
 
                         // Get current animated values
-                        var animatedProps = CssAnimationEngine.Instance.GetAnimatedProperties(elem);
-                        var transitionProps = CssAnimationEngine.Instance.GetTransitionedProperties(elem);
+                        var animatedProps = _animationEngine.GetAnimatedProperties(elem);
+                        var transitionProps = _animationEngine.GetTransitionedProperties(elem);
 
                         if (animatedProps.Count > 0 || transitionProps.Count > 0)
                         {
@@ -592,8 +595,8 @@ namespace FenBrowser.FenEngine.Rendering
                             var style = kvp.Value;
                             if (style.Map.ContainsKey("animation-name") || style.Map.ContainsKey("transition"))
                             {
-                                CssAnimationEngine.Instance.CheckTransitions(elem, style);
-                                CssAnimationEngine.Instance.StartAnimation(elem, style);
+                                _animationEngine.CheckTransitions(elem, style);
+                                _animationEngine.StartAnimation(elem, style);
                                 // If it started, it will be caught in the next frame
                             }
                         }
@@ -785,7 +788,8 @@ namespace FenBrowser.FenEngine.Rendering
                     float docScrollY = GetDocumentScrollY(root);
                     var docScrollState = _scrollManager.GetScrollState((root as Element)?.GetRootNode() as Element ?? root as Element);
                     float docScrollMax = docScrollState?.MaxScrollY ?? 0;
-                    CssAnimationEngine.Instance.UpdateScrollDrivenAnimations(docScrollY, docScrollMax);
+                    var animationDocument = root as Document ?? (root as Element)?.OwnerDocument;
+                    _animationEngine.UpdateScrollDrivenAnimations(animationDocument, docScrollY, docScrollMax);
                 }
 
                 if (scrollAnimationActive)

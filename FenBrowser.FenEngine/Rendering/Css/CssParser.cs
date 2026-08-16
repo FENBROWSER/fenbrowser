@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.Reflection;
 using System.Collections.Generic;
+using System.Threading;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Rendering
@@ -58,43 +59,69 @@ namespace FenBrowser.FenEngine.Rendering
         // Media query environment hints (set externally before parsing/cascade)
         // Reference: https://www.w3.org/TR/mediaqueries-5/
 
-        // === Viewport Dimensions ===
-        public static double? MediaViewportWidth { get; set; }
-        public static double? MediaViewportHeight { get; set; }
+        private sealed class MediaEnvironmentState
+        {
+            public double? ViewportWidth;
+            public double? ViewportHeight;
+            public double? Dppx;
+            public string PrefersColorScheme;
+            public string PrefersReducedMotion;
+            public string PrefersContrast;
+            public string PrefersReducedTransparency;
+            public string PrefersReducedData;
+            public string ForcedColors;
+            public string InvertedColors;
+            public string Pointer;
+            public string Hover;
+            public string AnyPointer;
+            public string AnyHover;
+            public string ColorGamut;
+            public string DynamicRange;
+            public int? ColorIndex;
+            public int? Monochrome;
+            public int? Color;
+            public string Scripting;
+            public string Update;
+            public string DisplayMode;
 
-        // === Resolution ===
-        public static double? MediaDppx { get; set; }  // Device pixel ratio (1.0 for standard, 2.0 for retina)
+            public MediaEnvironmentState Clone() => (MediaEnvironmentState)MemberwiseClone();
+        }
 
-        // === User Preferences ===
-        public static string MediaPrefersColorScheme { get; set; }  // "light" or "dark"
-        public static string MediaPrefersReducedMotion { get; set; }  // "no-preference" or "reduce"
-        public static string MediaPrefersContrast { get; set; }  // "no-preference", "more", "less", "custom"
-        public static string MediaPrefersReducedTransparency { get; set; }  // "no-preference" or "reduce"
-        public static string MediaPrefersReducedData { get; set; }  // "no-preference" or "reduce"
-        public static string MediaForcedColors { get; set; }  // "none" or "active"
-        public static string MediaInvertedColors { get; set; }  // "none" or "inverted"
+        // Rendering work inherits ExecutionContext. Copy-on-write is required because
+        // child contexts initially inherit the parent's AsyncLocal reference.
+        private static readonly AsyncLocal<MediaEnvironmentState> MediaEnvironmentSlot = new();
+        private static MediaEnvironmentState MediaEnvironment =>
+            MediaEnvironmentSlot.Value ??= new MediaEnvironmentState();
 
-        // === Device Capabilities ===
-        public static string MediaPointer { get; set; }  // "none", "coarse", or "fine"
-        public static string MediaHover { get; set; }  // "none" or "hover"
-        public static string MediaAnyPointer { get; set; }  // "none", "coarse", or "fine"
-        public static string MediaAnyHover { get; set; }  // "none" or "hover"
+        private static void UpdateMediaEnvironment(Action<MediaEnvironmentState> update)
+        {
+            var next = (MediaEnvironmentSlot.Value?.Clone()) ?? new MediaEnvironmentState();
+            update(next);
+            MediaEnvironmentSlot.Value = next;
+        }
 
-        // === Display Capabilities ===
-        public static string MediaColorGamut { get; set; }  // "srgb", "p3", or "rec2020"
-        public static string MediaDynamicRange { get; set; }  // "standard" or "high"
-        public static int? MediaColorIndex { get; set; }  // Number of colors in color lookup table
-        public static int? MediaMonochrome { get; set; }  // Bits per pixel in monochrome frame buffer
-        public static int? MediaColor { get; set; }  // Bits per color component
-
-        // === Scripting ===
-        public static string MediaScripting { get; set; }  // "none", "initial-only", or "enabled"
-
-        // === Update Frequency ===
-        public static string MediaUpdate { get; set; }  // "none", "slow", or "fast"
-
-        // === Display Mode ===
-        public static string MediaDisplayMode { get; set; }  // "fullscreen", "standalone", "minimal-ui", "browser"
+        public static double? MediaViewportWidth { get => MediaEnvironment.ViewportWidth; set => UpdateMediaEnvironment(s => s.ViewportWidth = value); }
+        public static double? MediaViewportHeight { get => MediaEnvironment.ViewportHeight; set => UpdateMediaEnvironment(s => s.ViewportHeight = value); }
+        public static double? MediaDppx { get => MediaEnvironment.Dppx; set => UpdateMediaEnvironment(s => s.Dppx = value); }
+        public static string MediaPrefersColorScheme { get => MediaEnvironment.PrefersColorScheme; set => UpdateMediaEnvironment(s => s.PrefersColorScheme = value); }
+        public static string MediaPrefersReducedMotion { get => MediaEnvironment.PrefersReducedMotion; set => UpdateMediaEnvironment(s => s.PrefersReducedMotion = value); }
+        public static string MediaPrefersContrast { get => MediaEnvironment.PrefersContrast; set => UpdateMediaEnvironment(s => s.PrefersContrast = value); }
+        public static string MediaPrefersReducedTransparency { get => MediaEnvironment.PrefersReducedTransparency; set => UpdateMediaEnvironment(s => s.PrefersReducedTransparency = value); }
+        public static string MediaPrefersReducedData { get => MediaEnvironment.PrefersReducedData; set => UpdateMediaEnvironment(s => s.PrefersReducedData = value); }
+        public static string MediaForcedColors { get => MediaEnvironment.ForcedColors; set => UpdateMediaEnvironment(s => s.ForcedColors = value); }
+        public static string MediaInvertedColors { get => MediaEnvironment.InvertedColors; set => UpdateMediaEnvironment(s => s.InvertedColors = value); }
+        public static string MediaPointer { get => MediaEnvironment.Pointer; set => UpdateMediaEnvironment(s => s.Pointer = value); }
+        public static string MediaHover { get => MediaEnvironment.Hover; set => UpdateMediaEnvironment(s => s.Hover = value); }
+        public static string MediaAnyPointer { get => MediaEnvironment.AnyPointer; set => UpdateMediaEnvironment(s => s.AnyPointer = value); }
+        public static string MediaAnyHover { get => MediaEnvironment.AnyHover; set => UpdateMediaEnvironment(s => s.AnyHover = value); }
+        public static string MediaColorGamut { get => MediaEnvironment.ColorGamut; set => UpdateMediaEnvironment(s => s.ColorGamut = value); }
+        public static string MediaDynamicRange { get => MediaEnvironment.DynamicRange; set => UpdateMediaEnvironment(s => s.DynamicRange = value); }
+        public static int? MediaColorIndex { get => MediaEnvironment.ColorIndex; set => UpdateMediaEnvironment(s => s.ColorIndex = value); }
+        public static int? MediaMonochrome { get => MediaEnvironment.Monochrome; set => UpdateMediaEnvironment(s => s.Monochrome = value); }
+        public static int? MediaColor { get => MediaEnvironment.Color; set => UpdateMediaEnvironment(s => s.Color = value); }
+        public static string MediaScripting { get => MediaEnvironment.Scripting; set => UpdateMediaEnvironment(s => s.Scripting = value); }
+        public static string MediaUpdate { get => MediaEnvironment.Update; set => UpdateMediaEnvironment(s => s.Update = value); }
+        public static string MediaDisplayMode { get => MediaEnvironment.DisplayMode; set => UpdateMediaEnvironment(s => s.DisplayMode = value); }
 
         /// <summary>
         /// Evaluates a media query condition string against the current viewport state.

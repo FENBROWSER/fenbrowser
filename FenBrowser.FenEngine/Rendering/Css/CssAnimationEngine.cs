@@ -7,6 +7,8 @@ using FenBrowser.Core.Dom.V2;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Threading;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Rendering.Core;
@@ -73,36 +75,6 @@ namespace FenBrowser.FenEngine.Rendering
     /// </summary>
     public class CssAnimationEngine
     {
-        #region Singleton
-        private static CssAnimationEngine _instance;
-        private static readonly object _lock = new object();
-        
-        public static CssAnimationEngine Instance
-        {
-            get
-            {
-                if (_instance == null)
-                {
-                    lock (_lock)
-                    {
-                        if (_instance == null)
-                            _instance = new CssAnimationEngine();
-                    }
-                }
-                return _instance;
-            }
-        }
-        
-        public static void Reset()
-        {
-            lock (_lock)
-            {
-                _instance?.Stop();
-                _instance = null;
-            }
-        }
-        #endregion
-
         #region Clock injection
         /// <summary>
         /// Wall-clock source for transition/animation progress. Defaults to DateTime.UtcNow.
@@ -114,7 +86,14 @@ namespace FenBrowser.FenEngine.Rendering
         /// "transition complete" pixel only because the file writes inflated the render
         /// time past the transition duration. Engine output should not depend on logging.
         /// </summary>
-        public static Func<DateTime> NowProvider = () => DateTime.UtcNow;
+        private static readonly Func<DateTime> DefaultNowProvider = () => DateTime.UtcNow;
+        private static readonly AsyncLocal<Func<DateTime>> NowProviderSlot = new();
+
+        public static Func<DateTime> NowProvider
+        {
+            get => NowProviderSlot.Value ?? DefaultNowProvider;
+            set => NowProviderSlot.Value = value ?? DefaultNowProvider;
+        }
 
         internal static DateTime Now() => NowProvider();
         #endregion
@@ -173,33 +152,36 @@ namespace FenBrowser.FenEngine.Rendering
         private System.Threading.Timer _timer;
         private const int FrameIntervalMs = 16; // ~60fps
 
-        // Phase 1: per-document animation generation. Incremented only when a visible
-        // animation value actually changes on an element belonging to that document.
-        // Used by the host to detect whether animation state is newer than the last
-        // rendered frame without scanning all active elements.
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<Document, long> _documentAnimationGenerations = new();
+        private sealed class AnimationDocumentState
+        {
+            public readonly object SyncRoot = new();
+            public readonly Dictionary<string, ScrollTimelineRegistration> ScrollTimelines = new(StringComparer.Ordinal);
+            public readonly Dictionary<string, ViewTimelineRegistration> ViewTimelines = new(StringComparer.Ordinal);
+            public long Generation;
+            public double LastScrollOffset;
+            public double LastScrollMax;
+        }
 
-        /// <summary>
-        /// Phase 1: returns the current animation generation for a document.
-        /// Incremented monotonically each time a visible animation value changes.
-        /// </summary>
+        // Animation bookkeeping is owned by Document lifetime. Weak ownership means
+        // the engine cannot retain a closed document merely through animation metadata.
+        private readonly ConditionalWeakTable<Document, AnimationDocumentState> _documentStates = new();
+
+        private AnimationDocumentState GetDocumentState(Document document) =>
+            document == null ? null : _documentStates.GetValue(document, static _ => new AnimationDocumentState());
+
         public long GetDocumentGeneration(Document doc)
         {
-            if (doc == null) return 0;
-            return _documentAnimationGenerations.TryGetValue(doc, out var gen) ? gen : 0;
+            if (doc == null || !_documentStates.TryGetValue(doc, out var state)) return 0;
+            return System.Threading.Interlocked.Read(ref state.Generation);
         }
 
         private long IncrementDocumentGeneration(Document doc)
         {
-            if (doc == null) return 0;
-            return _documentAnimationGenerations.AddOrUpdate(doc, 1, (_, v) => v + 1);
+            var state = GetDocumentState(doc);
+            return state == null ? 0 : System.Threading.Interlocked.Increment(ref state.Generation);
         }
 
-        // Scroll-driven animation state
-        private readonly Dictionary<string, ScrollTimelineRegistration> _scrollTimelines = new(StringComparer.Ordinal);
-        private readonly Dictionary<string, ViewTimelineRegistration> _viewTimelines = new(StringComparer.Ordinal);
-        private double _lastDocumentScrollOffset;
-        private double _lastDocumentScrollMax;
+        // Named scroll/view timelines and document scroll fallback are document-owned.
 
         private class ScrollTimelineRegistration
         {
@@ -271,22 +253,34 @@ namespace FenBrowser.FenEngine.Rendering
             style.Map.TryGetValue("scroll-timeline-axis", out axis);
             if (string.IsNullOrWhiteSpace(axis)) axis = "block";
 
-            _scrollTimelines[name] = new ScrollTimelineRegistration
+            var documentState = GetDocumentState(element.OwnerDocument);
+            if (documentState == null) return;
+            lock (documentState.SyncRoot)
             {
-                Name = name,
-                ScrollerElement = element,
-                Axis = axis.ToLowerInvariant()
-            };
+                documentState.ScrollTimelines[name] = new ScrollTimelineRegistration
+                {
+                    Name = name,
+                    ScrollerElement = element,
+                    Axis = axis.ToLowerInvariant()
+                };
+            }
         }
 
         public void UnregisterScrollTimeline(Element element)
         {
-            var keysToRemove = _scrollTimelines
-                .Where(kvp => kvp.Value.ScrollerElement == element)
-                .Select(kvp => kvp.Key)
-                .ToList();
-            foreach (var key in keysToRemove)
-                _scrollTimelines.Remove(key);
+            if (element?.OwnerDocument == null ||
+                !_documentStates.TryGetValue(element.OwnerDocument, out var documentState))
+                return;
+
+            lock (documentState.SyncRoot)
+            {
+                var keysToRemove = documentState.ScrollTimelines
+                    .Where(kvp => ReferenceEquals(kvp.Value.ScrollerElement, element))
+                    .Select(kvp => kvp.Key)
+                    .ToList();
+                foreach (var key in keysToRemove)
+                    documentState.ScrollTimelines.Remove(key);
+            }
         }
 
         /// <summary>
@@ -307,33 +301,50 @@ namespace FenBrowser.FenEngine.Rendering
             string inset = null;
             style.Map.TryGetValue("view-timeline-inset", out inset);
 
-            _viewTimelines[name] = new ViewTimelineRegistration
+            var documentState = GetDocumentState(element.OwnerDocument);
+            if (documentState == null) return;
+            lock (documentState.SyncRoot)
             {
-                Name = name,
-                SubjectElement = element,
-                Axis = axis.ToLowerInvariant(),
-                Inset = inset
-            };
+                documentState.ViewTimelines[name] = new ViewTimelineRegistration
+                {
+                    Name = name,
+                    SubjectElement = element,
+                    Axis = axis.ToLowerInvariant(),
+                    Inset = inset
+                };
+            }
         }
 
         public void UnregisterViewTimeline(Element element)
         {
-            var keysToRemove = _viewTimelines
-                .Where(kvp => kvp.Value.SubjectElement == element)
-                .Select(kvp => kvp.Key)
-                .ToList();
-            foreach (var key in keysToRemove)
-                _viewTimelines.Remove(key);
+            if (element?.OwnerDocument == null ||
+                !_documentStates.TryGetValue(element.OwnerDocument, out var documentState))
+                return;
+
+            lock (documentState.SyncRoot)
+            {
+                var keysToRemove = documentState.ViewTimelines
+                    .Where(kvp => ReferenceEquals(kvp.Value.SubjectElement, element))
+                    .Select(kvp => kvp.Key)
+                    .ToList();
+                foreach (var key in keysToRemove)
+                    documentState.ViewTimelines.Remove(key);
+            }
         }
 
         /// <summary>
         /// Called when document scroll position changes (after layout).
         /// Processes all scroll-driven animations by mapping scroll progress to animation progress.
         /// </summary>
-        public void UpdateScrollDrivenAnimations(double scrollOffset, double scrollMax)
+        public void UpdateScrollDrivenAnimations(Document document, double scrollOffset, double scrollMax)
         {
-            _lastDocumentScrollOffset = scrollOffset;
-            _lastDocumentScrollMax = scrollMax;
+            var documentState = GetDocumentState(document);
+            if (documentState == null) return;
+            lock (documentState.SyncRoot)
+            {
+                documentState.LastScrollOffset = scrollOffset;
+                documentState.LastScrollMax = scrollMax;
+            }
 
             var toNotify = new HashSet<Element>();
 
@@ -342,6 +353,7 @@ namespace FenBrowser.FenEngine.Rendering
                 foreach (var kvp in _activeAnimations)
                 {
                     var element = kvp.Key;
+                    if (!ReferenceEquals(element.OwnerDocument, document)) continue;
                     var style = element.GetComputedStyle();
                     if (!CanParticipateInAnimation(element, style))
                         continue;
@@ -405,7 +417,7 @@ namespace FenBrowser.FenEngine.Rendering
                 var scroller = FindScroller(element, scrollerType);
                 if (scroller != null)
                 {
-                    var state = GetScrollStateForElement(scroller);
+                    var state = GetScrollStateForElement(scroller, element.OwnerDocument);
                     scrollOffset = state.offset;
                     scrollMax = state.max;
                 }
@@ -416,15 +428,29 @@ namespace FenBrowser.FenEngine.Rendering
             }
             else if (timelineValue.StartsWith("--"))
             {
-                // Named timeline (scroll-timeline or view-timeline)
-                if (_scrollTimelines.TryGetValue(timelineValue, out var reg))
+                // Named timelines are document-scoped; equal author names in other
+                // tabs/documents cannot influence this element.
+                var documentState = GetDocumentState(element.OwnerDocument);
+                ScrollTimelineRegistration reg = null;
+                ViewTimelineRegistration viewReg = null;
+                if (documentState != null)
+                {
+                    lock (documentState.SyncRoot)
+                    {
+                        documentState.ScrollTimelines.TryGetValue(timelineValue, out reg);
+                        if (reg == null)
+                            documentState.ViewTimelines.TryGetValue(timelineValue, out viewReg);
+                    }
+                }
+
+                if (reg != null)
                 {
                     axis = reg.Axis;
-                    var state = GetScrollStateForElement(reg.ScrollerElement);
+                    var state = GetScrollStateForElement(reg.ScrollerElement, element.OwnerDocument);
                     scrollOffset = state.offset;
                     scrollMax = state.max;
                 }
-                else if (_viewTimelines.TryGetValue(timelineValue, out var viewReg))
+                else if (viewReg != null)
                 {
                     return ComputeViewTimelineProgress(element, style, viewReg, scrollOffset);
                 }
@@ -460,9 +486,17 @@ namespace FenBrowser.FenEngine.Rendering
             return 0; // Stub - requires layout box access for element position
         }
 
-        private static (double offset, double max) GetScrollStateForElement(Element scroller)
+        private (double offset, double max) GetScrollStateForElement(Element scroller, Document ownerDocument)
         {
-            if (scroller == null) return (CssAnimationEngine.Instance._lastDocumentScrollOffset, CssAnimationEngine.Instance._lastDocumentScrollMax);
+            if (scroller == null)
+            {
+                if (ownerDocument != null && _documentStates.TryGetValue(ownerDocument, out var documentState))
+                {
+                    lock (documentState.SyncRoot)
+                        return (documentState.LastScrollOffset, documentState.LastScrollMax);
+                }
+                return (0, 0);
+            }
 
             if (ScrollStateResolver != null)
                 return ScrollStateResolver(scroller);

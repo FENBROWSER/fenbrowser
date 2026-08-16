@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using System.Threading;
 
 namespace FenBrowser.Core.Dom.V2.Selectors
 {
@@ -412,7 +413,14 @@ namespace FenBrowser.Core.Dom.V2.Selectors
         /// Handles dynamic states: hover, focus, active, focus-within, focus-visible, target, valid, invalid.
         /// Core registers a no-op by default; FenEngine replaces it with ElementStateManager.
         /// </summary>
-        public static Func<Element, string, bool> StateProvider { get; set; } = (_, _) => false;
+        private static readonly Func<Element, string, bool> DefaultStateProvider = (_, _) => false;
+        private static readonly AsyncLocal<Func<Element, string, bool>> StateProviderSlot = new();
+
+        public static Func<Element, string, bool> StateProvider
+        {
+            get => StateProviderSlot.Value ?? DefaultStateProvider;
+            set => StateProviderSlot.Value = value ?? DefaultStateProvider;
+        }
 
         public StatePseudoClassSelector(string name)
         {

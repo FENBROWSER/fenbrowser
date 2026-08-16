@@ -594,7 +594,7 @@ public class BrowserIntegration : IDisposable
         // this integration actually owns (see OnAnimationFrame). This prevents an
         // animation in one tab from waking unrelated tabs.
         _animationFrameHandler = OnAnimationFrame;
-        CssAnimationEngine.Instance.OnAnimationFrame += _animationFrameHandler;
+        _renderer.AnimationEngine.OnAnimationFrame += _animationFrameHandler;
     }
 
     private void OnAnimationFrame(AnimationFrameEvent animation)
@@ -730,7 +730,7 @@ public class BrowserIntegration : IDisposable
             return false;
         }
 
-        var active = CssAnimationEngine.Instance.GetAllActiveAnimationElements();
+        var active = _renderer.AnimationEngine.GetAllActiveAnimationElements();
         foreach (var element in active)
         {
             if (ReferenceEquals(element.OwnerDocument, activeDocument))
@@ -888,7 +888,7 @@ public class BrowserIntegration : IDisposable
         // 4. Unsubscribe all events.
         if (_animationFrameHandler != null)
         {
-            CssAnimationEngine.Instance.OnAnimationFrame -= _animationFrameHandler;
+            _renderer.AnimationEngine.OnAnimationFrame -= _animationFrameHandler;
             _animationFrameHandler = null;
         }
 
