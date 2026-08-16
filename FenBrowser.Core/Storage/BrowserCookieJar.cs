@@ -362,7 +362,7 @@ namespace FenBrowser.Core.Storage
             if (!IsCookieName(name) || !IsSafeCookieValue(value))
                 return false;
 
-            var requestHost = (requestUri.IdnHost ?? string.Empty).Trim().TrimEnd('.').ToLowerInvariant();
+            var requestHost = SiteIdentityService.Default.CanonicalizeHost(requestUri.IdnHost);
             if (string.IsNullOrEmpty(requestHost))
                 return false;
 
@@ -457,15 +457,26 @@ namespace FenBrowser.Core.Storage
             var domainAttributeSpecified = lastDomainAttribute != null;
             if (domainAttributeSpecified)
             {
-                // Do not silently downgrade an invalid Domain attribute into a
-                // host-only cookie. A Domain scope must include the origin host.
-                if (string.IsNullOrEmpty(lastDomainAttribute) ||
-                    !DomainMatches(requestHost, lastDomainAttribute))
-                {
+                if (string.IsNullOrEmpty(lastDomainAttribute))
                     return false;
-                }
 
-                domain = lastDomainAttribute;
+                // RFC6265bis public-suffix handling: reject Domain=public-suffix
+                // unless it exactly equals the request host, in which case the
+                // Domain attribute is ignored and the cookie remains host-only.
+                if (SiteIdentityService.Default.IsPublicSuffix(lastDomainAttribute))
+                {
+                    if (!string.Equals(lastDomainAttribute, requestHost, StringComparison.Ordinal))
+                        return false;
+
+                    lastDomainAttribute = null;
+                    domainAttributeSpecified = false;
+                }
+                else
+                {
+                    if (!DomainMatches(requestHost, lastDomainAttribute))
+                        return false;
+                    domain = lastDomainAttribute;
+                }
             }
 
             var isSecureRequest = string.Equals(
@@ -581,18 +592,10 @@ namespace FenBrowser.Core.Storage
             if (string.IsNullOrWhiteSpace(value))
                 return false;
 
-            var candidate = value.Trim().TrimStart('.');
-            try
-            {
-                if (!System.Net.IPAddress.TryParse(candidate, out _))
-                    candidate = new IdnMapping().GetAscii(candidate);
-            }
-            catch (ArgumentException)
-            {
+            var candidate = SiteIdentityService.Default.CanonicalizeHost(
+                value.Trim().TrimStart('.'));
+            if (string.IsNullOrEmpty(candidate))
                 return false;
-            }
-
-            candidate = candidate.ToLowerInvariant();
             if (!IsAsciiCookieDomain(candidate))
                 return false;
 
@@ -632,7 +635,7 @@ namespace FenBrowser.Core.Storage
                 "strict" => CookieSameSite.Strict,
                 "none" => CookieSameSite.None,
                 "lax" => CookieSameSite.Lax,
-                _ => CookieSameSite.Lax
+                _ => CookieSameSite.Unspecified
             };
         }
 
