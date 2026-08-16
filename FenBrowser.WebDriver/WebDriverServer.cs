@@ -454,13 +454,24 @@ namespace FenBrowser.WebDriver
                 Log($"Implemented-but-unrouted commands: {string.Join(", ", extra)}");
             }
 
-            var strictRaw = Environment.GetEnvironmentVariable("FEN_WEBDRIVER_STRICT_COMMAND_COVERAGE");
-            var strict = string.Equals(strictRaw, "1", StringComparison.Ordinal) ||
-                         string.Equals(strictRaw, "true", StringComparison.OrdinalIgnoreCase);
-            if (strict && (missing.Length > 0 || extra.Length > 0))
+            if (missing.Length == 0 && extra.Length == 0)
             {
-                throw new InvalidOperationException("WebDriver command coverage strict mode failed. Set FEN_WEBDRIVER_STRICT_COMMAND_COVERAGE=0 to allow partial coverage.");
+                return;
             }
+
+#if DEBUG
+            var allowPartialRaw = Environment.GetEnvironmentVariable("FEN_WEBDRIVER_ALLOW_PARTIAL_COMMAND_COVERAGE");
+            var allowPartial = string.Equals(allowPartialRaw, "1", StringComparison.Ordinal) ||
+                               string.Equals(allowPartialRaw, "true", StringComparison.OrdinalIgnoreCase);
+            if (allowPartial)
+            {
+                Log("WARNING: Starting WebDriver with incomplete command coverage because FEN_WEBDRIVER_ALLOW_PARTIAL_COMMAND_COVERAGE is enabled in a Debug build.");
+                return;
+            }
+#endif
+
+            throw new InvalidOperationException(
+                "WebDriver command coverage is incomplete. The remote end will not start while registered routes and implemented handlers differ.");
         }
         
         private void ThrowIfDisposed()
