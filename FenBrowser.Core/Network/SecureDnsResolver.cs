@@ -113,13 +113,20 @@ namespace FenBrowser.Core.Network
                     minTtl = Math.Min(minTtl, records[i].ttlSeconds);
                 }
 
-                var ttl = Math.Max(30, Math.Min(3600, minTtl));
-                _cache[cacheKey] = new CacheEntry
+                // TTL=0 explicitly means the answer must not be reused from cache.
+                // Positive TTLs are honored as returned, with only an upper bound to
+                // keep stale DoH answers from surviving indefinitely.
+                if (minTtl > 0)
                 {
-                    Addresses = addresses,
-                    ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(ttl)
-                };
-                TrimCacheIfNeeded();
+                    var ttl = Math.Min(3600, minTtl);
+                    _cache[cacheKey] = new CacheEntry
+                    {
+                        Addresses = addresses,
+                        ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(ttl)
+                    };
+                    TrimCacheIfNeeded();
+                }
+
                 return addresses;
             }
             catch (Exception ex)
