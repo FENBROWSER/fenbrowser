@@ -397,22 +397,6 @@ public Uri LastTextResponseUri { get; private set; }
             }
         }
 
-        private static string DetermineSecFetchSite(Uri referer, Uri request)
-        {
-            try
-            {
-                if (request == null || referer == null) return "none";
-                if (IsSameOrigin(referer, request)) return "same-origin";
-                return SiteIdentityService.Default.CompareSameSite(referer, request)
-                    ? "same-site"
-                    : "cross-site";
-            }
-            catch
-            {
-                return "none";
-            }
-        }
-
         private static bool IsSameOrigin(Uri left, Uri right)
         {
             if (left == null || right == null || !left.IsAbsoluteUri || !right.IsAbsoluteUri)
@@ -1011,7 +995,7 @@ public Uri LastTextResponseUri { get; private set; }
                     AddHeaderSafe(req, "Sec-Fetch-Mode", fetchMode);
                     ApplyRefererHeader(req, effectiveReferer, current, ActiveReferrerPolicy);
                     var computedReferer = ComputeReferrerHeader(effectiveReferer, current, ActiveReferrerPolicy);
-                    AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(computedReferer, current));
+                    AddHeaderSafe(req, "Sec-Fetch-Site", BrowserRequestHeaderPolicy.DetermineSite(computedReferer, current));
                     ApplyNavigationRequestHeaders(req, secFetchDest);
                     AttachCookies(req, refererOriginal ?? current, secFetchDest);
                     
@@ -1745,7 +1729,7 @@ public Uri LastTextResponseUri { get; private set; }
                 AddHeaderSafe(req, "Sec-Fetch-Mode", fetchMode);
                 var computedReferer = ComputeReferrerHeader(referer, url, ActiveReferrerPolicy);
                 ApplyRefererHeader(req, referer, url, ActiveReferrerPolicy);
-                AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(computedReferer, url));
+                AddHeaderSafe(req, "Sec-Fetch-Site", BrowserRequestHeaderPolicy.DetermineSite(computedReferer, url));
                 ApplyNavigationRequestHeaders(req, secFetchDest);
                 AttachCookies(req, referer ?? url, secFetchDest);
                 var cts = new System.Threading.CancellationTokenSource();
@@ -2550,7 +2534,7 @@ throw new HttpRequestException($"Blocked by Content Security Policy (connect-src
             }
 
             preflight.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
-            preflight.Headers.TryAddWithoutValidation("Sec-Fetch-Site", DetermineSecFetchSite(originUri, request.RequestUri));
+            preflight.Headers.TryAddWithoutValidation("Sec-Fetch-Site", BrowserRequestHeaderPolicy.DetermineSite(originUri, request.RequestUri));
             preflight.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
 
             using var preflightResponse = await SendRequestTrackedAsync(preflight, token).ConfigureAwait(false);
