@@ -29,26 +29,15 @@ namespace FenBrowser.WebDriver
         }
 
         /// <summary>
-        /// Uses the listener's dedicated request worker as the queue waiter.
-        /// This keeps queue admission independent from managed thread-pool
-        /// continuations when a renderer is consuming or starving that pool.
+        /// Compatibility entry point retained for existing server call sites. Queue
+        /// admission is asynchronous so waiting commands do not pin request worker
+        /// or thread-pool threads while another command owns the gate.
         /// </summary>
-        public async Task<T> ExecuteWithSynchronousAdmissionAsync<T>(
+        public Task<T> ExecuteWithSynchronousAdmissionAsync<T>(
             Func<Task<T>> command,
             CancellationToken cancellationToken)
         {
-            ArgumentNullException.ThrowIfNull(command);
-            ObjectDisposedException.ThrowIf(_disposed, this);
-
-            _gate.Wait(cancellationToken);
-            try
-            {
-                return await command().ConfigureAwait(false);
-            }
-            finally
-            {
-                _gate.Release();
-            }
+            return ExecuteAsync(command, cancellationToken);
         }
 
         public void Dispose()
