@@ -10,6 +10,7 @@
 // =============================================================================
 
 using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -37,6 +38,8 @@ namespace FenBrowser.WebDriver
         private readonly CommandRouter _router;
         private readonly CommandHandler _handler;
         private readonly WebDriverCommandQueue _commandQueue;
+        private readonly ConcurrentDictionary<string, WebDriverCommandQueue> _sessionCommandQueues =
+            new(StringComparer.Ordinal);
         private readonly OriginValidator _originValidator;
         private readonly CancellationTokenSource _cts;
         private readonly IBiDiTransportBootstrap _biDiBootstrap;
@@ -240,10 +243,17 @@ namespace FenBrowser.WebDriver
                 {
                     body = await ReadRequestBodyAsync(request).ConfigureAwait(false);
                 }
+
+                var sessionId = routeMatch.GetSessionId();
+                var commandQueue = string.IsNullOrEmpty(sessionId)
+                    ? _commandQueue
+                    : _sessionCommandQueues.GetOrAdd(
+                        sessionId,
+                        static _ => new WebDriverCommandQueue());
                 
                 var commandId = Interlocked.Increment(ref _nextCommandId);
                 var queuedAt = Stopwatch.StartNew();
-                var result = await _commandQueue.ExecuteWithSynchronousAdmissionAsync(async () =>
+                var result = await commandQueue.ExecuteWithSynchronousAdmissionAsync(async () =>
                 {
                     var queueWaitMs = queuedAt.ElapsedMilliseconds;
                     var execution = Stopwatch.StartNew();
@@ -262,7 +272,7 @@ namespace FenBrowser.WebDriver
                             }
                             catch (TimeoutException)
                             {
-                                _handler.MarkSessionUnresponsive(routeMatch.GetSessionId());
+                                _handler.MarkSessionUnresponsive(sessionId);
                                 throw new WebDriverException(
                                     ErrorCodes.ScriptTimeout,
                                     "Script execution timed out");
@@ -274,7 +284,7 @@ namespace FenBrowser.WebDriver
                     catch (WebDriverException ex) when (
                         string.Equals(ex.ErrorCode, ErrorCodes.ScriptTimeout, StringComparison.Ordinal))
                     {
-                        _handler.MarkSessionUnresponsive(routeMatch.GetSessionId());
+                        _handler.MarkSessionUnresponsive(sessionId);
                         throw;
                     }
                     finally
@@ -282,6 +292,16 @@ namespace FenBrowser.WebDriver
                         Log($"Command {commandId} finished: {routeMatch.Command} (durationMs={execution.ElapsedMilliseconds})");
                     }
                 }, _cts.Token).ConfigureAwait(false);
+
+                if (!string.IsNullOrEmpty(sessionId) &&
+                    string.Equals(routeMatch.Command, "DeleteSession", StringComparison.Ordinal))
+                {
+                    // Remove the dictionary ownership only after a successful delete.
+                    // Do not dispose the queue here: requests that were already admitted
+                    // may still hold the same queue reference and be waiting to observe
+                    // that the session was deleted.
+                    _sessionCommandQueues.TryRemove(sessionId, out _);
+                }
                 
                 await SendResponseAsync(response, result);
             }
