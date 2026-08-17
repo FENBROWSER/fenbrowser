@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -17,6 +18,7 @@ namespace FenBrowser.Core.Network
     public static class EncodingSniffer
     {
         private static readonly Encoding Windows1252;
+        private static readonly IReadOnlyDictionary<string, int> WebEncodingCodePages = BuildWebEncodingCodePages();
         private static readonly Regex CharsetRegex = new Regex(
             @"charset\s*=\s*([""']?)([^;""'\s]+)\1",
             RegexOptions.IgnoreCase | RegexOptions.Compiled,
@@ -395,7 +397,10 @@ namespace FenBrowser.Core.Network
         }
 
         /// <summary>
-        /// Maps charset name to Encoding, normalizing common aliases.
+        /// Maps a WHATWG web-encoding label to a known decoder. Labels are closed over
+        /// the browser registry: attacker-controlled names never reach the host's
+        /// Encoding.GetEncoding(string) resolver, so behavior cannot vary with OS or
+        /// installed code-page aliases.
         /// </summary>
         private static Encoding GetEncodingByName(string name)
         {
@@ -403,49 +408,126 @@ namespace FenBrowser.Core.Network
                 return null;
 
             var normalized = name.Trim().ToLowerInvariant();
+            if (normalized is "utf-8" or "utf8" or "unicode-1-1-utf-8")
+                return Encoding.UTF8;
+            if (normalized is "utf-16" or "utf-16le")
+                return Encoding.Unicode;
+            if (normalized == "utf-16be")
+                return Encoding.BigEndianUnicode;
+            if (normalized == "x-user-defined")
+                return XUserDefinedEncoding.Instance;
 
-            // Common aliases per the web encoding model.
-            switch (normalized)
+            // The Encoding Standard's replacement labels intentionally do not expose
+            // their historical stateful decoders to the web. Treat them as unusable
+            // declarations and continue normal sniffing/fallback.
+            if (normalized is "csiso2022kr" or "hz-gb-2312" or "iso-2022-cn" or
+                "iso-2022-cn-ext" or "iso-2022-kr" or "replacement")
             {
-                case "utf-8":
-                case "utf8":
-                case "unicode-1-1-utf-8":
-                    return Encoding.UTF8;
-
-                case "utf-16":
-                case "utf-16le":
-                    return Encoding.Unicode;
-
-                case "utf-16be":
-                    return Encoding.BigEndianUnicode;
-
-                case "iso-8859-1":
-                case "latin1":
-                case "latin-1":
-                case "windows-1252":
-                case "cp1252":
-                case "ascii":
-                case "us-ascii":
-                    // On the web, historical ASCII/Latin1 labels are aliases for
-                    // windows-1252. Encoding.ASCII would corrupt bytes above 0x7F.
-                    return Windows1252;
-
-                default:
-                    try
-                    {
-                        var encoding = Encoding.GetEncoding(name);
-                        // UTF-7 and UTF-32 are .NET encodings but not web encodings.
-                        // Accepting them from attacker-controlled HTTP/meta labels can
-                        // produce decoding behavior no conforming browser exposes.
-                        if (encoding.CodePage is 65000 or 12000 or 12001)
-                            return null;
-                        return encoding;
-                    }
-                    catch
-                    {
-                        return null;
-                    }
+                return null;
             }
+
+            if (!WebEncodingCodePages.TryGetValue(normalized, out var codePage))
+                return null;
+
+            try
+            {
+                return Encoding.GetEncoding(codePage);
+            }
+            catch (ArgumentException)
+            {
+                // CodePagesEncodingProvider is registered in the type initializer, but
+                // fail closed if a deployment cannot provide one of our explicit pages.
+                return null;
+            }
+        }
+
+        private static IReadOnlyDictionary<string, int> BuildWebEncodingCodePages()
+        {
+            var map = new Dictionary<string, int>(StringComparer.Ordinal);
+
+            static void Add(Dictionary<string, int> target, int codePage, params string[] labels)
+            {
+                foreach (var label in labels)
+                    target[label] = codePage;
+            }
+
+            Add(map, 866, "866", "cp866", "csibm866", "ibm866");
+            Add(map, 28592, "csisolatin2", "iso-8859-2", "iso-ir-101", "iso8859-2", "iso88592", "iso_8859-2", "iso_8859-2:1987", "l2", "latin2");
+            Add(map, 28593, "csisolatin3", "iso-8859-3", "iso-ir-109", "iso8859-3", "iso88593", "iso_8859-3", "iso_8859-3:1988", "l3", "latin3");
+            Add(map, 28594, "csisolatin4", "iso-8859-4", "iso-ir-110", "iso8859-4", "iso88594", "iso_8859-4", "iso_8859-4:1988", "l4", "latin4");
+            Add(map, 28595, "csisolatincyrillic", "cyrillic", "iso-8859-5", "iso-ir-144", "iso8859-5", "iso88595", "iso_8859-5", "iso_8859-5:1988");
+            Add(map, 28596, "arabic", "asmo-708", "csiso88596e", "csiso88596i", "csisolatinarabic", "ecma-114", "iso-8859-6", "iso-8859-6-e", "iso-8859-6-i", "iso-ir-127", "iso8859-6", "iso88596", "iso_8859-6", "iso_8859-6:1987");
+            Add(map, 28597, "csisolatingreek", "ecma-118", "elot_928", "greek", "greek8", "iso-8859-7", "iso-ir-126", "iso8859-7", "iso88597", "iso_8859-7", "iso_8859-7:1987", "sun_eu_greek");
+            Add(map, 28598, "csiso88598e", "csisolatinhebrew", "hebrew", "iso-8859-8", "iso-8859-8-e", "iso-ir-138", "iso8859-8", "iso88598", "iso_8859-8", "iso_8859-8:1988", "visual");
+            Add(map, 38598, "csiso88598i", "iso-8859-8-i", "logical");
+            Add(map, 28590, "csisolatin6", "iso-8859-10", "iso-ir-157", "iso8859-10", "iso885910", "l6", "latin6");
+            Add(map, 28603, "iso-8859-13", "iso8859-13", "iso885913");
+            Add(map, 28604, "iso-8859-14", "iso8859-14", "iso885914");
+            Add(map, 28605, "csisolatin9", "iso-8859-15", "iso8859-15", "iso885915", "iso_8859-15", "l9", "latin9");
+            Add(map, 28606, "iso-8859-16");
+            Add(map, 20866, "cskoi8r", "koi", "koi8", "koi8-r", "koi8_r");
+            Add(map, 21866, "koi8-ru", "koi8-u");
+            Add(map, 10000, "csmacintosh", "mac", "macintosh", "x-mac-roman");
+            Add(map, 874, "dos-874", "iso-8859-11", "iso8859-11", "iso885911", "tis-620", "windows-874");
+            Add(map, 1250, "cp1250", "windows-1250", "x-cp1250");
+            Add(map, 1251, "cp1251", "windows-1251", "x-cp1251");
+            Add(map, 1252, "ansi_x3.4-1968", "ascii", "cp1252", "cp819", "csisolatin1", "ibm819", "iso-8859-1", "iso-ir-100", "iso8859-1", "iso8859-1:1987", "iso88591", "iso_8859-1", "iso_8859-1:1987", "l1", "latin1", "us-ascii", "windows-1252", "x-cp1252");
+            Add(map, 1253, "cp1253", "windows-1253", "x-cp1253");
+            Add(map, 1254, "cp1254", "csisolatin5", "iso-8859-9", "iso-ir-148", "iso8859-9", "iso88599", "iso_8859-9", "iso_8859-9:1989", "l5", "latin5", "windows-1254", "x-cp1254");
+            Add(map, 1255, "cp1255", "windows-1255", "x-cp1255");
+            Add(map, 1256, "cp1256", "windows-1256", "x-cp1256");
+            Add(map, 1257, "cp1257", "windows-1257", "x-cp1257");
+            Add(map, 1258, "cp1258", "windows-1258", "x-cp1258");
+            Add(map, 10007, "x-mac-cyrillic", "x-mac-ukrainian");
+            Add(map, 936, "chinese", "csgb2312", "csiso58gb231280", "gb2312", "gb_2312", "gb_2312-80", "gbk", "iso-ir-58", "x-gbk");
+            Add(map, 54936, "gb18030");
+            Add(map, 950, "big5", "big5-hkscs", "cn-big5", "csbig5", "x-x-big5");
+            Add(map, 51932, "cseucpkdfmtjapanese", "euc-jp", "x-euc-jp");
+            Add(map, 50220, "csiso2022jp", "iso-2022-jp");
+            Add(map, 932, "csshiftjis", "ms932", "ms_kanji", "shift-jis", "shift_jis", "sjis", "windows-31j", "x-sjis");
+            Add(map, 51949, "cseuckr", "csksc56011987", "euc-kr", "iso-ir-149", "korean", "ks_c_5601-1987", "ks_c_5601-1989", "ksc5601", "ksc_5601", "windows-949");
+
+            return map;
+        }
+
+        private sealed class XUserDefinedEncoding : Encoding
+        {
+            public static readonly XUserDefinedEncoding Instance = new XUserDefinedEncoding();
+
+            public override int GetByteCount(char[] chars, int index, int count) => count;
+
+            public override int GetBytes(char[] chars, int charIndex, int charCount, byte[] bytes, int byteIndex)
+            {
+                if (chars == null) throw new ArgumentNullException(nameof(chars));
+                if (bytes == null) throw new ArgumentNullException(nameof(bytes));
+                for (var i = 0; i < charCount; i++)
+                {
+                    var c = chars[charIndex + i];
+                    bytes[byteIndex + i] = c < 0x80
+                        ? (byte)c
+                        : c >= 0xF780 && c <= 0xF7FF
+                            ? (byte)(0x80 + c - 0xF780)
+                            : (byte)'?';
+                }
+                return charCount;
+            }
+
+            public override int GetCharCount(byte[] bytes, int index, int count) => count;
+
+            public override int GetChars(byte[] bytes, int byteIndex, int byteCount, char[] chars, int charIndex)
+            {
+                if (bytes == null) throw new ArgumentNullException(nameof(bytes));
+                if (chars == null) throw new ArgumentNullException(nameof(chars));
+                for (var i = 0; i < byteCount; i++)
+                {
+                    var b = bytes[byteIndex + i];
+                    chars[charIndex + i] = b < 0x80 ? (char)b : (char)(0xF780 + b - 0x80);
+                }
+                return byteCount;
+            }
+
+            public override int GetMaxByteCount(int charCount) => charCount;
+            public override int GetMaxCharCount(int byteCount) => byteCount;
         }
 
         /// <summary>
