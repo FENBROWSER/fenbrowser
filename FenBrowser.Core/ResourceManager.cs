@@ -6,7 +6,6 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Reflection;
-using FenBrowser.Core.Compat;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Network.Handlers;
@@ -1662,23 +1661,18 @@ public Uri LastTextResponseUri { get; private set; }
                 // NoteHsts(resp, url); // Handled by HstsHandler
 
                 var maxImageBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxImageBodyBytes);
-                byte[] buf = null;
-                var cachedBuffer = await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false);
-                if (cachedBuffer != null)
+                byte[] buf;
+                try
                 {
-                    buf = cachedBuffer;
-                    if (buf.Length > maxImageBodyBytes) return null;
+                    buf = await ReadStreamingBodyBoundedAsync(
+                        resp,
+                        maxImageBodyBytes,
+                        url?.ToString(),
+                        "image_body_bytes").ConfigureAwait(false);
                 }
-                else
+                catch (InvalidOperationException ex) when (ex.Message.StartsWith("LIMIT_EXCEEDED"))
                 {
-                    try
-                    {
-                        buf = await ReadStreamingBodyBoundedAsync(resp, maxImageBodyBytes, url?.ToString(), "image_body_bytes").ConfigureAwait(false);
-                    }
-                    catch (InvalidOperationException ex) when (ex.Message.StartsWith("LIMIT_EXCEEDED"))
-                    {
-                        return null;
-                    }
+                    return null;
                 }
                 var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
                 if (ShouldBlockCorb(
@@ -1871,25 +1865,14 @@ public Uri LastTextResponseUri { get; private set; }
                 }
 
                 var maxBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxImageBodyBytes);
-                byte[] buf = null;
+                byte[] buf;
                 try
                 {
-                    if (resp.IsSuccessStatusCode)
-                    {
-                        var cachedBuffer = await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false);
-                        if (cachedBuffer != null)
-                        {
-                            buf = cachedBuffer;
-                            if (buf.Length > maxBodyBytes)
-                            {
-                                return BinaryFailure(BinaryFetchFailureReason.BodySizeLimitExceeded, current, $"Body size {buf.Length} exceeded limit {maxBodyBytes}", redirectChain, (int)resp.StatusCode, resp.Content?.Headers?.ContentType?.MediaType, bodySizeAllowed: false);
-                            }
-                        }
-                    }
-                    if (buf == null)
-                    {
-                        buf = await ReadStreamingBodyBoundedAsync(resp, maxBodyBytes, current?.ToString(), "binary_body_bytes").ConfigureAwait(false);
-                    }
+                    buf = await ReadStreamingBodyBoundedAsync(
+                        resp,
+                        maxBodyBytes,
+                        current?.ToString(),
+                        "binary_body_bytes").ConfigureAwait(false);
                 }
                 catch (InvalidOperationException ex) when (ex.Message.StartsWith("LIMIT_EXCEEDED"))
                 {
