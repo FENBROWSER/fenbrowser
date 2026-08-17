@@ -203,11 +203,17 @@ namespace FenBrowser.Core.Dom.V2
             if (_deliveryScheduler != null)
             {
                 _deliveryScheduler(DeliverPendingRecords);
+                return;
             }
-            else
-            {
-                DeliverPendingRecords();
-            }
+
+            // A MutationObserver callback is never delivered on the mutation stack.
+            // BrowserScriptEngine supplies the owning event loop's mutation-observer
+            // microtask scheduler. Core-only embedders that omit a scheduler still
+            // receive deferred delivery instead of the old synchronous fallback.
+            ThreadPool.UnsafeQueueUserWorkItem(
+                static observer => observer.DeliverPendingRecords(),
+                this,
+                preferLocal: false);
         }
 
         private void DeliverPendingRecords()
