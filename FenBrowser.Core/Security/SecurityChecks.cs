@@ -179,9 +179,12 @@ namespace FenBrowser.Core.Security
             string sameSiteAttribute,
             bool isSameOriginRequest,
             bool isTopLevelNavigation,
-            string requestMethod)
+            string requestMethod,
+            DateTimeOffset? creationTime = null,
+            DateTimeOffset? now = null)
         {
-            switch (sameSiteAttribute?.ToLowerInvariant())
+            var state = sameSiteAttribute?.Trim().ToLowerInvariant();
+            switch (state)
             {
                 case "strict":
                     return isSameOriginRequest;
@@ -190,9 +193,30 @@ namespace FenBrowser.Core.Security
                            (isTopLevelNavigation && IsSafeMethod(requestMethod));
                 case "none":
                     return true;
+                case "default":
+                case null:
+                case "":
+                    // RFC6265bis keeps the Default state distinct from an explicit
+                    // SameSite=Lax attribute. Current browser behavior applies Lax
+                    // by default and permits the narrowly-scoped "Lax-allowing-unsafe"
+                    // exception for recently-created default-state cookies. Never apply
+                    // that grace period to explicitly-Lax cookies.
+                    if (isSameOriginRequest)
+                        return true;
+                    if (!isTopLevelNavigation)
+                        return false;
+                    if (IsSafeMethod(requestMethod))
+                        return true;
+                    if (!creationTime.HasValue)
+                        return false;
+
+                    var effectiveNow = now ?? DateTimeOffset.UtcNow;
+                    var age = effectiveNow - creationTime.Value;
+                    return age >= TimeSpan.Zero && age <= TimeSpan.FromMinutes(2);
                 default:
-                    return isSameOriginRequest ||
-                           (isTopLevelNavigation && IsSafeMethod(requestMethod));
+                    // Unknown SameSite values are parsed into the Default state by the
+                    // cookie parser. Fail closed here if an unnormalized value escapes.
+                    return false;
             }
         }
 
