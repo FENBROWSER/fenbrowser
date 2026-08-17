@@ -363,15 +363,6 @@ public Uri LastTextResponseUri { get; private set; }
             return Math.Max(1, resilience.RequestTimeoutSeconds);
         }
 
-        private static string ComputeLegacyNetworkPartition(Uri requestUri, Uri initiatorUri)
-        {
-            var frame = initiatorUri ?? requestUri;
-            var topLevel = frame ?? requestUri;
-            return StoragePartitionKeyFactory
-                .Compute(topLevel?.AbsoluteUri, frame?.AbsoluteUri)
-                .ToStorageKey();
-        }
-
         private static Uri ExtractOrigin(Uri candidate)
         {
             if (candidate == null || !candidate.IsAbsoluteUri)
@@ -849,285 +840,37 @@ public Uri LastTextResponseUri { get; private set; }
         // Text with redirect + small disk cache (5m TTL)
         public async Task<string> FetchTextAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
         {
-            if (url == null) return null;
-            if (!IsSupportedFetchScheme(url))
-            {
-                EngineLogCompat.Warn($"[FetchText] Blocked unsupported scheme '{url.Scheme}' for {url}", LogCategory.Security);
+            if (url == null)
                 return null;
-            }
 
-            if (string.Equals(url.Scheme, "data", StringComparison.OrdinalIgnoreCase))
+            var destination = string.IsNullOrWhiteSpace(secFetchDest) ? "empty" : secFetchDest;
+            var context = new FetchContext
             {
-                var maxTextBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxTextBodyBytes);
-                if (!DataUrlParser.TryParse(url, maxTextBodyBytes, out var dataUrl, out var dataUrlError))
-                {
-                    EngineLogCompat.Debug($"[FetchText] data URL rejected: {dataUrlError}", LogCategory.Network);
-                    return null;
-                }
+                RequestUri = url,
+                InitiatorUri = referer,
+                FrameDocumentUri = referer,
+                TopLevelDocumentUri = referer,
+                Destination = destination,
+                Mode = DetermineFetchMode(destination),
+                CredentialsMode = "include",
+                IsTopLevelNavigation = IsTopLevelDocumentRequest(destination),
+                IsUserInitiated = false,
+                Method = "GET"
+            };
 
-                try
-                {
-                    return dataUrl.DecodeText();
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Debug($"[FetchText] data URL decode failed: {ex.Message}", LogCategory.Network);
-                    return null;
-                }
-            }
+            var result = await FetchTextDetailedAsync(context, accept).ConfigureAwait(false);
+            LastTextResponseUri = result?.FinalUri;
+            if (result?.Status == FetchStatus.Success)
+                return result.Content;
 
-            // CSP Check
-            if (ActivePolicy != null)
+            if (!string.IsNullOrWhiteSpace(result?.ErrorDetail))
             {
-                var dest = secFetchDest ?? ""; 
-                var directive = "default-src";
-                if (dest == "script") directive = "script-src";
-                else if (dest == "style") directive = "style-src";
-                else if (dest == "worker")
-                {
-                    directive = ActivePolicy.Directives.ContainsKey("worker-src") ? "worker-src" : "child-src";
-                }
-                else if (dest == "iframe") directive = "frame-src";
-                
-                if (directive != "default-src" || !string.IsNullOrEmpty(dest))
-                {
-                    // For fetch/xhr
-                    if (string.IsNullOrEmpty(dest)) directive = "connect-src";
-                }
-                
-                // If checking subresources
-                var origin = ExtractOrigin(referer);
-                if (!ActivePolicy.IsAllowed(directive, url, origin))
-                {
-                    System.Diagnostics.Debug.WriteLine($"[CSP] Blocked {url} ({directive})");
-                    return null;
-                }
-            }
-            
-            // Handle file scheme locally
-            if (string.Equals(url.Scheme, "file", StringComparison.OrdinalIgnoreCase))
-            {
-                if (!IsFileSchemeAccessAllowed())
-                {
-                    EngineLogCompat.Warn($"[FetchText] Blocked file scheme load by policy: {url}", LogCategory.Security);
-                    return null;
-                }
-
-                try
-                {
-                    return await File.ReadAllTextAsync(url.LocalPath).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[FetchText] file failed: {url} {ex.Message}");
-                    return null;
-                }
+                EngineLogCompat.Debug(
+                    $"[FetchText] {url} failed: {result.ErrorDetail}",
+                    LogCategory.Network);
             }
 
-            // url = UpgradeIfHsts(url); // Handled by HstsHandler
-            LastTextResponseUri = null;
-
-            // Direct Send via NetworkClient
-            // Cache Setup
-            var key = url.ToString();
-            string partition = ComputeLegacyNetworkPartition(url, referer);
-            
-            // 1. Sharded Memory Lookup
-            if (_textCache.TryGet(partition, key, out var memEntry))
-            {
-                LastTextResponseUri = memEntry.FinalUri ?? url;
-                return memEntry.Body;
-            }
-
-            string folderPath = null, filePath = null, metaPath = null;
-            if (!_isPrivate && !string.IsNullOrEmpty(_cacheRoot))
-            {
-                try {
-                    using (var sha = System.Security.Cryptography.SHA256.Create())
-                    {
-                        var hashBytes = sha.ComputeHash(Encoding.UTF8.GetBytes(key));
-                        var hash = BitConverter.ToString(hashBytes).Replace("-", "");
-                        folderPath = Path.Combine(_cacheRoot, "Text", hash.Substring(0, 2));
-                        filePath = Path.Combine(folderPath, hash);
-                        metaPath = filePath + ".meta";
-                    }
-                } catch (Exception ex) {
-                    EngineLogCompat.Debug($"[Network] Text cache path hashing failed: {ex.Message}", LogCategory.Network);
-                } 
-            }            var refererOriginal = referer;
-            Uri previousRequest = null;
-
-            try
-            {
-                var _startFetch = DateTimeOffset.UtcNow;
-                Uri current = url; HttpResponseMessage resp = null; int hops = 0; HttpRequestMessage req = null;
-                var maxRedirectHops = Math.Max(1, GetResilienceSettings().MaxRedirectHops);
-                while (hops < maxRedirectHops)
-                {
-                    req = new HttpRequestMessage(HttpMethod.Get, current);
-                    AddHeaderSafe(req, "Accept", string.IsNullOrWhiteSpace(accept) ? "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" : accept);
-                    BrowserSettings.ApplyBrowserRequestHeaders(req, useMobile: false);
-                    
-                    AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
-                    AddHeaderSafe(req, "Accept-Encoding", "gzip, deflate, br");
-
-                    var effectiveReferer = refererOriginal ?? previousRequest;
-                    AddHeaderSafe(req, "Sec-Fetch-Dest", string.IsNullOrWhiteSpace(secFetchDest) ? "empty" : secFetchDest);
-                    var fetchMode = DetermineFetchMode(secFetchDest);
-                    AddHeaderSafe(req, "Sec-Fetch-Mode", fetchMode);
-                    ApplyRefererHeader(req, effectiveReferer, current, ActiveReferrerPolicy);
-                    var computedReferer = ComputeReferrerHeader(effectiveReferer, current, ActiveReferrerPolicy);
-                    AddHeaderSafe(req, "Sec-Fetch-Site", BrowserRequestHeaderPolicy.DetermineSite(computedReferer, current));
-                    ApplyNavigationRequestHeaders(req, secFetchDest);
-                    AttachCookies(req, refererOriginal ?? current, secFetchDest);
-                    
-                    var cts = new System.Threading.CancellationTokenSource();
-                    try
-                    {
-                        int sec = ResolveTimeoutSeconds(secFetchDest);
-                        cts.CancelAfter(System.TimeSpan.FromSeconds(sec));
-                    }
-                    catch (Exception ex)
-                    {
-                        EngineLogCompat.Debug($"[Network] Failed to apply request timeout: {ex.Message}", LogCategory.Network);
-                    }
-                    try { resp = await SendRequestTrackedAsync(req, cts.Token).ConfigureAwait(false); }
-                    catch (Exception sendEx)
-                    {
-                        EngineLogCompat.Error($"[Network] Request failed: {current} - {sendEx.Message}", LogCategory.Network);
-                        resp = null;
-                    }
-                    StoreResponseCookies(resp, refererOriginal ?? current);
-                    
-                    if (resp != null && resp.StatusCode == System.Net.HttpStatusCode.Forbidden && resp.ReasonPhrase == "Blocked by AdBlock")
-                    {
-                        IncrementBlockedRequestCount();
-                    }
-
-                    if (resp != null)
-                    {
-                        var code = (int)resp.StatusCode;
-                        if (code >= 300 && code < 400 && resp.Headers.Location != null)
-                        {
-                            var loc = resp.Headers.Location; if (!loc.IsAbsoluteUri) loc = new Uri(current, loc);
-                            previousRequest = current;
-                            // current = UpgradeIfHsts(loc); // Handled by HstsHandler on next pass
-                            current = loc;
-                            hops++;
-                            continue;
-                        }
-                    }
-                    break;
-                }
-                if (resp == null || !resp.IsSuccessStatusCode)
-                {
-                    EngineLogCompat.Warn($"[Network] Request failed: {url} Status={(resp != null ? (int)resp.StatusCode : 0)} Hops={hops}", LogCategory.Network);
-                    return null;
-                }
-                var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
-                LastTextResponseUri = finalUri;
-                // NoteHsts(resp, finalUri ?? url); // Handled by HstsHandler
-
-                var ct = resp.Content != null && resp.Content.Headers != null && resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : null;
-                var ctHeader = resp.Content?.Headers?.ContentType?.ToString();
-                
-                // --- Phase 2: Encoding-aware text decoding ---
-                string text = null;
-                try 
-                { 
-                    // Read raw bytes first with limits
-                    var maxTextBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxTextBodyBytes);
-                    var bytes = await ReadStreamingBodyBoundedAsync(resp, maxTextBodyBytes, url?.ToString(), "text_body_bytes").ConfigureAwait(false);
-                    
-                    // MIME Sniff if declared type is missing or generic
-                    var effectiveMime = ct;
-                    if (string.IsNullOrEmpty(ct) || ct == "application/octet-stream")
-                    {
-                        effectiveMime = MimeSniffer.SniffMimeType(bytes, ct);
-                        System.Diagnostics.Debug.WriteLine($"[ResourceLoader] MIME sniffed: {ct} -> {effectiveMime} for {url}");
-                    }
-                    
-                    // Decode bytes to string using detected encoding
-                    text = EncodingSniffer.DecodeToUtf8(bytes, ctHeader);
-                    
-                    var detectedEncoding = EncodingSniffer.DetermineEncoding(bytes, ctHeader);
-                    System.Diagnostics.Debug.WriteLine($"[ResourceLoader] Encoding: {detectedEncoding.WebName} for {url}");
-                }
-                catch (Exception bodyEx)
-                {
-                    EngineLogCompat.Debug($"[FetchTextError] body read failed url={url} ex={bodyEx.Message}", LogCategory.Network);
-                    text = null;
-                }
-                try { 
-                    var _elapsed = DateTimeOffset.UtcNow - _startFetch; 
-                    var _msg = $"[Network] GET {url} → {(int)resp.StatusCode} in {(int)_elapsed.TotalMilliseconds}ms"; 
-                    EngineLogCompat.Info(_msg, LogCategory.Network);
-                    if (LogSink != null) LogSink(_msg); 
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Debug($"[Network] Post-request logging failed: {ex.Message}", LogCategory.Network);
-                }
-
-                if (resp != null)
-                {
-                    Console.WriteLine($"[FetchTextDebug] url={url} status={resp.StatusCode} type={ct} len={text?.Length ?? -1} headerCount={resp.Headers.Count()}");
-                }
-
-                if (LooksTextual(ct))
-                {
-                    if (IsTopLevelDocumentRequest(secFetchDest))
-                    {
-                        FenBrowser.Core.Verification.ContentVerifier.RegisterSource(
-                            url?.ToString() ?? "unknown",
-                            text?.Length ?? 0,
-                            text?.GetHashCode() ?? 0,
-                            authoritative: true);
-                    }
-
-                    // Phase 2.3: Sharded Memory Cache
-                    var entry = new TextEntry { Body = text ?? string.Empty, ContentType = ct ?? string.Empty, FinalUri = finalUri };
-                    
-                    // Partition by immutable browsing-context network partition
-                    string partitionKey = ComputeLegacyNetworkPartition(url, refererOriginal);
-                    _textCache.Put(partitionKey, key, entry);
-
-                    // disk cache (skip if private)
-                    if (!_isPrivate)
-                    {
-                        try
-                        {
-                            Directory.CreateDirectory(folderPath); // Ensure dir exists
-                            await File.WriteAllTextAsync(filePath, entry.Body).ConfigureAwait(false);
-                            var metaPayload = DateTimeOffset.UtcNow.ToString("o") + "|" + (finalUri != null ? finalUri.AbsoluteUri : string.Empty);
-                            await File.WriteAllTextAsync(metaPath, metaPayload).ConfigureAwait(false);
-                        }
-                        catch (Exception ex)
-                        {
-                            EngineLogCompat.Debug($"[Network] Disk text cache write failed for {url}: {ex.Message}", LogCategory.Network);
-                        }
-                    }
-                }
-                if (string.IsNullOrEmpty(text))
-                {
-                    EngineLogCompat.Debug($"[FetchTextEmpty] url={url}", LogCategory.Network);
-                }
-                return text;
-            }
-            catch (Exception ex) {
-                var msg = $"[FetchTextException] url={url} ex={ex.Message}";
-                EngineLogCompat.Error(msg, LogCategory.Network);
-                try
-                {
-                    LogSink?.Invoke(msg);
-                }
-                catch (Exception sinkEx)
-                {
-                    EngineLogCompat.Debug($"[Network] FetchText exception sink failed: {sinkEx.Message}", LogCategory.Network);
-                }
-                // Return a clear error message for text resources
-                return $"<!-- Resource load failed: {System.Net.WebUtility.HtmlEncode(url?.ToString() ?? "(null)")} : {System.Net.WebUtility.HtmlEncode(ex.Message)} -->";
-            }
+            return null;
         }
 
         public Task<FetchResult> FetchTextDetailedAsync(
