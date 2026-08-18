@@ -1,4 +1,4 @@
-﻿using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Engine;
 using FenBrowser.Core.Logging;
 using System;
@@ -501,34 +501,6 @@ namespace FenBrowser.Core.Parsing
 
         private void ProcessToken(HtmlToken token)
         {
-            // TEMP DEBUG: trace mode when processing tokens near xtSCL/aajZCb area
-            if (Logging.DebugConfig.LogHtmlParse)
-            {
-                string curCls = (CurrentNode as Element)?.GetAttribute("class") ?? "";
-                string curTag = (CurrentNode as Element)?.TagName ?? "?";
-                bool trace = curCls.Contains("xtSCL") || curCls.Contains("aajZCb") ||
-                             curCls.Contains("FPdoLc") || curCls.Contains("VfL2Y") ||
-                             curCls.Contains("WzNHm") || curCls.Contains("JUypV") ||
-                             curCls.Contains("LRZwuc") || curCls.Contains("lJ9FBc");
-                // Also trace when token mentions FPdoLc
-                if (token is StartTagToken stDbg && stDbg.HasAttributes)
-                {
-                    foreach (var attr in stDbg.Attributes)
-                        if (attr.Name == "class" && attr.Value.Contains("FPdoLc")) trace = true;
-                }
-                if (trace)
-                {
-                    string tokenDesc = token switch {
-                        StartTagToken st => $"StartTag({st.TagName})",
-                        EndTagToken et => $"EndTag({et.TagName})",
-                        CharacterToken ct => $"Char({(ct.Data?.Length > 30 ? ct.Data.Substring(0,30)+"..." : ct.Data)})",
-                        CommentToken => "Comment",
-                        _ => token.GetType().Name
-                    };
-                    EngineLogCompat.Info($"[PARSE-TRACE] Mode={_insertionMode} CurrentNode={((CurrentNode as Element)?.TagName ?? "?")}[{curCls}] Token={tokenDesc} StackDepth={_openElements.Count}", Logging.LogCategory.HtmlParsing);
-                }
-            }
-
             // Simplified dispatch based on mode
             bool processed = false;
 
@@ -594,8 +566,17 @@ namespace FenBrowser.Core.Parsing
                     case InsertionMode.AfterBody:
                         processed = HandleAfterBody(token);
                         break;
+                    case InsertionMode.InFrameset:
+                        processed = HandleInFrameset(token);
+                        break;
+                    case InsertionMode.AfterFrameset:
+                        processed = HandleAfterFrameset(token);
+                        break;
                     case InsertionMode.AfterAfterBody:
                         processed = HandleAfterAfterBody(token);
+                        break;
+                    case InsertionMode.AfterAfterFrameset:
+                        processed = HandleAfterAfterFrameset(token);
                         break;
                     default:
                         if (DebugConfig.LogHtmlParse)
@@ -636,6 +617,140 @@ namespace FenBrowser.Core.Parsing
             _document.Mode = QuirksMode.Quirks;
             SwitchTo(InsertionMode.BeforeHtml);
             return false; // Reprocess
+        }
+
+        private bool HandleInFrameset(HtmlToken token)
+        {
+            if (token is CharacterToken characters && string.IsNullOrWhiteSpace(characters.Data))
+            {
+                InsertCharacter(characters);
+                return true;
+            }
+
+            if (token is CommentToken comment)
+            {
+                CurrentNode.AppendChild(new Comment(comment.Data));
+                return true;
+            }
+
+            if (token is DoctypeToken)
+            {
+                return true;
+            }
+
+            if (token is StartTagToken startTag)
+            {
+                var name = startTag.TagName?.ToLowerInvariant();
+                if (name == "html")
+                {
+                    return HandleInBody(token);
+                }
+
+                if (name == "frameset")
+                {
+                    InsertHtmlElement(startTag);
+                    return true;
+                }
+
+                if (name == "frame")
+                {
+                    InsertHtmlElement(startTag);
+                    SafePopOpenElement();
+                    return true;
+                }
+
+                if (name == "noframes")
+                {
+                    return HandleInHead(token);
+                }
+
+                return true;
+            }
+
+            if (token is EndTagToken endTag &&
+                string.Equals(endTag.TagName, "frameset", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.Equals(CurrentTag, "html", StringComparison.OrdinalIgnoreCase))
+                {
+                    SafePopOpenElement();
+                }
+
+                if (!string.Equals(CurrentTag, "frameset", StringComparison.OrdinalIgnoreCase))
+                {
+                    SwitchTo(InsertionMode.AfterFrameset);
+                }
+                return true;
+            }
+
+            return true;
+        }
+
+        private bool HandleAfterFrameset(HtmlToken token)
+        {
+            if (token is CharacterToken characters && string.IsNullOrWhiteSpace(characters.Data))
+            {
+                InsertCharacter(characters);
+                return true;
+            }
+
+            if (token is CommentToken comment)
+            {
+                CurrentNode.AppendChild(new Comment(comment.Data));
+                return true;
+            }
+
+            if (token is DoctypeToken)
+            {
+                return true;
+            }
+
+            if (token is StartTagToken startTag)
+            {
+                if (string.Equals(startTag.TagName, "html", StringComparison.OrdinalIgnoreCase))
+                {
+                    return HandleInBody(token);
+                }
+
+                if (string.Equals(startTag.TagName, "noframes", StringComparison.OrdinalIgnoreCase))
+                {
+                    return HandleInHead(token);
+                }
+
+                return true;
+            }
+
+            if (token is EndTagToken endTag &&
+                string.Equals(endTag.TagName, "html", StringComparison.OrdinalIgnoreCase))
+            {
+                SwitchTo(InsertionMode.AfterAfterFrameset);
+                return true;
+            }
+
+            return true;
+        }
+
+        private bool HandleAfterAfterFrameset(HtmlToken token)
+        {
+            if (token is CommentToken comment)
+            {
+                _document.AppendChild(new Comment(comment.Data));
+                return true;
+            }
+
+            if (token is DoctypeToken ||
+                token is CharacterToken characters && string.IsNullOrWhiteSpace(characters.Data) ||
+                token is StartTagToken htmlStart && string.Equals(htmlStart.TagName, "html", StringComparison.OrdinalIgnoreCase))
+            {
+                return HandleInBody(token);
+            }
+
+            if (token is StartTagToken startTag &&
+                string.Equals(startTag.TagName, "noframes", StringComparison.OrdinalIgnoreCase))
+            {
+                return HandleInHead(token);
+            }
+
+            return true;
         }
 
         private bool HandleInTemplate(HtmlToken token)
