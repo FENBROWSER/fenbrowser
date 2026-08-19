@@ -1573,3 +1573,13 @@ Verification:
 Verification:
 
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj --nologo --verbosity minimal`: passed with zero errors; three pre-existing Skia deprecation warnings remain.
+
+### Binary Network Body Data Plane (2026-08-19)
+
+- Network request metadata remains on the authenticated JSON control pipe, while each request receives a capability-bound, current-user-only binary pipe for request and response bodies.
+- Upload and response bodies are streamed as bounded binary frames with native pipe backpressure. Base64 encoding, per-chunk JSON allocation, the 128 KiB upload ceiling, and the broker's bounded-channel overflow failure path are removed.
+- Response limits are applied by fetch destination while bytes are consumed instead of materializing a fixed-size response in memory. Body streams reject synchronous reads on browser-critical paths.
+
+Verification:
+
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj --nologo --verbosity minimal --no-restore`: passed with zero errors; three pre-existing Skia deprecation warnings remain.

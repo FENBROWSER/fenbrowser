@@ -18,7 +18,7 @@ namespace FenBrowser.Host.ProcessIsolation.Network
     // The Network process is a Target process (sandboxed, least-privilege).
     // The Broker (BrowserProcess) communicates with it over a named pipe.
     // Control plane: JSON envelopes over pipe.
-    // Data plane: response bodies flow through a shared-memory ring.
+    // Data plane: request and response bodies flow through authenticated binary pipes.
     // Security: all messages validated; capability tokens required; no raw file
     //           paths or OS handles sent to renderer without broker mediation.
     // ─────────────────────────────────────────────────────────────────────────
@@ -38,7 +38,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         // Network → Broker
         Ready,
         FetchResponseHead,
-        FetchResponseBody,
         FetchFailed,
         LogBatch,
         CookieResult,
@@ -61,7 +60,9 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         public string Url { get; set; }
         public string Method { get; set; } = "GET";
         public System.Collections.Generic.Dictionary<string, string> Headers { get; set; }
-        public string BodyBase64 { get; set; }           // null = no body
+        public bool HasBody { get; set; }
+        public string BodyPipeName { get; set; }
+        public string BodyPipeToken { get; set; }
         public string Mode { get; set; } = "cors";       // cors | no-cors | same-origin | navigate
         public string Credentials { get; set; } = "same-origin";
         public string Cache { get; set; } = "default";
@@ -84,15 +85,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         public bool Cors { get; set; }
         public bool Opaque { get; set; }
         public long ContentLength { get; set; } = -1;
-    }
-
-    public sealed class NetworkFetchResponseBodyPayload
-    {
-        public string RequestId { get; set; }
-        public bool IsComplete { get; set; }
-        public int ChunkIndex { get; set; }
-        public string BodyChunkBase64 { get; set; }      // base64-encoded chunk
-        public long BytesTotal { get; set; }
     }
 
     public sealed class NetworkFetchFailedPayload
@@ -243,7 +235,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         {
             return messageType == NetworkIpcMessageType.Ready ||
                    messageType == NetworkIpcMessageType.FetchResponseHead ||
-                   messageType == NetworkIpcMessageType.FetchResponseBody ||
                    messageType == NetworkIpcMessageType.FetchFailed ||
                    messageType == NetworkIpcMessageType.LogBatch ||
                    messageType == NetworkIpcMessageType.Pong ||
@@ -280,7 +271,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
         public bool IsConnected => _connected && _pipe.IsConnected;
 
         public event Action<NetworkFetchResponseHeadPayload> ResponseHeadReceived;
-        public event Action<NetworkFetchResponseBodyPayload> ResponseBodyReceived;
         public event Action<NetworkFetchFailedPayload> RequestFailed;
         public event Action NetworkProcessCrashed;
 
@@ -467,7 +457,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
 
         private static bool RequiresRequestCapability(NetworkIpcMessageType messageType) =>
             messageType == NetworkIpcMessageType.FetchResponseHead ||
-            messageType == NetworkIpcMessageType.FetchResponseBody ||
             messageType == NetworkIpcMessageType.FetchFailed;
 
         private bool HasExpectedRequestCapability(NetworkIpcEnvelope envelope)
@@ -492,20 +481,6 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                         break;
                     }
                     InvokeSubscribers(ResponseHeadReceived, head, nameof(ResponseHeadReceived));
-                    break;
-
-                case NetworkIpcMessageType.FetchResponseBody:
-                    var body = NetworkIpc.DeserializePayload<NetworkFetchResponseBodyPayload>(env);
-                    if (body == null || !PayloadRequestIdMatchesEnvelope(env, body.RequestId))
-                    {
-                        RejectResponse(env.RequestId, "response-requestid-mismatch", "Response-body request ID did not match its envelope.");
-                        break;
-                    }
-                    InvokeSubscribers(ResponseBodyReceived, body, nameof(ResponseBodyReceived));
-                    if (body.IsComplete)
-                    {
-                        ReleaseCapabilityToken(env.RequestId);
-                    }
                     break;
 
                 case NetworkIpcMessageType.FetchFailed:

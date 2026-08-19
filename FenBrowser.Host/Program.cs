@@ -988,7 +988,14 @@ namespace FenBrowser.Host
                         {
                             try
                             {
-                                using var request = BuildNetworkChildRequest(payload);
+                                await using var bodyPipe = await NetworkBodyPipe.ConnectClientAsync(
+                                    payload.BodyPipeName,
+                                    payload.BodyPipeToken,
+                                    linkedCts.Token).ConfigureAwait(false);
+                                using var requestBody = payload.HasBody
+                                    ? bodyPipe.OpenReadStream(long.MaxValue)
+                                    : null;
+                                using var request = BuildNetworkChildRequest(payload, requestBody);
                                 using var response = await SendNetworkRequestAsync(httpClient, noProxyClient, request, linkedCts.Token).ConfigureAwait(false);
 
                                 var headers = new System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -1022,50 +1029,7 @@ namespace FenBrowser.Host
                                 });
 
                                 using var bodyStream = await response.Content.ReadAsStreamAsync(linkedCts.Token).ConfigureAwait(false);
-                                var buffer = new byte[16 * 1024];
-                                int chunkIndex = 0;
-                                long bytesTotal = 0;
-                                while (true)
-                                {
-                                    var read = await bodyStream.ReadAsync(buffer, 0, buffer.Length, linkedCts.Token).ConfigureAwait(false);
-                                    if (read <= 0)
-                                    {
-                                        break;
-                                    }
-
-                                    bytesTotal += read;
-                                    var chunk = new byte[read];
-                                    Buffer.BlockCopy(buffer, 0, chunk, 0, read);
-                                    SendNetworkEnvelope(writer, new NetworkIpcEnvelope
-                                    {
-                                        Type = NetworkIpcMessageType.FetchResponseBody.ToString(),
-                                        RequestId = envelope.RequestId,
-                                        CapabilityToken = envelope.CapabilityToken,
-                                        Payload = NetworkIpc.SerializePayload(new NetworkFetchResponseBodyPayload
-                                        {
-                                            RequestId = envelope.RequestId,
-                                            IsComplete = false,
-                                            ChunkIndex = chunkIndex++,
-                                            BodyChunkBase64 = Convert.ToBase64String(chunk),
-                                            BytesTotal = bytesTotal
-                                        })
-                                    });
-                                }
-
-                                SendNetworkEnvelope(writer, new NetworkIpcEnvelope
-                                {
-                                    Type = NetworkIpcMessageType.FetchResponseBody.ToString(),
-                                    RequestId = envelope.RequestId,
-                                    CapabilityToken = envelope.CapabilityToken,
-                                    Payload = NetworkIpc.SerializePayload(new NetworkFetchResponseBodyPayload
-                                    {
-                                        RequestId = envelope.RequestId,
-                                        IsComplete = true,
-                                        ChunkIndex = chunkIndex,
-                                        BodyChunkBase64 = string.Empty,
-                                        BytesTotal = bytesTotal
-                                    })
-                                });
+                                await bodyPipe.SendStreamAsync(bodyStream, linkedCts.Token).ConfigureAwait(false);
                             }
                             catch (OperationCanceledException)
                             {
@@ -2018,11 +1982,19 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
             });
         }
 
-        private static HttpRequestMessage BuildNetworkChildRequest(NetworkFetchRequestPayload payload)
+        private static HttpRequestMessage BuildNetworkChildRequest(
+            NetworkFetchRequestPayload payload,
+            Stream requestBody)
         {
             var request = new HttpRequestMessage(
                 new HttpMethod(string.IsNullOrWhiteSpace(payload.Method) ? "GET" : payload.Method),
                 payload.Url);
+
+            if (payload.HasBody)
+            {
+                request.Content = new StreamContent(
+                    requestBody ?? throw new InvalidDataException("Request body stream was unavailable."));
+            }
 
             if (payload.Headers != null)
             {
@@ -2034,12 +2006,6 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                         request.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
                     }
                 }
-            }
-
-            if (!string.IsNullOrWhiteSpace(payload.BodyBase64))
-            {
-                var bodyBytes = Convert.FromBase64String(payload.BodyBase64);
-                request.Content = new ByteArrayContent(bodyBytes);
             }
 
             return request;
@@ -2055,7 +2021,7 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
             {
                 return await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             }
-            catch (HttpRequestException ex) when (IsLoopbackProxyRefusal(ex))
+            catch (HttpRequestException ex) when (IsLoopbackProxyRefusal(ex) && request.Content == null)
             {
                 using var retryRequest = await CloneHttpRequestMessageAsync(request).ConfigureAwait(false);
                 return await noProxyClient.SendAsync(retryRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
@@ -2174,5 +2140,3 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
         }
     }
 }
-
-
