@@ -4,21 +4,17 @@ using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace FenBrowser.FenEngine.Rendering.Css
 {
-    /// <summary>
-    /// Custom CSS engine wrapping the existing CssLoader.
-    /// This is the default implementation and will always be available.
-    /// </summary>
     public class CustomCssEngine : ICssEngine
     {
         public string EngineName => "FenBrowser.Custom";
 
         private Dictionary<Node, CssComputed> _lastComputed;
-        
-        // Expose CSS sources for DevTools
+
         public List<CssLoader.CssSource> LastSources { get; private set; }
 
         public async Task<Dictionary<Node, CssComputed>> ComputeStylesAsync(
@@ -31,14 +27,16 @@ namespace FenBrowser.FenEngine.Rendering.Css
         {
             try
             {
-                // Use existing CssLoader
                 var result = await CssLoader.ComputeWithResultAsync(
-                    root, baseUri, fetchExternalCssAsync, 
-                    viewportWidth, viewportHeight, null, deadline);
-                
+                    root,
+                    baseUri,
+                    fetchExternalCssAsync,
+                    viewportWidth,
+                    viewportHeight,
+                    null,
+                    deadline);
+
                 _lastComputed = result.Computed;
-                // Don't store sources - causes memory issues on complex sites like GitHub
-                // LastSources = result.Sources;
                 LastSources = null;
                 return result.Computed;
             }
@@ -55,66 +53,187 @@ namespace FenBrowser.FenEngine.Rendering.Css
             {
                 return style;
             }
+
             return new CssComputed();
         }
 
         public Dictionary<string, string> ParseInlineStyle(string styleValue)
         {
             var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            if (string.IsNullOrWhiteSpace(styleValue)) return result;
-
-            // Simple inline style parsing (already handled by CssLoader internally)
-            // This is a lightweight version for direct use
-            try
+            if (string.IsNullOrWhiteSpace(styleValue))
             {
-                var parts = styleValue.Split(';');
-                foreach (var part in parts)
+                return result;
+            }
+
+            foreach (var declaration in SplitDeclarations(styleValue))
+            {
+                var colon = FindTopLevelColon(declaration);
+                if (colon <= 0)
                 {
-                    var colonIdx = part.IndexOf(':');
-                    if (colonIdx > 0)
-                    {
-                        var name = part.Substring(0, colonIdx).Trim().ToLowerInvariant();
-                        var value = part.Substring(colonIdx + 1).Trim();
-                        if (!string.IsNullOrEmpty(name))
-                        {
-                            result[name] = value;
-                        }
-                    }
+                    continue;
+                }
+
+                var name = declaration[..colon].Trim().ToLowerInvariant();
+                var value = declaration[(colon + 1)..].Trim();
+                if (name.Length != 0)
+                {
+                    result[name] = value;
                 }
             }
-            catch (Exception ex) { FenBrowser.Core.EngineLogCompat.Warn($"[CssEngineFactory] Named color parsing failed: {ex.Message}", FenBrowser.Core.Logging.LogCategory.Rendering); }
+
             return result;
+        }
+
+        private static IEnumerable<string> SplitDeclarations(string input)
+        {
+            var current = new StringBuilder();
+            var depth = 0;
+            var quote = '\0';
+            var escaped = false;
+            var inComment = false;
+
+            for (var i = 0; i < input.Length; i++)
+            {
+                var c = input[i];
+
+                if (inComment)
+                {
+                    if (c == '*' && i + 1 < input.Length && input[i + 1] == '/')
+                    {
+                        inComment = false;
+                        i++;
+                    }
+                    continue;
+                }
+
+                if (quote != '\0')
+                {
+                    current.Append(c);
+                    if (escaped)
+                    {
+                        escaped = false;
+                    }
+                    else if (c == '\\')
+                    {
+                        escaped = true;
+                    }
+                    else if (c == quote)
+                    {
+                        quote = '\0';
+                    }
+                    continue;
+                }
+
+                if (c == '/' && i + 1 < input.Length && input[i + 1] == '*')
+                {
+                    inComment = true;
+                    i++;
+                    continue;
+                }
+
+                if (c is '\'' or '"')
+                {
+                    quote = c;
+                    current.Append(c);
+                    continue;
+                }
+
+                if (c is '(' or '[' or '{')
+                {
+                    depth++;
+                    current.Append(c);
+                    continue;
+                }
+
+                if (c is ')' or ']' or '}')
+                {
+                    if (depth > 0)
+                    {
+                        depth--;
+                    }
+                    current.Append(c);
+                    continue;
+                }
+
+                if (c == ';' && depth == 0)
+                {
+                    if (current.Length != 0)
+                    {
+                        yield return current.ToString();
+                        current.Clear();
+                    }
+                    continue;
+                }
+
+                current.Append(c);
+            }
+
+            if (current.Length != 0)
+            {
+                yield return current.ToString();
+            }
+        }
+
+        private static int FindTopLevelColon(string input)
+        {
+            var depth = 0;
+            var quote = '\0';
+            var escaped = false;
+
+            for (var i = 0; i < input.Length; i++)
+            {
+                var c = input[i];
+                if (quote != '\0')
+                {
+                    if (escaped)
+                    {
+                        escaped = false;
+                    }
+                    else if (c == '\\')
+                    {
+                        escaped = true;
+                    }
+                    else if (c == quote)
+                    {
+                        quote = '\0';
+                    }
+                    continue;
+                }
+
+                if (c is '\'' or '"')
+                {
+                    quote = c;
+                }
+                else if (c is '(' or '[' or '{')
+                {
+                    depth++;
+                }
+                else if (c is ')' or ']' or '}')
+                {
+                    if (depth > 0)
+                    {
+                        depth--;
+                    }
+                }
+                else if (c == ':' && depth == 0)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
         }
     }
 
-    /// <summary>
-    /// Static factory for getting the configured CSS engine.
-    /// </summary>
     public static class CssEngineFactory
     {
-        private static CustomCssEngine _customEngine;
-
-        /// <summary>
-        /// Get the currently configured CSS engine.
-        /// Always returns Custom engine.
-        /// </summary>
         public static ICssEngine GetEngine()
         {
-            return GetCustomEngine();
+            return new CustomCssEngine();
         }
 
-        private static CustomCssEngine GetCustomEngine()
-        {
-            return _customEngine ??= new CustomCssEngine();
-        }
-
-        /// <summary>
-        /// Clear cached engines (useful for testing).
-        /// </summary>
         public static void ClearCache()
         {
-            _customEngine = null;
         }
     }
 }
-
