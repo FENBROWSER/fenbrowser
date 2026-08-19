@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Net;
 using System.Threading.Tasks;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Logging;
@@ -15,20 +14,40 @@ namespace FenBrowser.Core.Parsing
     /// </summary>
     public sealed class PreloadScanner
     {
-        private static readonly HashSet<string> RawTextLikeElements = new(StringComparer.OrdinalIgnoreCase)
-        {
-            "script", "style", "title", "textarea", "xmp", "iframe", "noembed", "noframes", "plaintext"
-        };
-
         private readonly string _html;
         private readonly Uri _baseUri;
         private readonly ResourcePrefetcher _prefetcher;
+        private Uri _observedBaseUri;
+        private bool _observedBaseElement;
 
         public PreloadScanner(string html, Uri baseUri, ResourcePrefetcher prefetcher)
         {
             _html = html;
             _baseUri = baseUri;
             _prefetcher = prefetcher;
+            _observedBaseUri = baseUri;
+        }
+
+        public void ObserveStartTag(StartTagToken token)
+        {
+            if (token == null || _baseUri == null || string.IsNullOrEmpty(token.TagName))
+                return;
+
+            if (token.TagName.Equals("base", StringComparison.OrdinalIgnoreCase) &&
+                !_observedBaseElement &&
+                TryResolveUrl(_baseUri, GetAttributeOrNull(token, "href"), out var resolvedBase))
+            {
+                _observedBaseUri = resolvedBase;
+                _observedBaseElement = true;
+                return;
+            }
+
+            if (token.TagName.Equals("link", StringComparison.OrdinalIgnoreCase))
+                QueueLinkCore(token, _observedBaseUri);
+            else if (token.TagName.Equals("script", StringComparison.OrdinalIgnoreCase))
+                QueueScriptCore(token, _observedBaseUri);
+            else if (token.TagName.Equals("img", StringComparison.OrdinalIgnoreCase))
+                QueueImageCore(token, _observedBaseUri);
         }
 
         public Task ScanAsync()
@@ -38,80 +57,41 @@ namespace FenBrowser.Core.Parsing
                 return Task.CompletedTask;
             }
 
-            var tasks = new List<Task>();
-            var currentBaseUri = _baseUri;
-            var acceptedBaseElement = false;
-            var cursor = 0;
-
             try
             {
-                while (cursor < _html.Length)
+                _observedBaseUri = _baseUri;
+                _observedBaseElement = false;
+                var tokenizer = new HtmlTokenizer(_html);
+                foreach (var token in tokenizer.Tokenize())
                 {
-                    var tagStart = _html.IndexOf('<', cursor);
-                    if (tagStart < 0)
+                    if (token is not StartTagToken startTag)
                     {
-                        break;
-                    }
-
-                    if (StartsWithAt(tagStart, "<!--"))
-                    {
-                        var commentEnd = _html.IndexOf("-->", tagStart + 4, StringComparison.Ordinal);
-                        cursor = commentEnd < 0 ? _html.Length : commentEnd + 3;
                         continue;
                     }
 
-                    if (tagStart + 1 >= _html.Length ||
-                        _html[tagStart + 1] is '/' or '!' or '?')
+                    ObserveStartTag(startTag);
+                    var name = startTag.TagName;
+                    tokenizer.LastStartTagName = name;
+                    if (name.Equals("script", StringComparison.OrdinalIgnoreCase))
                     {
-                        cursor = SkipMarkup(tagStart + 1);
-                        continue;
+                        tokenizer.SetState(HtmlTokenizer.TokenizerState.ScriptData);
                     }
-
-                    if (!TryReadStartTag(
-                            tagStart,
-                            out var tagName,
-                            out var attributes,
-                            out var nextCursor,
-                            out var selfClosing))
+                    else if (name.Equals("title", StringComparison.OrdinalIgnoreCase) ||
+                             name.Equals("textarea", StringComparison.OrdinalIgnoreCase))
                     {
-                        cursor = tagStart + 1;
-                        continue;
+                        tokenizer.SetState(HtmlTokenizer.TokenizerState.RcData);
                     }
-
-                    cursor = nextCursor;
-
-                    if (string.Equals(tagName, "base", StringComparison.OrdinalIgnoreCase) &&
-                        !acceptedBaseElement &&
-                        TryGetAttribute(attributes, "href", out var baseHref) &&
-                        TryResolveUrl(_baseUri, baseHref, out var resolvedBase))
+                    else if (name.Equals("style", StringComparison.OrdinalIgnoreCase) ||
+                             name.Equals("xmp", StringComparison.OrdinalIgnoreCase) ||
+                             name.Equals("iframe", StringComparison.OrdinalIgnoreCase) ||
+                             name.Equals("noembed", StringComparison.OrdinalIgnoreCase) ||
+                             name.Equals("noframes", StringComparison.OrdinalIgnoreCase))
                     {
-                        // HTML uses the first applicable <base href> for subsequent
-                        // relative URL resolution. Later base elements must not rewrite
-                        // already-discovered resource URLs.
-                        currentBaseUri = resolvedBase;
-                        acceptedBaseElement = true;
+                        tokenizer.SetState(HtmlTokenizer.TokenizerState.RawText);
                     }
-                    else if (string.Equals(tagName, "link", StringComparison.OrdinalIgnoreCase))
+                    else if (name.Equals("plaintext", StringComparison.OrdinalIgnoreCase))
                     {
-                        QueueLink(attributes, currentBaseUri, tasks);
-                    }
-                    else if (string.Equals(tagName, "script", StringComparison.OrdinalIgnoreCase))
-                    {
-                        QueueScript(attributes, currentBaseUri, tasks);
-                    }
-                    else if (string.Equals(tagName, "img", StringComparison.OrdinalIgnoreCase))
-                    {
-                        QueueImage(attributes, currentBaseUri, tasks);
-                    }
-
-                    if (!selfClosing && RawTextLikeElements.Contains(tagName))
-                    {
-                        if (string.Equals(tagName, "plaintext", StringComparison.OrdinalIgnoreCase))
-                        {
-                            break;
-                        }
-
-                        cursor = SkipRawTextBody(tagName, cursor);
+                        tokenizer.SetState(HtmlTokenizer.TokenizerState.PlainText);
                     }
                 }
             }
@@ -122,16 +102,14 @@ namespace FenBrowser.Core.Parsing
                     LogCategory.HtmlParsing);
             }
 
-            return tasks.Count > 0 ? Task.WhenAll(tasks) : Task.CompletedTask;
+            return Task.CompletedTask;
         }
 
-        private void QueueLink(
-            IReadOnlyDictionary<string, string> attributes,
-            Uri baseUri,
-            List<Task> tasks)
+        private void QueueLinkCore(StartTagToken token, Uri baseUri)
         {
-            if (!TryGetAttribute(attributes, "rel", out var relValue) ||
-                !TryGetAttribute(attributes, "href", out var href) ||
+            var relValue = GetAttributeOrNull(token, "rel");
+            var href = GetAttributeOrNull(token, "href");
+            if (string.IsNullOrWhiteSpace(relValue) ||
                 !TryResolveUrl(baseUri, href, out var url))
             {
                 return;
@@ -139,7 +117,7 @@ namespace FenBrowser.Core.Parsing
 
             var relTokens = TokenizeRel(relValue);
             ResourceHint? hint = null;
-            var asType = ParseAsType(GetAttributeOrNull(attributes, "as"));
+            var asType = ParseAsType(GetAttributeOrNull(token, "as"));
             var discoveryType = string.Empty;
             var eventName = string.Empty;
 
@@ -193,22 +171,18 @@ namespace FenBrowser.Core.Parsing
 
             if (_prefetcher != null)
             {
-                tasks.Add(_prefetcher.QueueHintAsync(
+                _ = _prefetcher.QueueHintAsync(
                     url,
                     hint.Value,
                     asType,
-                    GetAttributeOrNull(attributes, "crossorigin"),
-                    GetAttributeOrNull(attributes, "type")));
+                    GetAttributeOrNull(token, "crossorigin"),
+                    GetAttributeOrNull(token, "type"));
             }
         }
 
-        private void QueueScript(
-            IReadOnlyDictionary<string, string> attributes,
-            Uri baseUri,
-            List<Task> tasks)
+        private void QueueScriptCore(StartTagToken token, Uri baseUri)
         {
-            if (!TryGetAttribute(attributes, "src", out var source) ||
-                !TryResolveUrl(baseUri, source, out var url))
+            if (!TryResolveUrl(baseUri, GetAttributeOrNull(token, "src"), out var url))
             {
                 return;
             }
@@ -216,192 +190,29 @@ namespace FenBrowser.Core.Parsing
             EmitResourceDiscovered("ScriptDiscovered", url, "script-src");
             if (_prefetcher != null)
             {
-                tasks.Add(_prefetcher.QueueHintAsync(
+                _ = _prefetcher.QueueHintAsync(
                     url,
                     ResourceHint.Preload,
                     PreloadAs.Script,
-                    GetAttributeOrNull(attributes, "crossorigin"),
-                    GetAttributeOrNull(attributes, "type")));
+                    GetAttributeOrNull(token, "crossorigin"),
+                    GetAttributeOrNull(token, "type"));
             }
         }
 
-        private void QueueImage(
-            IReadOnlyDictionary<string, string> attributes,
-            Uri baseUri,
-            List<Task> tasks)
+        private void QueueImageCore(StartTagToken token, Uri baseUri)
         {
             if (_prefetcher == null ||
-                !TryGetAttribute(attributes, "src", out var source) ||
-                !TryResolveUrl(baseUri, source, out var url))
+                !TryResolveUrl(baseUri, GetAttributeOrNull(token, "src"), out var url))
             {
                 return;
             }
 
-            tasks.Add(_prefetcher.QueueHintAsync(
+            _ = _prefetcher.QueueHintAsync(
                 url,
                 ResourceHint.Preload,
                 PreloadAs.Image,
-                GetAttributeOrNull(attributes, "crossorigin"),
-                GetAttributeOrNull(attributes, "type")));
-        }
-
-        private bool TryReadStartTag(
-            int start,
-            out string tagName,
-            out Dictionary<string, string> attributes,
-            out int nextCursor,
-            out bool selfClosing)
-        {
-            tagName = null;
-            attributes = null;
-            nextCursor = start + 1;
-            selfClosing = false;
-
-            var i = start + 1;
-            if (i >= _html.Length || !IsTagNameChar(_html[i]))
-            {
-                return false;
-            }
-
-            var nameStart = i;
-            while (i < _html.Length && IsTagNameChar(_html[i])) i++;
-            tagName = _html.Substring(nameStart, i - nameStart).ToLowerInvariant();
-            attributes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-            while (i < _html.Length)
-            {
-                SkipAsciiWhitespace(ref i);
-                if (i >= _html.Length)
-                {
-                    return false;
-                }
-
-                if (_html[i] == '>')
-                {
-                    nextCursor = i + 1;
-                    return true;
-                }
-
-                if (_html[i] == '/')
-                {
-                    var slash = i++;
-                    SkipAsciiWhitespace(ref i);
-                    if (i < _html.Length && _html[i] == '>')
-                    {
-                        selfClosing = true;
-                        nextCursor = i + 1;
-                        return true;
-                    }
-                    i = slash + 1;
-                    continue;
-                }
-
-                var attrNameStart = i;
-                while (i < _html.Length && IsAttributeNameChar(_html[i])) i++;
-                if (i == attrNameStart)
-                {
-                    // Malformed byte in a tag: make forward progress without treating
-                    // the rest of the document as an attribute value.
-                    i++;
-                    continue;
-                }
-
-                var attrName = _html.Substring(attrNameStart, i - attrNameStart).ToLowerInvariant();
-                SkipAsciiWhitespace(ref i);
-                var attrValue = string.Empty;
-
-                if (i < _html.Length && _html[i] == '=')
-                {
-                    i++;
-                    SkipAsciiWhitespace(ref i);
-                    if (i >= _html.Length)
-                    {
-                        return false;
-                    }
-
-                    if (_html[i] is '\'' or '"')
-                    {
-                        var quote = _html[i++];
-                        var valueStart = i;
-                        while (i < _html.Length && _html[i] != quote) i++;
-                        if (i >= _html.Length)
-                        {
-                            return false;
-                        }
-                        attrValue = _html.Substring(valueStart, i - valueStart);
-                        i++;
-                    }
-                    else
-                    {
-                        var valueStart = i;
-                        while (i < _html.Length &&
-                               !IsAsciiWhitespace(_html[i]) &&
-                               _html[i] != '>')
-                        {
-                            i++;
-                        }
-                        attrValue = _html.Substring(valueStart, i - valueStart);
-                    }
-                }
-
-                // HTML keeps the first duplicate attribute on a token. Matching that
-                // behavior prevents a later duplicate href/src from steering only the
-                // speculative scanner to a different resource.
-                if (!attributes.ContainsKey(attrName))
-                {
-                    attributes[attrName] = WebUtility.HtmlDecode(attrValue) ?? string.Empty;
-                }
-            }
-
-            return false;
-        }
-
-        private int SkipRawTextBody(string tagName, int cursor)
-        {
-            var closeNeedle = "</" + tagName;
-            var closeStart = _html.IndexOf(closeNeedle, cursor, StringComparison.OrdinalIgnoreCase);
-            if (closeStart < 0)
-            {
-                return _html.Length;
-            }
-
-            var closeEnd = _html.IndexOf('>', closeStart + closeNeedle.Length);
-            return closeEnd < 0 ? _html.Length : closeEnd + 1;
-        }
-
-        private int SkipMarkup(int cursor)
-        {
-            var quote = '\0';
-            while (cursor < _html.Length)
-            {
-                var c = _html[cursor++];
-                if (quote != '\0')
-                {
-                    if (c == quote) quote = '\0';
-                    continue;
-                }
-
-                if (c is '\'' or '"')
-                {
-                    quote = c;
-                }
-                else if (c == '>')
-                {
-                    break;
-                }
-            }
-
-            return cursor;
-        }
-
-        private bool StartsWithAt(int index, string value)
-        {
-            if (index < 0 || value == null || index > _html.Length - value.Length)
-            {
-                return false;
-            }
-
-            return _html.AsSpan(index, value.Length).SequenceEqual(value.AsSpan());
+                GetAttributeOrNull(token, "crossorigin"),
+                GetAttributeOrNull(token, "type"));
         }
 
         private static bool TryResolveUrl(Uri baseUri, string rawValue, out Uri resolved)
@@ -465,41 +276,18 @@ namespace FenBrowser.Core.Parsing
             };
         }
 
-        private static bool TryGetAttribute(
-            IReadOnlyDictionary<string, string> attributes,
-            string name,
-            out string value)
+        private static string GetAttributeOrNull(StartTagToken token, string name)
         {
-            value = null;
-            return attributes != null &&
-                   attributes.TryGetValue(name, out value) &&
-                   !string.IsNullOrWhiteSpace(value);
-        }
+            if (token?.HasAttributes != true)
+                return null;
 
-        private static string GetAttributeOrNull(
-            IReadOnlyDictionary<string, string> attributes,
-            string name)
-        {
-            return attributes != null && attributes.TryGetValue(name, out var value)
-                ? value
-                : null;
-        }
+            foreach (var attribute in token.Attributes)
+            {
+                if (attribute.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    return attribute.Value;
+            }
 
-        private static bool IsTagNameChar(char c)
-        {
-            return char.IsAsciiLetterOrDigit(c) || c is ':' or '-' or '_';
-        }
-
-        private static bool IsAttributeNameChar(char c)
-        {
-            return !IsAsciiWhitespace(c) && c is not '=' and not '>' and not '/' and not '<' and not '\'' and not '"';
-        }
-
-        private static bool IsAsciiWhitespace(char c) => c is ' ' or '\t' or '\r' or '\n' or '\f';
-
-        private void SkipAsciiWhitespace(ref int index)
-        {
-            while (index < _html.Length && IsAsciiWhitespace(_html[index])) index++;
+            return null;
         }
 
         private static void EmitResourceDiscovered(string eventName, Uri url, string discoveryType)

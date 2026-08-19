@@ -117,7 +117,12 @@ namespace FenBrowser.Core.Parsing
                 }
             }
 
-            var ownerDocument = contextElement?.OwnerDocument ?? Document.CreateHtmlDocument();
+            if (contextElement == null)
+            {
+                throw new ArgumentNullException(nameof(contextElement));
+            }
+
+            var ownerDocument = contextElement.OwnerDocument ?? Document.CreateHtmlDocument();
             var fragment = ownerDocument.CreateDocumentFragment();
             if (string.IsNullOrEmpty(markup))
             {
@@ -125,30 +130,11 @@ namespace FenBrowser.Core.Parsing
                 return fragment;
             }
 
-            var contextTag = IsValidContextTagName(contextElement?.LocalName) ? contextElement.LocalName : "div";
-            var marker = "__fen_fragment_root__";
-            var wrapped = $"<{contextTag} data-fen-fragment-root=\"{marker}\">{markup}</{contextTag}>";
-            var document = ParseDocument(wrapped, effectiveOptions, out outcome);
-            var source = document.Descendants()
-                .OfType<Element>()
-                .FirstOrDefault(e => string.Equals(e.GetAttribute("data-fen-fragment-root"), marker, StringComparison.Ordinal));
-
-            if (source != null)
-            {
-                source.RemoveAttribute("data-fen-fragment-root");
-                while (source.FirstChild != null)
-                {
-                    fragment.AppendChild(source.FirstChild);
-                }
-                return fragment;
-            }
-
-            var fallback = document.Body ?? document.DocumentElement as ContainerNode ?? document;
-            while (fallback.FirstChild != null)
-            {
-                fragment.AppendChild(fallback.FirstChild);
-            }
-            return fragment;
+            var builder = new HtmlTreeBuilder(markup, contextElement);
+            ConfigureBuilder(builder, effectiveOptions, effectiveOptions.SecurityPolicy?.Clone() ?? ParserSecurityPolicy.Default);
+            var parsedFragment = builder.BuildFragment();
+            outcome = CloneOutcome(builder.LastParsingOutcome);
+            return parsedFragment;
         }
 
         public static Document ParseStream(TextReader reader, HtmlParserOptions options = null)
@@ -172,6 +158,11 @@ namespace FenBrowser.Core.Parsing
             {
                 var builder = new HtmlTreeBuilder(reader);
                 ConfigureBuilder(builder, options, policy);
+                if (options.Prefetcher != null)
+                {
+                    var preloadObserver = new PreloadScanner(null, safeBaseUri, options.Prefetcher);
+                    builder.StartTagObserved = preloadObserver.ObserveStartTag;
+                }
                 var document = options.PipelineContext != null
                     ? builder.BuildWithPipelineStages(options.PipelineContext)
                     : builder.Build();
@@ -199,11 +190,13 @@ namespace FenBrowser.Core.Parsing
 
             try
             {
-                var scanner = new PreloadScanner(parseInput, safeBaseUri, options.Prefetcher);
-                scanner.ScanAsync();
-
                 var builder = new HtmlTreeBuilder(parseInput);
                 ConfigureBuilder(builder, options, policy);
+                if (options.Prefetcher != null)
+                {
+                    var preloadObserver = new PreloadScanner(null, safeBaseUri, options.Prefetcher);
+                    builder.StartTagObserved = preloadObserver.ObserveStartTag;
+                }
 
                 var document = options.PipelineContext != null
                     ? builder.BuildWithPipelineStages(options.PipelineContext)
@@ -358,31 +351,24 @@ namespace FenBrowser.Core.Parsing
 
         public static bool IsVoid(string tag)
         {
-            // Void elements from HTML5 spec
-            // area, base, br, col, embed, hr, img, input, link, meta, source, track, wbr
             if (string.IsNullOrEmpty(tag)) return false;
-            var t = tag.ToLowerInvariant();
-            return t == "area" || t == "base" || t == "br" || t == "col" || t == "embed" ||
-                   t == "hr" || t == "img" || t == "input" || t == "link" || t == "meta" ||
-                   t == "source" || t == "track" || t == "wbr";
-        }
-
-        private static bool IsValidContextTagName(string localName)
-        {
-            if (string.IsNullOrWhiteSpace(localName))
+            return tag.Length switch
             {
-                return false;
-            }
-
-            foreach (var c in localName)
-            {
-                if (!(char.IsLetterOrDigit(c) || c == '-' || c == ':' || c == '_'))
-                {
-                    return false;
-                }
-            }
-
-            return true;
+                2 => tag.Equals("br", StringComparison.OrdinalIgnoreCase) ||
+                     tag.Equals("hr", StringComparison.OrdinalIgnoreCase),
+                3 => tag.Equals("col", StringComparison.OrdinalIgnoreCase) ||
+                     tag.Equals("img", StringComparison.OrdinalIgnoreCase) ||
+                     tag.Equals("wbr", StringComparison.OrdinalIgnoreCase),
+                4 => tag.Equals("area", StringComparison.OrdinalIgnoreCase) ||
+                     tag.Equals("base", StringComparison.OrdinalIgnoreCase) ||
+                     tag.Equals("link", StringComparison.OrdinalIgnoreCase) ||
+                     tag.Equals("meta", StringComparison.OrdinalIgnoreCase),
+                5 => tag.Equals("embed", StringComparison.OrdinalIgnoreCase) ||
+                     tag.Equals("input", StringComparison.OrdinalIgnoreCase) ||
+                     tag.Equals("track", StringComparison.OrdinalIgnoreCase),
+                6 => tag.Equals("source", StringComparison.OrdinalIgnoreCase),
+                _ => false
+            };
         }
 
         private static HtmlParsingOutcome CloneOutcome(HtmlParsingOutcome outcome)
@@ -427,4 +413,3 @@ namespace FenBrowser.Core.Parsing
         }
     }
 }
-

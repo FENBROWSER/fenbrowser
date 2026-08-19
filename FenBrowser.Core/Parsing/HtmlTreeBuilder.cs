@@ -53,6 +53,8 @@ namespace FenBrowser.Core.Parsing
         private readonly HtmlTokenPool _pool;
         private readonly HtmlTokenizer _tokenizer;
         private readonly Document _document;
+        private readonly DocumentFragment _fragment;
+        private readonly Element _fragmentRoot;
         
         // Stack of Open Elements
         private readonly Stack<Element> _openElements = new Stack<Element>();
@@ -74,6 +76,7 @@ namespace FenBrowser.Core.Parsing
         public int InterleavedTokenBatchSize { get; set; }
         public Action<HtmlParseCheckpoint> ParseCheckpointCallback { get; set; }
         public Action<Document, HtmlParseCheckpoint> ParseDocumentCheckpointCallback { get; set; }
+        public Action<StartTagToken> StartTagObserved { get; set; }
         public int MaxTokenizerEmissions { get; set; } = 2_000_000;
         public int MaxInputLengthChars { get; set; } = 8_000_000;
         public int MaxAttributesPerTag { get; set; } = 4096;
@@ -102,6 +105,21 @@ namespace FenBrowser.Core.Parsing
             _document = new Document();
         }
 
+        public HtmlTreeBuilder(string html, Element contextElement)
+        {
+            if (contextElement == null)
+                throw new ArgumentNullException(nameof(contextElement));
+
+            _pool = new HtmlTokenPool();
+            _tokenizer = new HtmlTokenizer(html, _pool);
+            _document = contextElement.OwnerDocument ?? Document.CreateHtmlDocument();
+            _fragment = _document.CreateDocumentFragment();
+            _fragmentRoot = _document.CreateElement(contextElement.LocalName ?? "div");
+            _fragment.AppendChild(_fragmentRoot);
+            _openElements.Push(_fragmentRoot);
+            ConfigureFragmentContext(contextElement.LocalName);
+        }
+
         public Document Build()
         {
             return BuildInternal(null);
@@ -115,6 +133,20 @@ namespace FenBrowser.Core.Parsing
             }
 
             return BuildInternal(pipelineContext);
+        }
+
+        public DocumentFragment BuildFragment()
+        {
+            if (_fragment == null || _fragmentRoot == null)
+                throw new InvalidOperationException("This tree builder was not created for fragment parsing.");
+
+            BuildInternal(null);
+            while (_fragmentRoot.FirstChild != null)
+            {
+                _fragment.AppendChild(_fragmentRoot.FirstChild);
+            }
+            _fragment.RemoveChild(_fragmentRoot);
+            return _fragment;
         }
 
         private Document BuildInternal(PipelineContext pipelineContext)
@@ -374,6 +406,10 @@ namespace FenBrowser.Core.Parsing
             foreach (var token in tokenBuffer)
             {
                 var parseStart = Stopwatch.GetTimestamp();
+                if (token is StartTagToken startTag)
+                {
+                    EmitStartTagObserved(startTag);
+                }
                 ProcessToken(token);
                 EnforceOpenElementDepthLimit();
                 parsingTicks += Stopwatch.GetTimestamp() - parseStart;
@@ -405,6 +441,39 @@ namespace FenBrowser.Core.Parsing
             return ParseCheckpointTokenInterval > 0 &&
                 processedTokenCount > 0 &&
                 (processedTokenCount % ParseCheckpointTokenInterval) == 0;
+        }
+
+        private void EmitStartTagObserved(StartTagToken startTag)
+        {
+            var callback = StartTagObserved;
+            if (callback == null)
+                return;
+
+            try
+            {
+                callback(startTag);
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Debug(
+                    $"[HTML] Preload token observer failed (type={ex.GetType().Name}).",
+                    LogCategory.HtmlParsing);
+            }
+        }
+
+        private void ConfigureFragmentContext(string localName)
+        {
+            var name = localName?.ToLowerInvariant() ?? "div";
+            _tokenizer.LastStartTagName = name;
+            _tokenizer.SetState(name switch
+            {
+                "title" or "textarea" => HtmlTokenizer.TokenizerState.RcData,
+                "style" or "xmp" or "iframe" or "noembed" or "noframes" => HtmlTokenizer.TokenizerState.RawText,
+                "script" => HtmlTokenizer.TokenizerState.ScriptData,
+                "plaintext" => HtmlTokenizer.TokenizerState.PlainText,
+                _ => HtmlTokenizer.TokenizerState.Data
+            });
+            ResetInsertionMode();
         }
 
         private static bool RequiresImmediateTreeBuilderFeedback(HtmlToken token)
@@ -3202,7 +3271,6 @@ namespace FenBrowser.Core.Parsing
         }
     }
 }
-
 
 
 

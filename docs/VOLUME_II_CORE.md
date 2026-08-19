@@ -1918,3 +1918,24 @@ Verification:
 - Core builds in Release with zero warnings and errors.
 - Focused network tests cover non-throwing telemetry delivery, numeric request IDs,
   async body reads, and rejection of synchronous body reads.
+
+### 1.96 Token-Integrated Preloads and Native Fragment Parsing (2026-08-19)
+
+- Document and stream parsing now feed preload discovery from emitted start-tag
+  tokens. The parser no longer launches a second full-document lexical scan or
+  builds per-tag attribute dictionaries and substrings for speculative loading.
+- The standalone preload-scanner API also uses the canonical tokenizer, including
+  raw-text, RCDATA, script, and plaintext state transitions. Hint execution remains
+  owned and canceled by `ResourcePrefetcher`'s generation lifecycle.
+- Fragment parsing initializes the tokenizer and insertion mode from the supplied
+  context element and builds directly into a `DocumentFragment`. It no longer
+  constructs wrapper markup, parses a synthetic full document, searches for a
+  marker attribute, and reparents from an HTML/body tree.
+- Void-element recognition is allocation-free and case-insensitive without
+  materializing a lowercased tag string.
+
+Verification:
+
+- Core and the repository test assembly build in Release with zero warnings and
+  errors. Canonical parser and interleaved-state tests pass (`13/13`), including
+  RCDATA fragment behavior and bounded stream parsing.

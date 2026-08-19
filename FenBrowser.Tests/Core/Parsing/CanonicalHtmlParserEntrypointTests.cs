@@ -29,6 +29,19 @@ namespace FenBrowser.Tests.Core.Parsing
         }
 
         [Fact]
+        public void ParseFragment_UsesContextTokenizerState()
+        {
+            var document = Document.CreateHtmlDocument();
+            var context = document.CreateElement("textarea");
+
+            var fragment = HtmlParser.ParseFragment(context, "<b>literal</b>&amp;");
+
+            Assert.Single(fragment.ChildNodes);
+            Assert.Equal("<b>literal</b>&", fragment.TextContent);
+            Assert.Empty(fragment.Descendants().OfType<Element>());
+        }
+
+        [Fact]
         public void ParseDocument_ReportsDeterministicOutcome_WhenTokenLimitTriggers()
         {
             var html = "<!doctype html><html><body><div><span><b>hello</b></span></div></body></html>";
