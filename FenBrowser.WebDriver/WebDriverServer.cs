@@ -107,7 +107,8 @@ namespace FenBrowser.WebDriver
                 _biDiBootstrap.Register(new BiDiBootstrapContext(_port)
                 {
                     SessionManager = _sessionManager,
-                    Browser = _handler.Browser
+                    Browser = _handler.Browser,
+                    CommandHandler = _handler
                 });
                 _listenerTask = Task.Run(ListenAsync);
             }

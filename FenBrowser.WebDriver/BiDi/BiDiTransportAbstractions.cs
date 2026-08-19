@@ -24,6 +24,7 @@ namespace FenBrowser.WebDriver.BiDi
         /// </summary>
         public SessionManager? SessionManager { get; init; }
         public Commands.IBrowserDriver? Browser { get; init; }
+        internal Commands.CommandHandler? CommandHandler { get; init; }
     }
 
     public sealed class BiDiTransportOptions
@@ -46,7 +47,11 @@ namespace FenBrowser.WebDriver.BiDi
                 return;
             }
 
-            _server = new BiDiWebSocketServer(context.SessionManager, context.WebDriverPort, context.Browser);
+            _server = new BiDiWebSocketServer(
+                context.SessionManager,
+                context.WebDriverPort,
+                context.Browser,
+                context.CommandHandler);
             _server.Start();
         }
 
