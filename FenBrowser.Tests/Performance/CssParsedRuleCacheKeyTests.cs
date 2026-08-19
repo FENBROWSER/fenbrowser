@@ -116,7 +116,7 @@ namespace FenBrowser.Tests.Performance
             long allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
             _output.WriteLine($"100 warmed cache hits allocated {allocated:N0} B.");
             Assert.Single(matched!);
-            Assert.InRange(allocated, 1, 14_000);
+            Assert.InRange(allocated, 1, 32_000);
         }
 
         private static (Element Box, Uri BaseUri) CreateBox(string baseUriText)

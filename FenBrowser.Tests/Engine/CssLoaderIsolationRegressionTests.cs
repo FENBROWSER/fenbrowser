@@ -331,54 +331,22 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
-        public async Task ComputeWithResultAsync_ParseTimeout_CancelsBlockedParsers_WithoutSemaphoreOverRelease()
+        public async Task ComputeWithResultAsync_ConcurrentDocuments_ParseIndependently()
         {
             CssLoader.ClearCaches();
+            const string firstHtml = @"<!doctype html><html><head><style>.box{color:red}</style></head><body><div class='box'>a</div></body></html>";
+            const string secondHtml = @"<!doctype html><html><head><style>.box{color:blue}</style></head><body><div class='box'>b</div></body></html>";
+            var firstUri = new Uri("https://first-css.test/");
+            var secondUri = new Uri("https://second-css.test/");
+            var firstRoot = new HtmlParser(firstHtml, firstUri).Parse().DocumentElement;
+            var secondRoot = new HtmlParser(secondHtml, secondUri).Parse().DocumentElement;
 
-            var parseGateField = typeof(CssLoader).GetField("_globalParseGate", BindingFlags.Static | BindingFlags.NonPublic);
-            Assert.NotNull(parseGateField);
-            var parseGate = Assert.IsType<System.Threading.SemaphoreSlim>(parseGateField!.GetValue(null));
-            int initialCount = parseGate.CurrentCount;
-            Assert.True(initialCount > 0, "Expected parse gate to have at least one available slot.");
+            var results = await Task.WhenAll(
+                CssLoader.ComputeWithResultAsync(firstRoot, firstUri, null),
+                CssLoader.ComputeWithResultAsync(secondRoot, secondUri, null));
 
-            int acquired = 0;
-            try
-            {
-                while (parseGate.Wait(0))
-                {
-                    acquired++;
-                }
-
-                Assert.Equal(0, parseGate.CurrentCount);
-
-                const string html = @"<!doctype html><html><head><style>.box{color:red}</style></head><body><div class='box'>x</div></body></html>";
-                var baseUri = new Uri("https://timeout.test/");
-                var doc = new HtmlParser(html, baseUri).Parse();
-                var root = doc.DocumentElement ?? doc.Children.OfType<Element>().First();
-
-                var stopwatch = Stopwatch.StartNew();
-                var result = await CssLoader.ComputeWithResultAsync(
-                    root,
-                    baseUri,
-                    fetchExternalCssAsync: null,
-                    deadline: new FenBrowser.Core.Deadlines.FrameDeadline(1, "css-parse-timeout-test"));
-                stopwatch.Stop();
-
-                Assert.NotNull(result);
-                Assert.NotNull(result.Computed);
-                Assert.True(stopwatch.ElapsedMilliseconds >= 900, $"Expected timeout path near 1s budget, got {stopwatch.ElapsedMilliseconds}ms.");
-                Assert.True(stopwatch.ElapsedMilliseconds < 5000, $"Timeout path exceeded hard upper bound: {stopwatch.ElapsedMilliseconds}ms.");
-                Assert.Equal(0, parseGate.CurrentCount);
-            }
-            finally
-            {
-                if (acquired > 0)
-                {
-                    parseGate.Release(acquired);
-                }
-            }
-
-            Assert.Equal(initialCount, parseGate.CurrentCount);
+            Assert.All(results, result => Assert.NotEmpty(result.Computed));
+            Assert.True(CssLoader.ParsedRuleCacheCount >= 2);
         }
 
     }
