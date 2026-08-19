@@ -6,12 +6,52 @@ using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Network;
+using FenBrowser.Core.Security;
 using Xunit;
 
 namespace FenBrowser.Tests.Core;
 
 public sealed class ResourceManagerFetchContextTests
 {
+    [Fact]
+    public async Task FetchTextDetailedAsync_UsesOnlyTheRequestSecurityContext()
+    {
+        var sendCount = 0;
+        using var client = new HttpClient(new StubHandler(_ =>
+        {
+            Interlocked.Increment(ref sendCount);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("ok") };
+        }));
+        var manager = new ResourceManager(client, isPrivate: true);
+        var origin = new Uri("https://app.example/");
+        var target = new Uri("https://cdn.example/app.js");
+
+        var blocked = await manager.FetchTextDetailedAsync(new FetchContext
+        {
+            RequestUri = target,
+            InitiatorUri = origin,
+            FrameDocumentUri = origin,
+            TopLevelDocumentUri = origin,
+            Destination = "script",
+            Mode = "no-cors",
+            ContentSecurityPolicy = CspPolicy.Parse("script-src 'none'")
+        });
+        var allowed = await manager.FetchTextDetailedAsync(new FetchContext
+        {
+            RequestUri = target,
+            InitiatorUri = origin,
+            FrameDocumentUri = origin,
+            TopLevelDocumentUri = origin,
+            Destination = "script",
+            Mode = "no-cors",
+            ContentSecurityPolicy = CspPolicy.Parse("script-src https://cdn.example")
+        });
+
+        Assert.Equal(FetchFailureReasonCode.CspBlocked, blocked.FailureReason);
+        Assert.Equal(FetchStatus.Success, allowed.Status);
+        Assert.Equal(1, sendCount);
+    }
+
     [Theory]
     [InlineData("https://assets.example.test/page", "https://assets.example.test/image.png", "same-origin")]
     [InlineData("https://www.example.test/page", "https://static.example.test/image.png", "same-site")]
@@ -212,7 +252,7 @@ public sealed class ResourceManagerFetchContextTests
         var topUri = new Uri("https://top.example.test/top");
         var frameUri = new Uri("https://frame.example.test/frame");
 
-        await manager.FetchTextDetailedAsync(new FetchContext
+        var topResult = await manager.FetchTextDetailedAsync(new FetchContext
         {
             RequestUri = topUri,
             InitiatorUri = topUri,
@@ -247,7 +287,7 @@ public sealed class ResourceManagerFetchContextTests
             IsTopLevelNavigation = false
         });
 
-        Assert.Equal(ReferrerPolicyDirective.UnsafeUrl, manager.ActiveReferrerPolicy);
+        Assert.Equal(ReferrerPolicyDirective.UnsafeUrl, topResult.ReferrerPolicy);
         Assert.Equal(ReferrerPolicyDirective.NoReferrer, frameResult.ReferrerPolicy);
         Assert.NotNull(frameScriptRequest);
         Assert.Null(frameScriptRequest.Headers.Referrer);

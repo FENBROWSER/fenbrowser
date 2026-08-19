@@ -147,6 +147,7 @@ namespace FenBrowser.FenEngine.Rendering
             get => _activePolicy;
             set => _activePolicy = value;
         }
+        public DocumentSecurityContext SecurityContext { get; set; }
 
         // EXPOSED STYLES FOR SKIA RENDERER
         public Dictionary<Node, CssComputed> LastComputedStyles { get; private set; }
@@ -1585,7 +1586,8 @@ public void Dispose()
                     // PreloadScanner only runs when Prefetcher is non-null; without
                     // this wiring the scanner was dead code and every subresource
                     // got fetched sequentially as the tree builder produced it.
-                    Prefetcher = Prefetcher
+                    Prefetcher = Prefetcher,
+                    ContentSecurityPolicy = ActivePolicy
                 };
                 AttachParseDocumentCheckpointCallback(parseOptions, parseCheckpointState);
 
@@ -1615,7 +1617,8 @@ public void Dispose()
                                 BaseUri = baseUri,
                                 ParseCheckpointTokenInterval = 512,
                                 InterleavedTokenBatchSize = 0,
-                                Prefetcher = Prefetcher
+                                Prefetcher = Prefetcher,
+                                ContentSecurityPolicy = ActivePolicy
                             };
                             AttachParseDocumentCheckpointCallback(fallbackOptions, parseCheckpointState);
                             parseResult = await Task.Run(() =>
@@ -2360,7 +2363,8 @@ public void Dispose()
                  },
                  scrollToElement: (el) => { }));
 
-             js.Sandbox = allowJs ? SandboxPolicy.StandardPage : SandboxPolicy.NoScripts;
+             js.DocumentSecurityContext = SecurityContext;
+             js.Sandbox = allowJs ? SecurityContext?.Sandbox ?? SandboxPolicy.StandardPage : SandboxPolicy.NoScripts;
              js.AllowExternalScripts = allowJs;
              js.SubresourceAllowed = (u, kind) =>
              {
@@ -2741,6 +2745,23 @@ public void Dispose()
 
                 ActivateDeclarativeShadowRoots(dom);
 
+                try
+                {
+                    var metaCsp = dom.Descendants().OfType<Element>()
+                        .FirstOrDefault(n =>
+                            string.Equals(n.TagName, "meta", StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(n.GetAttribute("http-equiv"), "Content-Security-Policy", StringComparison.OrdinalIgnoreCase));
+                    var cspContent = metaCsp?.GetAttribute("content");
+                    if (!string.IsNullOrWhiteSpace(cspContent))
+                    {
+                        ActivePolicy = CspPolicy.Intersect(ActivePolicy, CspPolicy.Parse(cspContent));
+                    }
+                }
+                catch (Exception cspEx)
+                {
+                    EngineLogCompat.Warn($"[Security] Failed to parse CSP meta: {cspEx.Message}", LogCategory.Rendering);
+                }
+
                 // 2. Helper: Load CSS
                 await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, renderGeneration, cancellationToken);
                 if (!IsCurrentRenderGeneration(renderGeneration))
@@ -2751,30 +2772,6 @@ public void Dispose()
                 cssAndStyleMs = Math.Max(0, elapsed - lastStageMarkMs);
                 lastStageMarkMs = elapsed;
                 EngineLogCompat.Debug($"[PERF] CSS Load: {elapsed}ms", LogCategory.Rendering);
-
-                // 2.5. Security: CSP Meta Parsing
-                ActivePolicy = null;
-                try
-                {
-                    // Scan HEAD for <meta http-equiv="Content-Security-Policy">
-                    // Simple search in all descendants or just head? Descendants is safer if HEAD parsing is loose.
-                    var metaCsp = dom.Descendants().OfType<Element>()
-                        .FirstOrDefault(n => 
-                            string.Equals(n.TagName, "meta", StringComparison.OrdinalIgnoreCase) &&
-                            n.GetAttribute("http-equiv") != null && 
-                            string.Equals(n.GetAttribute("http-equiv"), "Content-Security-Policy", StringComparison.OrdinalIgnoreCase));
-                    
-                    if (metaCsp != null && metaCsp.GetAttribute("content") != null)
-                    {
-                         var cspContent = metaCsp.GetAttribute("content");
-                         ActivePolicy = CspPolicy.Parse(cspContent);
-                         EngineLogCompat.Info($"[Security] Active CSP from Meta: {cspContent}", LogCategory.Rendering);
-                    }
-                }
-                catch (Exception cspEx)
-                {
-                    EngineLogCompat.Warn($"[Security] Failed to parse CSP meta: {cspEx.Message}", LogCategory.Rendering);
-                }
 
                 var renderJs = SetupJavaScriptEngine(baseUri, onNavigate, allowJs, fetchExternalCssAsync, viewportWidth, viewportHeight);
                 EngineLogCompat.Info($"[RenderAsync] JS Engine setup complete. ActiveJs={(renderJs != null ? "yes" : "no")} allowJs={allowJs}", LogCategory.Rendering);

@@ -40,6 +40,7 @@ namespace FenBrowser.Core
         TransportFailure,
         HttpError,
         CorbBlocked,
+        CspBlocked,
         XFrameBlocked,
         BodyReadFailed,
         Unknown
@@ -158,7 +159,6 @@ namespace FenBrowser.Core
         public sealed class ImgEntry { public byte[] Buffer; public string ContentType; }
         private readonly FenBrowser.Core.Cache.ShardedCache<ImgEntry> _imgCache = new FenBrowser.Core.Cache.ShardedCache<ImgEntry>(64);
 public Uri LastTextResponseUri { get; private set; }
-        public ReferrerPolicyDirective ActiveReferrerPolicy { get; private set; } = ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
 
         /// <summary>
         /// Parses a Referrer-Policy header value into a ReferrerPolicyDirective.
@@ -265,7 +265,6 @@ public Uri LastTextResponseUri { get; private set; }
         private static long _nextRequestId;
         private static readonly CorbFilter SharedCorbFilter = new();
 
-        public CspPolicy ActivePolicy { get; set; }
         public BrowserCookieJar CookieJar { get; }
 
         public ResourceManager(
@@ -946,16 +945,6 @@ public Uri LastTextResponseUri { get; private set; }
             return decoded;
         }
 
-        private void AdoptResponseReferrerPolicy(HttpResponseMessage response, FetchContext context)
-        {
-            if (context?.IsTopLevelNavigation != true)
-            {
-                return;
-            }
-
-            ActiveReferrerPolicy = ParseReferrerPolicy(response);
-        }
-
         private static string HashForFile(string key)
         {
             try
@@ -1053,6 +1042,21 @@ public Uri LastTextResponseUri { get; private set; }
                 ? DetermineFetchMode(secFetchDest)
                 : context.Mode;
             if (url == null) return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "URL is null" };
+            if (context.ContentSecurityPolicy != null)
+            {
+                var directive = ResolveCspFetchDirective(secFetchDest);
+                if (!context.ContentSecurityPolicy.IsAllowed(directive, url, ExtractOrigin(referer)))
+                {
+                    return new FetchResult
+                    {
+                        Status = FetchStatus.UnknownError,
+                        ErrorDetail = $"Blocked by {directive}",
+                        FinalUri = url,
+                        FailureReason = FetchFailureReasonCode.CspBlocked,
+                        IsRetryable = false
+                    };
+                }
+            }
             if (!IsSupportedFetchScheme(url))
             {
                 return new FetchResult
@@ -1198,13 +1202,26 @@ public Uri LastTextResponseUri { get; private set; }
                 var maxRedirectHops = Math.Max(1, GetResilienceSettings().MaxRedirectHops);
                 while (hops < maxRedirectHops)
                 {
+                    if (context.ContentSecurityPolicy != null &&
+                        !context.ContentSecurityPolicy.IsAllowed(ResolveCspFetchDirective(secFetchDest), current, ExtractOrigin(referer)))
+                    {
+                        resp?.Dispose();
+                        return new FetchResult
+                        {
+                            Status = FetchStatus.UnknownError,
+                            ErrorDetail = $"Redirect blocked by {ResolveCspFetchDirective(secFetchDest)}",
+                            FinalUri = current,
+                            FailureReason = FetchFailureReasonCode.CspBlocked,
+                            IsRetryable = false
+                        };
+                    }
                     /* [PERF-REMOVED] */
                     req = new HttpRequestMessage(HttpMethod.Get, current);
                     var effectiveReferer = refererOriginal ?? previousRequest;
                     BrowserRequestHeaderPolicy.Apply(
                         req,
                         context,
-                        context.ReferrerPolicy ?? ActiveReferrerPolicy,
+                        context.ReferrerPolicy ?? ReferrerPolicyDirective.StrictOriginWhenCrossOrigin,
                         string.IsNullOrWhiteSpace(accept)
                             ? BrowserNetworkCapabilities.DocumentAcceptHeader
                             : accept,
@@ -1487,7 +1504,6 @@ public Uri LastTextResponseUri { get; private set; }
                 ParseXFrameOptions(resp, out var xFramePolicy, out var xFrameAllowFrom);
 
                 var referrerPolicy = ParseReferrerPolicy(resp);
-                AdoptResponseReferrerPolicy(resp, context);
 
                 // Parse COOP/COEP headers for cross-origin isolation state.
                 var crossOriginIsolation = new CrossOriginIsolationPolicy();
@@ -1638,8 +1654,8 @@ public Uri LastTextResponseUri { get; private set; }
                 if (destLower == "document" || destLower == "iframe") fetchMode = "navigate";
                 else if (destLower == "style" || destLower == "script" || destLower == "image" || destLower == "font") fetchMode = "no-cors";
                 AddHeaderSafe(req, "Sec-Fetch-Mode", fetchMode);
-                var computedReferer = ComputeReferrerHeader(referer, url, ActiveReferrerPolicy);
-                ApplyRefererHeader(req, referer, url, ActiveReferrerPolicy);
+                var computedReferer = ComputeReferrerHeader(referer, url, ReferrerPolicyDirective.StrictOriginWhenCrossOrigin);
+                ApplyRefererHeader(req, referer, url, ReferrerPolicyDirective.StrictOriginWhenCrossOrigin);
                 AddHeaderSafe(req, "Sec-Fetch-Site", BrowserRequestHeaderPolicy.DetermineSite(computedReferer, url));
                 ApplyNavigationRequestHeaders(req, secFetchDest);
                 AttachCookies(req, referer ?? url, secFetchDest);
@@ -1663,10 +1679,6 @@ public Uri LastTextResponseUri { get; private set; }
                 {
                     EngineLogCompat.Debug($"[FetchTextOptFail] url={url} status={(resp != null ? (int)resp.StatusCode : 0)}", LogCategory.Network);
                     return null;
-                }
-                if (IsTopLevelDocumentRequest(secFetchDest))
-                {
-                    ActiveReferrerPolicy = ParseReferrerPolicy(resp);
                 }
                 LastTextResponseUri = resp.RequestMessage != null ? resp.RequestMessage.RequestUri : url;
                 string text = null;
@@ -1739,7 +1751,7 @@ public Uri LastTextResponseUri { get; private set; }
             }
 
             // CSP Check
-            if (ActivePolicy != null && !ActivePolicy.IsAllowed("img-src", url, ExtractOrigin(referer)))
+            if (context.ContentSecurityPolicy != null && !context.ContentSecurityPolicy.IsAllowed("img-src", url, ExtractOrigin(referer)))
             {
                  System.Diagnostics.Debug.WriteLine($"[CSP] Blocked image {url}");
                  return null;
@@ -1808,12 +1820,18 @@ public Uri LastTextResponseUri { get; private set; }
                 var maxRedirectHops = Math.Max(1, GetResilienceSettings().MaxRedirectHops);
                 while (hops < maxRedirectHops)
                 {
+                    if (context.ContentSecurityPolicy != null &&
+                        !context.ContentSecurityPolicy.IsAllowed("img-src", current, ExtractOrigin(referer)))
+                    {
+                        resp?.Dispose();
+                        return null;
+                    }
                     req = new HttpRequestMessage(HttpMethod.Get, current);
                     var effectiveReferer = refererOriginal ?? previousRequest;
                     BrowserRequestHeaderPolicy.Apply(
                         req,
                         context,
-                        context.ReferrerPolicy ?? ActiveReferrerPolicy,
+                        context.ReferrerPolicy ?? ReferrerPolicyDirective.StrictOriginWhenCrossOrigin,
                         BrowserNetworkCapabilities.ImageAcceptHeader,
                         effectiveReferer,
                         acceptEncoding: "gzip, deflate");
@@ -1976,14 +1994,14 @@ public Uri LastTextResponseUri { get; private set; }
             }
             
             // CSP Check (fonts, media, etc)
-            if (ActivePolicy != null)
+            if (context.ContentSecurityPolicy != null)
             {
                 var directive = "default-src";
                 if (secFetchDest == "font") directive = "font-src";
                 else if (secFetchDest == "audio" || secFetchDest == "video") directive = "media-src";
                 else if (secFetchDest == "object") directive = "object-src";
                 
-                if (!ActivePolicy.IsAllowed(directive, url, ExtractOrigin(referer)))
+                if (!context.ContentSecurityPolicy.IsAllowed(directive, url, ExtractOrigin(referer)))
                 {
                     return BinaryFailure(BinaryFetchFailureReason.CspBlocked, url, $"Blocked by {directive}", cspAllowed: false);
                 }
@@ -1997,11 +2015,18 @@ public Uri LastTextResponseUri { get; private set; }
                 var maxRedirectHops = Math.Max(1, GetResilienceSettings().MaxRedirectHops);
                 while (hops < maxRedirectHops)
                 {
+                    var redirectDirective = ResolveCspFetchDirective(secFetchDest);
+                    if (context.ContentSecurityPolicy != null &&
+                        !context.ContentSecurityPolicy.IsAllowed(redirectDirective, current, ExtractOrigin(referer)))
+                    {
+                        resp?.Dispose();
+                        return BinaryFailure(BinaryFetchFailureReason.CspBlocked, current, $"Redirect blocked by {redirectDirective}", cspAllowed: false);
+                    }
                     req = new HttpRequestMessage(HttpMethod.Get, current);
                     BrowserRequestHeaderPolicy.Apply(
                         req,
                         context,
-                        context.ReferrerPolicy ?? ActiveReferrerPolicy,
+                        context.ReferrerPolicy ?? ReferrerPolicyDirective.StrictOriginWhenCrossOrigin,
                         string.IsNullOrWhiteSpace(accept) ? "*/*" : accept,
                         referer);
                     AttachCookies(req, topLevelDocumentUri ?? current, secFetchDest);
@@ -2210,7 +2235,7 @@ public Uri LastTextResponseUri { get; private set; }
             BrowserRequestHeaderPolicy.Apply(
                 request,
                 context,
-                context.ReferrerPolicy ?? ActiveReferrerPolicy,
+                context.ReferrerPolicy ?? ReferrerPolicyDirective.StrictOriginWhenCrossOrigin,
                 request.Headers.Accept.Count > 0 ? null : "*/*",
                 context.InitiatorUri ?? context.FrameDocumentUri);
             var requestUrl = request.RequestUri.AbsoluteUri;
@@ -2502,6 +2527,23 @@ throw new HttpRequestException($"Blocked by Content Security Policy (connect-src
                 CredentialsMode = "include",
                 Method = "GET"
             });
+        }
+
+        private static string ResolveCspFetchDirective(string destination)
+        {
+            return (destination ?? string.Empty).Trim().ToLowerInvariant() switch
+            {
+                "script" => "script-src",
+                "style" => "style-src",
+                "image" => "img-src",
+                "font" => "font-src",
+                "audio" or "video" or "track" => "media-src",
+                "iframe" => "frame-src",
+                "object" or "embed" => "object-src",
+                "worker" or "sharedworker" or "serviceworker" => "worker-src",
+                "empty" => "connect-src",
+                _ => "default-src"
+            };
         }
 
         public async Task<string> FetchCssAsync(FetchContext context)

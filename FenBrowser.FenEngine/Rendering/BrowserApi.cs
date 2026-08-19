@@ -684,6 +684,8 @@ namespace FenBrowser.FenEngine.Rendering
 
         public SecurityState SecurityState { get; private set; } = SecurityState.None;
         public CspPolicy CurrentPolicy { get; private set; }
+        public DocumentSecurityContext CurrentSecurityContext { get; private set; }
+        public ReferrerPolicyDirective CurrentReferrerPolicy { get; private set; } = ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
         /// <summary>
         /// X-Frame-Options policy returned by the current page's HTTP response.
         /// DENY means this page asked not to be embedded in any frame.
@@ -814,6 +816,8 @@ namespace FenBrowser.FenEngine.Rendering
                     Destination = Header("Sec-Fetch-Dest") ?? "empty",
                     Mode = Header("Sec-Fetch-Mode") ?? "cors",
                     CredentialsMode = "same-origin",
+                    ReferrerPolicy = CurrentReferrerPolicy,
+                    ContentSecurityPolicy = CurrentPolicy,
                     Method = req.Method.Method
                 });
             };
@@ -1113,6 +1117,8 @@ namespace FenBrowser.FenEngine.Rendering
                                 Destination = "image",
                                 Mode = "no-cors",
                                 CredentialsMode = "include",
+                                ReferrerPolicy = CurrentReferrerPolicy,
+                                ContentSecurityPolicy = CurrentPolicy,
                                 Method = "GET"
                             },
                             BrowserNetworkCapabilities.ImageAcceptHeader)
@@ -1408,9 +1414,11 @@ namespace FenBrowser.FenEngine.Rendering
                 FenBrowser.Core.Verification.ContentVerifier.ResetForNavigation(url);
 
                 _resources.ResetBlockedCount();
-                _resources.ActivePolicy = null; // Reset CSP for new page
                 _engine.ActivePolicy = null;
                 CurrentPolicy = null;
+                CurrentSecurityContext = null;
+                _engine.SecurityContext = null;
+                CurrentReferrerPolicy = ReferrerPolicyDirective.StrictOriginWhenCrossOrigin;
                 CurrentXFrameOptions = FenBrowser.Core.XFrameOptionsPolicy.None;
                 CurrentPermissionsPolicy = FenBrowser.Core.Security.PermissionsPolicy.None;
 
@@ -1456,7 +1464,6 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     // Multiple CSP headers are joined here until multi-policy intersection support is added.
                     CurrentPolicy = CspPolicy.Parse(string.Join(";", cspValues));
-                    _resources.ActivePolicy = CurrentPolicy;
                     _engine.ActivePolicy = CurrentPolicy; // Set on engine for inline script/style CSP checks
                     Console.WriteLine($"[CSP] Policy Applied: {string.Join(";", cspValues)}");
 
@@ -1477,6 +1484,7 @@ namespace FenBrowser.FenEngine.Rendering
                 // Frame-document enforcement now happens in ResourceManager when a document is
                 // fetched with secFetchDest=iframe; this copy is retained for diagnostics/UI state.
                 CurrentXFrameOptions = result.XFrameOptions;
+                CurrentReferrerPolicy = result.ReferrerPolicy;
                 if (CurrentXFrameOptions != FenBrowser.Core.XFrameOptionsPolicy.None)
                     Console.WriteLine($"[XFO] X-Frame-Options: {CurrentXFrameOptions}{(result.XFrameAllowFromUri != null ? " " + result.XFrameAllowFromUri : "")}");
 
@@ -1489,20 +1497,14 @@ namespace FenBrowser.FenEngine.Rendering
                     jsEngine.PermissionsPolicyProvider = () => CurrentPermissionsPolicy;
                 }
 
-                // Publish COOP/COEP-derived cross-origin isolation state for this document.
-                // The scripting layer reads this to expose crossOriginIsolated and to gate
-                // SharedArrayBuffer / Atomics.wait availability.
-                if (result.CrossOriginIsolation != null)
-                {
-                    FenBrowser.Core.Security.CrossOriginIsolationState.Set(result.CrossOriginIsolation);
-                }
-                else
-                {
-                    FenBrowser.Core.Security.CrossOriginIsolationState.Reset();
-                }
-
                 string htmlToRender = result.Content;
                 Uri uri = result.FinalUri ?? new Uri("about:blank");
+                CurrentSecurityContext = DocumentSecurityContext.CreateTopLevel(
+                    uri,
+                    CurrentPolicy,
+                    CurrentPermissionsPolicy,
+                    result.CrossOriginIsolation);
+                _engine.SecurityContext = CurrentSecurityContext;
 
                 if (isViewSource && result.Status == FetchStatus.Success)
                 {
@@ -2836,7 +2838,19 @@ pre {{
                 _navigationSubresources.MarkLoadStarted(navigationId);
                 try
                 {
-                    return await _resources.FetchCssAsync(uri).ConfigureAwait(false);
+                    return await _resources.FetchCssAsync(new FetchContext
+                    {
+                        RequestUri = MapRuntimeUri(uri),
+                        InitiatorUri = _current,
+                        FrameDocumentUri = _current,
+                        TopLevelDocumentUri = _current,
+                        Destination = "style",
+                        Mode = "no-cors",
+                        CredentialsMode = "include",
+                        ReferrerPolicy = CurrentReferrerPolicy,
+                        ContentSecurityPolicy = CurrentPolicy,
+                        Method = "GET"
+                    }).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -2852,7 +2866,19 @@ pre {{
                 _navigationSubresources.MarkLoadStarted(navigationId);
                 try
                 {
-                    return await _resources.FetchImageAsync(uri).ConfigureAwait(false);
+                    return await _resources.FetchImageAsync(new FetchContext
+                    {
+                        RequestUri = MapRuntimeUri(uri),
+                        InitiatorUri = _current,
+                        FrameDocumentUri = _current,
+                        TopLevelDocumentUri = _current,
+                        Destination = "image",
+                        Mode = "no-cors",
+                        CredentialsMode = "include",
+                        ReferrerPolicy = CurrentReferrerPolicy,
+                        ContentSecurityPolicy = CurrentPolicy,
+                        Method = "GET"
+                    }).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -5270,6 +5296,8 @@ pre {{
                             Destination = "image",
                             Mode = "no-cors",
                             CredentialsMode = "include",
+                            ReferrerPolicy = CurrentReferrerPolicy,
+                            ContentSecurityPolicy = CurrentPolicy,
                             Method = "GET"
                         },
                         BrowserNetworkCapabilities.ImageAcceptHeader)
@@ -5299,6 +5327,7 @@ pre {{
                         Mode = "no-cors",
                         CredentialsMode = "include",
                         ReferrerPolicy = frameContext.ReferrerPolicy,
+                        ContentSecurityPolicy = frameContext.Policy,
                         IsTopLevelNavigation = false,
                         IsUserInitiated = false,
                         Method = "GET"
@@ -5346,7 +5375,8 @@ pre {{
                         CredentialsMode = "same-origin",
                         ReferrerPolicy = isFrameDocument
                             ? frameContext.ReferrerPolicy
-                            : ReferrerPolicyDirective.StrictOriginWhenCrossOrigin,
+                            : CurrentReferrerPolicy,
+                        ContentSecurityPolicy = policy,
                         IsTopLevelNavigation = false,
                         IsUserInitiated = false,
                         Method = "GET"
@@ -5421,6 +5451,7 @@ pre {{
                             Mode = "no-cors",
                             CredentialsMode = "include",
                             ReferrerPolicy = referrerPolicy,
+                            ContentSecurityPolicy = framePolicy,
                             IsTopLevelNavigation = false,
                             IsUserInitiated = false,
                             Method = "GET"
@@ -5443,6 +5474,7 @@ pre {{
                         Mode = Header("Sec-Fetch-Mode") ?? "cors",
                         CredentialsMode = "same-origin",
                         ReferrerPolicy = referrerPolicy,
+                        ContentSecurityPolicy = framePolicy,
                         IsTopLevelNavigation = false,
                         IsUserInitiated = false,
                         Method = request.Method.Method
@@ -5461,7 +5493,19 @@ pre {{
             var document = stylesheetRoot?.OwnerDocument;
             if (document == null || !_frameResourceSecurity.TryGetValue(document, out var frameContext))
             {
-                return await _resources.FetchCssAsync(resourceUri).ConfigureAwait(false);
+                return await _resources.FetchCssAsync(new FetchContext
+                {
+                    RequestUri = MapRuntimeUri(resourceUri),
+                    InitiatorUri = _current,
+                    FrameDocumentUri = _current,
+                    TopLevelDocumentUri = _current,
+                    Destination = "style",
+                    Mode = "no-cors",
+                    CredentialsMode = "include",
+                    ReferrerPolicy = CurrentReferrerPolicy,
+                    ContentSecurityPolicy = CurrentPolicy,
+                    Method = "GET"
+                }).ConfigureAwait(false);
             }
 
             if (frameContext.Policy != null &&
@@ -5480,6 +5524,7 @@ pre {{
                 Mode = "no-cors",
                 CredentialsMode = "include",
                 ReferrerPolicy = frameContext.ReferrerPolicy,
+                ContentSecurityPolicy = frameContext.Policy,
                 IsTopLevelNavigation = false,
                 IsUserInitiated = false,
                 Method = "GET"
@@ -11462,5 +11507,3 @@ pre {{
         }
     }
 }
-
-

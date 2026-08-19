@@ -44,5 +44,17 @@ namespace FenBrowser.Tests.Core.Network
 
             Assert.False(policy.IsAllowed("connect-src", target, origin: origin));
         }
+
+        [Fact]
+        public void Intersect_RequiresEveryPolicyToAllowTheRequest()
+        {
+            var responsePolicy = CspPolicy.Parse("default-src https:; script-src https://cdn.example");
+            var metaPolicy = CspPolicy.Parse("script-src 'self'");
+            var combined = CspPolicy.Intersect(responsePolicy, metaPolicy);
+            var origin = new Uri("https://app.example/");
+
+            Assert.False(combined.IsAllowed("script-src", new Uri("https://cdn.example/app.js"), origin));
+            Assert.False(combined.IsAllowed("script-src", new Uri("https://app.example/app.js"), origin));
+        }
     }
 }

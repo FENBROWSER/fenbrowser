@@ -1,6 +1,7 @@
 using System;
 using System.Net.Http;
 using FenBrowser.Core.Storage;
+using FenBrowser.Core.Security;
 
 namespace FenBrowser.Core.Network;
 
@@ -18,6 +19,7 @@ public sealed record FetchContext
     public string Mode { get; init; } = "cors";
     public string CredentialsMode { get; init; } = "same-origin";
     public ReferrerPolicyDirective? ReferrerPolicy { get; init; }
+    public CspPolicy ContentSecurityPolicy { get; init; }
     public bool IsTopLevelNavigation { get; init; }
     public bool IsUserInitiated { get; init; }
     public string Method { get; init; } = "GET";

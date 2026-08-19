@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using FenBrowser.Core.Network;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Security;
 
 namespace FenBrowser.Core.Parsing
 {
@@ -19,13 +20,15 @@ namespace FenBrowser.Core.Parsing
         private readonly ResourcePrefetcher _prefetcher;
         private Uri _observedBaseUri;
         private bool _observedBaseElement;
+        private CspPolicy _activePolicy;
 
-        public PreloadScanner(string html, Uri baseUri, ResourcePrefetcher prefetcher)
+        public PreloadScanner(string html, Uri baseUri, ResourcePrefetcher prefetcher, CspPolicy contentSecurityPolicy = null)
         {
             _html = html;
             _baseUri = baseUri;
             _prefetcher = prefetcher;
             _observedBaseUri = baseUri;
+            _activePolicy = contentSecurityPolicy;
         }
 
         public void ObserveStartTag(StartTagToken token)
@@ -39,6 +42,17 @@ namespace FenBrowser.Core.Parsing
             {
                 _observedBaseUri = resolvedBase;
                 _observedBaseElement = true;
+                return;
+            }
+
+            if (token.TagName.Equals("meta", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(GetAttributeOrNull(token, "http-equiv"), "Content-Security-Policy", StringComparison.OrdinalIgnoreCase))
+            {
+                var content = GetAttributeOrNull(token, "content");
+                if (!string.IsNullOrWhiteSpace(content))
+                {
+                    _activePolicy = CspPolicy.Intersect(_activePolicy, CspPolicy.Parse(content));
+                }
                 return;
             }
 
@@ -176,7 +190,8 @@ namespace FenBrowser.Core.Parsing
                     hint.Value,
                     asType,
                     GetAttributeOrNull(token, "crossorigin"),
-                    GetAttributeOrNull(token, "type"));
+                    GetAttributeOrNull(token, "type"),
+                    CreateFetchContext(url, asType));
             }
         }
 
@@ -195,7 +210,8 @@ namespace FenBrowser.Core.Parsing
                     ResourceHint.Preload,
                     PreloadAs.Script,
                     GetAttributeOrNull(token, "crossorigin"),
-                    GetAttributeOrNull(token, "type"));
+                    GetAttributeOrNull(token, "type"),
+                    CreateFetchContext(url, PreloadAs.Script));
             }
         }
 
@@ -212,7 +228,37 @@ namespace FenBrowser.Core.Parsing
                 ResourceHint.Preload,
                 PreloadAs.Image,
                 GetAttributeOrNull(token, "crossorigin"),
-                GetAttributeOrNull(token, "type"));
+                GetAttributeOrNull(token, "type"),
+                CreateFetchContext(url, PreloadAs.Image));
+        }
+
+        private FetchContext CreateFetchContext(Uri url, PreloadAs asType)
+        {
+            var destination = asType switch
+            {
+                PreloadAs.Script => "script",
+                PreloadAs.Style => "style",
+                PreloadAs.Image => "image",
+                PreloadAs.Font => "font",
+                PreloadAs.Audio => "audio",
+                PreloadAs.Video => "video",
+                PreloadAs.Track => "track",
+                PreloadAs.Worker => "worker",
+                PreloadAs.Document => "iframe",
+                _ => "empty"
+            };
+            return new FetchContext
+            {
+                RequestUri = url,
+                InitiatorUri = _baseUri,
+                FrameDocumentUri = _baseUri,
+                TopLevelDocumentUri = _baseUri,
+                Destination = destination,
+                Mode = BrowserRequestHeaderPolicy.DetermineMode(destination),
+                CredentialsMode = "include",
+                ContentSecurityPolicy = _activePolicy,
+                Method = "GET"
+            };
         }
 
         private static bool TryResolveUrl(Uri baseUri, string rawValue, out Uri resolved)

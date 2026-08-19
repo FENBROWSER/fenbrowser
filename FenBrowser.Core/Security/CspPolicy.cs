@@ -76,6 +76,7 @@ namespace FenBrowser.Core.Security
 
     public class CspPolicy
     {
+        private IReadOnlyList<CspPolicy> _additionalPolicies = Array.Empty<CspPolicy>();
         public Dictionary<string, CspDirective> Directives { get; } = new Dictionary<string, CspDirective>(StringComparer.OrdinalIgnoreCase);
         
         /// <summary>
@@ -112,13 +113,36 @@ namespace FenBrowser.Core.Security
         /// </summary>
         public bool IsAllowed(string directiveName, Uri url, string nonce, Uri origin, bool isInline = false, bool isEval = false, string elementHash = null, string elementTrustedType = null)
         {
-            // If no policy, everything allowed
-            if (Directives.Count == 0) return true;
+            if (Directives.Count != 0)
+            {
+                var directive = ResolveEffectiveDirective(directiveName);
+                if (directive != null && !directive.IsAllowed(url, nonce, isInline, isEval, origin, elementHash, elementTrustedType))
+                {
+                    return false;
+                }
+            }
 
-            var directive = ResolveEffectiveDirective(directiveName);
-            if (directive == null) return true;
+            foreach (var policy in _additionalPolicies)
+            {
+                if (!policy.IsAllowed(directiveName, url, nonce, origin, isInline, isEval, elementHash, elementTrustedType))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
 
-            return directive.IsAllowed(url, nonce, isInline, isEval, origin, elementHash, elementTrustedType);
+        public static CspPolicy Intersect(params CspPolicy[] policies)
+        {
+            var present = policies?.Where(static policy => policy != null).ToArray() ?? Array.Empty<CspPolicy>();
+            if (present.Length == 0) return null;
+            if (present.Length == 1) return present[0];
+
+            return new CspPolicy
+            {
+                HeaderValue = string.Join("; ", present.Select(static policy => policy.HeaderValue).Where(static value => !string.IsNullOrWhiteSpace(value))),
+                _additionalPolicies = present
+            };
         }
 
         private CspDirective ResolveEffectiveDirective(string directiveName)

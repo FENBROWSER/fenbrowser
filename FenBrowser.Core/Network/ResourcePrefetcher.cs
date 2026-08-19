@@ -47,6 +47,7 @@ namespace FenBrowser.Core.Network
         internal int Generation { get; set; }
         internal string OperationKey { get; set; }
         internal bool Started { get; set; }
+        internal FetchContext Context { get; set; }
     }
 
     /// <summary>
@@ -233,7 +234,8 @@ namespace FenBrowser.Core.Network
             ResourceHint hint,
             PreloadAs asType = PreloadAs.Unknown,
             string crossOrigin = null,
-            string mimeType = null)
+            string mimeType = null,
+            FetchContext context = null)
         {
             if (url == null || !url.IsAbsoluteUri || !IsFetchableHintUrl(url) || !IsHintEnabled(hint))
             {
@@ -248,7 +250,7 @@ namespace FenBrowser.Core.Network
                 return Task.CompletedTask;
             }
 
-            var operationKey = BuildOperationKey(url, hint, asType, crossOrigin);
+            var operationKey = BuildOperationKey(url, hint, asType, crossOrigin) + "|" + (context?.NetworkPartitionKey.ToString() ?? "global");
             var priority = GetPriority(hint, asType);
             var queued = false;
 
@@ -288,7 +290,8 @@ namespace FenBrowser.Core.Network
                         Priority = priority,
                         QueuedAt = DateTimeOffset.UtcNow,
                         Generation = _generation,
-                        OperationKey = operationKey
+                        OperationKey = operationKey,
+                        Context = context
                     };
 
                     _pending.Add(operationKey, request);
@@ -489,7 +492,14 @@ namespace FenBrowser.Core.Network
                         switch (request.AsType)
                         {
                             case PreloadAs.Image:
-                                await _resourceManager.FetchImageAsync(request.Url).ConfigureAwait(false);
+                                await _resourceManager.FetchImageAsync(request.Context ?? new FetchContext
+                                {
+                                    RequestUri = request.Url,
+                                    Destination = "image",
+                                    Mode = "no-cors",
+                                    CredentialsMode = "include",
+                                    Method = "GET"
+                                }).ConfigureAwait(false);
                                 success = true;
                                 break;
                             case PreloadAs.Style:
@@ -498,7 +508,21 @@ namespace FenBrowser.Core.Network
                             case PreloadAs.Document:
                             case PreloadAs.Worker:
                             case PreloadAs.Unknown:
-                                await _resourceManager.FetchTextAsync(request.Url).ConfigureAwait(false);
+                                await _resourceManager.FetchTextDetailedAsync(request.Context ?? new FetchContext
+                                {
+                                    RequestUri = request.Url,
+                                    Destination = request.AsType switch
+                                    {
+                                        PreloadAs.Style => "style",
+                                        PreloadAs.Script => "script",
+                                        PreloadAs.Worker => "worker",
+                                        PreloadAs.Document => "iframe",
+                                        _ => "empty"
+                                    },
+                                    Mode = "no-cors",
+                                    CredentialsMode = "include",
+                                    Method = "GET"
+                                }).ConfigureAwait(false);
                                 success = true;
                                 break;
                             default:

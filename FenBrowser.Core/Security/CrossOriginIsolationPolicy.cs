@@ -247,34 +247,3 @@ public sealed class CrossOriginIsolationPolicy
 /// headers are parsed; the scripting layer reads it to expose
 /// crossOriginIsolated and gate SharedArrayBuffer availability.
 /// </summary>
-public static class CrossOriginIsolationState
-{
-    private static readonly AsyncLocal<CrossOriginIsolationPolicy?> _current = new();
-
-    /// <summary>
-    /// Gets the isolation policy for the current document, or null when no
-    /// document has set one yet.
-    /// </summary>
-    public static CrossOriginIsolationPolicy? Current => _current.Value;
-
-    /// <summary>
-    /// Sets the isolation policy for the current document context.
-    /// </summary>
-    public static void Set(CrossOriginIsolationPolicy? policy)
-    {
-        _current.Value = policy;
-    }
-
-    /// <summary>
-    /// True when the current document context is cross-origin isolated.
-    /// </summary>
-    public static bool IsCrossOriginIsolated => _current.Value?.IsCrossOriginIsolated ?? false;
-
-    /// <summary>
-    /// Resets the ambient state (document teardown).
-    /// </summary>
-    public static void Reset()
-    {
-        _current.Value = null;
-    }
-}

@@ -12,6 +12,7 @@ namespace FenBrowser.Core.Parsing
     {
         public Uri BaseUri { get; set; }
         public Network.ResourcePrefetcher Prefetcher { get; set; }
+        public Security.CspPolicy ContentSecurityPolicy { get; set; }
         public ParserSecurityPolicy SecurityPolicy { get; set; }
         public int? MaxInputLengthChars { get; set; }
         public PipelineContext PipelineContext { get; set; }
@@ -160,7 +161,7 @@ namespace FenBrowser.Core.Parsing
                 ConfigureBuilder(builder, options, policy);
                 if (options.Prefetcher != null)
                 {
-                    var preloadObserver = new PreloadScanner(null, safeBaseUri, options.Prefetcher);
+                    var preloadObserver = new PreloadScanner(null, safeBaseUri, options.Prefetcher, options.ContentSecurityPolicy);
                     builder.StartTagObserved = preloadObserver.ObserveStartTag;
                 }
                 var document = options.PipelineContext != null
@@ -194,7 +195,7 @@ namespace FenBrowser.Core.Parsing
                 ConfigureBuilder(builder, options, policy);
                 if (options.Prefetcher != null)
                 {
-                    var preloadObserver = new PreloadScanner(null, safeBaseUri, options.Prefetcher);
+                    var preloadObserver = new PreloadScanner(null, safeBaseUri, options.Prefetcher, options.ContentSecurityPolicy);
                     builder.StartTagObserved = preloadObserver.ObserveStartTag;
                 }
 
