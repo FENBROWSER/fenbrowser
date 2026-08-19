@@ -41,5 +41,14 @@ namespace FenBrowser.Tests.Core.Network
 
             Assert.True(TrackingPreventionHandler.IsTracker(tracker, page));
         }
+
+        [Fact]
+        public void IsTracker_DoesNotBlockGenericCrossSiteTelemetryPath()
+        {
+            var page = new Uri("https://shop.example/");
+            var endpoint = new Uri("https://api.partner.example/collect/orders");
+
+            Assert.False(TrackingPreventionHandler.IsTracker(endpoint, page));
+        }
     }
 }

@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
+using FenBrowser.Core.Network.Filtering;
 using FenBrowser.Core.Security;
 
 namespace FenBrowser.Core.Network.Handlers
@@ -13,7 +15,11 @@ namespace FenBrowser.Core.Network.Handlers
     /// </summary>
     public sealed class TrackingPreventionHandler : INetworkHandler
     {
-        private static readonly HashSet<string> _trackerDomains = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        private static readonly SignedNetworkRuleSetStore RuleSets = new(new NetworkRuleSet(
+            version: 1,
+            generatedAtUtc: DateTimeOffset.UnixEpoch,
+            expiresAtUtc: null,
+            rules: Array.ConvertAll(new[]
         {
             "doubleclick.net",
             "googlesyndication.com",
@@ -56,13 +62,7 @@ namespace FenBrowser.Core.Network.Handlers
             "optimizely.com",
             "newrelic.com",
             "nr-data.net"
-        };
-
-        private static readonly string[] _trackingPixelPatterns = new[]
-        {
-            "/pixel", "/tracking", "/beacon", "/collect", "/log", "/impression",
-            "/1x1", "/blank.gif", "/spacer.gif", "/pixel.gif", "/t.gif", "/p.gif"
-        };
+        }, static domain => new NetworkFilterRule(domain))));
 
         private static int _blockedCount;
 
@@ -71,6 +71,13 @@ namespace FenBrowser.Core.Network.Handlers
         public static int BlockedCount => Volatile.Read(ref _blockedCount);
 
         public static void ResetBlockedCount() => Interlocked.Exchange(ref _blockedCount, 0);
+
+        public static long RuleSetVersion => RuleSets.Current.Version;
+
+        public static bool TryInstallSignedRuleSet(ReadOnlySpan<byte> ruleset, ReadOnlySpan<byte> signature, ECDsa verifier, DateTimeOffset now, out string error)
+            => RuleSets.TryInstall(ruleset, signature, verifier, now, out error);
+
+        public static bool TryRollbackRuleSet() => RuleSets.TryRollback();
 
         public static bool IsTracker(Uri uri, Uri pageOrigin = null)
         {
@@ -81,35 +88,7 @@ namespace FenBrowser.Core.Network.Handlers
                 return false;
             }
 
-            var host = NormalizeHost(uri.IdnHost);
-            if (!string.IsNullOrEmpty(host))
-            {
-                if (_trackerDomains.Contains(host)) return true;
-
-                foreach (var tracker in _trackerDomains)
-                {
-                    if (host.EndsWith("." + tracker, StringComparison.OrdinalIgnoreCase))
-                        return true;
-                }
-            }
-
-            // Generic path names such as /log, /collect, and /beacon are common on
-            // perfectly legitimate first-party endpoints. They are only useful as a
-            // tracking heuristic when we actually know this request is cross-site.
-            // With no page context, fail open for the heuristic instead of blocking a
-            // top-level/first-party request based on its path alone.
-            if (pageOrigin == null)
-            {
-                return false;
-            }
-
-            var path = uri.AbsolutePath?.ToLowerInvariant() ?? "";
-            foreach (var pattern in _trackingPixelPatterns)
-            {
-                if (MatchesTrackingPixelPattern(path, pattern)) return true;
-            }
-
-            return false;
+            return RuleSets.Current.Matches(uri);
         }
 
         private static bool IsSameOrigin(Uri a, Uri b)
@@ -118,40 +97,6 @@ namespace FenBrowser.Core.Network.Handlers
             return string.Equals(a.Scheme, b.Scheme, StringComparison.OrdinalIgnoreCase) &&
                    string.Equals(NormalizeHost(a.IdnHost), NormalizeHost(b.IdnHost), StringComparison.OrdinalIgnoreCase) &&
                    a.Port == b.Port;
-        }
-
-        private static bool MatchesTrackingPixelPattern(string path, string pattern)
-        {
-            if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(pattern))
-            {
-                return false;
-            }
-
-            var searchIndex = 0;
-            while (searchIndex < path.Length)
-            {
-                var matchIndex = path.IndexOf(pattern, searchIndex, StringComparison.OrdinalIgnoreCase);
-                if (matchIndex < 0)
-                {
-                    return false;
-                }
-
-                var endIndex = matchIndex + pattern.Length;
-                if (endIndex >= path.Length)
-                {
-                    return true;
-                }
-
-                var nextChar = path[endIndex];
-                if (!char.IsLetterOrDigit(nextChar))
-                {
-                    return true;
-                }
-
-                searchIndex = matchIndex + 1;
-            }
-
-            return false;
         }
 
         private static string NormalizeHost(string host)
@@ -182,7 +127,8 @@ namespace FenBrowser.Core.Network.Handlers
             // internal/embedder callers; cross-site browser requests use the same
             // origin only as additional same-site protection inside IsTracker.
             var pageOrigin = context.Request.Headers.Referrer;
-            if (IsTracker(context.Request.RequestUri, pageOrigin))
+            var destination = TryGetSingleHeader(context.Request, "Sec-Fetch-Dest");
+            if (IsTracker(context.Request.RequestUri, pageOrigin) && RuleSets.Current.Matches(context.Request.RequestUri, destination))
             {
                 Interlocked.Increment(ref _blockedCount);
 
@@ -236,6 +182,13 @@ namespace FenBrowser.Core.Network.Handlers
             }
 
             return parsed;
+        }
+
+        private static string TryGetSingleHeader(HttpRequestMessage request, string name)
+        {
+            if (!request.Headers.TryGetValues(name, out var values)) return null;
+            using var enumerator = values.GetEnumerator();
+            return enumerator.MoveNext() ? enumerator.Current?.Trim().ToLowerInvariant() : null;
         }
     }
 }
