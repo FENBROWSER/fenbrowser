@@ -16,6 +16,12 @@ namespace FenBrowser.WebDriver.Protocol
     /// </summary>
     public class WebDriverResponse
     {
+        internal static readonly JsonSerializerOptions SerializerOptions = new()
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        };
+
         [JsonPropertyName("value")]
         [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
         public object Value { get; set; }
@@ -41,11 +47,7 @@ namespace FenBrowser.WebDriver.Protocol
         
         public string ToJson()
         {
-            return JsonSerializer.Serialize(this, new JsonSerializerOptions
-            {
-                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-            });
+            return JsonSerializer.Serialize(this, SerializerOptions);
         }
     }
     

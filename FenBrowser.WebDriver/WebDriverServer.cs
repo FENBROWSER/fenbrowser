@@ -12,10 +12,8 @@
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Net;
-using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -31,7 +29,7 @@ namespace FenBrowser.WebDriver
     /// <summary>
     /// W3C WebDriver HTTP server.
     /// </summary>
-    public class WebDriverServer : IDisposable
+    public class WebDriverServer : IDisposable, IAsyncDisposable
     {
         private readonly HttpListener _listener;
         private readonly SessionManager _sessionManager;
@@ -40,18 +38,24 @@ namespace FenBrowser.WebDriver
         private readonly WebDriverCommandQueue _commandQueue;
         private readonly ConcurrentDictionary<string, WebDriverCommandQueue> _sessionCommandQueues =
             new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<long, Task> _activeRequests = new();
         private readonly OriginValidator _originValidator;
         private readonly CancellationTokenSource _cts;
         private readonly IBiDiTransportBootstrap _biDiBootstrap;
         private readonly SemaphoreSlim _requestAdmission;
         private readonly int _port;
+        private readonly object _lifecycleGate = new();
         private static readonly string[] AllowedCorsMethods = { "GET", "POST", "DELETE", "OPTIONS" };
         private static readonly string[] AllowedCorsHeaders = { "content-type" };
         private const int MaxRequestBodyBytes = 16 * 1024 * 1024;
         private const int MaxConcurrentRequests = 32;
-        private Task _listenerTask;
+        private Task _listenerTask = Task.CompletedTask;
+        private Task _stopTask;
         private long _nextCommandId;
-        private bool _disposed;
+        private long _nextRequestId;
+        private int _started;
+        private int _disposeStarted;
+        private int _disposed;
         
         public event Action<string> OnLog;
         
@@ -90,16 +94,28 @@ namespace FenBrowser.WebDriver
         public void Start()
         {
             ThrowIfDisposed();
-            ValidateCommandCoverage();
-            
-            _listener.Start();
-            Log($"WebDriver server started on port {_port}");
-            _biDiBootstrap.Register(new BiDiBootstrapContext(_port)
+            if (Interlocked.CompareExchange(ref _started, 1, 0) != 0)
             {
-                SessionManager = _sessionManager
-            });
-            
-            _listenerTask = Task.Run(ListenAsync);
+                return;
+            }
+
+            try
+            {
+                ValidateCommandCoverage();
+                _listener.Start();
+                Log($"WebDriver server started on port {_port}");
+                _biDiBootstrap.Register(new BiDiBootstrapContext(_port)
+                {
+                    SessionManager = _sessionManager,
+                    Browser = _handler.Browser
+                });
+                _listenerTask = Task.Run(ListenAsync);
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _started, 0);
+                throw;
+            }
         }
         
         /// <summary>
@@ -107,8 +123,49 @@ namespace FenBrowser.WebDriver
         /// </summary>
         public void Stop()
         {
+            StopAsync().GetAwaiter().GetResult();
+        }
+
+        public Task StopAsync()
+        {
+            lock (_lifecycleGate)
+            {
+                return _stopTask ??= StopCoreAsync();
+            }
+        }
+
+        private async Task StopCoreAsync()
+        {
             _cts.Cancel();
-            _listener.Stop();
+            try
+            {
+                _listener.Stop();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+
+            try
+            {
+                await _listenerTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            {
+            }
+
+            var requests = _activeRequests.Values.ToArray();
+            if (requests.Length > 0)
+            {
+                try
+                {
+                    await Task.WhenAll(requests).ConfigureAwait(false);
+                }
+                catch
+                {
+                }
+            }
+
+            await _biDiBootstrap.StopAsync().ConfigureAwait(false);
             Log("WebDriver server stopped");
         }
         
@@ -129,7 +186,10 @@ namespace FenBrowser.WebDriver
                         continue;
                     }
 
-                    _ = HandleAdmittedRequestAsync(context);
+                    var requestId = Interlocked.Increment(ref _nextRequestId);
+                    var requestTask = HandleAdmittedRequestAsync(context);
+                    _activeRequests[requestId] = requestTask;
+                    _ = ObserveRequestAsync(requestId, requestTask);
                 }
                 catch (HttpListenerException) when (_cts.Token.IsCancellationRequested)
                 {
@@ -143,6 +203,22 @@ namespace FenBrowser.WebDriver
                 {
                     Log($"Listener error: {ex}");
                 }
+            }
+        }
+
+        private async Task ObserveRequestAsync(long requestId, Task requestTask)
+        {
+            try
+            {
+                await requestTask.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Log($"Request task failed: {ex}");
+            }
+            finally
+            {
+                _activeRequests.TryRemove(requestId, out _);
             }
         }
 
@@ -198,7 +274,7 @@ namespace FenBrowser.WebDriver
                     response.Headers["Access-Control-Allow-Methods"] = string.Join(", ", AllowedCorsMethods);
                     response.Headers["Vary"] = "Origin";
                 }
-                
+
                 if (request.HttpMethod == "OPTIONS")
                 {
                     if (!ValidatePreflightRequest(request, response))
@@ -223,7 +299,7 @@ namespace FenBrowser.WebDriver
                     response.Close();
                     return;
                 }
-                
+
                 var path = request.Url?.AbsolutePath ?? "/";
                 var method = request.HttpMethod;
                 
@@ -238,72 +314,74 @@ namespace FenBrowser.WebDriver
                     return;
                 }
                 
-                string body = null;
+                JsonDocument bodyDocument = null;
+                JsonElement? body = null;
                 if (request.HasEntityBody)
                 {
-                    body = await ReadRequestBodyAsync(request).ConfigureAwait(false);
+                    bodyDocument = await ReadRequestBodyAsync(request, _cts.Token).ConfigureAwait(false);
+                    body = bodyDocument.RootElement;
                 }
 
-                var sessionId = routeMatch.GetSessionId();
-                var commandQueue = string.IsNullOrEmpty(sessionId)
-                    ? _commandQueue
-                    : _sessionCommandQueues.GetOrAdd(
-                        sessionId,
-                        static _ => new WebDriverCommandQueue());
-                
-                var commandId = Interlocked.Increment(ref _nextCommandId);
-                var queuedAt = Stopwatch.StartNew();
-                var result = await commandQueue.ExecuteWithSynchronousAdmissionAsync(async () =>
+                using (bodyDocument)
                 {
-                    var queueWaitMs = queuedAt.ElapsedMilliseconds;
-                    var execution = Stopwatch.StartNew();
-                    Log($"Command {commandId} started: {routeMatch.Command} (queueWaitMs={queueWaitMs})");
-                    try
+
+                    var sessionId = routeMatch.GetSessionId();
+                    var commandQueue = string.IsNullOrEmpty(sessionId)
+                        ? _commandQueue
+                        : _sessionCommandQueues.GetOrAdd(
+                            sessionId,
+                            static _ => new WebDriverCommandQueue());
+
+                    var commandId = Interlocked.Increment(ref _nextCommandId);
+                    var queuedAt = Stopwatch.StartNew();
+                    var result = await commandQueue.ExecuteWithSynchronousAdmissionAsync(async () =>
                     {
-                        var executionTask = _handler.ExecuteAsync(routeMatch, body);
-                        var commandTimeoutMs = _handler.GetProtocolCommandTimeoutMs(routeMatch);
-                        if (commandTimeoutMs.HasValue)
+                        var queueWaitMs = queuedAt.ElapsedMilliseconds;
+                        var execution = Stopwatch.StartNew();
+                        Log($"Command {commandId} started: {routeMatch.Command} (queueWaitMs={queueWaitMs})");
+                        try
                         {
-                            try
+                            var executionTask = _handler.ExecuteParsedAsync(routeMatch, body);
+                            var commandTimeoutMs = _handler.GetProtocolCommandTimeoutMs(routeMatch);
+                            if (commandTimeoutMs.HasValue)
                             {
-                                return await WebDriverCommandDeadline.WaitAsync(
-                                    executionTask,
-                                    commandTimeoutMs.Value).ConfigureAwait(false);
+                                try
+                                {
+                                    return await WebDriverCommandDeadline.WaitAsync(
+                                        executionTask,
+                                        commandTimeoutMs.Value).ConfigureAwait(false);
+                                }
+                                catch (TimeoutException)
+                                {
+                                    _handler.MarkSessionUnresponsive(sessionId);
+                                    throw new WebDriverException(
+                                        ErrorCodes.ScriptTimeout,
+                                        "Script execution timed out");
+                                }
                             }
-                            catch (TimeoutException)
-                            {
-                                _handler.MarkSessionUnresponsive(sessionId);
-                                throw new WebDriverException(
-                                    ErrorCodes.ScriptTimeout,
-                                    "Script execution timed out");
-                            }
+
+                            return await executionTask.ConfigureAwait(false);
                         }
+                        catch (WebDriverException ex) when (
+                            string.Equals(ex.ErrorCode, ErrorCodes.ScriptTimeout, StringComparison.Ordinal))
+                        {
+                            _handler.MarkSessionUnresponsive(sessionId);
+                            throw;
+                        }
+                        finally
+                        {
+                            Log($"Command {commandId} finished: {routeMatch.Command} (durationMs={execution.ElapsedMilliseconds})");
+                        }
+                    }, _cts.Token).ConfigureAwait(false);
 
-                        return await executionTask.ConfigureAwait(false);
-                    }
-                    catch (WebDriverException ex) when (
-                        string.Equals(ex.ErrorCode, ErrorCodes.ScriptTimeout, StringComparison.Ordinal))
+                    if (!string.IsNullOrEmpty(sessionId) &&
+                        string.Equals(routeMatch.Command, "DeleteSession", StringComparison.Ordinal))
                     {
-                        _handler.MarkSessionUnresponsive(sessionId);
-                        throw;
+                        _sessionCommandQueues.TryRemove(sessionId, out _);
                     }
-                    finally
-                    {
-                        Log($"Command {commandId} finished: {routeMatch.Command} (durationMs={execution.ElapsedMilliseconds})");
-                    }
-                }, _cts.Token).ConfigureAwait(false);
 
-                if (!string.IsNullOrEmpty(sessionId) &&
-                    string.Equals(routeMatch.Command, "DeleteSession", StringComparison.Ordinal))
-                {
-                    // Remove the dictionary ownership only after a successful delete.
-                    // Do not dispose the queue here: requests that were already admitted
-                    // may still hold the same queue reference and be waiting to observe
-                    // that the session was deleted.
-                    _sessionCommandQueues.TryRemove(sessionId, out _);
+                    await SendResponseAsync(response, result, _cts.Token).ConfigureAwait(false);
                 }
-                
-                await SendResponseAsync(response, result);
             }
             catch (RequestBodyTooLargeException ex)
             {
@@ -336,7 +414,9 @@ namespace FenBrowser.WebDriver
             }
         }
 
-        private static async Task<string> ReadRequestBodyAsync(HttpListenerRequest request)
+        private static async Task<JsonDocument> ReadRequestBodyAsync(
+            HttpListenerRequest request,
+            CancellationToken cancellationToken)
         {
             if (request.ContentLength64 > MaxRequestBodyBytes)
             {
@@ -344,52 +424,40 @@ namespace FenBrowser.WebDriver
                     $"WebDriver request body exceeds the {MaxRequestBodyBytes}-byte limit.");
             }
 
-            var initialCapacity = request.ContentLength64 > 0
-                ? (int)Math.Min(request.ContentLength64, MaxRequestBodyBytes)
-                : 0;
-            using var bodyBuffer = initialCapacity > 0
-                ? new MemoryStream(initialCapacity)
-                : new MemoryStream();
-            var buffer = new byte[8192];
-            var totalBytes = 0;
-
-            while (true)
-            {
-                var read = await request.InputStream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
-                if (read == 0)
+            using var bounded = new BoundedReadStream(request.InputStream, MaxRequestBodyBytes);
+            return await JsonDocument.ParseAsync(
+                bounded,
+                new JsonDocumentOptions
                 {
-                    break;
-                }
-
-                if (totalBytes > MaxRequestBodyBytes - read)
-                {
-                    throw new RequestBodyTooLargeException(
-                        $"WebDriver request body exceeds the {MaxRequestBodyBytes}-byte limit.");
-                }
-
-                totalBytes += read;
-                bodyBuffer.Write(buffer, 0, read);
-            }
-
-            if (!bodyBuffer.TryGetBuffer(out var segment) || segment.Array == null)
-            {
-                return Encoding.UTF8.GetString(bodyBuffer.ToArray());
-            }
-
-            return Encoding.UTF8.GetString(segment.Array, segment.Offset, segment.Count);
+                    AllowTrailingCommas = false,
+                    CommentHandling = JsonCommentHandling.Disallow,
+                    MaxDepth = 64
+                },
+                cancellationToken).ConfigureAwait(false);
         }
         
-        private async Task SendResponseAsync(HttpListenerResponse response, WebDriverResponse result)
+        private static async Task SendResponseAsync(
+            HttpListenerResponse response,
+            WebDriverResponse result,
+            CancellationToken cancellationToken = default)
         {
             response.ContentType = "application/json; charset=utf-8";
             response.StatusCode = 200;
             response.Headers["Cache-Control"] = "no-cache";
-            
-            var json = result.ToJson();
-            var bytes = Encoding.UTF8.GetBytes(json);
-            
-            response.ContentLength64 = bytes.Length;
-            await response.OutputStream.WriteAsync(bytes);
+            await WriteJsonAsync(response, result, cancellationToken).ConfigureAwait(false);
+        }
+
+        private static async Task WriteJsonAsync(
+            HttpListenerResponse response,
+            WebDriverResponse result,
+            CancellationToken cancellationToken = default)
+        {
+            response.SendChunked = true;
+            await JsonSerializer.SerializeAsync(
+                response.OutputStream,
+                result,
+                WebDriverResponse.SerializerOptions,
+                cancellationToken).ConfigureAwait(false);
             response.Close();
         }
         
@@ -399,13 +467,9 @@ namespace FenBrowser.WebDriver
             response.StatusCode = status;
             response.Headers["Cache-Control"] = "no-cache";
             
-            var result = WebDriverResponse.Error(error, message, data: data);
-            var json = result.ToJson();
-            var bytes = Encoding.UTF8.GetBytes(json);
-            
-            response.ContentLength64 = bytes.Length;
-            await response.OutputStream.WriteAsync(bytes);
-            response.Close();
+            await WriteJsonAsync(
+                response,
+                WebDriverResponse.Error(error, message, data: data)).ConfigureAwait(false);
         }
         
         private void Log(string message)
@@ -496,7 +560,7 @@ namespace FenBrowser.WebDriver
         
         private void ThrowIfDisposed()
         {
-            if (_disposed)
+            if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(WebDriverServer));
         }
 
@@ -507,17 +571,90 @@ namespace FenBrowser.WebDriver
             {
             }
         }
+
+        private sealed class BoundedReadStream : Stream
+        {
+            private readonly Stream _inner;
+            private readonly long _limit;
+            private long _consumed;
+
+            public BoundedReadStream(Stream inner, long limit)
+            {
+                _inner = inner;
+                _limit = limit;
+            }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => _consumed; set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override int Read(byte[] buffer, int offset, int count)
+                => Read(buffer.AsSpan(offset, count));
+
+            public override int Read(Span<byte> buffer)
+            {
+                var read = _inner.Read(Limit(buffer));
+                Count(read);
+                return read;
+            }
+
+            public override async ValueTask<int> ReadAsync(
+                Memory<byte> buffer,
+                CancellationToken cancellationToken = default)
+            {
+                var read = await _inner.ReadAsync(Limit(buffer), cancellationToken).ConfigureAwait(false);
+                Count(read);
+                return read;
+            }
+
+            private Span<byte> Limit(Span<byte> buffer)
+            {
+                var remainingWithProbe = Math.Max(1, _limit - _consumed + 1);
+                return buffer[..(int)Math.Min(buffer.Length, remainingWithProbe)];
+            }
+
+            private Memory<byte> Limit(Memory<byte> buffer)
+            {
+                var remainingWithProbe = Math.Max(1, _limit - _consumed + 1);
+                return buffer[..(int)Math.Min(buffer.Length, remainingWithProbe)];
+            }
+
+            private void Count(int read)
+            {
+                _consumed += read;
+                if (_consumed > _limit)
+                {
+                    throw new RequestBodyTooLargeException(
+                        $"WebDriver request body exceeds the {_limit}-byte limit.");
+                }
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
         
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
-            
-            Stop();
+            DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+            {
+                return;
+            }
+
+            await StopAsync().ConfigureAwait(false);
             _sessionManager.Dispose();
             _requestAdmission.Dispose();
             _cts.Dispose();
             _listener.Close();
+            Volatile.Write(ref _disposed, 1);
+            GC.SuppressFinalize(this);
         }
     }
 }

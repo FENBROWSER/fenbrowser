@@ -180,6 +180,17 @@ namespace FenBrowser.WebDriver.Commands
         /// </summary>
         public async Task<WebDriverResponse> ExecuteAsync(RouteMatch match, string body)
         {
+            if (string.IsNullOrEmpty(body))
+            {
+                return await ExecuteParsedAsync(match, null).ConfigureAwait(false);
+            }
+
+            using var document = JsonDocument.Parse(body);
+            return await ExecuteParsedAsync(match, document.RootElement).ConfigureAwait(false);
+        }
+
+        internal async Task<WebDriverResponse> ExecuteParsedAsync(RouteMatch match, JsonElement? json)
+        {
             var command = match.Command;
             var sessionId = match.GetSessionId();
 
@@ -191,12 +202,6 @@ namespace FenBrowser.WebDriver.Commands
                 EnsureSessionSecurityContext(sessionId);
             }
             
-            // Parse body as JSON if present
-            JsonElement? json = null;
-            if (!string.IsNullOrEmpty(body))
-            {
-                json = JsonSerializer.Deserialize<JsonElement>(body);
-            }
             await AlignBrowserToSessionWindowAsync(command, sessionId).ConfigureAwait(false);
             var isUnresponsiveRecoveryCommand =
                 IsSessionUnresponsive(sessionId) &&

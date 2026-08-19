@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.WebDriver.Protocol;
 using FenBrowser.WebDriver.Security;
+using FenBrowser.WebDriver.Commands;
 
 namespace FenBrowser.WebDriver.BiDi;
 
@@ -23,7 +24,7 @@ namespace FenBrowser.WebDriver.BiDi;
 /// subjected to the same remote-endpoint and browser-Origin checks as the HTTP
 /// WebDriver endpoint.
 /// </summary>
-public sealed class BiDiWebSocketServer : IDisposable
+public sealed class BiDiWebSocketServer : IDisposable, IAsyncDisposable
 {
     private const int MaxMessageBytes = 16 * 1024 * 1024;
     private const int MaxMethodChars = 256;
@@ -35,6 +36,7 @@ public sealed class BiDiWebSocketServer : IDisposable
 
     private readonly HttpListener _listener;
     private readonly SessionManager _sessionManager;
+    private readonly IBrowserDriver? _browser;
     private readonly OriginValidator _originValidator;
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _connectionAdmission = new(MaxConcurrentConnections, MaxConcurrentConnections);
@@ -45,7 +47,10 @@ public sealed class BiDiWebSocketServer : IDisposable
     private int _started;
     private int _disposed;
 
-    public BiDiWebSocketServer(SessionManager sessionManager, int port)
+    public BiDiWebSocketServer(
+        SessionManager sessionManager,
+        int port,
+        IBrowserDriver? browser = null)
     {
         // HttpListener cannot use port 0 as an "ephemeral port" request. Accepting it
         // here produced a server object that could never establish its advertised URL.
@@ -55,6 +60,7 @@ public sealed class BiDiWebSocketServer : IDisposable
         }
 
         _sessionManager = sessionManager ?? throw new ArgumentNullException(nameof(sessionManager));
+        _browser = browser;
         _port = port;
         _originValidator = new OriginValidator(allowLocalhostOnly: true);
 
@@ -508,6 +514,11 @@ public sealed class BiDiWebSocketServer : IDisposable
 
     public void Dispose()
     {
+        DisposeAsync().AsTask().GetAwaiter().GetResult();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
@@ -520,6 +531,17 @@ public sealed class BiDiWebSocketServer : IDisposable
         }
         catch
         {
+        }
+
+        if (_listenTask != null)
+        {
+            try
+            {
+                await _listenTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            {
+            }
         }
 
         foreach (var client in _clients.Values)
@@ -538,5 +560,6 @@ public sealed class BiDiWebSocketServer : IDisposable
         _listener.Close();
         _connectionAdmission.Dispose();
         _cts.Dispose();
+        GC.SuppressFinalize(this);
     }
 }

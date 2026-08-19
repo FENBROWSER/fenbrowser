@@ -7,6 +7,7 @@ namespace FenBrowser.WebDriver.BiDi
     public interface IBiDiTransportBootstrap
     {
         void Register(BiDiBootstrapContext context);
+        ValueTask StopAsync();
     }
 
     public sealed class BiDiBootstrapContext
@@ -22,6 +23,7 @@ namespace FenBrowser.WebDriver.BiDi
         /// The session manager used to authenticate BiDi upgrades.
         /// </summary>
         public SessionManager? SessionManager { get; init; }
+        public Commands.IBrowserDriver? Browser { get; init; }
     }
 
     public sealed class BiDiTransportOptions
@@ -35,6 +37,8 @@ namespace FenBrowser.WebDriver.BiDi
     /// </summary>
     public sealed class BiDiWebSocketTransportBootstrap : IBiDiTransportBootstrap
     {
+        private BiDiWebSocketServer? _server;
+
         public void Register(BiDiBootstrapContext context)
         {
             if (context.SessionManager == null)
@@ -42,8 +46,17 @@ namespace FenBrowser.WebDriver.BiDi
                 return;
             }
 
-            var server = new BiDiWebSocketServer(context.SessionManager, context.WebDriverPort);
-            server.Start();
+            _server = new BiDiWebSocketServer(context.SessionManager, context.WebDriverPort, context.Browser);
+            _server.Start();
+        }
+
+        public async ValueTask StopAsync()
+        {
+            if (_server != null)
+            {
+                await _server.DisposeAsync().ConfigureAwait(false);
+                _server = null;
+            }
         }
     }
 
@@ -53,5 +66,8 @@ namespace FenBrowser.WebDriver.BiDi
         {
             // Intentional no-op skeleton: concrete BiDi transport registration is out of scope.
         }
+
+
+        public ValueTask StopAsync() => ValueTask.CompletedTask;
     }
 }
