@@ -1563,3 +1563,13 @@ Verification:
 Verification:
 
 - Clean Host build passes with zero errors; focused renderer IPC tests pass (`6/6`).
+
+### Reusable Brokered Frame Surfaces (2026-08-19)
+
+- `FrameSharedMemory` copies a stable published sequence directly from the mapped region into a caller-owned native surface. It no longer allocates a full-frame managed byte array.
+- `BrowserIntegration` retains front and back `SKBitmap` surfaces, copies into the back surface, validates the shared-memory sequence, and swaps only a complete frame under the compositor lock.
+- Dimension changes recreate the two surfaces; steady-state frames perform one MMF-to-Skia copy with no full-frame managed allocation.
+
+Verification:
+
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj --nologo --verbosity minimal`: passed with zero errors; three pre-existing Skia deprecation warnings remain.

@@ -78,12 +78,7 @@ namespace FenBrowser.Host.ProcessIsolation
         /// and discard out-of-order deliveries.
         /// </summary>
         public uint FrameSequenceNumber { get; set; }
-        /// <summary>
-        /// Raw BGRA pixel bytes copied out of shared memory by the host-side reader.
-        /// Null when transmitted over IPC (pixels travel via shared memory, not the pipe).
-        /// Set by <see cref="RendererChildSession"/> after reading from <see cref="FrameSharedMemory"/>.
-        /// </summary>
-        public byte[] PixelData { get; set; }
+        internal FrameSharedMemory FrameSource { get; set; }
         public string RequestedBy { get; set; }
         public string InvalidationReason { get; set; }
         public string RasterMode { get; set; }
@@ -629,15 +624,7 @@ namespace FenBrowser.Host.ProcessIsolation
                             {
                                 try
                                 {
-                                    var frameData = _frameSharedMemory.TryReadFrame();
-                                    if (frameData.HasValue)
-                                    {
-                                        payload.PixelData = frameData.Value.pixels;
-                                        payload.FrameSequenceNumber = frameData.Value.seq;
-                                        // Use dimensions from shared memory header (authoritative).
-                                        payload.SurfaceWidth = frameData.Value.width;
-                                        payload.SurfaceHeight = frameData.Value.height;
-                                    }
+                                    payload.FrameSource = _frameSharedMemory;
                                 }
                                 catch (Exception ex)
                                 {
@@ -898,4 +885,3 @@ namespace FenBrowser.Host.ProcessIsolation
         }
     }
 }
-

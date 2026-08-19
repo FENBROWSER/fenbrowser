@@ -188,6 +188,7 @@ public class BrowserIntegration : IDisposable
     private long _lastRenderedImageGeneration;
     // Remote frame bitmap delivered from a brokered renderer child via shared memory.
     private SKBitmap _remoteFrameBitmap;
+    private SKBitmap _remoteFrameBackBitmap;
     private float _remoteFrameScrollY;
     private uint _remoteFrameSequenceNumber;
     private readonly object _remoteFrameLock = new object();
@@ -909,6 +910,8 @@ public class BrowserIntegration : IDisposable
         _currentFrameSeedImage = null;
         _remoteFrameBitmap?.Dispose();
         _remoteFrameBitmap = null;
+        _remoteFrameBackBitmap?.Dispose();
+        _remoteFrameBackBitmap = null;
         _recorder?.Dispose();
     }
 
@@ -1203,9 +1206,7 @@ public class BrowserIntegration : IDisposable
             ScrollChanged?.Invoke(_scrollY, _contentHeight);
         }
 
-        // If the payload carries raw BGRA pixels (from shared memory), decode into an SKBitmap
-        // so Render() can composite it directly.
-        if (payload?.PixelData != null && payload.PixelData.Length > 0 &&
+        if (payload?.FrameSource != null &&
             payload.SurfaceWidth > 0 && payload.SurfaceHeight > 0)
         {
             if (IsRemoteFrameAheadOfLiveScroll(payload.ScrollY))
@@ -1231,61 +1232,64 @@ public class BrowserIntegration : IDisposable
             }
 
             int expectedBytes = (int)expectedBytesLong;
-            if (payload.PixelData.Length >= expectedBytes)
+            try
             {
-                try
+                bool acceptedRemoteFrame = false;
+                lock (_remoteFrameLock)
                 {
-                    // Shared-memory frame bytes are raw BGRA, not an encoded image.
-                    // Copy them directly into an owned bitmap and release the GC pin.
                     var imageInfo = new SKImageInfo(w, h, SKColorType.Bgra8888, SKAlphaType.Premul);
-                    SKBitmap newBitmap;
-                    var handle = System.Runtime.InteropServices.GCHandle.Alloc(payload.PixelData, System.Runtime.InteropServices.GCHandleType.Pinned);
-                    try
+                    if (_remoteFrameBitmap == null ||
+                        _remoteFrameBitmap.Width != w ||
+                        _remoteFrameBitmap.Height != h)
                     {
-                        newBitmap = InstallPixelsCopy(imageInfo, handle.AddrOfPinnedObject());
-                    }
-                    finally
-                    {
-                        handle.Free();
-                    }
-
-                    bool acceptedRemoteFrame = false;
-                    lock (_remoteFrameLock)
-                    {
-                        if (_remoteFrameBitmap != null &&
-                            payload.FrameSequenceNumber != 0 &&
-                            payload.FrameSequenceNumber <= _remoteFrameSequenceNumber)
-                        {
-                            newBitmap.Dispose();
-                            EngineLogBridge.Debug($"[BrowserIntegration] Ignored out-of-order remote frame: seq={payload.FrameSequenceNumber} lastSeq={_remoteFrameSequenceNumber} tab={tabId}", LogCategory.Rendering);
-                        }
-                        else
-                        {
-                            _remoteFrameBitmap?.Dispose();
-                            _remoteFrameBitmap = newBitmap;
-                            _remoteFrameScrollY = Math.Max(0f, payload.ScrollY);
-                            if (payload.FrameSequenceNumber != 0)
-                            {
-                                _remoteFrameSequenceNumber = payload.FrameSequenceNumber;
-                            }
-
-                            acceptedRemoteFrame = true;
-                        }
+                        _remoteFrameBitmap?.Dispose();
+                        _remoteFrameBackBitmap?.Dispose();
+                        _remoteFrameBitmap = new SKBitmap(imageInfo);
+                        _remoteFrameBackBitmap = new SKBitmap(imageInfo);
                     }
 
-                    if (acceptedRemoteFrame)
+                    var destination = _remoteFrameBackBitmap.GetPixels();
+                    if (destination == IntPtr.Zero ||
+                        !payload.FrameSource.TryCopyFrame(
+                            destination,
+                            expectedBytes,
+                            out var frameWidth,
+                            out var frameHeight,
+                            out var frameSequence) ||
+                        frameWidth != w || frameHeight != h)
                     {
-                        EngineLogBridge.Debug($"[BrowserIntegration] Remote frame installed: {w}x{h} seq={payload.FrameSequenceNumber} scrollY={payload.ScrollY:F1} for tab={tabId}", LogCategory.Rendering);
-                        if (Math.Abs(payload.ScrollY - _scrollY) <= 0.5f)
-                        {
-                            ResetCompositorScrollPreview();
-                        }
+                        return;
                     }
+
+                    if (frameSequence != 0 && frameSequence <= _remoteFrameSequenceNumber)
+                    {
+                        EngineLogBridge.Debug($"[BrowserIntegration] Ignored out-of-order remote frame: seq={frameSequence} lastSeq={_remoteFrameSequenceNumber} tab={tabId}", LogCategory.Rendering);
+                        return;
+                    }
+
+                    (_remoteFrameBitmap, _remoteFrameBackBitmap) = (_remoteFrameBackBitmap, _remoteFrameBitmap);
+                    _remoteFrameScrollY = Math.Max(0f, payload.ScrollY);
+                    if (frameSequence != 0)
+                    {
+                        _remoteFrameSequenceNumber = frameSequence;
+                    }
+
+                    payload.FrameSequenceNumber = frameSequence;
+                    acceptedRemoteFrame = true;
                 }
-                catch (Exception ex)
+
+                if (acceptedRemoteFrame)
                 {
-                    EngineLogBridge.Warn($"[BrowserIntegration] Failed to decode remote frame pixels for tab={tabId}: {ex.Message}", LogCategory.Rendering);
+                    EngineLogBridge.Debug($"[BrowserIntegration] Remote frame installed: {w}x{h} seq={payload.FrameSequenceNumber} scrollY={payload.ScrollY:F1} for tab={tabId}", LogCategory.Rendering);
+                    if (Math.Abs(payload.ScrollY - _scrollY) <= 0.5f)
+                    {
+                        ResetCompositorScrollPreview();
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                EngineLogBridge.Warn($"[BrowserIntegration] Failed to copy remote frame pixels for tab={tabId}: {ex.Message}", LogCategory.Rendering);
             }
         }
 
@@ -1370,30 +1374,6 @@ public class BrowserIntegration : IDisposable
                 }
             }
         }
-    }
-
-    /// <summary>
-    /// Creates an owned SKBitmap by copying raw BGRA pixels from an unmanaged pointer.
-    /// </summary>
-    private static SKBitmap InstallPixelsCopy(SKImageInfo imageInfo, IntPtr src)
-    {
-        if (src == IntPtr.Zero)
-            throw new ArgumentException("Remote frame pixel pointer cannot be null.", nameof(src));
-
-        var bitmap = new SKBitmap(imageInfo);
-        var destination = bitmap.GetPixels();
-        if (destination == IntPtr.Zero)
-        {
-            bitmap.Dispose();
-            throw new InvalidOperationException("Skia could not allocate remote frame pixels.");
-        }
-
-        unsafe
-        {
-            int bytes = imageInfo.BytesSize;
-            Buffer.MemoryCopy((void*)src, (void*)destination, bytes, bytes);
-        }
-        return bitmap;
     }
 
     public void HighlightElement(Element? element)
@@ -3339,6 +3319,8 @@ public class BrowserIntegration : IDisposable
         {
             _remoteFrameBitmap?.Dispose();
             _remoteFrameBitmap = null;
+            _remoteFrameBackBitmap?.Dispose();
+            _remoteFrameBackBitmap = null;
             _remoteFrameScrollY = 0f;
             _remoteFrameSequenceNumber = 0;
         }
@@ -4346,4 +4328,3 @@ internal sealed record FrameRequestSnapshot(
     string PrimarySource,
     IReadOnlyDictionary<string, int> SourceCounts,
     long Generation);
-

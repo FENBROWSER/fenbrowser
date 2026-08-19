@@ -312,19 +312,28 @@ namespace FenBrowser.Host.ProcessIsolation
             _accessor.Write(OffsetSeq, publishedSequence);
         }
 
-        public (int width, int height, uint seq, byte[] pixels)? TryReadFrame()
+        public unsafe bool TryCopyFrame(
+            IntPtr destination,
+            int destinationCapacity,
+            out int width,
+            out int height,
+            out uint sequence)
         {
+            width = 0;
+            height = 0;
+            sequence = 0;
+
             if (_isWriter)
                 throw new InvalidOperationException("A shared-frame writer cannot consume compositor frames.");
-            if (_accessor == null || _disposed)
-                return null;
+            if (_accessor == null || _disposed || destination == IntPtr.Zero || destinationCapacity <= 0)
+                return false;
 
             uint sequenceBefore = _accessor.ReadUInt32(OffsetSeq);
             if ((sequenceBefore & 1u) != 0)
-                return null;
+                return false;
 
-            int width = _accessor.ReadInt32(OffsetWidth);
-            int height = _accessor.ReadInt32(OffsetHeight);
+            width = _accessor.ReadInt32(OffsetWidth);
+            height = _accessor.ReadInt32(OffsetHeight);
             if (!TryComputePixelBytes(width, height, out var pixelBytes) || pixelBytes > _regionCapacity)
             {
                 if (width != 0 || height != 0)
@@ -333,31 +342,32 @@ namespace FenBrowser.Host.ProcessIsolation
                         $"[FrameSharedMemory] Read rejected invalid/oversized dimensions: {width}x{height}.",
                         LogCategory.Rendering);
                 }
-                return null;
+                return false;
             }
 
-            var pixels = new byte[pixelBytes];
-            unsafe
+            if (pixelBytes > destinationCapacity)
             {
-                byte* ptr = null;
-                _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
-                try
-                {
-                    var src = new ReadOnlySpan<byte>(ptr + HeaderSize, pixelBytes);
-                    src.CopyTo(pixels);
-                }
-                finally
-                {
-                    _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
-                }
+                return false;
+            }
+
+            byte* ptr = null;
+            _accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
+            try
+            {
+                Buffer.MemoryCopy(ptr + HeaderSize, destination.ToPointer(), destinationCapacity, pixelBytes);
+            }
+            finally
+            {
+                _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
             }
 
             Thread.MemoryBarrier();
             uint sequenceAfter = _accessor.ReadUInt32(OffsetSeq);
             if (sequenceBefore != sequenceAfter || (sequenceAfter & 1u) != 0)
-                return null;
+                return false;
 
-            return (width, height, sequenceAfter, pixels);
+            sequence = sequenceAfter;
+            return true;
         }
 
         private static bool TryComputePixelBytes(int width, int height, out int pixelBytes)
