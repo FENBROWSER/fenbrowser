@@ -100,6 +100,9 @@
     <Compile Include="Rendering\PipelineAnimationTests.cs" />
     <!-- Phase 12 async input dispatch non-blocking regression. -->
     <Compile Include="Engine\Phase12AsyncInputDispatchTests.cs" />
+    <Compile Include="Engine\CustomHtmlEngineFallbackPromotionTests.cs" />
+    <Compile Include="Engine\CustomHtmlEngineNoJsNormalizationTests.cs" />
+    <Compile Include="Engine\MediaWikiDeduplicatedInlineStyleTests.cs" />
   </ItemGroup>
 
 </Project>

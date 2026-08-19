@@ -1,10125 +1,1556 @@
-ï»¿// SpecRef: CSS Conditional Rules Level 5, CSS Containment Level 3 container queries
-// CapabilityId: CSS-CONTAINMENT-QUERY-01
-// Determinism: strict
-// FallbackPolicy: spec-defined
-using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom.V2;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Text.RegularExpressions;
-using System.Threading.Tasks;
-using System.IO;
-using System.Globalization;
-using System.Runtime.CompilerServices;
-using SkiaSharp;
-using FenBrowser.Core;
-using FenBrowser.Core.Logging;
-using FenBrowser.FenEngine.Compatibility;
-using FenBrowser.FenEngine.Rendering.Css; // Direct using, will resolve ambiguity manually or by deleting inner classes
-using FenBrowser.Core.Parsing;
-using NewCss = FenBrowser.FenEngine.Rendering.Css;
-// using FenBrowser.Core.Math; // Namespace moved to Core
-namespace FenBrowser.FenEngine.Rendering
-{
-    public static partial class CssLoader
-    {
-        public class CssLoadResult
-        {
-            public Dictionary<Node, CssComputed> Computed { get; set; } = new Dictionary<Node, CssComputed>();
-            public List<CssSource> Sources { get; set; } = new List<CssSource>();
-            public CssLoadTiming Timing { get; set; } = new CssLoadTiming();
-        }
-
-        public sealed class CssLoadTiming
-        {
-            public double QueueWaitMs { get; set; }
-            public double DiscoveryAndFetchMs { get; set; }
-            public double ImportExpansionMs { get; set; }
-            public double RuleParseMs { get; set; }
-            public double VariableResolutionMs { get; set; }
-            public double CascadeMs { get; set; }
-            public double TotalMs { get; set; }
-            public int SourceCount { get; set; }
-            public int ExpandedSourceCount { get; set; }
-            public int RuleCount { get; set; }
-            public int ComputedStyleCount { get; set; }
-            public int InlineStyleCacheHits { get; set; }
-            public int InlineStyleCacheMisses { get; set; }
-            public int InlineStyleCacheEvictions { get; set; }
-            public int InlineStyleCacheEntries { get; set; }
-            public bool StyleSetCacheHit { get; set; }
-        }
-
-        private sealed class DocumentStyleSetCacheEntry
-        {
-            public string Fingerprint { get; init; }
-            public string BaseUri { get; init; }
-            public double? ViewportWidth { get; init; }
-            public double? ViewportHeight { get; init; }
-            public StyleSet StyleSet { get; init; }
-            public int SourceCount { get; init; }
-            public int ExpandedSourceCount { get; init; }
-            public int RuleCount { get; init; }
-        }
-
-        // Keep file diagnostics enabled only in debug builds.
-        // CS0162: blocks guarded by this const become unreachable in Release; that's intentional.
-#pragma warning disable CS0162
-#if DEBUG
-        private const bool DEBUG_FILE_LOGGING = true;
-#else
-        private const bool DEBUG_FILE_LOGGING = false;
-#endif
-
-        public class MatchedRule
-        {
-            public NewCss.CssRule Rule;
-            public CssSource Source;
-            public NewCss.Specificity Specificity;
-        }
-
-        private readonly record struct ParsedRuleCacheKey(
-            string Css,
-            string BaseUri,
-            double? ViewportWidth,
-            double? ViewportHeight,
-            int SourceOrder,
-            NewCss.CssOrigin Origin,
-            int ShadowScopeIdentity);
-
-        // -------------------------------------------------------------------------
-        // CSS PERFORMANCE CACHES
-        // -------------------------------------------------------------------------
-        // Parse cache: shared across tabs when CSS, base URI, viewport, source order,
-        // and origin are all equivalent.
-        private static readonly Dictionary<ParsedRuleCacheKey, List<NewCss.CssRule>> _parsedRulesCache = new();
-        private static readonly Dictionary<ParsedRuleCacheKey, Task<List<NewCss.CssRule>>> _inFlightParses = new();
-        private static readonly System.Threading.SemaphoreSlim _globalParseGate = new System.Threading.SemaphoreSlim(Environment.ProcessorCount > 2 ? Environment.ProcessorCount - 1 : 2);
-        // Compute gate: was 1 (serialised ALL CSS work across tabs).  Now allows
-        // concurrent computation per core so Tab1 and Tab2 cascade in parallel.
-        // The element-keyed caches below use ConcurrentDictionary for thread safety.
-        private static readonly System.Threading.SemaphoreSlim _globalComputeGate = new System.Threading.SemaphoreSlim(Math.Max(2, Environment.ProcessorCount));
-        // Element-keyed caches â€” ConcurrentDictionary so concurrent tab cascades
-        // don't corrupt each other.  Keys are Element instances, unique per tab DOM.
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<(Element, SelectorChain), bool> _matchCache = new();
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<Element, List<NewCss.CssRule>> _elementMatchedRulesCache = new();
-        private static readonly ConditionalWeakTable<Element, DocumentStyleSetCacheEntry> _documentStyleSets = new();
-        private static readonly object _documentStyleSetsLock = new();
-        private static int _stylesheetRegistrationCounter;
-
-        // UA stylesheet cache Ã¢â‚¬â€ read from disk only once per process lifetime
-        private static string _cachedUaCss;
-
-        // CSS Custom Properties (CSS Variables) storage - keyed by property name (e.g., "--primary-color")
-        private static readonly Dictionary<string, string> _customProperties = new Dictionary<string, string>(StringComparer.Ordinal);
-        internal static double _rootFontSize = 16.0; internal static void SetRootFontSize(double size) { _rootFontSize = size; }
-        private static ParserSecurityPolicy _defaultParserSecurityPolicy = ParserSecurityPolicy.Default;
-        private static readonly System.Threading.AsyncLocal<ParserSecurityPolicy> _scopedParserSecurityPolicy = new System.Threading.AsyncLocal<ParserSecurityPolicy>();
-        public static ParserSecurityPolicy ActiveParserSecurityPolicy
-        {
-            get => _scopedParserSecurityPolicy.Value ?? _defaultParserSecurityPolicy;
-            set => _scopedParserSecurityPolicy.Value = value;
-        }
-
-        public static void ClearCaches()
-        {
-            lock (_parsedRulesCache) _parsedRulesCache.Clear();
-            lock (_inFlightParses) _inFlightParses.Clear();
-            _matchCache.Clear();
-            _elementMatchedRulesCache.Clear();
-            lock (_documentStyleSetsLock) _documentStyleSets.Clear();
-            lock (_customProperties) _customProperties.Clear();
-            _rootFontSize = 16.0;
-            _keyframes.Clear();
-            FontRegistry.Clear();
-        }
-
-        /// <summary>
-        /// Releases cache entries that retain the outgoing document while preserving
-        /// immutable process-wide parse data and reusable native font/typeface state.
-        /// </summary>
-        public static void ClearDocumentScopedCaches(Element documentRoot)
-        {
-            if (documentRoot == null)
-            {
-                return;
-            }
-
-            var ownerDocument = documentRoot.OwnerDocument;
-            foreach (var key in _matchCache.Keys)
-            {
-                if (BelongsToDocument(key.Item1, documentRoot, ownerDocument))
-                {
-                    _matchCache.TryRemove(key, out _);
-                }
-            }
-
-            foreach (var element in _elementMatchedRulesCache.Keys)
-            {
-                if (BelongsToDocument(element, documentRoot, ownerDocument))
-                {
-                    _elementMatchedRulesCache.TryRemove(element, out _);
-                }
-            }
-
-            lock (_documentStyleSetsLock)
-            {
-                _documentStyleSets.Remove(documentRoot);
-            }
-
-            FontRegistry.ClearDocument(ownerDocument);
-        }
-
-        internal static int ParsedRuleCacheCount
-        {
-            get
-            {
-                lock (_parsedRulesCache)
-                {
-                    return _parsedRulesCache.Count;
-                }
-            }
-        }
-
-        private static bool BelongsToDocument(
-            Element element,
-            Element documentRoot,
-            Document ownerDocument)
-        {
-            if (element == null)
-            {
-                return false;
-            }
-
-            return ReferenceEquals(element, documentRoot) ||
-                   (ownerDocument != null && ReferenceEquals(element.OwnerDocument, ownerDocument));
-        }
-
-        private static ParsedRuleCacheKey BuildParsedRuleCacheKey(
-            string css,
-            Uri baseUri,
-            double? viewportWidth,
-            double? viewportHeight,
-            int sourceOrder = 0,
-            NewCss.CssOrigin origin = NewCss.CssOrigin.Author,
-            ShadowRoot shadowScopeRoot = null)
-        {
-            return new ParsedRuleCacheKey(
-                css ?? string.Empty,
-                baseUri?.AbsoluteUri ?? "null",
-                viewportWidth,
-                viewportHeight,
-                sourceOrder,
-                origin,
-                shadowScopeRoot == null ? 0 : RuntimeHelpers.GetHashCode(shadowScopeRoot));
-        }
-        // -------------------------------------------------------------------------
-
-        private static Task RunDetachedAsync(Func<Task> operation)
-        {
-            return Task.Factory.StartNew(async () =>
-            {
-                try
-                {
-                    await operation().ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Warn($"[CssLoader] Detached async operation failed: {ex.Message}", LogCategory.Rendering);
-                }
-            }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
-        }
-        public static List<MatchedRule> GetMatchedRules(Element element, List<CssSource> sources)
-        {
-             var matched = new List<MatchedRule>();
-             if (element == null || sources == null) return matched;
-             double? viewportWidth = CssParser.MediaViewportWidth;
-             double? viewportHeight = CssParser.MediaViewportHeight;
-
-             bool MatchesScope(NewCss.CssStyleRule styleRule)
-             {
-                 if (styleRule == null || string.IsNullOrEmpty(styleRule.ScopeSelector))
-                 {
-                     return true;
-                 }
-
-                 var current = element.ParentElement;
-                 while (current != null)
-                 {
-                     if (SelectorMatcher.Matches(current, styleRule.ScopeSelector))
-                     {
-                         return true;
-                     }
-
-                     current = current.ParentElement;
-                 }
-
-                 return false;
-             }
-
-             void CollectMatchedRules(NewCss.CssRule rule, CssSource source)
-             {
-                 if (rule is NewCss.CssStyleRule styleRule)
-                 {
-                     if (!MatchesScope(styleRule))
-                     {
-                         return;
-                     }
-
-                     var spec = SelectorMatcher.GetMatchingSpecificity(element, styleRule.Selector);
-                     if (spec.HasValue)
-                     {
-                         matched.Add(new MatchedRule { Rule = styleRule, Source = source, Specificity = spec.Value });
-                     }
-
-                     // CSS Nesting: traverse nested rules with resolved selectors
-                     foreach (var nested in styleRule.NestedRules)
-                     {
-                         CollectMatchedRules(nested, source);
-                     }
-
-                     return;
-                 }
-
-                 if (rule is NewCss.CssMediaRule mediaRule)
-                 {
-                     if (EvaluateMediaQuery(mediaRule.Condition, viewportWidth))
-                     {
-                         foreach (var child in mediaRule.Rules)
-                         {
-                             CollectMatchedRules(child, source);
-                         }
-                     }
-
-                     return;
-                 }
-
-                 if (rule is NewCss.CssLayerRule layerRule)
-                 {
-                     foreach (var child in layerRule.Rules)
-                     {
-                         CollectMatchedRules(child, source);
-                     }
-
-                     return;
-                 }
-
-                 if (rule is NewCss.CssScopeRule scopeRule)
-                 {
-                     foreach (var child in scopeRule.Rules)
-                     {
-                         CollectMatchedRules(child, source);
-                     }
-                 }
-             }
-             
-             foreach(var source in sources)
-             {
-                 try
-                 {
-                     List<NewCss.CssRule> rules;
-                     ParsedRuleCacheKey parseCacheKey = BuildParsedRuleCacheKey(
-                         source.CssText,
-                         source.BaseUri,
-                         viewportWidth,
-                         viewportHeight,
-                         source.SourceOrder,
-                         MapToNewCssOrigin(source.Origin),
-                         source.ShadowScopeRoot);
-                     lock (_parsedRulesCache)
-                     {
-                         if (!_parsedRulesCache.TryGetValue(parseCacheKey, out rules))
-                         {
-                             rules = ParseRules(source.CssText, source.SourceOrder, source.BaseUri, viewportWidth, viewportHeight, null, MapToNewCssOrigin(source.Origin));
-                             _parsedRulesCache[parseCacheKey] = rules;
-                         }
-                     }
-
-                     ApplyShadowScope(rules, source.ShadowScopeRoot);
-
-                     // Shadow-scoped rules retain their owning ShadowRoot. They belong to
-                     // this document's StyleSet and must not remain in the process-wide cache.
-                     if (source.ShadowScopeRoot != null)
-                     {
-                         lock (_parsedRulesCache)
-                         {
-                             _parsedRulesCache.Remove(parseCacheKey);
-                         }
-                     }
-
-                     foreach(var rule in rules)
-                     {
-                         CollectMatchedRules(rule, source);
-                     }
-                 }
-                 catch (Exception)
-                 {
-                     /* [PERF-REMOVED] */
-                 }
-             }
-             
-             // Sort by Origin -> Specificity -> Order
-             matched.Sort((a,b) => {
-                 var ruleA = a.Rule as NewCss.CssStyleRule;
-                 var ruleB = b.Rule as NewCss.CssStyleRule;
-                 if (ruleA == null) return -1; 
-                 if (ruleB == null) return 1;
-
-                 // 1. Origin (Ascending: UserAgent < User < Author)
-                 int originComp = ruleA.Origin.CompareTo(ruleB.Origin);
-                 if (originComp != 0) return originComp;
-
-                 // 2. Specificity (Ascending: lower specificity first, higher later)
-                 int specComp = a.Specificity.CompareTo(b.Specificity);
-                 if (specComp != 0) return specComp;
-
-                 // 3. Source Order (Ascending)
-                 return ruleA.Order.CompareTo(ruleB.Order);
-             });
-             return matched;
-        }
-        // ===========================
-        // Public API
-        // ===========================
-
-        /// <summary>
-        /// Main entry point: fetches external styles, parses all CSS, and computes styles for the document.
-        /// </summary>
-        /// <param name="root">Document root (html or the parsed tree root).</param>
-        /// <param name="baseUri">Base URI for resolving &lt;link&gt;, @import, url(...).</param>
-        /// <param name="fetchExternalCssAsync">
-        /// Delegate to fetch external CSS text for a given absolute URL (cookie-aware if needed).
-        /// If null, external styles are skipped gracefully.
-        /// </param>
-        /// <param name="viewportWidth">Optional viewport width for simple media checks.</param>
-        /// <param name="log">Optional logger for warnings/notes.</param>
-        public static async Task<Dictionary<Node, CssComputed>> ComputeAsync(
-            Element root,
-            Uri baseUri,
-            Func<Uri, Task<string>> fetchExternalCssAsync,
-            double? viewportWidth = null,
-            double? viewportHeight = null,
-            Action<string> log = null,
-            FenBrowser.Core.Deadlines.FrameDeadline deadline = null,
-            Func<Element, Uri, Task<string>> fetchExternalCssForRootAsync = null,
-            Action<Dictionary<Node, CssComputed>> progressiveStylesReady = null)
-        {
-            var result = await ComputeWithResultAsync(
-                root,
-                baseUri,
-                fetchExternalCssAsync,
-                viewportWidth,
-                viewportHeight,
-                log,
-                deadline,
-                fetchExternalCssForRootAsync,
-                progressiveStylesReady);
-            return result.Computed;
-        }
-
-        public static async Task<Dictionary<Node, CssComputed>> ComputeSubtreeAsync(
-            Element stylesheetRoot,
-            Element cascadeRoot,
-            Uri baseUri,
-            Func<Uri, Task<string>> fetchExternalCssAsync,
-            double? viewportWidth = null,
-            double? viewportHeight = null,
-            Action<string> log = null,
-            FenBrowser.Core.Deadlines.FrameDeadline deadline = null,
-            Func<Element, Uri, Task<string>> fetchExternalCssForRootAsync = null)
-        {
-            if (stylesheetRoot == null || cascadeRoot == null)
-            {
-                return new Dictionary<Node, CssComputed>();
-            }
-
-            var result = await ComputeWithResultCoreAsync(
-                stylesheetRoot,
-                baseUri,
-                fetchExternalCssAsync,
-                viewportWidth,
-                viewportHeight,
-                log,
-                deadline,
-                cascadeRoot).ConfigureAwait(false);
-
-            // A dirty parent subtree can gain a fully loaded iframe Document after the
-            // document's initial cascade. Cascade those nested browsing contexts against
-            // their own stylesheets before merging the incremental result; otherwise the
-            // frame DOM is laid out and painted with no computed styles.
-            try
-            {
-                await StyleIframeSubdocumentsAsync(
-                    cascadeRoot,
-                    baseUri,
-                    fetchExternalCssAsync,
-                    viewportWidth,
-                    viewportHeight,
-                    log,
-                    deadline,
-                    result.Computed,
-                    fetchExternalCssForRootAsync).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                Log(log, "[CssLoader] incremental iframe subdocument styling failed: " + ex.Message);
-            }
-
-            return result.Computed;
-        }
-
-        public static async Task<CssLoadResult> ComputeWithResultAsync(
-            Element root,
-            Uri baseUri,
-            Func<Uri, Task<string>> fetchExternalCssAsync,
-            double? viewportWidth = null,
-            double? viewportHeight = null,
-            Action<string> log = null,
-            FenBrowser.Core.Deadlines.FrameDeadline deadline = null,
-            Func<Element, Uri, Task<string>> fetchExternalCssForRootAsync = null,
-            Action<Dictionary<Node, CssComputed>> progressiveStylesReady = null)
-        {
-            var result = await ComputeWithResultCoreAsync(
-                root,
-                baseUri,
-                fetchExternalCssAsync,
-                viewportWidth,
-                viewportHeight,
-                log,
-                deadline,
-                progressiveStylesReady: progressiveStylesReady)
-                .ConfigureAwait(false);
-
-            // Nested browsing contexts (iframes) hold their own Document with its own
-            // author stylesheets. The cascade above only flattens Element nodes, so it
-            // never descends into the attached child Document â€” and even if it did, the
-            // parent StyleSet does not contain the iframe's <style>/<link> rules. Without
-            // this pass the iframe renders with UA defaults only (e.g. Acid2 needs the
-            // frame's own 100em margins to position the face). Style each subdocument
-            // against its own sheets. The recursive call re-enters this wrapper, which
-            // re-acquires the compute gate sequentially (no nesting â†’ no deadlock) and
-            // also handles iframes nested inside iframes.
-            try
-            {
-                await StyleIframeSubdocumentsAsync(
-                    root,
-                    baseUri,
-                    fetchExternalCssAsync,
-                    viewportWidth,
-                    viewportHeight,
-                    log,
-                    deadline,
-                    result.Computed,
-                    fetchExternalCssForRootAsync)
-                    .ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                Log(log, "[CssLoader] iframe subdocument styling failed: " + ex.Message);
-            }
-
-            return result;
-        }
-
-        private static async Task StyleIframeSubdocumentsAsync(
-            Element root,
-            Uri baseUri,
-            Func<Uri, Task<string>> fetchExternalCssAsync,
-            double? viewportWidth,
-            double? viewportHeight,
-            Action<string> log,
-            FenBrowser.Core.Deadlines.FrameDeadline deadline,
-            Dictionary<Node, CssComputed> aggregate,
-            Func<Element, Uri, Task<string>> fetchExternalCssForRootAsync)
-        {
-            if (root == null)
-            {
-                return;
-            }
-
-            // Collect iframe elements in the just-cascaded tree.
-            var frames = root.Descendants().OfType<Element>()
-                .Where(static e => string.Equals(e.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-            if (root is Element rootEl &&
-                string.Equals(rootEl.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
-            {
-                frames.Insert(0, rootEl);
-            }
-
-            foreach (var frame in frames)
-            {
-                var frameDoc = frame.ChildNodes.OfType<Document>().FirstOrDefault();
-                if (frameDoc == null)
-                {
-                    FenBrowser.FenEngine.DOM.ElementWrapper.TryGetCachedIframeDocument(frame, out frameDoc);
-                }
-
-                var frameRoot = frameDoc?.DocumentElement;
-                if (frameRoot == null)
-                {
-                    continue;
-                }
-
-                // The frame's viewport drives its media queries and viewport units.
-                // Priority: CSS computed width/height > percentage resolved against
-                // a definite containing block > HTML width/height attributes
-                // (presentational hints) > parent viewport fallback.
-                // Without checking HTML attributes, iframes sized via width="304" height="78"
-                // (like reCAPTCHA) get the parent page's viewport, breaking vh/vw units,
-                // percentage heights, and absolute positioning inside the frame.
-                double? frameVw = ResolveFrameViewportDimension(frame, "width", viewportWidth);
-                double? frameVh = ResolveFrameViewportDimension(frame, "height", viewportHeight);
-
-                var frameBaseUri = ResolveDocumentBaseUri(frameDoc, baseUri);
-                var frameCssFetcher = fetchExternalCssForRootAsync == null
-                    ? fetchExternalCssAsync
-                    : new Func<Uri, Task<string>>(uri => fetchExternalCssForRootAsync(frameRoot, uri));
-                var nested = await ComputeWithResultAsync(
-                    frameRoot,
-                    frameBaseUri,
-                    frameCssFetcher,
-                    frameVw,
-                    frameVh,
-                    log,
-                    deadline,
-                    fetchExternalCssForRootAsync)
-                    .ConfigureAwait(false);
-
-                if (nested?.Computed != null && aggregate != null)
-                {
-                    foreach (var kvp in nested.Computed)
-                    {
-                        aggregate[kvp.Key] = kvp.Value;
-                    }
-                }
-            }
-        }
-
-        private static Uri ResolveDocumentBaseUri(Document document, Uri fallback)
-        {
-            if (document != null)
-            {
-                var baseText = !string.IsNullOrWhiteSpace(document.BaseURI)
-                    ? document.BaseURI
-                    : document.URL;
-                if (!string.IsNullOrWhiteSpace(baseText) &&
-                    Uri.TryCreate(baseText, UriKind.Absolute, out var parsed))
-                {
-                    return parsed;
-                }
-            }
-
-            return fallback;
-        }
-
-        /// <summary>
-        /// Resolves the viewport dimension for an iframe subdocument.
-        /// Priority: CSS computed value > HTML presentational hint (width/height attribute) > parent viewport.
-        /// Per HTML spec Â§14.3.1, width/height attributes on iframe are presentational hints
-        /// that map to CSS properties with zero specificity.
-        /// </summary>
-        internal static double? ResolveFrameViewportDimension(
-            Element frame,
-            string attributeName,
-            double? parentViewportDimension)
-        {
-            // 1. CSS computed value (already resolved from parent page cascade)
-            double? cssValue = null;
-            bool hasDeclaredCssDimension =
-                    frame.GetComputedStyle()?.Map?.ContainsKey(attributeName) == true;
-            if (attributeName == "width")
-            {
-                if (hasDeclaredCssDimension && frame.GetComputedStyle()?.Width is double w && w > 0)
-                    cssValue = w;
-            }
-            else if (attributeName == "height")
-            {
-                if (hasDeclaredCssDimension && frame.GetComputedStyle()?.Height is double h && h > 0)
-                    cssValue = h;
-            }
-
-            if (cssValue.HasValue)
-                return cssValue;
-
-            // A percentage-sized iframe establishes a viewport from its own box,
-            // not from the top-level document viewport. During cascade the layout
-            // box may not exist yet, but an explicit pixel size on the containing
-            // block is already a definite percentage basis.
-            var percent = attributeName == "width"
-                    ? frame.GetComputedStyle()?.WidthPercent
-                    : frame.GetComputedStyle()?.HeightPercent;
-            if (percent.HasValue &&
-                TryReadInlinePixelDimension(frame.ParentElement, attributeName, out var containingDimension))
-            {
-                return containingDimension * percent.Value / 100d;
-            }
-
-            // 2. HTML presentational hint
-            if (FenBrowser.FenEngine.Layout.ReplacedElementSizing.TryGetLengthAttribute(
-                    frame, attributeName, out float attrValue) && attrValue > 0f)
-            {
-                return (double)attrValue;
-            }
-
-            // 3. Fall back to parent viewport
-            return parentViewportDimension;
-        }
-
-        private static bool TryReadInlinePixelDimension(Element element, string property, out double value)
-        {
-            value = 0;
-            string raw = null;
-            foreach (var declaration in (element?.GetAttribute("style") ?? string.Empty)
-                .Split(';', StringSplitOptions.RemoveEmptyEntries))
-            {
-                var colonIndex = declaration.IndexOf(':');
-                if (colonIndex <= 0 ||
-                    !string.Equals(declaration[..colonIndex].Trim(), property, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                raw = declaration[(colonIndex + 1)..].Trim();
-            }
-
-            if (string.IsNullOrWhiteSpace(raw) ||
-                !raw.EndsWith("px", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            return double.TryParse(
-                       raw[..^2].TrimEnd(),
-                       NumberStyles.Float,
-                       CultureInfo.InvariantCulture,
-                       out value) &&
-                   double.IsFinite(value) &&
-                   value > 0;
-        }
-
-        private static async Task<CssLoadResult> ComputeWithResultCoreAsync(
-            Element root,
-            Uri baseUri,
-            Func<Uri, Task<string>> fetchExternalCssAsync,
-            double? viewportWidth = null,
-            double? viewportHeight = null,
-            Action<string> log = null,
-            FenBrowser.Core.Deadlines.FrameDeadline deadline = null,
-            Element cascadeRoot = null,
-            Action<Dictionary<Node, CssComputed>> progressiveStylesReady = null)
-        {
-            long queueStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-            await _globalComputeGate.WaitAsync().ConfigureAwait(false);
-            double queueWaitMs = System.Diagnostics.Stopwatch.GetElapsedTime(queueStarted).TotalMilliseconds;
-            long computeStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-            try
-            {
-                // This MUST be done even if using cached rules.
-                CssParser.MediaViewportWidth = viewportWidth;
-                CssParser.MediaViewportHeight = viewportHeight;
-
-            /* [PERF-REMOVED] */
-
-                if (root == null)
-                {
-                    return new CssLoadResult
-                    {
-                        Timing = new CssLoadTiming
-                        {
-                            QueueWaitMs = queueWaitMs,
-                            TotalMs = System.Diagnostics.Stopwatch.GetElapsedTime(computeStarted).TotalMilliseconds
-                        }
-                    };
-                }
-
-                string stylesheetFingerprint = BuildStylesheetFingerprint(root);
-                if (TryGetCachedStyleSet(
-                    root,
-                    stylesheetFingerprint,
-                    baseUri,
-                    viewportWidth,
-                    viewportHeight,
-                    out var cachedStyleSet))
-                {
-                    long cachedCascadeStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-                    var cachedComputed = FenBrowser.FenEngine.Rendering.ParallelCascadeScheduler.Cascade(
-                        cascadeRoot ?? root,
-                        cachedStyleSet.StyleSet,
-                        log,
-                        deadline,
-                        out var cachedInlineStyleStatistics);
-                    double cachedCascadeMs = System.Diagnostics.Stopwatch.GetElapsedTime(cachedCascadeStarted).TotalMilliseconds;
-                    FenBrowser.FenEngine.Rendering.Performance.PerformanceDiagnosticsStore.RecordInlineStyleCache(
-                        cachedInlineStyleStatistics);
-                    EngineLogCompat.Log(
-                        LogCategory.Rendering,
-                        LogLevel.Info,
-                        $"[PERF-CSS] Reused document StyleSet: {cachedCascadeMs:F1}ms (Elements: {cachedComputed.Count})");
-
-                    return new CssLoadResult
-                    {
-                        Computed = cachedComputed,
-                        Timing = new CssLoadTiming
-                        {
-                            QueueWaitMs = queueWaitMs,
-                            CascadeMs = cachedCascadeMs,
-                            TotalMs = System.Diagnostics.Stopwatch.GetElapsedTime(computeStarted).TotalMilliseconds,
-                            SourceCount = cachedStyleSet.SourceCount,
-                            ExpandedSourceCount = cachedStyleSet.ExpandedSourceCount,
-                            RuleCount = cachedStyleSet.RuleCount,
-                            ComputedStyleCount = cachedComputed.Count,
-                            InlineStyleCacheHits = cachedInlineStyleStatistics.Hits,
-                            InlineStyleCacheMisses = cachedInlineStyleStatistics.Misses,
-                            InlineStyleCacheEvictions = cachedInlineStyleStatistics.Evictions,
-                            InlineStyleCacheEntries = cachedInlineStyleStatistics.Entries,
-                            StyleSetCacheHit = true
-                        }
-                    };
-                }
-
-                var cssBlobs = new List<CssSource>(); // collected CSS texts with source ordering
-                int sourceIndex = 0;
-                var _cssStopwatch = System.Diagnostics.Stopwatch.StartNew();
-
-            // 0) UA stylesheet - load from external file (lowest precedence)
-            // Cached in _cachedUaCss so disk I/O only happens once per process.
-            try
-            {
-                if (_cachedUaCss == null)
-                {
-                    var appDir = AppDomain.CurrentDomain.BaseDirectory;
-                    var candidatePaths = new List<string>
-                    {
-                        Path.Combine(appDir, "Assets", "ua.css"),
-                        Path.Combine(appDir, "FenBrowser.FenEngine", "Assets", "ua.css"),
-                        Path.Combine(appDir, "Resources", "ua.css"),
-                        Path.Combine(appDir, "FenBrowser.FenEngine", "Resources", "ua.css"),
-                        Path.Combine(DiagnosticPaths.GetWorkspaceRoot(), "FenBrowser.FenEngine", "Assets", "ua.css"),
-                        Path.Combine(DiagnosticPaths.GetWorkspaceRoot(), "Assets", "ua.css"),
-                        Path.Combine(DiagnosticPaths.GetWorkspaceRoot(), "FenBrowser.FenEngine", "Resources", "ua.css"),
-                        Path.Combine(DiagnosticPaths.GetWorkspaceRoot(), "Resources", "ua.css")
-                    };
-
-                    bool loaded = false;
-                    foreach (var path in candidatePaths)
-                    {
-                        if (File.Exists(path))
-                        {
-                            _cachedUaCss = File.ReadAllText(path);
-                            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Info, $"[CssLoader] Loaded UA stylesheet from: {path}");
-                            loaded = true;
-                            break;
-                        }
-                    }
-
-                    if (!loaded)
-                    {
-                        EngineLogCompat.Warn("[CssLoader] UA stylesheet NOT FOUND. Using minimal fallback.", LogCategory.Rendering);
-                        _cachedUaCss = @"
-                            html,body,div,p,h1,h2,h3,h4,h5,h6,ul,ol,li{display:block;margin:0;padding:0;}
-                            body{margin:8px;}
-                            h1{font-size:2em;margin:0.67em 0;font-weight:bold;}
-                            h2{font-size:1.5em;margin:0.83em 0;font-weight:bold;}
-                            h3{font-size:1.17em;margin:1em 0;font-weight:bold;}
-                            p,ul,ol{margin:1em 0;}
-                            b,strong{font-weight:bold;}
-                            i,em{font-style:italic;}
-                            pre,code{font-family:monospace;}
-                            mark{display:inline;background-color:yellow;color:black;}
-                            :link{color:#0000ee;text-decoration:underline;}
-                            :visited{color:#551a8b;text-decoration:underline;}
-                        ";
-                    }
-                }
-
-                cssBlobs.Add(new CssSource
-                {
-                    CssText = _cachedUaCss,
-                    Origin = CssOrigin.UserAgent,
-                    SourceOrder = sourceIndex,
-                    SequenceOrder = sourceIndex,
-                    BaseUri = baseUri
-                });
-                sourceIndex++;
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Error($"[CssLoader] UA stylesheet error: {ex.Message}", LogCategory.Rendering);
-            }
-
-            // 1) Pre-scan inline <style> dedupe keys used by MediaWiki link placeholders.
-            const int MAX_INLINE_CSS_SIZE = 300_000; // 300KB per inline style
-            var deduplicatedInlineStyles = new Dictionary<string, string>(StringComparer.Ordinal);
-            var stylesheetNodes = EnumerateElementsIncludingShadowTrees(root)
-                .Where(n => !n.IsText() &&
-                    (string.Equals(n.TagName, "style", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(n.TagName, "link", StringComparison.OrdinalIgnoreCase)))
-                .ToList();
-
-            foreach (var n in stylesheetNodes.Where(n => string.Equals(n.TagName, "style", StringComparison.OrdinalIgnoreCase)))
-            {
-                var text = SafeGatherText(n);
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    string dedupeKey = NormalizeMediaWikiDedupeKey(n.GetAttribute("data-mw-deduplicate"));
-                    if (!string.IsNullOrWhiteSpace(dedupeKey) && !deduplicatedInlineStyles.ContainsKey(dedupeKey))
-                    {
-                        deduplicatedInlineStyles[dedupeKey] = text;
-                    }
-                }
-            }
-
-            // 2) Collect inline <style> and external <link rel=stylesheet> in authored DOM order.
-            // External stylesheets fetch in parallel with a small concurrency limit.
-            
-            // DEBUG: Dump DOM structure to understand why LINK elements are not found
-            if (DEBUG_FILE_LOGGING)
-            {
-                DebugLog(@"css_debug.txt", $"[DOM-CHECK] Root tag='{root.NodeName}' Children={root.ChildNodes.Length}\r\n");
-                foreach (var child in root.ChildNodes)
-                {
-                    DebugLog(@"css_debug.txt", $"[DOM-CHECK]   Child tag='{child.NodeName}' (IsText={child.IsText()}) Children={child.ChildNodes.Length}\r\n");
-                    foreach (var child2 in child.ChildNodes)
-                    {
-                        string tag2 = child2.NodeName?.ToUpperInvariant() ?? "";
-                        if (!child2.IsText() && (tag2 == "HEAD" || tag2 == "LINK" || tag2 == "META"))
-                        {
-                            DebugLog(@"css_debug.txt", $"[DOM-CHECK]     Child2 tag='{child2.NodeName}' Children={child2.ChildNodes.Length}\r\n");
-                            // Dump HEAD children
-                            if (tag2 == "HEAD")
-                            {
-                                foreach (var headChild in child2.ChildNodes)
-                                {
-                                    DebugLog(@"css_debug.txt", $"[DOM-CHECK]       HEAD-Child tag='{headChild.NodeName}'\r\n");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            if (DEBUG_FILE_LOGGING) DebugLog(@"css_debug.txt", $"[LINK] Found {stylesheetNodes.Count(n => string.Equals(n.TagName, "link", StringComparison.OrdinalIgnoreCase))} link elements in DOM root\r\n");
-
-
-            var extTasks = new List<Task>();
-            var gate = new System.Threading.SemaphoreSlim(8); // Shared gate for all CSS fetches (links + imports)
-            var emittedMediaWikiDedupeKeys = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var node in stylesheetNodes)
-            {
-                if (string.Equals(node.TagName, "style", StringComparison.OrdinalIgnoreCase))
-                {
-                    var inlineCssText = SafeGatherText(node);
-                    if (!string.IsNullOrWhiteSpace(inlineCssText) && inlineCssText.Length <= MAX_INLINE_CSS_SIZE)
-                    {
-                        string dedupeKey = NormalizeMediaWikiDedupeKey(node.GetAttribute("data-mw-deduplicate"));
-                        if (!string.IsNullOrWhiteSpace(dedupeKey) &&
-                            !emittedMediaWikiDedupeKeys.Add(dedupeKey))
-                        {
-                            continue;
-                        }
-
-                        cssBlobs.Add(new CssSource
-                        {
-                            CssText = inlineCssText,
-                            Origin = CssOrigin.Inline,
-                            SourceOrder = sourceIndex,
-                            SequenceOrder = sourceIndex,
-                            BaseUri = baseUri,
-                            ShadowScopeRoot = node.GetRootNode() as ShadowRoot
-                        });
-                        sourceIndex++;
-                    }
-
-                    continue;
-                }
-
-                var link = node;
-                if (!link.HasAttributes()) { DebugLog(@"css_debug_v2.txt", "[LINK] SKIP: Link has no attributes\r\n"); continue; }
-                
-                string rel = link.GetAttribute("rel");
-                if (string.IsNullOrEmpty(rel)) 
-                {
-                     DebugLog(@"css_debug_v2.txt", "[LINK] SKIP: Link has no rel attribute\r\n");
-                     continue; 
-                }
-                
-                DebugLog(@"css_debug_v2.txt", $"[LINK] Checking rel='{rel}'\r\n");
-
-                if (ContainsToken(rel, "mw-deduplicated-inline-style"))
-                {
-                    string dedupeHref = NormalizeMediaWikiDedupeKey(link.GetAttribute("href"));
-                    if (!string.IsNullOrWhiteSpace(dedupeHref) &&
-                        deduplicatedInlineStyles.TryGetValue(dedupeHref, out var dedupedCss) &&
-                        !string.IsNullOrWhiteSpace(dedupedCss))
-                    {
-                        if (emittedMediaWikiDedupeKeys.Add(dedupeHref))
-                        {
-                            cssBlobs.Add(new CssSource
-                            {
-                                CssText = dedupedCss,
-                                Origin = CssOrigin.Inline,
-                                SourceOrder = sourceIndex,
-                                SequenceOrder = sourceIndex,
-                                BaseUri = baseUri,
-                                ShadowScopeRoot = link.GetRootNode() as ShadowRoot
-                            });
-                            sourceIndex++;
-                        }
-                    }
-                    else
-                    {
-                        DebugLog(@"css_debug_v2.txt", $"[LINK] Missing mw-deduplicated-inline-style source for href='{dedupeHref}'\r\n");
-                    }
-                    continue;
-                }
-                
-                if (!ContainsToken(rel, "stylesheet")) 
-                {
-                    DebugLog(@"css_debug_v2.txt", $"[LINK] SKIP: rel '{rel}' is not stylesheet\r\n");
-                    continue;
-                }
-                
-                string href = link.GetAttribute("href");
-                if (string.IsNullOrWhiteSpace(href))
-                {
-                    DebugLog(@"css_debug_v2.txt", "[LINK] SKIP: Link has no href\r\n");
-                    continue;
-                }
-
-                // SRI Ã¢â‚¬â€ capture integrity attribute before the async closure
-                string sriIntegrity = link.GetAttribute("integrity");
-                
-                DebugLog(@"css_debug_v2.txt", $"[LINK] Found stylesheet href='{href}'\r\n");
-
-                // Respect media attribute (screen/all). Some sites lazy-load CSS via media=print and switch to all onload.
-                string media = link.GetAttribute("media");
-                if (!string.IsNullOrWhiteSpace(media))
-                {
-                    var m = media.ToLowerInvariant();
-                    DebugLog(@"css_debug_v2.txt", $"[LINK] Checking media='{m}'\r\n");
-                    bool allowMedia = m.Contains("all") || m.Contains("screen");
-                    if (!allowMedia && m.Contains("print"))
-                    {
-                        // Heuristic: load print-marked stylesheets to support "media=print" lazy-load pattern.
-                        // This avoids missing critical layout on sites that flip media to "all" after load.
-                        allowMedia = true;
-                        DebugLog(@"css_debug_v2.txt", $"[LINK] Allowing media=print stylesheet for runtime media flip\r\n");
-                    }
-                    if (!allowMedia)
-                    {
-                        DebugLog(@"css_debug_v2.txt", $"[LINK] SKIP: Media mismatch\r\n");
-                        continue;
-                    }
-                }
-                var abs = ResolveUri(baseUri, href);
-                if (abs == null)
-                {
-                     DebugLog(@"css_debug_v2.txt", $"[LINK] SKIP: URL failed to resolve: {href}\r\n");
-                     continue;
-                }
-                
-                DebugLog(@"css_debug_v2.txt", $"[LINK] QUEUE: {abs}\r\n");
-
-                var order = sourceIndex++;
-                var shadowScopeRoot = link.GetRootNode() as ShadowRoot;
-                var t = RunDetachedAsync(async () =>
-                {
-                    await gate.WaitAsync().ConfigureAwait(false);
-                    try
-                    {
-                        var css = await fetchExternalCssAsync(abs).ConfigureAwait(false);
-                        /* [PERF-REMOVED] */
-                        // SRI check Ã¢â‚¬â€ if the link has an integrity attribute, verify before applying
-                        if (!string.IsNullOrWhiteSpace(css) && !VerifySriIntegrity(css, sriIntegrity))
-                        {
-                            Log(log, $"[CssLoader] [SRI] Blocked stylesheet (hash mismatch): {abs}");
-                            return; // Drop this stylesheet Ã¢â‚¬â€ integrity check failed
-                        }
-                        // Limit CSS size to prevent crashes on massive stylesheets (GitHub, etc.)
-                        const int MAX_CSS_SIZE = 2_000_000; // 2MB per stylesheet
-                        if (!string.IsNullOrWhiteSpace(css) && css.Length <= MAX_CSS_SIZE)
-                        {
-                            lock (cssBlobs)
-                            {
-                                cssBlobs.Add(new CssSource
-                                {
-                                    CssText = css,
-                                    Origin = CssOrigin.External,
-                                    SourceOrder = order,
-                                    SequenceOrder = order,
-                                    BaseUri = abs,
-                                    ShadowScopeRoot = shadowScopeRoot
-                                });
-                            }
-                        }
-                        else if (!string.IsNullOrWhiteSpace(css))
-                        {
-                            Log(log, $"[CssLoader] Skipped large CSS ({css.Length} bytes) from: {abs}");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log(log, "[CssLoader] Failed to fetch CSS: " + abs + " :: " + ex.Message);
-                    }
-                    finally { try { gate.Release(); } catch { /* Ignore release errors */ } }
-                });
-                extTasks.Add(t);
-            }
-            if (extTasks.Count > 0) 
-            {
-                if (progressiveStylesReady != null)
-                {
-                    TryPublishProgressiveStyles(
-                        root,
-                        cascadeRoot ?? root,
-                        cssBlobs,
-                        viewportWidth,
-                        viewportHeight,
-                        log,
-                        deadline,
-                        progressiveStylesReady);
-                }
-
-                EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS] Waiting for {extTasks.Count} external CSS fetches...");
-                try { await Task.WhenAll(extTasks); } catch { /* Ignore fetch errors */ } 
-            }
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS] External CSS Fetch: {_cssStopwatch.ElapsedMilliseconds}ms");
-
-            // Deterministic authored order regardless async fetch completion ordering.
-            cssBlobs = cssBlobs
-                .Where(s => s != null)
-                .OrderBy(s => s.SequenceOrder)
-                .ToList();
-            double discoveryAndFetchMs = System.Diagnostics.Stopwatch.GetElapsedTime(computeStarted).TotalMilliseconds;
-
-            // 3) Expand @import (depth-bounded)
-            EngineLogCompat.Debug("[PERF-CSS] Starting @import expansion...", LogCategory.Rendering);
-            long importStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-            var expanded = await ExpandImportsAsync(cssBlobs, fetchExternalCssAsync, viewportWidth, log, gate);
-            double importExpansionMs = System.Diagnostics.Stopwatch.GetElapsedTime(importStarted).TotalMilliseconds;
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS] @import Expansion: {_cssStopwatch.ElapsedMilliseconds}ms (Sources: {expanded.Count})");
-
-            // 4) Parse rules from all sources (parallel, bounded)
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS] Starting parallel rule parsing for {expanded.Count} sources (Global Gate Limit: {_globalParseGate.CurrentCount})...");
-            var styleSet = new StyleSet();
-            var parseTasks = new List<Task>();
-            using var parseStageCts = new System.Threading.CancellationTokenSource();
-            var parseStageToken = parseStageCts.Token;
-            bool parseStageSealed = false;
-            long ruleParseStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-            
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS-TRACK] Validated CSS Blobs: {expanded.Count}. Scheduling tasks...");
-            foreach (var blob in expanded)
-            {
-                parseTasks.Add(RunDetachedAsync(async () =>
-                {
-                    if (parseStageToken.IsCancellationRequested)
-                    {
-                        return;
-                    }
-
-                    int myOrder = blob.SourceOrder;
-                    int myLen = blob.CssText?.Length ?? 0;
-                    try
-                    {
-                        string processedCss = ExtractFontFace(
-                            blob.CssText,
-                            blob.BaseUri,
-                            log,
-                            root.OwnerDocument);
-                        
-                        List<NewCss.CssRule> parsed = null;
-                        Task<List<NewCss.CssRule>> inFlightTask = null;
-                        
-                        ParsedRuleCacheKey parseCacheKey = BuildParsedRuleCacheKey(
-                            processedCss,
-                            blob.BaseUri,
-                            viewportWidth,
-                            viewportHeight,
-                            blob.SourceOrder,
-                            MapToNewCssOrigin(blob.Origin),
-                            blob.ShadowScopeRoot);
-                        lock (_parsedRulesCache)
-                        {
-                            if (_parsedRulesCache.TryGetValue(parseCacheKey, out parsed))
-                            {
-                                // Ready in cache.
-                            }
-                            else if (_inFlightParses.TryGetValue(parseCacheKey, out inFlightTask))
-                            {
-                                // Another thread is parsing this right now. We will await it.
-                            }
-                            else
-                            {
-                                // We are the first! Set up the in-flight task wrapper.
-                                inFlightTask = Task.Run(async () =>
-                                {
-                                    bool parseGateAcquired = false;
-                                    try
-                                    {
-                                        await _globalParseGate.WaitAsync(parseStageToken).ConfigureAwait(false);
-                                        parseGateAcquired = true;
-                                        parseStageToken.ThrowIfCancellationRequested();
-                                        EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS-TRACK] START Parse Rules Source={myOrder} Len={myLen} Base={blob.BaseUri}");
-                                        var result = ParseRules(processedCss, blob.SourceOrder, blob.BaseUri, viewportWidth, viewportHeight, log, MapToNewCssOrigin(blob.Origin));
-                                        
-                                        // Once finished, move from in-flight to complete cache
-                                        lock (_parsedRulesCache)
-                                        {
-                                            _parsedRulesCache[parseCacheKey] = result;
-                                        }
-                                        return result;
-                                    }
-                                    finally
-                                    {
-                                        lock (_parsedRulesCache)
-                                        {
-                                            _inFlightParses.Remove(parseCacheKey);
-                                        }
-                                        if (parseGateAcquired)
-                                        {
-                                            _globalParseGate.Release();
-                                        }
-                                        EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS-TRACK] END Parse Rules Source={myOrder}");
-                                    }
-                                });
-                                _inFlightParses[parseCacheKey] = inFlightTask;
-                            }
-                        }
-                        
-                        // If it wasn't statically cached, await the in-flight task (which might be ours or someone else's)
-                        if (parsed == null && inFlightTask != null)
-                        {
-                            parsed = await inFlightTask.ConfigureAwait(false);
-                        }
-                        
-                        if (parsed != null && !parseStageToken.IsCancellationRequested)
-                        {
-                            ApplyShadowScope(parsed, blob.ShadowScopeRoot);
-                            if (blob.ShadowScopeRoot != null)
-                            {
-                                lock (_parsedRulesCache)
-                                {
-                                    _parsedRulesCache.Remove(parseCacheKey);
-                                }
-                            }
-                            var sheet = new NewCss.CssStylesheet();
-                            sheet.Rules.AddRange(parsed);
-                            lock (styleSet) 
-                            { 
-                                if (!parseStageSealed && !parseStageToken.IsCancellationRequested)
-                                {
-                                    styleSet.AddSheet(sheet, MapToNewCssOrigin(blob.Origin), blob.SourceOrder);
-                                }
-                            }
-                        }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        // Parse stage canceled due timeout budget. Silent by design.
-                    }
-                    catch (Exception ex)
-                    {
-                         Log(log, "[CssLoader] Parse error: " + ex.Message);
-                    }
-
-                }));
-            }
-
-            bool parseStageTimedOut = false;
-            if (parseTasks.Count > 0) 
-            {
-                var allParseTask = Task.WhenAll(parseTasks);
-                int parseTimeoutMs = 3500;
-                if (deadline != null)
-                {
-                    parseTimeoutMs = Math.Max(1000, Math.Min(5000, (int)deadline.Remaining.TotalMilliseconds));
-                }
-
-                var parseTimeoutTask = Task.Delay(parseTimeoutMs);
-                var finished = await Task.WhenAny(allParseTask, parseTimeoutTask);
-                
-                if (finished == parseTimeoutTask)
-                {
-                    parseStageTimedOut = true;
-                    lock (styleSet)
-                    {
-                        parseStageSealed = true;
-                    }
-                    parseStageCts.Cancel();
-                    EngineLogCompat.Warn($"[PERF-CSS] CSS parsing budget hit after {parseTimeoutMs}ms. Sealing immutable partial StyleSet snapshot ({styleSet.Count} sheets).", LogCategory.Rendering);
-                }
-                else
-                {
-                    await allParseTask; // Propagate errors
-                }
-            }
-
-            double ruleParseMs = System.Diagnostics.Stopwatch.GetElapsedTime(ruleParseStarted).TotalMilliseconds;
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Info, $"[PERF-CSS] Rule Parsing Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Sheets: {styleSet.Count})");
-
-            // Extract all rules purely for variable resolution (which is order-independent for initial pass)
-            var allRulesForVars = new List<NewCss.CssRule>();
-            foreach (var s in styleSet.Sheets) allRulesForVars.AddRange(s.Rules);
-
-            // 4.5) Resolve CSS variables
-            EngineLogCompat.Debug("[PERF-CSS] Starting variable resolution...", LogCategory.Rendering);
-            long variableResolutionStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-            ResolveVariables(allRulesForVars);
-            double variableResolutionMs = System.Diagnostics.Stopwatch.GetElapsedTime(variableResolutionStarted).TotalMilliseconds;
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS] Variable Resolution: {_cssStopwatch.ElapsedMilliseconds}ms");
-            if (!parseStageTimedOut)
-            {
-                CacheStyleSet(
-                    root,
-                    stylesheetFingerprint,
-                    baseUri,
-                    viewportWidth,
-                    viewportHeight,
-                    styleSet,
-                    cssBlobs.Count,
-                    expanded.Count,
-                    allRulesForVars.Count);
-            }
-            // Stage 3: Cascade
-            long cascadeStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-            var computed = FenBrowser.FenEngine.Rendering.ParallelCascadeScheduler.Cascade(
-                cascadeRoot ?? root,
-                styleSet,
-                log,
-                deadline,
-                out var inlineStyleCacheStatistics);
-            FenBrowser.FenEngine.Rendering.Performance.PerformanceDiagnosticsStore.RecordInlineStyleCache(inlineStyleCacheStatistics);
-            double cascadeMs = System.Diagnostics.Stopwatch.GetElapsedTime(cascadeStarted).TotalMilliseconds;
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Info, $"[PERF-CSS] Cascade Matching Complete: {_cssStopwatch.ElapsedMilliseconds}ms (Elements: {computed.Count})");
-            
-                return new CssLoadResult
-                {
-                    Computed = computed,
-                    Sources = cssBlobs,
-                    Timing = new CssLoadTiming
-                    {
-                        QueueWaitMs = queueWaitMs,
-                        DiscoveryAndFetchMs = discoveryAndFetchMs,
-                        ImportExpansionMs = importExpansionMs,
-                        RuleParseMs = ruleParseMs,
-                        VariableResolutionMs = variableResolutionMs,
-                        CascadeMs = cascadeMs,
-                        TotalMs = System.Diagnostics.Stopwatch.GetElapsedTime(computeStarted).TotalMilliseconds,
-                        SourceCount = cssBlobs.Count,
-                        ExpandedSourceCount = expanded.Count,
-                        RuleCount = allRulesForVars.Count,
-                        ComputedStyleCount = computed.Count,
-                        InlineStyleCacheHits = inlineStyleCacheStatistics.Hits,
-                        InlineStyleCacheMisses = inlineStyleCacheStatistics.Misses,
-                        InlineStyleCacheEvictions = inlineStyleCacheStatistics.Evictions,
-                        InlineStyleCacheEntries = inlineStyleCacheStatistics.Entries
-                    }
-                };
-            }
-            finally
-            {
-                _globalComputeGate.Release();
-            }
-        }
-
-        private static bool TryGetCachedStyleSet(
-            Element root,
-            string fingerprint,
-            Uri baseUri,
-            double? viewportWidth,
-            double? viewportHeight,
-            out DocumentStyleSetCacheEntry entry)
-        {
-            if (_documentStyleSets.TryGetValue(root, out entry) &&
-                string.Equals(entry.Fingerprint, fingerprint, StringComparison.Ordinal) &&
-                string.Equals(entry.BaseUri, baseUri?.AbsoluteUri ?? string.Empty, StringComparison.Ordinal) &&
-                entry.ViewportWidth == viewportWidth &&
-                entry.ViewportHeight == viewportHeight)
-            {
-                return true;
-            }
-
-            entry = null;
-            return false;
-        }
-
-        private static void CacheStyleSet(
-            Element root,
-            string fingerprint,
-            Uri baseUri,
-            double? viewportWidth,
-            double? viewportHeight,
-            StyleSet styleSet,
-            int sourceCount,
-            int expandedSourceCount,
-            int ruleCount)
-        {
-            var entry = new DocumentStyleSetCacheEntry
-            {
-                Fingerprint = fingerprint,
-                BaseUri = baseUri?.AbsoluteUri ?? string.Empty,
-                ViewportWidth = viewportWidth,
-                ViewportHeight = viewportHeight,
-                StyleSet = styleSet,
-                SourceCount = sourceCount,
-                ExpandedSourceCount = expandedSourceCount,
-                RuleCount = ruleCount
-            };
-
-            lock (_documentStyleSetsLock)
-            {
-                _documentStyleSets.Remove(root);
-                _documentStyleSets.Add(root, entry);
-            }
-        }
-
-        private static void TryPublishProgressiveStyles(
-            Element stylesheetRoot,
-            Element cascadeRoot,
-            List<CssSource> cssBlobs,
-            double? viewportWidth,
-            double? viewportHeight,
-            Action<string> log,
-            FenBrowser.Core.Deadlines.FrameDeadline deadline,
-            Action<Dictionary<Node, CssComputed>> progressiveStylesReady)
-        {
-            try
-            {
-                List<CssSource> localSources;
-                lock (cssBlobs)
-                {
-                    localSources = cssBlobs
-                        .Where(static source =>
-                            source != null &&
-                            source.Origin != CssOrigin.External &&
-                            source.Origin != CssOrigin.Imported)
-                        .OrderBy(static source => source.SequenceOrder)
-                        .ToList();
-                }
-
-                if (localSources.Count == 0)
-                {
-                    return;
-                }
-
-                var styleSet = new StyleSet();
-                foreach (var source in localSources)
-                {
-                    var processedCss = ExtractFontFace(
-                        source.CssText,
-                        source.BaseUri,
-                        log,
-                        stylesheetRoot?.OwnerDocument);
-                    var parsed = ParseRules(
-                        processedCss,
-                        source.SourceOrder,
-                        source.BaseUri,
-                        viewportWidth,
-                        viewportHeight,
-                        log,
-                        MapToNewCssOrigin(source.Origin));
-                    ApplyShadowScope(parsed, source.ShadowScopeRoot);
-                    var sheet = new NewCss.CssStylesheet();
-                    sheet.Rules.AddRange(parsed);
-                    styleSet.AddSheet(sheet, MapToNewCssOrigin(source.Origin), source.SourceOrder);
-                }
-
-                var allRules = styleSet.Sheets.SelectMany(static sheet => sheet.Rules).ToList();
-                ResolveVariables(allRules);
-                var computed = FenBrowser.FenEngine.Rendering.ParallelCascadeScheduler.Cascade(
-                    cascadeRoot,
-                    styleSet,
-                    log,
-                    deadline,
-                    out var inlineStyleCacheStatistics);
-                FenBrowser.FenEngine.Rendering.Performance.PerformanceDiagnosticsStore.RecordInlineStyleCache(
-                    inlineStyleCacheStatistics);
-                progressiveStylesReady(computed);
-                EngineLogCompat.Log(
-                    LogCategory.Rendering,
-                    LogLevel.Info,
-                    $"[PERF-CSS] Published progressive local StyleSet ({localSources.Count} sources, {computed.Count} elements)");
-            }
-            catch (Exception ex)
-            {
-                Log(log, "[CssLoader] Progressive local cascade failed: " + ex.Message);
-            }
-        }
-
-        private static IEnumerable<Element> EnumerateElementsIncludingShadowTrees(Element root)
-        {
-            if (root == null)
-            {
-                yield break;
-            }
-
-            var stack = new Stack<Element>();
-            stack.Push(root);
-            while (stack.Count > 0)
-            {
-                var element = stack.Pop();
-                yield return element;
-
-                var children = element.ChildNodes;
-                for (int i = children.Length - 1; i >= 0; i--)
-                {
-                    if (children[i] is Element childElement)
-                    {
-                        stack.Push(childElement);
-                    }
-                }
-
-                var shadowChildren = element.ShadowRoot?.ChildNodes;
-                if (shadowChildren == null)
-                {
-                    continue;
-                }
-
-                for (int i = shadowChildren.Length - 1; i >= 0; i--)
-                {
-                    if (shadowChildren[i] is Element childElement)
-                    {
-                        stack.Push(childElement);
-                    }
-                }
-            }
-        }
-
-        private static void ApplyShadowScope(IEnumerable<NewCss.CssRule> rules, ShadowRoot shadowScopeRoot)
-        {
-            if (rules == null)
-            {
-                return;
-            }
-
-            foreach (var rule in rules)
-            {
-                rule.ShadowScopeRoot = shadowScopeRoot;
-                switch (rule)
-                {
-                    case NewCss.CssStyleRule styleRule:
-                        ApplyShadowScope(styleRule.NestedRules, shadowScopeRoot);
-                        break;
-                    case NewCss.CssMediaRule mediaRule:
-                        ApplyShadowScope(mediaRule.Rules, shadowScopeRoot);
-                        break;
-                    case NewCss.CssLayerRule layerRule:
-                        ApplyShadowScope(layerRule.Rules, shadowScopeRoot);
-                        break;
-                    case NewCss.CssScopeRule scopeRule:
-                        ApplyShadowScope(scopeRule.Rules, shadowScopeRoot);
-                        break;
-                }
-            }
-        }
-
-        private static string BuildStylesheetFingerprint(Element root)
-        {
-            var builder = new StringBuilder();
-            foreach (var element in EnumerateElementsIncludingShadowTrees(root))
-            {
-                bool isStyle = string.Equals(element.TagName, "style", StringComparison.OrdinalIgnoreCase);
-                bool isLink = string.Equals(element.TagName, "link", StringComparison.OrdinalIgnoreCase);
-                if (!isStyle && !isLink)
-                {
-                    continue;
-                }
-
-                builder.Append(isStyle ? 'S' : 'L').Append('\0');
-                AppendStylesheetAttribute(builder, element, "rel");
-                AppendStylesheetAttribute(builder, element, "href");
-                AppendStylesheetAttribute(builder, element, "media");
-                AppendStylesheetAttribute(builder, element, "type");
-                AppendStylesheetAttribute(builder, element, "disabled");
-                AppendStylesheetAttribute(builder, element, "integrity");
-                AppendStylesheetAttribute(builder, element, "crossorigin");
-                AppendStylesheetAttribute(builder, element, "data-mw-deduplicate");
-                if (isStyle)
-                {
-                    builder.Append(element.TextContent ?? string.Empty).Append('\0');
-                }
-            }
-
-            return builder.ToString();
-        }
-
-        private static void AppendStylesheetAttribute(StringBuilder builder, Element element, string name)
-        {
-            builder.Append(element.GetAttribute(name) ?? string.Empty).Append('\0');
-        }
-
-        private static string NormalizeMediaWikiDedupeKey(string key)
-        {
-            if (string.IsNullOrWhiteSpace(key))
-            {
-                return key;
-            }
-
-            var normalized = key.Trim();
-            const string prefix = "mw-data:";
-            if (normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            {
-                normalized = normalized.Substring(prefix.Length);
-            }
-
-            return normalized;
-        }
-
-        /// <summary>
-        /// Overload without viewport/log parameters.
-        /// </summary>
-        public static Task<Dictionary<Node, CssComputed>> ComputeAsync(
-            Element root,
-            Uri baseUri,
-            Func<Uri, Task<string>> fetchExternalCssAsync)
-        {
-            return ComputeAsync(root, baseUri, fetchExternalCssAsync, null, null, null);
-        }
-
-        // ===========================
-        // CSS Custom Properties (Variables)
-        // ===========================
-        
-        /// <summary>
-        /// Extract CSS custom properties (--name: value) from :root and html rules
-        /// and store them in the global _customProperties dictionary for var() resolution.
-        /// </summary>
-        private static void ResolveVariables(List<NewCss.CssRule> rules)
-        {
-            if (rules == null) return;
-            
-            lock (_customProperties)
-            {
-                _customProperties.Clear();
-                _rootFontSize = 16.0;
-                int count = 0;
-                
-                foreach (var rule in rules)
-                {
-                    if (rule is NewCss.CssPropertyRule propertyRule)
-                    {
-                        string name = propertyRule.Name?.Trim();
-                        if (!string.IsNullOrEmpty(name) && name.StartsWith("--", StringComparison.Ordinal))
-                        {
-                            var initialValue = propertyRule.Declarations
-                                .LastOrDefault(d => string.Equals(d.Property, "initial-value", StringComparison.OrdinalIgnoreCase))
-                                ?.Value
-                                ?.Trim();
-                            if (!string.IsNullOrWhiteSpace(initialValue))
-                            {
-                                _customProperties[name] = initialValue;
-                            }
-                        }
-
-                        continue;
-                    }
-
-                    if (!(rule is NewCss.CssStyleRule styleRule)) continue;
-
-                    bool isRootRule = false;
-                    foreach (var chain in styleRule.Selector.Chains)
-                    {
-                        if (chain.Segments.Count > 0)
-                        {
-                            var lastSeg = chain.Segments[chain.Segments.Count - 1];
-                            string tag = lastSeg.TagName?.ToLowerInvariant() ?? "";
-                            if (tag == ":root" || tag == "html" || tag == "body" || tag == "*" || lastSeg.PseudoClasses?.Any(pc => pc.Name == "root" || pc.Name == ":root") == true)
-                            {
-                                isRootRule = true;
-                                break;
-                            }
-                            // Check pseudo-classes if tag is empty/implied
-                            if (string.IsNullOrEmpty(tag) && lastSeg.PseudoClasses != null)
-                            {
-                                foreach (var pc in lastSeg.PseudoClasses)
-                                {
-                                    if (pc.Name.ToLowerInvariant().Contains("root"))
-                                    {
-                                        isRootRule = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    foreach (var decl in styleRule.Declarations)
-                    {
-                        string propName = decl.Property;
-                        if (string.IsNullOrEmpty(propName)) continue;
-
-                        if (propName.StartsWith("--"))
-                        {
-                            string value = decl.Value?.Trim() ?? "";
-                            if (!string.IsNullOrEmpty(value))
-                            {
-                                if (isRootRule || !_customProperties.ContainsKey(propName))
-                                {
-                                    _customProperties[propName] = value;
-                                    count++;
-                                }
-                            }
-                        }
-                        
-                        if (isRootRule && propName.Equals("font-size", StringComparison.OrdinalIgnoreCase))
-                        {
-                            var rawFontSize = decl.Value?.Trim();
-                            if (string.IsNullOrEmpty(rawFontSize))
-                            {
-                                continue;
-                            }
-
-                            // Resolve root-level var() references before converting to px.
-                            // Without this guard, unresolved var() can evaluate to 0 and poison rem basis.
-                            var fontSizeForParse = rawFontSize;
-                            if (fontSizeForParse.IndexOf("var(", StringComparison.OrdinalIgnoreCase) >= 0)
-                            {
-                                var resolvedRootFontSize = ResolveCustomPropertyReferences(
-                                    fontSizeForParse,
-                                    new CssComputed(),
-                                    _customProperties,
-                                    new HashSet<string>(StringComparer.Ordinal));
-
-                                if (!string.IsNullOrWhiteSpace(resolvedRootFontSize))
-                                {
-                                    fontSizeForParse = resolvedRootFontSize;
-                                }
-                            }
-
-                            double fs;
-                            if (TryPx(fontSizeForParse, out fs, percentBase: 16.0) &&
-                                double.IsFinite(fs) &&
-                                fs > 0)
-                            {
-                                _rootFontSize = fs;
-                                DebugLog(@"debug_log.txt", $"[CSS-VAR] Captured Root Font Size: {_rootFontSize}px from '{rawFontSize}'\r\n");
-                            }
-                            else
-                            {
-                                DebugLog(
-                                    @"debug_log.txt",
-                                    $"[CSS-VAR] Ignored root font-size '{rawFontSize}' (resolved='{fontSizeForParse}') to preserve rem basis={_rootFontSize}px\r\n");
-                            }
-                        }
-                    }
-                }
-                
-                DebugLog(@"debug_log.txt", $"[CSS-VAR] Final Root Font Size: {_rootFontSize}px\r\n");
-                DebugLog(@"debug_log.txt", $"[CSS-VAR] Extracted {count} global variables.\r\n");
-            }
-        }
-
-        // ===========================
-        // Model & helpers
-        // ===========================
-
-        public enum CssOrigin
-        {
-            Inline, External, Imported,
-            UserAgent
-        }
-        
-        /// <summary>
-        /// Maps CssLoader.CssOrigin to NewCss.CssOrigin correctly.
-        /// Inline, External, Imported are all Author-level styles.
-        /// Only UserAgent maps to UserAgent.
-        /// </summary>
-        private static NewCss.CssOrigin MapToNewCssOrigin(CssOrigin origin)
-        {
-            return origin == CssOrigin.UserAgent 
-                ? NewCss.CssOrigin.UserAgent 
-                : NewCss.CssOrigin.Author;
-        }
-
-        // ===========================
-        // CSS Animations (@keyframes)
-        // ===========================
-        
-        /// <summary>
-        /// Storage for parsed @keyframes animations (keyed by animation name)
-        /// </summary>
-        private static readonly Dictionary<string, CssKeyframes> _keyframes = new Dictionary<string, CssKeyframes>(StringComparer.OrdinalIgnoreCase);
-        
-        /// <summary>
-        /// Represents a single @keyframes animation
-        /// </summary>
-        public class CssKeyframes
-        {
-            public string Name { get; set; }
-            public List<CssKeyframe> Frames { get; set; } = new List<CssKeyframe>();
-        }
-        
-        /// <summary>
-        /// Represents a single keyframe in an animation (e.g., "0%", "50%", "100%", "from", "to")
-        /// </summary>
-        public class CssKeyframe
-        {
-            public double Percentage { get; set; } // 0-100
-            public Dictionary<string, string> Properties { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        }
-        
-        /// <summary>
-        /// Get a keyframes animation by name
-        /// </summary>
-        public static CssKeyframes GetKeyframes(string name)
-        {
-            if (string.IsNullOrEmpty(name)) return null;
-            _keyframes.TryGetValue(name, out var kf);
-            return kf;
-        }
-        public class CssSource
-        {
-            public string CssText;
-            public CssOrigin Origin;
-            public int SourceOrder;
-            // Deterministic expansion order across authored sheets and @import recursion.
-            public long SequenceOrder;
-            public Uri BaseUri;
-            public ShadowRoot ShadowScopeRoot;
-        }
-
-        public class CssRule
-        {
-            public List<SelectorChain> Selectors = new List<SelectorChain>(); // comma-separated selectors
-            public Dictionary<string, CssDecl> Declarations = new Dictionary<string, CssDecl>(StringComparer.OrdinalIgnoreCase);
-            public int SourceOrder;    // to break ties
-            public Uri BaseUri;        // for url() resolving
-        }
-
-        public class CssDecl
-        {
-            public string Name;       // canonicalized (lowercase)
-            public string Value;      // raw value
-            public bool Important;    // !important
-            public int Specificity;   // computed from selector where used
-        }
-
-
-
-        // ===========================
-        // Stage 1: Import expansion
-        // ===========================
-
-        private static async Task<List<CssSource>> ExpandImportsAsync(
-            List<CssSource> sources,
-            Func<Uri, Task<string>> fetchExternal,
-            double? viewportWidth,
-            Action<string> log,
-            System.Threading.SemaphoreSlim gate,
-            System.Threading.CancellationToken cancellationToken = default)
-        {
-            var output = new List<CssSource>();
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var guard = new RecursionGuard();
-
-            foreach (var s in sources)
-            {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-
-                await ExpandOneAsync(s, fetchExternal, seen, output, viewportWidth, log, guard, gate, cancellationToken);
-
-            }
-
-            AssignDeterministicSourceOrder(output);
-            return output;
-        }
-
-        // Keeps track of @import recursion without needing ref/out on async methods
-        private sealed class RecursionGuard
-        {
-            public int Count;
-        }
-
-        private static async Task ExpandOneAsync(
-            CssSource source,
-            Func<Uri, Task<string>> fetchExternal,
-            HashSet<string> seenUrls,
-            List<CssSource> output,
-            double? viewportWidth,
-            Action<string> log,
-            RecursionGuard guard,
-            System.Threading.SemaphoreSlim gate,
-            System.Threading.CancellationToken cancellationToken = default)
-        {
-            if (cancellationToken.IsCancellationRequested)
-                return;
-
-            if (source == null || string.IsNullOrWhiteSpace(source.CssText))
-                return;
-
-            // Hard cap to avoid runaway recursion
-            if ((guard != null ? guard.Count : 0) > 2048)
-            {
-                Log(log, "[CssLoader] Import expansion limit reached.");
-                return;
-            }
-
-            string text = source.CssText;
-            text = StripComments(text);
-
-            var imports = new List<string>();
-            var sb = new StringBuilder();
-
-            int idx = 0;
-            while (idx < text.Length)
-            {
-                if (StartsWithAt(text, idx, "@import"))
-                {
-                    int semi = text.IndexOf(';', idx);
-                    if (semi < 0) { break; }
-                    var importLine = text.Substring(idx, semi - idx + 1);
-                    idx = semi + 1;
-
-                    var url = ExtractImportUrl(importLine);
-                    if (!string.IsNullOrWhiteSpace(url))
-                        imports.Add(url);
-                }
-                else
-                {
-                    sb.Append(text[idx]);
-                    idx++;
-                }
-            }
-
-            foreach (var imp in imports)
-            {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-
-                var abs = ResolveUri(source.BaseUri, imp);
-                if (abs == null) continue;
-                var key = abs.AbsoluteUri;
-                if (seenUrls.Contains(key)) continue; // cycle
-                seenUrls.Add(key);
-                if (fetchExternal == null) continue;
-
-                string css = null;
-                await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                try
-                {
-                    css = await fetchExternal(abs).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    Log(log, "[CssLoader] @import fetch failed: " + abs + " :: " + ex.Message);
-                }
-                finally
-                {
-                    try
-                    {
-                        gate.Release();
-                    }
-                    catch (Exception ex)
-                    {
-                        EngineLogCompat.Warn($"[CssLoader] Semaphore release failed: {ex.Message}", LogCategory.CSS);
-                    }
-                }
-
-                if (string.IsNullOrWhiteSpace(css))
-                {
-                    continue;
-                }
-
-                if (guard != null) guard.Count++;
-                await ExpandOneAsync(
-                    new CssSource
-                    {
-                        CssText = css,
-                        Origin = CssOrigin.Imported,
-                        SourceOrder = source.SourceOrder,
-                        SequenceOrder = source.SequenceOrder,
-                        BaseUri = abs,
-                        ShadowScopeRoot = source.ShadowScopeRoot
-                    },
-                    fetchExternal,
-                    seenUrls,
-                    output,
-                    viewportWidth,
-                    log,
-                    guard,
-                    gate,
-                    cancellationToken).ConfigureAwait(false);
-            }
-
-            // Keep the remainder (with @imports stripped)
-            output.Add(new CssSource
-            {
-                CssText = sb.ToString(),
-                Origin = source.Origin,
-                SourceOrder = source.SourceOrder,
-                SequenceOrder = source.SequenceOrder,
-                BaseUri = source.BaseUri,
-                ShadowScopeRoot = source.ShadowScopeRoot
-            });
-        }
-
-        private static void AssignDeterministicSourceOrder(List<CssSource> sources)
-        {
-            if (sources == null || sources.Count == 0)
-            {
-                return;
-            }
-
-            long nextSequence = 0;
-            for (int i = 0; i < sources.Count; i++)
-            {
-                var source = sources[i];
-                if (source == null)
-                {
-                    continue;
-                }
-
-                source.SourceOrder = i;
-                source.SequenceOrder = nextSequence++;
-            }
-        }
-
-        private static bool StartsWithAt(string s, int idx, string token)
-        {
-            if (idx + token.Length > s.Length) return false;
-            return string.Compare(s, idx, token, 0, token.Length, StringComparison.OrdinalIgnoreCase) == 0;
-        }
-
-        /// <summary>
-        /// Extract and parse @keyframes rules from CSS text, storing them for animation use
-        /// </summary>
-        private static string ExtractKeyframes(string text, Action<string> log)
-        {
-            if (string.IsNullOrEmpty(text)) return text;
-            
-            var result = new StringBuilder();
-            int i = 0;
-            
-            int loopCount = 0;
-            while (i < text.Length)
-            {
-                if (loopCount++ > 100000)
-                {
-                    log?.Invoke("[CSS] Aborting ExtractKeyframes loop: Iteration limit reached");
-                    result.Append(text.Substring(i));
-                    break;
-                }
-
-                // Look for @keyframes or @-webkit-keyframes
-                int kfPos = -1;
-                int prefixLen = 0;
-                
-                int pos1 = text.IndexOf("@keyframes", i, StringComparison.OrdinalIgnoreCase);
-                int pos2 = text.IndexOf("@-webkit-keyframes", i, StringComparison.OrdinalIgnoreCase);
-                
-                if (pos1 >= 0 && (pos2 < 0 || pos1 < pos2))
-                {
-                    kfPos = pos1;
-                    prefixLen = "@keyframes".Length;
-                }
-                else if (pos2 >= 0)
-                {
-                    kfPos = pos2;
-                    prefixLen = "@-webkit-keyframes".Length;
-                }
-                
-                if (kfPos < 0)
-                {
-                    // No more keyframes, append rest
-                    result.Append(text.Substring(i));
-                    break;
-                }
-                
-                // Append text before @keyframes
-                result.Append(text.Substring(i, kfPos - i));
-                
-                // Find the animation name (after @keyframes and before {)
-                int nameStart = kfPos + prefixLen;
-                int braceOpen = text.IndexOf('{', nameStart);
-                if (braceOpen < 0)
-                {
-                    // Safe recovery: advance past this @keyframes token
-                    i = nameStart + 1;
-                    continue;
-                }
-                
-                string animName = text.Substring(nameStart, braceOpen - nameStart).Trim();
-                
-                // Find matching closing brace for the outer @keyframes block
-                int braceClose = FindMatchingBrace(text, braceOpen);
-                if (braceClose < 0)
-                {
-                    // Safe recovery: advance past the open brace
-                    i = braceOpen + 1;
-                    continue;
-                }
-                
-                // Extract keyframes content
-                string keyframesBody = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
-                
-                // Parse keyframe stops
-                var keyframes = new CssKeyframes { Name = animName };
-                ParseKeyframeStops(keyframesBody, keyframes);
-                
-                // Store in dictionary
-                _keyframes[animName] = keyframes;
-                log?.Invoke($"[CSS] Parsed @keyframes: {animName} with {keyframes.Frames.Count} stops");
-                
-                i = braceClose + 1;
-            }
-            
-            return result.ToString();
-        }
-        
-        /// <summary>
-        /// Parse individual keyframe stops from the body of @keyframes
-        /// </summary>
-        private static void ParseKeyframeStops(string body, CssKeyframes keyframes)
-        {
-            int i = 0;
-            int loopCount = 0;
-            while (i < body.Length)
-            {
-                if (loopCount++ > 100000) { break; }
-                // Find next {
-                int open = body.IndexOf('{', i);
-                if (open < 0) break;
-                
-                string percentageText = body.Substring(i, open - i).Trim();
-                
-                int close = FindMatchingBrace(body, open);
-                if (close < 0) break;
-                
-                string propsText = body.Substring(open + 1, close - open - 1);
-                i = close + 1;
-                
-                // Parse percentages (can be comma-separated like "0%, 100%")
-                var percentages = new List<double>();
-                foreach (var pct in percentageText.Split(','))
-                {
-                    string p = pct.Trim().ToLowerInvariant();
-                    if (p == "from") percentages.Add(0);
-                    else if (p == "to") percentages.Add(100);
-                    else if (p.EndsWith("%"))
-                    {
-                        if (double.TryParse(p.TrimEnd('%'), out double val))
-                            percentages.Add(val);
-                    }
-                }
-                
-                // Parse properties
-                var props = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var decl in propsText.Split(';'))
-                {
-                    var colonIdx = decl.IndexOf(':');
-                    if (colonIdx > 0)
-                    {
-                        var propName = decl.Substring(0, colonIdx).Trim().ToLowerInvariant();
-                        var propValue = decl.Substring(colonIdx + 1).Trim();
-                        if (!string.IsNullOrEmpty(propName))
-                            props[propName] = propValue;
-                    }
-                }
-                
-                // Create keyframe for each percentage
-                foreach (var pct in percentages)
-                {
-                    keyframes.Frames.Add(new CssKeyframe
-                    {
-                        Percentage = pct,
-                        Properties = new Dictionary<string, string>(props, StringComparer.OrdinalIgnoreCase)
-                    });
-                }
-            }
-            
-            // Sort by percentage
-            keyframes.Frames.Sort((a, b) => a.Percentage.CompareTo(b.Percentage));
-        }
-
-        private static string ExtractImportUrl(string importLine)
-        {
-            // Handles: @import "x.css";  @import url('x.css');
-            var m = Regex.Match(importLine, @"@import\s+(url\((['""]?)(?<u>[^)'""]+)\2\)|(['""])(?<u2>[^'""]+)\4)", RegexOptions.IgnoreCase);
-            if (m.Success)
-            {
-                var u = !string.IsNullOrEmpty(m.Groups["u"].Value) ? m.Groups["u"].Value : m.Groups["u2"].Value;
-                return u.Trim();
-            }
-            return null;
-        }
-
-        /// <summary>
-        /// Extract and register @font-face rules from CSS text
-        /// </summary>
-        private static string ExtractFontFace(
-            string text,
-            Uri baseUri,
-            Action<string> log,
-            Document ownerDocument = null)
-        {
-            // EngineLogCompat.Debug($"[PERF-CSS-TRACK] Enter ExtractFontFace Len={text?.Length ?? 0}", LogCategory.Rendering);
-            if (string.IsNullOrEmpty(text)) return text;
-            if (text.IndexOf("@font-face", StringComparison.OrdinalIgnoreCase) < 0) return text;
-
-            var result = new StringBuilder();
-            int i = 0;
-
-            int loopCount = 0;
-            while (i < text.Length)
-            {
-                if (loopCount++ > 100000) break;
-                int ffPos = text.IndexOf("@font-face", i, StringComparison.OrdinalIgnoreCase);
-                if (ffPos < 0)
-                {
-                    result.Append(text.Substring(i));
-                    break;
-                }
-
-                // Append text before @font-face
-                result.Append(text, i, ffPos - i);
-
-                // Find the opening brace
-                int braceOpen = text.IndexOf('{', ffPos);
-                if (braceOpen < 0)
-                {
-                    i = ffPos + 10;
-                    continue;
-                }
-
-                // Find matching closing brace
-                // EngineLogCompat.Debug($"[PERF-CSS-TRACK] FindMatchingBrace start i={i}", LogCategory.Rendering);
-                int braceClose = FindMatchingBrace(text, braceOpen);
-                // EngineLogCompat.Debug($"[PERF-CSS-TRACK] FindMatchingBrace done close={braceClose}", LogCategory.Rendering);
-                
-                if (braceClose < 0)
-                {
-                    i = braceOpen + 1;
-                    continue;
-                }
-
-                // Extract and parse the @font-face block
-                string fontFaceBody = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
-                
-                try
-                {
-                    // EngineLogCompat.Debug($"[PERF-CSS-TRACK] calling ParseAndRegister", LogCategory.Rendering);
-                    FontRegistry.ParseAndRegister(fontFaceBody, baseUri, ownerDocument);
-                    // EngineLogCompat.Debug($"[PERF-CSS-TRACK] done ParseAndRegister", LogCategory.Rendering);
-                }
-                catch (Exception ex)
-                {
-                    log?.Invoke($"[CSS] Error parsing @font-face: {ex.Message}");
-                }
-
-                i = braceClose + 1;
-            }
-            // EngineLogCompat.Debug($"[PERF-CSS-TRACK] Exit ExtractFontFace loop loopCount={loopCount}", LogCategory.Rendering);
-            
-            if (loopCount > 1000) EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[CSS-DEBUG] ExtractFontFace finished with {loopCount} iterations.");
-            
-            return result.ToString();
-        }
-
-        /// <summary>
-        /// Handle @supports feature queries - include content if feature is supported
-        /// </summary>
-        private static string FlattenSupports(string text, Action<string> log)
-        {
-            if (string.IsNullOrEmpty(text)) return text;
-            if (text.IndexOf("@supports", StringComparison.OrdinalIgnoreCase) < 0) return text;
-
-            var result = new StringBuilder();
-            int i = 0;
-
-            int loopCount = 0;
-            while (i < text.Length)
-            {
-                if (loopCount++ > 100000) break;
-                int supPos = text.IndexOf("@supports", i, StringComparison.OrdinalIgnoreCase);
-                if (supPos < 0)
-                {
-                    result.Append(text.Substring(i));
-                    break;
-                }
-
-                result.Append(text.Substring(i, supPos - i));
-
-                int braceOpen = text.IndexOf('{', supPos);
-                if (braceOpen < 0) { i = supPos + 9; continue; }
-
-                int braceClose = FindMatchingBrace(text, braceOpen);
-                if (braceClose < 0) { i = braceOpen + 1; continue; }
-
-                // Parse the condition (between @supports and {)
-                string condition = text.Substring(supPos + 9, braceOpen - supPos - 9).Trim();
-                string body = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
-
-                // Check if condition is supported
-                if (IsSupportsConditionMet(condition))
-                {
-                    result.Append(body);
-                    log?.Invoke($"[CSS] @supports condition met: {condition}");
-                }
-                else
-                {
-                    log?.Invoke($"[CSS] @supports condition NOT met: {condition}");
-                }
-
-                i = braceClose + 1;
-            }
-
-            return result.ToString();
-        }
-
-        /// <summary>
-        /// Check if a @supports condition is met by this browser
-        /// </summary>
-        private static bool IsSupportsConditionMet(string condition)
-        {
-            if (string.IsNullOrWhiteSpace(condition)) return false;
-            condition = condition.Trim().ToLowerInvariant();
-
-            // Handle not()
-            if (condition.StartsWith("not"))
-            {
-                var inner = ExtractPseudoArg(condition.Substring(3));
-                return !IsSupportsConditionMet(inner);
-            }
-
-            // Handle or/and
-            if (condition.Contains(" or "))
-            {
-                var parts = condition.Split(new[] { " or " }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (var part in parts)
-                    if (IsSupportsConditionMet(part.Trim())) return true;
-                return false;
-            }
-
-            if (condition.Contains(" and "))
-            {
-                var parts = condition.Split(new[] { " and " }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (var part in parts)
-                    if (!IsSupportsConditionMet(part.Trim())) return false;
-                return true;
-            }
-
-            // Check for property:value pair in parentheses
-            var match = Regex.Match(condition, @"\(\s*([a-z-]+)\s*:\s*([^)]+)\s*\)");
-            if (match.Success)
-            {
-                var prop = match.Groups[1].Value.Trim();
-                // We support most standard CSS properties
-                return IsSupportedProperty(prop);
-            }
-
-            return false;
-        }
-        
-        /// <summary>
-        /// Handle @container queries by keeping/removing blocks based on container dimensions.
-        /// Currently we use viewport dimensions as container fallback for global stylesheet evaluation.
-        /// </summary>
-        private static string FlattenContainerQueries(string text, float containerWidth, float containerHeight, Action<string> log)
-        {
-            if (string.IsNullOrEmpty(text)) return text;
-            if (text.IndexOf("@container", StringComparison.OrdinalIgnoreCase) < 0) return text;
-
-            var result = new StringBuilder();
-            int i = 0;
-
-            int loopCount = 0;
-            while (i < text.Length)
-            {
-                if (loopCount++ > 100000) break;
-                int contPos = text.IndexOf("@container", i, StringComparison.OrdinalIgnoreCase);
-                if (contPos < 0)
-                {
-                    result.Append(text.Substring(i));
-                    break;
-                }
-
-                result.Append(text.Substring(i, contPos - i));
-
-                int braceOpen = text.IndexOf('{', contPos);
-                if (braceOpen < 0) { i = contPos + 10; continue; }
-
-                int braceClose = FindMatchingBrace(text, braceOpen);
-                if (braceClose < 0) { i = braceOpen + 1; continue; }
-
-                string condition = text.Substring(contPos + 10, braceOpen - contPos - 10).Trim();
-                string body = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
-
-                if (IsContainerConditionMet(condition, containerWidth, containerHeight))
-                {
-                    result.Append(body);
-                    log?.Invoke($"[CSS] @container condition met: {condition}");
-                }
-                else
-                {
-                    log?.Invoke($"[CSS] @container condition NOT met: {condition}");
-                }
-
-                i = braceClose + 1;
-            }
-
-            return result.ToString();
-        }
-        
-        /// <summary>
-        /// Evaluate a @container condition against container dimensions.
-        /// Supports min/max features, range syntax, and top-level and/or/not.
-        /// </summary>
-        private static bool IsContainerConditionMet(string condition, float containerWidth, float containerHeight)
-        {
-            if (string.IsNullOrWhiteSpace(condition))
-                return true;
-
-            var normalized = Regex.Replace(condition.Trim().ToLowerInvariant(), @"\s+", " ");
-
-            // Strip optional container name: "@container card (min-width: 400px)".
-            // Do not strip logical operators like "not (...)"
-            int firstParen = normalized.IndexOf('(');
-            if (!normalized.StartsWith("(") && firstParen > 0)
-            {
-                var prefix = normalized.Substring(0, firstParen).Trim();
-                bool looksLikeContainerName =
-                    prefix.Length > 0 &&
-                    prefix.IndexOf(' ') < 0 &&
-                    !string.Equals(prefix, "not", StringComparison.Ordinal);
-
-                if (looksLikeContainerName)
-                {
-                    normalized = normalized.Substring(firstParen).Trim();
-                }
-            }
-
-            if (string.IsNullOrWhiteSpace(normalized))
-                return true;
-
-            return EvaluateContainerExpression(normalized, containerWidth, containerHeight);
-        }
-
-        private static bool EvaluateContainerExpression(string expr, float containerWidth, float containerHeight)
-        {
-            expr = StripOuterParens(expr.Trim());
-            if (string.IsNullOrWhiteSpace(expr))
-                return false;
-
-            if (expr.StartsWith("not ", StringComparison.Ordinal))
-            {
-                return !EvaluateContainerExpression(expr.Substring(4).Trim(), containerWidth, containerHeight);
-            }
-
-            var orParts = SplitTopLevel(expr, " or ");
-            if (orParts.Count > 1)
-            {
-                foreach (var part in orParts)
-                {
-                    if (EvaluateContainerExpression(part, containerWidth, containerHeight))
-                        return true;
-                }
-                return false;
-            }
-
-            var andParts = SplitTopLevel(expr, " and ");
-            if (andParts.Count > 1)
-            {
-                foreach (var part in andParts)
-                {
-                    if (!EvaluateContainerExpression(part, containerWidth, containerHeight))
-                        return false;
-                }
-                return true;
-            }
-
-            return EvaluateContainerFeature(expr, containerWidth, containerHeight);
-        }
-
-        private static bool EvaluateContainerFeature(string expr, float containerWidth, float containerHeight)
-        {
-            expr = StripOuterParens(expr.Trim());
-            if (string.IsNullOrWhiteSpace(expr))
-                return false;
-
-            // Chained range syntax: 400px <= width <= 900px
-            var chain = Regex.Match(expr, @"^(?<left>[^\s]+)\s*(?<op1><=|<|>=|>)\s*(?<feature>width|height|inline-size|block-size)\s*(?<op2><=|<|>=|>)\s*(?<right>[^\s]+)$");
-            if (chain.Success &&
-                TryGetContainerAxisValue(chain.Groups["feature"].Value, containerWidth, containerHeight, out var featureValue, out var referenceDimension) &&
-                TryParseContainerLength(chain.Groups["left"].Value, referenceDimension, out var leftValue) &&
-                TryParseContainerLength(chain.Groups["right"].Value, referenceDimension, out var rightValue))
-            {
-                bool leftOk = CompareContainerValues(leftValue, featureValue, chain.Groups["op1"].Value);
-                bool rightOk = CompareContainerValues(featureValue, rightValue, chain.Groups["op2"].Value);
-                return leftOk && rightOk;
-            }
-
-            // Min/max/property syntax: min-width: 500px, width: 640px
-            int colon = expr.IndexOf(':');
-            if (colon > 0)
-            {
-                var rawFeature = expr.Substring(0, colon).Trim();
-                var rawValue = expr.Substring(colon + 1).Trim();
-                string op = "=";
-
-                if (rawFeature.StartsWith("min-", StringComparison.Ordinal))
-                {
-                    rawFeature = rawFeature.Substring(4);
-                    op = ">=";
-                }
-                else if (rawFeature.StartsWith("max-", StringComparison.Ordinal))
-                {
-                    rawFeature = rawFeature.Substring(4);
-                    op = "<=";
-                }
-
-                if (TryGetContainerAxisValue(rawFeature, containerWidth, containerHeight, out var axisValue, out var axisReference) &&
-                    TryParseContainerLength(rawValue, axisReference, out var target))
-                {
-                    return CompareContainerValues(axisValue, target, op);
-                }
-
-                return false;
-            }
-
-            // Binary comparison syntax: width >= 600px, 1200px > width
-            var binary = Regex.Match(expr, @"^(?<left>[^\s]+)\s*(?<op>>=|<=|>|<|=)\s*(?<right>[^\s]+)$");
-            if (binary.Success)
-            {
-                var left = binary.Groups["left"].Value;
-                var right = binary.Groups["right"].Value;
-                var op = binary.Groups["op"].Value;
-
-                if (TryGetContainerAxisValue(left, containerWidth, containerHeight, out var leftAxis, out var leftReference) &&
-                    TryParseContainerLength(right, leftReference, out var rightCompareValue))
-                {
-                    return CompareContainerValues(leftAxis, rightCompareValue, op);
-                }
-
-                if (TryGetContainerAxisValue(right, containerWidth, containerHeight, out var rightAxis, out var rightReference) &&
-                    TryParseContainerLength(left, rightReference, out var leftCompareValue))
-                {
-                    return CompareContainerValues(leftCompareValue, rightAxis, op);
-                }
-            }
-
-            // Unknown/unsupported feature should not be treated as a match.
-            return false;
-        }
-
-        private static bool TryGetContainerAxisValue(string feature, float containerWidth, float containerHeight, out float value, out float referenceDimension)
-        {
-            value = 0;
-            referenceDimension = 0;
-            if (string.IsNullOrWhiteSpace(feature))
-                return false;
-
-            switch (feature.Trim().ToLowerInvariant())
-            {
-                case "width":
-                case "inline-size":
-                    value = containerWidth;
-                    referenceDimension = containerWidth;
-                    return true;
-                case "height":
-                case "block-size":
-                    value = containerHeight;
-                    referenceDimension = containerHeight;
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
-        private static bool TryParseContainerLength(string token, float referenceDimension, out float value)
-        {
-            value = 0;
-            if (string.IsNullOrWhiteSpace(token))
-                return false;
-
-            token = token.Trim().ToLowerInvariant();
-
-            if (token.EndsWith("px", StringComparison.Ordinal))
-            {
-                return float.TryParse(token.Substring(0, token.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out value);
-            }
-
-            if (token.EndsWith("rem", StringComparison.Ordinal))
-            {
-                if (float.TryParse(token.Substring(0, token.Length - 3), NumberStyles.Float, CultureInfo.InvariantCulture, out var rem))
-                {
-                    value = rem * 16f;
-                    return true;
-                }
-                return false;
-            }
-
-            if (token.EndsWith("em", StringComparison.Ordinal))
-            {
-                if (float.TryParse(token.Substring(0, token.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out var em))
-                {
-                    value = em * 16f;
-                    return true;
-                }
-                return false;
-            }
-
-            if (token.EndsWith("%", StringComparison.Ordinal))
-            {
-                if (float.TryParse(token.Substring(0, token.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var pct))
-                {
-                    value = referenceDimension * (pct / 100f);
-                    return true;
-                }
-                return false;
-            }
-
-            return float.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
-        }
-
-        private static bool CompareContainerValues(float left, float right, string op)
-        {
-            const float epsilon = 0.5f;
-            return op switch
-            {
-                ">" => left > right,
-                "<" => left < right,
-                ">=" => left >= right,
-                "<=" => left <= right,
-                "=" => Math.Abs(left - right) <= epsilon,
-                _ => false
-            };
-        }
-
-        private static string StripOuterParens(string expr)
-        {
-            if (string.IsNullOrWhiteSpace(expr))
-                return expr;
-
-            expr = expr.Trim();
-            bool changed = true;
-            while (changed && expr.Length >= 2 && expr[0] == '(' && expr[expr.Length - 1] == ')')
-            {
-                changed = false;
-                int depth = 0;
-                bool wrapsAll = true;
-                for (int i = 0; i < expr.Length; i++)
-                {
-                    char c = expr[i];
-                    if (c == '(') depth++;
-                    else if (c == ')') depth--;
-
-                    if (depth == 0 && i < expr.Length - 1)
-                    {
-                        wrapsAll = false;
-                        break;
-                    }
-                }
-
-                if (wrapsAll)
-                {
-                    expr = expr.Substring(1, expr.Length - 2).Trim();
-                    changed = true;
-                }
-            }
-
-            return expr;
-        }
-
-        private static List<string> SplitTopLevel(string expr, string separator)
-        {
-            var parts = new List<string>();
-            int depth = 0;
-            int start = 0;
-
-            for (int i = 0; i <= expr.Length - separator.Length;)
-            {
-                char c = expr[i];
-                if (c == '(')
-                {
-                    depth++;
-                    i++;
-                    continue;
-                }
-
-                if (c == ')')
-                {
-                    if (depth > 0) depth--;
-                    i++;
-                    continue;
-                }
-
-                if (depth == 0 && expr.AsSpan(i, separator.Length).Equals(separator.AsSpan(), StringComparison.Ordinal))
-                {
-                    parts.Add(expr.Substring(start, i - start).Trim());
-                    i += separator.Length;
-                    start = i;
-                    continue;
-                }
-
-                i++;
-            }
-
-            if (start == 0)
-            {
-                parts.Add(expr.Trim());
-                return parts;
-            }
-
-            parts.Add(expr.Substring(start).Trim());
-            return parts.Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
-        }
-
-        /// <summary>
-        /// Check if a CSS property is supported and log unsupported ones
-        /// </summary>
-        private static bool IsSupportedProperty(string property, string value = null)
-        {
-            if (string.IsNullOrWhiteSpace(property))
-            {
-                return false;
-            }
-
-            var normalizedProperty = property.Trim().ToLowerInvariant();
-            if (normalizedProperty.StartsWith("--", StringComparison.Ordinal))
-            {
-                return true;
-            }
-
-            // Generic standards-forward acceptance: treat syntactically valid CSS property identifiers
-            // as recognized so the style system can preserve declarations beyond the curated checklist.
-            if (Regex.IsMatch(normalizedProperty, "^[a-z][a-z0-9-]*$"))
-            {
-                return true;
-            }
-
-            // List of supported CSS properties
-            var supported = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                "display", "position", "width", "height", "margin", "padding", "border",
-                "background", "background-color", "background-image", "color", "font",
-                "font-family", "font-size", "font-weight", "font-style", "text-align",
-                "text-decoration", "flex", "flex-direction", "flex-wrap", "justify-content",
-                "align-items", "grid", "grid-template-columns", "gap", "transform",
-                "opacity", "overflow", "z-index", "box-shadow", "border-radius",
-                "transition", "filter", "animation", "min-width", "max-width",
-                "min-height", "max-height", "aspect-ratio", "object-fit", "cursor", "box-sizing",
-                // Shorthand properties
-                "margin-top", "margin-right", "margin-bottom", "margin-left",
-                "padding-top", "padding-right", "padding-bottom", "padding-left",
-                "border-top", "border-right", "border-bottom", "border-left",
-                "border-width", "border-style", "border-color",
-                "top", "right", "bottom", "left",
-                "flex-grow", "flex-shrink", "flex-basis", "align-self",
-                "order", "grid-template-rows", "grid-column", "grid-row",
-                "line-height", "letter-spacing", "word-spacing", "text-transform",
-                "white-space", "overflow-x", "overflow-y", "visibility",
-                "vertical-align", "float", "clear",
-                "content", "counter-reset", "counter-increment", "counter-set",
-                "filter", "backdrop-filter", "clip-path",
-                // Grid Layout (from gap report)
-                "grid-template-areas", "grid-area", "grid-auto-flow", 
-                "grid-auto-columns", "grid-auto-rows", "place-items", "place-content",
-                "row-gap", "column-gap",
-                // Flexbox (from gap report)
-                "align-content",
-                // Visual Effects (from gap report)
-                "mix-blend-mode", "isolation", "mask", "mask-image",
-                // Typography (from gap report)
-                "font-variant", "font-stretch", "text-orientation", "writing-mode",
-                "hyphens", "word-break", "text-indent", "text-overflow",
-                // Bidirectional text (Phase 8)
-                "direction", "unicode-bidi",
-                // Logical Properties (from gap report)
-                "margin-block", "margin-block-start", "margin-block-end",
-                "margin-inline", "margin-inline-start", "margin-inline-end",
-                "padding-block", "padding-block-start", "padding-block-end",
-                "padding-inline", "padding-inline-start", "padding-inline-end",
-                "inset", "inset-block", "inset-inline", "inset-block-start", "inset-block-end", "inset-inline-start", "inset-inline-end",
-                "block-size", "inline-size", "min-inline-size", "min-block-size", "max-inline-size", "max-block-size",
-                // Interactivity (from gap report)
-                "pointer-events", "touch-action", "user-select", "resize",
-                // Scroll Control (from gap report)
-                "overscroll-behavior", "scroll-behavior", "scroll-margin", "scroll-padding", "overflow-inline", "overflow-block",
-                // Animation (from gap report)
-                "animation-name", "animation-duration", "animation-timing-function",
-                "animation-delay", "animation-iteration-count", "animation-direction",
-                "animation-fill-mode", "animation-play-state",
-                // Background enhancements
-                "background-position", "background-size", "background-repeat",
-                "background-attachment", "background-origin", "background-clip", "background-position-x", "background-position-y",
-                // Border enhancements
-                "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
-                "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
-                "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
-                "border-top-left-radius", "border-top-right-radius",
-                "border-bottom-left-radius", "border-bottom-right-radius",
-                "border-block", "border-inline", "border-block-start", "border-block-end", "border-inline-start", "border-inline-end",
-                "border-block-start-width", "border-block-end-width", "border-inline-start-width", "border-inline-end-width",
-                "border-block-start-style", "border-block-end-style", "border-inline-start-style", "border-inline-end-style",
-                "border-block-start-color", "border-block-end-color", "border-inline-start-color", "border-inline-end-color",
-                // Outline
-                "outline", "outline-width", "outline-style", "outline-color", "outline-offset",
-                // List styles
-                "list-style", "list-style-type", "list-style-position", "list-style-image",
-                // Table
-                "border-collapse", "border-spacing", "table-layout", "caption-side", "empty-cells",
-                // Modern CSS properties (new)
-                "accent-color", "caret-color", "color-scheme", "contain", "appearance",
-                "image-rendering", "rendering-intent", "image-orientation",
-                // 3D Transforms
-                "transform-origin", "transform-style", "backface-visibility", "perspective", "perspective-origin",
-                "translate", "rotate", "scale",
-                // Multi-column layout
-                "columns", "column-count", "column-width", "column-gap", "column-rule",
-                "column-rule-width", "column-rule-style", "column-rule-color", "column-span",
-                // Text decoration
-                "text-decoration-line", "text-decoration-style", "text-decoration-color", "text-decoration-thickness",
-                "text-underline-offset", "text-emphasis", "text-emphasis-style", "text-emphasis-color",
-                // Tab and line
-                "tab-size", "text-rendering",
-                // Transitions
-                "transition-property", "transition-duration", "transition-timing-function", "transition-delay", "transition-behavior",
-                // Will-change and containment
-                "will-change", "contain-intrinsic-size",
-                // Print/page
-                "page-break-before", "page-break-after", "page-break-inside", "orphans", "widows",
-                // Object fit
-                "object-position",
-                // SVG presentation properties
-                "fill", "stroke",
-                // Additional flex/grid
-                "place-self", "justify-items", "justify-self",
-                // Shapes
-                "shape-outside", "shape-margin", "shape-image-threshold"
-            };
-            
-            bool isSupported = supported.Contains(normalizedProperty);
-            
-            // Log unsupported properties for debugging (tracks first encounter only)
-            if (!isSupported && !string.IsNullOrEmpty(normalizedProperty))
-            {
-                // Skip vendor prefixes and CSS variables - they're expected to be unsupported
-                if (!normalizedProperty.StartsWith("-") && !normalizedProperty.StartsWith("--"))
-                {
-                    if (FenBrowser.Core.Logging.DebugConfig.LogCssParse)
-                        global::FenBrowser.Core.EngineLogCompat.Log($"[CSS] Ignored Property: '{normalizedProperty}' (Value: '{value ?? ""}')", LogCategory.CssParsing);
-                        
-                    EngineCapabilities.LogUnsupportedCss(normalizedProperty, value, "CSS property not implemented");
-                }
-            }
-            
-            return isSupported;
-        }
-
-        /// <summary>
-        /// Public method to check if an element matches a CSS selector string.
-        /// Used by DOM API methods like matches() and closest().
-        /// </summary>
-        public static bool MatchesSelector(Element element, string selectorString)
-        {
-            if (element == null || string.IsNullOrWhiteSpace(selectorString))
-                return false;
-            
-            try
-            {
-                return CssSelectorAdvanced.Matches(element, selectorString);
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Handle @layer cascade layers - flatten for now with layer tracking
-        /// </summary>
-        private static string ExtractLayers(string text, Action<string> log)
-        {
-            if (string.IsNullOrEmpty(text)) return text;
-            if (text.IndexOf("@layer", StringComparison.OrdinalIgnoreCase) < 0) return text;
-
-            var result = new StringBuilder();
-            int i = 0;
-
-            int loopCount = 0;
-            while (i < text.Length)
-            {
-                if (loopCount++ > 100000) break;
-                int layerPos = text.IndexOf("@layer", i, StringComparison.OrdinalIgnoreCase);
-                if (layerPos < 0)
-                {
-                    result.Append(text.Substring(i));
-                    break;
-                }
-
-                result.Append(text.Substring(i, layerPos - i));
-
-                // Check if it's a layer declaration (e.g., @layer theme, base;) or layer block
-                int braceOpen = text.IndexOf('{', layerPos);
-                int semicolon = text.IndexOf(';', layerPos);
-
-                if (semicolon >= 0 && (braceOpen < 0 || semicolon < braceOpen))
-                {
-                    // Layer declaration only (no block), skip it
-                    i = semicolon + 1;
-                    continue;
-                }
-
-                if (braceOpen < 0) { i = layerPos + 6; continue; }
-
-                int braceClose = FindMatchingBrace(text, braceOpen);
-                if (braceClose < 0) { i = braceOpen + 1; continue; }
-
-                // Extract layer name (if any)
-                string header = text.Substring(layerPos + 6, braceOpen - layerPos - 6).Trim();
-                string body = text.Substring(braceOpen + 1, braceClose - braceOpen - 1);
-
-                // Include the layer content (flatten it)
-                result.Append(body);
-                log?.Invoke($"[CSS] Flattened @layer: {(string.IsNullOrEmpty(header) ? "(anonymous)" : header)}");
-
-                i = braceClose + 1;
-            }
-
-            return result.ToString();
-        }
-
-        // ===========================
-        // Stage 2: Parsing rules
-        // ===========================
-
-        private static List<NewCss.CssRule> ParseRules(
-            string css,
-            int sourceOrder,
-            Uri baseForUrls,
-            double? viewportWidth,
-            double? viewportHeight,
-            Action<string> log,
-            NewCss.CssOrigin origin = NewCss.CssOrigin.Author)
-        {
-            var rules = new List<NewCss.CssRule>();
-            if (string.IsNullOrWhiteSpace(css)) return rules;
-
-            int registrationOrder = System.Threading.Interlocked.Increment(ref _stylesheetRegistrationCounter);
-            EngineLogCompat.Log(
-                LogCategory.CSS,
-                LogLevel.Info,
-                $"[STYLE][INFO] Stylesheet registered order={registrationOrder} sourceOrder={sourceOrder} origin={origin} href={(baseForUrls?.ToString() ?? "inline")}");
-
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[DEBUG-CSS] ParseRules input length: {css.Length}");
-
-            try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_raw_css.txt", "\n--- RAW CSS BLOCK ---\n" + css + "\n-------------------\n"); } catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Debug raw css log failed: {ex.Message}", LogCategory.CSS); }
-            var text = StripComments(css);
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[DEBUG-CSS] After StripComments length: {text.Length}");
-            
-             try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_full_css.txt", "\n--- NEW CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Debug preprocessed css log failed: {ex.Message}", LogCategory.CSS); }
-
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            // FlattenBasicMedia REMOVED: Now handled by proper parsing in CssSyntaxParser + Recursive processing below
-            // text = FlattenBasicMedia(text, viewportWidth, log);
-            
-            // Extract non-standard/unimplemented blocks to avoid parser errors
-            text = ExtractKeyframes(text, log);
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS] ExtractKeyframes: {sw.ElapsedMilliseconds}ms"); sw.Restart();
-            
-            text = ExtractFontFace(text, baseForUrls, log);
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS] ExtractFontFace: {sw.ElapsedMilliseconds}ms"); sw.Restart();
-
-            text = FlattenSupports(text, log);
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS] FlattenSupports: {sw.ElapsedMilliseconds}ms"); sw.Restart();
-
-            // text = ExtractLayers(text, log); // REMOVED: Now handled by proper parsing
-            
-            text = FlattenContainerQueries(
-                text,
-                (float)(viewportWidth ?? 1024),
-                (float)(viewportHeight ?? (CssParser.MediaViewportHeight ?? 768)),
-                log);
-             EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[PERF-CSS] FlattenContainerQueries: {sw.ElapsedMilliseconds}ms"); sw.Restart();
-
-             try { if (DEBUG_FILE_LOGGING) DebugLog(@"debug_full_css.txt", "\n--- PROCESSED CSS BLOCK ---\n" + text + "\n-------------------\n"); } catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Debug processed css log failed: {ex.Message}", LogCategory.CSS); }
-
-            // New Pipeline: Tokenize -> Parse
-            EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[DEBUG-CSS] Creating tokenizer for text length {text.Length}");
-            var tokenizer = new CssTokenizer(text);
-            var parser = new CssSyntaxParser(tokenizer);
-            var policy = ActiveParserSecurityPolicy ?? ParserSecurityPolicy.Default;
-            parser.MaxRules = policy.CssMaxRules;
-            parser.MaxDeclarationsPerBlock = policy.CssMaxDeclarationsPerBlock;
-            
-            NewCss.CssStylesheet sheet = null;
-            try 
-            {
-                EngineLogCompat.Debug("[DEBUG-CSS] Starting ParseStylesheet...", LogCategory.Rendering);
-                sheet = parser.ParseStylesheet();
-                EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Debug, $"[DEBUG-CSS] ParseStylesheet returned {sheet.Rules.Count} rules");
-            
-                int ruleIndexInsideSheet = 0;
-                
-                // Track layers to assign stable LayerOrder
-                var layerOrderIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-                int nextLayerOrder = 1; // 0 is reserved for unlayered
-
-                // Recursive helper to flatten media, layers, and scope into the main list
-                void ProcessRuleList(IEnumerable<NewCss.CssRule> inputRules, string currentLayer = null, int currentLayerOrder = 0, string currentScope = null)
-                {
-                    foreach (var rule in inputRules)
-                    {
-                        rule.BaseUri = baseForUrls;
-                        rule.Origin = origin;
-
-                        if (rule is NewCss.CssMediaRule mediaRule)
-                        {
-                            if (EvaluateMediaQuery(mediaRule.Condition, viewportWidth))
-                            {
-                                ProcessRuleList(mediaRule.Rules, currentLayer, currentLayerOrder, currentScope);
-                            }
-                        }
-                        else if (rule is NewCss.CssLayerRule layerRule)
-                        {
-                            if (layerRule.Rules.Count == 0)
-                            {
-                                // Order declaration: @layer base, theme;
-                                var names = layerRule.Name.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(n => n.Trim());
-                                foreach (var name in names)
-                                {
-                                    string full = string.IsNullOrEmpty(currentLayer) ? name : $"{currentLayer}.{name}";
-                                    if (!layerOrderIndex.ContainsKey(full))
-                                    {
-                                        layerOrderIndex[full] = nextLayerOrder++;
-                                    }
-                                }
-                            }
-                            else
-                            {
-                                // Layer block: @layer theme { ... }
-                                string layerName = string.IsNullOrEmpty(currentLayer) ? layerRule.Name : $"{currentLayer}.{layerRule.Name}";
-                                if (!string.IsNullOrEmpty(layerName))
-                                {
-                                    if (!layerOrderIndex.TryGetValue(layerName, out int order))
-                                    {
-                                        order = nextLayerOrder++;
-                                        layerOrderIndex[layerName] = order;
-                                    }
-                                    ProcessRuleList(layerRule.Rules, layerName, order, currentScope);
-                                }
-                                else
-                                {
-                                    ProcessRuleList(layerRule.Rules, null, nextLayerOrder++, currentScope);
-                                }
-                            }
-                        }
-                        else if (rule is NewCss.CssScopeRule scopeRule)
-                        {
-                            ProcessRuleList(scopeRule.Rules, currentLayer, currentLayerOrder, scopeRule.ScopeSelector);
-                        }
-                        else
-                        {
-                            rule.LayerName = currentLayer;
-                            rule.LayerOrder = currentLayerOrder;
-                            rule.ScopeSelector = currentScope;
-
-                            if (rule is NewCss.CssStyleRule styleRule)
-                            {
-                                styleRule.Order = (sourceOrder * 10000) + ruleIndexInsideSheet++;
-                            }
-                            rules.Add(rule);
-                        }
-                    }
-                }
-                
-                ProcessRuleList(sheet.Rules);
-
-                EngineLogCompat.Log(LogCategory.Rendering, LogLevel.Info, $"[PERF-CSS] [CHECKPOINT] ParseRules FINISHED for {text.Length} bytes. Time: {sw.ElapsedMilliseconds}ms");
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Error($"[DEBUG-CSS] CRASH in ParseStylesheet: {ex}", LogCategory.Rendering);
-                return rules;
-            }
-
-
-            return rules;
-        }
-
-        private static string FlattenBasicMedia(string text, double? viewportWidth, Action<string> log)
-        {
-            if (string.IsNullOrEmpty(text)) return "";
-            if (text.IndexOf("@media", StringComparison.OrdinalIgnoreCase) < 0) return text;
-
-            var sb = new StringBuilder();
-            int i = 0;
-            int loopCount = 0;
-            while (i < text.Length)
-            {
-                if (loopCount++ > 100000) break;
-                int mediaPos = text.IndexOf("@media", i, StringComparison.OrdinalIgnoreCase);
-                if (mediaPos < 0)
-                {
-                    sb.Append(text.Substring(i));
-                    break;
-                }
-
-                sb.Append(text.Substring(i, mediaPos - i));
-
-                int open = text.IndexOf('{', mediaPos);
-                if (open < 0) { i = mediaPos + 6; continue; }
-                
-                int close = FindMatchingBrace(text, open);
-                if (close < 0) { i = open + 1; continue; }
-
-                var header = text.Substring(mediaPos, open - mediaPos).ToLowerInvariant();
-                var body = text.Substring(open + 1, close - open - 1);
-
-                bool keep = EvaluateMediaQuery(header, viewportWidth);
-                if (keep) sb.Append(body);
-                
-                i = close + 1;
-            }
-
-            return sb.ToString();
-        }
-
-/// <summary>
-/// Evaluate a media query condition string
-/// </summary>
-private static bool EvaluateMediaQuery(string header, double? viewportWidth)
-{
-    if (string.IsNullOrWhiteSpace(header)) return true;
-    if (header.Equals("all", StringComparison.OrdinalIgnoreCase)) return true;
-
-    // Support comma-separated OR queries
-    if (header.Contains(","))
-    {
-        var parts = header.Split(',');
-        foreach (var p in parts)
-        {
-            if (EvaluateMediaQueryInternal(p.Trim(), viewportWidth)) return true;
-        }
-        return false;
-    }
-
-    return EvaluateMediaQueryInternal(header.Trim(), viewportWidth);
-}
-
-/// <summary>
-/// Evaluate a single media query condition per Media Queries Level 5.
-/// Reference: https://www.w3.org/TR/mediaqueries-5/
-/// </summary>
-private static bool EvaluateMediaQueryInternal(string query, double? viewportWidth)
-{
-    bool conditionMatches = true;
-    bool isNot = false;
-
-    if (query.StartsWith("not ", StringComparison.OrdinalIgnoreCase))
-    {
-        isNot = true;
-        query = query.Substring(4).Trim();
-    }
-    else if (query.StartsWith("only ", StringComparison.OrdinalIgnoreCase))
-    {
-        query = query.Substring(5).Trim();
-    }
-
-    if (HasUnsupportedBareMediaSegment(query))
-    {
-        return false;
-    }
-
-    // Get viewport dimensions
-    var vpW = viewportWidth ?? CssParser.MediaViewportWidth ?? 1920;
-    var vpH = CssParser.MediaViewportHeight ?? 1080;
-    var dppx = CssParser.MediaDppx ?? 1.0;
-
-    // === Media Types ===
-    if (query.Contains("print", StringComparison.OrdinalIgnoreCase) && !query.Contains("screen", StringComparison.OrdinalIgnoreCase))
-    {
-        conditionMatches = false; // We're always screen
-    }
-
-    // === Dimension Features ===
-    var mw = ExtractPx(query, "min-width");
-    var xw = ExtractPx(query, "max-width");
-    var mh = ExtractPx(query, "min-height");
-    var xh = ExtractPx(query, "max-height");
-
-    if (mw.HasValue && vpW < mw.Value) conditionMatches = false;
-    if (xw.HasValue && vpW > xw.Value) conditionMatches = false;
-    if (mh.HasValue && vpH < mh.Value) conditionMatches = false;
-    if (xh.HasValue && vpH > xh.Value) conditionMatches = false;
-
-    // Range syntax support (width > 600px, width >= 600px, etc.)
-    conditionMatches = conditionMatches && EvaluateRangeSyntax(query, "width", vpW);
-    conditionMatches = conditionMatches && EvaluateRangeSyntax(query, "height", vpH);
-
-    // === Aspect Ratio ===
-    if (query.Contains("aspect-ratio", StringComparison.OrdinalIgnoreCase) && !query.Contains("device-aspect-ratio", StringComparison.OrdinalIgnoreCase))
-    {
-        double aspectRatio = vpW / vpH;
-        var minAR = ExtractAspectRatio(query, "min-aspect-ratio");
-        var maxAR = ExtractAspectRatio(query, "max-aspect-ratio");
-        var exactAR = ExtractAspectRatio(query, "aspect-ratio");
-
-        if (minAR.HasValue && aspectRatio < minAR.Value) conditionMatches = false;
-        if (maxAR.HasValue && aspectRatio > maxAR.Value) conditionMatches = false;
-        if (exactAR.HasValue && Math.Abs(aspectRatio - exactAR.Value) > 0.01) conditionMatches = false;
-    }
-
-    // === Orientation ===
-    if (query.Contains("orientation", StringComparison.OrdinalIgnoreCase))
-    {
-        bool isPortrait = vpH > vpW;
-        if (query.Contains("portrait", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!isPortrait) conditionMatches = false;
-        }
-        else if (query.Contains("landscape", StringComparison.OrdinalIgnoreCase))
-        {
-            if (isPortrait) conditionMatches = false;
-        }
-    }
-
-    // === Resolution ===
-    if (query.Contains("resolution", StringComparison.OrdinalIgnoreCase) || query.Contains("min-resolution", StringComparison.OrdinalIgnoreCase) || query.Contains("max-resolution", StringComparison.OrdinalIgnoreCase))
-    {
-        var minRes = ExtractResolution(query, "min-resolution");
-        var maxRes = ExtractResolution(query, "max-resolution");
-
-        if (minRes.HasValue && dppx < minRes.Value) conditionMatches = false;
-        if (maxRes.HasValue && dppx > maxRes.Value) conditionMatches = false;
-    }
-
-    // === User Preference: Color Scheme ===
-    if (query.Contains("prefers-color-scheme", StringComparison.OrdinalIgnoreCase))
-    {
-        string scheme = CssParser.MediaPrefersColorScheme ?? "light";
-        bool isDark = string.Equals(scheme, "dark", StringComparison.OrdinalIgnoreCase);
-
-        if (query.Contains(": dark", StringComparison.OrdinalIgnoreCase) || query.Contains(":dark", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!isDark) conditionMatches = false;
-        }
-        else if (query.Contains(": light", StringComparison.OrdinalIgnoreCase) || query.Contains(":light", StringComparison.OrdinalIgnoreCase))
-        {
-            if (isDark) conditionMatches = false;
-        }
-    }
-
-    // === User Preference: Reduced Motion ===
-    if (query.Contains("prefers-reduced-motion", StringComparison.OrdinalIgnoreCase))
-    {
-        string pref = CssParser.MediaPrefersReducedMotion ?? "no-preference";
-        bool wantsReduce = string.Equals(pref, "reduce", StringComparison.OrdinalIgnoreCase);
-
-        if (query.Contains("reduce", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!wantsReduce) conditionMatches = false;
-        }
-        else if (query.Contains("no-preference", StringComparison.OrdinalIgnoreCase))
-        {
-            if (wantsReduce) conditionMatches = false;
-        }
-    }
-
-    // === User Preference: Contrast ===
-    if (query.Contains("prefers-contrast", StringComparison.OrdinalIgnoreCase))
-    {
-        string pref = CssParser.MediaPrefersContrast ?? "no-preference";
-
-        if (query.Contains(": more", StringComparison.OrdinalIgnoreCase) || query.Contains(":more", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(pref, "more", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-        else if (query.Contains(": less", StringComparison.OrdinalIgnoreCase) || query.Contains(":less", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(pref, "less", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-        else if (query.Contains("no-preference", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(pref, "no-preference", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-    }
-
-    // === User Preference: Reduced Transparency ===
-    if (query.Contains("prefers-reduced-transparency", StringComparison.OrdinalIgnoreCase))
-    {
-        string pref = CssParser.MediaPrefersReducedTransparency ?? "no-preference";
-        bool wantsReduce = string.Equals(pref, "reduce", StringComparison.OrdinalIgnoreCase);
-
-        if (query.Contains("reduce", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!wantsReduce) conditionMatches = false;
-        }
-    }
-
-    // === Forced Colors ===
-    if (query.Contains("forced-colors", StringComparison.OrdinalIgnoreCase))
-    {
-        string fc = CssParser.MediaForcedColors ?? "none";
-
-        if (query.Contains("active", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(fc, "active", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-        else if (query.Contains("none", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(fc, "none", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-    }
-
-    // === Inverted Colors ===
-    if (query.Contains("inverted-colors", StringComparison.OrdinalIgnoreCase))
-    {
-        string ic = CssParser.MediaInvertedColors ?? "none";
-
-        if (query.Contains("inverted", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(ic, "inverted", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-    }
-
-    // === Pointer Capability ===
-    if (query.Contains("(pointer", StringComparison.OrdinalIgnoreCase) && !query.Contains("any-pointer", StringComparison.OrdinalIgnoreCase))
-    {
-        string ptr = CssParser.MediaPointer ?? "fine";  // Desktop default
-
-        if (query.Contains(": fine", StringComparison.OrdinalIgnoreCase) || query.Contains(":fine", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(ptr, "fine", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-        else if (query.Contains(": coarse", StringComparison.OrdinalIgnoreCase) || query.Contains(":coarse", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(ptr, "coarse", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-        else if (query.Contains(": none", StringComparison.OrdinalIgnoreCase) || query.Contains(":none", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(ptr, "none", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-    }
-
-    // === Hover Capability ===
-    if (query.Contains("(hover", StringComparison.OrdinalIgnoreCase) && !query.Contains("any-hover", StringComparison.OrdinalIgnoreCase))
-    {
-        string hvr = CssParser.MediaHover ?? "hover";  // Desktop default
-
-        if (query.Contains(": hover", StringComparison.OrdinalIgnoreCase) || query.Contains(":hover", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(hvr, "hover", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-        else if (query.Contains(": none", StringComparison.OrdinalIgnoreCase) || query.Contains(":none", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(hvr, "none", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-    }
-
-    // === Color Gamut ===
-    if (query.Contains("color-gamut", StringComparison.OrdinalIgnoreCase))
-    {
-        string gamut = CssParser.MediaColorGamut ?? "srgb";  // Most common
-
-        // Order: srgb < p3 < rec2020 (wider gamuts include narrower ones)
-        if (query.Contains("rec2020", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(gamut, "rec2020", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-        else if (query.Contains("p3", StringComparison.OrdinalIgnoreCase))
-        {
-            if (string.Equals(gamut, "srgb", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-        // srgb always matches
-    }
-
-    // === Dynamic Range ===
-    if (query.Contains("dynamic-range", StringComparison.OrdinalIgnoreCase))
-    {
-        string dr = CssParser.MediaDynamicRange ?? "standard";
-
-        if (query.Contains("high", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(dr, "high", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-    }
-
-    // === Scripting ===
-    if (query.Contains("scripting", StringComparison.OrdinalIgnoreCase))
-    {
-        string script = CssParser.MediaScripting ?? "enabled";  // We support JS
-
-        if (query.Contains("enabled", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(script, "enabled", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-        else if (query.Contains("none", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(script, "none", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-    }
-
-    // === Update Frequency ===
-    if (query.Contains("(update", StringComparison.OrdinalIgnoreCase))
-    {
-        string upd = CssParser.MediaUpdate ?? "fast";  // Normal screen
-
-        if (query.Contains(": fast", StringComparison.OrdinalIgnoreCase) || query.Contains(":fast", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(upd, "fast", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-        else if (query.Contains(": slow", StringComparison.OrdinalIgnoreCase) || query.Contains(":slow", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(upd, "slow", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-        else if (query.Contains(": none", StringComparison.OrdinalIgnoreCase) || query.Contains(":none", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(upd, "none", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-    }
-
-    // === Display Mode (for PWAs) ===
-    if (query.Contains("display-mode", StringComparison.OrdinalIgnoreCase))
-    {
-        string mode = CssParser.MediaDisplayMode ?? "browser";
-
-        if (query.Contains("fullscreen", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(mode, "fullscreen", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-        else if (query.Contains("standalone", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!string.Equals(mode, "standalone", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(mode, "fullscreen", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-        else if (query.Contains("minimal-ui", StringComparison.OrdinalIgnoreCase))
-        {
-            if (string.Equals(mode, "browser", StringComparison.OrdinalIgnoreCase)) conditionMatches = false;
-        }
-    }
-
-    bool result = isNot ? !conditionMatches : conditionMatches;
-    return result;
-}
-
-private static bool HasUnsupportedBareMediaSegment(string query)
-{
-    if (string.IsNullOrWhiteSpace(query))
-    {
-        return false;
-    }
-
-    foreach (var segment in SplitTopLevel(query, " and "))
-    {
-        var normalized = StripOuterParens(segment).Trim();
-        if (string.IsNullOrWhiteSpace(normalized))
-        {
-            continue;
-        }
-
-        if (normalized.StartsWith("only ", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = normalized.Substring(5).Trim();
-        }
-
-        if (string.Equals(normalized, "all", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(normalized, "screen", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(normalized, "print", StringComparison.OrdinalIgnoreCase))
-        {
-            continue;
-        }
-
-        if (normalized.IndexOf(':') >= 0 ||
-            normalized.IndexOf('<') >= 0 ||
-            normalized.IndexOf('>') >= 0 ||
-            normalized.IndexOf('=') >= 0)
-        {
-            continue;
-        }
-
-        return true;
-    }
-
-    return false;
-}
-
-/// <summary>
-/// Evaluate CSS Media Queries Level 4 range syntax.
-/// Supports: width > 600px, 600px <= width <= 1200px, etc.
-/// </summary>
-private static bool EvaluateRangeSyntax(string query, string feature, double value)
-{
-    if (string.IsNullOrWhiteSpace(query)) return true;
-
-    // Avoid matching inside names like "min-width"/"max-width".
-    string featureToken = $@"(?<![-\w]){Regex.Escape(feature)}(?![-\w])";
-    const string numberToken = @"(\d+(?:\.\d+)?)";
-    const string unitToken = @"(px|em|rem)?";
-
-    // Form: (width >= 600px)
-    var featureFirst = Regex.Matches(
-        query,
-        $@"\(?\s*{featureToken}\s*(<=|>=|<|>|=)\s*{numberToken}\s*{unitToken}\s*\)?",
-        RegexOptions.IgnoreCase);
-    foreach (Match match in featureFirst)
-    {
-        if (!TryParseRangeLength(match.Groups[2].Value, match.Groups[3].Value, out var compareVal))
-            return false;
-        if (!EvaluateRangeComparison(value, match.Groups[1].Value, compareVal))
-            return false;
-    }
-
-    // Form: (600px <= width)
-    var valueFirst = Regex.Matches(
-        query,
-        $@"\(?\s*{numberToken}\s*{unitToken}\s*(<=|>=|<|>|=)\s*{featureToken}\s*\)?",
-        RegexOptions.IgnoreCase);
-    foreach (Match match in valueFirst)
-    {
-        if (!TryParseRangeLength(match.Groups[1].Value, match.Groups[2].Value, out var compareVal))
-            return false;
-        if (!EvaluateRangeComparison(compareVal, match.Groups[3].Value, value))
-            return false;
-    }
-
-    return true; // No range syntax found for this feature, or all matched predicates passed.
-}
-
-private static bool TryParseRangeLength(string numericPart, string unitPart, out double px)
-{
-    px = 0;
-    if (!double.TryParse(numericPart, NumberStyles.Any, CultureInfo.InvariantCulture, out var numeric))
-    {
-        return false;
-    }
-
-    var unit = (unitPart ?? string.Empty).ToLowerInvariant();
-    px = unit switch
-    {
-        "em" or "rem" => numeric * 16.0,
-        _ => numeric
-    };
-    return true;
-}
-
-private static bool EvaluateRangeComparison(double left, string op, double right)
-{
-    return op switch
-    {
-        ">" => left > right,
-        ">=" => left >= right,
-        "<" => left < right,
-        "<=" => left <= right,
-        "=" => Math.Abs(left - right) < 0.001,
-        _ => true
-    };
-}
-
-/// <summary>
-/// Extract aspect ratio value from media query (e.g., "16/9" or "1.777")
-/// </summary>
-private static double? ExtractAspectRatio(string query, string prop)
-{
-    // Match: aspect-ratio: 16/9 or aspect-ratio: 1.777
-    var m = Regex.Match(query, prop + @"\s*:\s*(\d+(?:\.\d+)?)\s*(?:/\s*(\d+(?:\.\d+)?))?", RegexOptions.IgnoreCase);
-    if (m.Success)
-    {
-        if (double.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double v1))
-        {
-            if (m.Groups[2].Success && double.TryParse(m.Groups[2].Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double v2))
-            {
-                return v1 / v2;  // Ratio like 16/9
-            }
-            return v1;  // Decimal like 1.777
-        }
-    }
-    return null;
-}
-
-/// <summary>
-/// Extract resolution value from media query, returning dppx
-/// </summary>
-private static double? ExtractResolution(string query, string prop)
-{
-    // Match: resolution: 2dppx, resolution: 192dpi, resolution: 2x
-    var m = Regex.Match(query, prop + @"\s*:\s*(\d+(?:\.\d+)?)\s*(dppx|dpi|dpcm|x)?", RegexOptions.IgnoreCase);
-    if (m.Success)
-    {
-        if (double.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double v))
-        {
-            string unit = m.Groups[2].Value.ToLowerInvariant();
-            return unit switch
-            {
-                "dpi" => v / 96.0,        // 96dpi = 1dppx
-                "dpcm" => v * 2.54 / 96,  // Convert dpcm to dppx
-                "x" => v,                 // x is alias for dppx
-                "dppx" => v,
-                _ => v                    // Default to dppx
-            };
-        }
-    }
-    return null;
-}
-
-private static double? ExtractPx(string text, string prop)
-{
-    var propertyMatch = Regex.Match(
-        text,
-        Regex.Escape(prop) + @"\s*:\s*",
-        RegexOptions.IgnoreCase);
-    if (propertyMatch.Success)
-    {
-        int valueStart = propertyMatch.Index + propertyMatch.Length;
-        if (text.AsSpan(valueStart).StartsWith("calc(", StringComparison.OrdinalIgnoreCase))
-        {
-            int depth = 0;
-            for (int i = valueStart; i < text.Length; i++)
-            {
-                if (text[i] == '(')
-                {
-                    depth++;
-                }
-                else if (text[i] == ')' && --depth == 0)
-                {
-                    string expression = text.Substring(valueStart, i - valueStart + 1);
-                    double percentBase = prop.Contains("width", StringComparison.OrdinalIgnoreCase)
-                        ? CssParser.MediaViewportWidth ?? 1920
-                        : CssParser.MediaViewportHeight ?? 1080;
-                    if (TryParseCalc(expression, out double calculatedPx, percentBase: percentBase))
-                    {
-                        return calculatedPx;
-                    }
-
-                    break;
-                }
-            }
-        }
-    }
-
-    // Support decimal values and optional units (default px)
-    // Matches prop: 123.45px or prop: 123.45
-    // Using named groups to avoid index confusion
-    var m = Regex.Match(text, prop + @"\s*:\s*(?<v>[0-9]*\.?[0-9]+)\s*(?<u>px|em|rem|vw)?", RegexOptions.IgnoreCase);
-    if (m.Success)
-    {
-        if (double.TryParse(m.Groups["v"].Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double v))
-        {
-            string unit = m.Groups["u"].Value.ToLowerInvariant();
-            if (unit == "em" || unit == "rem") v *= 16; 
-            else if (unit == "vw") v = (v / 100.0) * (CssParser.MediaViewportWidth ?? 1920);
-            return v;
-        }
-    }
-    return null;
-}
-
-        private static int FindMatchingBrace(string s, int openIdx)
-        {
-            if (string.IsNullOrEmpty(s) || openIdx < 0 || openIdx >= s.Length) return -1;
-            
-            int depth = 0;
-            bool inSingleQuote = false;
-            bool inDoubleQuote = false;
-
-            for (int i = openIdx; i < s.Length; i++)
-            {
-                char c = s[i];
-                
-                if (inSingleQuote) { if (c == '\'') inSingleQuote = false; continue; }
-                if (inDoubleQuote) { if (c == '"') inDoubleQuote = false; continue; }
-
-                if (c == '\'') { inSingleQuote = true; continue; }
-                if (c == '"') { inDoubleQuote = true; continue; }
-
-                if (c == '{') depth++;
-                else if (c == '}')
-                {
-                    depth--;
-                    if (depth == 0) return i;
-                }
-            }
-            return -1;
-        }
-
-
-
-
-
-        private static List<NewCss.CssDeclaration> ParseDeclarations(string declText)
-        {
-            var list = new List<NewCss.CssDeclaration>();
-            if (string.IsNullOrWhiteSpace(declText)) return list;
-
-            var parts = SplitTopLevelDeclarations(declText);
-            foreach (var p in parts)
-            {
-                var decl = p.Trim();
-                if (decl.Length == 0) continue;
-
-                int colonIndex = FindTopLevelDeclarationColon(decl);
-                if (colonIndex <= 0) continue;
-
-                var nameRaw = decl.Substring(0, colonIndex).Trim();
-                if (nameRaw.Length == 0) continue;
-
-                var valRaw = decl.Substring(colonIndex + 1).Trim();
-                var name = NormalizeDeclarationPropertyName(nameRaw);
-
-                bool important = false;
-                var val = valRaw;
-                if (TryStripTrailingImportant(valRaw, out var valueWithoutImportant))
-                {
-                    important = true;
-                    val = valueWithoutImportant;
-                }
-
-                list.Add(new NewCss.CssDeclaration { Property = name, Value = val, IsImportant = important });
-            }
-            return list;
-        }
-
-        private static List<string> SplitTopLevelDeclarations(string declText)
-        {
-            var result = new List<string>();
-            var current = new StringBuilder();
-            int parenDepth = 0;
-            int bracketDepth = 0;
-            int braceDepth = 0;
-            bool inString = false;
-            char stringChar = '\0';
-            bool escaped = false;
-
-            for (int i = 0; i < declText.Length; i++)
-            {
-                char ch = declText[i];
-                current.Append(ch);
-
-                if (inString)
-                {
-                    if (escaped)
-                    {
-                        escaped = false;
-                        continue;
-                    }
-
-                    if (ch == '\\')
-                    {
-                        escaped = true;
-                        continue;
-                    }
-
-                    if (ch == stringChar)
-                    {
-                        inString = false;
-                    }
-
-                    continue;
-                }
-
-                if (ch == '"' || ch == '\'')
-                {
-                    inString = true;
-                    stringChar = ch;
-                    continue;
-                }
-
-                if (ch == '(') { parenDepth++; continue; }
-                if (ch == ')') { if (parenDepth > 0) parenDepth--; continue; }
-                if (ch == '[') { bracketDepth++; continue; }
-                if (ch == ']') { if (bracketDepth > 0) bracketDepth--; continue; }
-                if (ch == '{') { braceDepth++; continue; }
-                if (ch == '}') { if (braceDepth > 0) braceDepth--; continue; }
-
-                if (ch == ';' && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0)
-                {
-                    current.Length--;
-                    var part = current.ToString().Trim();
-                    if (part.Length > 0)
-                    {
-                        result.Add(part);
-                    }
-                    current.Clear();
-                }
-            }
-
-            var tail = current.ToString().Trim();
-            if (tail.Length > 0)
-            {
-                result.Add(tail);
-            }
-
-            return result;
-        }
-
-        private static int FindTopLevelDeclarationColon(string declaration)
-        {
-            int parenDepth = 0;
-            int bracketDepth = 0;
-            int braceDepth = 0;
-            bool inString = false;
-            char stringChar = '\0';
-            bool escaped = false;
-
-            for (int i = 0; i < declaration.Length; i++)
-            {
-                char ch = declaration[i];
-
-                if (inString)
-                {
-                    if (escaped)
-                    {
-                        escaped = false;
-                        continue;
-                    }
-
-                    if (ch == '\\')
-                    {
-                        escaped = true;
-                        continue;
-                    }
-
-                    if (ch == stringChar)
-                    {
-                        inString = false;
-                    }
-
-                    continue;
-                }
-
-                if (ch == '"' || ch == '\'')
-                {
-                    inString = true;
-                    stringChar = ch;
-                    continue;
-                }
-
-                if (ch == '(') { parenDepth++; continue; }
-                if (ch == ')') { if (parenDepth > 0) parenDepth--; continue; }
-                if (ch == '[') { bracketDepth++; continue; }
-                if (ch == ']') { if (bracketDepth > 0) bracketDepth--; continue; }
-                if (ch == '{') { braceDepth++; continue; }
-                if (ch == '}') { if (braceDepth > 0) braceDepth--; continue; }
-
-                if (ch == ':' && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0)
-                {
-                    return i;
-                }
-            }
-
-            return -1;
-        }
-
-        private static bool TryStripTrailingImportant(string value, out string stripped)
-        {
-            stripped = value?.TrimEnd() ?? string.Empty;
-            if (stripped.Length == 0) return false;
-
-            int parenDepth = 0;
-            int bracketDepth = 0;
-            int braceDepth = 0;
-            bool inString = false;
-            char stringChar = '\0';
-            bool escaped = false;
-            int importantStart = -1;
-
-            for (int i = 0; i < stripped.Length; i++)
-            {
-                char ch = stripped[i];
-
-                if (inString)
-                {
-                    if (escaped)
-                    {
-                        escaped = false;
-                        continue;
-                    }
-
-                    if (ch == '\\')
-                    {
-                        escaped = true;
-                        continue;
-                    }
-
-                    if (ch == stringChar)
-                    {
-                        inString = false;
-                    }
-
-                    continue;
-                }
-
-                if (ch == '"' || ch == '\'')
-                {
-                    inString = true;
-                    stringChar = ch;
-                    continue;
-                }
-
-                if (ch == '(') { parenDepth++; continue; }
-                if (ch == ')') { if (parenDepth > 0) parenDepth--; continue; }
-                if (ch == '[') { bracketDepth++; continue; }
-                if (ch == ']') { if (bracketDepth > 0) bracketDepth--; continue; }
-                if (ch == '{') { braceDepth++; continue; }
-                if (ch == '}') { if (braceDepth > 0) braceDepth--; continue; }
-
-                if (ch != '!' || parenDepth != 0 || bracketDepth != 0 || braceDepth != 0)
-                {
-                    continue;
-                }
-
-                int cursor = i + 1;
-                while (cursor < stripped.Length && char.IsWhiteSpace(stripped[cursor])) cursor++;
-
-                const string importantKeyword = "important";
-                if (cursor + importantKeyword.Length > stripped.Length) continue;
-                if (!stripped.AsSpan(cursor, importantKeyword.Length).Equals(importantKeyword.AsSpan(), StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                int end = cursor + importantKeyword.Length;
-                while (end < stripped.Length && char.IsWhiteSpace(stripped[end])) end++;
-                if (end == stripped.Length)
-                {
-                    importantStart = i;
-                }
-            }
-
-            if (importantStart < 0)
-            {
-                return false;
-            }
-
-            stripped = stripped.Substring(0, importantStart).TrimEnd();
-            return true;
-        }
-
-        private static string NormalizeDeclarationPropertyName(string name)
-        {
-            if (string.IsNullOrEmpty(name))
-            {
-                return name ?? string.Empty;
-            }
-
-            if (name.StartsWith("--", StringComparison.Ordinal))
-            {
-                return name;
-            }
-
-            return name.ToLowerInvariant();
-        }
-
-        // ===========================
-        // Stage 3: Cascade
-        // ===========================
-
-        private static Dictionary<Node, CssComputed> CascadeIntoComputedStyles(Element root, StyleSet styleSet, Action<string> log, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
-        {
-            var result = new Dictionary<Node, CssComputed>();
-            if (root == null) return result;
-
-            var engine = new CascadeEngine(styleSet);
-
-            // Pre-flatten the DOM into a list
-            var nodes = new List<Element>();
-            var stack = new Stack<Element>();
-            stack.Push(root);
-            while (stack.Count > 0)
-            {
-                var n = stack.Pop();
-                nodes.Add(n);
-                var children = n.ChildNodes;
-                for (int i = children.Length - 1; i >= 0; i--)
-                {
-                    if (children[i] is Element childEl)
-                        stack.Push(childEl);
-                }
-            }
-
-            int cacheHits = 0;
-            int cacheMisses = 0;
-            foreach (var n in nodes)
-            {
-                deadline?.Check();
-
-                if (n.IsText()) continue;
-
-                // PERF: Skip cascade for clean elements that already have computed
-                // styles from a previous cascade.  Element.ComputedStyle is set on
-                // line ~3271 below.  StyleDirty is cleared after each cascade and
-                // re-set by DOM mutations (class/id/style changes from JS).  On the
-                // first cascade every element is dirty; on incremental recascades
-                // only mutated elements need recomputation.
-                if (!n.StyleDirty && n.GetComputedStyle() != null)
-                {
-                    result[n] = n.GetComputedStyle();
-                    cacheHits++;
-                    continue;
-                }
-                cacheMisses++;
-
-                CssComputed parentCss = null;
-                if (n.ParentElement != null)
-                    result.TryGetValue(n.ParentElement, out parentCss);
-
-                try
-                {
-                    // 1. Compute Main Styles
-                    var mainProps = engine.ComputeCascadedValues(n, null);
-                    var css = ResolveStyle(n, parentCss, mainProps);
-
-                    // Clear the dirty flag so subsequent incremental recascades
-                    // skip this element (cache hit via ComputedStyle above).
-                    n.ClearStyleDirty();
-
-                    // Keep rem basis aligned to the computed root font-size, including
-                    // cases where root size comes from `font` shorthand.
-                    if (ReferenceEquals(n, root) &&
-                        css.FontSize.HasValue &&
-                        css.FontSize.Value > 0 &&
-                        double.IsFinite(css.FontSize.Value))
-                    {
-                        _rootFontSize = css.FontSize.Value;
-                    }
-
-                    // 2. Compute Pseudo-Element Styles (PERF: Skip if no rules target this pseudo)
-                    if (engine.HasPseudoRules("before")) ResolvePseudo(n, css, engine, "before", (c, s) => c.Before = s);
-                    if (engine.HasPseudoRules("after")) ResolvePseudo(n, css, engine, "after", (c, s) => c.After = s);
-                    if (engine.HasPseudoRules("marker")) ResolvePseudo(n, css, engine, "marker", (c, s) => c.Marker = s);
-                    if (engine.HasPseudoRules("placeholder")) ResolvePseudo(n, css, engine, "placeholder", (c, s) => c.Placeholder = s);
-                    if (engine.HasPseudoRules("selection")) ResolvePseudo(n, css, engine, "selection", (c, s) => c.Selection = s);
-                    if (engine.HasPseudoRules("first-line")) ResolvePseudo(n, css, engine, "first-line", (c, s) => c.FirstLine = s);
-                    if (engine.HasPseudoRules("first-letter")) ResolvePseudo(n, css, engine, "first-letter", (c, s) => c.FirstLetter = s);
-
-                    result[n] = css;
-                    
-                    // CRITICAL FIX: Attach style directly to node to avoid dictionary key mismatch
-                    // This ensures layout can find styles even if DOM node instances differ
-                    FenBrowser.FenEngine.Layout.LayoutStyleResolver.NormalizeForLayout(css);
-                    n.SetComputedStyle(css);
-                }
-                catch (Exception resolveEx)
-                {
-                    var msg = $"[CssLoader] CRASH in ResolveStyle (or pseudo) for Node <{n.TagName} id='{n.Id}'>: {resolveEx}";
-                    Log(log, msg);
-                    result[n] = new CssComputed(); // Recovery
-                    n.SetComputedStyle(result[n]);  // Also attach recovery style
-                }
-            }
-
-            if (cacheHits > 0 || cacheMisses > 0)
-            {
-                EngineLogCompat.Info(
-                    $"[PERF-CSS] Cascade: {cacheHits} cache hits, {cacheMisses} computed ({(cacheHits * 100.0 / (cacheHits + cacheMisses)):F0}% hit rate)",
-                    LogCategory.CSS);
-            }
-
-            return result;
-        }
-
-        internal static void ResolvePseudo(Element n, CssComputed parent, CascadeEngine engine, string pseudo, Action<CssComputed, CssComputed> setProp)
-        {
-            var props = engine.ComputeCascadedValues(n, pseudo);
-            if (props.Count > 0)
-            {
-                // Pseudo-elements inherit from their originating element (parent)
-                var resolved = ResolveStyle(n, parent, props);
-                // ResolveStyle receives the originating element so inherited values
-                // and relative units have the correct parent context. Its tag-based
-                // defaults must not leak onto the generated box, though: the initial
-                // display of ::before/::after is inline unless a pseudo rule says otherwise.
-                if (!props.ContainsKey("display"))
-                {
-                    resolved.Display = "inline";
-                    resolved.Map["display"] = "inline";
-                }
-                setProp(parent, resolved);
-            }
-        }
-
-        private static void MergeInlineStyle(Element n, Dictionary<string, NewCss.CssDeclaration> props)
-        {
-            string style = n.GetAttribute("style");
-            if (!string.IsNullOrWhiteSpace(style))
-            {
-                var decls = ParseDeclarations(style);
-                 if (n.TagName == "DIV" && n.GetAttribute("id") == "dynamic-box")
-                 {
-                     DebugLog(@"debug_log.txt", $"[INLINE-TRACE] Tag={n.TagName} Id={n.GetAttribute("id")} Style='{style}' Decls={decls.Count}\r\n");
-                 }
-                 foreach (var d in decls)
-                {
-                    // Inline style overrides author rules.
-                    props[d.Property] = d; 
-                }
-            }
-        }
-
-        internal static CssComputed ResolveStyle(Element n, CssComputed parentCss, Dictionary<string, NewCss.CssDeclaration> cascadedProperties)
-        {
-            // DebugLog(@"debug_log.txt", "[D-BUG] ResolveStyle\r\n");
-
-            var css = new CssComputed();
-            string tag = n?.TagName?.ToUpperInvariant() ?? "";
-
-            try
-            {
-                if (parentCss != null && parentCss.CustomProperties != null)
-                {
-                    foreach (var kv in parentCss.CustomProperties)
-                    {
-                        css.CustomProperties[kv.Key] = kv.Value;
-                        css.Map[kv.Key] = kv.Value;
-                    }
-                }
-
-                if (cascadedProperties != null && cascadedProperties.Count > 0)
-                {
-                    // Extract custom properties first
-                    var rawCustom = new Dictionary<string, string>(StringComparer.Ordinal);
-                    foreach(var kv in cascadedProperties)
-                    {
-                         if (kv.Key.StartsWith("--"))
-                            rawCustom[kv.Key] = kv.Value.Value ?? "";
-                    }
-                    
-                    // Resolve variables in custom properties
-                    foreach (var key in rawCustom.Keys.ToList())
-                    {
-                        var resolvedCustom = ResolveCustomPropertyReferences(rawCustom[key], css, rawCustom, new HashSet<string>(StringComparer.Ordinal) { key });
-                        rawCustom[key] = resolvedCustom;
-                        css.CustomProperties[key] = resolvedCustom;
-                        css.Map[key] = resolvedCustom;
-                    }
-
-                    // Resolve standard properties
-                    foreach (var kv in cascadedProperties)
-                    {
-                        if (kv.Key.StartsWith("--")) continue;
-                        var val = ResolveCustomPropertyReferences(kv.Value.Value, css, rawCustom, seen: null);
-                        
-                        // Handle CSS-wide keywords: inherit, initial, unset, revert, revert-layer
-                        var lowerVal = val?.ToLowerInvariant()?.Trim();
-                        if (lowerVal == "inherit")
-                        {
-                            if (string.Equals(kv.Key, "font", StringComparison.OrdinalIgnoreCase) &&
-                                parentCss != null &&
-                                parentCss.FontSize.HasValue)
-                            {
-                                // Inherited computed font values must be absolute to avoid
-                                // re-resolving relative units (e.g. 2em) against the child.
-                                string inheritedFamily = !string.IsNullOrWhiteSpace(parentCss.FontFamilyName)
-                                    ? parentCss.FontFamilyName
-                                    : "sans-serif";
-                                val = string.Create(
-                                    CultureInfo.InvariantCulture,
-                                    $"{parentCss.FontSize.Value:0.##}px {inheritedFamily}");
-                            }
-                            else if (string.Equals(kv.Key, "font-size", StringComparison.OrdinalIgnoreCase) &&
-                                     parentCss != null &&
-                                     parentCss.FontSize.HasValue)
-                            {
-                                // Same rule for the long-hand: inherit must propagate the
-                                // parent's COMPUTED font-size (px), not the literal value
-                                // (e.g. "2em") which would re-resolve against the child's
-                                // own parent and compound.
-                                val = string.Create(
-                                    CultureInfo.InvariantCulture,
-                                    $"{parentCss.FontSize.Value:0.##}px");
-                            }
-                            // Use parent's computed value
-                            else if (parentCss != null && parentCss.Map.TryGetValue(kv.Key, out var parentVal))
-                                val = parentVal;
-                            else
-                                val = CssComputed.GetInitialValue(kv.Key) ?? val;
-                        }
-                        else if (lowerVal == "initial")
-                        {
-                            // Use spec-defined initial value
-                            val = CssComputed.GetInitialValue(kv.Key) ?? val;
-                        }
-                        else if (lowerVal == "unset")
-                        {
-                            // inherit for inherited properties, initial for non-inherited
-                            if (CssComputed.IsInheritedProperty(kv.Key))
-                            {
-                                if (parentCss != null && parentCss.Map.TryGetValue(kv.Key, out var parentVal))
-                                    val = parentVal;
-                                else
-                                    val = CssComputed.GetInitialValue(kv.Key) ?? val;
-                            }
-                            else
-                            {
-                                val = CssComputed.GetInitialValue(kv.Key) ?? val;
-                            }
-                        }
-                        else if (lowerVal == "revert")
-                        {
-                            // CSS Cascade Level 4: Rolls back the cascade to the previous origin
-                            // In author stylesheets, revert falls back to user-agent value
-                            // Since we don't track cascaded values by origin at this point,
-                            // we use the UA stylesheet default (which is similar to initial for most properties)
-                            // A full implementation would need to track values per origin
-                            val = GetUserAgentValue(kv.Key) ?? CssComputed.GetInitialValue(kv.Key) ?? val;
-                        }
-                        else if (lowerVal == "revert-layer")
-                        {
-                            // CSS Cascade Level 5: Rolls back to value from previous cascade layer
-                            // Since we already cascade layers in order, rolling back means using
-                            // the value as if this rule didn't exist. For now, treat similar to unset
-                            // for inherited properties, or fall back to UA value for non-inherited
-                            if (CssComputed.IsInheritedProperty(kv.Key))
-                            {
-                                if (parentCss != null && parentCss.Map.TryGetValue(kv.Key, out var parentVal))
-                                    val = parentVal;
-                                else
-                                    val = GetUserAgentValue(kv.Key) ?? CssComputed.GetInitialValue(kv.Key) ?? val;
-                            }
-                            else
-                            {
-                                val = GetUserAgentValue(kv.Key) ?? CssComputed.GetInitialValue(kv.Key) ?? val;
-                            }
-                        }
-                        // Per CSS spec: when var() resolves to guaranteed-invalid (no variable
-                        // defined and no fallback), the property declaration is invalid at
-                        // computed-value time. For inherited properties this means the value
-                        // is inherited from the parent; for non-inherited it uses the initial value.
-                        bool originalHadVar = kv.Value.Value != null && kv.Value.Value.Contains("var(");
-                        bool valIsEffectivelyEmpty = val == null ||
-                                                     string.Equals(val, GuaranteedInvalidCustomPropertyValue, StringComparison.Ordinal) ||
-                                                     (originalHadVar && val.Length == 0);
-
-                        if (!valIsEffectivelyEmpty)
-                        {
-                            css.Map[kv.Key] = val;
-                        }
-                        else if (originalHadVar)
-                        {
-                            // var() resolved to nothing (null or empty string with no fallback).
-                            // For inherited properties, inherit from parent.
-                            if (CssComputed.IsInheritedProperty(kv.Key) && parentCss != null &&
-                                parentCss.Map.TryGetValue(kv.Key, out var inheritedVal))
-                            {
-                                css.Map[kv.Key] = inheritedVal;
-                            }
-                            else
-                            {
-                                // Invalid at computed-value time resolves to the property's
-                                // initial value for non-inherited properties. Preserve that
-                                // computed value in the map so later stages do not mistake it
-                                // for an absent declaration and apply legacy control defaults.
-                                var initialValue = CssComputed.GetInitialValue(kv.Key);
-                                if (initialValue != null)
-                                {
-                                    css.Map[kv.Key] = initialValue;
-                                }
-                            }
-                        }
-                        else
-                        {
-                            css.Map[kv.Key] = val;
-                        }
-                    }
-                }
-
-                // Normalize known aliases/logical checklist tokens to canonical longhands
-                // before typed projections parse computed map values.
-                ApplyInventoryPropertyAliasNormalizations(css.Map);
-
-                // DEBUG: Log all cascaded properties for div elements
-                if (tag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
-                {
-                    var propsStr = string.Join(", ", css.Map.Select(kv => $"{kv.Key}={kv.Value}"));
-                    FenBrowser.Core.EngineLogCompat.Info($"[DIV-CASCADE] Cascaded props for <div>: {propsStr}", LogCategory.CSS);
-                }
-
-                // Populate core display/positioning properties from the map
-                css.Display = Safe(DictGet(css.Map, "display"))?.ToLowerInvariant();
-                if (string.IsNullOrWhiteSpace(css.Display))
-                {
-                    css.Display = GetDefaultDisplayValue(n);
-                }
-                
-                // Trace display:flex application (disabled â€” too verbose for production).
-                // Enable locally with FEN_TRACE_FLEX=1 to debug flex layout issues.
-                // if (css.Display == "flex" || css.Display == "inline-flex")
-                // {
-                //     EngineLogCompat.Debug($"[FLEX-DEBUG] Element={n.TagName}.{n.GetAttribute("class")??""}#{n.GetAttribute("id")??""} Display={css.Display}", LogCategory.Layout);
-                // }
-                
-                css.Position = Safe(DictGet(css.Map, "position"))?.ToLowerInvariant();
-                css.Direction = Safe(DictGet(css.Map, "direction"))?.ToLowerInvariant();
-                if (string.IsNullOrWhiteSpace(css.Direction) && parentCss != null)
-                {
-                    css.Direction = parentCss.Direction;
-                }
-                css.UnicodeBidi = Safe(DictGet(css.Map, "unicode-bidi"))?.ToLowerInvariant();
-                if (string.IsNullOrWhiteSpace(css.UnicodeBidi) && parentCss != null)
-                {
-                    css.UnicodeBidi = parentCss.UnicodeBidi;
-                }
-                css.Visibility = Safe(DictGet(css.Map, "visibility"))?.ToLowerInvariant(); // Add Visibility
-                css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"))?.ToLowerInvariant();
-                css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"))?.ToLowerInvariant();
-                css.JustifyContent = Safe(DictGet(css.Map, "justify-content"))?.ToLowerInvariant();
-                css.JustifyItems = Safe(DictGet(css.Map, "justify-items"))?.ToLowerInvariant();
-                css.JustifySelf = Safe(DictGet(css.Map, "justify-self"))?.ToLowerInvariant();
-                css.AlignItems = Safe(DictGet(css.Map, "align-items"))?.ToLowerInvariant();
-                css.AlignContent = Safe(DictGet(css.Map, "align-content"))?.ToLowerInvariant();
-                css.AlignSelf = Safe(DictGet(css.Map, "align-self"))?.ToLowerInvariant();
-                
-                // Grid Properties
-                css.GridTemplateColumns = Safe(DictGet(css.Map, "grid-template-columns"));
-                css.GridTemplateRows = Safe(DictGet(css.Map, "grid-template-rows"));
-                css.GridTemplateAreas = Safe(DictGet(css.Map, "grid-template-areas"));
-                
-                // Grid Placement
-                css.GridArea = Safe(DictGet(css.Map, "grid-area"));
-                css.GridColumnStart = Safe(DictGet(css.Map, "grid-column-start"));
-                css.GridColumnEnd = Safe(DictGet(css.Map, "grid-column-end"));
-                
-                // Gaps (row-gap, column-gap, gap, grid-gap shorthand)
-                var rawRowGap = Safe(DictGet(css.Map, "row-gap")) ?? Safe(DictGet(css.Map, "grid-row-gap"));
-                var rawColGap = Safe(DictGet(css.Map, "column-gap")) ?? Safe(DictGet(css.Map, "grid-column-gap"));
-                var rawGap = Safe(DictGet(css.Map, "gap")) ?? Safe(DictGet(css.Map, "grid-gap"));
-
-                if (!string.IsNullOrEmpty(rawGap)) 
-                {
-                    var parts = rawGap.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                    if (parts.Length >= 1) rawRowGap = parts[0];
-                    if (parts.Length >= 2) rawColGap = parts[1];
-                    else if (parts.Length == 1) rawColGap = parts[0];
-                }
-
-                css.RowGap = ParseGapValue(rawRowGap);
-                css.ColumnGap = ParseGapValue(rawColGap);
-                css.GridRowStart = Safe(DictGet(css.Map, "grid-row-start"));
-                css.GridRowEnd = Safe(DictGet(css.Map, "grid-row-end"));
-                
-                // Parse grid-column shorthand
-                string gridColumn = DictGet(css.Map, "grid-column");
-                if (!string.IsNullOrWhiteSpace(gridColumn))
-                {
-                    var parts = gridColumn.Split('/');
-                    if (parts.Length >= 1 && string.IsNullOrEmpty(css.GridColumnStart))
-                        css.GridColumnStart = parts[0].Trim();
-                    if (parts.Length >= 2 && string.IsNullOrEmpty(css.GridColumnEnd))
-                        css.GridColumnEnd = parts[1].Trim();
-                }
-                
-                // Parse grid-row shorthand
-                string gridRow = DictGet(css.Map, "grid-row");
-                if (!string.IsNullOrWhiteSpace(gridRow))
-                {
-                    var parts = gridRow.Split('/');
-                    if (parts.Length >= 1 && string.IsNullOrEmpty(css.GridRowStart))
-                        css.GridRowStart = parts[0].Trim();
-                    if (parts.Length >= 2 && string.IsNullOrEmpty(css.GridRowEnd))
-                        css.GridRowEnd = parts[1].Trim();
-                }
-                
-                // Grid Auto Flow & Implicit Tracks
-                css.GridAutoFlow = Safe(DictGet(css.Map, "grid-auto-flow"))?.ToLowerInvariant();
-                css.GridAutoColumns = Safe(DictGet(css.Map, "grid-auto-columns"));
-                css.GridAutoRows = Safe(DictGet(css.Map, "grid-auto-rows"));
-                
-                css.ColumnSpan = Safe(DictGet(css.Map, "column-span"));
-                css.ColumnRuleStyle = Safe(DictGet(css.Map, "column-rule-style"));
-                css.ColumnRuleWidth = Safe(DictGet(css.Map, "column-rule-width"));
-                css.ColumnRuleColor = Safe(DictGet(css.Map, "column-rule-color"));
-                
-                // Overflow properties
-                css.Overflow = Safe(DictGet(css.Map, "overflow"))?.ToLowerInvariant();
-                var logicalOverflowInline = Safe(DictGet(css.Map, "overflow-inline"))?.ToLowerInvariant();
-                var logicalOverflowBlock = Safe(DictGet(css.Map, "overflow-block"))?.ToLowerInvariant();
-                css.OverflowX = Safe(DictGet(css.Map, "overflow-x"))?.ToLowerInvariant() ?? logicalOverflowInline ?? css.Overflow;
-                css.OverflowY = Safe(DictGet(css.Map, "overflow-y"))?.ToLowerInvariant() ?? logicalOverflowBlock ?? css.Overflow;
-
-                // ACID2 FIX: Visibility property - critical for hiding elements
-                css.Visibility = Safe(DictGet(css.Map, "visibility"))?.ToLowerInvariant();
-
-                // Box Model
-                css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"))?.ToLowerInvariant();
-            }
-            catch (Exception)
-            {
-                 /* [PERF-REMOVED] */
-            }
-            
-            // z-index logic continues below...
-
-            double zVal; // Declare zVal here, outside the try-catch block
-            if (TryDouble(DictGet(css.Map, "z-index"), out zVal)) css.ZIndex = (int)zVal;
-            
-            // Background properties
-            css.BackgroundClip = Safe(DictGet(css.Map, "background-clip"))?.ToLowerInvariant();
-            css.BackgroundOrigin = Safe(DictGet(css.Map, "background-origin"))?.ToLowerInvariant();
-            css.BackgroundAttachment = Safe(DictGet(css.Map, "background-attachment"))?.ToLowerInvariant();
-            css.BackgroundRepeat = Safe(DictGet(css.Map, "background-repeat"))?.ToLowerInvariant();
-            css.BackgroundSize = Safe(DictGet(css.Map, "background-size"))?.ToLowerInvariant();
-            css.BackgroundPosition = Safe(DictGet(css.Map, "background-position"))?.ToLowerInvariant();
-            var explicitBackgroundPositionX = Safe(DictGet(css.Map, "background-position-x"))?.ToLowerInvariant();
-            var explicitBackgroundPositionY = Safe(DictGet(css.Map, "background-position-y"))?.ToLowerInvariant();
-            if (!string.IsNullOrWhiteSpace(explicitBackgroundPositionX) || !string.IsNullOrWhiteSpace(explicitBackgroundPositionY))
-            {
-                css.BackgroundPosition = $"{(explicitBackgroundPositionX ?? "0%")} {(explicitBackgroundPositionY ?? "0%")}";
-            }
-            css.ObjectFit = Safe(DictGet(css.Map, "object-fit"))?.ToLowerInvariant();
-            css.ObjectPosition = Safe(DictGet(css.Map, "object-position"));
-
-            double cssFlexVal;
-            if (TryDouble(DictGet(css.Map, "flex-grow"), out cssFlexVal)) css.FlexGrow = cssFlexVal;
-            if (TryDouble(DictGet(css.Map, "flex-shrink"), out cssFlexVal)) css.FlexShrink = cssFlexVal;
-            if (TryDouble(DictGet(css.Map, "order"), out cssFlexVal)) css.Order = (int)cssFlexVal;
-            
-            // Handle 'flex' shorthand: flex: [grow] [shrink] [basis]
-            string flexShorthand = DictGet(css.Map, "flex");
-            if (!string.IsNullOrEmpty(flexShorthand))
-            {
-                double fg, fs, fb;
-                if (TryFlexShorthand(flexShorthand, out fg, out fs, out fb))
-                {
-                    css.FlexGrow = fg;
-                    css.FlexShrink = fs;
-                    if (!double.IsNaN(fb)) css.FlexBasis = fb;
-                }
-            }
-            
-            // Interaction
-            css.PointerEvents = Safe(DictGet(css.Map, "pointer-events"))?.ToLowerInvariant();
-
-            double emBase = 16.0;
-            if (parentCss != null && parentCss.FontSize.HasValue) emBase = parentCss.FontSize.Value;
-            
-            // Parse CSS 'font' shorthand: font: [style] [weight] size[/line-height] family
-            // Example: font: 400 16px/1.5 Arial
-            string fontShorthand = DictGet(css.Map, "font");
-            if (!string.IsNullOrWhiteSpace(fontShorthand) && !fontShorthand.StartsWith("var("))
-            {
-                // `font` shorthand must not override an already-cascaded explicit
-                // `font-size` longhand from a higher-priority declaration.
-                bool preserveExplicitFontSize = css.Map.ContainsKey("font-size");
-                ParseFontShorthand(fontShorthand, css, emBase, preserveExplicitFontSize);
-            }
-            
-            // Explicit font-family overrides shorthand
-            string fontFamilyRaw = DictGet(css.Map, "font-family");
-            if (!string.IsNullOrWhiteSpace(fontFamilyRaw))
-            {
-                 var fontParts = fontFamilyRaw.Split(',');
-                 foreach(var fp in fontParts) 
-                 {
-                     var clean = fp.Trim().Trim('"', '\'');
-                     if (!string.IsNullOrEmpty(clean)) 
-                     {
-                         css.FontFamilyName = clean;
-                         break; 
-                     }
-                 }
-            }
-            // INHERITANCE: Font family
-            if (string.IsNullOrEmpty(css.FontFamilyName) && parentCss != null)
-            {
-                css.FontFamilyName = parentCss.FontFamilyName;
-            }
-            
-            double currentEmBase = emBase;
-            double fsPx;
-            string rawFontSize = DictGet(css.Map, "font-size");
-            if (TryPx(rawFontSize, out fsPx, emBase, percentBase: emBase)) 
-            {
-                css.FontSize = fsPx;
-                currentEmBase = fsPx;
-                // DebugLog(@"debug_log.txt", $"[FONT-TRACE] Element={n.TagName} fs={rawFontSize} -> {fsPx}px\r\n");
-            }
-            else if (parentCss != null && parentCss.FontSize.HasValue)
-            {
-                css.FontSize = parentCss.FontSize.Value;
-                currentEmBase = parentCss.FontSize.Value;
-            }
-            else {
-                css.FontSize = 16.0;
-                currentEmBase = 16.0;
-            }
-
-            if (tag == "H1" || n.GetAttribute("id") == "dynamic-box")
-            {
-                 DebugLog(@"debug_log.txt", $"[CSS-TRACE] Tag={tag} ID={n.GetAttribute("id")} RAW_FS='{rawFontSize}' RESOLVED_FS={css.FontSize} RAW_H='{DictGet(css.Map, "height")}' RESOLVED_H='{css.Height}'\r\n");
-            }
-            
-            // Multi-column properties (moved here to have currentEmBase available)
-            css.ColumnCount = Safe(DictGet(css.Map, "column-count"));
-            if (int.TryParse(css.ColumnCount, out int cCount)) css.ColumnCountInt = cCount;
-            
-            css.ColumnWidth = Safe(DictGet(css.Map, "column-width"));
-            if (TryPx(css.ColumnWidth, out double cWidth, currentEmBase)) css.ColumnWidthFloat = cWidth;
-            
-            css.Columns = Safe(DictGet(css.Map, "columns"));
-            if (!string.IsNullOrEmpty(css.Columns))
-            {
-                // Shorthand: [width] [count] (order-independent)
-                var colParts = css.Columns.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (var cp in colParts)
-                {
-                    if (int.TryParse(cp, out int c)) css.ColumnCountInt = c;
-                    else if (TryPx(cp, out double w, currentEmBase)) css.ColumnWidthFloat = w;
-                }
-            }
-            
-            css.ColumnGapValue = Safe(DictGet(css.Map, "column-gap"));
-            if (TryPx(css.ColumnGapValue, out double colGapVal, currentEmBase)) css.ColumnGap = colGapVal;
-            
-            if (css.FontSize < 8) {
-                DebugLog(@"debug_log.txt", $"[FONT-WARN] Tiny Font! Element={n.TagName} fs={rawFontSize ?? "null"} resolved={css.FontSize}px\r\n");
-            }
-
-            double posVal;
-            if (TryPx(DictGet(css.Map, "left"), out posVal, currentEmBase)) css.Left = posVal;
-            else if (TryPercent(DictGet(css.Map, "left"), out posVal)) css.LeftPercent = posVal;
-
-            if (TryPx(DictGet(css.Map, "top"), out posVal, currentEmBase)) css.Top = posVal;
-            else if (TryPercent(DictGet(css.Map, "top"), out posVal)) css.TopPercent = posVal;
-
-            if (TryPx(DictGet(css.Map, "right"), out posVal, currentEmBase)) css.Right = posVal;
-            else if (TryPercent(DictGet(css.Map, "right"), out posVal)) css.RightPercent = posVal;
-
-            if (TryPx(DictGet(css.Map, "bottom"), out posVal, currentEmBase)) css.Bottom = posVal;
-            else if (TryPercent(DictGet(css.Map, "bottom"), out posVal)) css.BottomPercent = posVal;
-            
-            // inset property: shorthand for top, right, bottom, left
-            Thickness insetTh;
-            if (TryThickness(DictGet(css.Map, "inset"), out insetTh, currentEmBase))
-            {
-                css.Top = insetTh.Top;
-                css.Right = insetTh.Right;
-                css.Bottom = insetTh.Bottom;
-                css.Left = insetTh.Left;
-            }
-            // inset-block: shorthand for top, bottom (in horizontal-tb)
-            if (TryParseLogicalAxisPair(DictGet(css.Map, "inset-block"), currentEmBase, out var insetBlockStart, out var insetBlockEnd))
-            {
-                css.Top = insetBlockStart;
-                css.Bottom = insetBlockEnd;
-            }
-            // inset-inline: shorthand for left, right (in horizontal-tb)
-            if (TryParseLogicalAxisPair(DictGet(css.Map, "inset-inline"), currentEmBase, out var insetInlineStart, out var insetInlineEnd))
-            {
-                css.Left = insetInlineStart;
-                css.Right = insetInlineEnd;
-            }
-            bool insetInlineStartIsRight = string.Equals(css.Direction, "rtl", StringComparison.OrdinalIgnoreCase);
-            void ApplyInsetSide(string side, string rawValue)
-            {
-                if (string.IsNullOrWhiteSpace(rawValue) ||
-                    string.Equals(rawValue.Trim(), "auto", StringComparison.OrdinalIgnoreCase))
-                {
-                    return;
-                }
-
-                double parsedInset;
-                switch (side)
-                {
-                    case "left":
-                        css.Left = null;
-                        css.LeftPercent = null;
-                        if (TryPx(rawValue, out parsedInset, currentEmBase)) css.Left = parsedInset;
-                        else if (TryPercent(rawValue, out parsedInset)) css.LeftPercent = parsedInset;
-                        break;
-                    case "right":
-                        css.Right = null;
-                        css.RightPercent = null;
-                        if (TryPx(rawValue, out parsedInset, currentEmBase)) css.Right = parsedInset;
-                        else if (TryPercent(rawValue, out parsedInset)) css.RightPercent = parsedInset;
-                        break;
-                    case "top":
-                        css.Top = null;
-                        css.TopPercent = null;
-                        if (TryPx(rawValue, out parsedInset, currentEmBase)) css.Top = parsedInset;
-                        else if (TryPercent(rawValue, out parsedInset)) css.TopPercent = parsedInset;
-                        break;
-                    case "bottom":
-                        css.Bottom = null;
-                        css.BottomPercent = null;
-                        if (TryPx(rawValue, out parsedInset, currentEmBase)) css.Bottom = parsedInset;
-                        else if (TryPercent(rawValue, out parsedInset)) css.BottomPercent = parsedInset;
-                        break;
-                }
-            }
-
-            ApplyInsetSide("top", DictGet(css.Map, "inset-block-start"));
-            ApplyInsetSide("bottom", DictGet(css.Map, "inset-block-end"));
-            ApplyInsetSide(insetInlineStartIsRight ? "right" : "left", DictGet(css.Map, "inset-inline-start"));
-            ApplyInsetSide(insetInlineStartIsRight ? "left" : "right", DictGet(css.Map, "inset-inline-end"));
-
-            double sizeVal;
-            
-
-
-            string wStr = DictGet(css.Map, "width");
-            if (tag == "BODY") {
-            }
-            if (IsCssFunction(wStr)) {
-                css.WidthExpression = wStr;
-            }
-            else if (TryPx(wStr, out sizeVal, currentEmBase)) {
-                css.Width = sizeVal;
-            }
-            else if (TryPercent(wStr, out sizeVal)) {
-                css.WidthPercent = sizeVal;
-            }
-
-            string hStr = DictGet(css.Map, "height");
-            if (IsCssFunction(hStr)) css.HeightExpression = hStr;
-            else if (TryPx(hStr, out sizeVal, currentEmBase)) css.Height = sizeVal;
-            else if (TryPercent(hStr, out sizeVal)) css.HeightPercent = sizeVal;
-
-            string minWStr = DictGet(css.Map, "min-width");
-            if (IsCssFunction(minWStr)) css.MinWidthExpression = minWStr;
-            else if (TryPx(minWStr, out sizeVal, currentEmBase)) css.MinWidth = sizeVal;
-            else if (TryPercent(minWStr, out sizeVal)) css.MinWidthPercent = sizeVal;
-            
-            string minHStr = DictGet(css.Map, "min-height");
-            if (IsCssFunction(minHStr)) css.MinHeightExpression = minHStr;
-            else if (TryPx(minHStr, out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
-            else if (TryPercent(minHStr, out sizeVal)) css.MinHeightPercent = sizeVal;
-            
-            string maxWStr = DictGet(css.Map, "max-width");
-            if (IsCssFunction(maxWStr)) css.MaxWidthExpression = maxWStr;
-            else if (TryPx(maxWStr, out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
-            else if (TryPercent(maxWStr, out sizeVal)) css.MaxWidthPercent = sizeVal;
-
-            if (!string.IsNullOrEmpty(maxWStr) && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
-            {
-                EngineLogCompat.Info($"[CSS-MAXWIDTH] <{tag}#{n.Id}> Raw='{maxWStr}' MW={css.MaxWidth} MWP={css.MaxWidthPercent}", LogCategory.CSS);
-            }
-
-            string maxHStr = DictGet(css.Map, "max-height");
-            if (IsCssFunction(maxHStr)) css.MaxHeightExpression = maxHStr;
-            else if (TryPx(maxHStr, out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
-            else if (TryPercent(maxHStr, out sizeVal)) css.MaxHeightPercent = sizeVal;
-            
-            // Logical properties: inline-size, block-size
-            string isVal = DictGet(css.Map, "inline-size");
-            if (IsCssFunction(isVal)) css.WidthExpression = isVal;
-            else if (TryPx(isVal, out sizeVal, currentEmBase)) css.Width = sizeVal;
-            else if (TryPercent(isVal, out sizeVal)) css.WidthPercent = sizeVal;
-            
-            string bsVal = DictGet(css.Map, "block-size");
-            if (IsCssFunction(bsVal)) css.HeightExpression = bsVal;
-            else if (TryPx(bsVal, out sizeVal, currentEmBase)) css.Height = sizeVal;
-            else if (TryPercent(bsVal, out sizeVal)) css.HeightPercent = sizeVal;
-            
-            var minInlineSize = DictGet(css.Map, "min-inline-size");
-            if (IsCssFunction(minInlineSize)) css.MinWidthExpression = minInlineSize;
-            else if (TryPx(minInlineSize, out sizeVal, currentEmBase)) css.MinWidth = sizeVal;
-            else if (TryPercent(minInlineSize, out sizeVal)) css.MinWidthPercent = sizeVal;
-
-            var minBlockSize = DictGet(css.Map, "min-block-size");
-            if (IsCssFunction(minBlockSize)) css.MinHeightExpression = minBlockSize;
-            else if (TryPx(minBlockSize, out sizeVal, currentEmBase)) css.MinHeight = sizeVal;
-            else if (TryPercent(minBlockSize, out sizeVal)) css.MinHeightPercent = sizeVal;
-
-            var maxInlineSize = DictGet(css.Map, "max-inline-size");
-            if (IsCssFunction(maxInlineSize)) css.MaxWidthExpression = maxInlineSize;
-            else if (TryPx(maxInlineSize, out sizeVal, currentEmBase)) css.MaxWidth = sizeVal;
-            else if (TryPercent(maxInlineSize, out sizeVal)) css.MaxWidthPercent = sizeVal;
-
-            var maxBlockSize = DictGet(css.Map, "max-block-size");
-            if (IsCssFunction(maxBlockSize)) css.MaxHeightExpression = maxBlockSize;
-            else if (TryPx(maxBlockSize, out sizeVal, currentEmBase)) css.MaxHeight = sizeVal;
-            else if (TryPercent(maxBlockSize, out sizeVal)) css.MaxHeightPercent = sizeVal;
-            
-            var aspectRatioRaw = Safe(DictGet(css.Map, "aspect-ratio"));
-            if (!string.IsNullOrEmpty(aspectRatioRaw) && !aspectRatioRaw.Contains("auto"))
-            {
-                if (aspectRatioRaw.Contains("/"))
-                {
-                    var parts = aspectRatioRaw.Split('/');
-                    if (parts.Length == 2)
-                    {
-                        double w, h;
-                        if (TryDouble(parts[0].Trim(), out w) && TryDouble(parts[1].Trim(), out h) && h > 0)
-                            css.AspectRatio = w / h;
-                    }
-                }
-                else
-                {
-                    double ratio;
-                    if (TryDouble(aspectRatioRaw, out ratio) && ratio > 0)
-                        css.AspectRatio = ratio;
-                }
-            }
-
-            double gapRow, gapCol;
-            if (TryGapShorthand(DictGet(css.Map, "gap"), out gapRow, out gapCol))
-            {
-                css.Gap = gapRow;
-                css.RowGap = gapRow;
-                css.ColumnGap = gapCol;
-            }
-            double gapExplicit;
-            if (TryPx(DictGet(css.Map, "row-gap"), out gapExplicit, currentEmBase)) css.RowGap = gapExplicit;
-            if (TryPx(DictGet(css.Map, "column-gap"), out gapExplicit, currentEmBase)) css.ColumnGap = gapExplicit;
-            if (!css.RowGap.HasValue && css.Gap.HasValue) css.RowGap = css.Gap;
-            if (!css.ColumnGap.HasValue)
-            {
-                if (css.Gap.HasValue) css.ColumnGap = css.Gap;
-                else if (css.RowGap.HasValue) css.ColumnGap = css.RowGap;
-            }
-
-            // INHERITANCE: Visibility
-            // Visibility is an inherited property. If not specified, take from parent.
-            if (string.IsNullOrEmpty(css.Visibility))
-            {
-                 if (parentCss != null && !string.IsNullOrEmpty(parentCss.Visibility))
-                 {
-                     css.Visibility = parentCss.Visibility;
-                 }
-                 else
-                 {
-                     css.Visibility = "visible";
-                 }
-            }
-
-            var fgColor = TryColor(DictGet(css.Map, "color"));
-            if (fgColor.HasValue && !CssParser.IsCurrentColorSentinel(fgColor.Value))
-            {
-                css.ForegroundColor = fgColor;
-            }
-            else if (fgColor.HasValue && CssParser.IsCurrentColorSentinel(fgColor.Value))
-            {
-                // currentColor on the 'color' property acts as 'inherit'
-                css.ForegroundColor = (parentCss?.ForegroundColor is SKColor pc && !CssParser.IsCurrentColorSentinel(pc))
-                    ? pc : SKColors.Black;
-            }
-            else if (parentCss != null && parentCss.ForegroundColor.HasValue)
-                css.ForegroundColor = parentCss.ForegroundColor; // Inherit color from parent
-
-            // When a var() reference cannot be resolved (custom property
-            // undefined), the raw value fails TryColor and ForegroundColor
-            // stays null through the entire ancestor chain.  Fall back to
-            // the CSS initial value for color (depends on system; black
-            // is the safe default for light-mode pages like Google CAPTCHA).
-            if (!css.ForegroundColor.HasValue)
-            {
-                css.ForegroundColor = parentCss?.ForegroundColor ?? SKColors.Black;
-            }
-
-            // [FIX] Explicitly handle background-color first (highest priority)
-            var bgColorRaw = DictGet(css.Map, "background-color");
-            var explicitBgColor = TryColor(bgColorRaw);
-            // DEBUG: Log background-color for div elements
-            if (tag == "DIV" && FenBrowser.Core.Logging.DebugConfig.LogCssCascade)
-            {
-                FenBrowser.Core.EngineLogCompat.Info($"[BG-DEBUG] DIV background-color: raw='{bgColorRaw}' parsed={explicitBgColor}", LogCategory.CSS);
-            }
-            if (explicitBgColor.HasValue)
-            {
-                css.BackgroundColor = CssParser.ResolveCurrentColor(explicitBgColor.Value, css.ForegroundColor);
-            }
-            else
-            {
-                // Fallback to 'background' shorthand
-                var bgShorthand = DictGet(css.Map, "background");
-                if (!string.IsNullOrWhiteSpace(bgShorthand))
-                {
-                    // Try parsing whole string as color first
-                    var shColor = TryColor(bgShorthand);
-                    if (shColor.HasValue) 
-                    {
-                        css.BackgroundColor = shColor;
-                    }
-                    else
-                    {
-                        // Extract color from complex shorthand (e.g. gradients/position-size/url + color).
-                        // Use only the last background layer per spec.
-                        var extractedColor = ExtractBackgroundColorFromShorthand(bgShorthand);
-                        if (extractedColor.HasValue)
-                            css.BackgroundColor = extractedColor;
-                    }
-                }
-            }
-
-            string bgImage = DictGet(css.Map, "background-image");
-            var bgShorthandRaw = DictGet(css.Map, "background");
-            if (string.IsNullOrWhiteSpace(bgImage))
-            {
-                bgImage = ParseBackgroundImage(bgShorthandRaw);
-            }
-            else
-            {
-                // Some cascade paths still preserve the original shorthand text in
-                // background-image; normalize to a concrete url(...) token so paint
-                // code can load the image reliably.
-                var normalizedBgImage = ParseBackgroundImage(bgImage);
-                if (!string.IsNullOrWhiteSpace(normalizedBgImage))
-                {
-                    bgImage = normalizedBgImage;
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(bgImage) &&
-                bgImage.Contains("gradient", StringComparison.OrdinalIgnoreCase) &&
-                bgImage.IndexOf("url(", StringComparison.OrdinalIgnoreCase) < 0)
-            {
-                var fallbackUrlImage = ParseBackgroundImage(bgShorthandRaw);
-                if (!string.IsNullOrWhiteSpace(fallbackUrlImage))
-                {
-                    bgImage = fallbackUrlImage;
-                }
-            }
-
-            var authoredBackgroundAttachment = Safe(DictGet(css.Map, "background-attachment"));
-            if (string.IsNullOrWhiteSpace(css.BackgroundAttachment))
-            {
-                css.BackgroundAttachment = ExtractBackgroundAttachmentFromShorthand(bgShorthandRaw);
-            }
-            else if (string.IsNullOrWhiteSpace(authoredBackgroundAttachment) ||
-                     string.Equals(authoredBackgroundAttachment, "scroll", StringComparison.OrdinalIgnoreCase))
-            {
-                var shorthandAttachment = ExtractBackgroundAttachmentFromShorthand(bgShorthandRaw);
-                if (!string.IsNullOrWhiteSpace(shorthandAttachment))
-                {
-                    css.BackgroundAttachment = shorthandAttachment;
-                }
-            }
-
-            var authoredBackgroundRepeat = Safe(DictGet(css.Map, "background-repeat"));
-            if (string.IsNullOrWhiteSpace(css.BackgroundRepeat))
-            {
-                css.BackgroundRepeat = ExtractBackgroundRepeatFromShorthand(bgShorthandRaw);
-            }
-            else if (string.IsNullOrWhiteSpace(authoredBackgroundRepeat) ||
-                     string.Equals(authoredBackgroundRepeat, "repeat", StringComparison.OrdinalIgnoreCase))
-            {
-                var shorthandRepeat = ExtractBackgroundRepeatFromShorthand(bgShorthandRaw);
-                if (!string.IsNullOrWhiteSpace(shorthandRepeat))
-                {
-                    css.BackgroundRepeat = shorthandRepeat;
-                }
-            }
-
-            var authoredBackgroundPosition = Safe(DictGet(css.Map, "background-position"));
-            if (string.IsNullOrWhiteSpace(css.BackgroundPosition))
-            {
-                css.BackgroundPosition = ExtractBackgroundPositionFromShorthand(bgShorthandRaw);
-            }
-            else if (string.IsNullOrWhiteSpace(authoredBackgroundPosition) ||
-                     string.Equals(authoredBackgroundPosition, "0% 0%", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(authoredBackgroundPosition, "0 0", StringComparison.OrdinalIgnoreCase) ||
-                     string.Equals(authoredBackgroundPosition, "left top", StringComparison.OrdinalIgnoreCase))
-            {
-                var shorthandPosition = ExtractBackgroundPositionFromShorthand(bgShorthandRaw);
-                if (!string.IsNullOrWhiteSpace(shorthandPosition))
-                {
-                    css.BackgroundPosition = shorthandPosition;
-                }
-            }
-
-            var authoredBackgroundSize = Safe(DictGet(css.Map, "background-size"));
-            if (string.IsNullOrWhiteSpace(css.BackgroundSize))
-            {
-                css.BackgroundSize = ExtractBackgroundSizeFromShorthand(bgShorthandRaw);
-            }
-            else if (string.IsNullOrWhiteSpace(authoredBackgroundSize) ||
-                     string.Equals(authoredBackgroundSize, "auto", StringComparison.OrdinalIgnoreCase))
-            {
-                var shorthandSize = ExtractBackgroundSizeFromShorthand(bgShorthandRaw);
-                if (!string.IsNullOrWhiteSpace(shorthandSize))
-                {
-                    css.BackgroundSize = shorthandSize;
-                }
-            }
-
-            var authoredBackgroundOrigin = Safe(DictGet(css.Map, "background-origin"));
-            if (string.IsNullOrWhiteSpace(css.BackgroundOrigin))
-            {
-                css.BackgroundOrigin = ExtractBackgroundOriginFromShorthand(bgShorthandRaw);
-            }
-            else if (string.IsNullOrWhiteSpace(authoredBackgroundOrigin) ||
-                     string.Equals(authoredBackgroundOrigin, "padding-box", StringComparison.OrdinalIgnoreCase))
-            {
-                var shorthandOrigin = ExtractBackgroundOriginFromShorthand(bgShorthandRaw);
-                if (!string.IsNullOrWhiteSpace(shorthandOrigin))
-                {
-                    css.BackgroundOrigin = shorthandOrigin;
-                }
-            }
-
-            var authoredBackgroundClip = Safe(DictGet(css.Map, "background-clip"));
-            if (string.IsNullOrWhiteSpace(css.BackgroundClip))
-            {
-                css.BackgroundClip = ExtractBackgroundClipFromShorthand(bgShorthandRaw);
-            }
-            else if (string.IsNullOrWhiteSpace(authoredBackgroundClip) ||
-                     string.Equals(authoredBackgroundClip, "border-box", StringComparison.OrdinalIgnoreCase))
-            {
-                var shorthandClip = ExtractBackgroundClipFromShorthand(bgShorthandRaw);
-                if (!string.IsNullOrWhiteSpace(shorthandClip))
-                {
-                    css.BackgroundClip = shorthandClip;
-                }
-            }
-
-            var authoredBackgroundPositionX = Safe(DictGet(css.Map, "background-position-x"));
-            var authoredBackgroundPositionY = Safe(DictGet(css.Map, "background-position-y"));
-            if ((string.IsNullOrWhiteSpace(authoredBackgroundPositionX) || string.IsNullOrWhiteSpace(authoredBackgroundPositionY)) &&
-                !string.IsNullOrWhiteSpace(css.BackgroundPosition))
-            {
-                var positionParts = SplitCssShorthandTokens(css.BackgroundPosition).Select(p => p.Trim()).Where(p => p.Length > 0).ToList();
-                if (positionParts.Count > 0)
-                {
-                    if (string.IsNullOrWhiteSpace(authoredBackgroundPositionX))
-                    {
-                        css.Map["background-position-x"] = positionParts[0];
-                    }
-
-                    if (string.IsNullOrWhiteSpace(authoredBackgroundPositionY))
-                    {
-                        css.Map["background-position-y"] = positionParts.Count > 1 ? positionParts[1] : "center";
-                    }
-                }
-            }
-
-            // When a var() reference cannot be resolved in background-color
-            // (custom property undefined), fall back to transparent (the CSS
-            // initial value for background-color).
-            if (!css.BackgroundColor.HasValue)
-            {
-                css.BackgroundColor = SKColors.Transparent;
-            }
-
-            if (!string.IsNullOrWhiteSpace(bgImage))
-            {
-                // Check for url() - store directly for image rendering
-                bool containsUrl = bgImage.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0;
-                bool containsGradient = bgImage.Contains("gradient");
-                
-                if (containsUrl)
-                {
-                    // Preserve URL-backed image layers even when gradients are also present.
-                    var normalizedBgImage = ParseBackgroundImage(bgImage) ?? bgImage;
-                    css.BackgroundImage = normalizedBgImage;
-                    EngineLogCompat.Log(LogCategory.CSS, LogLevel.Debug, $"[CSS] BackgroundImage URL stored: {bgImage.Substring(0, Math.Min(80, bgImage.Length))}...");
-                }
-                else if (containsGradient)
-                {
-                    // Parse gradient
-
-                    
-                    var grad = ParseGradient(bgImage);
-                    if (grad != null) 
-                    {
-                        css.BackgroundImage = grad;
-
-                    }
-                    else
-                    {
-
-                    }
-                }
-            }
-
-            try
-            {
-                var ffRaw = DictGet(css.Map, "font-family");
-                var resolved = SelectFontFamily(ffRaw);
-                if (!string.IsNullOrEmpty(resolved))
-                    css.FontFamilyName = resolved;
-            }
-            catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Font-family resolution failed: {ex.Message}", LogCategory.CSS); }
-
-            var fwRaw = Safe(DictGet(css.Map, "font-weight"));
-            if (!string.IsNullOrEmpty(fwRaw))
-            {
-                var fw = fwRaw.Trim().ToLowerInvariant();
-                if (fw == "normal") css.FontWeight = MakeFontWeight(400);
-                else if (fw == "bold") css.FontWeight = MakeFontWeight(700);
-                else if (fw == "bolder") css.FontWeight = MakeFontWeight(700);
-                else if (fw == "lighter") css.FontWeight = MakeFontWeight(300);
-                else
-                {
-                    int numeric;
-                    if (int.TryParse(fw, NumberStyles.Integer, CultureInfo.InvariantCulture, out numeric))
-                    {
-                        css.FontWeight = MakeFontWeight(numeric);
-                    }
-                }
-            }
-
-            var fsRaw = Safe(DictGet(css.Map, "font-style"));
-            if (!string.IsNullOrEmpty(fsRaw))
-            {
-                if (string.Equals(fsRaw, "italic", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(fsRaw, "oblique", StringComparison.OrdinalIgnoreCase))
-                    css.FontStyle = SKFontStyleSlant.Italic;
-                else if (string.Equals(fsRaw, "normal", StringComparison.OrdinalIgnoreCase))
-                    css.FontStyle = SKFontStyleSlant.Upright;
-            }
-
-            var ta = Safe(DictGet(css.Map, "text-align"));
-            if (ta == "center") css.TextAlign = SKTextAlign.Center;
-            else if (ta == "right") css.TextAlign = SKTextAlign.Right;
-            else if (ta == "justify") css.TextAlign = SKTextAlign.Left; // Skia doesn't support justify natively
-
-            css.TextDecoration = Safe(DictGet(css.Map, "text-decoration"));
-
-            // Preserve typed projections for inherited text properties so layout/paint
-            // can rely on strongly-typed values even when the property came from the parent.
-            if (!css.TextAlign.HasValue && parentCss?.TextAlign.HasValue == true)
-                css.TextAlign = parentCss.TextAlign;
-            if (string.IsNullOrEmpty(css.TextDecoration) && !string.IsNullOrEmpty(parentCss?.TextDecoration))
-                css.TextDecoration = parentCss.TextDecoration;
-            if (string.IsNullOrEmpty(css.FontFamilyName) && !string.IsNullOrEmpty(parentCss?.FontFamilyName))
-                css.FontFamilyName = parentCss.FontFamilyName;
-            if (!css.FontWeight.HasValue && parentCss?.FontWeight.HasValue == true)
-                css.FontWeight = parentCss.FontWeight;
-            if (!css.FontStyle.HasValue && parentCss?.FontStyle.HasValue == true)
-                css.FontStyle = parentCss.FontStyle;
-            if (!css.LineHeight.HasValue && parentCss?.LineHeight.HasValue == true)
-                css.LineHeight = parentCss.LineHeight;
-
-            double opacityVal;
-            if (TryDouble(DictGet(css.Map, "opacity"), out opacityVal))
-                css.Opacity = Math.Max(0.0, Math.Min(1.0, opacityVal));
-
-            // Interactivity
-            css.PointerEvents = Safe(DictGet(css.Map, "pointer-events"));
-            css.Cursor = Safe(DictGet(css.Map, "cursor"));
-            css.UserSelect = Safe(DictGet(css.Map, "user-select"));
-
-            css.TextShadow = Safe(DictGet(css.Map, "text-shadow"));
-            css.BoxShadow = Safe(DictGet(css.Map, "box-shadow"));
-            css.MaskImage = Safe(DictGet(css.Map, "mask-image"));
-            if (string.IsNullOrEmpty(css.MaskImage)) css.MaskImage = Safe(DictGet(css.Map, "-webkit-mask-image"));
-
-            Thickness th;
-            if (TryThickness(DictGet(css.Map, "margin"), out th, currentEmBase)) css.Margin = th;
-            
-            // Detect margin: auto for centering (horizontal and vertical for absolute pos)
-            string marginRaw = DictGet(css.Map, "margin")?.Trim().ToLowerInvariant() ?? "";
-            string marginLeftRaw = DictGet(css.Map, "margin-left")?.Trim().ToLowerInvariant() ?? "";
-            string marginRightRaw = DictGet(css.Map, "margin-right")?.Trim().ToLowerInvariant() ?? "";
-            string marginTopRaw = DictGet(css.Map, "margin-top")?.Trim().ToLowerInvariant() ?? "";
-            string marginBottomRaw = DictGet(css.Map, "margin-bottom")?.Trim().ToLowerInvariant() ?? "";
-            string marginInlineRaw = DictGet(css.Map, "margin-inline")?.Trim().ToLowerInvariant() ?? "";
-            string marginInlineStartRaw = DictGet(css.Map, "margin-inline-start")?.Trim().ToLowerInvariant() ?? "";
-            string marginInlineEndRaw = DictGet(css.Map, "margin-inline-end")?.Trim().ToLowerInvariant() ?? "";
-            string marginBlockRaw = DictGet(css.Map, "margin-block")?.Trim().ToLowerInvariant() ?? "";
-            string marginBlockStartRaw = DictGet(css.Map, "margin-block-start")?.Trim().ToLowerInvariant() ?? "";
-            string marginBlockEndRaw = DictGet(css.Map, "margin-block-end")?.Trim().ToLowerInvariant() ?? "";
-            
-            // Parse margin shorthand for auto: "auto", "0 auto", "0 auto 0 auto", etc.
-            if (!string.IsNullOrEmpty(marginRaw))
-            {
-                var parts = marginRaw.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length == 1 && parts[0] == "auto")
-                {
-                    // margin: auto - all sides auto
-                    css.MarginLeftAuto = true;
-                    css.MarginRightAuto = true;
-                    css.MarginTopAuto = true;
-                    css.MarginBottomAuto = true;
-                }
-                else if (parts.Length == 2)
-                {
-                    // margin: V H
-                    if (parts[0] == "auto") { css.MarginTopAuto = true; css.MarginBottomAuto = true; }
-                    if (parts[1] == "auto") { css.MarginLeftAuto = true; css.MarginRightAuto = true; }
-                }
-                else if (parts.Length == 3)
-                {
-                    // margin: T H B
-                    if (parts[0] == "auto") css.MarginTopAuto = true;
-                    if (parts[1] == "auto") { css.MarginLeftAuto = true; css.MarginRightAuto = true; }
-                    if (parts[2] == "auto") css.MarginBottomAuto = true;
-                }
-                else if (parts.Length >= 4)
-                {
-                    // margin: T R B L
-                    if (parts[0] == "auto") css.MarginTopAuto = true;
-                    if (parts[1] == "auto") css.MarginRightAuto = true;
-                    if (parts[2] == "auto") css.MarginBottomAuto = true;
-                    if (parts[3] == "auto") css.MarginLeftAuto = true;
-                }
-            }
-            
-            // Explicit margin-left: auto overrides shorthand
-            if (marginLeftRaw == "auto") css.MarginLeftAuto = true;
-            if (marginRightRaw == "auto") css.MarginRightAuto = true;
-            if (marginTopRaw == "auto") css.MarginTopAuto = true;
-            if (marginBottomRaw == "auto") css.MarginBottomAuto = true;
-
-            bool marginInlineStartIsRight = string.Equals(css.Direction, "rtl", StringComparison.OrdinalIgnoreCase);
-            void MarkInlineMarginAuto(string logicalValue, bool isStart)
-            {
-                if (!IsCssAuto(logicalValue)) return;
-                bool mapsToRight = isStart ? marginInlineStartIsRight : !marginInlineStartIsRight;
-                if (mapsToRight) css.MarginRightAuto = true;
-                else css.MarginLeftAuto = true;
-            }
-
-            if (TrySplitLogicalAxisPairRaw(marginInlineRaw, out var marginInlineStartToken, out var marginInlineEndToken))
-            {
-                MarkInlineMarginAuto(marginInlineStartToken, isStart: true);
-                MarkInlineMarginAuto(marginInlineEndToken, isStart: false);
-            }
-            MarkInlineMarginAuto(marginInlineStartRaw, isStart: true);
-            MarkInlineMarginAuto(marginInlineEndRaw, isStart: false);
-
-            if (TrySplitLogicalAxisPairRaw(marginBlockRaw, out var marginBlockStartToken, out var marginBlockEndToken))
-            {
-                if (IsCssAuto(marginBlockStartToken)) css.MarginTopAuto = true;
-                if (IsCssAuto(marginBlockEndToken)) css.MarginBottomAuto = true;
-            }
-            if (IsCssAuto(marginBlockStartRaw)) css.MarginTopAuto = true;
-            if (IsCssAuto(marginBlockEndRaw)) css.MarginBottomAuto = true;
-
-            if (css.MarginLeftAuto || css.MarginRightAuto)
-            {
-                EngineLogCompat.Log(LogCategory.CSS, LogLevel.Info, $"[CSS-MARGIN] <{tag}#{n.Id}> margin-auto detected. L={css.MarginLeftAuto} R={css.MarginRightAuto} Raw='{marginRaw}' LRaw='{marginLeftRaw}' RRaw='{marginRightRaw}'");
-            }
-
-            // DEBUG: Log margin auto detection for DIV elements
-            if (tag == "DIV" && (!string.IsNullOrEmpty(marginRaw) || !string.IsNullOrEmpty(marginLeftRaw) || !string.IsNullOrEmpty(marginRightRaw)))
-            {
-                /* [PERF-REMOVED] */
-            }
-
-            double mVal;
-            var m = css.Margin;
-            double mLeft = m.Left, mTop = m.Top, mRight = m.Right, mBottom = m.Bottom;
-
-            void ApplyMarginSide(string side, string rawValue)
-            {
-                if (string.IsNullOrWhiteSpace(rawValue) || IsCssAuto(rawValue))
-                {
-                    return;
-                }
-
-                if (!TryPx(rawValue, out var parsedMargin, currentEmBase))
-                {
-                    return;
-                }
-
-                switch (side)
-                {
-                    case "left":
-                        if (!css.MarginLeftAuto) mLeft = parsedMargin;
-                        break;
-                    case "right":
-                        if (!css.MarginRightAuto) mRight = parsedMargin;
-                        break;
-                    case "top":
-                        if (!css.MarginTopAuto) mTop = parsedMargin;
-                        break;
-                    case "bottom":
-                        if (!css.MarginBottomAuto) mBottom = parsedMargin;
-                        break;
-                }
-            }
-
-            if (!css.MarginLeftAuto && TryPx(DictGet(css.Map, "margin-left"), out mVal, currentEmBase)) mLeft = mVal;
-            if (TryPx(DictGet(css.Map, "margin-top"), out mVal, currentEmBase)) mTop = mVal;
-            if (!css.MarginRightAuto && TryPx(DictGet(css.Map, "margin-right"), out mVal, currentEmBase)) mRight = mVal;
-            if (TryPx(DictGet(css.Map, "margin-bottom"), out mVal, currentEmBase)) mBottom = mVal;
-            
-            // Logical Properties: margin-block/margin-inline (horizontal-tb writing mode)
-            // margin-block-start -> top, margin-block-end -> bottom
-            // margin-inline-start -> left, margin-inline-end -> right
-            if (TrySplitLogicalAxisPairRaw(marginBlockRaw, out marginBlockStartToken, out marginBlockEndToken))
-            {
-                ApplyMarginSide("top", marginBlockStartToken);
-                ApplyMarginSide("bottom", marginBlockEndToken);
-            }
-            ApplyMarginSide("top", marginBlockStartRaw);
-            ApplyMarginSide("bottom", marginBlockEndRaw);
-            if (TrySplitLogicalAxisPairRaw(marginInlineRaw, out marginInlineStartToken, out marginInlineEndToken))
-            {
-                ApplyMarginSide(marginInlineStartIsRight ? "right" : "left", marginInlineStartToken);
-                ApplyMarginSide(marginInlineStartIsRight ? "left" : "right", marginInlineEndToken);
-            }
-            ApplyMarginSide(marginInlineStartIsRight ? "right" : "left", marginInlineStartRaw);
-            ApplyMarginSide(marginInlineStartIsRight ? "left" : "right", marginInlineEndRaw);
-            
-            css.Margin = new Thickness(mLeft, mTop, mRight, mBottom);
-            
-            // DEBUG: Log H2 margin to trace 2400px margin-top bug (DISABLED - causes performance issues)
-            // if (tag == "H2")
-            // {
-            //     string rawMarginH2 = DictGet(css.Map, "margin") ?? "(none)";
-            //     string rawMarginTop = DictGet(css.Map, "margin-top") ?? "(none)";
-            //     /* [PERF-REMOVED] */
-            // }
-
-            if (TryThickness(DictGet(css.Map, "padding"), out th, currentEmBase)) css.Padding = th;
-
-            var p = css.Padding;
-            double pLeft = p.Left, pTop = p.Top, pRight = p.Right, pBottom = p.Bottom;
-            if (TryPx(DictGet(css.Map, "padding-left"), out mVal, currentEmBase)) pLeft = mVal;
-            if (TryPx(DictGet(css.Map, "padding-top"), out mVal, currentEmBase)) pTop = mVal;
-            if (TryPx(DictGet(css.Map, "padding-right"), out mVal, currentEmBase)) pRight = mVal;
-            if (TryPx(DictGet(css.Map, "padding-bottom"), out mVal, currentEmBase)) pBottom = mVal;
-            
-            // Logical Properties: padding-block/padding-inline (horizontal-tb writing mode)
-            if (TryParseLogicalAxisPair(DictGet(css.Map, "padding-block"), currentEmBase, out var paddingBlockStart, out var paddingBlockEnd))
-            {
-                pTop = paddingBlockStart;
-                pBottom = paddingBlockEnd;
-            }
-            if (TryPx(DictGet(css.Map, "padding-block-start"), out mVal, currentEmBase)) pTop = mVal;
-            if (TryPx(DictGet(css.Map, "padding-block-end"), out mVal, currentEmBase)) pBottom = mVal;
-            if (TryParseLogicalAxisPair(DictGet(css.Map, "padding-inline"), currentEmBase, out var paddingInlineStart, out var paddingInlineEnd))
-            {
-                pLeft = paddingInlineStart;
-                pRight = paddingInlineEnd;
-            }
-            if (TryPx(DictGet(css.Map, "padding-inline-start"), out mVal, currentEmBase)) pLeft = mVal;
-            if (TryPx(DictGet(css.Map, "padding-inline-end"), out mVal, currentEmBase)) pRight = mVal;
-            
-            // Spec: padding cannot be negative
-            css.Padding = new Thickness(
-                System.Math.Max(0, pLeft), 
-                System.Math.Max(0, pTop), 
-                System.Math.Max(0, pRight), 
-                System.Math.Max(0, pBottom)
-            );
-            
-            var borderColor = TryColor(ExtractBorderColor(css.Map));
-            if (borderColor.HasValue) css.BorderBrushColor = CssParser.ResolveCurrentColor(borderColor.Value, css.ForegroundColor);
-
-            if (TryThickness(ExtractBorderThickness(css.Map), out th, currentEmBase)) css.BorderThickness = th;
-            CssCornerRadius cr;
-            if (TryCornerRadius(DictGet(css.Map, "border-radius"), out cr)) css.BorderRadius = cr;
-            
-            // Parse border-style shorthand
-            var borderStyleValue = Safe(DictGet(css.Map, "border-style"));
-            if (!string.IsNullOrEmpty(borderStyleValue))
-            {
-                string bsTop, bsRight, bsBottom, bsLeft;
-                ExtractBorderStyles(borderStyleValue, out bsTop, out bsRight, out bsBottom, out bsLeft);
-                css.BorderStyleTop = bsTop;
-                css.BorderStyleRight = bsRight;
-                css.BorderStyleBottom = bsBottom;
-                css.BorderStyleLeft = bsLeft;
-            }
-
-            bool hasExplicitBorderStyleShorthand = !string.IsNullOrEmpty(borderStyleValue);
-            bool hasExplicitBorderTopStyle = !string.IsNullOrEmpty(Safe(DictGet(css.Map, "border-top-style")));
-            bool hasExplicitBorderRightStyle = !string.IsNullOrEmpty(Safe(DictGet(css.Map, "border-right-style")));
-            bool hasExplicitBorderBottomStyle = !string.IsNullOrEmpty(Safe(DictGet(css.Map, "border-bottom-style")));
-            bool hasExplicitBorderLeftStyle = !string.IsNullOrEmpty(Safe(DictGet(css.Map, "border-left-style")));
-            
-            // Also check for style in "border" shorthand
-            var borderShorthand = Safe(DictGet(css.Map, "border"));
-            if (!string.IsNullOrEmpty(borderShorthand))
-            {
-                var bStyle = ExtractBorderSideStyle(borderShorthand);
-                if (bStyle != "none")
-                {
-                    if (!hasExplicitBorderStyleShorthand && !hasExplicitBorderTopStyle) css.BorderStyleTop = bStyle;
-                    if (!hasExplicitBorderStyleShorthand && !hasExplicitBorderRightStyle) css.BorderStyleRight = bStyle;
-                    if (!hasExplicitBorderStyleShorthand && !hasExplicitBorderBottomStyle) css.BorderStyleBottom = bStyle;
-                    if (!hasExplicitBorderStyleShorthand && !hasExplicitBorderLeftStyle) css.BorderStyleLeft = bStyle;
-                }
-            }
-            
-            var bt = css.BorderThickness;
-            double bLeft = bt.Left, bTop = bt.Top, bRight = bt.Right, bBottom = bt.Bottom;
-            SKColor? borderSideColor = null;
-            
-            var borderBottomRaw = Safe(DictGet(css.Map, "border-bottom"));
-            if (!string.IsNullOrEmpty(borderBottomRaw))
-            {
-                var sideWidth = ExtractBorderSideWidth(borderBottomRaw, currentEmBase);
-                if (sideWidth > 0) bBottom = sideWidth;
-                var sideCol = ExtractBorderSideColor(borderBottomRaw);
-                if (sideCol.HasValue) borderSideColor = sideCol;
-                var sideStyle = ExtractBorderSideStyle(borderBottomRaw);
-                css.BorderStyleBottom = sideStyle;
-            }
-            
-            var borderTopRaw = Safe(DictGet(css.Map, "border-top"));
-            if (!string.IsNullOrEmpty(borderTopRaw))
-            {
-                var sideWidth = ExtractBorderSideWidth(borderTopRaw, currentEmBase);
-                if (sideWidth > 0) bTop = sideWidth;
-                var sideCol = ExtractBorderSideColor(borderTopRaw);
-                if (sideCol.HasValue) borderSideColor = sideCol;
-                var sideStyle = ExtractBorderSideStyle(borderTopRaw);
-                css.BorderStyleTop = sideStyle;
-            }
-            
-            var borderLeftRaw = Safe(DictGet(css.Map, "border-left"));
-            if (!string.IsNullOrEmpty(borderLeftRaw))
-            {
-                var sideWidth = ExtractBorderSideWidth(borderLeftRaw, currentEmBase);
-                if (sideWidth > 0) bLeft = sideWidth;
-                var sideCol = ExtractBorderSideColor(borderLeftRaw);
-                if (sideCol.HasValue) borderSideColor = sideCol;
-                var sideStyle = ExtractBorderSideStyle(borderLeftRaw);
-                css.BorderStyleLeft = sideStyle;
-            }
-            
-            var borderRightRaw = Safe(DictGet(css.Map, "border-right"));
-            if (!string.IsNullOrEmpty(borderRightRaw))
-            {
-                var sideWidth = ExtractBorderSideWidth(borderRightRaw, currentEmBase);
-                if (sideWidth > 0) bRight = sideWidth;
-                var sideCol = ExtractBorderSideColor(borderRightRaw);
-                if (sideCol.HasValue) borderSideColor = sideCol;
-                var sideStyle = ExtractBorderSideStyle(borderRightRaw);
-                css.BorderStyleRight = sideStyle;
-            }
-            
-            // Parse individual border-style-* properties (override shorthand)
-            // Parse individual border-style-* properties (override shorthand)
-            var bsTopVal = Safe(DictGet(css.Map, "border-top-style"));
-            if (!string.IsNullOrEmpty(bsTopVal)) css.BorderStyleTop = bsTopVal.ToLowerInvariant();
-            var bsRightVal = Safe(DictGet(css.Map, "border-right-style"));
-            if (!string.IsNullOrEmpty(bsRightVal)) css.BorderStyleRight = bsRightVal.ToLowerInvariant();
-            var bsBottomVal = Safe(DictGet(css.Map, "border-bottom-style"));
-            if (!string.IsNullOrEmpty(bsBottomVal)) css.BorderStyleBottom = bsBottomVal.ToLowerInvariant();
-            var bsLeftVal = Safe(DictGet(css.Map, "border-left-style"));
-            if (!string.IsNullOrEmpty(bsLeftVal)) css.BorderStyleLeft = bsLeftVal.ToLowerInvariant();
-            
-            // List Properties
-            css.ListStyleType = Safe(DictGet(css.Map, "list-style-type"))?.ToLowerInvariant();
-            css.ListStylePosition = Safe(DictGet(css.Map, "list-style-position"))?.ToLowerInvariant();
-            css.ListStyleImage = Safe(DictGet(css.Map, "list-style-image"));
-            
-            // list-style shorthand: [type] [position] [image]
-            string listStyle = DictGet(css.Map, "list-style");
-            if (!string.IsNullOrWhiteSpace(listStyle))
-            {
-                var listParts = listStyle.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (var lp in listParts)
-                {
-                    string safeP = lp.ToLowerInvariant();
-                    if (safeP == "inside" || safeP == "outside")
-                    {
-                        if (string.IsNullOrEmpty(css.ListStylePosition)) css.ListStylePosition = safeP;
-                    }
-                    else if (safeP.StartsWith("url("))
-                    {
-                        if (string.IsNullOrEmpty(css.ListStyleImage)) css.ListStyleImage = lp;
-                    }
-                    else
-                    {
-                        // Assume it's a type if not position or url (and not already set)
-                        // This is a simplification but covers standard cases like "disc", "decimal", etc.
-                        if (string.IsNullOrEmpty(css.ListStyleType)) css.ListStyleType = safeP;
-                    }
-                }
-            }
-            
-            // INHERITANCE: List properties are inherited by default
-            if (string.IsNullOrEmpty(css.ListStyleType))
-            {
-                css.ListStyleType = parentCss?.ListStyleType ?? CssComputed.GetInitialValue("list-style-type");
-            }
-            if (string.IsNullOrEmpty(css.ListStylePosition))
-            {
-                css.ListStylePosition = parentCss?.ListStylePosition ?? CssComputed.GetInitialValue("list-style-position");
-            }
-            if (string.IsNullOrEmpty(css.ListStyleImage))
-            {
-                css.ListStyleImage = parentCss?.ListStyleImage ?? CssComputed.GetInitialValue("list-style-image");
-            }
-            
-            // Default list-style-type for LI if not set but parent is UL/OL
-            if (string.IsNullOrEmpty(css.ListStyleType) && tag == "LI")
-            {
-                 // Inherit is handled by cascade, but default user agent style needs apply if cascade missed it
-                 // Actually UA stylesheet should handle this: 'ul { list-style-type: disc }' etc.
-                 // So we don't force it here unless UA CSS is missing.
-            }
-            // Logical Properties: border-block/border-inline (horizontal-tb)
-            // border-block -> top/bottom
-            var borderBlockRaw = Safe(DictGet(css.Map, "border-block"));
-            if (!string.IsNullOrEmpty(borderBlockRaw))
-            {
-                var sideWidth = ExtractBorderSideWidth(borderBlockRaw, currentEmBase);
-                if (sideWidth > 0) { bTop = sideWidth; bBottom = sideWidth; }
-                var sideCol = ExtractBorderSideColor(borderBlockRaw);
-                if (sideCol.HasValue) borderSideColor = sideCol;
-                var sideStyle = ExtractBorderSideStyle(borderBlockRaw);
-                if (sideStyle != "none") { css.BorderStyleTop = sideStyle; css.BorderStyleBottom = sideStyle; }
-            }
-            
-            var borderInlineRaw = Safe(DictGet(css.Map, "border-inline"));
-            if (!string.IsNullOrEmpty(borderInlineRaw))
-            {
-                var sideWidth = ExtractBorderSideWidth(borderInlineRaw, currentEmBase);
-                if (sideWidth > 0) { bLeft = sideWidth; bRight = sideWidth; }
-                var sideCol = ExtractBorderSideColor(borderInlineRaw);
-                if (sideCol.HasValue) borderSideColor = sideCol;
-                var sideStyle = ExtractBorderSideStyle(borderInlineRaw);
-                if (sideStyle != "none") { css.BorderStyleLeft = sideStyle; css.BorderStyleRight = sideStyle; }
-            }
-
-            // Logical border side longhands and directional variants.
-            bool inlineStartIsRight = string.Equals(css.Direction, "rtl", StringComparison.OrdinalIgnoreCase);
-            string inlineStartSide = inlineStartIsRight ? "right" : "left";
-            string inlineEndSide = inlineStartIsRight ? "left" : "right";
-
-            void SetBorderWidthForSide(string side, double width)
-            {
-                if (width <= 0)
-                {
-                    return;
-                }
-
-                switch (side)
-                {
-                    case "left":
-                        bLeft = width;
-                        break;
-                    case "right":
-                        bRight = width;
-                        break;
-                    case "top":
-                        bTop = width;
-                        break;
-                    case "bottom":
-                        bBottom = width;
-                        break;
-                }
-
-                css.Map[$"border-{side}-width"] = width.ToString("0.###", CultureInfo.InvariantCulture) + "px";
-            }
-
-            void SetBorderStyleForSide(string side, string styleValue)
-            {
-                var normalized = styleValue?.Trim().ToLowerInvariant();
-                if (string.IsNullOrEmpty(normalized))
-                {
-                    return;
-                }
-
-                switch (side)
-                {
-                    case "left":
-                        css.BorderStyleLeft = normalized;
-                        break;
-                    case "right":
-                        css.BorderStyleRight = normalized;
-                        break;
-                    case "top":
-                        css.BorderStyleTop = normalized;
-                        break;
-                    case "bottom":
-                        css.BorderStyleBottom = normalized;
-                        break;
-                }
-
-                css.Map[$"border-{side}-style"] = normalized;
-            }
-
-            void SetBorderColorForSide(string side, string colorValue)
-            {
-                if (string.IsNullOrWhiteSpace(colorValue))
-                {
-                    return;
-                }
-
-                var parsed = TryColor(colorValue);
-                if (!parsed.HasValue)
-                {
-                    return;
-                }
-
-                borderSideColor = parsed;
-                css.Map[$"border-{side}-color"] = colorValue.Trim();
-            }
-
-            void ApplyLogicalBorderSideShorthand(string logicalName, string physicalSide)
-            {
-                var raw = Safe(DictGet(css.Map, logicalName));
-                if (string.IsNullOrWhiteSpace(raw))
-                {
-                    return;
-                }
-
-                var sideWidth = ExtractBorderSideWidth(raw, currentEmBase);
-                SetBorderWidthForSide(physicalSide, sideWidth);
-
-                var sideStyle = ExtractBorderSideStyle(raw);
-                if (!string.Equals(sideStyle, "none", StringComparison.OrdinalIgnoreCase))
-                {
-                    SetBorderStyleForSide(physicalSide, sideStyle);
-                }
-
-                var sideColor = ExtractBorderSideColor(raw);
-                if (sideColor.HasValue)
-                {
-                    borderSideColor = sideColor;
-                }
-            }
-
-            void ApplyLogicalBorderWidthLonghand(string logicalName, string physicalSide)
-            {
-                var raw = Safe(DictGet(css.Map, logicalName));
-                if (TryParseBorderWidthToken(raw, currentEmBase, out var width))
-                {
-                    SetBorderWidthForSide(physicalSide, width);
-                }
-            }
-
-            void ApplyLogicalBorderStyleLonghand(string logicalName, string physicalSide)
-            {
-                var raw = Safe(DictGet(css.Map, logicalName));
-                if (!string.IsNullOrWhiteSpace(raw))
-                {
-                    SetBorderStyleForSide(physicalSide, raw);
-                }
-            }
-
-            void ApplyLogicalBorderColorLonghand(string logicalName, string physicalSide)
-            {
-                var raw = Safe(DictGet(css.Map, logicalName));
-                SetBorderColorForSide(physicalSide, raw);
-            }
-
-            void ApplyLogicalAxisWidthShorthand(string logicalName, string firstSide, string secondSide)
-            {
-                var raw = Safe(DictGet(css.Map, logicalName));
-                var tokens = SplitCssValues(raw);
-                if (tokens.Count == 0)
-                {
-                    return;
-                }
-
-                if (TryParseBorderWidthToken(tokens[0], currentEmBase, out var first))
-                {
-                    SetBorderWidthForSide(firstSide, first);
-                }
-
-                if (tokens.Count > 1)
-                {
-                    if (TryParseBorderWidthToken(tokens[1], currentEmBase, out var second))
-                    {
-                        SetBorderWidthForSide(secondSide, second);
-                    }
-                }
-                else
-                {
-                    if (TryParseBorderWidthToken(tokens[0], currentEmBase, out var same))
-                    {
-                        SetBorderWidthForSide(secondSide, same);
-                    }
-                }
-            }
-
-            void ApplyLogicalAxisStyleShorthand(string logicalName, string firstSide, string secondSide)
-            {
-                var raw = Safe(DictGet(css.Map, logicalName));
-                var tokens = SplitCssValues(raw).Select(t => t.Trim()).Where(t => t.Length > 0).ToList();
-                if (tokens.Count == 0)
-                {
-                    return;
-                }
-
-                SetBorderStyleForSide(firstSide, tokens[0]);
-                SetBorderStyleForSide(secondSide, tokens.Count > 1 ? tokens[1] : tokens[0]);
-            }
-
-            void ApplyLogicalAxisColorShorthand(string logicalName, string firstSide, string secondSide)
-            {
-                var raw = Safe(DictGet(css.Map, logicalName));
-                var tokens = SplitCssValues(raw).Select(t => t.Trim()).Where(t => t.Length > 0).ToList();
-                if (tokens.Count == 0)
-                {
-                    return;
-                }
-
-                SetBorderColorForSide(firstSide, tokens[0]);
-                SetBorderColorForSide(secondSide, tokens.Count > 1 ? tokens[1] : tokens[0]);
-            }
-
-            ApplyLogicalBorderSideShorthand("border-inline-start", inlineStartSide);
-            ApplyLogicalBorderSideShorthand("border-inline-end", inlineEndSide);
-            ApplyLogicalBorderSideShorthand("border-block-start", "top");
-            ApplyLogicalBorderSideShorthand("border-block-end", "bottom");
-
-            ApplyLogicalBorderWidthLonghand("border-inline-start-width", inlineStartSide);
-            ApplyLogicalBorderWidthLonghand("border-inline-end-width", inlineEndSide);
-            ApplyLogicalBorderWidthLonghand("border-block-start-width", "top");
-            ApplyLogicalBorderWidthLonghand("border-block-end-width", "bottom");
-
-            ApplyLogicalBorderStyleLonghand("border-inline-start-style", inlineStartSide);
-            ApplyLogicalBorderStyleLonghand("border-inline-end-style", inlineEndSide);
-            ApplyLogicalBorderStyleLonghand("border-block-start-style", "top");
-            ApplyLogicalBorderStyleLonghand("border-block-end-style", "bottom");
-
-            ApplyLogicalBorderColorLonghand("border-inline-start-color", inlineStartSide);
-            ApplyLogicalBorderColorLonghand("border-inline-end-color", inlineEndSide);
-            ApplyLogicalBorderColorLonghand("border-block-start-color", "top");
-            ApplyLogicalBorderColorLonghand("border-block-end-color", "bottom");
-
-            ApplyLogicalAxisWidthShorthand("border-inline-width", inlineStartSide, inlineEndSide);
-            ApplyLogicalAxisWidthShorthand("border-block-width", "top", "bottom");
-
-            ApplyLogicalAxisStyleShorthand("border-inline-style", inlineStartSide, inlineEndSide);
-            ApplyLogicalAxisStyleShorthand("border-block-style", "top", "bottom");
-
-            ApplyLogicalAxisColorShorthand("border-inline-color", inlineStartSide, inlineEndSide);
-            ApplyLogicalAxisColorShorthand("border-block-color", "top", "bottom");
-            
-            // Spec: border-width computed value is 0 if border-style is none or hidden
-            if (css.BorderStyleLeft == "none" || css.BorderStyleLeft == "hidden") bLeft = 0;
-            if (css.BorderStyleRight == "none" || css.BorderStyleRight == "hidden") bRight = 0;
-            if (css.BorderStyleTop == "none" || css.BorderStyleTop == "hidden") bTop = 0;
-            if (css.BorderStyleBottom == "none" || css.BorderStyleBottom == "hidden") bBottom = 0;
-
-            css.BorderThickness = new Thickness(bLeft, bTop, bRight, bBottom);
-            if (borderSideColor.HasValue && (!css.BorderBrushColor.HasValue || css.BorderBrushColor.Value == default))
-                css.BorderBrushColor = CssParser.ResolveCurrentColor(borderSideColor.Value, css.ForegroundColor);
-
-            css.Display = Safe(DictGet(css.Map, "display"))?.ToLowerInvariant();
-            if (string.IsNullOrWhiteSpace(css.Display))
-            {
-                css.Display = GetDefaultDisplayValue(n);
-            }
-            css.Position = Safe(DictGet(css.Map, "position"));
-            css.Float = Safe(DictGet(css.Map, "float"));
-            css.Clear = Safe(DictGet(css.Map, "clear"));
-            css.Overflow = Safe(DictGet(css.Map, "overflow"));
-
-                css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"));
-                css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"));
-                css.JustifyContent = Safe(DictGet(css.Map, "justify-content"));
-                css.JustifyItems = Safe(DictGet(css.Map, "justify-items"));
-                css.JustifySelf = Safe(DictGet(css.Map, "justify-self"));
-                css.AlignItems = Safe(DictGet(css.Map, "align-items"));
-                css.AlignContent = Safe(DictGet(css.Map, "align-content"));
-                css.AlignSelf = Safe(DictGet(css.Map, "align-self"));
-                ApplyPlaceShorthands(css);
-            // Generated Content & Counters
-            css.Content = Safe(DictGet(css.Map, "content"));
-            css.CounterReset = Safe(DictGet(css.Map, "counter-reset"));
-            css.CounterIncrement = Safe(DictGet(css.Map, "counter-increment"));
-
-            double fG, fS, fB;
-            if (TryFlexShorthand(DictGet(css.Map, "flex"), out fG, out fS, out fB))
-            {
-                css.FlexGrow = fG;
-                css.FlexShrink = fS;
-                css.FlexBasis = fB;
-            }
-
-            double flexVal;
-            if (TryDouble(DictGet(css.Map, "flex-grow"), out flexVal)) css.FlexGrow = flexVal;
-            if (TryDouble(DictGet(css.Map, "flex-shrink"), out flexVal)) css.FlexShrink = flexVal;
-            // flex-basis
-            double basisVal;
-            if (TryPx(DictGet(css.Map, "flex-basis"), out basisVal)) css.FlexBasis = basisVal;
-            else if (TryPercent(DictGet(css.Map, "flex-basis"), out basisVal)) css.FlexBasis = basisVal; // simplified percent as px for basis
-            
-            // align-self for individual flex item alignment override
-            css.AlignSelf = Safe(DictGet(css.Map, "align-self"));
-            
-            // order for flex item ordering
-            int orderVal;
-            if (int.TryParse(DictGet(css.Map, "order"), NumberStyles.Integer, CultureInfo.InvariantCulture, out orderVal))
-                css.Order = orderVal;
-
-            var lhRaw = Safe(DictGet(css.Map, "line-height"));
-            if (!string.IsNullOrEmpty(lhRaw))
-            {
-                double lh;
-                if (TryPx(lhRaw, out lh, currentEmBase, 0, allowUnitless: true)) css.LineHeight = lh;
-                else if (double.TryParse(lhRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out lh)) css.LineHeight = lh;
-            }
-
-            // Parse word-spacing and letter-spacing
-            var wordSpacingRaw = Safe(DictGet(css.Map, "word-spacing"));
-            if (!string.IsNullOrEmpty(wordSpacingRaw) && wordSpacingRaw != "normal")
-            {
-                double ws;
-                if (TryPx(wordSpacingRaw, out ws)) css.WordSpacing = ws;
-            }
-            
-            var letterSpacingRaw = Safe(DictGet(css.Map, "letter-spacing"));
-            if (!string.IsNullOrEmpty(letterSpacingRaw) && letterSpacingRaw != "normal")
-            {
-                double ls;
-                if (TryPx(letterSpacingRaw, out ls)) css.LetterSpacing = ls;
-            }
-
-            // Parse hyphens property for word-breaking behavior
-            css.Hyphens = Safe(DictGet(css.Map, "hyphens"));
-            css.WordBreak = Safe(DictGet(css.Map, "word-break"))?.ToLowerInvariant();
-            css.OverflowWrap = Safe(DictGet(css.Map, "overflow-wrap"))?.ToLowerInvariant();
-            if (string.IsNullOrEmpty(css.OverflowWrap))
-            {
-                css.OverflowWrap = Safe(DictGet(css.Map, "word-wrap"))?.ToLowerInvariant();
-            }
-
-            css.VerticalAlign = Safe(DictGet(css.Map, "vertical-align"));
-            css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
-            css.TextOverflow = Safe(DictGet(css.Map, "text-overflow"));
-            css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
-            css.Cursor = Safe(DictGet(css.Map, "cursor"));
-            css.TextTransform = Safe(DictGet(css.Map, "text-transform"));
-            css.TextRendering = Safe(DictGet(css.Map, "text-rendering"));
-            css.FontVariant = Safe(DictGet(css.Map, "font-variant"));
-            css.FontFeatureSettings = Safe(DictGet(css.Map, "font-feature-settings"));
-            css.TabSize = Safe(DictGet(css.Map, "tab-size"));
-            css.TextUnderlineOffset = Safe(DictGet(css.Map, "text-underline-offset"));
-            css.TextDecorationStyle = Safe(DictGet(css.Map, "text-decoration-style"));
-            css.TextDecorationThickness = Safe(DictGet(css.Map, "text-decoration-thickness"));
-            css.PageBreakBefore = Safe(DictGet(css.Map, "page-break-before"));
-            css.PageBreakAfter = Safe(DictGet(css.Map, "page-break-after"));
-            css.PageBreakInside = Safe(DictGet(css.Map, "page-break-inside"));
-            css.ScrollBehavior = Safe(DictGet(css.Map, "scroll-behavior"));
-            css.UserSelect = Safe(DictGet(css.Map, "user-select"));
-            css.TouchAction = Safe(DictGet(css.Map, "touch-action"));
-            css.Resize = Safe(DictGet(css.Map, "resize"));
-            css.ColorScheme = Safe(DictGet(css.Map, "color-scheme"));
-            css.AccentColor = Safe(DictGet(css.Map, "accent-color"));
-            css.CaretColor = Safe(DictGet(css.Map, "caret-color"));
-            css.Isolation = Safe(DictGet(css.Map, "isolation"));
-            css.MixBlendMode = Safe(DictGet(css.Map, "mix-blend-mode"));
-            if (TryPx(DictGet(css.Map, "text-indent"), out var parsedTextIndent, currentEmBase))
-            {
-                css.TextIndent = parsedTextIndent;
-            }
-
-            // Removed duplicate flex property assignments (already handled above)
-
-
-            int zIndex;
-            if (int.TryParse(DictGet(css.Map, "z-index"), NumberStyles.Integer, CultureInfo.InvariantCulture, out zIndex))
-                css.ZIndex = zIndex;
-
-            // Preserve the earlier offset parse that used `currentEmBase`.
-            // Re-parsing here with default TryPx semantics can override `em` values
-            // with a different base (often 16px), which breaks positioned layout.
-            if (!css.Top.HasValue && !css.TopPercent.HasValue && TryPx(DictGet(css.Map, "top"), out posVal, currentEmBase))
-                css.Top = posVal;
-            if (!css.Right.HasValue && !css.RightPercent.HasValue && TryPx(DictGet(css.Map, "right"), out posVal, currentEmBase))
-                css.Right = posVal;
-            if (!css.Bottom.HasValue && !css.BottomPercent.HasValue && TryPx(DictGet(css.Map, "bottom"), out posVal, currentEmBase))
-                css.Bottom = posVal;
-            if (!css.Left.HasValue && !css.LeftPercent.HasValue && TryPx(DictGet(css.Map, "left"), out posVal, currentEmBase))
-                css.Left = posVal;
-            css.WhiteSpace = Safe(DictGet(css.Map, "white-space"));
-            css.TextOverflow = Safe(DictGet(css.Map, "text-overflow"));
-            css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"));
-            css.Cursor = Safe(DictGet(css.Map, "cursor"));
-
-            // Parse gap properties
-            double gapVal;
-            if (TryPx(DictGet(css.Map, "gap"), out gapVal)) css.Gap = gapVal;
-            if (TryPx(DictGet(css.Map, "row-gap"), out gapVal)) css.RowGap = gapVal;
-            if (TryPx(DictGet(css.Map, "column-gap"), out gapVal)) css.ColumnGap = gapVal;
-
-            css.GridTemplateColumns = Safe(DictGet(css.Map, "grid-template-columns"));
-            if (string.IsNullOrWhiteSpace(css.GridTemplateRows))
-                css.GridTemplateRows = Safe(DictGet(css.Map, "grid-template-rows"));
-            if (string.IsNullOrWhiteSpace(css.GridTemplateAreas))
-                css.GridTemplateAreas = Safe(DictGet(css.Map, "grid-template-areas"));
-            ApplyGridTemplateShorthand(css);
-
-            css.Transition = Safe(DictGet(css.Map, "transition"));
-            css.TransitionProperty = Safe(DictGet(css.Map, "transition-property"));
-            css.TransitionDuration = Safe(DictGet(css.Map, "transition-duration"));
-            css.TransitionTimingFunction = Safe(DictGet(css.Map, "transition-timing-function"));
-            css.TransitionDelay = Safe(DictGet(css.Map, "transition-delay"));
-
-            css.Filter = Safe(DictGet(css.Map, "filter"));
-            css.BackdropFilter = Safe(DictGet(css.Map, "backdrop-filter"));
-
-            css.ScrollSnapType = Safe(DictGet(css.Map, "scroll-snap-type"));
-            css.ScrollSnapAlign = Safe(DictGet(css.Map, "scroll-snap-align"));
-
-            css.WritingMode = Safe(DictGet(css.Map, "writing-mode"));
-            if (string.IsNullOrEmpty(css.WritingMode) && parentCss != null)
-            {
-                css.WritingMode = parentCss.WritingMode;
-            }
-
-
-            css.TableLayout = Safe(DictGet(css.Map, "table-layout"));
-            css.BorderCollapse = Safe(DictGet(css.Map, "border-collapse"));
-            css.BorderSpacing = Safe(DictGet(css.Map, "border-spacing"));
-            css.CaptionSide = Safe(DictGet(css.Map, "caption-side"));
-            css.EmptyCells = Safe(DictGet(css.Map, "empty-cells"));
-
-            css.CounterReset = Safe(DictGet(css.Map, "counter-reset"));
-            css.CounterIncrement = Safe(DictGet(css.Map, "counter-increment"));
-            css.Content = ResolveAttr(Safe(DictGet(css.Map, "content")), n);
-
-            css.MaskImage = Safe(DictGet(css.Map, "mask-image"));
-            if (string.IsNullOrEmpty(css.MaskImage))
-                css.MaskImage = Safe(DictGet(css.Map, "-webkit-mask-image"));
-            css.MaskMode = Safe(DictGet(css.Map, "mask-mode"));
-            css.MaskRepeat = Safe(DictGet(css.Map, "mask-repeat"));
-            css.MaskPosition = Safe(DictGet(css.Map, "mask-position"));
-            css.MaskSize = Safe(DictGet(css.Map, "mask-size"));
-
-            css.ShapeOutside = Safe(DictGet(css.Map, "shape-outside"));
-            css.ShapeMargin = Safe(DictGet(css.Map, "shape-margin"));
-            css.ShapeImageThreshold = Safe(DictGet(css.Map, "shape-image-threshold"));
-
-            var backgroundBrushRaw2 = Safe(DictGet(css.Map, "background"));
-            var backgroundColorRawVal2 = Safe(DictGet(css.Map, "background-color"));
-            var backgroundImageRawVal2 = Safe(DictGet(css.Map, "background-image"));
-            
-            if (!string.IsNullOrEmpty(backgroundBrushRaw2) || !string.IsNullOrEmpty(backgroundImageRawVal2))
-            {
-                var bgValue = !string.IsNullOrEmpty(backgroundImageRawVal2) ? backgroundImageRawVal2 : backgroundBrushRaw2;
-                if (bgValue.Contains("gradient"))
-                {
-                    try
-                    {
-                        var brush = ParseGradient(bgValue);
-                        if (brush != null) css.Background = brush;
-                    }
-                    catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Background gradient parse failed: {ex.Message}", LogCategory.CSS); }
-                }
-                else if (bgValue.IndexOf("url(", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    try
-                    {
-                        var brush = ParseBackgroundImage(bgValue);
-                        if (brush != null) css.Background = brush;
-                    }
-                    catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Background image parse failed: {ex.Message}", LogCategory.CSS); }
-                }
-                else if (string.Equals(bgValue, "none", StringComparison.OrdinalIgnoreCase))
-                {
-                    css.Background = null;
-                    css.BackgroundColor = SKColors.Transparent;
-                }
-                else if (!string.IsNullOrEmpty(bgValue))
-                {
-                    var col = CssParser.ParseColor(bgValue);
-                    if (col.HasValue)
-                    {
-                        css.BackgroundColor = col.Value;
-                       // css.Background = new SolidColorBrush(col.Value);
-                    }
-                }
-            }
-            
-            if (css.Background == null && !string.IsNullOrEmpty(backgroundColorRawVal2))
-            {
-                var col = CssParser.ParseColor(backgroundColorRawVal2);
-                if (col.HasValue)
-                {
-                    css.BackgroundColor = col.Value;
-                    // css.Background = new SolidColorBrush(col.Value);
-                }
-            }
-
-            var colorRaw2 = Safe(DictGet(css.Map, "color"));
-            if (!string.IsNullOrEmpty(colorRaw2))
-            {
-                var col = CssParser.ParseColor(colorRaw2);
-                if (col.HasValue)
-                {
-                    css.ForegroundColor = col.Value;
-                    // css.Foreground = new SolidColorBrush(col.Value); // Legacy removed
-                }
-            }
-
-            var filterRaw2 = Safe(DictGet(css.Map, "filter"));
-            if (!string.IsNullOrEmpty(filterRaw2))
-            {
-                css.Filter = filterRaw2;
-            }
-            
-            var backdropFilterRaw2 = Safe(DictGet(css.Map, "backdrop-filter"));
-            if (string.IsNullOrEmpty(backdropFilterRaw2))
-                backdropFilterRaw2 = Safe(DictGet(css.Map, "-webkit-backdrop-filter"));
-            if (!string.IsNullOrEmpty(backdropFilterRaw2))
-            {
-                css.BackdropFilter = backdropFilterRaw2;
-            }
-            
-            var clipPathRaw2 = Safe(DictGet(css.Map, "clip-path"));
-            if (!string.IsNullOrEmpty(clipPathRaw2))
-            {
-                css.ClipPath = clipPathRaw2;
-            }
-            css.Contain = Safe(DictGet(css.Map, "contain"));
-
-
-
-            // Generated Content & Counters
-            css.Content = Safe(DictGet(css.Map, "content"));
-            css.CounterReset = Safe(DictGet(css.Map, "counter-reset"));
-            css.CounterIncrement = Safe(DictGet(css.Map, "counter-increment"));
-
-            // Transform & Opacity
-            css.Transform = ComposeEffectiveTransform(css.Map);
-            css.TransformOrigin = Safe(DictGet(css.Map, "transform-origin"));
-            css.WillChange = Safe(DictGet(css.Map, "will-change"));
-
-            // Web-compat policy: no domain/class-specific style overrides.
-            // Behavior fixes must come from standards-based parser/cascade/layout improvements.
-            WebCompatibilityInterventionRegistry.Instance.Apply(
-                new WebCompatibilityInterventionContext(
-                    WebCompatibilityPipelineStage.Cascade,
-                    n,
-                    css,
-                    DateTimeOffset.UtcNow));
-
-            if (css.Display == "none") {
-                // ...
-            }
-
-            // [DEBUG-LOGGING]
-            if (FenBrowser.Core.Logging.DebugConfig.LogCssComputed)
-            {
-                 var cls = n.GetAttribute("class");
-                 // Simply log everything if no debug classes defined, or if match found
-                 // (Optional: can remove ShouldLog check for full blast)
-                 if (!string.IsNullOrEmpty(cls) && FenBrowser.Core.Logging.DebugConfig.ShouldLog(cls))
-                 {
-                     Console.WriteLine($"[CSS-COMPUTED] {n.TagName}.{cls}: D={css.Display} Pos={css.Position} W={css.Width}/{css.WidthPercent}%/{css.WidthExpression} H={css.Height}/{css.HeightPercent}%/{css.HeightExpression} Flex={css.FlexDirection} Gap={css.Gap}");
-                 }
-            }
-
-            if (parentCss != null)
-            {
-                foreach (var inheritedProperty in CssComputed.InheritedProperties)
-                {
-                    if (!css.Map.ContainsKey(inheritedProperty) &&
-                        parentCss.Map.TryGetValue(inheritedProperty, out var inheritedValue))
-                    {
-                        css.Map[inheritedProperty] = inheritedValue;
-                    }
-                }
-            }
-
-            return css;
-        }
-
-        private static int MakeFontWeight(int openTypeWeight)
-        {
-            // Clamp to valid range
-            if (openTypeWeight < 1) openTypeWeight = 1;
-            if (openTypeWeight > 999) openTypeWeight = 999;
-
-            // Map OpenType weight to integer
-            if (openTypeWeight <= 150) return 100; // Thin
-            if (openTypeWeight <= 250) return 200; // ExtraLight
-            if (openTypeWeight <= 350) return 300; // Light
-            if (openTypeWeight <= 450) return 400; // Normal
-            if (openTypeWeight <= 550) return 500; // Medium
-            if (openTypeWeight <= 650) return 600; // SemiBold
-            if (openTypeWeight <= 750) return 700; // Bold
-            if (openTypeWeight <= 850) return 800; // ExtraBold
-            if (openTypeWeight <= 950) return 900; // Black
-            return 950; // ExtraBlack
-        }
-
-        // ===========================
-        // Matching
-        // ===========================
-
-        private static bool HasDebugText(Element n)
-        {
-            if (n == null) return false;
-            // Quick shallow check for debug text
-            var stack = new System.Collections.Generic.Stack<Element>();
-            stack.Push(n);
-            int count = 0;
-            while (stack.Count > 0 && count < 50)
-            {
-                var cur = stack.Pop();
-                if (cur.IsText() && cur.TextContent != null && (cur.TextContent.Contains("Guides") || cur.TextContent.Contains("Detect my settings")))
-                    return true;
-                
-                if (cur.Children != null)
-                {
-                    foreach (var c in cur.Children.OfType<Element>()) stack.Push(c); // Depth-first
-                }
-                count++;
-            }
-            return false;
-        }
-
-        private static bool Matches(Element n, SelectorChain chain)
-        {
-            if (n == null || chain == null || chain.Segments.Count == 0) return false;
-
-            // PROBE: Check for the failing UL in nav
-            if (n.TagName == "ul" && HasDebugText(n))
-            {
-                // reconstruct selector string for log
-                var sb = new StringBuilder();
-                foreach(var s in chain.Segments) {
-                    sb.Append(s.TagName ?? "");
-                    if(s.Id!=null) sb.Append("#" + s.Id);
-                    if(s.Classes!=null) foreach(var c in s.Classes) sb.Append("." + c);
-                    sb.Append(" ");
-                }
-                EngineLogCompat.Debug($"[SelectorProbe] Checking UL against rule: {sb}", LogCategory.Layout);
-
-                // Log Ancestor Chain EXACTLY ONCE per element (cache key?)
-                // Actually, just log it. It's spammy but needed.
-                var p = n.ParentNode;
-                var chainLog = new System.Text.StringBuilder("Ancestors: ");
-                int depth = 0;
-                while (p != null && depth < 10)
-                {
-                    string cls = (p as Element)?.GetAttribute("class") ?? "";
-                    chainLog.Append($"{(p as Element)?.TagName ?? p.NodeName}.{cls?.Replace(" ", ".")} > ");
-                    p = p.ParentNode;
-                    depth++;
-                }
-                EngineLogCompat.Debug($"[SelectorProbe] {chainLog}", LogCategory.Layout);
-            }
-
-            // Delegate implementation to the shared SelectorMatcher (V2 DOM compliant)
-            return SelectorMatcher.MatchesChain(n, chain);
-        }
-
-        private static Element FindAncestorMatching(Element n, SelectorSegment seg)
-        {
-            var p = n.ParentNode;
-            while (p != null)
-            {
-                var el = p as Element;
-                if (el != null && MatchesSingle(el, seg)) return el;
-                p = p.ParentNode;
-            }
-            return null;
-        }
-
-        /// <summary>
-        /// Check if a 1-based index matches the an+b pattern.
-        /// </summary>
-        private static bool MatchesNth(int index1Based, int a, int b)
-        {
-            if (a == 0)
-                return index1Based == b;
-
-            var diff = index1Based - b;
-            if (a > 0)
-                return diff >= 0 && diff % a == 0;
-            else
-                return diff <= 0 && diff % a == 0;
-        }
-
-        /// <summary>
-        /// Get the 1-based child index of element n within its parent's children.
-        /// </summary>
-        private static int GetChildIndex(Element n)
-        {
-            if (n == null || n.ParentNode == null) return 0;
-            int index = 0;
-            for (var node = n.ParentNode.FirstChild; node != null; node = node.NextSibling)
-            {
-                if (node.IsElement())
-                {
-                    index++;
-                    if (node == n) return index;
-                }
-            }
-            return 0;
-        }
-
-        /// <summary>
-        /// Get the 1-based index of element n among siblings of the same tag type.
-        /// </summary>
-        private static int GetTypeIndex(Element n)
-        {
-            if (n == null || n.ParentNode == null) return 0;
-            string tagName = n.TagName;
-
-            int index = 0;
-            for (var node = n.ParentNode.FirstChild; node != null; node = node.NextSibling)
-            {
-                if (node is Element el && string.Equals(el.TagName, tagName, StringComparison.OrdinalIgnoreCase))
-                {
-                    index++;
-                    if (el == n) return index;
-                }
-            }
-            return 0;
-        }
-
-        /// <summary>
-        /// Get the 1-based index from the end (last child = 1) within parent's children.
-        /// </summary>
-        private static int GetLastChildIndex(Element n)
-        {
-            if (n == null || n.ParentNode == null) return 0;
-            int index = 0;
-            for (var node = n.ParentNode.LastChild; node != null; node = node.PreviousSibling)
-            {
-                if (node.IsElement())
-                {
-                    index++;
-                    if (node == n) return index;
-                }
-            }
-            return 0;
-        }
-
-        /// <summary>
-        /// Get the 1-based index from the end among siblings of the same tag type.
-        /// </summary>
-        private static int GetLastTypeIndex(Element n)
-        {
-            if (n == null || n.ParentNode == null) return 0;
-            string tagName = n.TagName;
-
-            int index = 0;
-            for (var node = n.ParentNode.LastChild; node != null; node = node.PreviousSibling)
-            {
-                 if (node is Element el && string.Equals(el.TagName, tagName, StringComparison.OrdinalIgnoreCase))
-                 {
-                     index++;
-                     if (el == n) return index;
-                 }
-            }
-            return 0;
-        }
-
-        /// <summary>
-        /// Extract the argument from a pseudo-class like ":nth-child(2n+1)" -> "2n+1"
-        /// </summary>
-
-
-        /// <summary>
-        /// Check if a tag is a form element that can have :enabled/:disabled/:required states
-        /// </summary>
-        private static bool IsFormElement(string tag)
-        {
-            if (string.IsNullOrEmpty(tag)) return false;
-            return string.Equals(tag, "input", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(tag, "button", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(tag, "select", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(tag, "textarea", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(tag, "fieldset", StringComparison.OrdinalIgnoreCase);
-        }
-
-        /// <summary>
-        /// Determine text direction for dir="auto" based on first strong directional character.
-        /// Per HTML5 spec, the direction is determined by the first character with strong directionality.
-        /// Reference: https://html.spec.whatwg.org/multipage/dom.html#the-directionality
-        /// </summary>
-
-
-        private static bool MatchesSingle(Element n, SelectorSegment seg)
-        {
-            return SelectorMatcher.MatchesSegment(n, seg, 0);
-            /*
-            if (n == null || seg == null) return false;
-            if (n.IsText()) return false;
-
-            // GOOGLE DEEP DIVE LOGGING
-            bool isDebug = false;
-            if (seg.Classes != null)
-            {
-                if (seg.Classes.Contains("L3eUgb") || seg.Classes.Contains("SIvCob") || 
-                    seg.Classes.Contains("AghGtd") || seg.Classes.Contains("RNNXgb") || 
-                    seg.Classes.Contains("SDkEP") || seg.Classes.Contains("FPdoL") || 
-                    seg.Classes.Contains("lJ9F") || seg.Classes.Contains("gNO89b") || 
-                    seg.Classes.Contains("RNmpXc")) // Button classes
-                {
-                    isDebug = true;
-                }
-            }
-
-            // Universal selector support
-            if (!string.IsNullOrEmpty(seg.TagName) && seg.TagName != "*")
-            {
-                if (!string.Equals(n.TagName, seg.TagName, StringComparison.OrdinalIgnoreCase))
-                {
-                    if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match FAIL: Tag mismatch. Validating '{seg.TagName}' against '{n.TagName}' for classes {string.Join(",", seg.Classes)}", LogCategory.Layout);
-                    return false;
-                }
-            }
-
-            if (!string.IsNullOrEmpty(seg.Id))
-            {
-                string id = n.Id;
-                if (!string.Equals(id ?? "", seg.Id, StringComparison.OrdinalIgnoreCase))
-                {
-                    if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match FAIL: ID mismatch. Validating '{seg.Id}' against '{id ?? "null"}'", LogCategory.Layout);
-                    return false;
-                }
-            }
-
-            if (seg.Classes != null && seg.Classes.Count > 0)
-            {
-                string cls = n.GetAttribute("class");
-                if (string.IsNullOrWhiteSpace(cls))
-                {
-                    if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match FAIL: No class attr. Expected {string.Join(",", seg.Classes)}", LogCategory.Layout);
-                    return false;
-                }
-
-                var have = SplitTokens(cls);
-                foreach (var c in seg.Classes)
-                {
-                    if (!have.Contains(c, StringComparer.OrdinalIgnoreCase)) 
-                    {
-                        if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match FAIL: Missing class '{c}'. Have '{cls}'", LogCategory.Layout);
-                        return false;
-                    }
-                }
-            }
-
-            if (seg.Attributes != null)
-            {
-                foreach (var attr in seg.Attributes)
-                {
-                    string val = n.GetAttribute(attr.Name);
-                    if (val == null)
-                    {
-                         if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match FAIL: Missing attribute '{attr.Name}'", LogCategory.Layout);
-                         return false;
-                    }
-                    
-                    // Empty operator means just presence check
-                    if (string.IsNullOrEmpty(attr.Operator))
-                    {
-                        continue; // Attribute exists, that's enough
-                    }
-                    else if (attr.Operator == "=")
-                    {
-                        if (!string.Equals(val ?? "", attr.Value, StringComparison.OrdinalIgnoreCase)) return false;
-                    }
-                    else if (attr.Operator == "~=")
-                    {
-                        // [attr~=val] - val is one of space-separated words in attribute value
-                        var tokens = SplitTokens(val ?? "");
-                        if (!tokens.Contains(attr.Value, StringComparer.OrdinalIgnoreCase)) return false;
-                    }
-                    else if (attr.Operator == "|=")
-                    {
-                        // [attr|=val] - value is exactly val or starts with val followed by hyphen
-                        var v = val ?? "";
-                        if (!string.Equals(v, attr.Value, StringComparison.OrdinalIgnoreCase) &&
-                            !v.StartsWith(attr.Value + "-", StringComparison.OrdinalIgnoreCase)) return false;
-                    }
-                    else if (attr.Operator == "^=")
-                    {
-                        if (!(val ?? "").StartsWith(attr.Value, StringComparison.OrdinalIgnoreCase)) return false;
-                    }
-                    else if (attr.Operator == "$=")
-                    {
-                        if (!(val ?? "").EndsWith(attr.Value, StringComparison.OrdinalIgnoreCase)) return false;
-                    }
-                    else if (attr.Operator == "*=")
-                    {
-                        if ((val ?? "").IndexOf(attr.Value, StringComparison.OrdinalIgnoreCase) < 0) return false;
-                    }
-                }
-            }
-
-            // Pseudo-element support (basic: ::before, ::after, ::placeholder)
-            if (seg.PseudoClasses != null)
-            {
-                foreach (var pseudo in seg.PseudoClasses)
-                foreach (var psObj in seg.PseudoClasses)
-                {
-                    string ps = (psObj.Name ?? string.Empty).Trim();
-                    string normalizedPs = ps.TrimStart(':');
-                    string args = psObj.Args;
-
-                    // Handle pseudo-elements first
-                    if (string.Equals(normalizedPs, "before", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(normalizedPs, "after", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(normalizedPs, "placeholder", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // For now, pseudo-elements do not match real elements
-                        return false;
-                    }
-
-                    if (string.Equals(normalizedPs, "first-child", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var parent = n.ParentNode;
-                        if (parent == null) return false;
-                        var firstElement = parent.ChildNodes.OfType<Element>().FirstOrDefault();
-                        if (firstElement != n) return false;
-                    }
-                    else if (string.Equals(normalizedPs, "last-child", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var parent = n.ParentNode;
-                        if (parent == null) return false;
-                        var lastElement = parent.ChildNodes.OfType<Element>().LastOrDefault();
-                        if (lastElement != n) return false;
-                    }
-                    else if (string.Equals(normalizedPs, "root", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (!string.Equals(n.TagName, "html", StringComparison.OrdinalIgnoreCase)) return false;
-                    }
-                    else if (string.Equals(normalizedPs, "only-child", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var parent = n.ParentNode;
-                        if (parent == null) return false;
-                        var elementChildren = parent.ChildNodes.OfType<Element>().ToList();
-                        if (elementChildren.Count != 1 || elementChildren[0] != n) return false;
-                    }
-                    else if (normalizedPs.StartsWith("nth-child", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var arg = args ?? ExtractPseudoArg(ps); // Use pre-parsed args if available, else extract
-                        int a, b;
-                        if (ParseNthExpression(arg, out a, out b))
-                        {
-                            int index = GetChildIndex(n);
-                            if (index == 0 || !MatchesNth(index, a, b)) return false;
-                        }
-                        else
-                        {
-                            return false; // Invalid nth-expression
-                        }
-                    }
-                    else if (normalizedPs.StartsWith("nth-of-type", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var arg = args ?? ExtractPseudoArg(ps);
-                        int a, b;
-                        if (ParseNthExpression(arg, out a, out b))
-                        {
-                            int index = GetTypeIndex(n);
-                            if (index == 0 || !MatchesNth(index, a, b)) return false;
-                        }
-                        else
-                        {
-                            return false; // Invalid nth-expression
-                        }
-                    }
-                    else if (normalizedPs.StartsWith("matches(", StringComparison.OrdinalIgnoreCase) || 
-                             normalizedPs.StartsWith("is(", StringComparison.OrdinalIgnoreCase) || 
-                             normalizedPs.StartsWith("where(", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var arg = ExtractPseudoArg(ps);
-                        if (!MatchesSelectorList(n, arg)) return false;
-                    }
-                    else if (normalizedPs.StartsWith("has(", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var arg = ExtractPseudoArg(ps);
-                        if (!MatchesHas(n, arg)) return false;
-                    }
-                    else if (normalizedPs.StartsWith("not(", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var arg = ExtractPseudoArg(ps);
-                        if (MatchesSelectorList(n, arg)) return false;
-                    }
-                    // Keep existing :not implementation for backward compat if needed, but the above covers it generally if arg is complex
-                    // The existing parser might have stored :not as not(xyz) in PseudoClasses
-                    else if (string.Equals(normalizedPs, "empty", StringComparison.OrdinalIgnoreCase))
-                    {
-                         if (n.Children != null && n.Children.Any(c => !c.IsText() || !string.IsNullOrWhiteSpace(c.Text))) return false;
-                    }
-                    else if (normalizedPs.StartsWith("nth-last-child", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var arg = args ?? ExtractPseudoArg(ps);
-                        int a, b;
-                        if (ParseNthExpression(arg, out a, out b))
-                        {
-                            int index = GetLastChildIndex(n);
-                            if (index == 0 || !MatchesNth(index, a, b)) return false;
-                        }
-                        else
-                        {
-                            return false; // Invalid nth-expression
-                        }
-                    }
-                    else if (normalizedPs.StartsWith("nth-last-of-type", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var arg = args ?? ExtractPseudoArg(ps);
-                        int a, b;
-                        if (ParseNthExpression(arg, out a, out b))
-                        {
-                            int index = GetLastTypeIndex(n);
-                            if (index == 0 || !MatchesNth(index, a, b)) return false;
-                        }
-                        else
-                        {
-                            return false; // Invalid nth-expression
-                        }
-                    }
-                    else if (string.Equals(normalizedPs, "first-of-type", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (n == null || n.ParentNode == null || string.IsNullOrEmpty(n.TagName)) return false;
-
-                        // Find the first element of this type among siblings using DOM child nodes
-                        Element firstOfType = null;
-                        foreach (var childNode in n.ParentNode.ChildNodes)
-                        {
-                            var child = childNode as Element;
-                            if (child != null && !child.IsText() && string.Equals(child.TagName, n.TagName, StringComparison.OrdinalIgnoreCase))
-                            {
-                                firstOfType = child;
-                                break;
-                            }
-                        }
-                        if (firstOfType != n) return false;
-                    }
-                    else if (string.Equals(normalizedPs, "not", StringComparison.OrdinalIgnoreCase))
-                    {
-                         // Handle :not with pre-parsed args or string args
-                         var parsedArgs = psObj.ParsedArgsOrNull;
-                         if (parsedArgs != null && parsedArgs.Count > 0)
-                         {
-                             if (MatchesSelectorList(n, parsedArgs)) return false;
-                         }
-                         else if (!string.IsNullOrEmpty(args))
-                         {
-                             // Fallback to parsing args
-                             // Note: MatchesSelectorList overload for string does parsing
-                             if (MatchesSelectorList(n, args)) return false;
-                         }
-                    }
-                    else if (string.Equals(normalizedPs, "is", StringComparison.OrdinalIgnoreCase) || string.Equals(normalizedPs, "where", StringComparison.OrdinalIgnoreCase))
-                    {
-                         bool match = false;
-                         var parsedArgs = psObj.ParsedArgsOrNull;
-                         if (parsedArgs != null && parsedArgs.Count > 0)
-                         {
-                             match = MatchesSelectorList(n, parsedArgs);
-                         }
-                         else if (!string.IsNullOrEmpty(args))
-                         {
-                             match = MatchesSelectorList(n, args);
-                         }
-                         if (!match) return false;
-                    }
-                    else if (string.Equals(ps, "has", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (!string.IsNullOrEmpty(args))
-                        {
-                            if (!MatchesHas(n, args)) return false; 
-                        }
-                    }
-                    else if (string.Equals(ps, "last-of-type", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (n == null || n.ParentNode == null || string.IsNullOrEmpty(n.TagName)) return false;
-
-                        // Find the last element of this type among siblings
-                        Element lastOfType = null;
-                        foreach (var childNode in n.ParentNode.ChildNodes)
-                        {
-                            var child = childNode as Element;
-                            if (child != null && !child.IsText() && string.Equals(child.TagName, n.TagName, StringComparison.OrdinalIgnoreCase))
-                                lastOfType = child;
-                        }
-                        if (lastOfType != n) return false;
-                    }
-                    else if (string.Equals(ps, "only-of-type", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (n == null || n.ParentNode == null || string.IsNullOrEmpty(n.TagName)) return false;
-
-                        int typeCount = 0;
-                        for (var childNode = n.ParentNode.FirstChild; childNode != null; childNode = childNode.NextSibling)
-                        {
-                            var child = childNode as Element;
-                            if (child != null && string.Equals(child.TagName, n.TagName, StringComparison.OrdinalIgnoreCase))
-                                typeCount++;
-                        }
-                        if (typeCount != 1) return false;
-                    }
-                    else if (string.Equals(ps, "empty", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :empty matches elements with no children (except comments)
-                        if (n.HasChildNodes)
-                        {
-                             // Check if any child is Element or non-empty Text
-                             for (var child = n.FirstChild; child != null; child = child.NextSibling)
-                             {
-                                 if (child.IsElement()) return false;
-                                 if (child.IsText() && !string.IsNullOrEmpty(child.TextContent)) return false;
-                             }
-                        }
-                    }
-                    // === Interactive state pseudo-classes (query ElementStateManager) ===
-                    else if (string.Equals(ps, "hover", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :hover - query ElementStateManager for hover state
-                        if (!ElementStateManager.Instance.IsHovered(n)) return false;
-                    }
-                    else if (string.Equals(ps, "active", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :active - query ElementStateManager for active (mouse down) state
-                        if (!ElementStateManager.Instance.IsActive(n)) return false;
-                    }
-                    else if (string.Equals(ps, "focus", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :focus - query ElementStateManager for focus state
-                        if (!ElementStateManager.Instance.IsFocused(n)) return false;
-                    }
-                    else if (string.Equals(ps, "focus-within", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :focus-within - query ElementStateManager for focus-within state
-                        if (!ElementStateManager.Instance.IsFocusWithin(n)) return false;
-                    }
-                    else if (string.Equals(ps, "focus-visible", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :focus-visible - match focused element if visible focus indicator should be shown
-                        // Per CSS Selectors Level 4, this is true when focus was keyboard-triggered
-                        // or for text inputs which always show focus rings
-                        if (!ElementStateManager.Instance.IsFocusVisible(n)) return false;
-                    }
-                    // === Link state pseudo-classes ===
-                    else if (string.Equals(ps, "link", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :link matches <a>, <area>, <link> with href that hasn't been visited
-                        // Since we don't track visited links, match all links
-                        if (!string.Equals(n.TagName, "a", StringComparison.OrdinalIgnoreCase) &&
-                            !string.Equals(n.TagName, "area", StringComparison.OrdinalIgnoreCase))
-                            return false;
-                        string href = n.GetAttribute("href");
-                        if (string.IsNullOrWhiteSpace(href))
-                            return false;
-                    }
-                    else if (string.Equals(ps, "visited", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :visited - we don't track history, so never match
-                        return false;
-                    }
-                    else if (string.Equals(ps, "any-link", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :any-link matches any <a> or <area> with href
-                        if (!string.Equals(n.TagName, "a", StringComparison.OrdinalIgnoreCase) &&
-                            !string.Equals(n.TagName, "area", StringComparison.OrdinalIgnoreCase))
-                            return false;
-                        string href = n.GetAttribute("href");
-                        if (string.IsNullOrWhiteSpace(href))
-                            return false;
-                    }
-                    // === Form state pseudo-classes ===
-                    else if (string.Equals(ps, "checked", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :checked matches checked checkboxes, radios, and selected options
-                        if (string.Equals(n.TagName, "input", StringComparison.OrdinalIgnoreCase))
-                        {
-                            string type;
-                            if (n.Attr != null && n.Attr.TryGetValue("type", out type))
-                            {
-                                if (string.Equals(type, "checkbox", StringComparison.OrdinalIgnoreCase) ||
-                                    string.Equals(type, "radio", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    if (n.Attr == null || !n.Attr.ContainsKey("checked")) return false;
-                                }
-                                else return false;
-                            }
-                            else return false;
-                        }
-                        else if (string.Equals(n.TagName, "option", StringComparison.OrdinalIgnoreCase))
-                        {
-                            if (n.Attr == null || !n.Attr.ContainsKey("selected")) return false;
-                        }
-                        else return false;
-                    }
-                    else if (string.Equals(ps, "disabled", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :disabled matches form elements with disabled attribute
-                        if (!IsFormElement(n.TagName)) return false;
-                        if (n.Attr == null || !n.Attr.ContainsKey("disabled")) return false;
-                    }
-                    else if (string.Equals(ps, "enabled", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :enabled matches form elements WITHOUT disabled attribute
-                        if (!IsFormElement(n.TagName)) return false;
-                        if (n.Attr != null && n.Attr.ContainsKey("disabled")) return false;
-                    }
-                    else if (string.Equals(ps, "read-only", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :read-only matches elements that are not editable
-                        if (string.Equals(n.TagName, "input", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(n.TagName, "textarea", StringComparison.OrdinalIgnoreCase))
-                        {
-                            if (n.Attr == null || !n.Attr.ContainsKey("readonly")) return false;
-                        }
-                        // Non-input elements are always read-only, so they match
-                    }
-                    else if (string.Equals(ps, "read-write", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :read-write matches editable elements without readonly
-                        if (string.Equals(n.TagName, "input", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(n.TagName, "textarea", StringComparison.OrdinalIgnoreCase))
-                        {
-                            if (n.Attr != null && n.Attr.ContainsKey("readonly")) return false;
-                        }
-                        else return false; // Non-form elements don't match
-                    }
-                    else if (string.Equals(ps, "required", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :required matches form elements with required attribute
-                        if (!IsFormElement(n.TagName)) return false;
-                        if (n.Attr == null || !n.Attr.ContainsKey("required")) return false;
-                    }
-                    else if (string.Equals(ps, "optional", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :optional matches form elements WITHOUT required attribute
-                        if (!IsFormElement(n.TagName)) return false;
-                        if (n.Attr != null && n.Attr.ContainsKey("required")) return false;
-                    }
-                    else if (string.Equals(ps, "valid", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :valid matches form elements that pass validation
-                        if (!ElementStateManager.IsValid(n)) return false;
-                    }
-                    else if (string.Equals(ps, "invalid", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :invalid matches form elements that fail validation
-                        if (!ElementStateManager.IsInvalid(n)) return false;
-                    }
-                    else if (string.Equals(ps, "in-range", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :in-range matches number inputs within min/max range
-                        if (!ElementStateManager.IsValid(n)) return false;
-                        // Must be a ranged input type
-                        if (!string.Equals(n.TagName, "input", StringComparison.OrdinalIgnoreCase)) return false;
-                        string type = null;
-                        n.Attr?.TryGetValue("type", out type);
-                        if (type != "number" && type != "range" && type != "date" && type != "datetime-local")
-                            return false;
-                    }
-                    else if (string.Equals(ps, "out-of-range", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :out-of-range matches number inputs outside min/max range
-                        if (!ElementStateManager.IsInvalid(n)) return false;
-                    }
-                    else if (string.Equals(ps, "placeholder-shown", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :placeholder-shown - for now, match if has placeholder and value is empty/missing
-                        if (!string.Equals(n.TagName, "input", StringComparison.OrdinalIgnoreCase) &&
-                            !string.Equals(n.TagName, "textarea", StringComparison.OrdinalIgnoreCase))
-                            return false;
-                        string placeholder = n.GetAttribute("placeholder");
-                        if (string.IsNullOrEmpty(placeholder))
-                            return false;
-                        // If there's a value attribute with content, placeholder isn't shown
-                        string val = n.GetAttribute("value");
-                        if (!string.IsNullOrEmpty(val))
-                            return false;
-                    }
-                    // === Target pseudo-class ===
-                    else if (string.Equals(ps, "target", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :target matches element whose ID matches URL fragment
-                        if (!ElementStateManager.Instance.IsTarget(n)) return false;
-                    }
-                    // === Language pseudo-class ===
-                    else if (ps.StartsWith("lang(", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :lang(xx) matches elements in a specific language
-                        var lang = ExtractPseudoArg(ps);
-                        string elemLang = null;
-                        var current = n;
-                        while (current != null)
-                        {
-                            elemLang = current.GetAttribute("lang");
-                            if (elemLang != null)
-                                break;
-                            current = current.ParentNode as Element;
-                        }
-                        if (elemLang == null || !elemLang.StartsWith(lang, StringComparison.OrdinalIgnoreCase))
-                            return false;
-                    }
-                    // === Scope pseudo-class ===
-                    else if (string.Equals(ps, "scope", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :scope in document context matches :root (html element)
-                        if (!string.Equals(n.TagName, "html", StringComparison.OrdinalIgnoreCase)) return false;
-                    }
-                    // === Directionality pseudo-class (CSS Selectors Level 4) ===
-                    else if (ps.StartsWith("dir(", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // :dir(ltr) or :dir(rtl) - matches elements based on text direction
-                        var dirArg = ExtractPseudoArg(ps)?.ToLowerInvariant();
-                        if (dirArg != "ltr" && dirArg != "rtl")
-                            return false; // Invalid argument
-
-                        // Find the effective direction by checking dir attribute on ancestors
-                        string effectiveDir = "ltr"; // Default direction
-                        var current = n;
-                        while (current != null)
-                        {
-                            var dirAttr = current.GetAttribute("dir");
-                            if (dirAttr != null)
-                            {
-                                var d = dirAttr?.ToLowerInvariant();
-                                if (d == "ltr" || d == "rtl")
-                                {
-                                    effectiveDir = d;
-                                    break;
-                                }
-                                else if (d == "auto")
-                                {
-                                    // dir="auto" means derive from content
-                                    effectiveDir = GetAutoDirection(n);
-                                    break;
-                                }
-                            }
-                            current = current.ParentNode as Element;
-                        }
-
-                        if (!string.Equals(effectiveDir, dirArg, StringComparison.OrdinalIgnoreCase))
-                            return false;
-                    }
-                    // === Vendor prefixes - silently ignore/don't match ===
-                    else if (ps.StartsWith("-webkit-", StringComparison.OrdinalIgnoreCase) ||
-                             ps.StartsWith("-moz-", StringComparison.OrdinalIgnoreCase) ||
-                             ps.StartsWith("-ms-", StringComparison.OrdinalIgnoreCase) ||
-                             ps.StartsWith("-o-", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Vendor-specific pseudo-classes - don't match but don't log spam
-                        return false;
-                    }
-                    // === Pseudo-elements accidentally parsed as pseudo-classes ===
-                    else if (string.Equals(ps, "placeholder", StringComparison.OrdinalIgnoreCase) ||
-                             string.Equals(ps, "before", StringComparison.OrdinalIgnoreCase) ||
-                             string.Equals(ps, "after", StringComparison.OrdinalIgnoreCase) ||
-                             string.Equals(ps, "first-line", StringComparison.OrdinalIgnoreCase) ||
-                             string.Equals(ps, "first-letter", StringComparison.OrdinalIgnoreCase) ||
-                             string.Equals(ps, "selection", StringComparison.OrdinalIgnoreCase))
-                    {
-                        // These are pseudo-elements (::), not pseudo-classes (:)
-                        // They style sub-parts of elements, not the element itself
-                        // For now, silently don't match
-                        return false;
-                    }
-                    // === Default state for unknown pseudo-classes: log and don't match ===
-                    else
-                    {
-                        // Log unknown pseudo-class for debugging
-                        // Log filtered to avoid performance hit on large sites with modern CSS (e.g. view-transition)
-                        // debug-file append intentionally disabled
-                        return false; // Unknown pseudo-classes should NOT match
-                    }
-                }
-            }
-
-            // Check :not() selectors - element must NOT match any of them (compound support)
-            if (seg.NotSelectors != null)
-            {
-                foreach (var notSeg in seg.NotSelectors)
-                {
-                    if (MatchesSelectorChain(new SelectorChain { Segments = new List<SelectorSegment> { notSeg } }, n))
-                    {
-                        if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match FAIL: Matches :not() selector", LogCategory.Layout);
-                        return false; // Element matches the :not() selector, so it should NOT match the overall selector
-                    }
-                }
-            }
-
-            if (isDebug) EngineLogCompat.Debug($"[DeepDive] Match SUCCESS: {seg.TagName} {string.Join(".", seg.Classes ?? new List<string>())}", LogCategory.Layout);
-            return true;
-            */
-        }
-
-        /// <summary>
-        /// Basic matching for :not() argument - checks tag, id, classes, attributes only
-        /// (no pseudo-classes to avoid recursion complexity)
-        /// </summary>
-        private static bool MatchesSingleBasic(Element n, SelectorSegment seg)
-        {
-            if (n == null || seg == null) return false;
-            if (n.IsText()) return false;
-
-            // Check tag
-            if (!string.IsNullOrEmpty(seg.TagName))
-            {
-                if (!string.Equals(n.TagName, seg.TagName, StringComparison.OrdinalIgnoreCase))
-                    return false;
-            }
-
-            // Check ID
-            if (!string.IsNullOrEmpty(seg.Id))
-            {
-                if (!string.Equals(n.Id ?? "", seg.Id, StringComparison.OrdinalIgnoreCase))
-                    return false;
-            }
-
-            // Check classes
-            if (seg.Classes != null && seg.Classes.Count > 0)
-            {
-                var cl = n.ClassList;
-                foreach (var c in seg.Classes)
-                    if (!cl.Contains(c)) return false; 
-            }
-
-            // Check attributes
-            // Check attributes
-            if (seg.Attributes != null)
-            {
-                foreach (var attr in seg.Attributes)
-                {
-                    string val = n.GetAttribute(attr.Name);
-                    if (val == null) return false;
-                    
-                    if (string.IsNullOrEmpty(attr.Operator))
-                    {
-                        continue; // Presence check passed
-                    }
-                    else if (attr.Operator == "=")
-                    {
-                        if (!string.Equals(val ?? "", attr.Value, StringComparison.OrdinalIgnoreCase)) return false;
-                    }
-                    else if (attr.Operator == "~=")
-                    {
-                        var tokens = SplitTokens(val ?? "");
-                        if (!tokens.Contains(attr.Value, StringComparer.OrdinalIgnoreCase)) return false;
-                    }
-                    else if (attr.Operator == "|=")
-                    {
-                        var v = val ?? "";
-                        if (!string.Equals(v, attr.Value, StringComparison.OrdinalIgnoreCase) &&
-                            !v.StartsWith(attr.Value + "-", StringComparison.OrdinalIgnoreCase)) return false;
-                    }
-                    else if (attr.Operator == "^=")
-                    {
-                        if (!(val ?? "").StartsWith(attr.Value, StringComparison.OrdinalIgnoreCase)) return false;
-                    }
-                    else if (attr.Operator == "$=")
-                    {
-                        if (!(val ?? "").EndsWith(attr.Value, StringComparison.OrdinalIgnoreCase)) return false;
-                    }
-                    else if (attr.Operator == "*=")
-                    {
-                        if ((val ?? "").IndexOf(attr.Value, StringComparison.OrdinalIgnoreCase) < 0) return false;
-                    }
-                }
-            }
-
-            return true;
-        }
-
-        // ===========================
-        // Utility helpers
-        // ===========================
-
-        private static void ParseFontShorthand(string font, CssComputed css)
-        {
-            // Syntax: [ <font-style> || <font-variant> || <font-weight> || <font-stretch> ]? <font-size> [ / <line-height> ]? <font-family>
-            // Example: italic bold 12px/30px Georgia, serif
-            
-            var parts = SplitCssValues(font);
-            if (parts.Count == 0) return;
-
-            int index = 0;
-            
-            // 1. Parse optional style/weight/variant
-            // We loop until we find a size (digit or known size keyword)
-            while (index < parts.Count)
-            {
-                var p = parts[index].ToLowerInvariant();
-                
-                // Check if it's a size
-                if (char.IsDigit(p[0]) || p.StartsWith(".") || IsFontSizeKeyword(p))
-                {
-                    break;
-                }
-
-                // Check style
-                if (p == "italic" || p == "oblique")
-                {
-                    css.FontStyle = SKFontStyleSlant.Italic;
-                }
-                else if (p == "normal")
-                {
-                    css.FontStyle = SKFontStyleSlant.Upright;
-                    css.FontWeight = 400;
-                }
-                // Check weight
-                else if (p == "bold")
-                {
-                    css.FontWeight = 700;
-                }
-                else if (p == "bolder" || p == "lighter")
-                {
-                    // simplified
-                    css.FontWeight = p == "bolder" ? 700 : 300;
-                }
-                else if (int.TryParse(p, out int w))
-                {
-                    css.FontWeight = MakeFontWeight(w);
-                }
-                // Ignore variant/stretch for now
-                
-                index++;
-            }
-
-            if (index >= parts.Count) return;
-
-            // 2. Parse font-size and optional line-height
-            var sizePart = parts[index];
-            index++;
-
-            string fontSizeStr = sizePart;
-            string lineHeightStr = null;
-
-            int slash = sizePart.IndexOf('/');
-            if (slash >= 0)
-            {
-                fontSizeStr = sizePart.Substring(0, slash);
-                lineHeightStr = sizePart.Substring(slash + 1);
-            }
-
-            double fs;
-            if (TryPx(fontSizeStr, out fs)) css.FontSize = fs;
-            else if (IsFontSizeKeyword(fontSizeStr)) css.FontSize = ParseFontSizeKeyword(fontSizeStr);
-
-            if (!string.IsNullOrEmpty(lineHeightStr))
-            {
-                double lh;
-                if (TryPx(lineHeightStr, out lh)) css.LineHeight = lh;
-                else if (double.TryParse(lineHeightStr, NumberStyles.Float, CultureInfo.InvariantCulture, out lh)) css.LineHeight = lh;
-            }
-
-            // 3. Parse font-family (rest of the string)
-            if (index < parts.Count)
-            {
-                var sb = new StringBuilder();
-                for (int i = index; i < parts.Count; i++)
-                {
-                    if (sb.Length > 0) sb.Append(" ");
-                    sb.Append(parts[i]);
-                }
-                var family = sb.ToString();
-                
-                // Resolve family
-                var resolved = SelectFontFamily(family);
-                if (!string.IsNullOrEmpty(resolved))
-                    css.FontFamilyName = resolved;
-            }
-        }
-
-        private static bool IsFontSizeKeyword(string s)
-        {
-            return s == "xx-small" || s == "x-small" || s == "small" || s == "medium" || s == "large" || s == "x-large" || s == "xx-large" || s == "smaller" || s == "larger";
-        }
-
-        private static double ParseFontSizeKeyword(string s)
-        {
-            // Base 16px
-            switch (s)
-            {
-                case "xx-small": return 9;
-                case "x-small": return 10;
-                case "small": return 13;
-                case "medium": return 16;
-                case "large": return 18;
-                case "x-large": return 24;
-                case "xx-large": return 32;
-                default: return 16;
-            }
-        }
-
-        private static bool IsCustomPropertyName(string name)
-        {
-            return !string.IsNullOrEmpty(name) && name.StartsWith("--", StringComparison.Ordinal);
-        }
-
-        private static string ResolveCustomPropertyReferences(string value, CssComputed current, Dictionary<string, string> rawCurrent, HashSet<string> seen)
-        {
-            if (value != null && value.Contains("var(")) DebugLog(@"debug_log.txt", $"[D-BUG] ResolveCustomPropertyReferences value='{value}'\r\n");
-            if (string.IsNullOrEmpty(value)) return value ?? string.Empty;
-            if (value.IndexOf("var(", StringComparison.OrdinalIgnoreCase) < 0) return value;
-
-            if (seen == null)
-                seen = new HashSet<string>(StringComparer.Ordinal);
-
-            var sb = new StringBuilder(value.Length);
-            int idx = 0;
-            while (idx < value.Length)
-            {
-                var pos = value.IndexOf("var(", idx, StringComparison.OrdinalIgnoreCase);
-                if (pos < 0)
-                {
-                    sb.Append(value.Substring(idx));
-                    break;
-                }
-
-                sb.Append(value.Substring(idx, pos - idx));
-                int argsStart = pos + 4;
-                int depth = 1;
-                int i = argsStart;
-                while (i < value.Length && depth > 0)
-                {
-                    char ch = value[i];
-                    if (ch == '(') depth++;
-                    else if (ch == ')') depth--;
-                    if (depth == 0) break;
-                    i++;
-                }
-
-                if (depth != 0)
-                {
-                    sb.Append(value.Substring(pos));
-                    break;
-                }
-
-                var inner = value.Substring(argsStart, i - argsStart);
-                var resolved = EvaluateVarExpression(inner, current, rawCurrent, seen);
-                if (string.Equals(resolved, GuaranteedInvalidCustomPropertyValue, StringComparison.Ordinal))
-                {
-                    return GuaranteedInvalidCustomPropertyValue;
-                }
-                sb.Append(resolved);
-                idx = i + 1;
-            }
-
-            return sb.ToString();
-        }
-
-        /// <summary>
-        /// Maximum recursion depth for CSS var() resolution to prevent infinite loops.
-        /// </summary>
-        private const int MaxCssVarRecursionDepth = 10;
-        private const string GuaranteedInvalidCustomPropertyValue = "\0fen-css-guaranteed-invalid";
-
-        /// <summary>
-        /// Resolves a CSS var() expression by looking up the variable value and applying fallbacks.
-        /// Implements the CSS Custom Properties specification with circular reference detection.
-        /// </summary>
-        private static string EvaluateVarExpression(string rawArgs, CssComputed current, Dictionary<string, string> rawCurrent, HashSet<string> seen)
-        {
-            var trimmed = (rawArgs ?? string.Empty).Trim();
-            if (trimmed.Length == 0) return string.Empty;
-
-            int comma = FindTopLevelComma(trimmed);
-            string name = comma >= 0 ? trimmed.Substring(0, comma).Trim() : trimmed;
-            string fallback = comma >= 0 ? trimmed.Substring(comma + 1).Trim() : null;
-
-            // Only log in debug mode to avoid performance impact
-            #if DEBUG_CSS_VARS
-            DebugLog(@"debug_log.txt", $"[D-BUG] EvaluateVarExpression name='{name}'\r\n");
-            #endif
-
-            if (string.IsNullOrEmpty(name) || !name.StartsWith("--", StringComparison.Ordinal))
-            {
-                // Invalid variable name - use fallback
-                return ResolveFallback(fallback, current, rawCurrent, seen);
-            }
-
-            // Initialize recursion tracking
-            if (seen == null) seen = new HashSet<string>(StringComparer.Ordinal);
-            
-            // Check for circular reference
-            if (seen.Contains(name))
-            {
-                #if DEBUG_CSS_VARS
-                DebugLog(@"debug_log.txt", $"[CSS-VAR-LOOP] name='{name}' circular reference detected\r\n");
-                #endif
-                // Per CSS spec: circular references result in invalid at computed-value time
-                // Use fallback or return empty
-                return ResolveFallback(fallback, current, rawCurrent, seen);
-            }
-
-            // Check recursion depth limit
-            if (seen.Count >= MaxCssVarRecursionDepth)
-            {
-                #if DEBUG_CSS_VARS
-                DebugLog(@"debug_log.txt", $"[CSS-VAR-DEPTH] name='{name}' max recursion depth reached\r\n");
-                #endif
-                return ResolveFallback(fallback, current, rawCurrent, seen);
-            }
-
-            string resolved = null;
-            bool found = false;
-
-            // LEVEL 1: Check local raw properties (from the element's inline style)
-            string rawValue;
-            if (rawCurrent != null && rawCurrent.TryGetValue(name, out rawValue))
-            {
-                seen.Add(name);
-                resolved = ResolveCustomPropertyReferences(rawValue, current, rawCurrent, seen);
-                seen.Remove(name);
-                
-                if (current != null)
-                {
-                    current.CustomProperties[name] = resolved;
-                }
-                
-                #if DEBUG_CSS_VARS
-                DebugLog(@"debug_log.txt", $"[CSS-VAR-LOCAL] name='{name}' resolved to='{resolved}'\r\n");
-                #endif
-                found = true;
-            }
-
-            // LEVEL 2: Check inherited computed properties (from parent)
-            if (!found && current != null && current.CustomProperties != null && current.CustomProperties.TryGetValue(name, out resolved))
-            {
-                #if DEBUG_CSS_VARS
-                DebugLog(@"debug_log.txt", $"[CSS-VAR-INHERITED] name='{name}' found value='{resolved}'\r\n");
-                #endif
-                found = true;
-            }
-
-            // LEVEL 3: Check global properties (:root, html, body scoped)
-            if (!found)
-            {
-                lock (_customProperties)
-                {
-                    if (_customProperties.TryGetValue(name, out resolved))
-                    {
-                        // Handle nested var() in global property values
-                        if (resolved != null && resolved.Contains("var("))
-                        {
-                            seen.Add(name);
-                            #if DEBUG_CSS_VARS
-                            DebugLog(@"debug_log.txt", $"[CSS-VAR-RECURSE] Recursing for {name} value='{resolved}'\r\n");
-                            #endif
-                            resolved = ResolveCustomPropertyReferences(resolved, current, rawCurrent, seen);
-                            seen.Remove(name);
-                            #if DEBUG_CSS_VARS
-                            DebugLog(@"debug_log.txt", $"[CSS-VAR-RECURSE] Result for {name} is '{resolved}'\r\n");
-                            #endif
-                        }
-                        
-                        #if DEBUG_CSS_VARS
-                        DebugLog(@"debug_log.txt", $"[CSS-VAR-GLOBAL] name='{name}' resolved to='{resolved}'\r\n");
-                        #endif
-                        found = true;
-                    }
-                    else
-                    {
-                        #if DEBUG_CSS_VARS
-                        DebugLog(@"debug_log.txt", $"[CSS-VAR-MISS] name='{name}' (Global Dict Count: {_customProperties.Count})\r\n");
-                        #endif
-                    }
-                }
-            }
-
-            // If found and valid, return it
-            if (found && resolved != null)
-            {
-                // The initial value of a custom property is the guaranteed-invalid value.
-                if (string.Equals(resolved, GuaranteedInvalidCustomPropertyValue, StringComparison.Ordinal) ||
-                    resolved.Equals("initial", StringComparison.OrdinalIgnoreCase))
-                {
-                    return ResolveFallback(fallback, current, rawCurrent, seen);
-                }
-                
-                return resolved;
-            }
-
-            // Variable not found - use fallback
-            return ResolveFallback(fallback, current, rawCurrent, seen);
-        }
-
-        private static string ResolveFallback(string fallback, CssComputed current, Dictionary<string, string> rawCurrent, HashSet<string> seen)
-        {
-            if (string.IsNullOrEmpty(fallback)) return GuaranteedInvalidCustomPropertyValue;
-            return ResolveCustomPropertyReferences(fallback, current, rawCurrent, seen);
-        }
-
-        private static int FindTopLevelComma(string raw)
-        {
-            if (string.IsNullOrEmpty(raw)) return -1;
-            int depth = 0;
-            bool inString = false;
-            char stringChar = '\0';
-
-            for (int i = 0; i < raw.Length; i++)
-            {
-                var ch = raw[i];
-                if (inString)
-                {
-                    if (ch == stringChar) inString = false;
-                    continue;
-                }
-
-                if (ch == '\"' || ch == '\'')
-                {
-                    inString = true; stringChar = ch; continue;
-                }
-                if (ch == '(') { depth++; continue; }
-                if (ch == ')') { depth = Math.Max(0, depth - 1); continue; }
-                if (ch == ',' && depth == 0) return i;
-            }
-            return -1;
-        }
-
-        private static List<string> SplitCssValues(string raw)
-        {
-            var result = new List<string>();
-            if (string.IsNullOrWhiteSpace(raw)) return result;
-
-            var sb = new StringBuilder();
-            int depth = 0;
-            bool inString = false;
-            char stringChar = '\0';
-
-            foreach (var ch in raw)
-            {
-                if (inString)
-                {
-                    sb.Append(ch);
-                    if (ch == stringChar) inString = false;
-                    continue;
-                }
-
-                if (ch == '\"' || ch == '\'')
-                {
-                    inString = true; stringChar = ch; sb.Append(ch); continue;
-                }
-
-                if (ch == '(') { depth++; sb.Append(ch); continue; }
-                if (ch == ')') { depth = Math.Max(0, depth - 1); sb.Append(ch); continue; }
-
-                if (char.IsWhiteSpace(ch) && depth == 0)
-                {
-                    if (sb.Length > 0) { result.Add(sb.ToString()); sb.Clear(); }
-                }
-                else
-                {
-                    sb.Append(ch);
-                }
-            }
-
-            if (sb.Length > 0) result.Add(sb.ToString());
-            return result;
-        }
-
-
-
-
-
-        private static bool TryGapShorthand(string raw, out double row, out double column)
-        {
-            row = column = 0;
-            if (string.IsNullOrWhiteSpace(raw)) return false;
-            
-            var parts = SplitCssValues(raw);
-            if (parts.Count == 0) return false;
-
-            double first;
-            string p0 = parts[0].Trim();
-            if (!TryPx(p0, out first)) 
-            {
-                // Fallback: Manually strip px
-                if (p0.EndsWith("px", StringComparison.OrdinalIgnoreCase) && 
-                    double.TryParse(p0.Substring(0, p0.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out first))
-                {
-                    // success
-                }
-                else if (double.TryParse(p0, NumberStyles.Float, CultureInfo.InvariantCulture, out first))
-                {
-                    // success (unitless)
-                }
-                else return false;
-            }
-            row = first;
-            column = first;
-
-            if (parts.Count > 1)
-            {
-                double second;
-                string p1 = parts[1].Trim();
-                if (TryPx(p1, out second)) 
-                {
-                    column = second;
-                }
-                else if (p1.EndsWith("px", StringComparison.OrdinalIgnoreCase) && 
-                         double.TryParse(p1.Substring(0, p1.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out second))
-                {
-                    column = second;
-                }
-                else if (double.TryParse(p1, NumberStyles.Float, CultureInfo.InvariantCulture, out second))
-                {
-                    column = second;
-                }
-            }
-
-            return true;
-        }
-
-
-
-
-
-        private static bool TryFlexShorthand(string raw, out double grow, out double shrink, out double basis)
-        {
-            grow = 0; shrink = 1; basis = double.NaN; // Default initial values
-            if (string.IsNullOrWhiteSpace(raw)) return false;
-
-            var parts = SplitCssValues(raw);
-            if (parts.Count == 0) return false;
-
-            // Handle keywords
-            if (parts.Count == 1)
-            {
-                var p = parts[0].ToLowerInvariant();
-                if (p == "none") { grow = 0; shrink = 0; basis = double.NaN; return true; }
-                if (p == "auto") { grow = 1; shrink = 1; basis = double.NaN; return true; }
-                if (p == "initial") { grow = 0; shrink = 1; basis = double.NaN; return true; }
-            }
-
-            // Helper to check if string is a length
-            Func<string, bool> isLength = (s) =>
-            {
-                s = s.ToLowerInvariant();
-                return s.EndsWith("px") || s.EndsWith("%") || s.EndsWith("em") || s.EndsWith("rem") || s == "auto" || s == "content";
-            };
-
-            // Helper to resolve a basis value from a string
-            Func<string, (bool success, double value, bool isAuto)> resolveBasis = (s) =>
-            {
-                double val;
-                if (s.ToLowerInvariant() == "auto") return (true, double.NaN, true);
-                if (TryPx(s, out val)) return (true, val, false);
-                if (TryPercent(s, out val)) return (true, val, false);
-                return (false, double.NaN, false);
-            };
-
-            // Parse parts
-            if (parts.Count == 1)
-            {
-                // <number> (grow) OR <length> (basis)
-                double val;
-                if (isLength(parts[0]))
-                {
-                    var (ok, bv, _) = resolveBasis(parts[0]);
-                    if (ok)
-                    {
-                        grow = 1; shrink = 1; basis = bv;
-                    }
-                    else
-                    {
-                        grow = 1; shrink = 1; basis = double.NaN;
-                    }
-                }
-                else if (TryDouble(parts[0], out val))
-                {
-                    grow = val; shrink = 1; basis = 0;
-                }
-            }
-            else if (parts.Count == 2)
-            {
-                // first is grow
-                double val1;
-                if (TryDouble(parts[0], out val1)) grow = val1;
-
-                // second: <number> (shrink) OR <length> (basis)
-                double val2;
-                if (isLength(parts[1]))
-                {
-                    shrink = 1;
-                    var (ok, bv, _) = resolveBasis(parts[1]);
-                    basis = ok ? bv : double.NaN;
-                }
-                else if (TryDouble(parts[1], out val2))
-                {
-                    shrink = val2; basis = 0;
-                }
-            }
-            else if (parts.Count >= 3)
-            {
-                // grow shrink basis
-                double v;
-                if (TryDouble(parts[0], out v)) grow = v;
-                if (TryDouble(parts[1], out v)) shrink = v;
-                var (ok, bv, _) = resolveBasis(parts[2]);
-                if (ok) basis = bv;
-            }
-
-            return true;
-        }
-
-        internal static string StripComments(string css)
-        {
-            if (string.IsNullOrEmpty(css)) return "";
-            if (css.IndexOf("/*", StringComparison.Ordinal) < 0) return css;
-
-            int outputLength = 0;
-            int sourceIndex = 0;
-            while (sourceIndex < css.Length)
-            {
-                int commentStart = css.IndexOf("/*", sourceIndex, StringComparison.Ordinal);
-                if (commentStart < 0)
-                {
-                    outputLength += css.Length - sourceIndex;
-                    break;
-                }
-
-                outputLength += commentStart - sourceIndex;
-                int commentEnd = css.IndexOf("*/", commentStart + 2, StringComparison.Ordinal);
-                if (commentEnd < 0)
-                {
-                    break;
-                }
-
-                sourceIndex = commentEnd + 2;
-            }
-
-            return string.Create(outputLength, css, static (destination, source) =>
-            {
-                int readIndex = 0;
-                int writeIndex = 0;
-                while (readIndex < source.Length)
-                {
-                    int commentStart = source.IndexOf("/*", readIndex, StringComparison.Ordinal);
-                    if (commentStart < 0)
-                    {
-                        source.AsSpan(readIndex).CopyTo(destination[writeIndex..]);
-                        break;
-                    }
-
-                    int segmentLength = commentStart - readIndex;
-                    source.AsSpan(readIndex, segmentLength).CopyTo(destination[writeIndex..]);
-                    writeIndex += segmentLength;
-
-                    int commentEnd = source.IndexOf("*/", commentStart + 2, StringComparison.Ordinal);
-                    if (commentEnd < 0)
-                    {
-                        break;
-                    }
-
-                    readIndex = commentEnd + 2;
-                }
-            });
-        }
-
-        private static IEnumerable<string> SplitTokens(string s)
-        {
-            if (string.IsNullOrWhiteSpace(s)) yield break;
-            var parts = s.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            for (int i = 0; i < parts.Length; i++)
-                yield return parts[i].Trim();
-        }
-
-        /// <summary>
-        /// Extract background-color from a complex background shorthand.
-        /// Uses last-layer semantics and keeps function tokens intact (rgb()/oklab()/etc).
-        /// </summary>
-        private static SKColor? ExtractBackgroundColorFromShorthand(string shorthand)
-        {
-            if (string.IsNullOrWhiteSpace(shorthand)) return null;
-
-            // Fast path: entire shorthand is a color.
-            var direct = TryColor(shorthand);
-            if (direct.HasValue) return direct;
-
-            var layers = SplitByComma(shorthand);
-            var lastLayer = layers.Count > 0 ? layers[layers.Count - 1] : shorthand;
-            var tokens = SplitTokensOutsideFunctions(lastLayer);
-
-            SKColor? lastColor = null;
-            foreach (var rawToken in tokens)
-            {
-                var token = rawToken?.Trim();
-                if (string.IsNullOrWhiteSpace(token)) continue;
-                if (token == "/") continue;
-                if (token.StartsWith("url(", StringComparison.OrdinalIgnoreCase)) continue;
-
-                var c = TryColor(token);
-                if (c.HasValue)
-                {
-                    lastColor = c;
-                }
-            }
-
-            return lastColor;
-        }
-
-        /// <summary>
-        /// Split by whitespace while preserving function arguments, e.g. rgb(1 2 3 / 50%).
-        /// </summary>
-        private static List<string> SplitTokensOutsideFunctions(string text)
-        {
-            var result = new List<string>();
-            if (string.IsNullOrWhiteSpace(text)) return result;
-
-            var sb = new StringBuilder();
-            int parenDepth = 0;
-            bool inSingleQuote = false;
-            bool inDoubleQuote = false;
-
-            void FlushToken()
-            {
-                if (sb.Length == 0) return;
-                result.Add(sb.ToString());
-                sb.Clear();
-            }
-
-            for (int i = 0; i < text.Length; i++)
-            {
-                char c = text[i];
-
-                if (inSingleQuote)
-                {
-                    sb.Append(c);
-                    if (c == '\'') inSingleQuote = false;
-                    continue;
-                }
-                if (inDoubleQuote)
-                {
-                    sb.Append(c);
-                    if (c == '"') inDoubleQuote = false;
-                    continue;
-                }
-
-                if (c == '\'')
-                {
-                    inSingleQuote = true;
-                    sb.Append(c);
-                    continue;
-                }
-                if (c == '"')
-                {
-                    inDoubleQuote = true;
-                    sb.Append(c);
-                    continue;
-                }
-
-                if (c == '(')
-                {
-                    parenDepth++;
-                    sb.Append(c);
-                    continue;
-                }
-                if (c == ')')
-                {
-                    if (parenDepth > 0) parenDepth--;
-                    sb.Append(c);
-                    continue;
-                }
-
-                if (char.IsWhiteSpace(c) && parenDepth == 0)
-                {
-                    FlushToken();
-                    continue;
-                }
-
-                sb.Append(c);
-            }
-
-            FlushToken();
-            return result;
-        }
-
-        private static bool ContainsToken(string list, string token)
-        {
-            foreach (var t in SplitTokens(list))
-                if (string.Equals(t, token, StringComparison.OrdinalIgnoreCase)) return true;
-            return false;
-        }
-
-        private static string GetDefaultDisplayValue(Node node)
-        {
-            if (node is Text)
-            {
-                return "inline";
-            }
-
-            if (node is not Element element)
-            {
-                return "inline";
-            }
-
-            if (element.HasAttribute("hidden"))
-            {
-                return "none";
-            }
-
-            if (string.Equals(element.TagName, "INPUT", StringComparison.OrdinalIgnoreCase))
-            {
-                string inputType = element.GetAttribute("type")?.Trim();
-                if (string.Equals(inputType, "hidden", StringComparison.OrdinalIgnoreCase))
-                {
-                    return "none";
-                }
-            }
-
-            string tag = element.TagName?.ToUpperInvariant();
-            if (string.IsNullOrEmpty(tag))
-            {
-                return "inline";
-            }
-
-            if (tag.Contains("-", StringComparison.Ordinal))
-            {
-                return "inline";
-            }
-
-            return tag switch
-            {
-                "HEAD" or "SCRIPT" or "STYLE" or "META" or "LINK" or "TITLE" or "NOSCRIPT" or "TEMPLATE" => "none",
-                "TABLE" => "table",
-                "TR" => "table-row",
-                "THEAD" => "table-header-group",
-                "TBODY" => "table-row-group",
-                "TFOOT" => "table-footer-group",
-                "COL" => "table-column",
-                "COLGROUP" => "table-column-group",
-                "TD" or "TH" => "table-cell",
-                "CAPTION" => "table-caption",
-                "LI" => "list-item",
-                "INPUT" or "SELECT" or "TEXTAREA" or "BUTTON" => "inline-block",
-                "SVG" => "inline-block",
-                "IMG" or "CANVAS" or "IFRAME" or "OBJECT" => "inline",
-                "A" or "ABBR" or "ACRONYM" or "B" or "BDI" or "BDO" or "BIG" or
-                "BR" or "CITE" or "CODE" or "DATA" or "DEL" or "DFN" or "EM" or
-                "I" or "INS" or "KBD" or "LABEL" or "MAP" or "MARK" or
-                "METER" or "OUTPUT" or "PICTURE" or "PROGRESS" or "Q" or "RUBY" or
-                "RT" or "RB" or "RP" or "RTC" or
-                "S" or "SAMP" or "SMALL" or "SPAN" or "STRONG" or "SUB" or "SUP" or
-                "TIME" or "TT" or "U" or "VAR" or "WBR" => "inline",
-                _ => "block"
-            };
-        }
-
-        private static string Safe(string s) { return string.IsNullOrWhiteSpace(s) ? null : s.Trim(); }
-
-        /// <summary>
-        /// Get the user-agent stylesheet default value for a property.
-        /// Used for 'revert' keyword implementation.
-        /// Reference: CSS Cascade Level 4 - https://www.w3.org/TR/css-cascade-4/#default
-        /// </summary>
-        private static string GetUserAgentValue(string property)
-        {
-            if (string.IsNullOrEmpty(property)) return null;
-
-            // UA defaults that differ from initial values (from ua.css)
-            switch (property.ToLowerInvariant())
-            {
-                // Display
-                case "display":
-                    return "inline"; // Most elements are inline by default in UA, blocks are set per-element
-
-                // Typography
-                case "font-family":
-                    return "sans-serif";
-                case "font-size":
-                    return "16px"; // Medium = 16px
-                case "line-height":
-                    return "normal";
-                case "color":
-                    return "canvastext";
-
-                // Links
-                case "text-decoration":
-                    return "none"; // Links have underline from UA but most elements don't
-
-                // Margins - block elements typically have margins
-                case "margin-top":
-                case "margin-bottom":
-                    return "0";
-                case "margin-left":
-                case "margin-right":
-                    return "0";
-
-                // Lists
-                case "list-style-type":
-                    return "disc"; // For <ul>
-                case "list-style-position":
-                    return "outside";
-
-                // Tables
-                case "border-collapse":
-                    return "separate";
-                case "border-spacing":
-                    return "2px";
-
-                // Cursor
-                case "cursor":
-                    return "auto";
-
-                default:
-                    // Fall back to initial value for unlisted properties
-                    return CssComputed.GetInitialValue(property);
-            }
-        }
-
-        private static bool TryCornerRadius(string raw, out CssCornerRadius radius)
-        {
-            radius = new CssCornerRadius(new CssLength(0));
-            if (string.IsNullOrWhiteSpace(raw)) return false;
-            
-            /* [PERF-REMOVED] */
-
-            // Remove / part for now (elliptical corners not fully supported in simple model)
-            var main = raw.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? raw;
-            
-            // Robust splitting by whitespace
-            var parts = main.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-
-            CssLength tl, tr, br, bl;
-            if (parts.Length == 1)
-            {
-                if (TryCornerComponent(parts[0], out var val))
-                {
-                    radius = new CssCornerRadius(val);
-                    return true;
-                }
-            }
-            else if (parts.Length == 2)
-            {
-                if (TryCornerComponent(parts[0], out tl) && TryCornerComponent(parts[1], out tr))
-                {
-                    radius = new CssCornerRadius(tl, tr, tl, tr); // top-left=bottom-right, top-right=bottom-left
-                    return true;
-                }
-            }
-            else if (parts.Length == 3)
-            {
-                if (TryCornerComponent(parts[0], out tl) && TryCornerComponent(parts[1], out tr) && TryCornerComponent(parts[2], out br))
-                {
-                    radius = new CssCornerRadius(tl, tr, br, tr); // top-left, top-right=bottom-left, bottom-right
-                    return true;
-                }
-            }
-            else if (parts.Length >= 4)
-            {
-                if (TryCornerComponent(parts[0], out tl) &&
-                    TryCornerComponent(parts[1], out tr) &&
-                    TryCornerComponent(parts[2], out br) &&
-                    TryCornerComponent(parts[3], out bl))
-                {
-                    radius = new CssCornerRadius(tl, tr, br, bl);
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private static bool TryCornerComponent(string raw, out CssLength value)
-        {
-            value = new CssLength(0);
-            if (string.IsNullOrWhiteSpace(raw)) return false;
-
-            double val;
-            // Try standard parser
-            if (TryPx(raw, out val)) 
-            {
-                value = new CssLength((float)val);
-                return true;
-            }
-            
-            // Fallback: Manually strip px
-            var trimmed = raw.Trim();
-            if (trimmed.EndsWith("px", StringComparison.OrdinalIgnoreCase))
-            {
-                var numPart = trimmed.Substring(0, trimmed.Length - 2).Trim();
-                if (double.TryParse(numPart, NumberStyles.Float, CultureInfo.InvariantCulture, out val))
-                {
-                    value = new CssLength((float)val);
-                    return true;
-                }
-            }
-            
-            // Fallback: Unitless (quirks)
-            if (double.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture, out val))
-            {
-                value = new CssLength((float)val);
-                return true;
-            }
-
-            if (trimmed.EndsWith("%", StringComparison.Ordinal))
-            {
-                double pct;
-                if (TryDouble(trimmed.TrimEnd('%'), out pct))
-                {
-                    // Store as percentage
-                    value = new CssLength((float)Math.Max(0, pct), true);
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private static string SelectFontFamily(string raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw)) return null;
-
-            var parts = raw.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var part in parts)
-            {
-                var candidate = part.Trim().Trim('\"', '\'');
-                if (candidate.Length == 0) continue;
-                if (IsGenericFamily(candidate)) continue;
-                return candidate;
-            }
-
-            if (parts.Length == 0) return null;
-            var fallback = parts[0].Trim().Trim('"', '\'');
-            if (string.IsNullOrEmpty(fallback)) return null;
-            return MapGenericFamily(fallback) ?? fallback;
-        }
-
-        private static bool IsGenericFamily(string name)
-        {
-            if (string.IsNullOrWhiteSpace(name)) return false;
-            switch (name.Trim().ToLowerInvariant())
-            {
-                case "sans-serif":
-                case "serif":
-                case "monospace":
-                case "cursive":
-                case "fantasy":
-                case "system-ui":
-                case "ui-sans-serif":
-                case "ui-serif":
-                case "ui-monospace":
-                case "ui-rounded":
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
-        private static string MapGenericFamily(string name)
-        {
-            if (string.IsNullOrWhiteSpace(name)) return null;
-            switch (name.Trim().ToLowerInvariant())
-            {
-                case "sans-serif":
-                case "system-ui":
-                case "ui-sans-serif":
-                    return "Segoe UI";
-                case "serif":
-                case "ui-serif":
-                    return "Times New Roman";
-                case "monospace":
-                case "ui-monospace":
-                    return "Consolas";
-                case "cursive":
-                    return "Comic Sans MS";
-                case "fantasy":
-                case "ui-rounded":
-                    return "Segoe UI";
-                default:
-                    return null;
-            }
-        }
-
-        private static string SafeGatherText(Node n)
-        {
-            if (n == null) return null;
-            return n.TextContent ?? "";
-        }
-
-        private static string DictGet(IDictionary<string, string> map, string key)
-        {
-            if (map == null || key == null) return null;
-            string v;
-            return map.TryGetValue(key, out v) ? v : null;
-        }
-
-        private static Uri ResolveUri(Uri baseUri, string href)
-        {
-            if (string.IsNullOrWhiteSpace(href)) return null;
-            href = href.Trim();
-
-            if (href.StartsWith("//"))
-            {
-                try { return new Uri((baseUri != null ? baseUri.Scheme : "https") + ":" + href); } catch { return null; }
-            }
-
-            Uri abs;
-            if (Uri.TryCreate(href, UriKind.Absolute, out abs)) return abs;
-            if (baseUri != null && Uri.TryCreate(baseUri, href, out abs)) return abs;
-            return null;
-        }
-
-        private static string ResolveUrlIfNeeded(string value, Uri baseUri)
-        {
-            if (string.IsNullOrWhiteSpace(value)) return value;
-            var m = Regex.Match(value, @"url\(['""]?(?<u>[^)'""]+)['""]?\)", RegexOptions.IgnoreCase);
-            if (m.Success)
-            {
-                var u = m.Groups["u"].Value.Trim();
-                var abs = ResolveUri(baseUri, u);
-                if (abs != null)
-                    return "url(" + abs.AbsoluteUri + ")";
-            }
-            return value;
-        }
-
-        // ---- CSS value parsing used for typed properties ----
-
-        private static bool IsCssFunction(string s)
-        {
-            if (string.IsNullOrWhiteSpace(s)) return false;
-            s = s.Trim().ToLowerInvariant();
-            return s.StartsWith("calc(") ||
-                   s.StartsWith("min(") ||
-                   s.StartsWith("max(") ||
-                   s.StartsWith("clamp(") ||
-                   s.StartsWith("env(") ||
-                   s.StartsWith("var(") ||
-                   s.StartsWith("fit-content(") ||
-                   s == "fit-content" ||
-                   s == "min-content" ||
-                   s == "max-content" ||
-                   s.EndsWith("vh") ||
-                   s.EndsWith("vw");
-        }
-
-        private static string ComposeEffectiveTransform(IDictionary<string, string> map)
-        {
-            if (map == null)
-            {
-                return null;
-            }
-
-            var translate = NormalizeTransformLonghandValue(Safe(DictGet(map, "translate")), "translate");
-            var rotate = NormalizeTransformLonghandValue(Safe(DictGet(map, "rotate")), "rotate");
-            var scale = NormalizeTransformLonghandValue(Safe(DictGet(map, "scale")), "scale");
-            var transform = Safe(DictGet(map, "transform"));
-
-            List<string> segments = null;
-            if (!string.IsNullOrEmpty(translate))
-            {
-                segments ??= new List<string>(4);
-                segments.Add(translate);
-            }
-
-            if (!string.IsNullOrEmpty(rotate))
-            {
-                segments ??= new List<string>(4);
-                segments.Add(rotate);
-            }
-
-            if (!string.IsNullOrEmpty(scale))
-            {
-                segments ??= new List<string>(4);
-                segments.Add(scale);
-            }
-
-            if (!string.IsNullOrWhiteSpace(transform) &&
-                !string.Equals(transform.Trim(), "none", StringComparison.OrdinalIgnoreCase))
-            {
-                segments ??= new List<string>(4);
-                segments.Add(transform.Trim());
-            }
-
-            if (segments != null)
-            {
-                return string.Join(" ", segments);
-            }
-
-            if (string.Equals(transform?.Trim(), "none", StringComparison.OrdinalIgnoreCase))
-            {
-                return "none";
-            }
-
-            return null;
-        }
-
-        private static string NormalizeTransformLonghandValue(string rawValue, string functionName)
-        {
-            if (string.IsNullOrWhiteSpace(rawValue))
-            {
-                return null;
-            }
-
-            var value = rawValue.Trim();
-            if (string.Equals(value, "none", StringComparison.OrdinalIgnoreCase))
-            {
-                return null;
-            }
-
-            if (Regex.IsMatch(value, @"^[a-zA-Z][a-zA-Z0-9-]*\s*\("))
-            {
-                return value;
-            }
-
-            return $"{functionName}({value})";
-        }
-
-        private static void ApplyGridTemplateShorthand(CssComputed css)
-        {
-            if (css?.Map == null)
-            {
-                return;
-            }
-
-            var shorthand = Safe(DictGet(css.Map, "grid-template"));
-            if (string.IsNullOrWhiteSpace(shorthand))
-            {
-                return;
-            }
-
-            shorthand = NormalizeWhitespace(shorthand);
-            if (string.Equals(shorthand, "none", StringComparison.OrdinalIgnoreCase))
-            {
-                if (string.IsNullOrWhiteSpace(css.GridTemplateColumns))
-                    css.GridTemplateColumns = "none";
-                if (string.IsNullOrWhiteSpace(css.GridTemplateRows))
-                    css.GridTemplateRows = "none";
-                if (string.IsNullOrWhiteSpace(css.GridTemplateAreas))
-                    css.GridTemplateAreas = "none";
-                return;
-            }
-
-            if (!TrySplitTopLevelGridTemplate(shorthand, out var rowsPart, out var columnsPart))
-            {
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(css.GridTemplateColumns) && !string.IsNullOrWhiteSpace(columnsPart))
-            {
-                css.GridTemplateColumns = NormalizeWhitespace(columnsPart);
-            }
-
-            ParseGridTemplateRowsAndAreas(rowsPart, out var parsedRows, out var parsedAreas);
-
-            if (string.IsNullOrWhiteSpace(css.GridTemplateRows) && !string.IsNullOrWhiteSpace(parsedRows))
-            {
-                css.GridTemplateRows = parsedRows;
-            }
-
-            if (string.IsNullOrWhiteSpace(css.GridTemplateAreas) && !string.IsNullOrWhiteSpace(parsedAreas))
-            {
-                css.GridTemplateAreas = parsedAreas;
-            }
-        }
-
-        private static bool TrySplitTopLevelGridTemplate(string value, out string rowsPart, out string columnsPart)
-        {
-            rowsPart = null;
-            columnsPart = null;
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return false;
-            }
-
-            int parenDepth = 0;
-            char quote = '\0';
-            for (int i = 0; i < value.Length; i++)
-            {
-                char ch = value[i];
-                if (quote != '\0')
-                {
-                    if (ch == quote)
-                    {
-                        quote = '\0';
-                    }
-
-                    continue;
-                }
-
-                if (ch == '"' || ch == '\'')
-                {
-                    quote = ch;
-                    continue;
-                }
-
-                if (ch == '(')
-                {
-                    parenDepth++;
-                    continue;
-                }
-
-                if (ch == ')' && parenDepth > 0)
-                {
-                    parenDepth--;
-                    continue;
-                }
-
-                if (ch == '/' && parenDepth == 0)
-                {
-                    rowsPart = value.Substring(0, i).Trim();
-                    columnsPart = value.Substring(i + 1).Trim();
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static void ParseGridTemplateRowsAndAreas(string rowsPart, out string rows, out string areas)
-        {
-            rows = null;
-            areas = null;
-            if (string.IsNullOrWhiteSpace(rowsPart))
-            {
-                return;
-            }
-
-            var matches = Regex.Matches(rowsPart, "\"[^\"]*\"|'[^']*'");
-            if (matches.Count == 0)
-            {
-                rows = NormalizeWhitespace(rowsPart);
-                return;
-            }
-
-            var rowSizes = new List<string>(matches.Count);
-            var areaTokens = new List<string>(matches.Count);
-
-            for (int i = 0; i < matches.Count; i++)
-            {
-                var current = matches[i];
-                areaTokens.Add(current.Value.Trim());
-
-                int segmentStart = current.Index + current.Length;
-                int segmentEnd = i + 1 < matches.Count ? matches[i + 1].Index : rowsPart.Length;
-                string trailingSegment = rowsPart.Substring(segmentStart, segmentEnd - segmentStart).Trim();
-                rowSizes.Add(string.IsNullOrWhiteSpace(trailingSegment)
-                    ? "auto"
-                    : NormalizeWhitespace(trailingSegment));
-            }
-
-            areas = string.Join(" ", areaTokens);
-            rows = string.Join(" ", rowSizes);
-        }
-
-        private static string NormalizeWhitespace(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
-
-            return Regex.Replace(value.Trim(), "\\s+", " ");
-        }
-
-        /// <summary>
-        /// Parse CSS 'font' shorthand property.
-        /// Format: [font-style] [font-variant] [font-weight] font-size[/line-height] font-family
-        /// Example: font: italic 400 16px/1.5 Arial, sans-serif
-        /// Only font-size and font-family are required.
-        /// </summary>
-        private static void ParseFontShorthand(string value, CssComputed css, double emBase, bool preserveExplicitFontSize = false)
-        {
-            if (string.IsNullOrWhiteSpace(value)) return;
-            
-            // Skip system font keywords
-            var lower = value.Trim().ToLowerInvariant();
-            if (lower == "caption" || lower == "icon" || lower == "menu" || 
-                lower == "message-box" || lower == "small-caption" || lower == "status-bar" ||
-                lower == "inherit" || lower == "initial" || lower == "unset")
-            {
-                return;
-            }
-            
-            try
-            {
-                // Split by spaces, but be careful of font-family names with spaces
-                var parts = value.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length < 2) return;
-                
-                // Font-size is the first part that looks like a size (has unit or is a size keyword)
-                // Font-weight is typically 100-900 or normal/bold/lighter/bolder
-                double parsedSize = 0;
-                bool foundSize = false;
-                
-                foreach (var part in parts)
-                {
-                    var p = part.Trim().ToLowerInvariant();
-                    
-                    // Skip font-weight numeric values (100-900)
-                    if (p == "100" || p == "200" || p == "300" || p == "400" || 
-                        p == "500" || p == "600" || p == "700" || p == "800" || p == "900")
-                    {
-                        continue;
-                    }
-                    
-                    // Skip font-style
-                    if (p == "normal" || p == "italic" || p == "oblique") continue;
-                    
-                    // Skip font-variant
-                    if (p == "small-caps") continue;
-                    
-                    // Skip font-weight keywords
-                    if (p == "bold" || p == "bolder" || p == "lighter") continue;
-                    
-                    // Handle size/line-height (e.g., "16px/1.5")
-                    string sizeStr = p;
-                    if (p.Contains("/"))
-                    {
-                        var slashParts = p.Split('/');
-                        sizeStr = slashParts[0];
-                        // Could parse line-height from slashParts[1] here
-                    }
-                    
-                    // Try to parse as font-size
-                    if (TryPx(sizeStr, out parsedSize, emBase, percentBase: emBase))
-                    {
-                        foundSize = true;
-                        break; // Font-size found, rest is font-family
-                    }
-                }
-                
-                if (foundSize && parsedSize > 0)
-                {
-                    // Honor cascade winner: if font-size longhand already exists in
-                    // the cascaded map, shorthand cannot overwrite it here.
-                    if (!preserveExplicitFontSize && !css.Map.ContainsKey("font-size"))
-                    {
-                        css.FontSize = parsedSize;
-                        css.Map["font-size"] = parsedSize.ToString("0.##") + "px";
-                    }
-                }
-            }
-            catch
-            {
-                // Ignore parsing errors for font shorthand
-            }
-        }
-
-
-
-        /// <summary>
-        /// Extract width from a border-side shorthand (e.g., "2px solid #eee")
-        /// </summary>
-        private static double ExtractBorderSideWidth(string borderSide, double emBase = 16.0)
-        {
-            if (string.IsNullOrWhiteSpace(borderSide)) return 0;
-            var parts = borderSide.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var part in parts)
-            {
-                double px;
-                if (TryPx(part, out px, emBase) && px > 0)
-                    return px;
-            }
-            return 0;
-        }
-
-        /// <summary>
-        /// Extract color from a border-side shorthand (e.g., "2px solid #eee")
-        /// </summary>
-        private static SKColor? ExtractBorderSideColor(string borderSide)
-        {
-            if (string.IsNullOrWhiteSpace(borderSide)) return null;
-            var parts = borderSide.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var part in parts)
-            {
-                // Skip width values
-                double px;
-                if (TryPx(part, out px)) continue;
-                // Skip style keywords
-                var lower = part.ToLowerInvariant();
-                if (lower == "none" || lower == "hidden" || lower == "dotted" || lower == "dashed" ||
-                    lower == "solid" || lower == "double" || lower == "groove" || lower == "ridge" ||
-                    lower == "inset" || lower == "outset") continue;
-                // Try as color
-                var col = TryColor(part);
-                if (col.HasValue) return col;
-            }
-            return null;
-        }
-
-        // ... existing methods ...
-
-        private static string ParseBackgroundImage(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return null;
-            }
-
-            int urlIndex = value.IndexOf("url(", StringComparison.OrdinalIgnoreCase);
-            if (urlIndex < 0)
-            {
-                return null;
-            }
-
-            int depth = 0;
-            int end = -1;
-            for (int i = urlIndex; i < value.Length; i++)
-            {
-                char c = value[i];
-                if (c == '(')
-                {
-                    depth++;
-                }
-                else if (c == ')')
-                {
-                    depth--;
-                    if (depth == 0)
-                    {
-                        end = i;
-                        break;
-                    }
-                }
-            }
-
-            if (end <= urlIndex)
-            {
-                return null;
-            }
-
-            return value.Substring(urlIndex, end - urlIndex + 1).Trim();
-        }
-
-        private static string ParseBackgroundImageOrGradient(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return null;
-            }
-
-            var urlValue = ParseBackgroundImage(value);
-            if (!string.IsNullOrWhiteSpace(urlValue))
-            {
-                return urlValue;
-            }
-
-            if (value.Contains("gradient", StringComparison.OrdinalIgnoreCase))
-            {
-                return value.Trim();
-            }
-
-            return null;
-        }
-
-        private static string ExtractBackgroundAttachmentFromShorthand(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return null;
-            }
-
-            var lower = value.ToLowerInvariant();
-            if (Regex.IsMatch(lower, @"\bfixed\b"))
-            {
-                return "fixed";
-            }
-
-            if (Regex.IsMatch(lower, @"\blocal\b"))
-            {
-                return "local";
-            }
-
-            if (Regex.IsMatch(lower, @"\bscroll\b"))
-            {
-                return "scroll";
-            }
-
-            return null;
-        }
-
-        private static string ExtractBackgroundRepeatFromShorthand(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return null;
-            }
-
-            var lower = value.ToLowerInvariant();
-            if (Regex.IsMatch(lower, @"\bno-repeat\b"))
-            {
-                return "no-repeat";
-            }
-
-            if (Regex.IsMatch(lower, @"\brepeat-x\b"))
-            {
-                return "repeat-x";
-            }
-
-            if (Regex.IsMatch(lower, @"\brepeat-y\b"))
-            {
-                return "repeat-y";
-            }
-
-            if (Regex.IsMatch(lower, @"\brepeat\b"))
-            {
-                return "repeat";
-            }
-
-            return null;
-        }
-
-        private static string ExtractBackgroundPositionFromShorthand(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return null;
-            }
-
-            var tokens = SplitCssShorthandTokens(value);
-            if (tokens.Count == 0)
-            {
-                return null;
-            }
-
-            var position = new List<string>(2);
-            foreach (var token in tokens)
-            {
-                var lower = token.ToLowerInvariant();
-
-                if (lower == "/" ||
-                    lower.StartsWith("url(", StringComparison.OrdinalIgnoreCase) ||
-                    lower.Contains("gradient(", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                if (lower == "repeat" || lower == "no-repeat" || lower == "repeat-x" || lower == "repeat-y" ||
-                    lower == "space" || lower == "round" ||
-                    lower == "fixed" || lower == "scroll" || lower == "local")
-                {
-                    continue;
-                }
-
-                if (TryColor(lower).HasValue)
-                {
-                    continue;
-                }
-
-                if (IsBackgroundPositionToken(lower))
-                {
-                    position.Add(lower);
-                    if (position.Count == 2)
-                    {
-                        break;
-                    }
-                }
-            }
-
-            if (position.Count == 0)
-            {
-                return null;
-            }
-
-            return string.Join(" ", position);
-        }
-
-        private static string ExtractBackgroundSizeFromShorthand(string value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return null;
-            }
-
-            var tokens = SplitCssShorthandTokens(value);
-            if (tokens.Count == 0)
-            {
-                return null;
-            }
-
-            var sizes = new List<string>(2);
-            bool parsingSize = false;
-            foreach (var tokenRaw in tokens)
-            {
-                var token = tokenRaw.Trim().ToLowerInvariant();
-                if (string.IsNullOrEmpty(token))
-                {
-                    continue;
-                }
-
-                if (token == "/")
-                {
-                    parsingSize = true;
-                    continue;
-                }
-
-                var slashIdx = token.IndexOf('/');
-                if (slashIdx >= 0 &&
-                    !token.StartsWith("url(", StringComparison.OrdinalIgnoreCase) &&
-                    !token.Contains("gradient(", StringComparison.OrdinalIgnoreCase))
-                {
-                    parsingSize = true;
-                    var tail = token.Substring(slashIdx + 1).Trim();
-                    if (IsBackgroundSizeToken(tail))
-                    {
-                        sizes.Add(tail);
-                    }
-                    continue;
-                }
-
-                if (!parsingSize)
-                {
-                    continue;
-                }
-
-                if (IsBackgroundSizeToken(token))
-                {
-                    sizes.Add(token);
-                    if (sizes.Count == 2)
-                    {
-                        break;
-                    }
-                    continue;
-                }
-
-                break;
-            }
-
-            if (sizes.Count == 0)
-            {
-                return null;
-            }
-
-            return string.Join(" ", sizes.Take(2));
-        }
-
-        private static string ExtractBackgroundOriginFromShorthand(string value)
-        {
-            var boxes = ExtractBackgroundBoxTokensFromShorthand(value);
-            return boxes.Count > 0 ? boxes[0] : null;
-        }
-
-        private static string ExtractBackgroundClipFromShorthand(string value)
-        {
-            var boxes = ExtractBackgroundBoxTokensFromShorthand(value);
-            if (boxes.Count == 0)
-            {
-                return null;
-            }
-
-            // With one box token, spec applies it to both origin and clip.
-            return boxes.Count == 1 ? boxes[0] : boxes[1];
-        }
-
-        private static List<string> ExtractBackgroundBoxTokensFromShorthand(string value)
-        {
-            var boxes = new List<string>(2);
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return boxes;
-            }
-
-            foreach (var tokenRaw in SplitCssShorthandTokens(value))
-            {
-                var token = tokenRaw.Trim().ToLowerInvariant();
-                if (!IsBackgroundBoxToken(token))
-                {
-                    continue;
-                }
-
-                boxes.Add(token);
-                if (boxes.Count == 2)
-                {
-                    break;
-                }
-            }
-
-            return boxes;
-        }
-
-        private static List<string> SplitCssShorthandTokens(string value)
-        {
-            var result = new List<string>();
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return result;
-            }
-
-            int depth = 0;
-            int start = 0;
-            for (int i = 0; i < value.Length; i++)
-            {
-                char c = value[i];
-                if (c == '(') depth++;
-                else if (c == ')') depth = Math.Max(0, depth - 1);
-                else if (char.IsWhiteSpace(c) && depth == 0)
-                {
-                    if (i > start)
-                    {
-                        result.Add(value.Substring(start, i - start));
-                    }
-                    start = i + 1;
-                }
-            }
-
-            if (start < value.Length)
-            {
-                result.Add(value.Substring(start));
-            }
-
-            return result;
-        }
-
-        private static bool IsBackgroundPositionToken(string token)
-        {
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                return false;
-            }
-
-            token = token.Trim().ToLowerInvariant();
-            if (token == "left" || token == "right" || token == "top" || token == "bottom" || token == "center")
-            {
-                return true;
-            }
-
-            if (token.EndsWith("%", StringComparison.Ordinal))
-            {
-                return double.TryParse(token[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out _);
-            }
-
-            if (token.EndsWith("px", StringComparison.Ordinal) ||
-                token.EndsWith("em", StringComparison.Ordinal) ||
-                token.EndsWith("rem", StringComparison.Ordinal) ||
-                token.EndsWith("pt", StringComparison.Ordinal))
-            {
-                return double.TryParse(token[..^2], NumberStyles.Float, CultureInfo.InvariantCulture, out _);
-            }
-
-            return token == "0";
-        }
-
-        private static bool IsBackgroundBoxToken(string token)
-        {
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                return false;
-            }
-
-            token = token.Trim().ToLowerInvariant();
-            return token == "border-box" || token == "padding-box" || token == "content-box";
-        }
-
-        private static bool IsBackgroundSizeToken(string token)
-        {
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                return false;
-            }
-
-            token = token.Trim().ToLowerInvariant();
-            if (token == "auto" || token == "cover" || token == "contain")
-            {
-                return true;
-            }
-
-            return IsBackgroundLengthToken(token);
-        }
-
-        private static bool IsBackgroundLengthToken(string token)
-        {
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                return false;
-            }
-
-            token = token.Trim().ToLowerInvariant();
-            if (token == "0")
-            {
-                return true;
-            }
-
-            if (token.EndsWith("%", StringComparison.Ordinal))
-            {
-                return double.TryParse(token[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out _);
-            }
-
-            string[] units = { "px", "em", "rem", "pt", "vw", "vh", "vmin", "vmax", "ch", "ex", "cm", "mm", "in", "pc" };
-            foreach (var unit in units)
-            {
-                if (token.EndsWith(unit, StringComparison.Ordinal))
-                {
-                    return double.TryParse(token.Substring(0, token.Length - unit.Length), NumberStyles.Float, CultureInfo.InvariantCulture, out _);
-                }
-            }
-
-            return false;
-        }
-
-        private static string ParseGradient(string css)
-        {
-            if (string.IsNullOrWhiteSpace(css)) return null;
-            css = css.Trim();
-
-            if (css.StartsWith("linear-gradient(", StringComparison.OrdinalIgnoreCase) ||
-                css.StartsWith("radial-gradient(", StringComparison.OrdinalIgnoreCase) ||
-                css.StartsWith("conic-gradient(", StringComparison.OrdinalIgnoreCase) ||
-                css.StartsWith("repeating-linear-gradient(", StringComparison.OrdinalIgnoreCase) ||
-                css.StartsWith("repeating-radial-gradient(", StringComparison.OrdinalIgnoreCase))
-            {
-                return css;
-            }
-
-            return null;
-        }
-
-        /// <summary>
-        /// Extract border style from a border shorthand (e.g., "2px solid #eee")
-        /// Returns the style keyword: none, hidden, dotted, dashed, solid, double, groove, ridge, inset, outset
-        /// </summary>
-        private static string ExtractBorderSideStyle(string borderSide)
-        {
-            if (string.IsNullOrWhiteSpace(borderSide)) return "none";
-            var parts = borderSide.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var part in parts)
-            {
-                var lower = part.ToLowerInvariant();
-                if (IsBorderStyle(lower)) return lower;
-            }
-            return "none";
-        }
-
-        /// <summary>
-        /// Extract border style from border-style shorthand (1-4 values)
-        /// </summary>
-        private static void ExtractBorderStyles(string value, out string top, out string right, out string bottom, out string left)
-        {
-            top = right = bottom = left = "none";
-            if (string.IsNullOrWhiteSpace(value)) return;
-            var parts = value.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length == 0) return;
-            
-            // CSS shorthand: 1 value = all, 2 values = top/bottom + left/right, 3 values = top + left/right + bottom, 4 = each
-            if (parts.Length == 1)
-            {
-                top = right = bottom = left = parts[0].ToLowerInvariant();
-            }
-            else if (parts.Length == 2)
-            {
-                top = bottom = parts[0].ToLowerInvariant();
-                left = right = parts[1].ToLowerInvariant();
-            }
-            else if (parts.Length == 3)
-            {
-                top = parts[0].ToLowerInvariant();
-                left = right = parts[1].ToLowerInvariant();
-                bottom = parts[2].ToLowerInvariant();
-            }
-            else
-            {
-                top = parts[0].ToLowerInvariant();
-                right = parts[1].ToLowerInvariant();
-                bottom = parts[2].ToLowerInvariant();
-                left = parts[3].ToLowerInvariant();
-            }
-        }
-
-        private static void Log(Action<string> log, string msg)
-        {
-            try { if (log != null) log(msg); } catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] External logger callback failed: {ex.Message}", LogCategory.CSS); }
-        }
-
-
-
-        private static List<string> SplitByComma(string content)
-        {
-            var list = new List<string>();
-            if (string.IsNullOrWhiteSpace(content)) return list;
-            
-            int depth = 0;
-            int start = 0;
-            for (int i = 0; i < content.Length; i++)
-            {
-                if (content[i] == '(') depth++;
-                else if (content[i] == ')') depth--;
-                else if (content[i] == ',' && depth == 0)
-                {
-                    list.Add(content.Substring(start, i - start));
-                    start = i + 1;
-                }
-            }
-            if (start < content.Length) list.Add(content.Substring(start));
-            return list;
-        }
-
-    private static readonly object _logLock = new object();
-    private static void DebugLog(string filename, string message)
-    {
-#if !DEBUG
-        return;
-#else
-        try
-        {
-            var safeName = Path.GetFileName(filename);
-            if (string.IsNullOrWhiteSpace(safeName))
-                safeName = "css_debug.txt";
-            DiagnosticPaths.AppendRootText(safeName, message);
-        }
-        catch (Exception ex) { EngineLogCompat.Warn($"[CssLoader] Debug file write failed: {ex.Message}", LogCategory.CSS); }
-#endif
-    }
-
-    /// <summary>
-    /// Matches a SelectorChain against an element (for compound :not() support)
-    /// </summary>
-    private static bool MatchesSelectorChain(SelectorChain chain, Element n)
-    {
-        return Matches(n, chain);
-    }
-
-    /// <summary>
-    /// Parses an nth-expression (e.g. '2n+1', 'odd', 'even') into a and b for an+b
-    /// </summary>
-    private static bool ParseNthExpression(string expr, out int a, out int b)
-    {
-        a = 0; b = 0;
-        expr = expr.Trim().ToLowerInvariant();
-        if (expr == "odd") { a = 2; b = 1; return true; }
-        if (expr == "even") { a = 2; b = 0; return true; }
-        var match = System.Text.RegularExpressions.Regex.Match(expr, @"^([+-]?\d*)n([+-]?\d+)?$");
-        if (match.Success)
-        {
-            var aStr = match.Groups[1].Value;
-            var bStr = match.Groups[2].Value;
-            a = (aStr == "" || aStr == "+") ? 1 : (aStr == "-" ? -1 : int.Parse(aStr));
-            b = bStr == "" ? 0 : int.Parse(bStr);
-            return true;
-        }
-        // Just a number
-        if (int.TryParse(expr, out b)) { a = 0; return true; }
-        return false;
-    }
-
-    // ==========================================
-    // Selector Helpers for :is, :where, :has
-    // ==========================================
-
-    private static bool MatchesSelectorList(Element n, List<SelectorChain> chains)
-    {
-        if (chains == null) return false;
-        foreach (var chain in chains)
-        {
-            if (Matches(n, chain)) return true;
-        }
-        return false;
-    }
-
-    private static bool MatchesSelectorList(Element n, string selectorList)
-    {
-        if (string.IsNullOrWhiteSpace(selectorList)) return false;
-        
-        // Use SelectorMatcher to parse!
-        var chains = SelectorMatcher.ParseSelectorList(selectorList);
-        return MatchesSelectorList(n, chains);
-    }
-
-    private static bool MatchesHas(Element n, string selectorList)
-    {
-        if (n == null || string.IsNullOrWhiteSpace(selectorList))
-        {
-            return false;
-        }
-
-        // Delegate to the Level-4 matcher so :has() relative selectors
-        // (> / + / ~ / descendant) resolve against the anchor element.
-        return SelectorMatcher.Matches(n, $":has({selectorList})");
-    }
-
-    private static void ApplyPlaceShorthands(CssComputed css)
-    {
-        if (css?.Map == null)
-        {
-            return;
-        }
-
-        ApplyPlaceShorthand(css, "place-items", "align-items", "justify-items", () => css.AlignItems, () => css.JustifyItems, v => css.AlignItems = v, v => css.JustifyItems = v);
-        ApplyPlaceShorthand(css, "place-content", "align-content", "justify-content", () => css.AlignContent, () => css.JustifyContent, v => css.AlignContent = v, v => css.JustifyContent = v);
-        ApplyPlaceShorthand(css, "place-self", "align-self", "justify-self", () => css.AlignSelf, () => css.JustifySelf, v => css.AlignSelf = v, v => css.JustifySelf = v);
-    }
-
-    private static void ApplyPlaceShorthand(
-        CssComputed css,
-        string shorthandKey,
-        string primaryLonghand,
-        string secondaryLonghand,
-        Func<string> getPrimary,
-        Func<string> getSecondary,
-        Action<string> setPrimary,
-        Action<string> setSecondary)
-    {
-        var raw = Safe(DictGet(css.Map, shorthandKey));
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return;
-        }
-
-        if (!TryParsePlacePair(raw, out var first, out var second))
-        {
-            return;
-        }
-
-        bool hasPrimary = !string.IsNullOrWhiteSpace(getPrimary?.Invoke()) || css.Map.ContainsKey(primaryLonghand);
-        bool hasSecondary = !string.IsNullOrWhiteSpace(getSecondary?.Invoke()) || css.Map.ContainsKey(secondaryLonghand);
-
-        if (!hasPrimary && !string.IsNullOrWhiteSpace(first))
-        {
-            setPrimary(first);
-            css.Map[primaryLonghand] = first;
-        }
-
-        if (!hasSecondary && !string.IsNullOrWhiteSpace(second))
-        {
-            setSecondary(second);
-            css.Map[secondaryLonghand] = second;
-        }
-    }
-
-    private static bool TryParsePlacePair(string raw, out string first, out string second)
-    {
-        first = null;
-        second = null;
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return false;
-        }
-
-        var tokens = SplitCssValues(raw)
-            .Select(t => t?.Trim())
-            .Where(t => !string.IsNullOrWhiteSpace(t))
-            .ToList();
-
-        if (tokens.Count == 0)
-        {
-            return false;
-        }
-
-        first = tokens[0].ToLowerInvariant();
-        second = tokens.Count > 1 ? tokens[1].ToLowerInvariant() : first;
-        return true;
-    }
-
-    private static void ApplyInventoryPropertyAliasNormalizations(Dictionary<string, string> map)
-    {
-        if (map == null)
-        {
-            return;
-        }
-
-        if (TryGetNonEmptyMapValue(map, "word-wrap", out var wordWrapAlias) &&
-            !map.ContainsKey("overflow-wrap"))
-        {
-            map["overflow-wrap"] = wordWrapAlias;
-        }
-
-        if (TryGetNonEmptyMapValue(map, "font-width", out var fontWidthAlias) &&
-            !map.ContainsKey("font-stretch"))
-        {
-            map["font-stretch"] = fontWidthAlias;
-        }
-
-        if (TryGetNonEmptyMapValue(map, "background-position-inline", out var backgroundPositionInline) &&
-            !map.ContainsKey("background-position-x"))
-        {
-            map["background-position-x"] = backgroundPositionInline;
-        }
-
-        if (TryGetNonEmptyMapValue(map, "background-position-block", out var backgroundPositionBlock) &&
-            !map.ContainsKey("background-position-y"))
-        {
-            map["background-position-y"] = backgroundPositionBlock;
-        }
-
-        var posX = map.TryGetValue("background-position-x", out var xValue) ? xValue?.Trim().ToLowerInvariant() : null;
-        var posY = map.TryGetValue("background-position-y", out var yValue) ? yValue?.Trim().ToLowerInvariant() : null;
-        if (!string.IsNullOrWhiteSpace(posX) &&
-            !string.IsNullOrWhiteSpace(posY) &&
-            !map.ContainsKey("background-position"))
-        {
-            map["background-position"] = $"{posX} {posY}";
-        }
-
-        if (TryGetNonEmptyMapValue(map, "background-repeat-inline", out var repeatInline))
-        {
-            map["background-repeat-x"] = repeatInline;
-        }
-
-        if (TryGetNonEmptyMapValue(map, "background-repeat-block", out var repeatBlock))
-        {
-            map["background-repeat-y"] = repeatBlock;
-        }
-
-        var repeatX = map.TryGetValue("background-repeat-x", out var repeatXValue) ? repeatXValue?.Trim().ToLowerInvariant() : null;
-        var repeatY = map.TryGetValue("background-repeat-y", out var repeatYValue) ? repeatYValue?.Trim().ToLowerInvariant() : null;
-        if (!string.IsNullOrWhiteSpace(repeatX) && !string.IsNullOrWhiteSpace(repeatY))
-        {
-            if (repeatX == "repeat" && repeatY == "repeat")
-            {
-                map["background-repeat"] = "repeat";
-            }
-            else if (repeatX == "no-repeat" && repeatY == "no-repeat")
-            {
-                map["background-repeat"] = "no-repeat";
-            }
-            else if (repeatX == "repeat" && repeatY == "no-repeat")
-            {
-                map["background-repeat"] = "repeat-x";
-            }
-            else if (repeatX == "no-repeat" && repeatY == "repeat")
-            {
-                map["background-repeat"] = "repeat-y";
-            }
-            else
-            {
-                map["background-repeat"] = $"{repeatX} {repeatY}";
-            }
-        }
-
-        ApplyFlexFlowAlias(map);
-        ApplyContainerShorthandAlias(map);
-        ApplyLogicalScrollSpacingAliases(map);
-        ApplyLogicalBorderRadiusAliases(map);
-        ApplyBreakAliases(map);
-        ApplyTextWrapAliases(map);
-        ApplyTimelineAliases(map);
-        ApplyOffsetAliases(map);
-        ApplyBorderImageAliases(map);
-        ApplyMaskBorderAliases(map);
-        ApplyContainIntrinsicAliases(map);
-        ApplyFontAndTextAliases(map);
-        ApplyAnimationRangeAliases(map);
-        ApplyAdvancedInventoryPassThrough(map);
-    }
-
-    private static void ApplyFlexFlowAlias(Dictionary<string, string> map)
-    {
-        if (!TryGetNonEmptyMapValue(map, "flex-flow", out var flexFlowRaw))
-        {
-            return;
-        }
-
-        var tokens = SplitCssValues(flexFlowRaw)
-            .Select(t => t?.Trim().ToLowerInvariant())
-            .Where(t => !string.IsNullOrWhiteSpace(t))
-            .ToList();
-
-        string direction = null;
-        string wrap = null;
-        foreach (var token in tokens)
-        {
-            switch (token)
-            {
-                case "row":
-                case "row-reverse":
-                case "column":
-                case "column-reverse":
-                    direction ??= token;
-                    break;
-                case "nowrap":
-                case "wrap":
-                case "wrap-reverse":
-                    wrap ??= token;
-                    break;
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(direction) && !map.ContainsKey("flex-direction"))
-        {
-            map["flex-direction"] = direction;
-        }
-
-        if (!string.IsNullOrWhiteSpace(wrap) && !map.ContainsKey("flex-wrap"))
-        {
-            map["flex-wrap"] = wrap;
-        }
-    }
-
-    private static void ApplyContainerShorthandAlias(Dictionary<string, string> map)
-    {
-        if (!TryGetNonEmptyMapValue(map, "container", out var containerRaw))
-        {
-            return;
-        }
-
-        if (string.Equals(containerRaw, "normal", StringComparison.Ordinal))
-        {
-            if (!map.ContainsKey("container-name"))
-            {
-                map["container-name"] = "none";
-            }
-            if (!map.ContainsKey("container-type"))
-            {
-                map["container-type"] = "normal";
-            }
-            return;
-        }
-
-        if (string.Equals(containerRaw, "none", StringComparison.Ordinal))
-        {
-            if (!map.ContainsKey("container-name"))
-            {
-                map["container-name"] = "none";
-            }
-            return;
-        }
-
-        var slashIndex = containerRaw.IndexOf('/');
-        if (slashIndex >= 0)
-        {
-            var namePart = containerRaw.Substring(0, slashIndex).Trim().ToLowerInvariant();
-            var typePart = containerRaw.Substring(slashIndex + 1).Trim().ToLowerInvariant();
-
-            if (!string.IsNullOrWhiteSpace(namePart) && !map.ContainsKey("container-name"))
-            {
-                map["container-name"] = namePart;
-            }
-            if (!string.IsNullOrWhiteSpace(typePart) && !map.ContainsKey("container-type"))
-            {
-                map["container-type"] = typePart;
-            }
-            return;
-        }
-
-        if (containerRaw == "size" || containerRaw == "inline-size" || containerRaw == "normal")
-        {
-            if (!map.ContainsKey("container-type"))
-            {
-                map["container-type"] = containerRaw;
-            }
-            if (!map.ContainsKey("container-name"))
-            {
-                map["container-name"] = "none";
-            }
-            return;
-        }
-
-        if (!map.ContainsKey("container-name"))
-        {
-            map["container-name"] = containerRaw;
-        }
-    }
-
-    private static void ApplyLogicalScrollSpacingAliases(Dictionary<string, string> map)
-    {
-        var direction = map.TryGetValue("direction", out var dirRaw) ? dirRaw?.Trim().ToLowerInvariant() : "ltr";
-        var inlineStart = string.Equals(direction, "rtl", StringComparison.Ordinal) ? "right" : "left";
-        var inlineEnd = inlineStart == "left" ? "right" : "left";
-
-        ApplyPhysicalBoxShorthand("scroll-margin", "scroll-margin-top", "scroll-margin-right", "scroll-margin-bottom", "scroll-margin-left");
-        ApplyPhysicalBoxShorthand("scroll-padding", "scroll-padding-top", "scroll-padding-right", "scroll-padding-bottom", "scroll-padding-left");
-
-        ApplyLogicalAxis("scroll-margin-inline", "scroll-margin-inline-start", "scroll-margin-inline-end");
-        ApplyLogicalAxis("scroll-margin-block", "scroll-margin-block-start", "scroll-margin-block-end");
-        ApplyLogicalAxis("scroll-padding-inline", "scroll-padding-inline-start", "scroll-padding-inline-end");
-        ApplyLogicalAxis("scroll-padding-block", "scroll-padding-block-start", "scroll-padding-block-end");
-
-        ProjectLogicalToPhysical("scroll-margin-inline-start", $"scroll-margin-{inlineStart}");
-        ProjectLogicalToPhysical("scroll-margin-inline-end", $"scroll-margin-{inlineEnd}");
-        ProjectLogicalToPhysical("scroll-margin-block-start", "scroll-margin-top");
-        ProjectLogicalToPhysical("scroll-margin-block-end", "scroll-margin-bottom");
-
-        ProjectLogicalToPhysical("scroll-padding-inline-start", $"scroll-padding-{inlineStart}");
-        ProjectLogicalToPhysical("scroll-padding-inline-end", $"scroll-padding-{inlineEnd}");
-        ProjectLogicalToPhysical("scroll-padding-block-start", "scroll-padding-top");
-        ProjectLogicalToPhysical("scroll-padding-block-end", "scroll-padding-bottom");
-
-        void ApplyPhysicalBoxShorthand(string shorthand, string topKey, string rightKey, string bottomKey, string leftKey)
-        {
-            if (!TryGetNonEmptyMapValue(map, shorthand, out var raw))
-            {
-                return;
-            }
-
-            if (!TryExpandPhysicalBoxShorthand(raw, out var top, out var right, out var bottom, out var left))
-            {
-                return;
-            }
-
-            if (!map.ContainsKey(topKey)) map[topKey] = top;
-            if (!map.ContainsKey(rightKey)) map[rightKey] = right;
-            if (!map.ContainsKey(bottomKey)) map[bottomKey] = bottom;
-            if (!map.ContainsKey(leftKey)) map[leftKey] = left;
-        }
-
-        void ApplyLogicalAxis(string axisShorthand, string startKey, string endKey)
-        {
-            if (!TryGetNonEmptyMapValue(map, axisShorthand, out var raw))
-            {
-                return;
-            }
-
-            if (!TryParseLogicalAxisPair(raw, out var start, out var end))
-            {
-                return;
-            }
-
-            if (!map.ContainsKey(startKey)) map[startKey] = start;
-            if (!map.ContainsKey(endKey)) map[endKey] = end;
-        }
-
-        void ProjectLogicalToPhysical(string logicalKey, string physicalKey)
-        {
-            if (TryGetNonEmptyMapValue(map, logicalKey, out var value) && !map.ContainsKey(physicalKey))
-            {
-                map[physicalKey] = value;
-            }
-        }
-    }
-
-    private static void ApplyLogicalBorderRadiusAliases(Dictionary<string, string> map)
-    {
-        var direction = map.TryGetValue("direction", out var dirRaw) ? dirRaw?.Trim().ToLowerInvariant() : "ltr";
-        var inlineStart = string.Equals(direction, "rtl", StringComparison.Ordinal) ? "right" : "left";
-        var inlineEnd = inlineStart == "left" ? "right" : "left";
-
-        string startStartCorner = ResolveCornerKey("top", inlineStart);
-        string startEndCorner = ResolveCornerKey("top", inlineEnd);
-        string endStartCorner = ResolveCornerKey("bottom", inlineStart);
-        string endEndCorner = ResolveCornerKey("bottom", inlineEnd);
-
-        ApplyDirectCornerAlias("border-start-start-radius", startStartCorner);
-        ApplyDirectCornerAlias("border-start-end-radius", startEndCorner);
-        ApplyDirectCornerAlias("border-end-start-radius", endStartCorner);
-        ApplyDirectCornerAlias("border-end-end-radius", endEndCorner);
-
-        ApplyBlockAxisRadiusShorthand("border-block-start-radius", startStartCorner, startEndCorner);
-        ApplyBlockAxisRadiusShorthand("border-block-end-radius", endStartCorner, endEndCorner);
-
-        void ApplyDirectCornerAlias(string logicalKey, string physicalKey)
-        {
-            if (TryGetNonEmptyMapValue(map, logicalKey, out var value) && !map.ContainsKey(physicalKey))
-            {
-                map[physicalKey] = value;
-            }
-        }
-
-        void ApplyBlockAxisRadiusShorthand(string logicalKey, string firstCorner, string secondCorner)
-        {
-            if (!TryGetNonEmptyMapValue(map, logicalKey, out var raw))
-            {
-                return;
-            }
-
-            var tokens = SplitCssValues(raw)
-                .Select(t => t?.Trim().ToLowerInvariant())
-                .Where(t => !string.IsNullOrWhiteSpace(t))
-                .ToList();
-            if (tokens.Count == 0)
-            {
-                return;
-            }
-
-            var first = tokens[0];
-            var second = tokens.Count > 1 ? tokens[1] : tokens[0];
-
-            if (!map.ContainsKey(firstCorner))
-            {
-                map[firstCorner] = first;
-            }
-            if (!map.ContainsKey(secondCorner))
-            {
-                map[secondCorner] = second;
-            }
-        }
-    }
-
-    private static void ApplyBreakAliases(Dictionary<string, string> map)
-    {
-        ApplyBreakAlias("break-before", "page-break-before");
-        ApplyBreakAlias("break-after", "page-break-after");
-        ApplyBreakAlias("break-inside", "page-break-inside");
-
-        void ApplyBreakAlias(string breakKey, string pageBreakKey)
-        {
-            if (!TryGetNonEmptyMapValue(map, breakKey, out var breakValue))
-            {
-                return;
-            }
-
-            if (map.ContainsKey(pageBreakKey))
-            {
-                return;
-            }
-
-            var normalized = breakValue switch
-            {
-                "avoid-page" => "avoid",
-                "page" => "always",
-                "left" => "always",
-                "right" => "always",
-                "recto" => "always",
-                "verso" => "always",
-                _ => breakValue
-            };
-
-            map[pageBreakKey] = normalized;
-        }
-    }
-
-    private static void ApplyTextWrapAliases(Dictionary<string, string> map)
-    {
-        if (TryGetNonEmptyMapValue(map, "text-wrap", out var textWrap))
-        {
-            if (!map.ContainsKey("text-wrap-mode"))
-            {
-                map["text-wrap-mode"] = string.Equals(textWrap, "nowrap", StringComparison.Ordinal)
-                    ? "nowrap"
-                    : "wrap";
-            }
-
-            if (!map.ContainsKey("text-wrap-style"))
-            {
-                map["text-wrap-style"] = textWrap switch
-                {
-                    "balance" => "balance",
-                    "pretty" => "pretty",
-                    "stable" => "stable",
-                    _ => "auto"
-                };
-            }
-        }
-
-        if (TryGetNonEmptyMapValue(map, "text-wrap-mode", out var textWrapMode))
-        {
-            if (!map.ContainsKey("white-space"))
-            {
-                map["white-space"] = string.Equals(textWrapMode, "nowrap", StringComparison.Ordinal)
-                    ? "nowrap"
-                    : "normal";
-            }
-        }
-
-        if (TryGetNonEmptyMapValue(map, "white-space-collapse", out var whiteSpaceCollapse) &&
-            !map.ContainsKey("white-space"))
-        {
-            map["white-space"] = whiteSpaceCollapse switch
-            {
-                "preserve" => "pre",
-                "preserve-breaks" => "pre-wrap",
-                "preserve-spaces" => "pre",
-                "break-spaces" => "break-spaces",
-                _ => "normal"
-            };
-        }
-
-        if (TryGetNonEmptyMapValue(map, "text-align-all", out var textAlignAll) &&
-            !map.ContainsKey("text-align"))
-        {
-            map["text-align"] = textAlignAll;
-        }
-    }
-
-    private static void ApplyTimelineAliases(Dictionary<string, string> map)
-    {
-        ApplyNameAxisShorthand("scroll-timeline", "scroll-timeline-name", "scroll-timeline-axis", null);
-        ApplyNameAxisShorthand("view-timeline", "view-timeline-name", "view-timeline-axis", "view-timeline-inset");
-
-        if (TryGetNonEmptyMapValue(map, "animation-timeline", out var animationTimeline))
-        {
-            if (string.Equals(animationTimeline, "auto", StringComparison.Ordinal) &&
-                map.TryGetValue("scroll-timeline-name", out var scrollTimelineName) &&
-                !string.IsNullOrWhiteSpace(scrollTimelineName))
-            {
-                map["animation-timeline"] = scrollTimelineName.Trim().ToLowerInvariant();
-            }
-        }
-
-        void ApplyNameAxisShorthand(string shorthandKey, string nameKey, string axisKey, string insetKey)
-        {
-            if (!TryGetNonEmptyMapValue(map, shorthandKey, out var shorthand))
-            {
-                return;
-            }
-
-            var shorthandParts = SplitTopLevelByChar(shorthand, '/');
-            var beforeSlash = shorthandParts.Count > 0 ? shorthandParts[0] : shorthand;
-            var afterSlash = shorthandParts.Count > 1 ? shorthandParts[1]?.Trim().ToLowerInvariant() : null;
-
-            var tokens = SplitCssValues(beforeSlash)
-                .Select(t => t?.Trim().ToLowerInvariant())
-                .Where(t => !string.IsNullOrWhiteSpace(t))
-                .ToList();
-            if (tokens.Count == 0)
-            {
-                return;
-            }
-
-            string name = null;
-            string axis = null;
-
-            foreach (var token in tokens)
-            {
-                if (token is "x" or "y" or "block" or "inline")
-                {
-                    axis ??= token;
-                }
-                else
-                {
-                    name ??= token;
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(name) && !map.ContainsKey(nameKey))
-            {
-                map[nameKey] = name;
-            }
-            if (!string.IsNullOrWhiteSpace(axis) && !map.ContainsKey(axisKey))
-            {
-                map[axisKey] = axis;
-            }
-
-            if (!string.IsNullOrWhiteSpace(insetKey) &&
-                !string.IsNullOrWhiteSpace(afterSlash) &&
-                !map.ContainsKey(insetKey))
-            {
-                map[insetKey] = afterSlash;
-            }
-        }
-    }
-
-    private static void ApplyOffsetAliases(Dictionary<string, string> map)
-    {
-        if (!TryGetNonEmptyMapValue(map, "offset", out var offsetRaw))
-        {
-            return;
-        }
-
-        var parts = SplitTopLevelByChar(offsetRaw, '/');
-        var beforeSlash = parts.Count > 0 ? parts[0].Trim() : string.Empty;
-        var afterSlash = parts.Count > 1 ? parts[1].Trim().ToLowerInvariant() : null;
-
-        var tokens = SplitCssValues(beforeSlash)
-            .Select(t => t?.Trim())
-            .Where(t => !string.IsNullOrWhiteSpace(t))
-            .ToList();
-
-        string inferredPath = null;
-        string inferredDistance = null;
-        string inferredRotate = null;
-        var inferredPositionTokens = new List<string>();
-
-        foreach (var rawToken in tokens)
-        {
-            var token = rawToken.Trim();
-            var lower = token.ToLowerInvariant();
-
-            if (inferredPath == null &&
-                (lower.StartsWith("path(", StringComparison.Ordinal) ||
-                 lower.StartsWith("ray(", StringComparison.Ordinal) ||
-                 lower.StartsWith("url(", StringComparison.Ordinal) ||
-                 lower == "none"))
-            {
-                inferredPath = lower;
-                continue;
-            }
-
-            if (inferredDistance == null &&
-                Regex.IsMatch(lower, @"^[+-]?(\d+(\.\d+)?|\.\d+)(px|em|rem|vw|vh|vmin|vmax|cm|mm|in|pt|pc|q|%)$"))
-            {
-                inferredDistance = lower;
-                continue;
-            }
-
-            if (lower == "auto" || lower == "reverse" || lower.StartsWith("auto ", StringComparison.Ordinal))
-            {
-                inferredRotate = inferredRotate == null ? lower : inferredRotate + " " + lower;
-                continue;
-            }
-
-            inferredPositionTokens.Add(lower);
-        }
-
-        if (!string.IsNullOrWhiteSpace(inferredPath) && !map.ContainsKey("offset-path"))
-        {
-            map["offset-path"] = inferredPath;
-        }
-
-        if (!string.IsNullOrWhiteSpace(inferredDistance) && !map.ContainsKey("offset-distance"))
-        {
-            map["offset-distance"] = inferredDistance;
-        }
-
-        if (!string.IsNullOrWhiteSpace(inferredRotate) && !map.ContainsKey("offset-rotate"))
-        {
-            map["offset-rotate"] = inferredRotate;
-        }
-
-        if (inferredPositionTokens.Count > 0 && !map.ContainsKey("offset-position"))
-        {
-            map["offset-position"] = string.Join(" ", inferredPositionTokens);
-        }
-
-        if (!string.IsNullOrWhiteSpace(afterSlash) && !map.ContainsKey("offset-anchor"))
-        {
-            map["offset-anchor"] = afterSlash;
-        }
-    }
-
-    private static void ApplyBorderImageAliases(Dictionary<string, string> map)
-    {
-        if (!TryGetNonEmptyMapValue(map, "border-image", out var borderImageRaw))
-        {
-            return;
-        }
-
-        var slashParts = SplitTopLevelByChar(borderImageRaw, '/');
-        var head = slashParts.Count > 0 ? slashParts[0].Trim() : string.Empty;
-
-        var tokens = SplitCssValues(head).Select(t => t?.Trim().ToLowerInvariant()).Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
-        var repeatTokens = new List<string>();
-        var sliceTokens = new List<string>();
-        string source = null;
-
-        foreach (var token in tokens)
-        {
-            if (source == null &&
-                (token.StartsWith("url(", StringComparison.Ordinal) ||
-                 token.StartsWith("image(", StringComparison.Ordinal) ||
-                 token.StartsWith("linear-gradient(", StringComparison.Ordinal) ||
-                 token.StartsWith("radial-gradient(", StringComparison.Ordinal) ||
-                 token == "none"))
-            {
-                source = token;
-                continue;
-            }
-
-            if (token is "stretch" or "repeat" or "round" or "space")
-            {
-                repeatTokens.Add(token);
-                continue;
-            }
-
-            sliceTokens.Add(token);
-        }
-
-        var width = slashParts.Count > 1 ? ExtractNonRepeatSegment(slashParts[1], repeatTokens) : null;
-        var outset = slashParts.Count > 2 ? ExtractNonRepeatSegment(slashParts[2], repeatTokens) : null;
-
-        if (!string.IsNullOrWhiteSpace(source) && !map.ContainsKey("border-image-source"))
-        {
-            map["border-image-source"] = source;
-        }
-        if (sliceTokens.Count > 0 && !map.ContainsKey("border-image-slice"))
-        {
-            map["border-image-slice"] = string.Join(" ", sliceTokens);
-        }
-        if (!string.IsNullOrWhiteSpace(width) && !map.ContainsKey("border-image-width"))
-        {
-            map["border-image-width"] = width;
-        }
-        if (!string.IsNullOrWhiteSpace(outset) && !map.ContainsKey("border-image-outset"))
-        {
-            map["border-image-outset"] = outset;
-        }
-        if (repeatTokens.Count > 0 && !map.ContainsKey("border-image-repeat"))
-        {
-            map["border-image-repeat"] = string.Join(" ", repeatTokens);
-        }
-    }
-
-    private static void ApplyMaskBorderAliases(Dictionary<string, string> map)
-    {
-        if (!TryGetNonEmptyMapValue(map, "mask-border", out var maskBorderRaw))
-        {
-            return;
-        }
-
-        var slashParts = SplitTopLevelByChar(maskBorderRaw, '/');
-        var head = slashParts.Count > 0 ? slashParts[0].Trim() : string.Empty;
-
-        var tokens = SplitCssValues(head).Select(t => t?.Trim().ToLowerInvariant()).Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
-        var repeatTokens = new List<string>();
-        var sliceTokens = new List<string>();
-        string source = null;
-
-        foreach (var token in tokens)
-        {
-            if (source == null &&
-                (token.StartsWith("url(", StringComparison.Ordinal) ||
-                 token.StartsWith("image(", StringComparison.Ordinal) ||
-                 token.StartsWith("linear-gradient(", StringComparison.Ordinal) ||
-                 token.StartsWith("radial-gradient(", StringComparison.Ordinal) ||
-                 token == "none"))
-            {
-                source = token;
-                continue;
-            }
-
-            if (token is "stretch" or "repeat" or "round" or "space")
-            {
-                repeatTokens.Add(token);
-                continue;
-            }
-
-            sliceTokens.Add(token);
-        }
-
-        var width = slashParts.Count > 1 ? ExtractNonRepeatSegment(slashParts[1], repeatTokens) : null;
-        var outset = slashParts.Count > 2 ? ExtractNonRepeatSegment(slashParts[2], repeatTokens) : null;
-
-        if (!string.IsNullOrWhiteSpace(source) && !map.ContainsKey("mask-border-source"))
-        {
-            map["mask-border-source"] = source;
-        }
-        if (sliceTokens.Count > 0 && !map.ContainsKey("mask-border-slice"))
-        {
-            map["mask-border-slice"] = string.Join(" ", sliceTokens);
-        }
-        if (!string.IsNullOrWhiteSpace(width) && !map.ContainsKey("mask-border-width"))
-        {
-            map["mask-border-width"] = width;
-        }
-        if (!string.IsNullOrWhiteSpace(outset) && !map.ContainsKey("mask-border-outset"))
-        {
-            map["mask-border-outset"] = outset;
-        }
-        if (repeatTokens.Count > 0 && !map.ContainsKey("mask-border-repeat"))
-        {
-            map["mask-border-repeat"] = string.Join(" ", repeatTokens);
-        }
-    }
-
-    private static void ApplyContainIntrinsicAliases(Dictionary<string, string> map)
-    {
-        var explicitInline = TryGetNonEmptyMapValue(map, "contain-intrinsic-inline-size", out var inlineRaw)
-            ? inlineRaw
-            : (TryGetNonEmptyMapValue(map, "contain-intrinsic-width", out var widthRaw) ? widthRaw : null);
-        var explicitBlock = TryGetNonEmptyMapValue(map, "contain-intrinsic-block-size", out var blockRaw)
-            ? blockRaw
-            : (TryGetNonEmptyMapValue(map, "contain-intrinsic-height", out var heightRaw) ? heightRaw : null);
-
-        if (!map.ContainsKey("contain-intrinsic-size"))
-        {
-            if (!string.IsNullOrWhiteSpace(explicitInline) && !string.IsNullOrWhiteSpace(explicitBlock))
-            {
-                map["contain-intrinsic-size"] = $"{explicitInline} {explicitBlock}";
-            }
-            else if (!string.IsNullOrWhiteSpace(explicitInline))
-            {
-                map["contain-intrinsic-size"] = explicitInline;
-            }
-            else if (!string.IsNullOrWhiteSpace(explicitBlock))
-            {
-                map["contain-intrinsic-size"] = explicitBlock;
-            }
-        }
-
-        if (TryGetNonEmptyMapValue(map, "contain-intrinsic-size", out var containIntrinsicSizeRaw))
-        {
-            var tokens = SplitCssValues(containIntrinsicSizeRaw)
-                .Select(t => t?.Trim().ToLowerInvariant())
-                .Where(t => !string.IsNullOrWhiteSpace(t))
-                .ToList();
-            if (tokens.Count > 0)
-            {
-                var inline = tokens[0];
-                var block = tokens.Count > 1 ? tokens[1] : tokens[0];
-
-                if (!map.ContainsKey("contain-intrinsic-inline-size"))
-                {
-                    map["contain-intrinsic-inline-size"] = inline;
-                }
-                if (!map.ContainsKey("contain-intrinsic-block-size"))
-                {
-                    map["contain-intrinsic-block-size"] = block;
-                }
-                if (!map.ContainsKey("contain-intrinsic-width"))
-                {
-                    map["contain-intrinsic-width"] = inline;
-                }
-                if (!map.ContainsKey("contain-intrinsic-height"))
-                {
-                    map["contain-intrinsic-height"] = block;
-                }
-            }
-        }
-    }
-
-    private static void ApplyFontAndTextAliases(Dictionary<string, string> map)
-    {
-        ApplyTokenAggregator(
-            "font-synthesis",
-            "font-synthesis-weight",
-            "font-synthesis-style",
-            "font-synthesis-small-caps",
-            "font-synthesis-position");
-
-        ApplyTokenAggregator(
-            "font-variant",
-            "font-variant-ligatures",
-            "font-variant-caps",
-            "font-variant-numeric",
-            "font-variant-east-asian",
-            "font-variant-alternates",
-            "font-variant-position",
-            "font-variant-emoji");
-
-        if (TryGetNonEmptyMapValue(map, "text-align-last", out var textAlignLast) &&
-            !map.ContainsKey("text-align") &&
-            !string.Equals(textAlignLast, "auto", StringComparison.Ordinal))
-        {
-            map["text-align"] = textAlignLast;
-        }
-
-        void ApplyTokenAggregator(string targetKey, params string[] sourceKeys)
-        {
-            if (map.ContainsKey(targetKey))
-            {
-                return;
-            }
-
-            var tokens = new List<string>();
-            foreach (var key in sourceKeys)
-            {
-                if (!TryGetNonEmptyMapValue(map, key, out var raw))
-                {
-                    continue;
-                }
-
-                foreach (var token in SplitCssValues(raw)
-                    .Select(t => t?.Trim().ToLowerInvariant())
-                    .Where(t => !string.IsNullOrWhiteSpace(t)))
-                {
-                    if (!tokens.Contains(token, StringComparer.OrdinalIgnoreCase))
-                    {
-                        tokens.Add(token);
-                    }
-                }
-            }
-
-            if (tokens.Count > 0)
-            {
-                map[targetKey] = string.Join(" ", tokens);
-            }
-        }
-    }
-
-    private static void ApplyAnimationRangeAliases(Dictionary<string, string> map)
-    {
-        if (TryGetNonEmptyMapValue(map, "animation-range", out var animationRangeRaw))
-        {
-            var tokens = SplitCssValues(animationRangeRaw)
-                .Select(t => t?.Trim().ToLowerInvariant())
-                .Where(t => !string.IsNullOrWhiteSpace(t))
-                .ToList();
-
-            if (tokens.Count == 1)
-            {
-                if (!map.ContainsKey("animation-range-start"))
-                {
-                    map["animation-range-start"] = tokens[0];
-                }
-                if (!map.ContainsKey("animation-range-end"))
-                {
-                    map["animation-range-end"] = tokens[0];
-                }
-            }
-            else if (tokens.Count > 1)
-            {
-                if (!map.ContainsKey("animation-range-start"))
-                {
-                    map["animation-range-start"] = tokens[0];
-                }
-                if (!map.ContainsKey("animation-range-end"))
-                {
-                    map["animation-range-end"] = string.Join(" ", tokens.Skip(1));
-                }
-            }
-        }
-
-        if (!map.ContainsKey("animation-range") &&
-            TryGetNonEmptyMapValue(map, "animation-range-start", out var rangeStart) &&
-            TryGetNonEmptyMapValue(map, "animation-range-end", out var rangeEnd))
-        {
-            map["animation-range"] = string.Equals(rangeStart, rangeEnd, StringComparison.Ordinal)
-                ? rangeStart
-                : $"{rangeStart} {rangeEnd}";
-        }
-    }
-
-    private static void ApplyAdvancedInventoryPassThrough(Dictionary<string, string> map)
-    {
-        NormalizeIfPresent("anchor-name");
-        NormalizeIfPresent("anchor-scope");
-        NormalizeIfPresent("animation-composition");
-        NormalizeIfPresent("azimuth");
-        NormalizeIfPresent("background-blend-mode");
-        NormalizeIfPresent("box-decoration-break");
-        NormalizeIfPresent("clip");
-        NormalizeIfPresent("color-interpolation");
-        NormalizeIfPresent("color-interpolation-filters");
-        NormalizeIfPresent("color-rendering");
-        NormalizeIfPresent("column-fill");
-        NormalizeIfPresent("content-visibility");
-        NormalizeIfPresent("fill-opacity");
-        NormalizeIfPresent("fill-rule");
-        NormalizeIfPresent("flood-color");
-        NormalizeIfPresent("flood-opacity");
-        NormalizeIfPresent("font-kerning");
-        NormalizeIfPresent("font-language-override");
-        NormalizeIfPresent("font-optical-sizing");
-        NormalizeIfPresent("font-palette");
-        NormalizeIfPresent("font-size-adjust");
-        NormalizeIfPresent("hanging-punctuation");
-        NormalizeIfPresent("hyphenate-character");
-        NormalizeIfPresent("hyphenate-limit-chars");
-        NormalizeIfPresent("lighting-color");
-        NormalizeIfPresent("line-break");
-        NormalizeIfPresent("mask-border-mode");
-        NormalizeIfPresent("mask-clip");
-        NormalizeIfPresent("mask-composite");
-        NormalizeIfPresent("mask-origin");
-        NormalizeIfPresent("mask-type");
-        NormalizeIfPresent("overflow-clip-margin");
-        NormalizeIfPresent("paint-order");
-        NormalizeIfPresent("position-anchor");
-        NormalizeIfPresent("position-area");
-        NormalizeIfPresent("position-try");
-        NormalizeIfPresent("position-try-fallbacks");
-        NormalizeIfPresent("position-try-order");
-        NormalizeIfPresent("position-visibility");
-        NormalizeIfPresent("quotes");
-        NormalizeIfPresent("ruby-align");
-        NormalizeIfPresent("ruby-merge");
-        NormalizeIfPresent("ruby-position");
-        NormalizeIfPresent("scroll-snap-stop");
-        NormalizeIfPresent("stop-color");
-        NormalizeIfPresent("stop-opacity");
-        NormalizeIfPresent("stroke-dasharray");
-        NormalizeIfPresent("stroke-dashoffset");
-        NormalizeIfPresent("stroke-linecap");
-        NormalizeIfPresent("stroke-linejoin");
-        NormalizeIfPresent("stroke-miterlimit");
-        NormalizeIfPresent("stroke-opacity");
-        NormalizeIfPresent("stroke-width");
-        NormalizeIfPresent("text-autospace");
-        NormalizeIfPresent("text-combine-upright");
-        NormalizeIfPresent("text-emphasis-position");
-        NormalizeIfPresent("text-emphasis-skip");
-        NormalizeIfPresent("text-justify");
-        NormalizeIfPresent("text-spacing");
-        NormalizeIfPresent("text-spacing-trim");
-        NormalizeIfPresent("text-underline-position");
-        NormalizeIfPresent("timeline-scope");
-        NormalizeIfPresent("transform-box");
-        NormalizeIfPresent("view-transition-name");
-
-        void NormalizeIfPresent(string key)
-        {
-            if (TryGetNonEmptyMapValue(map, key, out var value))
-            {
-                map[key] = value;
-            }
-        }
-    }
-
-    private static string ResolveCornerKey(string blockSide, string inlineSide)
-    {
-        if (string.Equals(blockSide, "top", StringComparison.Ordinal))
-        {
-            return string.Equals(inlineSide, "left", StringComparison.Ordinal)
-                ? "border-top-left-radius"
-                : "border-top-right-radius";
-        }
-
-        return string.Equals(inlineSide, "left", StringComparison.Ordinal)
-            ? "border-bottom-left-radius"
-            : "border-bottom-right-radius";
-    }
-
-    private static bool TryGetNonEmptyMapValue(Dictionary<string, string> map, string key, out string normalized)
-    {
-        normalized = null;
-        if (map == null || string.IsNullOrWhiteSpace(key))
-        {
-            return false;
-        }
-
-        if (!map.TryGetValue(key, out var raw) || string.IsNullOrWhiteSpace(raw))
-        {
-            return false;
-        }
-
-        normalized = raw.Trim().ToLowerInvariant();
-        return normalized.Length > 0;
-    }
-
-    private static bool TryParseLogicalAxisPair(string raw, out string start, out string end)
-    {
-        start = null;
-        end = null;
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return false;
-        }
-
-        var tokens = SplitCssValues(raw)
-            .Select(t => t?.Trim().ToLowerInvariant())
-            .Where(t => !string.IsNullOrWhiteSpace(t))
-            .ToList();
-        if (tokens.Count == 0)
-        {
-            return false;
-        }
-
-        start = tokens[0];
-        end = tokens.Count > 1 ? tokens[1] : tokens[0];
-        return true;
-    }
-
-    private static bool TrySplitLogicalAxisPairRaw(string raw, out string start, out string end)
-    {
-        return TryParseLogicalAxisPair(raw, out start, out end);
-    }
-
-    private static bool IsCssAuto(string raw)
-    {
-        return string.Equals(raw?.Trim(), "auto", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool TryExpandPhysicalBoxShorthand(string raw, out string top, out string right, out string bottom, out string left)
-    {
-        top = null;
-        right = null;
-        bottom = null;
-        left = null;
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return false;
-        }
-
-        var tokens = SplitCssValues(raw)
-            .Select(t => t?.Trim().ToLowerInvariant())
-            .Where(t => !string.IsNullOrWhiteSpace(t))
-            .ToList();
-
-        if (tokens.Count == 0 || tokens.Count > 4)
-        {
-            return false;
-        }
-
-        switch (tokens.Count)
-        {
-            case 1:
-                top = right = bottom = left = tokens[0];
-                break;
-            case 2:
-                top = bottom = tokens[0];
-                right = left = tokens[1];
-                break;
-            case 3:
-                top = tokens[0];
-                right = left = tokens[1];
-                bottom = tokens[2];
-                break;
-            default:
-                top = tokens[0];
-                right = tokens[1];
-                bottom = tokens[2];
-                left = tokens[3];
-                break;
-        }
-
-        return true;
-    }
-
-    private static List<string> SplitTopLevelByChar(string raw, char separator)
-    {
-        var result = new List<string>();
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return result;
-        }
-
-        var current = new StringBuilder();
-        int parenDepth = 0;
-        int bracketDepth = 0;
-        bool inString = false;
-        char quote = '\0';
-
-        foreach (var ch in raw)
-        {
-            if ((ch == '"' || ch == '\'') && (quote == '\0' || quote == ch))
-            {
-                if (inString && quote == ch)
-                {
-                    inString = false;
-                    quote = '\0';
-                }
-                else if (!inString)
-                {
-                    inString = true;
-                    quote = ch;
-                }
-                current.Append(ch);
-                continue;
-            }
-
-            if (!inString)
-            {
-                if (ch == '(') parenDepth++;
-                else if (ch == ')' && parenDepth > 0) parenDepth--;
-                else if (ch == '[') bracketDepth++;
-                else if (ch == ']' && bracketDepth > 0) bracketDepth--;
-            }
-
-            if (!inString && parenDepth == 0 && bracketDepth == 0 && ch == separator)
-            {
-                result.Add(current.ToString().Trim());
-                current.Clear();
-                continue;
-            }
-
-            current.Append(ch);
-        }
-
-        if (current.Length > 0)
-        {
-            result.Add(current.ToString().Trim());
-        }
-
-        return result;
-    }
-
-    private static string ExtractNonRepeatSegment(string raw, List<string> repeatTokens)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return null;
-        }
-
-        var kept = new List<string>();
-        var tokens = SplitCssValues(raw)
-            .Select(token => token?.Trim().ToLowerInvariant())
-            .Where(token => !string.IsNullOrWhiteSpace(token));
-
-        foreach (var token in tokens)
-        {
-            if (token is "stretch" or "repeat" or "round" or "space")
-            {
-                repeatTokens.Add(token);
-                continue;
-            }
-
-            kept.Add(token);
-        }
-
-        return kept.Count > 0 ? string.Join(" ", kept) : null;
-    }
-
-    private static bool TryParseBorderWidthToken(string raw, double emBase, out double width)
-    {
-        width = 0;
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return false;
-        }
-
-        raw = raw.Trim().ToLowerInvariant();
-        switch (raw)
-        {
-            case "thin":
-                width = 1;
-                return true;
-            case "medium":
-                width = 3;
-                return true;
-            case "thick":
-                width = 5;
-                return true;
-        }
-
-        if (TryPx(raw, out width, emBase))
-        {
-            return true;
-        }
-
-        return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out width);
-    }
-
-    private static bool TryParseLogicalAxisPair(string raw, double emBase, out double start, out double end)
-    {
-        start = 0;
-        end = 0;
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return false;
-        }
-
-        var tokens = SplitCssValues(raw)
-            .Select(t => t?.Trim())
-            .Where(t => !string.IsNullOrWhiteSpace(t))
-            .ToList();
-        if (tokens.Count == 0)
-        {
-            return false;
-        }
-
-        if (!TryPx(tokens[0], out start, emBase))
-        {
-            return false;
-        }
-
-        if (tokens.Count == 1)
-        {
-            end = start;
-            return true;
-        }
-
-        if (!TryPx(tokens[1], out end, emBase))
-        {
-            return false;
-        }
-
-        return true;
-    }
-    
-    private static bool IsIdentChar(char c)
-    {
-        return char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '*' || c >= 128;
-    }
-
-    /// <summary>
-    /// Resolve attr() function in CSS value.
-    /// </summary>
-    private static string ResolveAttr(string value, Element n)
-    {
-        if (string.IsNullOrEmpty(value) || n == null || !value.Contains("attr(")) return value;
-        
-        // Replaces attr(name) with attribute value
-        return System.Text.RegularExpressions.Regex.Replace(value, @"attr\s*\(\s*([a-zA-Z0-9-]+)\s*\)", m => 
-        {
-            string attrName = m.Groups[1].Value.Trim();
-            string attrVal = n.GetAttribute(attrName);
-            return attrVal ?? "";
-        });
-    }
-
-    private static double? ParseGapValue(string val)
-    {
-        if (string.IsNullOrWhiteSpace(val)) return null;
-        val = val.Trim();
-        if (val.EndsWith("px", StringComparison.OrdinalIgnoreCase))
-        {
-             if (double.TryParse(val.Substring(0, val.Length - 2), out double px)) return px;
-        }
-        if (val.All(char.IsDigit))
-        {
-             if (double.TryParse(val, out double d)) return d;
-        }
-        return 0;
-    }
-
-    /// <summary>
-    /// Verifies Subresource Integrity (SRI) for fetched content.
-    /// Returns true if integrity is absent (no check needed) or if at least one hash token matches.
-    /// Returns false if one or more tokens are present and none match Ã¢â‚¬â€ caller must block the resource.
-    /// Supported algorithms: sha256, sha384, sha512.
-    /// </summary>
-    private static bool VerifySriIntegrity(string content, string integrity)
-    {
-        if (string.IsNullOrWhiteSpace(integrity)) return true;
-        var tokens = integrity.Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-        if (tokens.Length == 0) return true;
-
-        var bytes = System.Text.Encoding.UTF8.GetBytes(content ?? "");
-        foreach (var token in tokens)
-        {
-            var dash = token.IndexOf('-');
-            if (dash < 0) continue;
-            var algo = token.Substring(0, dash).ToLowerInvariant();
-            var expectedB64 = token.Substring(dash + 1);
-
-            byte[] hash;
-            try
-            {
-                using var alg = algo switch
-                {
-                    "sha256" => (System.Security.Cryptography.HashAlgorithm)System.Security.Cryptography.SHA256.Create(),
-                    "sha384" => System.Security.Cryptography.SHA384.Create(),
-                    "sha512" => System.Security.Cryptography.SHA512.Create(),
-                    _ => null
-                };
-                if (alg == null) continue; // Unknown algorithm Ã¢â‚¬â€ skip this token
-                hash = alg.ComputeHash(bytes);
-            }
-            catch { continue; }
-
-            if (Convert.ToBase64String(hash) == expectedB64) return true;
-        }
-        // No token matched Ã¢â‚¬â€ block the resource
-        return false;
-    }
-}
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éí×zç´èµ©hºÚn¶X§zÍ{îïËËÈÜXÔ™YŽˆÔÔÈÛÛ™][Û˜[[\È]™[KÔÔÈÛÛZ[›Y[]™[ÈÛÛZ[™\ˆ]Y\šY\Â‹ËÈØ\Xš[]RYˆÔÔËPÓÓ•RS“QS•TUQT–KLB‹ËÈ]\›Z[š\ÛNˆÝšXÝ‹ËÈ˜[˜XÚÔÛXÞNˆÜXËYYš[™Y\Ú[™È™[œ›ÝÜÙ\‹ÛÜ™KÜÜÎÂ\Ú[™È™[œ›ÝÜÙ\‹ÛÜ™K‘ÛK•ŒŽÂ\Ú[™ÈÞ\Ý[NÂ\Ú[™ÈÞ\Ý[KÛÛXÝ[ÛœË‘Ù[™\šXÎÂ\Ú[™ÈÞ\Ý[K“[œNÂ\Ú[™ÈÞ\Ý[K•^Â\Ú[™ÈÞ\Ý[K•^”™YÝ[\‘^™\ÜÚ[ÛœÎÂ\Ú[™ÈÞ\Ý[K•™XY[™Ë•\ÚÜÎÂ\Ú[™ÈÞ\Ý[K’SÎÂ\Ú[™ÈÞ\Ý[K‘ÛØ˜[^˜][ÛŽÂ\Ú[™ÈÞ\Ý[K”[[YKÛÛ\[\”Ù\šXÙ\ÎÂ\Ú[™ÈÚÚXTÚ\œÂ\Ú[™È™[œ›ÝÜÙ\‹ÛÜ™NÂ\Ú[™È™[œ›ÝÜÙ\‹ÛÜ™K“ÙÙÚ[™ÎÂ\Ú[™È™[œ›ÝÜÙ\‹‘™[‘[™Ú[™KÛÛ\]Xš[]NÂ\Ú[™È™[œ›ÝÜÙ\‹‘™[‘[™Ú[™K”™[™\š[™ËÜÜÎÈËÈ\™XÝ\Ú[™ËÚ[™\ÛÛ™H[XšYÝZ]HX[X[HÜˆžH[][™È[›™\ˆÛ\ÜÙ\Â\Ú[™È™[œ›ÝÜÙ\‹ÛÜ™K”\œÚ[™ÎÂ\Ú[™È™]ÐÜÜÈH™[œ›ÝÜÙ\‹‘™[‘[™Ú[™K”™[™\š[™ËÜÜÎÂ‹ËÈ\Ú[™È™[œ›ÝÜÙ\‹ÛÜ™K“X]ÈËÈ˜[Y\ÜXÙH[Ý™YÈÛÜ™B›˜[Y\ÜXÙH™[œ›ÝÜÙ\‹‘™[‘[™Ú[™K”™[™\š[™ÂžÂˆX›XÈÝ]XÈ\X[Û\ÜÈÜÜÓØY\‚ˆÂˆX›XÈÛ\ÜÈÜÜÓØY™\Ý[ˆÂˆX›XÈXÝ[Û˜\žO›ÙKÜÜÐÛÛ\]YˆÛÛ\]YÈÙ]ÈÙ]ÈHH™]ÈXÝ[Û˜\žO›ÙKÜÜÐÛÛ\]YŠ
+NÂˆX›XÈ\ÝÜÜÔÛÝ\˜ÙOˆÛÝ\˜Ù\ÈÈÙ]ÈÙ]ÈHH™]È\ÝÜÜÔÛÝ\˜ÙOŠ
+NÂˆX›XÈÜÜÓØY[Z[™È[Z[™ÈÈÙ]ÈÙ]ÈHH™]ÈÜÜÓØY[Z[™Ê
+NÂˆB‚ˆX›XÈÙX[YÛ\ÜÈÜÜÓØY[Z[™ÂˆÂˆX›XÈÝX›H]Y]YUØZ]\ÈÈÙ]ÈÙ]ÈBˆX›XÈÝX›H\ØÛÝ™\žP[™™]Ú\ÈÈÙ]ÈÙ]ÈBˆX›XÈÝX›H[\Ü^[œÚ[Û“\ÈÈÙ]ÈÙ]ÈBˆX›XÈÝX›H[T\œÙS\ÈÈÙ]ÈÙ]ÈBˆX›XÈÝX›H˜\šXX›T™\ÛÛ][Û“\ÈÈÙ]ÈÙ]ÈBˆX›XÈÝX›HØ\ØØYS\ÈÈÙ]ÈÙ]ÈBˆX›XÈÝX›HÝ[\ÈÈÙ]ÈÙ]ÈBˆX›XÈ[ÛÝ\˜ÙPÛÝ[ÈÙ]ÈÙ]ÈBˆX›XÈ[^[™YÛÝ\˜ÙPÛÝ[ÈÙ]ÈÙ]ÈBˆX›XÈ[[PÛÝ[ÈÙ]ÈÙ]ÈBˆX›XÈ[ÛÛ\]YÝ[PÛÝ[ÈÙ]ÈÙ]ÈBˆX›XÈ[[›[™TÝ[PØXÚR]ÈÈÙ]ÈÙ]ÈBˆX›XÈ[[›[™TÝ[PØXÚSZ\ÜÙ\ÈÈÙ]ÈÙ]ÈBˆX›XÈ[[›[™TÝ[PØXÚQ]šXÝ[ÛœÈÈÙ]ÈÙ]ÈBˆX›XÈ[[›[™TÝ[PØXÚQ[šY\ÈÈÙ]ÈÙ]ÈBˆX›XÈ›ÛÛÝ[TÙ]ØXÚR]ÈÙ]ÈÙ]ÈBˆB‚ˆš]˜]HÙX[YÛ\ÜÈØÝ[Y[Ý[TÙ]ØXÚQ[žBˆÂˆX›XÈÝš[™Èš[™Ù\œš[ÈÙ]È[š]ÈBˆX›XÈÝš[™È˜\ÙU\šHÈÙ]È[š]ÈBˆX›XÈÝX›OÈšY]ÜÜÚYÈÙ]È[š]ÈBˆX›XÈÝX›OÈšY]ÜÜZYÚÈÙ]È[š]ÈBˆX›XÈÝ[TÙ]Ý[TÙ]ÈÙ]È[š]ÈBˆX›XÈ[ÛÝ\˜ÙPÛÝ[ÈÙ]È[š]ÈBˆX›XÈ[^[™YÛÝ\˜ÙPÛÝ[ÈÙ]È[š]ÈBˆX›XÈ[[PÛÝ[ÈÙ]È[š]ÈBˆB‚ˆËÈÙY\š[HXYÛ›ÜÝXÜÈ[˜X›YÛ›H[ˆXYÈZ[Ë‚ˆËÈÔÌMŒŽˆ›ØÚÜÈÝX\™YžH\ÈÛÛœÝ™XÛÛYH[œ™XXÚX›H[ˆ™[X\ÙNÈ]	ÜÈ[[[Û˜[‚ˆÜ˜YÛXHØ\›š[™È\ØX›HÔÌMŒ‚ˆÚYˆP•QÂˆš]˜]HÛÛœÝ›ÛÛP•Q×Ñ’SWÓÑÑÒS‘ÈHYNÂˆÙ[ÙBˆš]˜]HÛÛœÝ›ÛÛP•Q×Ñ’SWÓÑÑÒS‘ÈH˜[ÙNÂˆÙ[™Y‚‚ˆX›XÈÛ\ÜÈX]ÚY[BˆÂˆX›XÈ™]ÐÜÜËÜÜÔ[H[NÂˆX›XÈÜÜÔÛÝ\˜ÙHÛÝ\˜ÙNÂˆX›XÈ™]ÐÜÜË”ÜXÚYšXÚ]HÜXÚYšXÚ]NÂˆB‚ˆš]˜]H™XYÛ›H™XÛÜ™ÝXÝ\œÙY[PØXÚRÙ^JˆÝš[™ÈÜÜËˆÝš[™È˜\ÙU\šKˆÝX›OÈšY]ÜÜÚYˆÝX›OÈšY]ÜÜZYÚˆ[ÛÝ\˜ÙSÜ™\‹ˆ™]ÐÜÜËÜÜÓÜšYÚ[ˆÜšYÚ[‹ˆ[ÚYÝÔØÛÜRY[]JNÂ‚ˆËÈKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKBˆËÈÔÔÈT‘“Ô“PSÑHÐPÒTÂˆËÈKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKBˆËÈ\œÙHØXÚNˆÚ\™YXÜ›ÜÜÈXœÈÚ[ˆÔÔË˜\ÙHT’KšY]ÜÜÛÝ\˜ÙHÜ™\‹ˆËÈ[™ÜšYÚ[ˆ\™H[\]Z]˜[[‚ˆš]˜]HÝ]XÈ™XYÛ›HXÝ[Û˜\žO\œÙY[PØXÚRÙ^K\Ý™]ÐÜÜËÜÜÔ[OˆÜ\œÙY[\ÐØXÚHH™]Ê
+NÂˆš]˜]HÝ]XÈ™XYÛ›HXÝ[Û˜\žO\œÙY[PØXÚRÙ^K\ÚÏ\Ý™]ÐÜÜËÜÜÔ[OˆÚ[‘›YÚ\œÙ\ÈH™]Ê
+NÂˆš]˜]HÝ]XÈ™XYÛ›HÞ\Ý[K•™XY[™Ë”Ù[X\Ü™TÛ[HÙÛØ˜[\œÙQØ]HH™]ÈÞ\Ý[K•™XY[™Ë”Ù[X\Ü™TÛ[J[š\›Û›Y[”›ØÙ\ÜÛÜÛÝ[ˆˆÈ[š\›Û›Y[”›ØÙ\ÜÛÜÛÝ[HHˆŠNÂˆËÈÛÛ\]HØ]NˆØ\ÈH
+Ù\šX[\ÙYSÔÔÈÛÜšÈXÜ›ÜÜÈXœÊKˆ›ÝÈ[ÝÜÂˆËÈÛÛ˜Ý\œ™[ÛÛ\]][Ûˆ\ˆÛÜ™HÛÈXŒH[™XŒˆØ\ØØYH[ˆ\˜[[‚ˆËÈH[[Y[ZÙ^YYØXÚ\È™[ÝÈ\ÙHÛÛ˜Ý\œ™[XÝ[Û˜\žH›Üˆ™XYØY™]K‚ˆš]˜]HÝ]XÈ™XYÛ›HÞ\Ý[K•™XY[™Ë”Ù[X\Ü™TÛ[HÙÛØ˜[ÛÛ\]QØ]HH™]ÈÞ\Ý[K•™XY[™Ë”Ù[X\Ü™TÛ[JX]“X^
+‹[š\›Û›Y[”›ØÙ\ÜÛÜÛÝ[
+JNÂˆËÈ[[Y[ZÙ^YYØXÚ\È8 %ÛÛ˜Ý\œ™[XÝ[Û˜\žHÛÈÛÛ˜Ý\œ™[XˆØ\ØØY\ÂˆËÈÛ‰ÝÛÜœ\XXÚÝ\‹ˆÙ^\È\™H[[Y[[œÝ[˜Ù\Ë[š\]YH\ˆXˆÓK‚ˆš]˜]HÝ]XÈ™XYÛ›HÞ\Ý[KÛÛXÝ[ÛœËÛÛ˜Ý\œ™[ÛÛ˜Ý\œ™[XÝ[Û˜\žO
+[[Y[Ù[XÝÜÚZ[ŠK›ÛÛˆÛX]ÚØXÚHH™]Ê
+NÂˆš]˜]HÝ]XÈ™XYÛ›HÞ\Ý[KÛÛXÝ[ÛœËÛÛ˜Ý\œ™[ÛÛ˜Ý\œ™[XÝ[Û˜\žO[[Y[\Ý™]ÐÜÜËÜÜÔ[OˆÙ[[Y[X]ÚY[\ÐØXÚHH™]Ê
+NÂˆš]˜]HÝ]XÈ™XYÛ›HÛÛ™][Û˜[ÙXZÕX›O[[Y[ØÝ[Y[Ý[TÙ]ØXÚQ[žOˆÙØÝ[Y[Ý[TÙ]ÈH™]Ê
+NÂˆš]˜]HÝ]XÈ™XYÛ›HØš™XÝÙØÝ[Y[Ý[TÙ]ÓØÚÈH™]Ê
+NÂˆš]˜]HÝ]XÈ[ÜÝ[\ÚY]™YÚ\Ý˜][ÛÛÝ[\ŽÂ‚ˆš]˜]HÝ]XÈ™XYÛ›H^žOÝš[™ÏˆXTÝ[\ÚY]H™]ÊØY[X™YYXTÝ[\ÚY]YJNÂ‚ˆËÈÔÔÈÝ\ÝÛH›Ü\Y\È
+ÔÔÈ˜\šXX›\ÊHÝÜ˜YÙHHÙ^YYžH›Ü\H˜[YH
+K™Ë‹‹K\š[X\žKXÛÛÜˆŠBˆš]˜]HÝ]XÈ™XYÛ›HXÝ[Û˜\žOÝš[™ËÝš[™ÏˆØÝ\ÝÛT›Ü\Y\ÈH™]ÈXÝ[Û˜\žOÝš[™ËÝš[™ÏŠÝš[™ÐÛÛ\\™\‹“Ü™[˜[
+NÂˆ[\›˜[Ý]XÈÝX›HÜ›ÛÝ›ÛÚ^™HHM‹ŒÈ[\›˜[Ý]XÈ›ÚYÙ]›ÛÝ›ÛÚ^™JÝX›HÚ^™JHÈÜ›ÛÝ›ÛÚ^™HHÚ^™NÈBˆš]˜]HÝ]XÈ\œÙ\”ÙXÝ\š]TÛXÞHÙY˜][\œÙ\”ÙXÝ\š]TÛXÞHH\œÙ\”ÙXÝ\š]TÛXÞK‘Y˜][Âˆš]˜]HÝ]XÈ™XYÛ›HÞ\Ý[K•™XY[™Ë\Þ[˜ÓØØ[\œÙ\”ÙXÝ\š]TÛXÞOˆÜØÛÜY\œÙ\”ÙXÝ\š]TÛXÞHH™]ÈÞ\Ý[K•™XY[™Ë\Þ[˜ÓØØ[\œÙ\”ÙXÝ\š]TÛXÞOŠ
+NÂˆX›XÈÝ]XÈ\œÙ\”ÙXÝ\š]TÛXÞHXÝ]™T\œÙ\”ÙXÝ\š]TÛXÞBˆÂˆÙ]OˆÜØÛÜY\œÙ\”ÙXÝ\š]TÛXÞK•˜[YHÏÈÙY˜][\œÙ\”ÙXÝ\š]TÛXÞNÂˆÙ]OˆÜØÛÜY\œÙ\”ÙXÝ\š]TÛXÞK•˜[YHH˜[YNÂˆB‚ˆX›XÈÝ]XÈ›ÚYÛX\ØXÚ\Ê
+BˆÂˆØÚÈ
+Ü\œÙY[\ÐØXÚJHÜ\œÙY[\ÐØXÚKÛX\Š
+NÂˆØÚÈ
+Ú[‘›YÚ\œÙ\ÊHÚ[‘›YÚ\œÙ\ËÛX\Š
+NÂˆÛX]ÚØXÚKÛX\Š
+NÂˆÙ[[Y[X]ÚY[\ÐØXÚKÛX\Š
+NÂˆØÚÈ
+ÙØÝ[Y[Ý[TÙ]ÓØÚÊHÙØÝ[Y[Ý[TÙ]ËÛX\Š
+NÂˆØÚÈ
+ØÝ\ÝÛT›Ü\Y\ÊHØÝ\ÝÛT›Ü\Y\ËÛX\Š
+NÂˆÜ›ÛÝ›ÛÚ^™HHM‹ŒÂˆÚÙ^Yœ˜[Y\ËÛX\Š
+NÂˆ›Û™YÚ\ÝžKÛX\Š
+NÂˆB‚ˆËËÈÝ[[X\žO‚ˆËËÈ™[X\Ù\ÈØXÚH[šY\È]™]Z[ˆHÝ]ÛÚ[™ÈØÝ[Y[Ú[H™\Ù\š[™ÂˆËËÈ[[]]X›H›ØÙ\ÜË]ÚYH\œÙH]H[™™]\ØX›H˜]]™H›ÛÝ\Y˜XÙHÝ]K‚ˆËËÈÜÝ[[X\žO‚ˆX›XÈÝ]XÈ›ÚYÛX\‘ØÝ[Y[ØÛÜYØXÚ\Ê[[Y[ØÝ[Y[›ÛÝ
+BˆÂˆYˆ
+ØÝ[Y[›ÛÝOH[
+BˆÂˆ™]\›ŽÂˆB‚ˆ˜\ˆÝÛ™\‘ØÝ[Y[HØÝ[Y[›ÛÝ“ÝÛ™\‘ØÝ[Y[Âˆ›Ü™XXÚ
+˜\ˆÙ^H[ˆÛX]ÚØXÚK’Ù^\ÊBˆÂˆYˆ
+™[Û™ÜÕÑØÝ[Y[
+Ù^K’][LKØÝ[Y[›ÛÝÝÛ™\‘ØÝ[Y[
+JBˆÂˆÛX]ÚØXÚK•žT™[[Ý™JÙ^KÝ]ÊNÂˆBˆB‚ˆ›Ü™XXÚ
+˜\ˆ[[Y[[ˆÙ[[Y[X]ÚY[\ÐØXÚK’Ù^\ÊBˆÂˆYˆ
+™[Û™ÜÕÑØÝ[Y[
+[[Y[ØÝ[Y[›ÛÝÝÛ™\‘ØÝ[Y[
+JBˆÂˆÙ[[Y[X]ÚY[\ÐØXÚK•žT™[[Ý™J[[Y[Ý]ÊNÂˆBˆB‚ˆØÚÈ
+ÙØÝ[Y[Ý[TÙ]ÓØÚÊBˆÂˆÙØÝ[Y[Ý[TÙ]Ë”™[[Ý™JØÝ[Y[›ÛÝ
+NÂˆB‚ˆ›Û™YÚ\ÝžKÛX\‘ØÝ[Y[
+ÝÛ™\‘ØÝ[Y[
+NÂˆB‚ˆ[\›˜[Ý]XÈ[\œÙY[PØXÚPÛÝ[ˆÂˆÙ]ˆÂˆØÚÈ
+Ü\œÙY[\ÐØXÚJBˆÂˆ™]\›ˆÜ\œÙY[\ÐØXÚKÛÝ[ÂˆBˆBˆB‚ˆš]˜]HÝ]XÈ›ÛÛ™[Û™ÜÕÑØÝ[Y[
+ˆ[[Y[[[Y[ˆ[[Y[ØÝ[Y[›ÛÝˆØÝ[Y[ÝÛ™\‘ØÝ[Y[
+BˆÂˆYˆ
+[[Y[OH[
+BˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆ™]\›ˆ™Y™\™[˜ÙQ\]X[Ê[[Y[ØÝ[Y[›ÛÝ
+Hˆ
+ÝÛ™\‘ØÝ[Y[OH[	‰ˆ™Y™\™[˜ÙQ\]X[Ê[[Y[“ÝÛ™\‘ØÝ[Y[ÝÛ™\‘ØÝ[Y[
+JNÂˆB‚ˆš]˜]HÝ]XÈ\œÙY[PØXÚRÙ^HZ[\œÙY[PØXÚRÙ^JˆÝš[™ÈÜÜËˆ\šH˜\ÙU\šKˆÝX›OÈšY]ÜÜÚYˆÝX›OÈšY]ÜÜZYÚˆ[ÛÝ\˜ÙSÜ™\ˆHˆ™]ÐÜÜËÜÜÓÜšYÚ[ˆÜšYÚ[ˆH™]ÐÜÜËÜÜÓÜšYÚ[‹]]Ü‹ˆÚYÝÔ›ÛÝÚYÝÔØÛÜT›ÛÝH[
+BˆÂˆ™]\›ˆ™]È\œÙY[PØXÚRÙ^JˆÜÜÈÏÈÝš[™Ë‘[\Kˆ˜\ÙU\šOËXœÛÛ]U\šHÏÈ›[‹ˆšY]ÜÜÚYˆšY]ÜÜZYÚˆÛÝ\˜ÙSÜ™\‹ˆÜšYÚ[‹ˆÚYÝÔØÛÜT›ÛÝOH[Èˆ[[YR[\œË‘Ù]\ÚÛÙJÚYÝÔØÛÜT›ÛÝ
+JNÂˆBˆËÈKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKB‚ˆš]˜]HÝ]XÈ\ÚÈ[‘]XÚY\Þ[˜Ê[˜Ï\ÚÏˆÜ\˜][ÛŠBˆÂˆ™]\›ˆ\ÚË‘˜XÝÜžK”Ý\™]Ê\Þ[˜È
+
+HO‚ˆÂˆžBˆÂˆ]ØZ]Ü\˜][ÛŠ
+KÛÛ™šYÝ\™P]ØZ]
+˜[ÙJNÂˆBˆØ]Ú
+^Ù\[Ûˆ^
+BˆÂˆ[™Ú[™SÙÐÛÛ\]•Ø\›Š	–ÐÜÜÓØY\—H]XÚY\Þ[˜ÈÜ\˜][Ûˆ˜Z[YˆÙ^“Y\ÜØYÙ_H‹ÙÐØ]YÛÜžK”™[™\š[™ÊNÂˆBˆKÞ\Ý[K•™XY[™ËØ[˜Ù[][Û•ÚÙ[‹“›Û™K\ÚÐÜ™X][Û“Ü[ÛœË‘[žPÚ[]XÚ\ÚÔØÚY[\‹‘Y˜][
+K•[Ü˜\
+
+NÂˆBˆX›XÈÝ]XÈ\ÝX]ÚY[OˆÙ]X]ÚY[\Ê[[Y[[[Y[\ÝÜÜÔÛÝ\˜ÙOˆÛÝ\˜Ù\ÊBˆÂˆ˜\ˆX]ÚYH™]È\ÝX]ÚY[OŠ
+NÂˆYˆ
+[[Y[OH[ÛÝ\˜Ù\ÈOH[
+H™]\›ˆX]ÚYÂˆÝX›OÈšY]ÜÜÚYHÜÜÔ\œÙ\‹“YYXUšY]ÜÜÚYÂˆÝX›OÈšY]ÜÜZYÚHÜÜÔ\œÙ\‹“YYXUšY]ÜÜZYÚÂ‚ˆ›ÛÛX]Ú\ÔØÛÜJ™]ÐÜÜËÜÜÔÝ[T[HÝ[T[JBˆÂˆYˆ
+Ý[T[HOH[Ýš[™Ë’\Ó[Ü‘[\JÝ[T[K”ØÛÜTÙ[XÝÜŠJBˆÂˆ™]\›ˆYNÂˆB‚ˆ˜\ˆÝ\œ™[H[[Y[”\™[[[Y[ÂˆÚ[H
+Ý\œ™[OH[
+BˆÂˆYˆ
+Ù[XÝÜ“X]Ú\‹“X]Ú\ÊÝ\œ™[Ý[T[K”ØÛÜTÙ[XÝÜŠJBˆÂˆ™]\›ˆYNÂˆB‚ˆÝ\œ™[HÝ\œ™[”\™[[[Y[ÂˆB‚ˆ™]\›ˆ˜[ÙNÂˆB‚ˆ›ÚYÛÛXÝX]ÚY[\Ê™]ÐÜÜËÜÜÔ[H[KÜÜÔÛÝ\˜ÙHÛÝ\˜ÙJBˆÂˆYˆ
+[H\È™]ÐÜÜËÜÜÔÝ[T[HÝ[T[JBˆÂˆYˆ
+SX]Ú\ÔØÛÜJÝ[T[JJBˆÂˆ™]\›ŽÂˆB‚ˆ˜\ˆÜXÈHÙ[XÝÜ“X]Ú\‹‘Ù]X]Ú[™ÔÜXÚYšXÚ]J[[Y[Ý[T[K”Ù[XÝÜŠNÂˆYˆ
+ÜXË’\Õ˜[YJBˆÂˆX]ÚYY
+™]ÈX]ÚY[HÈ[HHÝ[T[KÛÝ\˜ÙHHÛÝ\˜ÙKÜXÚYšXÚ]HHÜXË•˜[YHJNÂˆB‚ˆËÈÔÔÈ™\Ý[™Îˆ˜]™\œÙH™\ÝY[\ÈÚ]™\ÛÛ™YÙ[XÝÜœÂˆ›Ü™XXÚ
+˜\ˆ™\ÝY[ˆÝ[T[K“™\ÝY[\ÊBˆÂˆÛÛXÝX]ÚY[\Ê™\ÝYÛÝ\˜ÙJNÂˆB‚ˆ™]\›ŽÂˆB‚ˆYˆ
+[H\È™]ÐÜÜËÜÜÓYYXT[HYYXT[JBˆÂˆYˆ
+]˜[X]SYYXT]Y\žJYYXT[KÛÛ™][Û‹šY]ÜÜÚY
+JBˆÂˆ›Ü™XXÚ
+˜\ˆÚ[[ˆYYXT[K”[\ÊBˆÂˆÛÛXÝX]ÚY[\ÊÚ[ÛÝ\˜ÙJNÂˆBˆB‚ˆ™]\›ŽÂˆB‚ˆYˆ
+[H\È™]ÐÜÜËÜÜÓ^Y\”[H^Y\”[JBˆÂˆ›Ü™XXÚ
+˜\ˆÚ[[ˆ^Y\”[K”[\ÊBˆÂˆÛÛXÝX]ÚY[\ÊÚ[ÛÝ\˜ÙJNÂˆB‚ˆ™]\›ŽÂˆB‚ˆYˆ
+[H\È™]ÐÜÜËÜÜÔØÛÜT[HØÛÜT[JBˆÂˆ›Ü™XXÚ
+˜\ˆÚ[[ˆØÛÜT[K”[\ÊBˆÂˆÛÛXÝX]ÚY[\ÊÚ[ÛÝ\˜ÙJNÂˆBˆBˆBˆˆ›Ü™XXÚ
+˜\ˆÛÝ\˜ÙH[ˆÛÝ\˜Ù\ÊBˆÂˆžBˆÂˆ\Ý™]ÐÜÜËÜÜÔ[Oˆ[\ÎÂˆ\œÙY[PØXÚRÙ^H\œÙPØXÚRÙ^HHZ[\œÙY[PØXÚRÙ^JˆÛÝ\˜ÙKÜÜÕ^ˆÛÝ\˜ÙK˜\ÙU\šKˆšY]ÜÜÚYˆšY]ÜÜZYÚˆÛÝ\˜ÙK”ÛÝ\˜ÙSÜ™\‹ˆX\Ó™]ÐÜÜÓÜšYÚ[ŠÛÝ\˜ÙK“ÜšYÚ[ŠKˆÛÝ\˜ÙK”ÚYÝÔØÛÜT›ÛÝ
+NÂˆØÚÈ
+Ü\œÙY[\ÐØXÚJBˆÂˆYˆ
+WÜ\œÙY[\ÐØXÚK•žQÙ]˜[YJ\œÙPØXÚRÙ^KÝ][\ÊJBˆÂˆ[\ÈH\œÙT[\ÊÛÝ\˜ÙKÜÜÕ^ÛÝ\˜ÙK”ÛÝ\˜ÙSÜ™\‹ÛÝ\˜ÙK˜\ÙU\šKšY]ÜÜÚYšY]ÜÜZYÚ[X\Ó™]ÐÜÜÓÜšYÚ[ŠÛÝ\˜ÙK“ÜšYÚ[ŠJNÂˆÜ\œÙY[\ÐØXÚVÜ\œÙPØXÚRÙ^WHH[\ÎÂˆBˆB‚ˆ\TÚYÝÔØÛÜJ[\ËÛÝ\˜ÙK”ÚYÝÔØÛÜT›ÛÝ
+NÂ‚ˆËÈÚYÝË\ØÛÜY[\È™]Z[ˆZ\ˆÝÛš[™ÈÚYÝÔ›ÛÝˆ^H™[Û™ÈÂˆËÈ\ÈØÝ[Y[	ÜÈÝ[TÙ][™]\Ý›Ý™[XZ[ˆ[ˆH›ØÙ\ÜË]ÚYHØXÚK‚ˆYˆ
+ÛÝ\˜ÙK”ÚYÝÔØÛÜT›ÛÝOH[
+BˆÂˆØÚÈ
+Ü\œÙY[\ÐØXÚJBˆÂˆÜ\œÙY[\ÐØXÚK”™[[Ý™J\œÙPØXÚRÙ^JNÂˆBˆB‚ˆ›Ü™XXÚ
+˜\ˆ[H[ˆ[\ÊBˆÂˆÛÛXÝX]ÚY[\Ê[KÛÝ\˜ÙJNÂˆBˆBˆØ]Ú
+^Ù\[ÛŠBˆÂˆÊˆÔT‘‹T‘SSÕ‘QH
+‹ÂˆBˆBˆˆËÈÛÜžHÜšYÚ[ˆOˆÜXÚYšXÚ]HOˆÜ™\‚ˆX]ÚY”ÛÜ
+
+KŠHOˆÂˆ˜\ˆ[PHHK”[H\È™]ÐÜÜËÜÜÔÝ[T[NÂˆ˜\ˆ[PˆH‹”[H\È™]ÐÜÜËÜÜÔÝ[T[NÂˆYˆ
+[PHOH[
+H™]\›ˆLNÈˆYˆ
+[PˆOH[
+H™]\›ˆNÂ‚ˆËÈKˆÜšYÚ[ˆ
+\ØÙ[™[™Îˆ\Ù\YÙ[\Ù\ˆ]]ÜŠBˆ[ÜšYÚ[ÛÛ\H[PK“ÜšYÚ[‹ÛÛ\\™UÊ[P‹“ÜšYÚ[ŠNÂˆYˆ
+ÜšYÚ[ÛÛ\OH
+H™]\›ˆÜšYÚ[ÛÛ\Â‚ˆËÈ‹ˆÜXÚYšXÚ]H
+\ØÙ[™[™ÎˆÝÙ\ˆÜXÚYšXÚ]Hš\œÝYÚ\ˆ]\ŠBˆ[ÜXÐÛÛ\HK”ÜXÚYšXÚ]KÛÛ\\™UÊ‹”ÜXÚYšXÚ]JNÂˆYˆ
+ÜXÐÛÛ\OH
+H™]\›ˆÜXÐÛÛ\Â‚ˆËÈËˆÛÝ\˜ÙHÜ™\ˆ
+\ØÙ[™[™ÊBˆ™]\›ˆ[PK“Ü™\‹ÛÛ\\™UÊ[P‹“Ü™\ŠNÂˆJNÂˆ™]\›ˆX]ÚYÂˆBˆËÈOOOOOOOOOOOOOOOOOOOOOOOOOOBˆËÈX›XÈTBˆËÈOOOOOOOOOOOOOOOOOOOOOOOOOOB‚ˆËËÈÝ[[X\žO‚ˆËËÈXZ[ˆ[žHÚ[ˆ™]Ú\È^\›˜[Ý[\Ë\œÙ\È[ÔÔË[™ÛÛ\]\ÈÝ[\È›ÜˆHØÝ[Y[‚ˆËËÈÜÝ[[X\žO‚ˆËËÈ\˜[H˜[YOHœ›ÛÝ‘ØÝ[Y[›ÛÝ
+[ÜˆH\œÙY™YH›ÛÝ
+KÜ\˜[O‚ˆËËÈ\˜[H˜[YOH˜˜\ÙU\šH˜\ÙHT’H›Üˆ™\ÛÛš[™È	›Û[šÉ™ÝË[\Ü\›
+‹‹ŠKÜ\˜[O‚ˆËËÈ\˜[H˜[YOH™™]Ú^\›˜[ÜÜÐ\Þ[˜È‚ˆËËÈ[YØ]HÈ™]Ú^\›˜[ÔÔÈ^›ÜˆHÚ]™[ˆXœÛÛ]HT“
+ÛÛÚÚYKX]Ø\™HYˆ™YYY
+K‚ˆËËÈYˆ[^\›˜[Ý[\È\™HÚÚ\YÜ˜XÙY[K‚ˆËËÈÜ\˜[O‚ˆËËÈ\˜[H˜[YOHšY]ÜÜÚY“Ü[Û˜[šY]ÜÜÚY›ÜˆÚ[\HYYXHÚXÚÜËÜ\˜[O‚ˆËËÈ\˜[H˜[YOH›ÙÈ“Ü[Û˜[ÙÙÙ\ˆ›ÜˆØ\›š[™ÜËÛ›Ý\ËÜ\˜[O‚ˆX›XÈÝ]XÈ\Þ[˜È\ÚÏXÝ[Û˜\žO›ÙKÜÜÐÛÛ\]YˆÛÛ\]P\Þ[˜Êˆ[[Y[›ÛÝˆ\šH˜\ÙU\šKˆ[˜Ï\šK\ÚÏÝš[™Ïˆ™]Ú^\›˜[ÜÜÐ\Þ[˜ËˆÝX›OÈšY]ÜÜÚYH[ˆÝX›OÈšY]ÜÜZYÚH[ˆXÝ[ÛÝš[™ÏˆÙÈH[ˆ™[œ›ÝÜÙ\‹ÛÜ™K‘XY[™\Ë‘œ˜[YQXY[™HXY[™HH[ˆ[˜Ï[[Y[\šK\ÚÏÝš[™Ïˆ™]Ú^\›˜[ÜÜÑ›Ü”›ÛÝ\Þ[˜ÈH[ˆXÝ[ÛXÝ[Û˜\žO›ÙKÜÜÐÛÛ\]Yˆ›ÙÜ™\ÜÚ]™TÝ[\Ô™XYHH[
+BˆÂˆ˜\ˆ™\Ý[H]ØZ]ÛÛ\]UÚ]™\Ý[\Þ[˜Êˆ›ÛÝˆ˜\ÙU\šKˆ™]Ú^\›˜[ÜÜÐ\Þ[˜ËˆšY]ÜÜÚYˆšY]ÜÜZYÚˆÙËˆXY[™Kˆ™]Ú^\›˜[ÜÜÑ›Ü”›ÛÝ\Þ[˜Ëˆ›ÙÜ™\ÜÚ]™TÝ[\Ô™XYJNÂˆ™]\›ˆ™\Ý[ÛÛ\]YÂˆB‚ˆX›XÈÝ]XÈ\Þ[˜È\ÚÏXÝ[Û˜\žO›ÙKÜÜÐÛÛ\]YˆÛÛ\]TÝX™YP\Þ[˜Êˆ[[Y[Ý[\ÚY]›ÛÝˆ[[Y[Ø\ØØYT›ÛÝˆ\šH˜\ÙU\šKˆ[˜Ï\šK\ÚÏÝš[™Ïˆ™]Ú^\›˜[ÜÜÐ\Þ[˜ËˆÝX›OÈšY]ÜÜÚYH[ˆÝX›OÈšY]ÜÜZYÚH[ˆXÝ[ÛÝš[™ÏˆÙÈH[ˆ™[œ›ÝÜÙ\‹ÛÜ™K‘XY[™\Ë‘œ˜[YQXY[™HXY[™HH[ˆ[˜Ï[[Y[\šK\ÚÏÝš[™Ïˆ™]Ú^\›˜[ÜÜÑ›Ü”›ÛÝ\Þ[˜ÈH[
+BˆÂˆYˆ
+Ý[\ÚY]›ÛÝOH[Ø\ØØYT›ÛÝOH[
+BˆÂˆ™]\›ˆ™]ÈXÝ[Û˜\žO›ÙKÜÜÐÛÛ\]YŠ
+NÂˆB‚ˆ˜\ˆ™\Ý[H]ØZ]ÛÛ\]UÚ]™\Ý[ÛÜ™P\Þ[˜ÊˆÝ[\ÚY]›ÛÝˆ˜\ÙU\šKˆ™]Ú^\›˜[ÜÜÐ\Þ[˜ËˆšY]ÜÜÚYˆšY]ÜÜZYÚˆÙËˆXY[™KˆØ\ØØYT›ÛÝ
+KÛÛ™šYÝ\™P]ØZ]
+˜[ÙJNÂ‚ˆËÈH\H\™[ÝX™YHØ[ˆØZ[ˆH[HØYYYœ˜[YHØÝ[Y[Y\ˆBˆËÈØÝ[Y[	ÜÈ[š]X[Ø\ØØYKˆØ\ØØYHÜÙH™\ÝYœ›ÝÜÚ[™ÈÛÛ^ÈYØZ[œÝˆËÈZ\ˆÝÛˆÝ[\ÚY]È™Y›Ü™HY\™Ú[™ÈH[˜Ü™[Y[[™\Ý[ÈÝ\Ú\ÙHBˆËÈœ˜[YHÓH\ÈZYÝ][™Z[YÚ]›ÈÛÛ\]YÝ[\Ë‚ˆžBˆÂˆ]ØZ]Ý[RYœ˜[YTÝX™ØÝ[Y[Ð\Þ[˜ÊˆØ\ØØYT›ÛÝˆ˜\ÙU\šKˆ™]Ú^\›˜[ÜÜÐ\Þ[˜ËˆšY]ÜÜÚYˆšY]ÜÜZYÚˆÙËˆXY[™Kˆ™\Ý[ÛÛ\]Yˆ™]Ú^\›˜[ÜÜÑ›Ü”›ÛÝ\Þ[˜ÊKÛÛ™šYÝ\™P]ØZ]
+˜[ÙJNÂˆBˆØ]Ú
+^Ù\[Ûˆ^
+BˆÂˆÙÊÙË–ÐÜÜÓØY\—H[˜Ü™[Y[[Yœ˜[YHÝX™ØÝ[Y[Ý[[™È˜Z[Yˆˆ
+È^“Y\ÜØYÙJNÂˆB‚ˆ™]\›ˆ™\Ý[ÛÛ\]YÂˆB‚ˆX›XÈÝ]XÈ\Þ[˜È\ÚÏÜÜÓØY™\Ý[ˆÛÛ\]UÚ]™\Ý[\Þ[˜Êˆ[[Y[›ÛÝˆ\šH˜\ÙU\šKˆ[˜Ï\šK\ÚÏÝš[™Ïˆ™]Ú^\›˜[ÜÜÐ\Þ[˜ËˆÝX›OÈšY]ÜÜÚYH[ˆÝX›OÈšY]ÜÜZYÚH[ˆXÝ[ÛÝš[™ÏˆÙÈH[ˆ™[œ›ÝÜÙ\‹ÛÜ™K‘XY[™\Ë‘œ˜[YQXY[™HXY[™HH[ˆ[˜Ï[[Y[\šK\ÚÏÝš[™Ïˆ™]Ú^\›˜[ÜÜÑ›Ü”›ÛÝ\Þ[˜ÈH[ˆXÝ[ÛXÝ[Û˜\žO›ÙKÜÜÐÛÛ\]Yˆ›ÙÜ™\ÜÚ]™TÝ[\Ô™XYHH[
+BˆÂˆ˜\ˆ™\Ý[H]ØZ]ÛÛ\]UÚ]™\Ý[ÛÜ™P\Þ[˜Êˆ›ÛÝˆ˜\ÙU\šKˆ™]Ú^\›˜[ÜÜÐ\Þ[˜ËˆšY]ÜÜÚYˆšY]ÜÜZYÚˆÙËˆXY[™Kˆ›ÙÜ™\ÜÚ]™TÝ[\Ô™XYNˆ›ÙÜ™\ÜÚ]™TÝ[\Ô™XYJBˆÛÛ™šYÝ\™P]ØZ]
+˜[ÙJNÂ‚ˆËÈ™\ÝYœ›ÝÜÚ[™ÈÛÛ^È
+Yœ˜[Y\ÊHÛZ\ˆÝÛˆØÝ[Y[Ú]]ÈÝÛ‚ˆËÈ]]ÜˆÝ[\ÚY]ËˆHØ\ØØYHX›Ý™HÛ›H›][œÈ[[Y[›Ù\ËÛÈ]ˆËÈ™]™\ˆ\ØÙ[™È[ÈH]XÚYÚ[ØÝ[Y[8 %[™]™[ˆYˆ]YBˆËÈ\™[Ý[TÙ]Ù\È›ÝÛÛZ[ˆHYœ˜[YIÜÈÝ[O‹Ï[šÏˆ[\ËˆÚ]Ý]ˆËÈ\È\ÜÈHYœ˜[YH™[™\œÈÚ]PHY˜][ÈÛ›H
+K™ËˆXÚYˆ™YYÈBˆËÈœ˜[YIÜÈÝÛˆL[HX\™Ú[œÈÈÜÚ][ÛˆH˜XÙJKˆÝ[HXXÚÝX™ØÝ[Y[ˆËÈYØZ[œÝ]ÈÝÛˆÚY]ËˆH™XÝ\œÚ]™HØ[™KY[\œÈ\ÈÜ˜\\‹ÚXÚˆËÈ™KXXÜ]Z\™\ÈHÛÛ\]HØ]HÙ\]Y[X[H
+›È™\Ý[™È8¡¤ˆ›ÈXYØÚÊH[™ˆËÈ[ÛÈ[™\ÈYœ˜[Y\È™\ÝY[œÚYHYœ˜[Y\Ë‚ˆžBˆÂˆ]ØZ]Ý[RYœ˜[YTÝX™ØÝ[Y[Ð\Þ[˜Êˆ›ÛÝˆ˜\ÙU\šKˆ™]Ú^\›˜[ÜÜÐ\Þ[˜ËˆšY]ÜÜÚYˆšY]ÜÜZYÚˆÙËˆXY[™Kˆ™\Ý[ÛÛ\]Yˆ™]Ú^\›˜[ÜÜÑ›Ü”›ÛÝ\Þ[˜ÊBˆÛÛ™šYÝ\™P]ØZ]
+˜[ÙJNÂˆBˆØ]Ú
+^Ù\[Ûˆ^
+BˆÂˆÙÊÙË–ÐÜÜÓØY\—HYœ˜[YHÝX™ØÝ[Y[Ý[[™È˜Z[Yˆˆ
+È^“Y\ÜØYÙJNÂˆB‚ˆ™]\›ˆ™\Ý[ÂˆB‚ˆš]˜]HÝ]XÈ\Þ[˜È\ÚÈÝ[RYœ˜[YTÝX™ØÝ[Y[Ð\Þ[˜Êˆ[[Y[›ÛÝˆ\šH˜\ÙU\šKˆ[˜Ï\šK\ÚÏÝš[™Ïˆ™]Ú^\›˜[ÜÜÐ\Þ[˜ËˆÝX›OÈšY]ÜÜÚYˆÝX›OÈšY]ÜÜZYÚˆXÝ[ÛÝš[™ÏˆÙËˆ™[œ›ÝÜÙ\‹ÛÜ™K‘XY[™\Ë‘œ˜[YQXY[™HXY[™KˆXÝ[Û˜\žO›ÙKÜÜÐÛÛ\]YˆYÙÜ™YØ]Kˆ[˜Ï[[Y[\šK\ÚÏÝš[™Ïˆ™]Ú^\›˜[ÜÜÑ›Ü”›ÛÝ\Þ[˜ÊBˆÂˆYˆ
+›ÛÝOH[
+BˆÂˆ™]\›ŽÂˆB‚ˆËÈÛÛXÝYœ˜[YH[[Y[È[ˆH\ÝXØ\ØØYY™YK‚ˆ˜\ˆœ˜[Y\ÈH›ÛÝ‘\ØÙ[™[Ê
+K“Ù•\O[[Y[Š
+Bˆ•Ú\™JÝ]XÈHOˆÝš[™Ë‘\]X[ÊK•YÓ˜[YKšYœ˜[YH‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆ•Ó\Ý
+
+NÂˆYˆ
+›ÛÝ\È[[Y[›ÛÝ[	‰‚ˆÝš[™Ë‘\]X[Ê›ÛÝ[•YÓ˜[YKšYœ˜[YH‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆÂˆœ˜[Y\Ë’[œÙ\
+›ÛÝ[
+NÂˆB‚ˆ›Ü™XXÚ
+˜\ˆœ˜[YH[ˆœ˜[Y\ÊBˆÂˆ˜\ˆœ˜[YQØÈHœ˜[YKÚ[›Ù\Ë“Ù•\OØÝ[Y[Š
+K‘š\œÝÜ‘Y˜][
+
+NÂˆYˆ
+œ˜[YQØÈOH[
+BˆÂˆ™[œ›ÝÜÙ\‹‘™[‘[™Ú[™K‘ÓK‘[[Y[Ü˜\\‹•žQÙ]ØXÚYYœ˜[YQØÝ[Y[
+œ˜[YKÝ]œ˜[YQØÊNÂˆB‚ˆ˜\ˆœ˜[YT›ÛÝHœ˜[YQØÏË‘ØÝ[Y[[[Y[ÂˆYˆ
+œ˜[YT›ÛÝOH[
+BˆÂˆÛÛ[YNÂˆB‚ˆËÈHœ˜[YIÜÈšY]ÜÜš]™\È]ÈYYXH]Y\šY\È[™šY]ÜÜ[š]Ë‚ˆËÈš[Üš]NˆÔÔÈÛÛ\]YÚYÚZYÚˆ\˜Ù[YÙH™\ÛÛ™YYØZ[œÝˆËÈHYš[š]HÛÛZ[š[™È›ØÚÈˆSÚYÚZYÚ]šX]\ÂˆËÈ
+™\Ù[][Û˜[[ÊHˆ\™[šY]ÜÜ˜[˜XÚË‚ˆËÈÚ]Ý]ÚXÚÚ[™ÈS]šX]\ËYœ˜[Y\ÈÚ^™YšXHÚYHŒÌˆZYÚHÎ‚ˆËÈ
+ZÙH™PÐTÒJHÙ]H\™[YÙIÜÈšY]ÜÜœ™XZÚ[™ÈšÝÈ[š]ËˆËÈ\˜Ù[YÙHZYÚË[™XœÛÛ]HÜÚ][Ûš[™È[œÚYHHœ˜[YK‚ˆÝX›OÈœ˜[YUÈH™\ÛÛ™Qœ˜[YUšY]ÜÜ[Y[œÚ[ÛŠœ˜[YKÚY‹šY]ÜÜÚY
+NÂˆÝX›OÈœ˜[YUšH™\ÛÛ™Qœ˜[YUšY]ÜÜ[Y[œÚ[ÛŠœ˜[YKšZYÚ‹šY]ÜÜZYÚ
+NÂ‚ˆ˜\ˆœ˜[YP˜\ÙU\šHH™\ÛÛ™QØÝ[Y[˜\ÙU\šJœ˜[YQØË˜\ÙU\šJNÂˆ˜\ˆœ˜[YPÜÜÑ™]Ú\ˆH™]Ú^\›˜[ÜÜÑ›Ü”›ÛÝ\Þ[˜ÈOH[ˆÈ™]Ú^\›˜[ÜÜÐ\Þ[˜Âˆˆ™]È[˜Ï\šK\ÚÏÝš[™ÏŠ\šHOˆ™]Ú^\›˜[ÜÜÑ›Ü”›ÛÝ\Þ[˜Êœ˜[YT›ÛÝ\šJJNÂˆ˜\ˆ™\ÝYH]ØZ]ÛÛ\]UÚ]™\Ý[\Þ[˜Êˆœ˜[YT›ÛÝˆœ˜[YP˜\ÙU\šKˆœ˜[YPÜÜÑ™]Ú\‹ˆœ˜[YUËˆœ˜[YUšˆÙËˆXY[™Kˆ™]Ú^\›˜[ÜÜÑ›Ü”›ÛÝ\Þ[˜ÊBˆÛÛ™šYÝ\™P]ØZ]
+˜[ÙJNÂ‚ˆYˆ
+™\ÝYËÛÛ\]YOH[	‰ˆYÙÜ™YØ]HOH[
+BˆÂˆ›Ü™XXÚ
+˜\ˆÝœ[ˆ™\ÝYÛÛ\]Y
+BˆÂˆYÙÜ™YØ]VÚÝœ’Ù^WHHÝœ•˜[YNÂˆBˆBˆBˆB‚ˆš]˜]HÝ]XÈ\šH™\ÛÛ™QØÝ[Y[˜\ÙU\šJØÝ[Y[ØÝ[Y[\šH˜[˜XÚÊBˆÂˆYˆ
+ØÝ[Y[OH[
+BˆÂˆ˜\ˆ˜\ÙU^H\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJØÝ[Y[˜\ÙUT’JBˆÈØÝ[Y[˜\ÙUT’BˆˆØÝ[Y[•T“ÂˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜\ÙU^
+H	‰‚ˆ\šK•žPÜ™X]J˜\ÙU^\šRÚ[™XœÛÛ]KÝ]˜\ˆ\œÙY
+JBˆÂˆ™]\›ˆ\œÙYÂˆBˆB‚ˆ™]\›ˆ˜[˜XÚÎÂˆB‚ˆËËÈÝ[[X\žO‚ˆËËÈ™\ÛÛ™\ÈHšY]ÜÜ[Y[œÚ[Ûˆ›Üˆ[ˆYœ˜[YHÝX™ØÝ[Y[‚ˆËËÈš[Üš]NˆÔÔÈÛÛ\]Y˜[YHˆS™\Ù[][Û˜[[
+ÚYÚZYÚ]šX]JHˆ\™[šY]ÜÜ‚ˆËËÈ\ˆSÜXÈ0©ÌMŒËŒKÚYÚZYÚ]šX]\ÈÛˆYœ˜[YH\™H™\Ù[][Û˜[[ÂˆËËÈ]X\ÈÔÔÈ›Ü\Y\ÈÚ]™\›ÈÜXÚYšXÚ]K‚ˆËËÈÜÝ[[X\žO‚ˆ[\›˜[Ý]XÈÝX›OÈ™\ÛÛ™Qœ˜[YUšY]ÜÜ[Y[œÚ[ÛŠˆ[[Y[œ˜[YKˆÝš[™È]šX]S˜[YKˆÝX›OÈ\™[šY]ÜÜ[Y[œÚ[ÛŠBˆÂˆËÈKˆÔÔÈÛÛ\]Y˜[YH
+[™XYH™\ÛÛ™Yœ›ÛH\™[YÙHØ\ØØYJBˆÝX›OÈÜÜÕ˜[YHH[Âˆ›ÛÛ\ÑXÛ\™YÜÜÑ[Y[œÚ[ÛˆBˆœ˜[YK‘Ù]ÛÛ\]YÝ[J
+OË“X\ËÛÛZ[œÒÙ^J]šX]S˜[YJHOHYNÂˆYˆ
+]šX]S˜[YHOHÚYŠBˆÂˆYˆ
+\ÑXÛ\™YÜÜÑ[Y[œÚ[Ûˆ	‰ˆœ˜[YK‘Ù]ÛÛ\]YÝ[J
+OË•ÚY\ÈÝX›HÈ	‰ˆÈˆ
+BˆÜÜÕ˜[YHHÎÂˆBˆ[ÙHYˆ
+]šX]S˜[YHOHšZYÚŠBˆÂˆYˆ
+\ÑXÛ\™YÜÜÑ[Y[œÚ[Ûˆ	‰ˆœ˜[YK‘Ù]ÛÛ\]YÝ[J
+OË’ZYÚ\ÈÝX›H	‰ˆˆ
+BˆÜÜÕ˜[YHHÂˆB‚ˆYˆ
+ÜÜÕ˜[YK’\Õ˜[YJBˆ™]\›ˆÜÜÕ˜[YNÂ‚ˆËÈH\˜Ù[YÙK\Ú^™YYœ˜[YH\ÝX›\Ú\ÈHšY]ÜÜœ›ÛH]ÈÝÛˆ›ÞˆËÈ›Ýœ›ÛHHÜ[]™[ØÝ[Y[šY]ÜÜˆ\š[™ÈØ\ØØYHH^[Ý]ˆËÈ›ÞX^H›Ý^\ÝY]][ˆ^XÚ]^[Ú^™HÛˆHÛÛZ[š[™ÂˆËÈ›ØÚÈ\È[™XYHHYš[š]H\˜Ù[YÙH˜\Ú\Ë‚ˆ˜\ˆ\˜Ù[H]šX]S˜[YHOHÚY‚ˆÈœ˜[YK‘Ù]ÛÛ\]YÝ[J
+OË•ÚY\˜Ù[ˆˆœ˜[YK‘Ù]ÛÛ\]YÝ[J
+OË’ZYÚ\˜Ù[ÂˆYˆ
+\˜Ù[’\Õ˜[YH	‰‚ˆžT™XY[›[™T^[[Y[œÚ[ÛŠœ˜[YK”\™[[[Y[]šX]S˜[YKÝ]˜\ˆÛÛZ[š[™Ñ[Y[œÚ[ÛŠJBˆÂˆ™]\›ˆÛÛZ[š[™Ñ[Y[œÚ[Ûˆ
+ˆ\˜Ù[•˜[YHÈLÂˆB‚ˆËÈ‹ˆS™\Ù[][Û˜[[ˆYˆ
+™[œ›ÝÜÙ\‹‘™[‘[™Ú[™K“^[Ý]”™\XÙY[[Y[Ú^š[™Ë•žQÙ][™Ý]šX]Jˆœ˜[YK]šX]S˜[YKÝ]›Ø]]•˜[YJH	‰ˆ]•˜[YHˆŠBˆÂˆ™]\›ˆ
+ÝX›JX]•˜[YNÂˆB‚ˆËÈËˆ˜[˜XÚÈÈ\™[šY]ÜÜˆ™]\›ˆ\™[šY]ÜÜ[Y[œÚ[ÛŽÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛžT™XY[›[™T^[[Y[œÚ[ÛŠ[[Y[[[Y[Ýš[™È›Ü\KÝ]ÝX›H˜[YJBˆÂˆ˜[YHHÂˆÝš[™È˜]ÈH[Âˆ›Ü™XXÚ
+˜\ˆXÛ\˜][Ûˆ[ˆ
+[[Y[Ë‘Ù]]šX]JœÝ[HŠHÏÈÝš[™Ë‘[\JBˆ”Ü]
+	ÎÉËÝš[™ÔÜ]Ü[ÛœË”™[[Ý™Q[\Q[šY\ÊJBˆÂˆ˜\ˆÛÛÛ’[™^HXÛ\˜][Û‹’[™^ÙŠ	Î‰ÊNÂˆYˆ
+ÛÛÛ’[™^Hˆ\Ýš[™Ë‘\]X[ÊXÛ\˜][Û–Ë‹˜ÛÛÛ’[™^K•š[J
+K›Ü\KÝš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆÂˆÛÛ[YNÂˆB‚ˆ˜]ÈHXÛ\˜][Û–ÊÛÛÛ’[™^
+ÈJK‹—K•š[J
+NÂˆB‚ˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜]ÊHˆ\˜]Ë‘[™ÕÚ]
+œ‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆ™]\›ˆÝX›K•žT\œÙJˆ˜]ÖË‹—Œ—K•š[Q[™
+
+Kˆ[X™\”Ý[\Ë‘›Ø]ˆÝ[\™R[™›Ë’[˜\šX[Ý[\™KˆÝ]˜[YJH	‰‚ˆÝX›K’\Ñš[š]J˜[YJH	‰‚ˆ˜[YHˆÂˆB‚ˆš]˜]HÝ]XÈ\Þ[˜È\ÚÏÜÜÓØY™\Ý[ˆÛÛ\]UÚ]™\Ý[ÛÜ™P\Þ[˜Êˆ[[Y[›ÛÝˆ\šH˜\ÙU\šKˆ[˜Ï\šK\ÚÏÝš[™Ïˆ™]Ú^\›˜[ÜÜÐ\Þ[˜ËˆÝX›OÈšY]ÜÜÚYH[ˆÝX›OÈšY]ÜÜZYÚH[ˆXÝ[ÛÝš[™ÏˆÙÈH[ˆ™[œ›ÝÜÙ\‹ÛÜ™K‘XY[™\Ë‘œ˜[YQXY[™HXY[™HH[ˆ[[Y[Ø\ØØYT›ÛÝH[ˆXÝ[ÛXÝ[Û˜\žO›ÙKÜÜÐÛÛ\]Yˆ›ÙÜ™\ÜÚ]™TÝ[\Ô™XYHH[
+BˆÂˆÛ™È]Y]YTÝ\YHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][Y\Ý[\
+
+NÂˆ]ØZ]ÙÛØ˜[ÛÛ\]QØ]K•ØZ]\Þ[˜Ê
+KÛÛ™šYÝ\™P]ØZ]
+˜[ÙJNÂˆÝX›H]Y]YUØZ]\ÈHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][\ÙY[YJ]Y]YTÝ\Y
+K•Ý[Z[\ÙXÛÛ™ÎÂˆÛ™ÈÛÛ\]TÝ\YHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][Y\Ý[\
+
+NÂˆžBˆÂˆËÈ\ÈUTÕ™HÛ™H]™[ˆYˆ\Ú[™ÈØXÚY[\Ë‚ˆÜÜÔ\œÙ\‹“YYXUšY]ÜÜÚYHšY]ÜÜÚYÂˆÜÜÔ\œÙ\‹“YYXUšY]ÜÜZYÚHšY]ÜÜZYÚÂ‚ˆÊˆÔT‘‹T‘SSÕ‘QH
+‹Â‚ˆYˆ
+›ÛÝOH[
+BˆÂˆ™]\›ˆ™]ÈÜÜÓØY™\Ý[ˆÂˆ[Z[™ÈH™]ÈÜÜÓØY[Z[™ÂˆÂˆ]Y]YUØZ]\ÈH]Y]YUØZ]\ËˆÝ[\ÈHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][\ÙY[YJÛÛ\]TÝ\Y
+K•Ý[Z[\ÙXÛÛ™ÂˆBˆNÂˆB‚ˆÝš[™ÈÝ[\ÚY]š[™Ù\œš[HZ[Ý[\ÚY]š[™Ù\œš[
+›ÛÝ
+NÂˆYˆ
+žQÙ]ØXÚYÝ[TÙ]
+ˆ›ÛÝˆÝ[\ÚY]š[™Ù\œš[ˆ˜\ÙU\šKˆšY]ÜÜÚYˆšY]ÜÜZYÚˆÝ]˜\ˆØXÚYÝ[TÙ]
+JBˆÂˆÛ™ÈØXÚYØ\ØØYTÝ\YHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][Y\Ý[\
+
+NÂˆ˜\ˆØXÚYÛÛ\]YH™[œ›ÝÜÙ\‹‘™[‘[™Ú[™K”™[™\š[™Ë”\˜[[Ø\ØØYTØÚY[\‹Ø\ØØYJˆØ\ØØYT›ÛÝÏÈ›ÛÝˆØXÚYÝ[TÙ]”Ý[TÙ]ˆÙËˆXY[™KˆÝ]˜\ˆØXÚY[›[™TÝ[TÝ]\ÝXÜÊNÂˆÝX›HØXÚYØ\ØØYS\ÈHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][\ÙY[YJØXÚYØ\ØØYTÝ\Y
+K•Ý[Z[\ÙXÛÛ™ÎÂˆ™[œ›ÝÜÙ\‹‘™[‘[™Ú[™K”™[™\š[™Ë”\™›Ü›X[˜ÙK”\™›Ü›X[˜ÙQXYÛ›ÜÝXÜÔÝÜ™K”™XÛÜ™[›[™TÝ[PØXÚJˆØXÚY[›[™TÝ[TÝ]\ÝXÜÊNÂˆ[™Ú[™SÙÐÛÛ\]“ÙÊˆÙÐØ]YÛÜžK”™[™\š[™ËˆÙÓ]™[’[™›Ëˆ	–ÔT‘‹PÔÔ×H™]\ÙYØÝ[Y[Ý[TÙ]ˆØØXÚYØ\ØØYS\Î‘Œ_[\È
+[[Y[ÎˆØØXÚYÛÛ\]YÛÝ[JHŠNÂ‚ˆ™]\›ˆ™]ÈÜÜÓØY™\Ý[ˆÂˆÛÛ\]YHØXÚYÛÛ\]Yˆ[Z[™ÈH™]ÈÜÜÓØY[Z[™ÂˆÂˆ]Y]YUØZ]\ÈH]Y]YUØZ]\ËˆØ\ØØYS\ÈHØXÚYØ\ØØYS\ËˆÝ[\ÈHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][\ÙY[YJÛÛ\]TÝ\Y
+K•Ý[Z[\ÙXÛÛ™ËˆÛÝ\˜ÙPÛÝ[HØXÚYÝ[TÙ]”ÛÝ\˜ÙPÛÝ[ˆ^[™YÛÝ\˜ÙPÛÝ[HØXÚYÝ[TÙ]‘^[™YÛÝ\˜ÙPÛÝ[ˆ[PÛÝ[HØXÚYÝ[TÙ]”[PÛÝ[ˆÛÛ\]YÝ[PÛÝ[HØXÚYÛÛ\]YÛÝ[ˆ[›[™TÝ[PØXÚR]ÈHØXÚY[›[™TÝ[TÝ]\ÝXÜË’]Ëˆ[›[™TÝ[PØXÚSZ\ÜÙ\ÈHØXÚY[›[™TÝ[TÝ]\ÝXÜË“Z\ÜÙ\Ëˆ[›[™TÝ[PØXÚQ]šXÝ[ÛœÈHØXÚY[›[™TÝ[TÝ]\ÝXÜË‘]šXÝ[ÛœËˆ[›[™TÝ[PØXÚQ[šY\ÈHØXÚY[›[™TÝ[TÝ]\ÝXÜË‘[šY\ËˆÝ[TÙ]ØXÚR]HYBˆBˆNÂˆB‚ˆ˜\ˆÜÜÐ›ØœÈH™]È\ÝÜÜÔÛÝ\˜ÙOŠ
+NÈËÈÛÛXÝYÔÔÈ^ÈÚ]ÛÝ\˜ÙHÜ™\š[™Âˆ[ÛÝ\˜ÙR[™^HÂˆ˜\ˆØÜÜÔÝÜØ]ÚHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú”Ý\™]Ê
+NÂ‚ˆËÈ
+HPHÝ[\ÚY]
+ÝÙ\Ý™XÙY[˜ÙJBˆžBˆÂˆÜÜÐ›ØœËY
+™]ÈÜÜÔÛÝ\˜ÙBˆÂˆÜÜÕ^HXTÝ[\ÚY]•˜[YKˆÜšYÚ[ˆHÜÜÓÜšYÚ[‹•\Ù\YÙ[ˆÛÝ\˜ÙSÜ™\ˆHÛÝ\˜ÙR[™^ˆÙ\]Y[˜ÙSÜ™\ˆHÛÝ\˜ÙR[™^ˆ˜\ÙU\šHH˜\ÙU\šBˆJNÂˆÛÝ\˜ÙR[™^
+ÊÎÂˆBˆØ]Ú
+^Ù\[Ûˆ^
+BˆÂˆ[™Ú[™SÙÐÛÛ\]‘\œ›ÜŠ	–ÐÜÜÓØY\—HPHÝ[\ÚY]\œ›ÜŽˆÙ^“Y\ÜØYÙ_H‹ÙÐØ]YÛÜžK”™[™\š[™ÊNÂˆB‚ˆ˜\ˆÝ[\ÚY]›Ù\ÈH[[Y\˜]Q[[Y[Ò[˜ÛY[™ÔÚYÝÕ™Y\Ê›ÛÝ
+Bˆ•Ú\™JˆOˆ[‹’\Õ^
+
+H	‰‚ˆ
+Ýš[™Ë‘\]X[Ê‹•YÓ˜[YKœÝ[H‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJHˆÝš[™Ë‘\]X[Ê‹•YÓ˜[YK›[šÈ‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJJBˆ•Ó\Ý
+
+NÂ‚ˆËÈÛÛXÝ[›[™HÝ[Oˆ[™^\›˜[[šÈ™[\Ý[\ÚY]ˆ[ˆ]]Ü™YÓHÜ™\‹‚ˆËÈ^\›˜[Ý[\ÚY]È™]Ú[ˆ\˜[[Ú]HÛX[ÛÛ˜Ý\œ™[˜ÞH[Z]‚ˆˆËÈP•QÎˆ[\ÓHÝXÝ\™HÈ[™\œÝ[™ÚHS’È[[Y[È\™H›Ý›Ý[™ˆYˆ
+P•Q×Ñ’SWÓÑÑÒS‘ÊBˆÂˆXYÓÙÊ˜ÜÜ×ÙXYË‹	–ÑÓKPÒPÒ×H›ÛÝYÏIÞÜ›ÛÝ“›ÙS˜[Y_IÈÚ[™[^Ü›ÛÝÚ[›Ù\Ë“[™ÝW—ˆŠNÂˆ›Ü™XXÚ
+˜\ˆÚ[[ˆ›ÛÝÚ[›Ù\ÊBˆÂˆXYÓÙÊ˜ÜÜ×ÙXYË‹	–ÑÓKPÒPÒ×HÚ[YÏIÞØÚ[“›ÙS˜[Y_IÈ
+\Õ^^ØÚ[’\Õ^
+
+_JHÚ[™[^ØÚ[Ú[›Ù\Ë“[™ÝW—ˆŠNÂˆ›Ü™XXÚ
+˜\ˆÚ[ˆ[ˆÚ[Ú[›Ù\ÊBˆÂˆÝš[™ÈYÌˆHÚ[‹“›ÙS˜[YOË•Õ\\’[˜\šX[
+
+HÏÈˆŽÂˆYˆ
+XÚ[‹’\Õ^
+
+H	‰ˆ
+YÌˆOH’PQˆYÌˆOH“S’ÈˆYÌˆOH“QUHŠJBˆÂˆXYÓÙÊ˜ÜÜ×ÙXYË‹	–ÑÓKPÒPÒ×HÚ[ˆYÏIÞØÚ[‹“›ÙS˜[Y_IÈÚ[™[^ØÚ[‹Ú[›Ù\Ë“[™ÝW—ˆŠNÂˆËÈ[\PQÚ[™[‚ˆYˆ
+YÌˆOH’PQŠBˆÂˆ›Ü™XXÚ
+˜\ˆXYÚ[[ˆÚ[‹Ú[›Ù\ÊBˆÂˆXYÓÙÊ˜ÜÜ×ÙXYË‹	–ÑÓKPÒPÒ×HPQPÚ[YÏIÞÚXYÚ[“›ÙS˜[Y_I×—ˆŠNÂˆBˆBˆBˆBˆBˆBˆˆYˆ
+P•Q×Ñ’SWÓÑÑÒS‘ÊHXYÓÙÊ˜ÜÜ×ÙXYË‹	–ÓS’×H›Ý[™ÜÝ[\ÚY]›Ù\ËÛÝ[
+ˆOˆÝš[™Ë‘\]X[Ê‹•YÓ˜[YK›[šÈ‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJ_H[šÈ[[Y[È[ˆÓH›ÛÝ—ˆŠNÂ‚‚ˆ˜\ˆ^\ÚÜÈH™]È\Ý\ÚÏŠ
+NÂˆ˜\ˆØ]HH™]ÈÞ\Ý[K•™XY[™Ë”Ù[X\Ü™TÛ[J
+NÈËÈÚ\™YØ]H›Üˆ[ÔÔÈ™]Ú\È
+[šÜÈ
+È[\ÜÊBˆ›Ü™XXÚ
+˜\ˆ›ÙH[ˆÝ[\ÚY]›Ù\ÊBˆÂˆYˆ
+Ýš[™Ë‘\]X[Ê›ÙK•YÓ˜[YKœÝ[H‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆÂˆ˜\ˆ[›[™PÜÜÕ^HØY™QØ]\•^
+›ÙJNÂˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ[›[™PÜÜÕ^
+JBˆÂˆÜÜÐ›ØœËY
+™]ÈÜÜÔÛÝ\˜ÙBˆÂˆÜÜÕ^H[›[™PÜÜÕ^ˆÜšYÚ[ˆHÜÜÓÜšYÚ[‹’[›[™KˆÛÝ\˜ÙSÜ™\ˆHÛÝ\˜ÙR[™^ˆÙ\]Y[˜ÙSÜ™\ˆHÛÝ\˜ÙR[™^ˆ˜\ÙU\šHH˜\ÙU\šKˆÚYÝÔØÛÜT›ÛÝH›ÙK‘Ù]›ÛÝ›ÙJ
+H\ÈÚYÝÔ›ÛÝˆJNÂˆÛÝ\˜ÙR[™^
+ÊÎÂˆB‚ˆÛÛ[YNÂˆB‚ˆ˜\ˆ[šÈH›ÙNÂˆYˆ
+[[šË’\Ð]šX]\Ê
+JHÈXYÓÙÊ˜ÜÜ×ÙXY×ÝŒ‹‹–ÓS’×HÒÒTˆ[šÈ\È›È]šX]\×—ˆŠNÈÛÛ[YNÈBˆˆÝš[™È™[H[šË‘Ù]]šX]Jœ™[ŠNÂˆYˆ
+Ýš[™Ë’\Ó[Ü‘[\J™[
+JHˆÂˆXYÓÙÊ˜ÜÜ×ÙXY×ÝŒ‹‹–ÓS’×HÒÒTˆ[šÈ\È›È™[]šX]W—ˆŠNÂˆÛÛ[YNÈˆBˆˆXYÓÙÊ˜ÜÜ×ÙXY×ÝŒ‹‹	–ÓS’×HÚXÚÚ[™È™[IÞÜ™[I×—ˆŠNÂ‚ˆYˆ
+PÛÛZ[œÕÚÙ[Š™[œÝ[\ÚY]ŠJHˆÂˆXYÓÙÊ˜ÜÜ×ÙXY×ÝŒ‹‹	–ÓS’×HÒÒTˆ™[	ÞÜ™[IÈ\È›ÝÝ[\ÚY]—ˆŠNÂˆÛÛ[YNÂˆBˆˆÝš[™È™YˆH[šË‘Ù]]šX]Jš™YˆŠNÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ™YŠJBˆÂˆXYÓÙÊ˜ÜÜ×ÙXY×ÝŒ‹‹–ÓS’×HÒÒTˆ[šÈ\È›È™Y——ˆŠNÂˆÛÛ[YNÂˆB‚ˆËÈÔ’H0è¸ «8 'HØ\\™H[YÜš]H]šX]H™Y›Ü™HH\Þ[˜ÈÛÜÝ\™BˆÝš[™ÈÜšR[YÜš]HH[šË‘Ù]]šX]Jš[YÜš]HŠNÂˆˆXYÓÙÊ˜ÜÜ×ÙXY×ÝŒ‹‹	–ÓS’×H›Ý[™Ý[\ÚY]™YIÞÚ™YŸI×—ˆŠNÂ‚ˆËÈ™\ÜXÝYYXH]šX]H
+ØÜ™Y[‹Ø[
+KˆÛÛYHÚ]\È^žK[ØYÔÔÈšXHYYXO\š[[™ÝÚ]ÚÈ[Û›ØY‚ˆÝš[™ÈYYXHH[šË‘Ù]]šX]J›YYXHŠNÂˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJYYXJJBˆÂˆ˜\ˆHHYYXK•ÓÝÙ\’[˜\šX[
+
+NÂˆXYÓÙÊ˜ÜÜ×ÙXY×ÝŒ‹‹	–ÓS’×HÚXÚÚ[™ÈYYXOIÞÛ_I×—ˆŠNÂˆ›ÛÛ[ÝÓYYXHHKÛÛZ[œÊ˜[ŠHKÛÛZ[œÊœØÜ™Y[ˆŠNÂˆYˆ
+X[ÝÓYYXH	‰ˆKÛÛZ[œÊœš[ŠJBˆÂˆËÈ]\š\ÝXÎˆØYš[[X\šÙYÝ[\ÚY]ÈÈÝ\Ü›YYXO\š[ˆ^žK[ØY]\›‹‚ˆËÈ\È]›ÚYÈZ\ÜÚ[™ÈÜš]XØ[^[Ý]ÛˆÚ]\È]›\YYXHÈ˜[ˆY\ˆØY‚ˆ[ÝÓYYXHHYNÂˆXYÓÙÊ˜ÜÜ×ÙXY×ÝŒ‹‹	–ÓS’×H[ÝÚ[™ÈYYXO\š[Ý[\ÚY]›Üˆ[[YHYYXH›\—ˆŠNÂˆBˆYˆ
+X[ÝÓYYXJBˆÂˆXYÓÙÊ˜ÜÜ×ÙXY×ÝŒ‹‹	–ÓS’×HÒÒTˆYYXHZ\ÛX]Ú—ˆŠNÂˆÛÛ[YNÂˆBˆBˆ˜\ˆXœÈH™\ÛÛ™U\šJ˜\ÙU\šK™YŠNÂˆYˆ
+XœÈOH[
+BˆÂˆXYÓÙÊ˜ÜÜ×ÙXY×ÝŒ‹‹	–ÓS’×HÒÒTˆT“˜Z[YÈ™\ÛÛ™NˆÚ™YŸW—ˆŠNÂˆÛÛ[YNÂˆBˆˆXYÓÙÊ˜ÜÜ×ÙXY×ÝŒ‹‹	–ÓS’×HUQUQNˆØXœßW—ˆŠNÂ‚ˆ˜\ˆÜ™\ˆHÛÝ\˜ÙR[™^
+ÊÎÂˆ˜\ˆÚYÝÔØÛÜT›ÛÝH[šË‘Ù]›ÛÝ›ÙJ
+H\ÈÚYÝÔ›ÛÝÂˆ˜\ˆH[‘]XÚY\Þ[˜Ê\Þ[˜È
+
+HO‚ˆÂˆ]ØZ]Ø]K•ØZ]\Þ[˜Ê
+KÛÛ™šYÝ\™P]ØZ]
+˜[ÙJNÂˆžBˆÂˆ˜\ˆÜÜÈH]ØZ]™]Ú^\›˜[ÜÜÐ\Þ[˜ÊXœÊKÛÛ™šYÝ\™P]ØZ]
+˜[ÙJNÂˆÊˆÔT‘‹T‘SSÕ‘QH
+‹ÂˆËÈÔ’HÚXÚÈ0è¸ «8 'HYˆH[šÈ\È[ˆ[YÜš]H]šX]K™\šYžH™Y›Ü™H\Z[™ÂˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÜÜÊH	‰ˆU™\šYžTÜšR[YÜš]JÜÜËÜšR[YÜš]JJBˆÂˆÙÊÙË	–ÐÜÜÓØY\—HÔÔ’WH›ØÚÙYÝ[\ÚY]
+\ÚZ\ÛX]Ú
+NˆØXœßHŠNÂˆ™]\›ŽÈËÈ›Ü\ÈÝ[\ÚY]0è¸ «8 'H[YÜš]HÚXÚÈ˜Z[YˆBˆËÈ[Z]ÔÔÈÚ^™HÈ™]™[Ü˜\Ú\ÈÛˆX\ÜÚ]™HÝ[\ÚY]È
+Ú]X‹]ËŠBˆÛÛœÝ[PVÐÔÔ×ÔÒV‘HH—ÌÌÈËÈ“Pˆ\ˆÝ[\ÚY]ˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÜÜÊH	‰ˆÜÜË“[™ÝHPVÐÔÔ×ÔÒV‘JBˆÂˆØÚÈ
+ÜÜÐ›ØœÊBˆÂˆÜÜÐ›ØœËY
+™]ÈÜÜÔÛÝ\˜ÙBˆÂˆÜÜÕ^HÜÜËˆÜšYÚ[ˆHÜÜÓÜšYÚ[‹‘^\›˜[ˆÛÝ\˜ÙSÜ™\ˆHÜ™\‹ˆÙ\]Y[˜ÙSÜ™\ˆHÜ™\‹ˆ˜\ÙU\šHHXœËˆÚYÝÔØÛÜT›ÛÝHÚYÝÔØÛÜT›ÛÝˆJNÂˆBˆBˆ[ÙHYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÜÜÊJBˆÂˆÙÊÙË	–ÐÜÜÓØY\—HÚÚ\Y\™ÙHÔÔÈ
+ØÜÜË“[™ÝHž]\ÊHœ›ÛNˆØXœßHŠNÂˆBˆBˆØ]Ú
+^Ù\[Ûˆ^
+BˆÂˆÙÊÙË–ÐÜÜÓØY\—H˜Z[YÈ™]ÚÔÔÎˆˆ
+ÈXœÈ
+ÈˆŽˆˆ
+È^“Y\ÜØYÙJNÂˆBˆš[˜[HÈžHÈØ]K”™[X\ÙJ
+NÈHØ]ÚÈÊˆYÛ›Ü™H™[X\ÙH\œ›ÜœÈ
+‹ÈHBˆJNÂˆ^\ÚÜËY
+
+NÂˆBˆYˆ
+^\ÚÜËÛÝ[ˆ
+HˆÂˆYˆ
+›ÙÜ™\ÜÚ]™TÝ[\Ô™XYHOH[
+BˆÂˆžTX›\Ú›ÙÜ™\ÜÚ]™TÝ[\Êˆ›ÛÝˆØ\ØØYT›ÛÝÏÈ›ÛÝˆÜÜÐ›ØœËˆšY]ÜÜÚYˆšY]ÜÜZYÚˆÙËˆXY[™Kˆ›ÙÜ™\ÜÚ]™TÝ[\Ô™XYJNÂˆB‚ˆ[™Ú[™SÙÐÛÛ\]“ÙÊÙÐØ]YÛÜžK”™[™\š[™ËÙÓ]™[‘XYË	–ÔT‘‹PÔÔ×HØZ][™È›ÜˆÙ^\ÚÜËÛÝ[H^\›˜[ÔÔÈ™]Ú\Ë‹‹ˆŠNÂˆžHÈ]ØZ]\ÚË•Ú[[
+^\ÚÜÊNÈHØ]ÚÈÊˆYÛ›Ü™H™]Ú\œ›ÜœÈ
+‹ÈHˆBˆ[™Ú[™SÙÐÛÛ\]“ÙÊÙÐØ]YÛÜžK”™[™\š[™ËÙÓ]™[‘XYË	–ÔT‘‹PÔÔ×H^\›˜[ÔÔÈ™]Úˆ×ØÜÜÔÝÜØ]Ú‘[\ÙYZ[\ÙXÛÛ™ß[\ÈŠNÂ‚ˆËÈ]\›Z[š\ÝXÈ]]Ü™YÜ™\ˆ™YØ\™\ÜÈ\Þ[˜È™]ÚÛÛ\][ÛˆÜ™\š[™Ë‚ˆÜÜÐ›ØœÈHÜÜÐ›ØœÂˆ•Ú\™JÈOˆÈOH[
+Bˆ“Ü™\žJÈOˆË”Ù\]Y[˜ÙSÜ™\ŠBˆ•Ó\Ý
+
+NÂˆÝX›H\ØÛÝ™\žP[™™]Ú\ÈHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][\ÙY[YJÛÛ\]TÝ\Y
+K•Ý[Z[\ÙXÛÛ™ÎÂ‚ˆËÈÊH^[™[\Ü
+\X›Ý[™Y
+Bˆ[™Ú[™SÙÐÛÛ\]‘XYÊ–ÔT‘‹PÔÔ×HÝ\[™È[\Ü^[œÚ[Û‹‹‹ˆ‹ÙÐØ]YÛÜžK”™[™\š[™ÊNÂˆÛ™È[\ÜÝ\YHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][Y\Ý[\
+
+NÂˆ˜\ˆ^[™YH]ØZ]^[™[\ÜÐ\Þ[˜ÊÜÜÐ›ØœË™]Ú^\›˜[ÜÜÐ\Þ[˜ËšY]ÜÜÚYÙËØ]JNÂˆÝX›H[\Ü^[œÚ[Û“\ÈHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][\ÙY[YJ[\ÜÝ\Y
+K•Ý[Z[\ÙXÛÛ™ÎÂˆ[™Ú[™SÙÐÛÛ\]“ÙÊÙÐØ]YÛÜžK”™[™\š[™ËÙÓ]™[‘XYË	–ÔT‘‹PÔÔ×H[\Ü^[œÚ[ÛŽˆ×ØÜÜÔÝÜØ]Ú‘[\ÙYZ[\ÙXÛÛ™ß[\È
+ÛÝ\˜Ù\ÎˆÙ^[™YÛÝ[JHŠNÂ‚ˆËÈ
+H\œÙH[\Èœ›ÛH[ÛÝ\˜Ù\È
+\˜[[›Ý[™Y
+Bˆ[™Ú[™SÙÐÛÛ\]“ÙÊÙÐØ]YÛÜžK”™[™\š[™ËÙÓ]™[‘XYË	–ÔT‘‹PÔÔ×HÝ\[™È\˜[[[H\œÚ[™È›ÜˆÙ^[™YÛÝ[HÛÝ\˜Ù\È
+ÛØ˜[Ø]H[Z]ˆ×ÙÛØ˜[\œÙQØ]KÝ\œ™[ÛÝ[JK‹‹ˆŠNÂˆ˜\ˆÝ[TÙ]H™]ÈÝ[TÙ]
+
+NÂˆ˜\ˆ\œÙU\ÚÜÈH™]È\Ý\ÚÏŠ
+NÂˆ\Ú[™È˜\ˆ\œÙTÝYÙPÝÈH™]ÈÞ\Ý[K•™XY[™ËØ[˜Ù[][Û•ÚÙ[”ÛÝ\˜ÙJ
+NÂˆ˜\ˆ\œÙTÝYÙUÚÙ[ˆH\œÙTÝYÙPÝË•ÚÙ[ŽÂˆ›ÛÛ\œÙTÝYÙTÙX[YH˜[ÙNÂˆÛ™È[T\œÙTÝ\YHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][Y\Ý[\
+
+NÂˆˆ[™Ú[™SÙÐÛÛ\]“ÙÊÙÐØ]YÛÜžK”™[™\š[™ËÙÓ]™[‘XYË	–ÔT‘‹PÔÔËUPÒ×H˜[Y]YÔÔÈ›ØœÎˆÙ^[™YÛÝ[KˆØÚY[[™È\ÚÜË‹‹ˆŠNÂˆ›Ü™XXÚ
+˜\ˆ›Øˆ[ˆ^[™Y
+BˆÂˆ\œÙU\ÚÜËY
+[‘]XÚY\Þ[˜Ê\Þ[˜È
+
+HO‚ˆÂˆYˆ
+\œÙTÝYÙUÚÙ[‹’\ÐØ[˜Ù[][Û”™\]Y\ÝY
+BˆÂˆ™]\›ŽÂˆB‚ˆ[^SÜ™\ˆH›Ø‹”ÛÝ\˜ÙSÜ™\ŽÂˆ[^S[ˆH›Ø‹ÜÜÕ^Ë“[™ÝÏÈÂˆžBˆÂˆÝš[™È›ØÙ\ÜÙYÜÜÈH^˜XÝ›Û˜XÙJˆ›Ø‹ÜÜÕ^ˆ›Ø‹˜\ÙU\šKˆÙËˆ›ÛÝ“ÝÛ™\‘ØÝ[Y[
+NÂˆˆ\Ý™]ÐÜÜËÜÜÔ[Oˆ\œÙYH[Âˆ\ÚÏ\Ý™]ÐÜÜËÜÜÔ[Oˆ[‘›YÚ\ÚÈH[Âˆˆ\œÙY[PØXÚRÙ^H\œÙPØXÚRÙ^HHZ[\œÙY[PØXÚRÙ^Jˆ›ØÙ\ÜÙYÜÜËˆ›Ø‹˜\ÙU\šKˆšY]ÜÜÚYˆšY]ÜÜZYÚˆ›Ø‹”ÛÝ\˜ÙSÜ™\‹ˆX\Ó™]ÐÜÜÓÜšYÚ[Š›Ø‹“ÜšYÚ[ŠKˆ›Ø‹”ÚYÝÔØÛÜT›ÛÝ
+NÂˆØÚÈ
+Ü\œÙY[\ÐØXÚJBˆÂˆYˆ
+Ü\œÙY[\ÐØXÚK•žQÙ]˜[YJ\œÙPØXÚRÙ^KÝ]\œÙY
+JBˆÂˆËÈ™XYH[ˆØXÚK‚ˆBˆ[ÙHYˆ
+Ú[‘›YÚ\œÙ\Ë•žQÙ]˜[YJ\œÙPØXÚRÙ^KÝ][‘›YÚ\ÚÊJBˆÂˆËÈ[›Ý\ˆ™XY\È\œÚ[™È\ÈšYÚ›ÝËˆÙHÚ[]ØZ]]‚ˆBˆ[ÙBˆÂˆËÈÙH\™HHš\œÝHÙ]\H[‹Y›YÚ\ÚÈÜ˜\\‹‚ˆ[‘›YÚ\ÚÈH\ÚË”[Š\Þ[˜È
+
+HO‚ˆÂˆ›ÛÛ\œÙQØ]PXÜ]Z\™YH˜[ÙNÂˆžBˆÂˆ]ØZ]ÙÛØ˜[\œÙQØ]K•ØZ]\Þ[˜Ê\œÙTÝYÙUÚÙ[ŠKÛÛ™šYÝ\™P]ØZ]
+˜[ÙJNÂˆ\œÙQØ]PXÜ]Z\™YHYNÂˆ\œÙTÝYÙUÚÙ[‹•›ÝÒYØ[˜Ù[][Û”™\]Y\ÝY
+
+NÂˆ[™Ú[™SÙÐÛÛ\]“ÙÊÙÐØ]YÛÜžK”™[™\š[™ËÙÓ]™[‘XYË	–ÔT‘‹PÔÔËUPÒ×HÕT•\œÙH[\ÈÛÝ\˜ÙO^Û^SÜ™\ŸH[^Û^S[ŸH˜\ÙO^Ø›Ø‹˜\ÙU\š_HŠNÂˆ˜\ˆ™\Ý[H\œÙT[\Ê›ØÙ\ÜÙYÜÜË›Ø‹”ÛÝ\˜ÙSÜ™\‹›Ø‹˜\ÙU\šKšY]ÜÜÚYšY]ÜÜZYÚÙËX\Ó™]ÐÜÜÓÜšYÚ[Š›Ø‹“ÜšYÚ[ŠJNÂˆˆËÈÛ˜ÙHš[š\ÚY[Ý™Hœ›ÛH[‹Y›YÚÈÛÛ\]HØXÚBˆØÚÈ
+Ü\œÙY[\ÐØXÚJBˆÂˆÜ\œÙY[\ÐØXÚVÜ\œÙPØXÚRÙ^WHH™\Ý[ÂˆBˆ™]\›ˆ™\Ý[ÂˆBˆš[˜[BˆÂˆØÚÈ
+Ü\œÙY[\ÐØXÚJBˆÂˆÚ[‘›YÚ\œÙ\Ë”™[[Ý™J\œÙPØXÚRÙ^JNÂˆBˆYˆ
+\œÙQØ]PXÜ]Z\™Y
+BˆÂˆÙÛØ˜[\œÙQØ]K”™[X\ÙJ
+NÂˆBˆ[™Ú[™SÙÐÛÛ\]“ÙÊÙÐØ]YÛÜžK”™[™\š[™ËÙÓ]™[‘XYË	–ÔT‘‹PÔÔËUPÒ×HS‘\œÙH[\ÈÛÝ\˜ÙO^Û^SÜ™\ŸHŠNÂˆBˆJNÂˆÚ[‘›YÚ\œÙ\ÖÜ\œÙPØXÚRÙ^WHH[‘›YÚ\ÚÎÂˆBˆBˆˆËÈYˆ]Ø\Û‰ÝÝ]XØ[HØXÚY]ØZ]H[‹Y›YÚ\ÚÈ
+ÚXÚZYÚ™HÝ\œÈÜˆÛÛY[Û™H[ÙIÜÊBˆYˆ
+\œÙYOH[	‰ˆ[‘›YÚ\ÚÈOH[
+BˆÂˆ\œÙYH]ØZ][‘›YÚ\ÚËÛÛ™šYÝ\™P]ØZ]
+˜[ÙJNÂˆBˆˆYˆ
+\œÙYOH[	‰ˆ\\œÙTÝYÙUÚÙ[‹’\ÐØ[˜Ù[][Û”™\]Y\ÝY
+BˆÂˆ\TÚYÝÔØÛÜJ\œÙY›Ø‹”ÚYÝÔØÛÜT›ÛÝ
+NÂˆYˆ
+›Ø‹”ÚYÝÔØÛÜT›ÛÝOH[
+BˆÂˆØÚÈ
+Ü\œÙY[\ÐØXÚJBˆÂˆÜ\œÙY[\ÐØXÚK”™[[Ý™J\œÙPØXÚRÙ^JNÂˆBˆBˆ˜\ˆÚY]H™]È™]ÐÜÜËÜÜÔÝ[\ÚY]
+
+NÂˆÚY]”[\ËY˜[™ÙJ\œÙY
+NÂˆØÚÈ
+Ý[TÙ]
+HˆÈˆYˆ
+\\œÙTÝYÙTÙX[Y	‰ˆ\\œÙTÝYÙUÚÙ[‹’\ÐØ[˜Ù[][Û”™\]Y\ÝY
+BˆÂˆÝ[TÙ]YÚY]
+ÚY]X\Ó™]ÐÜÜÓÜšYÚ[Š›Ø‹“ÜšYÚ[ŠK›Ø‹”ÛÝ\˜ÙSÜ™\ŠNÂˆBˆBˆBˆBˆØ]Ú
+Ü\˜][ÛØ[˜Ù[Y^Ù\[ÛŠBˆÂˆËÈ\œÙHÝYÙHØ[˜Ù[YYH[Y[Ý]YÙ]ˆÚ[[žH\ÚYÛ‹‚ˆBˆØ]Ú
+^Ù\[Ûˆ^
+BˆÂˆÙÊÙË–ÐÜÜÓØY\—H\œÙH\œ›ÜŽˆˆ
+È^“Y\ÜØYÙJNÂˆB‚ˆJJNÂˆB‚ˆ›ÛÛ\œÙTÝYÙU[YYÝ]H˜[ÙNÂˆYˆ
+\œÙU\ÚÜËÛÝ[ˆ
+HˆÂˆ˜\ˆ[\œÙU\ÚÈH\ÚË•Ú[[
+\œÙU\ÚÜÊNÂˆ[\œÙU[Y[Ý]\ÈHÍLÂˆYˆ
+XY[™HOH[
+BˆÂˆ\œÙU[Y[Ý]\ÈHX]“X^
+LX]“Z[ŠL
+[
+YXY[™K”™[XZ[š[™Ë•Ý[Z[\ÙXÛÛ™ÊJNÂˆB‚ˆ˜\ˆ\œÙU[Y[Ý]\ÚÈH\ÚË‘[^J\œÙU[Y[Ý]\ÊNÂˆ˜\ˆš[š\ÚYH]ØZ]\ÚË•Ú[[žJ[\œÙU\ÚË\œÙU[Y[Ý]\ÚÊNÂˆˆYˆ
+š[š\ÚYOH\œÙU[Y[Ý]\ÚÊBˆÂˆ\œÙTÝYÙU[YYÝ]HYNÂˆØÚÈ
+Ý[TÙ]
+BˆÂˆ\œÙTÝYÙTÙX[YHYNÂˆBˆ\œÙTÝYÙPÝËØ[˜Ù[
+
+NÂˆ[™Ú[™SÙÐÛÛ\]•Ø\›Š	–ÔT‘‹PÔÔ×HÔÔÈ\œÚ[™ÈYÙ]]Y\ˆÜ\œÙU[Y[Ý]\ß[\ËˆÙX[[™È[[]]X›H\X[Ý[TÙ]Û˜\ÚÝ
+ÜÝ[TÙ]ÛÝ[HÚY]ÊKˆ‹ÙÐØ]YÛÜžK”™[™\š[™ÊNÂˆBˆ[ÙBˆÂˆ]ØZ][\œÙU\ÚÎÈËÈ›ÜYØ]H\œ›ÜœÂˆBˆB‚ˆÝX›H[T\œÙS\ÈHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][\ÙY[YJ[T\œÙTÝ\Y
+K•Ý[Z[\ÙXÛÛ™ÎÂˆ[™Ú[™SÙÐÛÛ\]“ÙÊÙÐØ]YÛÜžK”™[™\š[™ËÙÓ]™[’[™›Ë	–ÔT‘‹PÔÔ×H[H\œÚ[™ÈÛÛ\]Nˆ×ØÜÜÔÝÜØ]Ú‘[\ÙYZ[\ÙXÛÛ™ß[\È
+ÚY]ÎˆÜÝ[TÙ]ÛÝ[JHŠNÂ‚ˆËÈ^˜XÝ[[\È\™[H›Üˆ˜\šXX›H™\ÛÛ][Ûˆ
+ÚXÚ\ÈÜ™\‹Z[™\[™[›Üˆ[š]X[\ÜÊBˆ˜\ˆ[[\Ñ›Ü•˜\œÈH™]È\Ý™]ÐÜÜËÜÜÔ[OŠ
+NÂˆ›Ü™XXÚ
+˜\ˆÈ[ˆÝ[TÙ]”ÚY]ÊH[[\Ñ›Ü•˜\œËY˜[™ÙJË”[\ÊNÂ‚ˆËÈJH™\ÛÛ™HÔÔÈ˜\šXX›\Âˆ[™Ú[™SÙÐÛÛ\]‘XYÊ–ÔT‘‹PÔÔ×HÝ\[™È˜\šXX›H™\ÛÛ][Û‹‹‹ˆ‹ÙÐØ]YÛÜžK”™[™\š[™ÊNÂˆÛ™È˜\šXX›T™\ÛÛ][Û”Ý\YHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][Y\Ý[\
+
+NÂˆ™\ÛÛ™U˜\šXX›\Ê[[\Ñ›Ü•˜\œÊNÂˆÝX›H˜\šXX›T™\ÛÛ][Û“\ÈHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][\ÙY[YJ˜\šXX›T™\ÛÛ][Û”Ý\Y
+K•Ý[Z[\ÙXÛÛ™ÎÂˆ[™Ú[™SÙÐÛÛ\]“ÙÊÙÐØ]YÛÜžK”™[™\š[™ËÙÓ]™[‘XYË	–ÔT‘‹PÔÔ×H˜\šXX›H™\ÛÛ][ÛŽˆ×ØÜÜÔÝÜØ]Ú‘[\ÙYZ[\ÙXÛÛ™ß[\ÈŠNÂˆYˆ
+\\œÙTÝYÙU[YYÝ]
+BˆÂˆØXÚTÝ[TÙ]
+ˆ›ÛÝˆÝ[\ÚY]š[™Ù\œš[ˆ˜\ÙU\šKˆšY]ÜÜÚYˆšY]ÜÜZYÚˆÝ[TÙ]ˆÜÜÐ›ØœËÛÝ[ˆ^[™YÛÝ[ˆ[[\Ñ›Ü•˜\œËÛÝ[
+NÂˆBˆËÈÝYÙHÎˆØ\ØØYBˆÛ™ÈØ\ØØYTÝ\YHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][Y\Ý[\
+
+NÂˆ˜\ˆÛÛ\]YH™[œ›ÝÜÙ\‹‘™[‘[™Ú[™K”™[™\š[™Ë”\˜[[Ø\ØØYTØÚY[\‹Ø\ØØYJˆØ\ØØYT›ÛÝÏÈ›ÛÝˆÝ[TÙ]ˆÙËˆXY[™KˆÝ]˜\ˆ[›[™TÝ[PØXÚTÝ]\ÝXÜÊNÂˆ™[œ›ÝÜÙ\‹‘™[‘[™Ú[™K”™[™\š[™Ë”\™›Ü›X[˜ÙK”\™›Ü›X[˜ÙQXYÛ›ÜÝXÜÔÝÜ™K”™XÛÜ™[›[™TÝ[PØXÚJ[›[™TÝ[PØXÚTÝ]\ÝXÜÊNÂˆÝX›HØ\ØØYS\ÈHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][\ÙY[YJØ\ØØYTÝ\Y
+K•Ý[Z[\ÙXÛÛ™ÎÂˆ[™Ú[™SÙÐÛÛ\]“ÙÊÙÐØ]YÛÜžK”™[™\š[™ËÙÓ]™[’[™›Ë	–ÔT‘‹PÔÔ×HØ\ØØYHX]Ú[™ÈÛÛ\]Nˆ×ØÜÜÔÝÜØ]Ú‘[\ÙYZ[\ÙXÛÛ™ß[\È
+[[Y[ÎˆØÛÛ\]YÛÝ[JHŠNÂˆˆ™]\›ˆ™]ÈÜÜÓØY™\Ý[ˆÂˆÛÛ\]YHÛÛ\]YˆÛÝ\˜Ù\ÈHÜÜÐ›ØœËˆ[Z[™ÈH™]ÈÜÜÓØY[Z[™ÂˆÂˆ]Y]YUØZ]\ÈH]Y]YUØZ]\Ëˆ\ØÛÝ™\žP[™™]Ú\ÈH\ØÛÝ™\žP[™™]Ú\Ëˆ[\Ü^[œÚ[Û“\ÈH[\Ü^[œÚ[Û“\Ëˆ[T\œÙS\ÈH[T\œÙS\Ëˆ˜\šXX›T™\ÛÛ][Û“\ÈH˜\šXX›T™\ÛÛ][Û“\ËˆØ\ØØYS\ÈHØ\ØØYS\ËˆÝ[\ÈHÞ\Ý[K‘XYÛ›ÜÝXÜË”ÝÜØ]Ú‘Ù][\ÙY[YJÛÛ\]TÝ\Y
+K•Ý[Z[\ÙXÛÛ™ËˆÛÝ\˜ÙPÛÝ[HÜÜÐ›ØœËÛÝ[ˆ^[™YÛÝ\˜ÙPÛÝ[H^[™YÛÝ[ˆ[PÛÝ[H[[\Ñ›Ü•˜\œËÛÝ[ˆÛÛ\]YÝ[PÛÝ[HÛÛ\]YÛÝ[ˆ[›[™TÝ[PØXÚR]ÈH[›[™TÝ[PØXÚTÝ]\ÝXÜË’]Ëˆ[›[™TÝ[PØXÚSZ\ÜÙ\ÈH[›[™TÝ[PØXÚTÝ]\ÝXÜË“Z\ÜÙ\Ëˆ[›[™TÝ[PØXÚQ]šXÝ[ÛœÈH[›[™TÝ[PØXÚTÝ]\ÝXÜË‘]šXÝ[ÛœËˆ[›[™TÝ[PØXÚQ[šY\ÈH[›[™TÝ[PØXÚTÝ]\ÝXÜË‘[šY\ÂˆBˆNÂˆBˆš[˜[BˆÂˆÙÛØ˜[ÛÛ\]QØ]K”™[X\ÙJ
+NÂˆBˆB‚ˆš]˜]HÝ]XÈ›ÛÛžQÙ]ØXÚYÝ[TÙ]
+ˆ[[Y[›ÛÝˆÝš[™Èš[™Ù\œš[ˆ\šH˜\ÙU\šKˆÝX›OÈšY]ÜÜÚYˆÝX›OÈšY]ÜÜZYÚˆÝ]ØÝ[Y[Ý[TÙ]ØXÚQ[žH[žJBˆÂˆYˆ
+ÙØÝ[Y[Ý[TÙ]Ë•žQÙ]˜[YJ›ÛÝÝ][žJH	‰‚ˆÝš[™Ë‘\]X[Ê[žK‘š[™Ù\œš[š[™Ù\œš[Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+H	‰‚ˆÝš[™Ë‘\]X[Ê[žK˜\ÙU\šK˜\ÙU\šOËXœÛÛ]U\šHÏÈÝš[™Ë‘[\KÝš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+H	‰‚ˆ[žK•šY]ÜÜÚYOHšY]ÜÜÚY	‰‚ˆ[žK•šY]ÜÜZYÚOHšY]ÜÜZYÚ
+BˆÂˆ™]\›ˆYNÂˆB‚ˆ[žHH[Âˆ™]\›ˆ˜[ÙNÂˆB‚ˆš]˜]HÝ]XÈ›ÚYØXÚTÝ[TÙ]
+ˆ[[Y[›ÛÝˆÝš[™Èš[™Ù\œš[ˆ\šH˜\ÙU\šKˆÝX›OÈšY]ÜÜÚYˆÝX›OÈšY]ÜÜZYÚˆÝ[TÙ]Ý[TÙ]ˆ[ÛÝ\˜ÙPÛÝ[ˆ[^[™YÛÝ\˜ÙPÛÝ[ˆ[[PÛÝ[
+BˆÂˆ˜\ˆ[žHH™]ÈØÝ[Y[Ý[TÙ]ØXÚQ[žBˆÂˆš[™Ù\œš[Hš[™Ù\œš[ˆ˜\ÙU\šHH˜\ÙU\šOËXœÛÛ]U\šHÏÈÝš[™Ë‘[\KˆšY]ÜÜÚYHšY]ÜÜÚYˆšY]ÜÜZYÚHšY]ÜÜZYÚˆÝ[TÙ]HÝ[TÙ]ˆÛÝ\˜ÙPÛÝ[HÛÝ\˜ÙPÛÝ[ˆ^[™YÛÝ\˜ÙPÛÝ[H^[™YÛÝ\˜ÙPÛÝ[ˆ[PÛÝ[H[PÛÝ[ˆNÂ‚ˆØÚÈ
+ÙØÝ[Y[Ý[TÙ]ÓØÚÊBˆÂˆÙØÝ[Y[Ý[TÙ]Ë”™[[Ý™J›ÛÝ
+NÂˆÙØÝ[Y[Ý[TÙ]ËY
+›ÛÝ[žJNÂˆBˆB‚ˆš]˜]HÝ]XÈ›ÚYžTX›\Ú›ÙÜ™\ÜÚ]™TÝ[\Êˆ[[Y[Ý[\ÚY]›ÛÝˆ[[Y[Ø\ØØYT›ÛÝˆ\ÝÜÜÔÛÝ\˜ÙOˆÜÜÐ›ØœËˆÝX›OÈšY]ÜÜÚYˆÝX›OÈšY]ÜÜZYÚˆXÝ[ÛÝš[™ÏˆÙËˆ™[œ›ÝÜÙ\‹ÛÜ™K‘XY[™\Ë‘œ˜[YQXY[™HXY[™KˆXÝ[ÛXÝ[Û˜\žO›ÙKÜÜÐÛÛ\]Yˆ›ÙÜ™\ÜÚ]™TÝ[\Ô™XYJBˆÂˆžBˆÂˆ\ÝÜÜÔÛÝ\˜ÙOˆØØ[ÛÝ\˜Ù\ÎÂˆØÚÈ
+ÜÜÐ›ØœÊBˆÂˆØØ[ÛÝ\˜Ù\ÈHÜÜÐ›ØœÂˆ•Ú\™JÝ]XÈÛÝ\˜ÙHO‚ˆÛÝ\˜ÙHOH[	‰‚ˆÛÝ\˜ÙK“ÜšYÚ[ˆOHÜÜÓÜšYÚ[‹‘^\›˜[	‰‚ˆÛÝ\˜ÙK“ÜšYÚ[ˆOHÜÜÓÜšYÚ[‹’[\ÜY
+Bˆ“Ü™\žJÝ]XÈÛÝ\˜ÙHOˆÛÝ\˜ÙK”Ù\]Y[˜ÙSÜ™\ŠBˆ•Ó\Ý
+
+NÂˆB‚ˆYˆ
+ØØ[ÛÝ\˜Ù\ËÛÝ[OH
+BˆÂˆ™]\›ŽÂˆB‚ˆ˜\ˆÝ[TÙ]H™]ÈÝ[TÙ]
+
+NÂˆ›Ü™XXÚ
+˜\ˆÛÝ\˜ÙH[ˆØØ[ÛÝ\˜Ù\ÊBˆÂˆ˜\ˆ›ØÙ\ÜÙYÜÜÈH^˜XÝ›Û˜XÙJˆÛÝ\˜ÙKÜÜÕ^ˆÛÝ\˜ÙK˜\ÙU\šKˆÙËˆÝ[\ÚY]›ÛÝË“ÝÛ™\‘ØÝ[Y[
+NÂˆ˜\ˆ\œÙYH\œÙT[\Êˆ›ØÙ\ÜÙYÜÜËˆÛÝ\˜ÙK”ÛÝ\˜ÙSÜ™\‹ˆÛÝ\˜ÙK˜\ÙU\šKˆšY]ÜÜÚYˆšY]ÜÜZYÚˆÙËˆX\Ó™]ÐÜÜÓÜšYÚ[ŠÛÝ\˜ÙK“ÜšYÚ[ŠJNÂˆ\TÚYÝÔØÛÜJ\œÙYÛÝ\˜ÙK”ÚYÝÔØÛÜT›ÛÝ
+NÂˆ˜\ˆÚY]H™]È™]ÐÜÜËÜÜÔÝ[\ÚY]
+
+NÂˆÚY]”[\ËY˜[™ÙJ\œÙY
+NÂˆÝ[TÙ]YÚY]
+ÚY]X\Ó™]ÐÜÜÓÜšYÚ[ŠÛÝ\˜ÙK“ÜšYÚ[ŠKÛÝ\˜ÙK”ÛÝ\˜ÙSÜ™\ŠNÂˆB‚ˆ˜\ˆ[[\ÈHÝ[TÙ]”ÚY]Ë”Ù[XÝX[žJÝ]XÈÚY]OˆÚY]”[\ÊK•Ó\Ý
+
+NÂˆ™\ÛÛ™U˜\šXX›\Ê[[\ÊNÂˆ˜\ˆÛÛ\]YH™[œ›ÝÜÙ\‹‘™[‘[™Ú[™K”™[™\š[™Ë”\˜[[Ø\ØØYTØÚY[\‹Ø\ØØYJˆØ\ØØYT›ÛÝˆÝ[TÙ]ˆÙËˆXY[™KˆÝ]˜\ˆ[›[™TÝ[PØXÚTÝ]\ÝXÜÊNÂˆ™[œ›ÝÜÙ\‹‘™[‘[™Ú[™K”™[™\š[™Ë”\™›Ü›X[˜ÙK”\™›Ü›X[˜ÙQXYÛ›ÜÝXÜÔÝÜ™K”™XÛÜ™[›[™TÝ[PØXÚJˆ[›[™TÝ[PØXÚTÝ]\ÝXÜÊNÂˆ›ÙÜ™\ÜÚ]™TÝ[\Ô™XYJÛÛ\]Y
+NÂˆ[™Ú[™SÙÐÛÛ\]“ÙÊˆÙÐØ]YÛÜžK”™[™\š[™ËˆÙÓ]™[’[™›Ëˆ	–ÔT‘‹PÔÔ×HX›\ÚY›ÙÜ™\ÜÚ]™HØØ[Ý[TÙ]
+ÛØØ[ÛÝ\˜Ù\ËÛÝ[HÛÝ\˜Ù\ËØÛÛ\]YÛÝ[H[[Y[ÊHŠNÂˆBˆØ]Ú
+^Ù\[Ûˆ^
+BˆÂˆÙÊÙË–ÐÜÜÓØY\—H›ÙÜ™\ÜÚ]™HØØ[Ø\ØØYH˜Z[Yˆˆ
+È^“Y\ÜØYÙJNÂˆBˆB‚ˆš]˜]HÝ]XÈQ[[Y\˜X›O[[Y[ˆ[[Y\˜]Q[[Y[Ò[˜ÛY[™ÔÚYÝÕ™Y\Ê[[Y[›ÛÝ
+BˆÂˆYˆ
+›ÛÝOH[
+BˆÂˆZY[œ™XZÎÂˆB‚ˆ˜\ˆÝXÚÈH™]ÈÝXÚÏ[[Y[Š
+NÂˆÝXÚË”\Ú
+›ÛÝ
+NÂˆÚ[H
+ÝXÚËÛÝ[ˆ
+BˆÂˆ˜\ˆ[[Y[HÝXÚË”Ü
+
+NÂˆZY[™]\›ˆ[[Y[Â‚ˆ˜\ˆÚ[™[ˆH[[Y[Ú[›Ù\ÎÂˆ›Üˆ
+[HHÚ[™[‹“[™ÝHNÈHHÈKKJBˆÂˆYˆ
+Ú[™[–ÚWH\È[[Y[Ú[[[Y[
+BˆÂˆÝXÚË”\Ú
+Ú[[[Y[
+NÂˆBˆB‚ˆ˜\ˆÚYÝÐÚ[™[ˆH[[Y[”ÚYÝÔ›ÛÝËÚ[›Ù\ÎÂˆYˆ
+ÚYÝÐÚ[™[ˆOH[
+BˆÂˆÛÛ[YNÂˆB‚ˆ›Üˆ
+[HHÚYÝÐÚ[™[‹“[™ÝHNÈHHÈKKJBˆÂˆYˆ
+ÚYÝÐÚ[™[–ÚWH\È[[Y[Ú[[[Y[
+BˆÂˆÝXÚË”\Ú
+Ú[[[Y[
+NÂˆBˆBˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\TÚYÝÔØÛÜJQ[[Y\˜X›O™]ÐÜÜËÜÜÔ[Oˆ[\ËÚYÝÔ›ÛÝÚYÝÔØÛÜT›ÛÝ
+BˆÂˆYˆ
+[\ÈOH[
+BˆÂˆ™]\›ŽÂˆB‚ˆ›Ü™XXÚ
+˜\ˆ[H[ˆ[\ÊBˆÂˆ[K”ÚYÝÔØÛÜT›ÛÝHÚYÝÔØÛÜT›ÛÝÂˆÝÚ]Ú
+[JBˆÂˆØ\ÙH™]ÐÜÜËÜÜÔÝ[T[HÝ[T[N‚ˆ\TÚYÝÔØÛÜJÝ[T[K“™\ÝY[\ËÚYÝÔØÛÜT›ÛÝ
+NÂˆœ™XZÎÂˆØ\ÙH™]ÐÜÜËÜÜÓYYXT[HYYXT[N‚ˆ\TÚYÝÔØÛÜJYYXT[K”[\ËÚYÝÔØÛÜT›ÛÝ
+NÂˆœ™XZÎÂˆØ\ÙH™]ÐÜÜËÜÜÓ^Y\”[H^Y\”[N‚ˆ\TÚYÝÔØÛÜJ^Y\”[K”[\ËÚYÝÔØÛÜT›ÛÝ
+NÂˆœ™XZÎÂˆØ\ÙH™]ÐÜÜËÜÜÔØÛÜT[HØÛÜT[N‚ˆ\TÚYÝÔØÛÜJØÛÜT[K”[\ËÚYÝÔØÛÜT›ÛÝ
+NÂˆœ™XZÎÂˆBˆBˆB‚ˆš]˜]HÝ]XÈÝš[™ÈZ[Ý[\ÚY]š[™Ù\œš[
+[[Y[›ÛÝ
+BˆÂˆ˜\ˆZ[\ˆH™]ÈÝš[™ÐZ[\Š
+NÂˆ›Ü™XXÚ
+˜\ˆ[[Y[[ˆ[[Y\˜]Q[[Y[Ò[˜ÛY[™ÔÚYÝÕ™Y\Ê›ÛÝ
+JBˆÂˆ›ÛÛ\ÔÝ[HHÝš[™Ë‘\]X[Ê[[Y[•YÓ˜[YKœÝ[H‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJNÂˆ›ÛÛ\Ó[šÈHÝš[™Ë‘\]X[Ê[[Y[•YÓ˜[YK›[šÈ‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJNÂˆYˆ
+Z\ÔÝ[H	‰ˆZ\Ó[šÊBˆÂˆÛÛ[YNÂˆB‚ˆZ[\‹\[™
+\ÔÝ[HÈ	ÔÉÈˆ	Ó	ÊK\[™
+	×	ÊNÂˆ\[™Ý[\ÚY]]šX]JZ[\‹[[Y[œ™[ŠNÂˆ\[™Ý[\ÚY]]šX]JZ[\‹[[Y[š™YˆŠNÂˆ\[™Ý[\ÚY]]šX]JZ[\‹[[Y[›YYXHŠNÂˆ\[™Ý[\ÚY]]šX]JZ[\‹[[Y[\HŠNÂˆ\[™Ý[\ÚY]]šX]JZ[\‹[[Y[™\ØX›YŠNÂˆ\[™Ý[\ÚY]]šX]JZ[\‹[[Y[š[YÜš]HŠNÂˆ\[™Ý[\ÚY]]šX]JZ[\‹[[Y[˜Ü›ÜÜÛÜšYÚ[ˆŠNÂˆYˆ
+\ÔÝ[JBˆÂˆZ[\‹\[™
+[[Y[•^ÛÛ[ÏÈÝš[™Ë‘[\JK\[™
+	×	ÊNÂˆBˆB‚ˆ™]\›ˆZ[\‹•ÔÝš[™Ê
+NÂˆB‚ˆš]˜]HÝ]XÈ›ÚY\[™Ý[\ÚY]]šX]JÝš[™ÐZ[\ˆZ[\‹[[Y[[[Y[Ýš[™È˜[YJBˆÂˆZ[\‹\[™
+[[Y[‘Ù]]šX]J˜[YJHÏÈÝš[™Ë‘[\JK\[™
+	×	ÊNÂˆB‚ˆš]˜]HÝ]XÈÝš[™ÈØY[X™YYXTÝ[\ÚY]
+
+BˆÂˆÛÛœÝÝš[™È™\ÛÝ\˜ÙS˜[YHH‘™[œ›ÝÜÙ\‹‘™[‘[™Ú[™K\ÜÙ]ËXK˜ÜÜÈŽÂˆ\Ú[™È˜\ˆÝ™X[HH\[ÙŠÜÜÓØY\ŠK\ÜÙ[X›K‘Ù]X[šY™\Ý™\ÛÝ\˜ÙTÝ™X[J™\ÛÝ\˜ÙS˜[YJNÂˆYˆ
+Ý™X[HOH[
+BˆÂˆ›ÝÈ™]È[˜[YÜ\˜][Û‘^Ù\[ÛŠ	‘[X™YYPHÝ[\ÚY]	ÞÜ™\ÛÝ\˜ÙS˜[Y_IÈØ\È›Ý›Ý[™ˆŠNÂˆB‚ˆ\Ú[™È˜\ˆ™XY\ˆH™]ÈÝ™X[T™XY\ŠÝ™X[K[˜ÛÙ[™Ë•UŽYJNÂˆ™]\›ˆ™XY\‹”™XYÑ[™
+
+NÂˆB‚ˆËËÈÝ[[X\žO‚ˆËËÈÝ™\›ØYÚ]Ý]šY]ÜÜÛÙÈ\˜[Y]\œË‚ˆËËÈÜÝ[[X\žO‚ˆX›XÈÝ]XÈ\ÚÏXÝ[Û˜\žO›ÙKÜÜÐÛÛ\]YˆÛÛ\]P\Þ[˜Êˆ[[Y[›ÛÝˆ\šH˜\ÙU\šKˆ[˜Ï\šK\ÚÏÝš[™Ïˆ™]Ú^\›˜[ÜÜÐ\Þ[˜ÊBˆÂˆ™]\›ˆÛÛ\]P\Þ[˜Ê›ÛÝ˜\ÙU\šK™]Ú^\›˜[ÜÜÐ\Þ[˜Ë[[[
+NÂˆB‚ˆËÈOOOOOOOOOOOOOOOOOOOOOOOOOOBˆËÈÔÔÈÝ\ÝÛH›Ü\Y\È
+˜\šXX›\ÊBˆËÈOOOOOOOOOOOOOOOOOOOOOOOOOOBˆˆËËÈÝ[[X\žO‚ˆËËÈ^˜XÝÔÔÈÝ\ÝÛH›Ü\Y\È
+K[˜[YNˆ˜[YJHœ›ÛHœ›ÛÝ[™[[\ÂˆËËÈ[™ÝÜ™H[H[ˆHÛØ˜[ØÝ\ÝÛT›Ü\Y\ÈXÝ[Û˜\žH›Üˆ˜\Š
+H™\ÛÛ][Û‹‚ˆËËÈÜÝ[[X\žO‚ˆš]˜]HÝ]XÈ›ÚY™\ÛÛ™U˜\šXX›\Ê\Ý™]ÐÜÜËÜÜÔ[Oˆ[\ÊBˆÂˆYˆ
+[\ÈOH[
+H™]\›ŽÂˆˆØÚÈ
+ØÝ\ÝÛT›Ü\Y\ÊBˆÂˆØÝ\ÝÛT›Ü\Y\ËÛX\Š
+NÂˆÜ›ÛÝ›ÛÚ^™HHM‹ŒÂˆ[ÛÝ[HÂˆˆ›Ü™XXÚ
+˜\ˆ[H[ˆ[\ÊBˆÂˆYˆ
+[H\È™]ÐÜÜËÜÜÔ›Ü\T[H›Ü\T[JBˆÂˆÝš[™È˜[YHH›Ü\T[K“˜[YOË•š[J
+NÂˆYˆ
+\Ýš[™Ë’\Ó[Ü‘[\J˜[YJH	‰ˆ˜[YK”Ý\ÕÚ]
+‹KH‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+JBˆÂˆ˜\ˆ[š]X[˜[YHH›Ü\T[K‘XÛ\˜][ÛœÂˆ“\ÝÜ‘Y˜][
+OˆÝš[™Ë‘\]X[Ê”›Ü\Kš[š]X[]˜[YH‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆË•˜[YBˆË•š[J
+NÂˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ[š]X[˜[YJJBˆÂˆØÝ\ÝÛT›Ü\Y\ÖÛ˜[YWHH[š]X[˜[YNÂˆBˆB‚ˆÛÛ[YNÂˆB‚ˆYˆ
+J[H\È™]ÐÜÜËÜÜÔÝ[T[HÝ[T[JJHÛÛ[YNÂ‚ˆ›ÛÛ\Ô›ÛÝ[HH˜[ÙNÂˆ›Ü™XXÚ
+˜\ˆÚZ[ˆ[ˆÝ[T[K”Ù[XÝÜ‹ÚZ[œÊBˆÂˆYˆ
+ÚZ[‹”ÙYÛY[ËÛÝ[ˆ
+BˆÂˆ˜\ˆ\ÝÙYÈHÚZ[‹”ÙYÛY[ÖØÚZ[‹”ÙYÛY[ËÛÝ[HWNÂˆÝš[™ÈYÈH\ÝÙYË•YÓ˜[YOË•ÓÝÙ\’[˜\šX[
+
+HÏÈˆŽÂˆYˆ
+YÈOHŽœ›ÛÝˆYÈOHš[ˆYÈOH˜›ÙHˆYÈOHŠˆˆ\ÝÙYË”Ù]YÐÛ\ÜÙ\ÏË[žJÈOˆË“˜[YHOHœ›ÛÝˆË“˜[YHOHŽœ›ÛÝŠHOHYJBˆÂˆ\Ô›ÛÝ[HHYNÂˆœ™XZÎÂˆBˆËÈÚXÚÈÙ]YËXÛ\ÜÙ\ÈYˆYÈ\È[\KÚ[\YYˆYˆ
+Ýš[™Ë’\Ó[Ü‘[\JYÊH	‰ˆ\ÝÙYË”Ù]YÐÛ\ÜÙ\ÈOH[
+BˆÂˆ›Ü™XXÚ
+˜\ˆÈ[ˆ\ÝÙYË”Ù]YÐÛ\ÜÙ\ÊBˆÂˆYˆ
+Ë“˜[YK•ÓÝÙ\’[˜\šX[
+
+KÛÛZ[œÊœ›ÛÝŠJBˆÂˆ\Ô›ÛÝ[HHYNÂˆœ™XZÎÂˆBˆBˆBˆBˆBˆˆ›Ü™XXÚ
+˜\ˆXÛ[ˆÝ[T[K‘XÛ\˜][ÛœÊBˆÂˆÝš[™È›Ü˜[YHHXÛ”›Ü\NÂˆYˆ
+Ýš[™Ë’\Ó[Ü‘[\J›Ü˜[YJJHÛÛ[YNÂ‚ˆYˆ
+›Ü˜[YK”Ý\ÕÚ]
+‹KHŠJBˆÂˆÝš[™È˜[YHHXÛ•˜[YOË•š[J
+HÏÈˆŽÂˆYˆ
+\Ýš[™Ë’\Ó[Ü‘[\J˜[YJJBˆÂˆYˆ
+\Ô›ÛÝ[HWØÝ\ÝÛT›Ü\Y\ËÛÛZ[œÒÙ^J›Ü˜[YJJBˆÂˆØÝ\ÝÛT›Ü\Y\ÖÜ›Ü˜[YWHH˜[YNÂˆÛÝ[
+ÊÎÂˆBˆBˆBˆˆYˆ
+\Ô›ÛÝ[H	‰ˆ›Ü˜[YK‘\]X[Ê™›Û\Ú^™H‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆÂˆ˜\ˆ˜]Ñ›ÛÚ^™HHXÛ•˜[YOË•š[J
+NÂˆYˆ
+Ýš[™Ë’\Ó[Ü‘[\J˜]Ñ›ÛÚ^™JJBˆÂˆÛÛ[YNÂˆB‚ˆËÈ™\ÛÛ™H›ÛÝ[]™[˜\Š
+H™Y™\™[˜Ù\È™Y›Ü™HÛÛ™\[™ÈÈ‚ˆËÈÚ]Ý]\ÈÝX\™[œ™\ÛÛ™Y˜\Š
+HØ[ˆ]˜[X]HÈ[™Ú\ÛÛˆ™[H˜\Ú\Ë‚ˆ˜\ˆ›ÛÚ^™Q›Ü”\œÙHH˜]Ñ›ÛÚ^™NÂˆYˆ
+›ÛÚ^™Q›Ü”\œÙK’[™^ÙŠ˜\Š‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJHH
+BˆÂˆ˜\ˆ™\ÛÛ™Y›ÛÝ›ÛÚ^™HH™\ÛÛ™PÝ\ÝÛT›Ü\T™Y™\™[˜Ù\Êˆ›ÛÚ^™Q›Ü”\œÙKˆ™]ÈÜÜÐÛÛ\]Y
+
+KˆØÝ\ÝÛT›Ü\Y\Ëˆ™]È\ÚÙ]Ýš[™ÏŠÝš[™ÐÛÛ\\™\‹“Ü™[˜[
+JNÂ‚ˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ™\ÛÛ™Y›ÛÝ›ÛÚ^™JJBˆÂˆ›ÛÚ^™Q›Ü”\œÙHH™\ÛÛ™Y›ÛÝ›ÛÚ^™NÂˆBˆB‚ˆÝX›HœÎÂˆYˆ
+žT
+›ÛÚ^™Q›Ü”\œÙKÝ]œË\˜Ù[˜\ÙNˆM‹Œ
+H	‰‚ˆÝX›K’\Ñš[š]JœÊH	‰‚ˆœÈˆ
+BˆÂˆÜ›ÛÝ›ÛÚ^™HHœÎÂˆXYÓÙÊ™XY×ÛÙË‹	–ÐÔÔËUT—HØ\\™Y›ÛÝ›ÛÚ^™Nˆ×Ü›ÛÝ›ÛÚ^™_\œ›ÛH	ÞÜ˜]Ñ›ÛÚ^™_I×—ˆŠNÂˆBˆ[ÙBˆÂˆXYÓÙÊˆ™XY×ÛÙË‹ˆ	–ÐÔÔËUT—HYÛ›Ü™Y›ÛÝ›Û\Ú^™H	ÞÜ˜]Ñ›ÛÚ^™_IÈ
+™\ÛÛ™YIÞÙ›ÛÚ^™Q›Ü”\œÙ_IÊHÈ™\Ù\™H™[H˜\Ú\Ï^×Ü›ÛÝ›ÛÚ^™_\—ˆŠNÂˆBˆBˆBˆBˆˆXYÓÙÊ™XY×ÛÙË‹	–ÐÔÔËUT—Hš[˜[›ÛÝ›ÛÚ^™Nˆ×Ü›ÛÝ›ÛÚ^™_\—ˆŠNÂˆXYÓÙÊ™XY×ÛÙË‹	–ÐÔÔËUT—H^˜XÝYØÛÝ[HÛØ˜[˜\šXX›\Ë——ˆŠNÂˆBˆB‚ˆËÈOOOOOOOOOOOOOOOOOOOOOOOOOOBˆËÈ[Ù[	ˆ[\œÂˆËÈOOOOOOOOOOOOOOOOOOOOOOOOOOB‚ˆX›XÈ[[HÜÜÓÜšYÚ[‚ˆÂˆ[›[™K^\›˜[[\ÜYˆ\Ù\YÙ[ˆBˆˆËËÈÝ[[X\žO‚ˆËËÈX\ÈÜÜÓØY\‹ÜÜÓÜšYÚ[ˆÈ™]ÐÜÜËÜÜÓÜšYÚ[ˆÛÜœ™XÝK‚ˆËËÈ[›[™K^\›˜[[\ÜY\™H[]]Ü‹[]™[Ý[\Ë‚ˆËËÈÛ›H\Ù\YÙ[X\ÈÈ\Ù\YÙ[‚ˆËËÈÜÝ[[X\žO‚ˆš]˜]HÝ]XÈ™]ÐÜÜËÜÜÓÜšYÚ[ˆX\Ó™]ÐÜÜÓÜšYÚ[ŠÜÜÓÜšYÚ[ˆÜšYÚ[ŠBˆÂˆ™]\›ˆÜšYÚ[ˆOHÜÜÓÜšYÚ[‹•\Ù\YÙ[ˆÈ™]ÐÜÜËÜÜÓÜšYÚ[‹•\Ù\YÙ[ˆˆ™]ÐÜÜËÜÜÓÜšYÚ[‹]]ÜŽÂˆB‚ˆËÈOOOOOOOOOOOOOOOOOOOOOOOOOOBˆËÈÔÔÈ[š[X][ÛœÈ
+Ù^Yœ˜[Y\ÊBˆËÈOOOOOOOOOOOOOOOOOOOOOOOOOOBˆˆËËÈÝ[[X\žO‚ˆËËÈÝÜ˜YÙH›Üˆ\œÙYÙ^Yœ˜[Y\È[š[X][ÛœÈ
+Ù^YYžH[š[X][Ûˆ˜[YJBˆËËÈÜÝ[[X\žO‚ˆš]˜]HÝ]XÈ™XYÛ›HXÝ[Û˜\žOÝš[™ËÜÜÒÙ^Yœ˜[Y\ÏˆÚÙ^Yœ˜[Y\ÈH™]ÈXÝ[Û˜\žOÝš[™ËÜÜÒÙ^Yœ˜[Y\ÏŠÝš[™ÐÛÛ\\™\‹“Ü™[˜[YÛ›Ü™PØ\ÙJNÂˆˆËËÈÝ[[X\žO‚ˆËËÈ™\™\Ù[ÈHÚ[™ÛHÙ^Yœ˜[Y\È[š[X][Û‚ˆËËÈÜÝ[[X\žO‚ˆX›XÈÛ\ÜÈÜÜÒÙ^Yœ˜[Y\ÂˆÂˆX›XÈÝš[™È˜[YHÈÙ]ÈÙ]ÈBˆX›XÈ\ÝÜÜÒÙ^Yœ˜[YOˆœ˜[Y\ÈÈÙ]ÈÙ]ÈHH™]È\ÝÜÜÒÙ^Yœ˜[YOŠ
+NÂˆBˆˆËËÈÝ[[X\žO‚ˆËËÈ™\™\Ù[ÈHÚ[™ÛHÙ^Yœ˜[YH[ˆ[ˆ[š[X][Ûˆ
+K™Ë‹Œ	H‹L	H‹ŒL	H‹™œ›ÛH‹ÈŠBˆËËÈÜÝ[[X\žO‚ˆX›XÈÛ\ÜÈÜÜÒÙ^Yœ˜[YBˆÂˆX›XÈÝX›H\˜Ù[YÙHÈÙ]ÈÙ]ÈHËÈLLˆX›XÈXÝ[Û˜\žOÝš[™ËÝš[™Ïˆ›Ü\Y\ÈÈÙ]ÈÙ]ÈHH™]ÈXÝ[Û˜\žOÝš[™ËÝš[™ÏŠÝš[™ÐÛÛ\\™\‹“Ü™[˜[YÛ›Ü™PØ\ÙJNÂˆBˆˆËËÈÝ[[X\žO‚ˆËËÈÙ]HÙ^Yœ˜[Y\È[š[X][ÛˆžH˜[YBˆËËÈÜÝ[[X\žO‚ˆX›XÈÝ]XÈÜÜÒÙ^Yœ˜[Y\ÈÙ]Ù^Yœ˜[Y\ÊÝš[™È˜[YJBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü‘[\J˜[YJJH™]\›ˆ[ÂˆÚÙ^Yœ˜[Y\Ë•žQÙ]˜[YJ˜[YKÝ]˜\ˆÙŠNÂˆ™]\›ˆÙŽÂˆBˆX›XÈÛ\ÜÈÜÜÔÛÝ\˜ÙBˆÂˆX›XÈÝš[™ÈÜÜÕ^ÂˆX›XÈÜÜÓÜšYÚ[ˆÜšYÚ[ŽÂˆX›XÈ[ÛÝ\˜ÙSÜ™\ŽÂˆËÈ]\›Z[š\ÝXÈ^[œÚ[ÛˆÜ™\ˆXÜ›ÜÜÈ]]Ü™YÚY]È[™[\Ü™XÝ\œÚ[Û‹‚ˆX›XÈÛ™ÈÙ\]Y[˜ÙSÜ™\ŽÂˆX›XÈ\šH˜\ÙU\šNÂˆX›XÈÚYÝÔ›ÛÝÚYÝÔØÛÜT›ÛÝÂˆB‚ˆX›XÈÛ\ÜÈÜÜÔ[BˆÂˆX›XÈ\ÝÙ[XÝÜÚZ[ˆÙ[XÝÜœÈH™]È\ÝÙ[XÝÜÚZ[Š
+NÈËÈÛÛ[XK\Ù\\˜]YÙ[XÝÜœÂˆX›XÈXÝ[Û˜\žOÝš[™ËÜÜÑXÛˆXÛ\˜][ÛœÈH™]ÈXÝ[Û˜\žOÝš[™ËÜÜÑXÛŠÝš[™ÐÛÛ\\™\‹“Ü™[˜[YÛ›Ü™PØ\ÙJNÂˆX›XÈ[ÛÝ\˜ÙSÜ™\ŽÈËÈÈœ™XZÈY\Âˆ=×®{¶‰žËkºwµç]\›ŽÂˆB‚ˆ˜\ˆÚÜ[™HØY™JXÝÙ]
+ÜÜË“X\™ÜšY][\]HŠJNÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÚÜ[™
+JBˆÂˆ™]\›ŽÂˆB‚ˆÚÜ[™H›Ü›X[^™UÚ]\ÜXÙJÚÜ[™
+NÂˆYˆ
+Ýš[™Ë‘\]X[ÊÚÜ[™››Û™H‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÜÜË‘ÜšY[\]PÛÛ[[œÊJBˆÜÜË‘ÜšY[\]PÛÛ[[œÈH››Û™HŽÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÜÜË‘ÜšY[\]T›ÝÜÊJBˆÜÜË‘ÜšY[\]T›ÝÜÈH››Û™HŽÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÜÜË‘ÜšY[\]P\™X\ÊJBˆÜÜË‘ÜšY[\]P\™X\ÈH››Û™HŽÂˆ™]\›ŽÂˆB‚ˆYˆ
+UžTÜ]Ü]™[ÜšY[\]JÚÜ[™Ý]˜\ˆ›ÝÜÔ\Ý]˜\ˆÛÛ[[œÔ\
+JBˆÂˆ™]\›ŽÂˆB‚ˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÜÜË‘ÜšY[\]PÛÛ[[œÊH	‰ˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÛÛ[[œÔ\
+JBˆÂˆÜÜË‘ÜšY[\]PÛÛ[[œÈH›Ü›X[^™UÚ]\ÜXÙJÛÛ[[œÔ\
+NÂˆB‚ˆ\œÙQÜšY[\]T›ÝÜÐ[™\™X\Ê›ÝÜÔ\Ý]˜\ˆ\œÙY›ÝÜËÝ]˜\ˆ\œÙY\™X\ÊNÂ‚ˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÜÜË‘ÜšY[\]T›ÝÜÊH	‰ˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ\œÙY›ÝÜÊJBˆÂˆÜÜË‘ÜšY[\]T›ÝÜÈH\œÙY›ÝÜÎÂˆB‚ˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÜÜË‘ÜšY[\]P\™X\ÊH	‰ˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ\œÙY\™X\ÊJBˆÂˆÜÜË‘ÜšY[\]P\™X\ÈH\œÙY\™X\ÎÂˆBˆB‚ˆš]˜]HÝ]XÈ›ÛÛžTÜ]Ü]™[ÜšY[\]JÝš[™È˜[YKÝ]Ýš[™È›ÝÜÔ\Ý]Ýš[™ÈÛÛ[[œÔ\
+BˆÂˆ›ÝÜÔ\H[ÂˆÛÛ[[œÔ\H[ÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YJJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆ[\™[‘\HÂˆÚ\ˆ][ÝHH	×	ÎÂˆ›Üˆ
+[HHÈH˜[YK“[™ÝÈJÊÊBˆÂˆÚ\ˆÚH˜[YVÚWNÂˆYˆ
+][ÝHOH	×	ÊBˆÂˆYˆ
+ÚOH][ÝJBˆÂˆ][ÝHH	×	ÎÂˆB‚ˆÛÛ[YNÂˆB‚ˆYˆ
+ÚOH	È‰ÈÚOH	×	ÉÊBˆÂˆ][ÝHHÚÂˆÛÛ[YNÂˆB‚ˆYˆ
+ÚOH	Ê	ÊBˆÂˆ\™[‘\
+ÊÎÂˆÛÛ[YNÂˆB‚ˆYˆ
+ÚOH	ÊIÈ	‰ˆ\™[‘\ˆ
+BˆÂˆ\™[‘\KNÂˆÛÛ[YNÂˆB‚ˆYˆ
+ÚOH	ËÉÈ	‰ˆ\™[‘\OH
+BˆÂˆ›ÝÜÔ\H˜[YK”ÝXœÝš[™ÊJK•š[J
+NÂˆÛÛ[[œÔ\H˜[YK”ÝXœÝš[™ÊH
+ÈJK•š[J
+NÂˆ™]\›ˆYNÂˆBˆB‚ˆ™]\›ˆ˜[ÙNÂˆB‚ˆš]˜]HÝ]XÈ›ÚY\œÙQÜšY[\]T›ÝÜÐ[™\™X\ÊÝš[™È›ÝÜÔ\Ý]Ýš[™È›ÝÜËÝ]Ýš[™È\™X\ÊBˆÂˆ›ÝÜÈH[Âˆ\™X\ÈH[ÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ›ÝÜÔ\
+JBˆÂˆ™]\›ŽÂˆB‚ˆ˜\ˆX]Ú\ÈH™YÙ^“X]Ú\Ê›ÝÜÔ\—–×——J—Ÿ	Ö×‰×J‰ÈŠNÂˆYˆ
+X]Ú\ËÛÝ[OH
+BˆÂˆ›ÝÜÈH›Ü›X[^™UÚ]\ÜXÙJ›ÝÜÔ\
+NÂˆ™]\›ŽÂˆB‚ˆ˜\ˆ›ÝÔÚ^™\ÈH™]È\ÝÝš[™ÏŠX]Ú\ËÛÝ[
+NÂˆ˜\ˆ\™XUÚÙ[œÈH™]È\ÝÝš[™ÏŠX]Ú\ËÛÝ[
+NÂ‚ˆ›Üˆ
+[HHÈHX]Ú\ËÛÝ[ÈJÊÊBˆÂˆ˜\ˆÝ\œ™[HX]Ú\ÖÚWNÂˆ\™XUÚÙ[œËY
+Ý\œ™[•˜[YK•š[J
+JNÂ‚ˆ[ÙYÛY[Ý\HÝ\œ™[’[™^
+ÈÝ\œ™[“[™ÝÂˆ[ÙYÛY[[™HH
+ÈHX]Ú\ËÛÝ[ÈX]Ú\ÖÚH
+ÈWK’[™^ˆ›ÝÜÔ\“[™ÝÂˆÝš[™È˜Z[[™ÔÙYÛY[H›ÝÜÔ\”ÝXœÝš[™ÊÙYÛY[Ý\ÙYÛY[[™HÙYÛY[Ý\
+K•š[J
+NÂˆ›ÝÔÚ^™\ËY
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜Z[[™ÔÙYÛY[
+BˆÈ˜]]È‚ˆˆ›Ü›X[^™UÚ]\ÜXÙJ˜Z[[™ÔÙYÛY[
+JNÂˆB‚ˆ\™X\ÈHÝš[™Ë’›Ú[Šˆ‹\™XUÚÙ[œÊNÂˆ›ÝÜÈHÝš[™Ë’›Ú[Šˆ‹›ÝÔÚ^™\ÊNÂˆB‚ˆš]˜]HÝ]XÈÝš[™È›Ü›X[^™UÚ]\ÜXÙJÝš[™È˜[YJBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YJJBˆÂˆ™]\›ˆ˜[YNÂˆB‚ˆ™]\›ˆ™YÙ^”™\XÙJ˜[YK•š[J
+K—ÊÈ‹ˆŠNÂˆB‚ˆËËÈÝ[[X\žO‚ˆËËÈ\œÙHÔÔÈ	Ù›Û	ÈÚÜ[™›Ü\K‚ˆËËÈ›Ü›X]ˆÙ›Û\Ý[WHÙ›Û]˜\šX[HÙ›Û]ÙZYÚH›Û\Ú^™VËÛ[™KZZYÚH›ÛY˜[Z[BˆËËÈ^[\Nˆ›Ûˆ][XÈMœÌKH\šX[Ø[œË\Ù\šY‚ˆËËÈÛ›H›Û\Ú^™H[™›ÛY˜[Z[H\™H™\]Z\™Y‚ˆËËÈÜÝ[[X\žO‚ˆš]˜]HÝ]XÈ›ÚY\œÙQ›ÛÚÜ[™
+Ýš[™È˜[YKÜÜÐÛÛ\]YÜÜËÝX›H[P˜\ÙK›ÛÛ™\Ù\™Q^XÚ]›ÛÚ^™HH˜[ÙJBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YJJH™]\›ŽÂˆˆËÈÚÚ\Þ\Ý[H›ÛÙ^]ÛÜ™Âˆ˜\ˆÝÙ\ˆH˜[YK•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆYˆ
+ÝÙ\ˆOH˜Ø\[ÛˆˆÝÙ\ˆOHšXÛÛˆˆÝÙ\ˆOH›Y[HˆˆÝÙ\ˆOH›Y\ÜØYÙKX›ÞˆÝÙ\ˆOHœÛX[XØ\[ÛˆˆÝÙ\ˆOHœÝ]\ËX˜\ˆˆˆÝÙ\ˆOHš[š\š]ˆÝÙ\ˆOHš[š]X[ˆÝÙ\ˆOH[œÙ]ŠBˆÂˆ™]\›ŽÂˆBˆˆžBˆÂˆËÈÜ]žHÜXÙ\Ë]™HØ\™Y[Ùˆ›ÛY˜[Z[H˜[Y\ÈÚ]ÜXÙ\Âˆ˜\ˆ\ÈH˜[YK”Ü]
+™]Ö×HÈ	È	ÈKÝš[™ÔÜ]Ü[ÛœË”™[[Ý™Q[\Q[šY\ÊNÂˆYˆ
+\Ë“[™ÝŠH™]\›ŽÂˆˆËÈ›Û\Ú^™H\ÈHš\œÝ\]ÛÚÜÈZÙHHÚ^™H
+\È[š]Üˆ\ÈHÚ^™HÙ^]ÛÜ™
+BˆËÈ›Û]ÙZYÚ\È\XØ[HLNLÜˆ›Ü›X[Ø›ÛÛYÚ\‹Ø›Û\‚ˆÝX›H\œÙYÚ^™HHÂˆ›ÛÛ›Ý[™Ú^™HH˜[ÙNÂˆˆ›Ü™XXÚ
+˜\ˆ\[ˆ\ÊBˆÂˆ˜\ˆH\•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆˆËÈÚÚ\›Û]ÙZYÚ[Y\šXÈ˜[Y\È
+LNL
+BˆYˆ
+OHŒLˆOHŒŒˆOHŒÌˆOHˆˆOHLˆOHŒˆOHÌˆOHŽˆOHŽLŠBˆÂˆÛÛ[YNÂˆBˆˆËÈÚÚ\›Û\Ý[BˆYˆ
+OH››Ü›X[ˆOHš][XÈˆOH›Ø›\]YHŠHÛÛ[YNÂˆˆËÈÚÚ\›Û]˜\šX[ˆYˆ
+OHœÛX[XØ\ÈŠHÛÛ[YNÂˆˆËÈÚÚ\›Û]ÙZYÚÙ^]ÛÜ™ÂˆYˆ
+OH˜›ÛˆOH˜›Û\ˆˆOH›YÚ\ˆŠHÛÛ[YNÂˆˆËÈ[™HÚ^™KÛ[™KZZYÚ
+K™Ë‹ŒMœÌKHŠBˆÝš[™ÈÚ^™TÝˆHÂˆYˆ
+ÛÛZ[œÊ‹ÈŠJBˆÂˆ˜\ˆÛ\Ú\ÈH”Ü]
+	ËÉÊNÂˆÚ^™TÝˆHÛ\Ú\ÖÌNÂˆËÈÛÝ[\œÙH[™KZZYÚœ›ÛHÛ\Ú\ÖÌWH\™BˆBˆˆËÈžHÈ\œÙH\È›Û\Ú^™BˆYˆ
+žT
+Ú^™TÝ‹Ý]\œÙYÚ^™K[P˜\ÙK\˜Ù[˜\ÙNˆ[P˜\ÙJJBˆÂˆ›Ý[™Ú^™HHYNÂˆœ™XZÎÈËÈ›Û\Ú^™H›Ý[™™\Ý\È›ÛY˜[Z[BˆBˆBˆˆYˆ
+›Ý[™Ú^™H	‰ˆ\œÙYÚ^™Hˆ
+BˆÂˆËÈÛ›ÜˆØ\ØØYHÚ[›™\ŽˆYˆ›Û\Ú^™HÛ™Ú[™[™XYH^\ÝÈ[‚ˆËÈHØ\ØØYYX\ÚÜ[™Ø[››ÝÝ™\Üš]H]\™K‚ˆYˆ
+\™\Ù\™Q^XÚ]›ÛÚ^™H	‰ˆXÜÜË“X\ÛÛZ[œÒÙ^J™›Û\Ú^™HŠJBˆÂˆÜÜË‘›ÛÚ^™HH\œÙYÚ^™NÂˆÜÜË“X\È™›Û\Ú^™H—HH\œÙYÚ^™K•ÔÝš[™ÊŒˆÈÈŠH
+ÈœŽÂˆBˆBˆBˆØ]ÚˆÂˆËÈYÛ›Ü™H\œÚ[™È\œ›ÜœÈ›Üˆ›ÛÚÜ[™ˆBˆB‚‚‚ˆËËÈÝ[[X\žO‚ˆËËÈ^˜XÝÚYœ›ÛHH›Ü™\‹\ÚYHÚÜ[™
+K™Ë‹ŒœÛÛYÙYYHŠBˆËËÈÜÝ[[X\žO‚ˆš]˜]HÝ]XÈÝX›H^˜XÝ›Ü™\”ÚYUÚY
+Ýš[™È›Ü™\”ÚYKÝX›H[P˜\ÙHHM‹Œ
+BˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ›Ü™\”ÚYJJH™]\›ˆÂˆ˜\ˆ\ÈH›Ü™\”ÚYK”Ü]
+™]Ö×HÈ	È	ÈKÝš[™ÔÜ]Ü[ÛœË”™[[Ý™Q[\Q[šY\ÊNÂˆ›Ü™XXÚ
+˜\ˆ\[ˆ\ÊBˆÂˆÝX›HÂˆYˆ
+žT
+\Ý][P˜\ÙJH	‰ˆˆ
+Bˆ™]\›ˆÂˆBˆ™]\›ˆÂˆB‚ˆËËÈÝ[[X\žO‚ˆËËÈ^˜XÝÛÛÜˆœ›ÛHH›Ü™\‹\ÚYHÚÜ[™
+K™Ë‹ŒœÛÛYÙYYHŠBˆËËÈÜÝ[[X\žO‚ˆš]˜]HÝ]XÈÒÐÛÛÜÈ^˜XÝ›Ü™\”ÚYPÛÛÜŠÝš[™È›Ü™\”ÚYJBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ›Ü™\”ÚYJJH™]\›ˆ[Âˆ˜\ˆ\ÈH›Ü™\”ÚYK”Ü]
+™]Ö×HÈ	È	ÈKÝš[™ÔÜ]Ü[ÛœË”™[[Ý™Q[\Q[šY\ÊNÂˆ›Ü™XXÚ
+˜\ˆ\[ˆ\ÊBˆÂˆËÈÚÚ\ÚY˜[Y\ÂˆÝX›HÂˆYˆ
+žT
+\Ý]
+JHÛÛ[YNÂˆËÈÚÚ\Ý[HÙ^]ÛÜ™Âˆ˜\ˆÝÙ\ˆH\•ÓÝÙ\’[˜\šX[
+
+NÂˆYˆ
+ÝÙ\ˆOH››Û™HˆÝÙ\ˆOHšY[ˆˆÝÙ\ˆOH™ÝYˆÝÙ\ˆOH™\ÚYˆˆÝÙ\ˆOHœÛÛYˆÝÙ\ˆOH™ÝX›HˆÝÙ\ˆOH™Ü›ÛÝ™HˆÝÙ\ˆOHœšYÙHˆˆÝÙ\ˆOHš[œÙ]ˆÝÙ\ˆOH›Ý]Ù]ŠHÛÛ[YNÂˆËÈžH\ÈÛÛÜ‚ˆ˜\ˆÛÛHžPÛÛÜŠ\
+NÂˆYˆ
+ÛÛ’\Õ˜[YJH™]\›ˆÛÛÂˆBˆ™]\›ˆ[ÂˆB‚ˆËÈ‹‹ˆ^\Ý[™ÈY]ÙÈ‹‹‚‚ˆš]˜]HÝ]XÈÝš[™È\œÙP˜XÚÙÜ›Ý[™[XYÙJÝš[™È˜[YJBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YJJBˆÂˆ™]\›ˆ[ÂˆB‚ˆ[\›[™^H˜[YK’[™^ÙŠ\›
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJNÂˆYˆ
+\›[™^
+BˆÂˆ™]\›ˆ[ÂˆB‚ˆ[\HÂˆ[[™HLNÂˆ›Üˆ
+[HH\›[™^ÈH˜[YK“[™ÝÈJÊÊBˆÂˆÚ\ˆÈH˜[YVÚWNÂˆYˆ
+ÈOH	Ê	ÊBˆÂˆ\
+ÊÎÂˆBˆ[ÙHYˆ
+ÈOH	ÊIÊBˆÂˆ\KNÂˆYˆ
+\OH
+BˆÂˆ[™HNÂˆœ™XZÎÂˆBˆBˆB‚ˆYˆ
+[™H\›[™^
+BˆÂˆ™]\›ˆ[ÂˆB‚ˆ™]\›ˆ˜[YK”ÝXœÝš[™Ê\›[™^[™H\›[™^
+ÈJK•š[J
+NÂˆB‚ˆš]˜]HÝ]XÈÝš[™È\œÙP˜XÚÙÜ›Ý[™[XYÙSÜ‘Ü˜YY[
+Ýš[™È˜[YJBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YJJBˆÂˆ™]\›ˆ[ÂˆB‚ˆ˜\ˆ\›˜[YHH\œÙP˜XÚÙÜ›Ý[™[XYÙJ˜[YJNÂˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ\›˜[YJJBˆÂˆ™]\›ˆ\›˜[YNÂˆB‚ˆYˆ
+˜[YKÛÛZ[œÊ™Ü˜YY[‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆÂˆ™]\›ˆ˜[YK•š[J
+NÂˆB‚ˆ™]\›ˆ[ÂˆB‚ˆš]˜]HÝ]XÈÝš[™È^˜XÝ˜XÚÙÜ›Ý[™]XÚY[œ›ÛTÚÜ[™
+Ýš[™È˜[YJBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YJJBˆÂˆ™]\›ˆ[ÂˆB‚ˆ˜\ˆÝÙ\ˆH˜[YK•ÓÝÙ\’[˜\šX[
+
+NÂˆYˆ
+™YÙ^’\ÓX]Ú
+ÝÙ\‹—™š^YˆŠJBˆÂˆ™]\›ˆ™š^YŽÂˆB‚ˆYˆ
+™YÙ^’\ÓX]Ú
+ÝÙ\‹—›ØØ[ˆŠJBˆÂˆ™]\›ˆ›ØØ[ŽÂˆB‚ˆYˆ
+™YÙ^’\ÓX]Ú
+ÝÙ\‹—œØÜ›ÛˆŠJBˆÂˆ™]\›ˆœØÜ›ÛŽÂˆB‚ˆ™]\›ˆ[ÂˆB‚ˆš]˜]HÝ]XÈÝš[™È^˜XÝ˜XÚÙÜ›Ý[™™\X]œ›ÛTÚÜ[™
+Ýš[™È˜[YJBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YJJBˆÂˆ™]\›ˆ[ÂˆB‚ˆ˜\ˆÝÙ\ˆH˜[YK•ÓÝÙ\’[˜\šX[
+
+NÂˆYˆ
+™YÙ^’\ÓX]Ú
+ÝÙ\‹—››Ë\™\X]ˆŠJBˆÂˆ™]\›ˆ››Ë\™\X]ŽÂˆB‚ˆYˆ
+™YÙ^’\ÓX]Ú
+ÝÙ\‹—œ™\X]^ˆŠJBˆÂˆ™]\›ˆœ™\X]^ŽÂˆB‚ˆYˆ
+™YÙ^’\ÓX]Ú
+ÝÙ\‹—œ™\X]^WˆŠJBˆÂˆ™]\›ˆœ™\X]^HŽÂˆB‚ˆYˆ
+™YÙ^’\ÓX]Ú
+ÝÙ\‹—œ™\X]ˆŠJBˆÂˆ™]\›ˆœ™\X]ŽÂˆB‚ˆ™]\›ˆ[ÂˆB‚ˆš]˜]HÝ]XÈÝš[™È^˜XÝ˜XÚÙÜ›Ý[™ÜÚ][Û‘œ›ÛTÚÜ[™
+Ýš[™È˜[YJBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YJJBˆÂˆ™]\›ˆ[ÂˆB‚ˆ˜\ˆÚÙ[œÈHÜ]ÜÜÔÚÜ[™ÚÙ[œÊ˜[YJNÂˆYˆ
+ÚÙ[œËÛÝ[OH
+BˆÂˆ™]\›ˆ[ÂˆB‚ˆ˜\ˆÜÚ][ÛˆH™]È\ÝÝš[™ÏŠŠNÂˆ›Ü™XXÚ
+˜\ˆÚÙ[ˆ[ˆÚÙ[œÊBˆÂˆ˜\ˆÝÙ\ˆHÚÙ[‹•ÓÝÙ\’[˜\šX[
+
+NÂ‚ˆYˆ
+ÝÙ\ˆOH‹ÈˆˆÝÙ\‹”Ý\ÕÚ]
+\›
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJHˆÝÙ\‹ÛÛZ[œÊ™Ü˜YY[
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆÂˆÛÛ[YNÂˆB‚ˆYˆ
+ÝÙ\ˆOHœ™\X]ˆÝÙ\ˆOH››Ë\™\X]ˆÝÙ\ˆOHœ™\X]^ˆÝÙ\ˆOHœ™\X]^HˆˆÝÙ\ˆOHœÜXÙHˆÝÙ\ˆOHœ›Ý[™ˆˆÝÙ\ˆOH™š^YˆÝÙ\ˆOHœØÜ›ÛˆÝÙ\ˆOH›ØØ[ŠBˆÂˆÛÛ[YNÂˆB‚ˆYˆ
+žPÛÛÜŠÝÙ\ŠK’\Õ˜[YJBˆÂˆÛÛ[YNÂˆB‚ˆYˆ
+\Ð˜XÚÙÜ›Ý[™ÜÚ][Û•ÚÙ[ŠÝÙ\ŠJBˆÂˆÜÚ][Û‹Y
+ÝÙ\ŠNÂˆYˆ
+ÜÚ][Û‹ÛÝ[OHŠBˆÂˆœ™XZÎÂˆBˆBˆB‚ˆYˆ
+ÜÚ][Û‹ÛÝ[OH
+BˆÂˆ™]\›ˆ[ÂˆB‚ˆ™]\›ˆÝš[™Ë’›Ú[Šˆ‹ÜÚ][ÛŠNÂˆB‚ˆš]˜]HÝ]XÈÝš[™È^˜XÝ˜XÚÙÜ›Ý[™Ú^™Qœ›ÛTÚÜ[™
+Ýš[™È˜[YJBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YJJBˆÂˆ™]\›ˆ[ÂˆB‚ˆ˜\ˆÚÙ[œÈHÜ]ÜÜÔÚÜ[™ÚÙ[œÊ˜[YJNÂˆYˆ
+ÚÙ[œËÛÝ[OH
+BˆÂˆ™]\›ˆ[ÂˆB‚ˆ˜\ˆÚ^™\ÈH™]È\ÝÝš[™ÏŠŠNÂˆ›ÛÛ\œÚ[™ÔÚ^™HH˜[ÙNÂˆ›Ü™XXÚ
+˜\ˆÚÙ[”˜]È[ˆÚÙ[œÊBˆÂˆ˜\ˆÚÙ[ˆHÚÙ[”˜]Ë•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆYˆ
+Ýš[™Ë’\Ó[Ü‘[\JÚÙ[ŠJBˆÂˆÛÛ[YNÂˆB‚ˆYˆ
+ÚÙ[ˆOH‹ÈŠBˆÂˆ\œÚ[™ÔÚ^™HHYNÂˆÛÛ[YNÂˆB‚ˆ˜\ˆÛ\ÚYHÚÙ[‹’[™^ÙŠ	ËÉÊNÂˆYˆ
+Û\ÚYH	‰‚ˆ]ÚÙ[‹”Ý\ÕÚ]
+\›
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJH	‰‚ˆ]ÚÙ[‹ÛÛZ[œÊ™Ü˜YY[
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆÂˆ\œÚ[™ÔÚ^™HHYNÂˆ˜\ˆZ[HÚÙ[‹”ÝXœÝš[™ÊÛ\ÚY
+ÈJK•š[J
+NÂˆYˆ
+\Ð˜XÚÙÜ›Ý[™Ú^™UÚÙ[ŠZ[
+JBˆÂˆÚ^™\ËY
+Z[
+NÂˆBˆÛÛ[YNÂˆB‚ˆYˆ
+\\œÚ[™ÔÚ^™JBˆÂˆÛÛ[YNÂˆB‚ˆYˆ
+\Ð˜XÚÙÜ›Ý[™Ú^™UÚÙ[ŠÚÙ[ŠJBˆÂˆÚ^™\ËY
+ÚÙ[ŠNÂˆYˆ
+Ú^™\ËÛÝ[OHŠBˆÂˆœ™XZÎÂˆBˆÛÛ[YNÂˆB‚ˆœ™XZÎÂˆB‚ˆYˆ
+Ú^™\ËÛÝ[OH
+BˆÂˆ™]\›ˆ[ÂˆB‚ˆ™]\›ˆÝš[™Ë’›Ú[Šˆ‹Ú^™\Ë•ZÙJŠJNÂˆB‚ˆš]˜]HÝ]XÈÝš[™È^˜XÝ˜XÚÙÜ›Ý[™ÜšYÚ[‘œ›ÛTÚÜ[™
+Ýš[™È˜[YJBˆÂˆ˜\ˆ›Þ\ÈH^˜XÝ˜XÚÙÜ›Ý[™›ÞÚÙ[œÑœ›ÛTÚÜ[™
+˜[YJNÂˆ™]\›ˆ›Þ\ËÛÝ[ˆÈ›Þ\ÖÌHˆ[ÂˆB‚ˆš]˜]HÝ]XÈÝš[™È^˜XÝ˜XÚÙÜ›Ý[™Û\œ›ÛTÚÜ[™
+Ýš[™È˜[YJBˆÂˆ˜\ˆ›Þ\ÈH^˜XÝ˜XÚÙÜ›Ý[™›ÞÚÙ[œÑœ›ÛTÚÜ[™
+˜[YJNÂˆYˆ
+›Þ\ËÛÝ[OH
+BˆÂˆ™]\›ˆ[ÂˆB‚ˆËÈÚ]Û™H›ÞÚÙ[‹ÜXÈ\Y\È]È›ÝÜšYÚ[ˆ[™Û\‚ˆ™]\›ˆ›Þ\ËÛÝ[OHHÈ›Þ\ÖÌHˆ›Þ\ÖÌWNÂˆB‚ˆš]˜]HÝ]XÈ\ÝÝš[™Ïˆ^˜XÝ˜XÚÙÜ›Ý[™›ÞÚÙ[œÑœ›ÛTÚÜ[™
+Ýš[™È˜[YJBˆÂˆ˜\ˆ›Þ\ÈH™]È\ÝÝš[™ÏŠŠNÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YJJBˆÂˆ™]\›ˆ›Þ\ÎÂˆB‚ˆ›Ü™XXÚ
+˜\ˆÚÙ[”˜]È[ˆÜ]ÜÜÔÚÜ[™ÚÙ[œÊ˜[YJJBˆÂˆ˜\ˆÚÙ[ˆHÚÙ[”˜]Ë•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆYˆ
+R\Ð˜XÚÙÜ›Ý[™›ÞÚÙ[ŠÚÙ[ŠJBˆÂˆÛÛ[YNÂˆB‚ˆ›Þ\ËY
+ÚÙ[ŠNÂˆYˆ
+›Þ\ËÛÝ[OHŠBˆÂˆœ™XZÎÂˆBˆB‚ˆ™]\›ˆ›Þ\ÎÂˆB‚ˆš]˜]HÝ]XÈ\ÝÝš[™ÏˆÜ]ÜÜÔÚÜ[™ÚÙ[œÊÝš[™È˜[YJBˆÂˆ˜\ˆ™\Ý[H™]È\ÝÝš[™ÏŠ
+NÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YJJBˆÂˆ™]\›ˆ™\Ý[ÂˆB‚ˆ[\HÂˆ[Ý\HÂˆ›Üˆ
+[HHÈH˜[YK“[™ÝÈJÊÊBˆÂˆÚ\ˆÈH˜[YVÚWNÂˆYˆ
+ÈOH	Ê	ÊH\
+ÊÎÂˆ[ÙHYˆ
+ÈOH	ÊIÊH\HX]“X^
+\HJNÂˆ[ÙHYˆ
+Ú\‹’\ÕÚ]TÜXÙJÊH	‰ˆ\OH
+BˆÂˆYˆ
+HˆÝ\
+BˆÂˆ™\Ý[Y
+˜[YK”ÝXœÝš[™ÊÝ\HHÝ\
+JNÂˆBˆÝ\HH
+ÈNÂˆBˆB‚ˆYˆ
+Ý\˜[YK“[™Ý
+BˆÂˆ™\Ý[Y
+˜[YK”ÝXœÝš[™ÊÝ\
+JNÂˆB‚ˆ™]\›ˆ™\Ý[ÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛ\Ð˜XÚÙÜ›Ý[™ÜÚ][Û•ÚÙ[ŠÝš[™ÈÚÙ[ŠBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÚÙ[ŠJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆÚÙ[ˆHÚÙ[‹•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆYˆ
+ÚÙ[ˆOH›YˆÚÙ[ˆOHœšYÚˆÚÙ[ˆOHÜˆÚÙ[ˆOH˜›ÝÛHˆÚÙ[ˆOH˜Ù[\ˆŠBˆÂˆ™]\›ˆYNÂˆB‚ˆYˆ
+ÚÙ[‹‘[™ÕÚ]
+‰H‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+JBˆÂˆ™]\›ˆÝX›K•žT\œÙJÚÙ[–Ë‹—ŒWK[X™\”Ý[\Ë‘›Ø]Ý[\™R[™›Ë’[˜\šX[Ý[\™KÝ]ÊNÂˆB‚ˆYˆ
+ÚÙ[‹‘[™ÕÚ]
+œ‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÚÙ[‹‘[™ÕÚ]
+™[H‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÚÙ[‹‘[™ÕÚ]
+œ™[H‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÚÙ[‹‘[™ÕÚ]
+œ‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+JBˆÂˆ™]\›ˆÝX›K•žT\œÙJÚÙ[–Ë‹—Œ—K[X™\”Ý[\Ë‘›Ø]Ý[\™R[™›Ë’[˜\šX[Ý[\™KÝ]ÊNÂˆB‚ˆ™]\›ˆÚÙ[ˆOHŒŽÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛ\Ð˜XÚÙÜ›Ý[™›ÞÚÙ[ŠÝš[™ÈÚÙ[ŠBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÚÙ[ŠJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆÚÙ[ˆHÚÙ[‹•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆ™]\›ˆÚÙ[ˆOH˜›Ü™\‹X›ÞˆÚÙ[ˆOHœY[™ËX›ÞˆÚÙ[ˆOH˜ÛÛ[X›ÞŽÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛ\Ð˜XÚÙÜ›Ý[™Ú^™UÚÙ[ŠÝš[™ÈÚÙ[ŠBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÚÙ[ŠJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆÚÙ[ˆHÚÙ[‹•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆYˆ
+ÚÙ[ˆOH˜]]ÈˆÚÙ[ˆOH˜ÛÝ™\ˆˆÚÙ[ˆOH˜ÛÛZ[ˆŠBˆÂˆ™]\›ˆYNÂˆB‚ˆ™]\›ˆ\Ð˜XÚÙÜ›Ý[™[™ÝÚÙ[ŠÚÙ[ŠNÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛ\Ð˜XÚÙÜ›Ý[™[™ÝÚÙ[ŠÝš[™ÈÚÙ[ŠBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÚÙ[ŠJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆÚÙ[ˆHÚÙ[‹•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆYˆ
+ÚÙ[ˆOHŒŠBˆÂˆ™]\›ˆYNÂˆB‚ˆYˆ
+ÚÙ[‹‘[™ÕÚ]
+‰H‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+JBˆÂˆ™]\›ˆÝX›K•žT\œÙJÚÙ[–Ë‹—ŒWK[X™\”Ý[\Ë‘›Ø]Ý[\™R[™›Ë’[˜\šX[Ý[\™KÝ]ÊNÂˆB‚ˆÝš[™Ö×H[š]ÈHÈœ‹™[H‹œ™[H‹œ‹È‹š‹›Z[ˆ‹›X^‹˜Ú‹™^‹˜ÛH‹›[H‹š[ˆ‹œÈˆNÂˆ›Ü™XXÚ
+˜\ˆ[š][ˆ[š]ÊBˆÂˆYˆ
+ÚÙ[‹‘[™ÕÚ]
+[š]Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+JBˆÂˆ™]\›ˆÝX›K•žT\œÙJÚÙ[‹”ÝXœÝš[™ÊÚÙ[‹“[™ÝH[š]“[™Ý
+K[X™\”Ý[\Ë‘›Ø]Ý[\™R[™›Ë’[˜\šX[Ý[\™KÝ]ÊNÂˆBˆB‚ˆ™]\›ˆ˜[ÙNÂˆB‚ˆš]˜]HÝ]XÈÝš[™È\œÙQÜ˜YY[
+Ýš[™ÈÜÜÊBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÜÜÊJH™]\›ˆ[ÂˆÜÜÈHÜÜË•š[J
+NÂ‚ˆYˆ
+ÜÜË”Ý\ÕÚ]
+›[™X\‹YÜ˜YY[
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJHˆÜÜË”Ý\ÕÚ]
+œ˜YX[YÜ˜YY[
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJHˆÜÜË”Ý\ÕÚ]
+˜ÛÛšXËYÜ˜YY[
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJHˆÜÜË”Ý\ÕÚ]
+œ™\X][™Ë[[™X\‹YÜ˜YY[
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJHˆÜÜË”Ý\ÕÚ]
+œ™\X][™Ë\˜YX[YÜ˜YY[
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆÂˆ™]\›ˆÜÜÎÂˆB‚ˆ™]\›ˆ[ÂˆB‚ˆËËÈÝ[[X\žO‚ˆËËÈ^˜XÝ›Ü™\ˆÝ[Hœ›ÛHH›Ü™\ˆÚÜ[™
+K™Ë‹ŒœÛÛYÙYYHŠBˆËËÈ™]\›œÈHÝ[HÙ^]ÛÜ™ˆ›Û™KY[‹ÝY\ÚYÛÛYÝX›KÜ›ÛÝ™KšYÙK[œÙ]Ý]Ù]ˆËËÈÜÝ[[X\žO‚ˆš]˜]HÝ]XÈÝš[™È^˜XÝ›Ü™\”ÚYTÝ[JÝš[™È›Ü™\”ÚYJBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ›Ü™\”ÚYJJH™]\›ˆ››Û™HŽÂˆ˜\ˆ\ÈH›Ü™\”ÚYK”Ü]
+™]Ö×HÈ	È	ÈKÝš[™ÔÜ]Ü[ÛœË”™[[Ý™Q[\Q[šY\ÊNÂˆ›Ü™XXÚ
+˜\ˆ\[ˆ\ÊBˆÂˆ˜\ˆÝÙ\ˆH\•ÓÝÙ\’[˜\šX[
+
+NÂˆYˆ
+\Ð›Ü™\”Ý[JÝÙ\ŠJH™]\›ˆÝÙ\ŽÂˆBˆ™]\›ˆ››Û™HŽÂˆB‚ˆËËÈÝ[[X\žO‚ˆËËÈ^˜XÝ›Ü™\ˆÝ[Hœ›ÛH›Ü™\‹\Ý[HÚÜ[™
+KM˜[Y\ÊBˆËËÈÜÝ[[X\žO‚ˆš]˜]HÝ]XÈ›ÚY^˜XÝ›Ü™\”Ý[\ÊÝš[™È˜[YKÝ]Ýš[™ÈÜÝ]Ýš[™ÈšYÚÝ]Ýš[™È›ÝÛKÝ]Ýš[™ÈY
+BˆÂˆÜHšYÚH›ÝÛHHYH››Û™HŽÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YJJH™]\›ŽÂˆ˜\ˆ\ÈH˜[YK•š[J
+K”Ü]
+™]Ö×HÈ	È	ÈKÝš[™ÔÜ]Ü[ÛœË”™[[Ý™Q[\Q[šY\ÊNÂˆYˆ
+\Ë“[™ÝOH
+H™]\›ŽÂˆˆËÈÔÔÈÚÜ[™ˆH˜[YHH[ˆ˜[Y\ÈHÜØ›ÝÛH
+ÈYÜšYÚÈ˜[Y\ÈHÜ
+ÈYÜšYÚ
+È›ÝÛKHXXÚˆYˆ
+\Ë“[™ÝOHJBˆÂˆÜHšYÚH›ÝÛHHYH\ÖÌK•ÓÝÙ\’[˜\šX[
+
+NÂˆBˆ[ÙHYˆ
+\Ë“[™ÝOHŠBˆÂˆÜH›ÝÛHH\ÖÌK•ÓÝÙ\’[˜\šX[
+
+NÂˆYHšYÚH\ÖÌWK•ÓÝÙ\’[˜\šX[
+
+NÂˆBˆ[ÙHYˆ
+\Ë“[™ÝOHÊBˆÂˆÜH\ÖÌK•ÓÝÙ\’[˜\šX[
+
+NÂˆYHšYÚH\ÖÌWK•ÓÝÙ\’[˜\šX[
+
+NÂˆ›ÝÛHH\ÖÌ—K•ÓÝÙ\’[˜\šX[
+
+NÂˆBˆ[ÙBˆÂˆÜH\ÖÌK•ÓÝÙ\’[˜\šX[
+
+NÂˆšYÚH\ÖÌWK•ÓÝÙ\’[˜\šX[
+
+NÂˆ›ÝÛHH\ÖÌ—K•ÓÝÙ\’[˜\šX[
+
+NÂˆYH\ÖÌ×K•ÓÝÙ\’[˜\šX[
+
+NÂˆBˆB‚ˆš]˜]HÝ]XÈ›ÚYÙÊXÝ[ÛÝš[™ÏˆÙËÝš[™È\ÙÊBˆÂˆžHÈYˆ
+ÙÈOH[
+HÙÊ\ÙÊNÈHØ]Ú
+^Ù\[Ûˆ^
+HÈ[™Ú[™SÙÐÛÛ\]•Ø\›Š	–ÐÜÜÓØY\—H^\›˜[ÙÙÙ\ˆØ[˜XÚÈ˜Z[YˆÙ^“Y\ÜØYÙ_H‹ÙÐØ]YÛÜžKÔÔÊNÈBˆB‚‚‚ˆš]˜]HÝ]XÈ\ÝÝš[™ÏˆÜ]žPÛÛ[XJÝš[™ÈÛÛ[
+BˆÂˆ˜\ˆ\ÝH™]È\ÝÝš[™ÏŠ
+NÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÛÛ[
+JH™]\›ˆ\ÝÂˆˆ[\HÂˆ[Ý\HÂˆ›Üˆ
+[HHÈHÛÛ[“[™ÝÈJÊÊBˆÂˆYˆ
+ÛÛ[ÚWHOH	Ê	ÊH\
+ÊÎÂˆ[ÙHYˆ
+ÛÛ[ÚWHOH	ÊIÊH\KNÂˆ[ÙHYˆ
+ÛÛ[ÚWHOH	Ë	È	‰ˆ\OH
+BˆÂˆ\ÝY
+ÛÛ[”ÝXœÝš[™ÊÝ\HHÝ\
+JNÂˆÝ\HH
+ÈNÂˆBˆBˆYˆ
+Ý\ÛÛ[“[™Ý
+H\ÝY
+ÛÛ[”ÝXœÝš[™ÊÝ\
+JNÂˆ™]\›ˆ\ÝÂˆB‚ˆš]˜]HÝ]XÈ™XYÛ›HØš™XÝÛÙÓØÚÈH™]ÈØš™XÝ
+
+NÂˆš]˜]HÝ]XÈ›ÚYXYÓÙÊÝš[™Èš[[˜[YKÝš[™ÈY\ÜØYÙJBˆÂˆÚYˆQP•QÂˆ™]\›ŽÂˆÙ[ÙBˆžBˆÂˆ˜\ˆØY™S˜[YHH]‘Ù]š[S˜[YJš[[˜[YJNÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJØY™S˜[YJJBˆØY™S˜[YHH˜ÜÜ×ÙXYËŽÂˆXYÛ›ÜÝXÔ]Ë\[™›ÛÝ^
+ØY™S˜[YKY\ÜØYÙJNÂˆBˆØ]Ú
+^Ù\[Ûˆ^
+HÈ[™Ú[™SÙÐÛÛ\]•Ø\›Š	–ÐÜÜÓØY\—HXYÈš[HÜš]H˜Z[YˆÙ^“Y\ÜØYÙ_H‹ÙÐØ]YÛÜžKÔÔÊNÈBˆÙ[™Y‚ˆB‚ˆËËÈÝ[[X\žO‚ˆËËÈX]Ú\ÈHÙ[XÝÜÚZ[ˆYØZ[œÝ[ˆ[[Y[
+›ÜˆÛÛ\Ý[™››Ý
+
+HÝ\Ü
+BˆËËÈÜÝ[[X\žO‚ˆš]˜]HÝ]XÈ›ÛÛX]Ú\ÔÙ[XÝÜÚZ[ŠÙ[XÝÜÚZ[ˆÚZ[‹[[Y[ŠBˆÂˆ™]\›ˆX]Ú\Ê‹ÚZ[ŠNÂˆB‚ˆËËÈÝ[[X\žO‚ˆËËÈ\œÙ\È[ˆY^™\ÜÚ[Ûˆ
+K™Ëˆ	Ì›ŠÌIË	ÛÙ	Ë	Ù]™[‰ÊH[ÈH[™ˆ›Üˆ[ŠØ‚ˆËËÈÜÝ[[X\žO‚ˆš]˜]HÝ]XÈ›ÛÛ\œÙS^™\ÜÚ[ÛŠÝš[™È^‹Ý][KÝ][ŠBˆÂˆHHÈˆHÂˆ^ˆH^‹•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆYˆ
+^ˆOH›ÙŠHÈHHŽÈˆHNÈ™]\›ˆYNÈBˆYˆ
+^ˆOH™]™[ˆŠHÈHHŽÈˆHÈ™]\›ˆYNÈBˆ˜\ˆX]ÚHÞ\Ý[K•^”™YÝ[\‘^™\ÜÚ[ÛœË”™YÙ^“X]Ú
+^‹—ŠÊËWO×
+Š[ŠÊËWO×
+ÊOÉŠNÂˆYˆ
+X]Ú”ÝXØÙ\ÜÊBˆÂˆ˜\ˆTÝˆHX]Ú‘Ü›Ý\ÖÌWK•˜[YNÂˆ˜\ˆ”ÝˆHX]Ú‘Ü›Ý\ÖÌ—K•˜[YNÂˆHH
+TÝˆOHˆˆTÝˆOHŠÈŠHÈHˆ
+TÝˆOH‹HˆÈLHˆ[”\œÙJTÝŠJNÂˆˆH”ÝˆOHˆˆÈˆ[”\œÙJ”ÝŠNÂˆ™]\›ˆYNÂˆBˆËÈ\ÝH[X™\‚ˆYˆ
+[•žT\œÙJ^‹Ý]ŠJHÈHHÈ™]\›ˆYNÈBˆ™]\›ˆ˜[ÙNÂˆB‚ˆËÈOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOBˆËÈÙ[XÝÜˆ[\œÈ›Üˆš\ËÚ\™Kš\ÂˆËÈOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOB‚ˆš]˜]HÝ]XÈ›ÛÛX]Ú\ÔÙ[XÝÜ“\Ý
+[[Y[‹\ÝÙ[XÝÜÚZ[ˆÚZ[œÊBˆÂˆYˆ
+ÚZ[œÈOH[
+H™]\›ˆ˜[ÙNÂˆ›Ü™XXÚ
+˜\ˆÚZ[ˆ[ˆÚZ[œÊBˆÂˆYˆ
+X]Ú\Ê‹ÚZ[ŠJH™]\›ˆYNÂˆBˆ™]\›ˆ˜[ÙNÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛX]Ú\ÔÙ[XÝÜ“\Ý
+[[Y[‹Ýš[™ÈÙ[XÝÜ“\Ý
+BˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÙ[XÝÜ“\Ý
+JH™]\›ˆ˜[ÙNÂˆˆËÈ\ÙHÙ[XÝÜ“X]Ú\ˆÈ\œÙHBˆ˜\ˆÚZ[œÈHÙ[XÝÜ“X]Ú\‹”\œÙTÙ[XÝÜ“\Ý
+Ù[XÝÜ“\Ý
+NÂˆ™]\›ˆX]Ú\ÔÙ[XÝÜ“\Ý
+‹ÚZ[œÊNÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛX]Ú\Ò\Ê[[Y[‹Ýš[™ÈÙ[XÝÜ“\Ý
+BˆÂˆYˆ
+ˆOH[Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÙ[XÝÜ“\Ý
+JBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆËÈ[YØ]HÈH]™[MX]Ú\ˆÛÈš\Ê
+H™[]]™HÙ[XÝÜœÂˆËÈ
+ˆÈ
+ÈÈˆÈ\ØÙ[™[
+H™\ÛÛ™HYØZ[œÝH[˜ÚÜˆ[[Y[‚ˆ™]\›ˆÙ[XÝÜ“X]Ú\‹“X]Ú\Ê‹	Žš\ÊÜÙ[XÝÜ“\ÝJHŠNÂˆB‚ˆš]˜]HÝ]XÈ›ÚY\TXÙTÚÜ[™ÊÜÜÐÛÛ\]YÜÜÊBˆÂˆYˆ
+ÜÜÏË“X\OH[
+BˆÂˆ™]\›ŽÂˆB‚ˆ\TXÙTÚÜ[™
+ÜÜËœXÙKZ][\È‹˜[YÛ‹Z][\È‹š\ÝYžKZ][\È‹
+
+HOˆÜÜË[YÛ’][\Ë
+
+HOˆÜÜË’\ÝYžR][\ËˆOˆÜÜË[YÛ’][\ÈH‹ˆOˆÜÜË’\ÝYžR][\ÈHŠNÂˆ\TXÙTÚÜ[™
+ÜÜËœXÙKXÛÛ[‹˜[YÛ‹XÛÛ[‹š\ÝYžKXÛÛ[‹
+
+HOˆÜÜË[YÛÛÛ[
+
+HOˆÜÜË’\ÝYžPÛÛ[ˆOˆÜÜË[YÛÛÛ[H‹ˆOˆÜÜË’\ÝYžPÛÛ[HŠNÂˆ\TXÙTÚÜ[™
+ÜÜËœXÙK\Ù[ˆ‹˜[YÛ‹\Ù[ˆ‹š\ÝYžK\Ù[ˆ‹
+
+HOˆÜÜË[YÛ”Ù[‹
+
+HOˆÜÜË’\ÝYžTÙ[‹ˆOˆÜÜË[YÛ”Ù[ˆH‹ˆOˆÜÜË’\ÝYžTÙ[ˆHŠNÂˆB‚ˆš]˜]HÝ]XÈ›ÚY\TXÙTÚÜ[™
+ˆÜÜÐÛÛ\]YÜÜËˆÝš[™ÈÚÜ[™Ù^KˆÝš[™Èš[X\žSÛ™Ú[™ˆÝš[™ÈÙXÛÛ™\žSÛ™Ú[™ˆ[˜ÏÝš[™ÏˆÙ]š[X\žKˆ[˜ÏÝš[™ÏˆÙ]ÙXÛÛ™\žKˆXÝ[ÛÝš[™ÏˆÙ]š[X\žKˆXÝ[ÛÝš[™ÏˆÙ]ÙXÛÛ™\žJBˆÂˆ˜\ˆ˜]ÈHØY™JXÝÙ]
+ÜÜË“X\ÚÜ[™Ù^JJNÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜]ÊJBˆÂˆ™]\›ŽÂˆB‚ˆYˆ
+UžT\œÙTXÙTZ\Š˜]ËÝ]˜\ˆš\œÝÝ]˜\ˆÙXÛÛ™
+JBˆÂˆ™]\›ŽÂˆB‚ˆ›ÛÛ\Ôš[X\žHH\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÙ]š[X\žOË’[›ÚÙJ
+JHÜÜË“X\ÛÛZ[œÒÙ^Jš[X\žSÛ™Ú[™
+NÂˆ›ÛÛ\ÔÙXÛÛ™\žHH\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÙ]ÙXÛÛ™\žOË’[›ÚÙJ
+JHÜÜË“X\ÛÛZ[œÒÙ^JÙXÛÛ™\žSÛ™Ú[™
+NÂ‚ˆYˆ
+Z\Ôš[X\žH	‰ˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJš\œÝ
+JBˆÂˆÙ]š[X\žJš\œÝ
+NÂˆÜÜË“X\Üš[X\žSÛ™Ú[™HHš\œÝÂˆB‚ˆYˆ
+Z\ÔÙXÛÛ™\žH	‰ˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÙXÛÛ™
+JBˆÂˆÙ]ÙXÛÛ™\žJÙXÛÛ™
+NÂˆÜÜË“X\ÜÙXÛÛ™\žSÛ™Ú[™HHÙXÛÛ™ÂˆBˆB‚ˆš]˜]HÝ]XÈ›ÛÛžT\œÙTXÙTZ\ŠÝš[™È˜]ËÝ]Ýš[™Èš\œÝÝ]Ýš[™ÈÙXÛÛ™
+BˆÂˆš\œÝH[ÂˆÙXÛÛ™H[ÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜]ÊJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆ˜\ˆÚÙ[œÈHÜ]ÜÜÕ˜[Y\Ê˜]ÊBˆ”Ù[XÝ
+OˆË•š[J
+JBˆ•Ú\™JOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ
+JBˆ•Ó\Ý
+
+NÂ‚ˆYˆ
+ÚÙ[œËÛÝ[OH
+BˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆš\œÝHÚÙ[œÖÌK•ÓÝÙ\’[˜\šX[
+
+NÂˆÙXÛÛ™HÚÙ[œËÛÝ[ˆHÈÚÙ[œÖÌWK•ÓÝÙ\’[˜\šX[
+
+Hˆš\œÝÂˆ™]\›ˆYNÂˆB‚ˆš]˜]HÝ]XÈ›ÚY\R[™[ÜžT›Ü\P[X\Ó›Ü›X[^˜][ÛœÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆYˆ
+X\OH[
+BˆÂˆ™]\›ŽÂˆB‚ˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\ÛÜ™]Ü˜\‹Ý]˜\ˆÛÜ™Ü˜\[X\ÊH	‰‚ˆ[X\ÛÛZ[œÒÙ^J›Ý™\™›ÝË]Ü˜\ŠJBˆÂˆX\È›Ý™\™›ÝË]Ü˜\—HHÛÜ™Ü˜\[X\ÎÂˆB‚ˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\™›Û]ÚY‹Ý]˜\ˆ›ÛÚY[X\ÊH	‰‚ˆ[X\ÛÛZ[œÒÙ^J™›Û\Ý™]ÚŠJBˆÂˆX\È™›Û\Ý™]Ú—HH›ÛÚY[X\ÎÂˆB‚ˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\˜˜XÚÙÜ›Ý[™\ÜÚ][Û‹Z[›[™H‹Ý]˜\ˆ˜XÚÙÜ›Ý[™ÜÚ][Û’[›[™JH	‰‚ˆ[X\ÛÛZ[œÒÙ^J˜˜XÚÙÜ›Ý[™\ÜÚ][Û‹^ŠJBˆÂˆX\È˜˜XÚÙÜ›Ý[™\ÜÚ][Û‹^—HH˜XÚÙÜ›Ý[™ÜÚ][Û’[›[™NÂˆB‚ˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\˜˜XÚÙÜ›Ý[™\ÜÚ][Û‹X›ØÚÈ‹Ý]˜\ˆ˜XÚÙÜ›Ý[™ÜÚ][Û›ØÚÊH	‰‚ˆ[X\ÛÛZ[œÒÙ^J˜˜XÚÙÜ›Ý[™\ÜÚ][Û‹^HŠJBˆÂˆX\È˜˜XÚÙÜ›Ý[™\ÜÚ][Û‹^H—HH˜XÚÙÜ›Ý[™ÜÚ][Û›ØÚÎÂˆB‚ˆ˜\ˆÜÖHX\•žQÙ]˜[YJ˜˜XÚÙÜ›Ý[™\ÜÚ][Û‹^‹Ý]˜\ˆ˜[YJHÈ˜[YOË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+Hˆ[Âˆ˜\ˆÜÖHHX\•žQÙ]˜[YJ˜˜XÚÙÜ›Ý[™\ÜÚ][Û‹^H‹Ý]˜\ˆU˜[YJHÈU˜[YOË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+Hˆ[ÂˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÜÖ
+H	‰‚ˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÜÖJH	‰‚ˆ[X\ÛÛZ[œÒÙ^J˜˜XÚÙÜ›Ý[™\ÜÚ][ÛˆŠJBˆÂˆX\È˜˜XÚÙÜ›Ý[™\ÜÚ][Ûˆ—HH	žÜÜÖHÜÜÖ_HŽÂˆB‚ˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\˜˜XÚÙÜ›Ý[™\™\X]Z[›[™H‹Ý]˜\ˆ™\X][›[™JJBˆÂˆX\È˜˜XÚÙÜ›Ý[™\™\X]^—HH™\X][›[™NÂˆB‚ˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\˜˜XÚÙÜ›Ý[™\™\X]X›ØÚÈ‹Ý]˜\ˆ™\X]›ØÚÊJBˆÂˆX\È˜˜XÚÙÜ›Ý[™\™\X]^H—HH™\X]›ØÚÎÂˆB‚ˆ˜\ˆ™\X]HX\•žQÙ]˜[YJ˜˜XÚÙÜ›Ý[™\™\X]^‹Ý]˜\ˆ™\X]˜[YJHÈ™\X]˜[YOË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+Hˆ[Âˆ˜\ˆ™\X]HHX\•žQÙ]˜[YJ˜˜XÚÙÜ›Ý[™\™\X]^H‹Ý]˜\ˆ™\X]U˜[YJHÈ™\X]U˜[YOË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+Hˆ[ÂˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ™\X]
+H	‰ˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ™\X]JJBˆÂˆYˆ
+™\X]OHœ™\X]ˆ	‰ˆ™\X]HOHœ™\X]ŠBˆÂˆX\È˜˜XÚÙÜ›Ý[™\™\X]—HHœ™\X]ŽÂˆBˆ[ÙHYˆ
+™\X]OH››Ë\™\X]ˆ	‰ˆ™\X]HOH››Ë\™\X]ŠBˆÂˆX\È˜˜XÚÙÜ›Ý[™\™\X]—HH››Ë\™\X]ŽÂˆBˆ[ÙHYˆ
+™\X]OHœ™\X]ˆ	‰ˆ™\X]HOH››Ë\™\X]ŠBˆÂˆX\È˜˜XÚÙÜ›Ý[™\™\X]—HHœ™\X]^ŽÂˆBˆ[ÙHYˆ
+™\X]OH››Ë\™\X]ˆ	‰ˆ™\X]HOHœ™\X]ŠBˆÂˆX\È˜˜XÚÙÜ›Ý[™\™\X]—HHœ™\X]^HŽÂˆBˆ[ÙBˆÂˆX\È˜˜XÚÙÜ›Ý[™\™\X]—HH	žÜ™\X]HÜ™\X]_HŽÂˆBˆB‚ˆ\Q›^›ÝÐ[X\ÊX\
+NÂˆ\PÛÛZ[™\”ÚÜ[™[X\ÊX\
+NÂˆ\SÙÚXØ[ØÜ›ÛÜXÚ[™Ð[X\Ù\ÊX\
+NÂˆ\SÙÚXØ[›Ü™\”˜Y]\Ð[X\Ù\ÊX\
+NÂˆ\Pœ™XZÐ[X\Ù\ÊX\
+NÂˆ\U^Ü˜\[X\Ù\ÊX\
+NÂˆ\U[Y[[™P[X\Ù\ÊX\
+NÂˆ\SÙ™œÙ][X\Ù\ÊX\
+NÂˆ\P›Ü™\’[XYÙP[X\Ù\ÊX\
+NÂˆ\SX\ÚÐ›Ü™\[X\Ù\ÊX\
+NÂˆ\PÛÛZ[’[š[œÚXÐ[X\Ù\ÊX\
+NÂˆ\Q›Û[™^[X\Ù\ÊX\
+NÂˆ\P[š[X][Û”˜[™ÙP[X\Ù\ÊX\
+NÂˆ\PY˜[˜ÙY[™[ÜžT\ÜÕ›ÝYÚ
+X\
+NÂˆB‚ˆš]˜]HÝ]XÈ›ÚY\Q›^›ÝÐ[X\ÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆYˆ
+UžQÙ]›Û‘[\SX\˜[YJX\™›^Y›ÝÈ‹Ý]˜\ˆ›^›ÝÔ˜]ÊJBˆÂˆ™]\›ŽÂˆB‚ˆ˜\ˆÚÙ[œÈHÜ]ÜÜÕ˜[Y\Ê›^›ÝÔ˜]ÊBˆ”Ù[XÝ
+OˆË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+JBˆ•Ú\™JOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ
+JBˆ•Ó\Ý
+
+NÂ‚ˆÝš[™È\™XÝ[ÛˆH[ÂˆÝš[™ÈÜ˜\H[Âˆ›Ü™XXÚ
+˜\ˆÚÙ[ˆ[ˆÚÙ[œÊBˆÂˆÝÚ]Ú
+ÚÙ[ŠBˆÂˆØ\ÙHœ›ÝÈŽ‚ˆØ\ÙHœ›ÝË\™]™\œÙHŽ‚ˆØ\ÙH˜ÛÛ[[ˆŽ‚ˆØ\ÙH˜ÛÛ[[‹\™]™\œÙHŽ‚ˆ\™XÝ[ÛˆÏÏHÚÙ[ŽÂˆœ™XZÎÂˆØ\ÙH››ÝÜ˜\Ž‚ˆØ\ÙHÜ˜\Ž‚ˆØ\ÙHÜ˜\\™]™\œÙHŽ‚ˆÜ˜\ÏÏHÚÙ[ŽÂˆœ™XZÎÂˆBˆB‚ˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ\™XÝ[ÛŠH	‰ˆ[X\ÛÛZ[œÒÙ^J™›^Y\™XÝ[ÛˆŠJBˆÂˆX\È™›^Y\™XÝ[Ûˆ—HH\™XÝ[ÛŽÂˆB‚ˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÜ˜\
+H	‰ˆ[X\ÛÛZ[œÒÙ^J™›^]Ü˜\ŠJBˆÂˆX\È™›^]Ü˜\—HHÜ˜\ÂˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\PÛÛZ[™\”ÚÜ[™[X\ÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆYˆ
+UžQÙ]›Û‘[\SX\˜[YJX\˜ÛÛZ[™\ˆ‹Ý]˜\ˆÛÛZ[™\”˜]ÊJBˆÂˆ™]\›ŽÂˆB‚ˆYˆ
+Ýš[™Ë‘\]X[ÊÛÛZ[™\”˜]Ë››Ü›X[‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+JBˆÂˆYˆ
+[X\ÛÛZ[œÒÙ^J˜ÛÛZ[™\‹[˜[YHŠJBˆÂˆX\È˜ÛÛZ[™\‹[˜[YH—HH››Û™HŽÂˆBˆYˆ
+[X\ÛÛZ[œÒÙ^J˜ÛÛZ[™\‹]\HŠJBˆÂˆX\È˜ÛÛZ[™\‹]\H—HH››Ü›X[ŽÂˆBˆ™]\›ŽÂˆB‚ˆYˆ
+Ýš[™Ë‘\]X[ÊÛÛZ[™\”˜]Ë››Û™H‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+JBˆÂˆYˆ
+[X\ÛÛZ[œÒÙ^J˜ÛÛZ[™\‹[˜[YHŠJBˆÂˆX\È˜ÛÛZ[™\‹[˜[YH—HH››Û™HŽÂˆBˆ™]\›ŽÂˆB‚ˆ˜\ˆÛ\Ú[™^HÛÛZ[™\”˜]Ë’[™^ÙŠ	ËÉÊNÂˆYˆ
+Û\Ú[™^H
+BˆÂˆ˜\ˆ˜[YT\HÛÛZ[™\”˜]Ë”ÝXœÝš[™ÊÛ\Ú[™^
+K•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆ˜\ˆ\T\HÛÛZ[™\”˜]Ë”ÝXœÝš[™ÊÛ\Ú[™^
+ÈJK•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂ‚ˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YT\
+H	‰ˆ[X\ÛÛZ[œÒÙ^J˜ÛÛZ[™\‹[˜[YHŠJBˆÂˆX\È˜ÛÛZ[™\‹[˜[YH—HH˜[YT\ÂˆBˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ\T\
+H	‰ˆ[X\ÛÛZ[œÒÙ^J˜ÛÛZ[™\‹]\HŠJBˆÂˆX\È˜ÛÛZ[™\‹]\H—HH\T\ÂˆBˆ™]\›ŽÂˆB‚ˆYˆ
+ÛÛZ[™\”˜]ÈOHœÚ^™HˆÛÛZ[™\”˜]ÈOHš[›[™K\Ú^™HˆÛÛZ[™\”˜]ÈOH››Ü›X[ŠBˆÂˆYˆ
+[X\ÛÛZ[œÒÙ^J˜ÛÛZ[™\‹]\HŠJBˆÂˆX\È˜ÛÛZ[™\‹]\H—HHÛÛZ[™\”˜]ÎÂˆBˆYˆ
+[X\ÛÛZ[œÒÙ^J˜ÛÛZ[™\‹[˜[YHŠJBˆÂˆX\È˜ÛÛZ[™\‹[˜[YH—HH››Û™HŽÂˆBˆ™]\›ŽÂˆB‚ˆYˆ
+[X\ÛÛZ[œÒÙ^J˜ÛÛZ[™\‹[˜[YHŠJBˆÂˆX\È˜ÛÛZ[™\‹[˜[YH—HHÛÛZ[™\”˜]ÎÂˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\SÙÚXØ[ØÜ›ÛÜXÚ[™Ð[X\Ù\ÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆ˜\ˆ\™XÝ[ÛˆHX\•žQÙ]˜[YJ™\™XÝ[Ûˆ‹Ý]˜\ˆ\”˜]ÊHÈ\”˜]ÏË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+Hˆ›ˆŽÂˆ˜\ˆ[›[™TÝ\HÝš[™Ë‘\]X[Ê\™XÝ[Û‹œ‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HÈœšYÚˆˆ›YŽÂˆ˜\ˆ[›[™Q[™H[›[™TÝ\OH›YˆÈœšYÚˆˆ›YŽÂ‚ˆ\T\ÚXØ[›ÞÚÜ[™
+œØÜ›Û[X\™Ú[ˆ‹œØÜ›Û[X\™Ú[‹]Ü‹œØÜ›Û[X\™Ú[‹\šYÚ‹œØÜ›Û[X\™Ú[‹X›ÝÛH‹œØÜ›Û[X\™Ú[‹[YŠNÂˆ\T\ÚXØ[›ÞÚÜ[™
+œØÜ›Û\Y[™È‹œØÜ›Û\Y[™Ë]Ü‹œØÜ›Û\Y[™Ë\šYÚ‹œØÜ›Û\Y[™ËX›ÝÛH‹œØÜ›Û\Y[™Ë[YŠNÂ‚ˆ\SÙÚXØ[^\ÊœØÜ›Û[X\™Ú[‹Z[›[™H‹œØÜ›Û[X\™Ú[‹Z[›[™K\Ý\‹œØÜ›Û[X\™Ú[‹Z[›[™KY[™ŠNÂˆ\SÙÚXØ[^\ÊœØÜ›Û[X\™Ú[‹X›ØÚÈ‹œØÜ›Û[X\™Ú[‹X›ØÚË\Ý\‹œØÜ›Û[X\™Ú[‹X›ØÚËY[™ŠNÂˆ\SÙÚXØ[^\ÊœØÜ›Û\Y[™ËZ[›[™H‹œØÜ›Û\Y[™ËZ[›[™K\Ý\‹œØÜ›Û\Y[™ËZ[›[™KY[™ŠNÂˆ\SÙÚXØ[^\ÊœØÜ›Û\Y[™ËX›ØÚÈ‹œØÜ›Û\Y[™ËX›ØÚË\Ý\‹œØÜ›Û\Y[™ËX›ØÚËY[™ŠNÂ‚ˆ›Ú™XÝÙÚXØ[Ô\ÚXØ[
+œØÜ›Û[X\™Ú[‹Z[›[™K\Ý\‹	œØÜ›Û[X\™Ú[‹^Ú[›[™TÝ\HŠNÂˆ›Ú™XÝÙÚXØ[Ô\ÚXØ[
+œØÜ›Û[X\™Ú[‹Z[›[™KY[™‹	œØÜ›Û[X\™Ú[‹^Ú[›[™Q[™HŠNÂˆ›Ú™XÝÙÚXØ[Ô\ÚXØ[
+œØÜ›Û[X\™Ú[‹X›ØÚË\Ý\‹œØÜ›Û[X\™Ú[‹]ÜŠNÂˆ›Ú™XÝÙÚXØ[Ô\ÚXØ[
+œØÜ›Û[X\™Ú[‹X›ØÚËY[™‹œØÜ›Û[X\™Ú[‹X›ÝÛHŠNÂ‚ˆ›Ú™XÝÙÚXØ[Ô\ÚXØ[
+œØÜ›Û\Y[™ËZ[›[™K\Ý\‹	œØÜ›Û\Y[™Ë^Ú[›[™TÝ\HŠNÂˆ›Ú™XÝÙÚXØ[Ô\ÚXØ[
+œØÜ›Û\Y[™ËZ[›[™KY[™‹	œØÜ›Û\Y[™Ë^Ú[›[™Q[™HŠNÂˆ›Ú™XÝÙÚXØ[Ô\ÚXØ[
+œØÜ›Û\Y[™ËX›ØÚË\Ý\‹œØÜ›Û\Y[™Ë]ÜŠNÂˆ›Ú™XÝÙÚXØ[Ô\ÚXØ[
+œØÜ›Û\Y[™ËX›ØÚËY[™‹œØÜ›Û\Y[™ËX›ÝÛHŠNÂ‚ˆ›ÚY\T\ÚXØ[›ÞÚÜ[™
+Ýš[™ÈÚÜ[™Ýš[™ÈÜÙ^KÝš[™ÈšYÚÙ^KÝš[™È›ÝÛRÙ^KÝš[™ÈYÙ^JBˆÂˆYˆ
+UžQÙ]›Û‘[\SX\˜[YJX\ÚÜ[™Ý]˜\ˆ˜]ÊJBˆÂˆ™]\›ŽÂˆB‚ˆYˆ
+UžQ^[™\ÚXØ[›ÞÚÜ[™
+˜]ËÝ]˜\ˆÜÝ]˜\ˆšYÚÝ]˜\ˆ›ÝÛKÝ]˜\ˆY
+JBˆÂˆ™]\›ŽÂˆB‚ˆYˆ
+[X\ÛÛZ[œÒÙ^JÜÙ^JJHX\ÝÜÙ^WHHÜÂˆYˆ
+[X\ÛÛZ[œÒÙ^JšYÚÙ^JJHX\ÜšYÚÙ^WHHšYÚÂˆYˆ
+[X\ÛÛZ[œÒÙ^J›ÝÛRÙ^JJHX\Ø›ÝÛRÙ^WHH›ÝÛNÂˆYˆ
+[X\ÛÛZ[œÒÙ^JYÙ^JJHX\ÛYÙ^WHHYÂˆB‚ˆ›ÚY\SÙÚXØ[^\ÊÝš[™È^\ÔÚÜ[™Ýš[™ÈÝ\Ù^KÝš[™È[™Ù^JBˆÂˆYˆ
+UžQÙ]›Û‘[\SX\˜[YJX\^\ÔÚÜ[™Ý]˜\ˆ˜]ÊJBˆÂˆ™]\›ŽÂˆB‚ˆYˆ
+UžT\œÙSÙÚXØ[^\ÔZ\Š˜]ËÝ]˜\ˆÝ\Ý]˜\ˆ[™
+JBˆÂˆ™]\›ŽÂˆB‚ˆYˆ
+[X\ÛÛZ[œÒÙ^JÝ\Ù^JJHX\ÜÝ\Ù^WHHÝ\ÂˆYˆ
+[X\ÛÛZ[œÒÙ^J[™Ù^JJHX\Ù[™Ù^WHH[™ÂˆB‚ˆ›ÚY›Ú™XÝÙÚXØ[Ô\ÚXØ[
+Ýš[™ÈÙÚXØ[Ù^KÝš[™È\ÚXØ[Ù^JBˆÂˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\ÙÚXØ[Ù^KÝ]˜\ˆ˜[YJH	‰ˆ[X\ÛÛZ[œÒÙ^J\ÚXØ[Ù^JJBˆÂˆX\Ü\ÚXØ[Ù^WHH˜[YNÂˆBˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\SÙÚXØ[›Ü™\”˜Y]\Ð[X\Ù\ÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆ˜\ˆ\™XÝ[ÛˆHX\•žQÙ]˜[YJ™\™XÝ[Ûˆ‹Ý]˜\ˆ\”˜]ÊHÈ\”˜]ÏË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+Hˆ›ˆŽÂˆ˜\ˆ[›[™TÝ\HÝš[™Ë‘\]X[Ê\™XÝ[Û‹œ‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HÈœšYÚˆˆ›YŽÂˆ˜\ˆ[›[™Q[™H[›[™TÝ\OH›YˆÈœšYÚˆˆ›YŽÂ‚ˆÝš[™ÈÝ\Ý\ÛÜ›™\ˆH™\ÛÛ™PÛÜ›™\’Ù^JÜ‹[›[™TÝ\
+NÂˆÝš[™ÈÝ\[™ÛÜ›™\ˆH™\ÛÛ™PÛÜ›™\’Ù^JÜ‹[›[™Q[™
+NÂˆÝš[™È[™Ý\ÛÜ›™\ˆH™\ÛÛ™PÛÜ›™\’Ù^J˜›ÝÛH‹[›[™TÝ\
+NÂˆÝš[™È[™[™ÛÜ›™\ˆH™\ÛÛ™PÛÜ›™\’Ù^J˜›ÝÛH‹[›[™Q[™
+NÂ‚ˆ\Q\™XÝÛÜ›™\[X\Ê˜›Ü™\‹\Ý\\Ý\\˜Y]\È‹Ý\Ý\ÛÜ›™\ŠNÂˆ\Q\™XÝÛÜ›™\[X\Ê˜›Ü™\‹\Ý\Y[™\˜Y]\È‹Ý\[™ÛÜ›™\ŠNÂˆ\Q\™XÝÛÜ›™\[X\Ê˜›Ü™\‹Y[™\Ý\\˜Y]\È‹[™Ý\ÛÜ›™\ŠNÂˆ\Q\™XÝÛÜ›™\[X\Ê˜›Ü™\‹Y[™Y[™\˜Y]\È‹[™[™ÛÜ›™\ŠNÂ‚ˆ\P›ØÚÐ^\Ô˜Y]\ÔÚÜ[™
+˜›Ü™\‹X›ØÚË\Ý\\˜Y]\È‹Ý\Ý\ÛÜ›™\‹Ý\[™ÛÜ›™\ŠNÂˆ\P›ØÚÐ^\Ô˜Y]\ÔÚÜ[™
+˜›Ü™\‹X›ØÚËY[™\˜Y]\È‹[™Ý\ÛÜ›™\‹[™[™ÛÜ›™\ŠNÂ‚ˆ›ÚY\Q\™XÝÛÜ›™\[X\ÊÝš[™ÈÙÚXØ[Ù^KÝš[™È\ÚXØ[Ù^JBˆÂˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\ÙÚXØ[Ù^KÝ]˜\ˆ˜[YJH	‰ˆ[X\ÛÛZ[œÒÙ^J\ÚXØ[Ù^JJBˆÂˆX\Ü\ÚXØ[Ù^WHH˜[YNÂˆBˆB‚ˆ›ÚY\P›ØÚÐ^\Ô˜Y]\ÔÚÜ[™
+Ýš[™ÈÙÚXØ[Ù^KÝš[™Èš\œÝÛÜ›™\‹Ýš[™ÈÙXÛÛ™ÛÜ›™\ŠBˆÂˆYˆ
+UžQÙ]›Û‘[\SX\˜[YJX\ÙÚXØ[Ù^KÝ]˜\ˆ˜]ÊJBˆÂˆ™]\›ŽÂˆB‚ˆ˜\ˆÚÙ[œÈHÜ]ÜÜÕ˜[Y\Ê˜]ÊBˆ”Ù[XÝ
+OˆË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+JBˆ•Ú\™JOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ
+JBˆ•Ó\Ý
+
+NÂˆYˆ
+ÚÙ[œËÛÝ[OH
+BˆÂˆ™]\›ŽÂˆB‚ˆ˜\ˆš\œÝHÚÙ[œÖÌNÂˆ˜\ˆÙXÛÛ™HÚÙ[œËÛÝ[ˆHÈÚÙ[œÖÌWHˆÚÙ[œÖÌNÂ‚ˆYˆ
+[X\ÛÛZ[œÒÙ^Jš\œÝÛÜ›™\ŠJBˆÂˆX\Ùš\œÝÛÜ›™\—HHš\œÝÂˆBˆYˆ
+[X\ÛÛZ[œÒÙ^JÙXÛÛ™ÛÜ›™\ŠJBˆÂˆX\ÜÙXÛÛ™ÛÜ›™\—HHÙXÛÛ™ÂˆBˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\Pœ™XZÐ[X\Ù\ÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆ\Pœ™XZÐ[X\Ê˜œ™XZËX™Y›Ü™H‹œYÙKXœ™XZËX™Y›Ü™HŠNÂˆ\Pœ™XZÐ[X\Ê˜œ™XZËXY\ˆ‹œYÙKXœ™XZËXY\ˆŠNÂˆ\Pœ™XZÐ[X\Ê˜œ™XZËZ[œÚYH‹œYÙKXœ™XZËZ[œÚYHŠNÂ‚ˆ›ÚY\Pœ™XZÐ[X\ÊÝš[™Èœ™XZÒÙ^KÝš[™ÈYÙPœ™XZÒÙ^JBˆÂˆYˆ
+UžQÙ]›Û‘[\SX\˜[YJX\œ™XZÒÙ^KÝ]˜\ˆœ™XZÕ˜[YJJBˆÂˆ™]\›ŽÂˆB‚ˆYˆ
+X\ÛÛZ[œÒÙ^JYÙPœ™XZÒÙ^JJBˆÂˆ™]\›ŽÂˆB‚ˆ˜\ˆ›Ü›X[^™YHœ™XZÕ˜[YHÝÚ]ÚˆÂˆ˜]›ÚY\YÙHˆOˆ˜]›ÚY‹ˆœYÙHˆOˆ˜[Ø^\È‹ˆ›YˆOˆ˜[Ø^\È‹ˆœšYÚˆOˆ˜[Ø^\È‹ˆœ™XÝÈˆOˆ˜[Ø^\È‹ˆ™\œÛÈˆOˆ˜[Ø^\È‹ˆÈOˆœ™XZÕ˜[YBˆNÂ‚ˆX\ÜYÙPœ™XZÒÙ^WHH›Ü›X[^™YÂˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\U^Ü˜\[X\Ù\ÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\^]Ü˜\‹Ý]˜\ˆ^Ü˜\
+JBˆÂˆYˆ
+[X\ÛÛZ[œÒÙ^J^]Ü˜\[[ÙHŠJBˆÂˆX\È^]Ü˜\[[ÙH—HHÝš[™Ë‘\]X[Ê^Ü˜\››ÝÜ˜\‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+BˆÈ››ÝÜ˜\‚ˆˆÜ˜\ŽÂˆB‚ˆYˆ
+[X\ÛÛZ[œÒÙ^J^]Ü˜\\Ý[HŠJBˆÂˆX\È^]Ü˜\\Ý[H—HH^Ü˜\ÝÚ]ÚˆÂˆ˜˜[[˜ÙHˆOˆ˜˜[[˜ÙH‹ˆœ™]HˆOˆœ™]H‹ˆœÝX›HˆOˆœÝX›H‹ˆÈOˆ˜]]È‚ˆNÂˆBˆB‚ˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\^]Ü˜\[[ÙH‹Ý]˜\ˆ^Ü˜\[ÙJJBˆÂˆYˆ
+[X\ÛÛZ[œÒÙ^JÚ]K\ÜXÙHŠJBˆÂˆX\ÈÚ]K\ÜXÙH—HHÝš[™Ë‘\]X[Ê^Ü˜\[ÙK››ÝÜ˜\‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+BˆÈ››ÝÜ˜\‚ˆˆ››Ü›X[ŽÂˆBˆB‚ˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\Ú]K\ÜXÙKXÛÛ\ÙH‹Ý]˜\ˆÚ]TÜXÙPÛÛ\ÙJH	‰‚ˆ[X\ÛÛZ[œÒÙ^JÚ]K\ÜXÙHŠJBˆÂˆX\ÈÚ]K\ÜXÙH—HHÚ]TÜXÙPÛÛ\ÙHÝÚ]ÚˆÂˆœ™\Ù\™HˆOˆœ™H‹ˆœ™\Ù\™KXœ™XZÜÈˆOˆœ™K]Ü˜\‹ˆœ™\Ù\™K\ÜXÙ\ÈˆOˆœ™H‹ˆ˜œ™XZË\ÜXÙ\ÈˆOˆ˜œ™XZË\ÜXÙ\È‹ˆÈOˆ››Ü›X[‚ˆNÂˆB‚ˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\^X[YÛ‹X[‹Ý]˜\ˆ^[YÛ[
+H	‰‚ˆ[X\ÛÛZ[œÒÙ^J^X[YÛˆŠJBˆÂˆX\È^X[YÛˆ—HH^[YÛ[ÂˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\U[Y[[™P[X\Ù\ÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆ\S˜[YP^\ÔÚÜ[™
+œØÜ›Û][Y[[™H‹œØÜ›Û][Y[[™K[˜[YH‹œØÜ›Û][Y[[™KX^\È‹[
+NÂˆ\S˜[YP^\ÔÚÜ[™
+šY]Ë][Y[[™H‹šY]Ë][Y[[™K[˜[YH‹šY]Ë][Y[[™KX^\È‹šY]Ë][Y[[™KZ[œÙ]ŠNÂ‚ˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\˜[š[X][Û‹][Y[[™H‹Ý]˜\ˆ[š[X][Û•[Y[[™JJBˆÂˆYˆ
+Ýš[™Ë‘\]X[Ê[š[X][Û•[Y[[™K˜]]È‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+H	‰‚ˆX\•žQÙ]˜[YJœØÜ›Û][Y[[™K[˜[YH‹Ý]˜\ˆØÜ›Û[Y[[™S˜[YJH	‰‚ˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJØÜ›Û[Y[[™S˜[YJJBˆÂˆX\È˜[š[X][Û‹][Y[[™H—HHØÜ›Û[Y[[™S˜[YK•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆBˆB‚ˆ›ÚY\S˜[YP^\ÔÚÜ[™
+Ýš[™ÈÚÜ[™Ù^KÝš[™È˜[YRÙ^KÝš[™È^\ÒÙ^KÝš[™È[œÙ]Ù^JBˆÂˆYˆ
+UžQÙ]›Û‘[\SX\˜[YJX\ÚÜ[™Ù^KÝ]˜\ˆÚÜ[™
+JBˆÂˆ™]\›ŽÂˆB‚ˆ˜\ˆÚÜ[™\ÈHÜ]Ü]™[žPÚ\ŠÚÜ[™	ËÉÊNÂˆ˜\ˆ™Y›Ü™TÛ\ÚHÚÜ[™\ËÛÝ[ˆÈÚÜ[™\ÖÌHˆÚÜ[™Âˆ˜\ˆY\”Û\ÚHÚÜ[™\ËÛÝ[ˆHÈÚÜ[™\ÖÌWOË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+Hˆ[Â‚ˆ˜\ˆÚÙ[œÈHÜ]ÜÜÕ˜[Y\Ê™Y›Ü™TÛ\Ú
+Bˆ”Ù[XÝ
+OˆË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+JBˆ•Ú\™JOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ
+JBˆ•Ó\Ý
+
+NÂˆYˆ
+ÚÙ[œËÛÝ[OH
+BˆÂˆ™]\›ŽÂˆB‚ˆÝš[™È˜[YHH[ÂˆÝš[™È^\ÈH[Â‚ˆ›Ü™XXÚ
+˜\ˆÚÙ[ˆ[ˆÚÙ[œÊBˆÂˆYˆ
+ÚÙ[ˆ\ÈžˆÜˆžHˆÜˆ˜›ØÚÈˆÜˆš[›[™HŠBˆÂˆ^\ÈÏÏHÚÙ[ŽÂˆBˆ[ÙBˆÂˆ˜[YHÏÏHÚÙ[ŽÂˆBˆB‚ˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[YJH	‰ˆ[X\ÛÛZ[œÒÙ^J˜[YRÙ^JJBˆÂˆX\Û˜[YRÙ^WHH˜[YNÂˆBˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ^\ÊH	‰ˆ[X\ÛÛZ[œÒÙ^J^\ÒÙ^JJBˆÂˆX\Ø^\ÒÙ^WHH^\ÎÂˆB‚ˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ[œÙ]Ù^JH	‰‚ˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJY\”Û\Ú
+H	‰‚ˆ[X\ÛÛZ[œÒÙ^J[œÙ]Ù^JJBˆÂˆX\Ú[œÙ]Ù^WHHY\”Û\ÚÂˆBˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\SÙ™œÙ][X\Ù\ÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆYˆ
+UžQÙ]›Û‘[\SX\˜[YJX\›Ù™œÙ]‹Ý]˜\ˆÙ™œÙ]˜]ÊJBˆÂˆ™]\›ŽÂˆB‚ˆ˜\ˆ\ÈHÜ]Ü]™[žPÚ\ŠÙ™œÙ]˜]Ë	ËÉÊNÂˆ˜\ˆ™Y›Ü™TÛ\ÚH\ËÛÝ[ˆÈ\ÖÌK•š[J
+HˆÝš[™Ë‘[\NÂˆ˜\ˆY\”Û\ÚH\ËÛÝ[ˆHÈ\ÖÌWK•š[J
+K•ÓÝÙ\’[˜\šX[
+
+Hˆ[Â‚ˆ˜\ˆÚÙ[œÈHÜ]ÜÜÕ˜[Y\Ê™Y›Ü™TÛ\Ú
+Bˆ”Ù[XÝ
+OˆË•š[J
+JBˆ•Ú\™JOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ
+JBˆ•Ó\Ý
+
+NÂ‚ˆÝš[™È[™™\œ™Y]H[ÂˆÝš[™È[™™\œ™Y\Ý[˜ÙHH[ÂˆÝš[™È[™™\œ™Y›Ý]HH[Âˆ˜\ˆ[™™\œ™YÜÚ][Û•ÚÙ[œÈH™]È\ÝÝš[™ÏŠ
+NÂ‚ˆ›Ü™XXÚ
+˜\ˆ˜]ÕÚÙ[ˆ[ˆÚÙ[œÊBˆÂˆ˜\ˆÚÙ[ˆH˜]ÕÚÙ[‹•š[J
+NÂˆ˜\ˆÝÙ\ˆHÚÙ[‹•ÓÝÙ\’[˜\šX[
+
+NÂ‚ˆYˆ
+[™™\œ™Y]OH[	‰‚ˆ
+ÝÙ\‹”Ý\ÕÚ]
+œ]
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÝÙ\‹”Ý\ÕÚ]
+œ˜^J‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÝÙ\‹”Ý\ÕÚ]
+\›
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÝÙ\ˆOH››Û™HŠJBˆÂˆ[™™\œ™Y]HÝÙ\ŽÂˆÛÛ[YNÂˆB‚ˆYˆ
+[™™\œ™Y\Ý[˜ÙHOH[	‰‚ˆ™YÙ^’\ÓX]Ú
+ÝÙ\‹—–ÊËWOÊ
+Ê—
+ÊOß—
+ÊJ[_™[_ßš›Z[Ÿ›X^Û_[_[Ÿß_	JIŠJBˆÂˆ[™™\œ™Y\Ý[˜ÙHHÝÙ\ŽÂˆÛÛ[YNÂˆB‚ˆYˆ
+ÝÙ\ˆOH˜]]ÈˆÝÙ\ˆOHœ™]™\œÙHˆÝÙ\‹”Ý\ÕÚ]
+˜]]È‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+JBˆÂˆ[™™\œ™Y›Ý]HH[™™\œ™Y›Ý]HOH[ÈÝÙ\ˆˆ[™™\œ™Y›Ý]H
+Èˆˆ
+ÈÝÙ\ŽÂˆÛÛ[YNÂˆB‚ˆ[™™\œ™YÜÚ][Û•ÚÙ[œËY
+ÝÙ\ŠNÂˆB‚ˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ[™™\œ™Y]
+H	‰ˆ[X\ÛÛZ[œÒÙ^J›Ù™œÙ]\]ŠJBˆÂˆX\È›Ù™œÙ]\]—HH[™™\œ™Y]ÂˆB‚ˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ[™™\œ™Y\Ý[˜ÙJH	‰ˆ[X\ÛÛZ[œÒÙ^J›Ù™œÙ]Y\Ý[˜ÙHŠJBˆÂˆX\È›Ù™œÙ]Y\Ý[˜ÙH—HH[™™\œ™Y\Ý[˜ÙNÂˆB‚ˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ[™™\œ™Y›Ý]JH	‰ˆ[X\ÛÛZ[œÒÙ^J›Ù™œÙ]\›Ý]HŠJBˆÂˆX\È›Ù™œÙ]\›Ý]H—HH[™™\œ™Y›Ý]NÂˆB‚ˆYˆ
+[™™\œ™YÜÚ][Û•ÚÙ[œËÛÝ[ˆ	‰ˆ[X\ÛÛZ[œÒÙ^J›Ù™œÙ]\ÜÚ][ÛˆŠJBˆÂˆX\È›Ù™œÙ]\ÜÚ][Ûˆ—HHÝš[™Ë’›Ú[Šˆ‹[™™\œ™YÜÚ][Û•ÚÙ[œÊNÂˆB‚ˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJY\”Û\Ú
+H	‰ˆ[X\ÛÛZ[œÒÙ^J›Ù™œÙ]X[˜ÚÜˆŠJBˆÂˆX\È›Ù™œÙ]X[˜ÚÜˆ—HHY\”Û\ÚÂˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\P›Ü™\’[XYÙP[X\Ù\ÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆYˆ
+UžQÙ]›Û‘[\SX\˜[YJX\˜›Ü™\‹Z[XYÙH‹Ý]˜\ˆ›Ü™\’[XYÙT˜]ÊJBˆÂˆ™]\›ŽÂˆB‚ˆ˜\ˆÛ\Ú\ÈHÜ]Ü]™[žPÚ\Š›Ü™\’[XYÙT˜]Ë	ËÉÊNÂˆ˜\ˆXYHÛ\Ú\ËÛÝ[ˆÈÛ\Ú\ÖÌK•š[J
+HˆÝš[™Ë‘[\NÂ‚ˆ˜\ˆÚÙ[œÈHÜ]ÜÜÕ˜[Y\ÊXY
+K”Ù[XÝ
+OˆË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+JK•Ú\™JOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ
+JK•Ó\Ý
+
+NÂˆ˜\ˆ™\X]ÚÙ[œÈH™]È\ÝÝš[™ÏŠ
+NÂˆ˜\ˆÛXÙUÚÙ[œÈH™]È\ÝÝš[™ÏŠ
+NÂˆÝš[™ÈÛÝ\˜ÙHH[Â‚ˆ›Ü™XXÚ
+˜\ˆÚÙ[ˆ[ˆÚÙ[œÊBˆÂˆYˆ
+ÛÝ\˜ÙHOH[	‰‚ˆ
+ÚÙ[‹”Ý\ÕÚ]
+\›
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÚÙ[‹”Ý\ÕÚ]
+š[XYÙJ‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÚÙ[‹”Ý\ÕÚ]
+›[™X\‹YÜ˜YY[
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÚÙ[‹”Ý\ÕÚ]
+œ˜YX[YÜ˜YY[
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÚÙ[ˆOH››Û™HŠJBˆÂˆÛÝ\˜ÙHHÚÙ[ŽÂˆÛÛ[YNÂˆB‚ˆYˆ
+ÚÙ[ˆ\ÈœÝ™]ÚˆÜˆœ™\X]ˆÜˆœ›Ý[™ˆÜˆœÜXÙHŠBˆÂˆ™\X]ÚÙ[œËY
+ÚÙ[ŠNÂˆÛÛ[YNÂˆB‚ˆÛXÙUÚÙ[œËY
+ÚÙ[ŠNÂˆB‚ˆ˜\ˆÚYHÛ\Ú\ËÛÝ[ˆHÈ^˜XÝ›Û”™\X]ÙYÛY[
+Û\Ú\ÖÌWK™\X]ÚÙ[œÊHˆ[Âˆ˜\ˆÝ]Ù]HÛ\Ú\ËÛÝ[ˆˆÈ^˜XÝ›Û”™\X]ÙYÛY[
+Û\Ú\ÖÌ—K™\X]ÚÙ[œÊHˆ[Â‚ˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÛÝ\˜ÙJH	‰ˆ[X\ÛÛZ[œÒÙ^J˜›Ü™\‹Z[XYÙK\ÛÝ\˜ÙHŠJBˆÂˆX\È˜›Ü™\‹Z[XYÙK\ÛÝ\˜ÙH—HHÛÝ\˜ÙNÂˆBˆYˆ
+ÛXÙUÚÙ[œËÛÝ[ˆ	‰ˆ[X\ÛÛZ[œÒÙ^J˜›Ü™\‹Z[XYÙK\ÛXÙHŠJBˆÂˆX\È˜›Ü™\‹Z[XYÙK\ÛXÙH—HHÝš[™Ë’›Ú[Šˆ‹ÛXÙUÚÙ[œÊNÂˆBˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÚY
+H	‰ˆ[X\ÛÛZ[œÒÙ^J˜›Ü™\‹Z[XYÙK]ÚYŠJBˆÂˆX\È˜›Ü™\‹Z[XYÙK]ÚY—HHÚYÂˆBˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÝ]Ù]
+H	‰ˆ[X\ÛÛZ[œÒÙ^J˜›Ü™\‹Z[XYÙK[Ý]Ù]ŠJBˆÂˆX\È˜›Ü™\‹Z[XYÙK[Ý]Ù]—HHÝ]Ù]ÂˆBˆYˆ
+™\X]ÚÙ[œËÛÝ[ˆ	‰ˆ[X\ÛÛZ[œÒÙ^J˜›Ü™\‹Z[XYÙK\™\X]ŠJBˆÂˆX\È˜›Ü™\‹Z[XYÙK\™\X]—HHÝš[™Ë’›Ú[Šˆ‹™\X]ÚÙ[œÊNÂˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\SX\ÚÐ›Ü™\[X\Ù\ÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆYˆ
+UžQÙ]›Û‘[\SX\˜[YJX\›X\ÚËX›Ü™\ˆ‹Ý]˜\ˆX\ÚÐ›Ü™\”˜]ÊJBˆÂˆ™]\›ŽÂˆB‚ˆ˜\ˆÛ\Ú\ÈHÜ]Ü]™[žPÚ\ŠX\ÚÐ›Ü™\”˜]Ë	ËÉÊNÂˆ˜\ˆXYHÛ\Ú\ËÛÝ[ˆÈÛ\Ú\ÖÌK•š[J
+HˆÝš[™Ë‘[\NÂ‚ˆ˜\ˆÚÙ[œÈHÜ]ÜÜÕ˜[Y\ÊXY
+K”Ù[XÝ
+OˆË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+JK•Ú\™JOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ
+JK•Ó\Ý
+
+NÂˆ˜\ˆ™\X]ÚÙ[œÈH™]È\ÝÝš[™ÏŠ
+NÂˆ˜\ˆÛXÙUÚÙ[œÈH™]È\ÝÝš[™ÏŠ
+NÂˆÝš[™ÈÛÝ\˜ÙHH[Â‚ˆ›Ü™XXÚ
+˜\ˆÚÙ[ˆ[ˆÚÙ[œÊBˆÂˆYˆ
+ÛÝ\˜ÙHOH[	‰‚ˆ
+ÚÙ[‹”Ý\ÕÚ]
+\›
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÚÙ[‹”Ý\ÕÚ]
+š[XYÙJ‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÚÙ[‹”Ý\ÕÚ]
+›[™X\‹YÜ˜YY[
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÚÙ[‹”Ý\ÕÚ]
+œ˜YX[YÜ˜YY[
+‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+HˆÚÙ[ˆOH››Û™HŠJBˆÂˆÛÝ\˜ÙHHÚÙ[ŽÂˆÛÛ[YNÂˆB‚ˆYˆ
+ÚÙ[ˆ\ÈœÝ™]ÚˆÜˆœ™\X]ˆÜˆœ›Ý[™ˆÜˆœÜXÙHŠBˆÂˆ™\X]ÚÙ[œËY
+ÚÙ[ŠNÂˆÛÛ[YNÂˆB‚ˆÛXÙUÚÙ[œËY
+ÚÙ[ŠNÂˆB‚ˆ˜\ˆÚYHÛ\Ú\ËÛÝ[ˆHÈ^˜XÝ›Û”™\X]ÙYÛY[
+Û\Ú\ÖÌWK™\X]ÚÙ[œÊHˆ[Âˆ˜\ˆÝ]Ù]HÛ\Ú\ËÛÝ[ˆˆÈ^˜XÝ›Û”™\X]ÙYÛY[
+Û\Ú\ÖÌ—K™\X]ÚÙ[œÊHˆ[Â‚ˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÛÝ\˜ÙJH	‰ˆ[X\ÛÛZ[œÒÙ^J›X\ÚËX›Ü™\‹\ÛÝ\˜ÙHŠJBˆÂˆX\È›X\ÚËX›Ü™\‹\ÛÝ\˜ÙH—HHÛÝ\˜ÙNÂˆBˆYˆ
+ÛXÙUÚÙ[œËÛÝ[ˆ	‰ˆ[X\ÛÛZ[œÒÙ^J›X\ÚËX›Ü™\‹\ÛXÙHŠJBˆÂˆX\È›X\ÚËX›Ü™\‹\ÛXÙH—HHÝš[™Ë’›Ú[Šˆ‹ÛXÙUÚÙ[œÊNÂˆBˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÚY
+H	‰ˆ[X\ÛÛZ[œÒÙ^J›X\ÚËX›Ü™\‹]ÚYŠJBˆÂˆX\È›X\ÚËX›Ü™\‹]ÚY—HHÚYÂˆBˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÝ]Ù]
+H	‰ˆ[X\ÛÛZ[œÒÙ^J›X\ÚËX›Ü™\‹[Ý]Ù]ŠJBˆÂˆX\È›X\ÚËX›Ü™\‹[Ý]Ù]—HHÝ]Ù]ÂˆBˆYˆ
+™\X]ÚÙ[œËÛÝ[ˆ	‰ˆ[X\ÛÛZ[œÒÙ^J›X\ÚËX›Ü™\‹\™\X]ŠJBˆÂˆX\È›X\ÚËX›Ü™\‹\™\X]—HHÝš[™Ë’›Ú[Šˆ‹™\X]ÚÙ[œÊNÂˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\PÛÛZ[’[š[œÚXÐ[X\Ù\ÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆ˜\ˆ^XÚ][›[™HHžQÙ]›Û‘[\SX\˜[YJX\˜ÛÛZ[‹Z[š[œÚXËZ[›[™K\Ú^™H‹Ý]˜\ˆ[›[™T˜]ÊBˆÈ[›[™T˜]Âˆˆ
+žQÙ]›Û‘[\SX\˜[YJX\˜ÛÛZ[‹Z[š[œÚXË]ÚY‹Ý]˜\ˆÚY˜]ÊHÈÚY˜]Èˆ[
+NÂˆ˜\ˆ^XÚ]›ØÚÈHžQÙ]›Û‘[\SX\˜[YJX\˜ÛÛZ[‹Z[š[œÚXËX›ØÚË\Ú^™H‹Ý]˜\ˆ›ØÚÔ˜]ÊBˆÈ›ØÚÔ˜]Âˆˆ
+žQÙ]›Û‘[\SX\˜[YJX\˜ÛÛZ[‹Z[š[œÚXËZZYÚ‹Ý]˜\ˆZYÚ˜]ÊHÈZYÚ˜]Èˆ[
+NÂ‚ˆYˆ
+[X\ÛÛZ[œÒÙ^J˜ÛÛZ[‹Z[š[œÚXË\Ú^™HŠJBˆÂˆYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ^XÚ][›[™JH	‰ˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ^XÚ]›ØÚÊJBˆÂˆX\È˜ÛÛZ[‹Z[š[œÚXË\Ú^™H—HH	žÙ^XÚ][›[™_HÙ^XÚ]›ØÚßHŽÂˆBˆ[ÙHYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ^XÚ][›[™JJBˆÂˆX\È˜ÛÛZ[‹Z[š[œÚXË\Ú^™H—HH^XÚ][›[™NÂˆBˆ[ÙHYˆ
+\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ^XÚ]›ØÚÊJBˆÂˆX\È˜ÛÛZ[‹Z[š[œÚXË\Ú^™H—HH^XÚ]›ØÚÎÂˆBˆB‚ˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\˜ÛÛZ[‹Z[š[œÚXË\Ú^™H‹Ý]˜\ˆÛÛZ[’[š[œÚXÔÚ^™T˜]ÊJBˆÂˆ˜\ˆÚÙ[œÈHÜ]ÜÜÕ˜[Y\ÊÛÛZ[’[š[œÚXÔÚ^™T˜]ÊBˆ”Ù[XÝ
+OˆË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+JBˆ•Ú\™JOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ
+JBˆ•Ó\Ý
+
+NÂˆYˆ
+ÚÙ[œËÛÝ[ˆ
+BˆÂˆ˜\ˆ[›[™HHÚÙ[œÖÌNÂˆ˜\ˆ›ØÚÈHÚÙ[œËÛÝ[ˆHÈÚÙ[œÖÌWHˆÚÙ[œÖÌNÂ‚ˆYˆ
+[X\ÛÛZ[œÒÙ^J˜ÛÛZ[‹Z[š[œÚXËZ[›[™K\Ú^™HŠJBˆÂˆX\È˜ÛÛZ[‹Z[š[œÚXËZ[›[™K\Ú^™H—HH[›[™NÂˆBˆYˆ
+[X\ÛÛZ[œÒÙ^J˜ÛÛZ[‹Z[š[œÚXËX›ØÚË\Ú^™HŠJBˆÂˆX\È˜ÛÛZ[‹Z[š[œÚXËX›ØÚË\Ú^™H—HH›ØÚÎÂˆBˆYˆ
+[X\ÛÛZ[œÒÙ^J˜ÛÛZ[‹Z[š[œÚXË]ÚYŠJBˆÂˆX\È˜ÛÛZ[‹Z[š[œÚXË]ÚY—HH[›[™NÂˆBˆYˆ
+[X\ÛÛZ[œÒÙ^J˜ÛÛZ[‹Z[š[œÚXËZZYÚŠJBˆÂˆX\È˜ÛÛZ[‹Z[š[œÚXËZZYÚ—HH›ØÚÎÂˆBˆBˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\Q›Û[™^[X\Ù\ÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆ\UÚÙ[YÙÜ™YØ]ÜŠˆ™›Û\Þ[\Ú\È‹ˆ™›Û\Þ[\Ú\Ë]ÙZYÚ‹ˆ™›Û\Þ[\Ú\Ë\Ý[H‹ˆ™›Û\Þ[\Ú\Ë\ÛX[XØ\È‹ˆ™›Û\Þ[\Ú\Ë\ÜÚ][ÛˆŠNÂ‚ˆ\UÚÙ[YÙÜ™YØ]ÜŠˆ™›Û]˜\šX[‹ˆ™›Û]˜\šX[[YØ]\™\È‹ˆ™›Û]˜\šX[XØ\È‹ˆ™›Û]˜\šX[[[Y\šXÈ‹ˆ™›Û]˜\šX[YX\ÝX\ÚX[ˆ‹ˆ™›Û]˜\šX[X[\›˜]\È‹ˆ™›Û]˜\šX[\ÜÚ][Ûˆ‹ˆ™›Û]˜\šX[Y[[ÚšHŠNÂ‚ˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\^X[YÛ‹[\Ý‹Ý]˜\ˆ^[YÛ“\Ý
+H	‰‚ˆ[X\ÛÛZ[œÒÙ^J^X[YÛˆŠH	‰‚ˆ\Ýš[™Ë‘\]X[Ê^[YÛ“\Ý˜]]È‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+JBˆÂˆX\È^X[YÛˆ—HH^[YÛ“\ÝÂˆB‚ˆ›ÚY\UÚÙ[YÙÜ™YØ]ÜŠÝš[™È\™Ù]Ù^K\˜[\ÈÝš[™Ö×HÛÝ\˜ÙRÙ^\ÊBˆÂˆYˆ
+X\ÛÛZ[œÒÙ^J\™Ù]Ù^JJBˆÂˆ™]\›ŽÂˆB‚ˆ˜\ˆÚÙ[œÈH™]È\ÝÝš[™ÏŠ
+NÂˆ›Ü™XXÚ
+˜\ˆÙ^H[ˆÛÝ\˜ÙRÙ^\ÊBˆÂˆYˆ
+UžQÙ]›Û‘[\SX\˜[YJX\Ù^KÝ]˜\ˆ˜]ÊJBˆÂˆÛÛ[YNÂˆB‚ˆ›Ü™XXÚ
+˜\ˆÚÙ[ˆ[ˆÜ]ÜÜÕ˜[Y\Ê˜]ÊBˆ”Ù[XÝ
+OˆË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+JBˆ•Ú\™JOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ
+JJBˆÂˆYˆ
+]ÚÙ[œËÛÛZ[œÊÚÙ[‹Ýš[™ÐÛÛ\\™\‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆÂˆÚÙ[œËY
+ÚÙ[ŠNÂˆBˆBˆB‚ˆYˆ
+ÚÙ[œËÛÝ[ˆ
+BˆÂˆX\Ý\™Ù]Ù^WHHÝš[™Ë’›Ú[Šˆ‹ÚÙ[œÊNÂˆBˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\P[š[X][Û”˜[™ÙP[X\Ù\ÊXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\˜[š[X][Û‹\˜[™ÙH‹Ý]˜\ˆ[š[X][Û”˜[™ÙT˜]ÊJBˆÂˆ˜\ˆÚÙ[œÈHÜ]ÜÜÕ˜[Y\Ê[š[X][Û”˜[™ÙT˜]ÊBˆ”Ù[XÝ
+OˆË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+JBˆ•Ú\™JOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ
+JBˆ•Ó\Ý
+
+NÂ‚ˆYˆ
+ÚÙ[œËÛÝ[OHJBˆÂˆYˆ
+[X\ÛÛZ[œÒÙ^J˜[š[X][Û‹\˜[™ÙK\Ý\ŠJBˆÂˆX\È˜[š[X][Û‹\˜[™ÙK\Ý\—HHÚÙ[œÖÌNÂˆBˆYˆ
+[X\ÛÛZ[œÒÙ^J˜[š[X][Û‹\˜[™ÙKY[™ŠJBˆÂˆX\È˜[š[X][Û‹\˜[™ÙKY[™—HHÚÙ[œÖÌNÂˆBˆBˆ[ÙHYˆ
+ÚÙ[œËÛÝ[ˆJBˆÂˆYˆ
+[X\ÛÛZ[œÒÙ^J˜[š[X][Û‹\˜[™ÙK\Ý\ŠJBˆÂˆX\È˜[š[X][Û‹\˜[™ÙK\Ý\—HHÚÙ[œÖÌNÂˆBˆYˆ
+[X\ÛÛZ[œÒÙ^J˜[š[X][Û‹\˜[™ÙKY[™ŠJBˆÂˆX\È˜[š[X][Û‹\˜[™ÙKY[™—HHÝš[™Ë’›Ú[Šˆ‹ÚÙ[œË”ÚÚ\
+JJNÂˆBˆBˆB‚ˆYˆ
+[X\ÛÛZ[œÒÙ^J˜[š[X][Û‹\˜[™ÙHŠH	‰‚ˆžQÙ]›Û‘[\SX\˜[YJX\˜[š[X][Û‹\˜[™ÙK\Ý\‹Ý]˜\ˆ˜[™ÙTÝ\
+H	‰‚ˆžQÙ]›Û‘[\SX\˜[YJX\˜[š[X][Û‹\˜[™ÙKY[™‹Ý]˜\ˆ˜[™ÙQ[™
+JBˆÂˆX\È˜[š[X][Û‹\˜[™ÙH—HHÝš[™Ë‘\]X[Ê˜[™ÙTÝ\˜[™ÙQ[™Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+BˆÈ˜[™ÙTÝ\ˆˆ	žÜ˜[™ÙTÝ\HÜ˜[™ÙQ[™HŽÂˆBˆB‚ˆš]˜]HÝ]XÈ›ÚY\PY˜[˜ÙY[™[ÜžT\ÜÕ›ÝYÚ
+XÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\
+BˆÂˆ›Ü›X[^™RY”™\Ù[
+˜[˜ÚÜ‹[˜[YHŠNÂˆ›Ü›X[^™RY”™\Ù[
+˜[˜ÚÜ‹\ØÛÜHŠNÂˆ›Ü›X[^™RY”™\Ù[
+˜[š[X][Û‹XÛÛ\ÜÚ][ÛˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+˜^š[]]ŠNÂˆ›Ü›X[^™RY”™\Ù[
+˜˜XÚÙÜ›Ý[™X›[™[[ÙHŠNÂˆ›Ü›X[^™RY”™\Ù[
+˜›ÞYXÛÜ˜][Û‹Xœ™XZÈŠNÂˆ›Ü›X[^™RY”™\Ù[
+˜Û\ŠNÂˆ›Ü›X[^™RY”™\Ù[
+˜ÛÛÜ‹Z[\œÛ][ÛˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+˜ÛÛÜ‹Z[\œÛ][Û‹Yš[\œÈŠNÂˆ›Ü›X[^™RY”™\Ù[
+˜ÛÛÜ‹\™[™\š[™ÈŠNÂˆ›Ü›X[^™RY”™\Ù[
+˜ÛÛ[[‹Yš[ŠNÂˆ›Ü›X[^™RY”™\Ù[
+˜ÛÛ[]š\ÚXš[]HŠNÂˆ›Ü›X[^™RY”™\Ù[
+™š[[ÜXÚ]HŠNÂˆ›Ü›X[^™RY”™\Ù[
+™š[\[HŠNÂˆ›Ü›X[^™RY”™\Ù[
+™›ÛÙXÛÛÜˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+™›ÛÙ[ÜXÚ]HŠNÂˆ›Ü›X[^™RY”™\Ù[
+™›ÛZÙ\›š[™ÈŠNÂˆ›Ü›X[^™RY”™\Ù[
+™›Û[[™ÝXYÙK[Ý™\œšYHŠNÂˆ›Ü›X[^™RY”™\Ù[
+™›Û[ÜXØ[\Ú^š[™ÈŠNÂˆ›Ü›X[^™RY”™\Ù[
+™›Û\[]HŠNÂˆ›Ü›X[^™RY”™\Ù[
+™›Û\Ú^™KXY\ÝŠNÂˆ›Ü›X[^™RY”™\Ù[
+š[™Ú[™Ë\[˜ÝX][ÛˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+š\[˜]KXÚ\˜XÝ\ˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+š\[˜]K[[Z]XÚ\œÈŠNÂˆ›Ü›X[^™RY”™\Ù[
+›YÚ[™ËXÛÛÜˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+›[™KXœ™XZÈŠNÂˆ›Ü›X[^™RY”™\Ù[
+›X\ÚËX›Ü™\‹[[ÙHŠNÂˆ›Ü›X[^™RY”™\Ù[
+›X\ÚËXÛ\ŠNÂˆ›Ü›X[^™RY”™\Ù[
+›X\ÚËXÛÛ\ÜÚ]HŠNÂˆ›Ü›X[^™RY”™\Ù[
+›X\ÚË[ÜšYÚ[ˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+›X\ÚË]\HŠNÂˆ›Ü›X[^™RY”™\Ù[
+›Ý™\™›ÝËXÛ\[X\™Ú[ˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+œZ[[Ü™\ˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÜÚ][Û‹X[˜ÚÜˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÜÚ][Û‹X\™XHŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÜÚ][Û‹]žHŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÜÚ][Û‹]žKY˜[˜XÚÜÈŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÜÚ][Û‹]žK[Ü™\ˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÜÚ][Û‹]š\ÚXš[]HŠNÂˆ›Ü›X[^™RY”™\Ù[
+œ][Ý\ÈŠNÂˆ›Ü›X[^™RY”™\Ù[
+œXžKX[YÛˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+œXžK[Y\™ÙHŠNÂˆ›Ü›X[^™RY”™\Ù[
+œXžK\ÜÚ][ÛˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+œØÜ›Û\Û˜\\ÝÜŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÝÜXÛÛÜˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÝÜ[ÜXÚ]HŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÝ›ÚÙKY\Ú\œ˜^HŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÝ›ÚÙKY\ÚÙ™œÙ]ŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÝ›ÚÙK[[™XØ\ŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÝ›ÚÙK[[™Z›Ú[ˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÝ›ÚÙK[Z]\›[Z]ŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÝ›ÚÙK[ÜXÚ]HŠNÂˆ›Ü›X[^™RY”™\Ù[
+œÝ›ÚÙK]ÚYŠNÂˆ›Ü›X[^™RY”™\Ù[
+^X]]ÜÜXÙHŠNÂˆ›Ü›X[^™RY”™\Ù[
+^XÛÛXš[™K]\šYÚŠNÂˆ›Ü›X[^™RY”™\Ù[
+^Y[\\Ú\Ë\ÜÚ][ÛˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+^Y[\\Ú\Ë\ÚÚ\ŠNÂˆ›Ü›X[^™RY”™\Ù[
+^Z\ÝYžHŠNÂˆ›Ü›X[^™RY”™\Ù[
+^\ÜXÚ[™ÈŠNÂˆ›Ü›X[^™RY”™\Ù[
+^\ÜXÚ[™Ë]š[HŠNÂˆ›Ü›X[^™RY”™\Ù[
+^][™\›[™K\ÜÚ][ÛˆŠNÂˆ›Ü›X[^™RY”™\Ù[
+[Y[[™K\ØÛÜHŠNÂˆ›Ü›X[^™RY”™\Ù[
+˜[œÙ›Ü›KX›ÞŠNÂˆ›Ü›X[^™RY”™\Ù[
+šY]Ë]˜[œÚ][Û‹[˜[YHŠNÂ‚ˆ›ÚY›Ü›X[^™RY”™\Ù[
+Ýš[™ÈÙ^JBˆÂˆYˆ
+žQÙ]›Û‘[\SX\˜[YJX\Ù^KÝ]˜\ˆ˜[YJJBˆÂˆX\ÚÙ^WHH˜[YNÂˆBˆBˆB‚ˆš]˜]HÝ]XÈÝš[™È™\ÛÛ™PÛÜ›™\’Ù^JÝš[™È›ØÚÔÚYKÝš[™È[›[™TÚYJBˆÂˆYˆ
+Ýš[™Ë‘\]X[Ê›ØÚÔÚYKÜ‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+JBˆÂˆ™]\›ˆÝš[™Ë‘\]X[Ê[›[™TÚYK›Y‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+BˆÈ˜›Ü™\‹]Ü[Y\˜Y]\È‚ˆˆ˜›Ü™\‹]Ü\šYÚ\˜Y]\ÈŽÂˆB‚ˆ™]\›ˆÝš[™Ë‘\]X[Ê[›[™TÚYK›Y‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[
+BˆÈ˜›Ü™\‹X›ÝÛK[Y\˜Y]\È‚ˆˆ˜›Ü™\‹X›ÝÛK\šYÚ\˜Y]\ÈŽÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛžQÙ]›Û‘[\SX\˜[YJXÝ[Û˜\žOÝš[™ËÝš[™ÏˆX\Ýš[™ÈÙ^KÝ]Ýš[™È›Ü›X[^™Y
+BˆÂˆ›Ü›X[^™YH[ÂˆYˆ
+X\OH[Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÙ^JJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆYˆ
+[X\•žQÙ]˜[YJÙ^KÝ]˜\ˆ˜]ÊHÝš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜]ÊJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆ›Ü›X[^™YH˜]Ë•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆ™]\›ˆ›Ü›X[^™Y“[™ÝˆÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛžT\œÙSÙÚXØ[^\ÔZ\ŠÝš[™È˜]ËÝ]Ýš[™ÈÝ\Ý]Ýš[™È[™
+BˆÂˆÝ\H[Âˆ[™H[ÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜]ÊJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆ˜\ˆÚÙ[œÈHÜ]ÜÜÕ˜[Y\Ê˜]ÊBˆ”Ù[XÝ
+OˆË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+JBˆ•Ú\™JOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ
+JBˆ•Ó\Ý
+
+NÂˆYˆ
+ÚÙ[œËÛÝ[OH
+BˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆÝ\HÚÙ[œÖÌNÂˆ[™HÚÙ[œËÛÝ[ˆHÈÚÙ[œÖÌWHˆÚÙ[œÖÌNÂˆ™]\›ˆYNÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛžTÜ]ÙÚXØ[^\ÔZ\”˜]ÊÝš[™È˜]ËÝ]Ýš[™ÈÝ\Ý]Ýš[™È[™
+BˆÂˆ™]\›ˆžT\œÙSÙÚXØ[^\ÔZ\Š˜]ËÝ]Ý\Ý][™
+NÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛ\ÐÜÜÐ]]ÊÝš[™È˜]ÊBˆÂˆ™]\›ˆÝš[™Ë‘\]X[Ê˜]ÏË•š[J
+K˜]]È‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJNÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛžQ^[™\ÚXØ[›ÞÚÜ[™
+Ýš[™È˜]ËÝ]Ýš[™ÈÜÝ]Ýš[™ÈšYÚÝ]Ýš[™È›ÝÛKÝ]Ýš[™ÈY
+BˆÂˆÜH[ÂˆšYÚH[Âˆ›ÝÛHH[ÂˆYH[ÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜]ÊJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆ˜\ˆÚÙ[œÈHÜ]ÜÜÕ˜[Y\Ê˜]ÊBˆ”Ù[XÝ
+OˆË•š[J
+K•ÓÝÙ\’[˜\šX[
+
+JBˆ•Ú\™JOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ
+JBˆ•Ó\Ý
+
+NÂ‚ˆYˆ
+ÚÙ[œËÛÝ[OHÚÙ[œËÛÝ[ˆ
+BˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆÝÚ]Ú
+ÚÙ[œËÛÝ[
+BˆÂˆØ\ÙHN‚ˆÜHšYÚH›ÝÛHHYHÚÙ[œÖÌNÂˆœ™XZÎÂˆØ\ÙHŽ‚ˆÜH›ÝÛHHÚÙ[œÖÌNÂˆšYÚHYHÚÙ[œÖÌWNÂˆœ™XZÎÂˆØ\ÙHÎ‚ˆÜHÚÙ[œÖÌNÂˆšYÚHYHÚÙ[œÖÌWNÂˆ›ÝÛHHÚÙ[œÖÌ—NÂˆœ™XZÎÂˆY˜][‚ˆÜHÚÙ[œÖÌNÂˆšYÚHÚÙ[œÖÌWNÂˆ›ÝÛHHÚÙ[œÖÌ—NÂˆYHÚÙ[œÖÌ×NÂˆœ™XZÎÂˆB‚ˆ™]\›ˆYNÂˆB‚ˆš]˜]HÝ]XÈ\ÝÝš[™ÏˆÜ]Ü]™[žPÚ\ŠÝš[™È˜]ËÚ\ˆÙ\\˜]ÜŠBˆÂˆ˜\ˆ™\Ý[H™]È\ÝÝš[™ÏŠ
+NÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜]ÊJBˆÂˆ™]\›ˆ™\Ý[ÂˆB‚ˆ˜\ˆÝ\œ™[H™]ÈÝš[™ÐZ[\Š
+NÂˆ[\™[‘\HÂˆ[œ˜XÚÙ]\HÂˆ›ÛÛ[”Ýš[™ÈH˜[ÙNÂˆÚ\ˆ][ÝHH	×	ÎÂ‚ˆ›Ü™XXÚ
+˜\ˆÚ[ˆ˜]ÊBˆÂˆYˆ
+
+ÚOH	È‰ÈÚOH	×	ÉÊH	‰ˆ
+][ÝHOH	×	È][ÝHOHÚ
+JBˆÂˆYˆ
+[”Ýš[™È	‰ˆ][ÝHOHÚ
+BˆÂˆ[”Ýš[™ÈH˜[ÙNÂˆ][ÝHH	×	ÎÂˆBˆ[ÙHYˆ
+Z[”Ýš[™ÊBˆÂˆ[”Ýš[™ÈHYNÂˆ][ÝHHÚÂˆBˆÝ\œ™[\[™
+Ú
+NÂˆÛÛ[YNÂˆB‚ˆYˆ
+Z[”Ýš[™ÊBˆÂˆYˆ
+ÚOH	Ê	ÊH\™[‘\
+ÊÎÂˆ[ÙHYˆ
+ÚOH	ÊIÈ	‰ˆ\™[‘\ˆ
+H\™[‘\KNÂˆ[ÙHYˆ
+ÚOH	ÖÉÊHœ˜XÚÙ]\
+ÊÎÂˆ[ÙHYˆ
+ÚOH	×IÈ	‰ˆœ˜XÚÙ]\ˆ
+Hœ˜XÚÙ]\KNÂˆB‚ˆYˆ
+Z[”Ýš[™È	‰ˆ\™[‘\OH	‰ˆœ˜XÚÙ]\OH	‰ˆÚOHÙ\\˜]ÜŠBˆÂˆ™\Ý[Y
+Ý\œ™[•ÔÝš[™Ê
+K•š[J
+JNÂˆÝ\œ™[ÛX\Š
+NÂˆÛÛ[YNÂˆB‚ˆÝ\œ™[\[™
+Ú
+NÂˆB‚ˆYˆ
+Ý\œ™[“[™Ýˆ
+BˆÂˆ™\Ý[Y
+Ý\œ™[•ÔÝš[™Ê
+K•š[J
+JNÂˆB‚ˆ™]\›ˆ™\Ý[ÂˆB‚ˆš]˜]HÝ]XÈÝš[™È^˜XÝ›Û”™\X]ÙYÛY[
+Ýš[™È˜]Ë\ÝÝš[™Ïˆ™\X]ÚÙ[œÊBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜]ÊJBˆÂˆ™]\›ˆ[ÂˆB‚ˆ˜\ˆÙ\H™]È\ÝÝš[™ÏŠ
+NÂˆ˜\ˆÚÙ[œÈHÜ]ÜÜÕ˜[Y\Ê˜]ÊBˆ”Ù[XÝ
+ÚÙ[ˆOˆÚÙ[Ë•š[J
+K•ÓÝÙ\’[˜\šX[
+
+JBˆ•Ú\™JÚÙ[ˆOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJÚÙ[ŠJNÂ‚ˆ›Ü™XXÚ
+˜\ˆÚÙ[ˆ[ˆÚÙ[œÊBˆÂˆYˆ
+ÚÙ[ˆ\ÈœÝ™]ÚˆÜˆœ™\X]ˆÜˆœ›Ý[™ˆÜˆœÜXÙHŠBˆÂˆ™\X]ÚÙ[œËY
+ÚÙ[ŠNÂˆÛÛ[YNÂˆB‚ˆÙ\Y
+ÚÙ[ŠNÂˆB‚ˆ™]\›ˆÙ\ÛÝ[ˆÈÝš[™Ë’›Ú[Šˆ‹Ù\
+Hˆ[ÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛžT\œÙP›Ü™\•ÚYÚÙ[ŠÝš[™È˜]ËÝX›H[P˜\ÙKÝ]ÝX›HÚY
+BˆÂˆÚYHÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜]ÊJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆ˜]ÈH˜]Ë•š[J
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆÝÚ]Ú
+˜]ÊBˆÂˆØ\ÙH[ˆŽ‚ˆÚYHNÂˆ™]\›ˆYNÂˆØ\ÙH›YY][HŽ‚ˆÚYHÎÂˆ™]\›ˆYNÂˆØ\ÙHXÚÈŽ‚ˆÚYHNÂˆ™]\›ˆYNÂˆB‚ˆYˆ
+žT
+˜]ËÝ]ÚY[P˜\ÙJJBˆÂˆ™]\›ˆYNÂˆB‚ˆ™]\›ˆÝX›K•žT\œÙJ˜]Ë[X™\”Ý[\Ë‘›Ø]Ý[\™R[™›Ë’[˜\šX[Ý[\™KÝ]ÚY
+NÂˆB‚ˆš]˜]HÝ]XÈ›ÛÛžT\œÙSÙÚXØ[^\ÔZ\ŠÝš[™È˜]ËÝX›H[P˜\ÙKÝ]ÝX›HÝ\Ý]ÝX›H[™
+BˆÂˆÝ\HÂˆ[™HÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜]ÊJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆ˜\ˆÚÙ[œÈHÜ]ÜÜÕ˜[Y\Ê˜]ÊBˆ”Ù[XÝ
+OˆË•š[J
+JBˆ•Ú\™JOˆ\Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ
+JBˆ•Ó\Ý
+
+NÂˆYˆ
+ÚÙ[œËÛÝ[OH
+BˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆYˆ
+UžT
+ÚÙ[œÖÌKÝ]Ý\[P˜\ÙJJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆYˆ
+ÚÙ[œËÛÝ[OHJBˆÂˆ[™HÝ\Âˆ™]\›ˆYNÂˆB‚ˆYˆ
+UžT
+ÚÙ[œÖÌWKÝ][™[P˜\ÙJJBˆÂˆ™]\›ˆ˜[ÙNÂˆB‚ˆ™]\›ˆYNÂˆBˆˆš]˜]HÝ]XÈ›ÛÛ\ÒY[Ú\ŠÚ\ˆÊBˆÂˆ™]\›ˆÚ\‹’\Ó]\“Ü‘YÚ]
+ÊHÈOH	ËIÈÈOH	×ÉÈÈOH	Ê‰ÈÈHLŽÂˆB‚ˆËËÈÝ[[X\žO‚ˆËËÈ™\ÛÛ™H]Š
+H[˜Ý[Ûˆ[ˆÔÔÈ˜[YK‚ˆËËÈÜÝ[[X\žO‚ˆš]˜]HÝ]XÈÝš[™È™\ÛÛ™P]ŠÝš[™È˜[YK[[Y[ŠBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü‘[\J˜[YJHˆOH[]˜[YKÛÛZ[œÊ˜]ŠŠJH™]\›ˆ˜[YNÂˆˆËÈ™\XÙ\È]Š˜[YJHÚ]]šX]H˜[YBˆ™]\›ˆÞ\Ý[K•^”™YÝ[\‘^™\ÜÚ[ÛœË”™YÙ^”™\XÙJ˜[YK˜]—Ê—
+ÊŠØK^KVŒNKWJÊWÊ—
+H‹HOˆˆÂˆÝš[™È]“˜[YHHK‘Ü›Ý\ÖÌWK•˜[YK•š[J
+NÂˆÝš[™È]•˜[H‹‘Ù]]šX]J]“˜[YJNÂˆ™]\›ˆ]•˜[ÏÈˆŽÂˆJNÂˆB‚ˆš]˜]HÝ]XÈÝX›OÈ\œÙQØ\˜[YJÝš[™È˜[
+BˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ˜[
+JH™]\›ˆ[Âˆ˜[H˜[•š[J
+NÂˆYˆ
+˜[‘[™ÕÚ]
+œ‹Ýš[™ÐÛÛ\\š\ÛÛ‹“Ü™[˜[YÛ›Ü™PØ\ÙJJBˆÂˆYˆ
+ÝX›K•žT\œÙJ˜[”ÝXœÝš[™Ê˜[“[™ÝHŠKÝ]ÝX›H
+JH™]\›ˆÂˆBˆYˆ
+˜[[
+Ú\‹’\ÑYÚ]
+JBˆÂˆYˆ
+ÝX›K•žT\œÙJ˜[Ý]ÝX›H
+JH™]\›ˆÂˆBˆ™]\›ˆÂˆB‚ˆËËÈÝ[[X\žO‚ˆËËÈ™\šYšY\ÈÝXœ™\ÛÝ\˜ÙH[YÜš]H
+Ô’JH›Üˆ™]ÚYÛÛ[‚ˆËËÈ™]\›œÈYHYˆ[YÜš]H\ÈXœÙ[
+›ÈÚXÚÈ™YYY
+HÜˆYˆ]X\ÝÛ™H\ÚÚÙ[ˆX]Ú\Ë‚ˆËËÈ™]\›œÈ˜[ÙHYˆÛ™HÜˆ[Ü™HÚÙ[œÈ\™H™\Ù[[™›Û™HX]Ú0è¸ «8 'HØ[\ˆ]\Ý›ØÚÈH™\ÛÝ\˜ÙK‚ˆËËÈÝ\ÜY[ÛÜš]\ÎˆÚLM‹ÚLÎÚMLL‹‚ˆËËÈÜÝ[[X\žO‚ˆš]˜]HÝ]XÈ›ÛÛ™\šYžTÜšR[YÜš]JÝš[™ÈÛÛ[Ýš[™È[YÜš]JBˆÂˆYˆ
+Ýš[™Ë’\Ó[Ü•Ú]TÜXÙJ[YÜš]JJH™]\›ˆYNÂˆ˜\ˆÚÙ[œÈH[YÜš]K•š[J
+K”Ü]
+™]Ö×HÈ	È	Ë	×	ÈKÝš[™ÔÜ]Ü[ÛœË”™[[Ý™Q[\Q[šY\ÊNÂˆYˆ
+ÚÙ[œË“[™ÝOH
+H™]\›ˆYNÂ‚ˆ˜\ˆž]\ÈHÞ\Ý[K•^‘[˜ÛÙ[™Ë•UŽ‘Ù]ž]\ÊÛÛ[ÏÈˆŠNÂˆ›Ü™XXÚ
+˜\ˆÚÙ[ˆ[ˆÚÙ[œÊBˆÂˆ˜\ˆ\ÚHÚÙ[‹’[™^ÙŠ	ËIÊNÂˆYˆ
+\Ú
+HÛÛ[YNÂˆ˜\ˆ[ÛÈHÚÙ[‹”ÝXœÝš[™Ê\Ú
+K•ÓÝÙ\’[˜\šX[
+
+NÂˆ˜\ˆ^XÝYHÚÙ[‹”ÝXœÝš[™Ê\Ú
+ÈJNÂ‚ˆž]V×H\ÚÂˆžBˆÂˆ\Ú[™È˜\ˆ[ÈH[ÛÈÝÚ]ÚˆÂˆœÚLMˆˆOˆ
+Þ\Ý[K”ÙXÝ\š]KÜž\ÙÜ˜\K’\Ú[ÛÜš]JTÞ\Ý[K”ÙXÝ\š]KÜž\ÙÜ˜\K”ÒLM‹Ü™X]J
+KˆœÚLÎˆOˆÞ\Ý[K”ÙXÝ\š]KÜž\ÙÜ˜\K”ÒLÎÜ™X]J
+KˆœÚMLLˆˆOˆÞ\Ý[K”ÙXÝ\š]KÜž\ÙÜ˜\K”ÒMLL‹Ü™X]J
+KˆÈOˆ[ˆNÂˆYˆ
+[ÈOH[
+HÛÛ[YNÈËÈ[šÛ›ÝÛˆ[ÛÜš]H0è¸ «8 'HÚÚ\\ÈÚÙ[‚ˆ\ÚH[ËÛÛ\]R\Ú
+ž]\ÊNÂˆBˆØ]ÚÈÛÛ[YNÈB‚ˆYˆ
+ÛÛ™\•Ð˜\ÙMÝš[™Ê\Ú
+HOH^XÝY
+H™]\›ˆYNÂˆBˆËÈ›ÈÚÙ[ˆX]ÚY0è¸ «8 'H›ØÚÈH™\ÛÝ\˜ÙBˆ™]\›ˆ˜[ÙNÂˆBŸBŸB‚‚‚‚‚‚‚‚‚‚‚‚

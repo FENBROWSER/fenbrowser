@@ -10,7 +10,7 @@ namespace FenBrowser.Tests.Engine
     public class CustomHtmlEngineNoJsNormalizationTests
     {
         [Fact]
-        public async Task RenderAsync_WithJavaScriptEnabled_RemovesNoJsClassTokens()
+        public async Task RenderAsync_WithJavaScriptEnabled_PreservesAuthoredFeatureClasses()
         {
             const string html = @"<!DOCTYPE html>
 <html class='no-js'>
@@ -37,16 +37,16 @@ namespace FenBrowser.Tests.Engine
                 forceJavascript: true);
 
             var root = Assert.IsType<Element>(engine.GetActiveDom());
-            Assert.False(HasClassToken(root.ClassName, "no-js"));
-            Assert.True(HasClassToken(root.ClassName, "js"));
+            Assert.True(HasClassToken(root.ClassName, "no-js"));
+            Assert.False(HasClassToken(root.ClassName, "js"));
 
             var nav = root.Descendants().OfType<Element>()
                 .First(e => string.Equals(e.TagName, "NAV", StringComparison.OrdinalIgnoreCase));
-            Assert.False(HasClassToken(nav.ClassName, "no-js"));
+            Assert.True(HasClassToken(nav.ClassName, "no-js"));
 
             var footer = root.Descendants().OfType<Element>()
                 .First(e => string.Equals(e.TagName, "FOOTER", StringComparison.OrdinalIgnoreCase));
-            Assert.False(HasClassToken(footer.ClassName, "no-js"));
+            Assert.True(HasClassToken(footer.ClassName, "no-js"));
         }
 
         private static bool HasClassToken(string classValue, string token)
