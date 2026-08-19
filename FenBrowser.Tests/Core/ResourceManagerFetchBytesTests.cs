@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
+using FenBrowser.Core.Network;
 using SkiaSharp;
 using Xunit;
 using System.IO;
@@ -99,6 +100,39 @@ namespace FenBrowser.Tests.Core
             var css = await manager.FetchCssAsync(new Uri("https://example.test/site.css"));
 
             Assert.Equal(cssText, css);
+        }
+
+        [Fact]
+        public async Task FetchTextDetailedAsync_CorbStopsAfterSniffPrefix()
+        {
+            var payload = Encoding.UTF8.GetBytes("<html>" + new string('x', 2 * 1024 * 1024));
+            using var source = new CountingReadStream(payload);
+            using var client = new HttpClient(new StubHandler(_ =>
+            {
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StreamContent(source)
+                };
+                response.Content.Headers.ContentType =
+                    new System.Net.Http.Headers.MediaTypeHeaderValue("text/html");
+                return response;
+            }));
+
+            var manager = new ResourceManager(client, isPrivate: true);
+            var result = await manager.FetchTextDetailedAsync(new FetchContext
+            {
+                RequestUri = new Uri("https://cross-origin.test/data"),
+                InitiatorUri = new Uri("https://example.test/page"),
+                FrameDocumentUri = new Uri("https://example.test/page"),
+                TopLevelDocumentUri = new Uri("https://example.test/page"),
+                Destination = "script",
+                Mode = "no-cors",
+                CredentialsMode = "same-origin",
+                Method = "GET"
+            });
+
+            Assert.Equal(FetchFailureReasonCode.CorbBlocked, result.FailureReason);
+            Assert.InRange(source.BytesRead, 1, 512);
         }
 
         [Fact]
@@ -299,6 +333,60 @@ namespace FenBrowser.Tests.Core
             using var image = surface.Snapshot();
             using var data = image.Encode(SKEncodedImageFormat.Png, 100);
             return data.ToArray();
+        }
+
+        private sealed class CountingReadStream : Stream
+        {
+            private readonly MemoryStream _inner;
+
+            public CountingReadStream(byte[] buffer)
+            {
+                _inner = new MemoryStream(buffer, writable: false);
+            }
+
+            public long BytesRead { get; private set; }
+            public override bool CanRead => true;
+            public override bool CanSeek => true;
+            public override bool CanWrite => false;
+            public override long Length => _inner.Length;
+            public override long Position { get => _inner.Position; set => _inner.Position = value; }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                var read = _inner.Read(buffer, offset, count);
+                BytesRead += read;
+                return read;
+            }
+
+            public override int Read(Span<byte> buffer)
+            {
+                var read = _inner.Read(buffer);
+                BytesRead += read;
+                return read;
+            }
+
+            public override async ValueTask<int> ReadAsync(
+                Memory<byte> buffer,
+                CancellationToken cancellationToken = default)
+            {
+                var read = await _inner.ReadAsync(buffer, cancellationToken);
+                BytesRead += read;
+                return read;
+            }
+
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _inner.Dispose();
+                }
+                base.Dispose(disposing);
+            }
         }
 
         private sealed class StubHandler : HttpMessageHandler

@@ -22,6 +22,8 @@ namespace FenBrowser.Core.Network.Handlers
             new(AuthorRequestHeadersOptionKey);
         private static readonly HttpRequestOptionsKey<string> s_credentialsModeKey =
             new(CredentialsModeOptionKey);
+        private static readonly HttpRequestOptionsKey<string[]> s_unsafeRequestHeadersKey =
+            new("FenBrowser.Cors.UnsafeRequestHeaders");
 
         private static readonly HashSet<string> SafelistedMethods = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -179,11 +181,13 @@ namespace FenBrowser.Core.Network.Handlers
 
         public static IReadOnlyList<string> GetCorsUnsafeRequestHeaderNames(HttpRequestMessage request)
         {
-            var unsafeNames = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
             if (request == null)
-                return unsafeNames.ToArray();
+                return Array.Empty<string>();
+            if (request.Options.TryGetValue(s_unsafeRequestHeadersKey, out var cached))
+                return cached;
 
-            var potentiallyUnsafeNames = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            var unsafeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var potentiallyUnsafeNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var safelistValueSize = 0;
 
             if (request.Options.TryGetValue(s_authorRequestHeadersKey, out var authorHeaders) && authorHeaders != null)
@@ -239,9 +243,10 @@ namespace FenBrowser.Core.Network.Handlers
                     unsafeNames.Add(name);
             }
 
-            return unsafeNames
-                .Select(name => name.ToLowerInvariant())
-                .ToArray();
+            var result = unsafeNames.Select(name => name.ToLowerInvariant()).ToArray();
+            Array.Sort(result, StringComparer.Ordinal);
+            request.Options.Set(s_unsafeRequestHeadersKey, result);
+            return result;
         }
 
         public static bool IsPreflightAllowed(HttpResponseMessage response, HttpRequestMessage request, Uri originUri)

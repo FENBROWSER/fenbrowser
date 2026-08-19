@@ -15,6 +15,7 @@ using FenBrowser.Core.Storage;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Globalization;
+using System.Buffers;
 
 namespace FenBrowser.Core
 {
@@ -1396,7 +1397,43 @@ public Uri LastTextResponseUri { get; private set; }
                 var maxTextBodyBytes = Math.Max(64 * 1024, GetResilienceSettings().MaxTextBodyBytes);
                 try
                 {
-                    bodyBytes = await ReadStreamingBodyBoundedAsync(resp, maxTextBodyBytes, finalUri?.ToString(), "text_body_bytes").ConfigureAwait(false);
+                    bodyBytes = await ReadStreamingBodyBoundedAsync(
+                        resp,
+                        maxTextBodyBytes,
+                        finalUri?.ToString(),
+                        "text_body_bytes",
+                        prefix =>
+                        {
+                            if (ShouldBlockCorb(
+                                corbFetchMode,
+                                secFetchDest,
+                                refererOriginal,
+                                finalUri,
+                                resp,
+                                prefix.Span,
+                                out var reason))
+                            {
+                                throw new CorbBlockedException(reason);
+                            }
+                        }).ConfigureAwait(false);
+                }
+                catch (CorbBlockedException ex)
+                {
+                    return new FetchResult
+                    {
+                        Status = FetchStatus.UnknownError,
+                        ErrorDetail = ex.Message,
+                        StatusCode = (int)resp.StatusCode,
+                        FinalUri = finalUri,
+                        ContentType = ct,
+                        Headers = resp.Headers,
+                        HeaderSnapshot = headerSnapshot,
+                        Redirected = redirectChain.Count > 1,
+                        RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                        FailureReason = FetchFailureReasonCode.CorbBlocked,
+                        IsRetryable = false
+                    };
                 }
                 catch (InvalidOperationException ex) when (ex.Message.StartsWith("LIMIT_EXCEEDED"))
                 {
@@ -1428,32 +1465,6 @@ public Uri LastTextResponseUri { get; private set; }
                         RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
                         FailureReason = FetchFailureReasonCode.BodyReadFailed,
                         IsRetryable = true
-                    };
-                }
-
-                if (ShouldBlockCorb(
-                    corbFetchMode,
-                    secFetchDest,
-                    refererOriginal,
-                    finalUri,
-                    resp,
-                    bodyBytes.AsSpan(0, Math.Min(bodyBytes.Length, 512)),
-                    out var corbReason))
-                {
-                    return new FetchResult
-                    {
-                        Status = FetchStatus.UnknownError,
-                        ErrorDetail = corbReason,
-                        StatusCode = (int)resp.StatusCode,
-                        FinalUri = finalUri,
-                        ContentType = ct,
-                        Headers = resp.Headers,
-                        HeaderSnapshot = headerSnapshot,
-                        Redirected = redirectChain.Count > 1,
-                        RedirectCount = Math.Max(0, redirectChain.Count - 1),
-                        RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
-                        FailureReason = FetchFailureReasonCode.CorbBlocked,
-                        IsRetryable = false
                     };
                 }
 
@@ -2565,25 +2576,109 @@ throw new HttpRequestException($"Blocked by Content Security Policy (connect-src
             EngineLogCompat.Debug($"[CssLoader] CSS Fetch Success: {url} Length: {result.Content?.Length ?? 0} Type: {result.ContentType}", LogCategory.Network);
             return result.Content;
         }
-        private async Task<byte[]> ReadStreamingBodyBoundedAsync(HttpResponseMessage resp, long maxSize, string uri, string limitType)
+        private async Task<byte[]> ReadStreamingBodyBoundedAsync(
+            HttpResponseMessage resp,
+            long maxSize,
+            string uri,
+            string limitType,
+            Action<ReadOnlyMemory<byte>> classifyPrefix = null)
         {
             if (resp.Content == null) return Array.Empty<byte>();
             using var stream = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
-            var ms = new MemoryStream();
-            var buffer = new byte[81920];
-            int bytesRead;
-            while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
+            var declaredLength = resp.Content.Headers.ContentLength;
+            if (declaredLength is >= 0 and <= int.MaxValue && declaredLength <= maxSize)
             {
-                if (ms.Length + bytesRead > maxSize)
+                var offset = 0;
+                byte[] prefix = null;
+                if (classifyPrefix != null)
                 {
-                    EngineLogCompat.Warn($"[Network.Resilience] Body limit exceeded for '{uri}' (> {maxSize}).", LogCategory.Network);
-                    throw new InvalidOperationException($"LIMIT_EXCEEDED:{maxSize}:{ms.Length + bytesRead}");
+                    prefix = new byte[Math.Min(512, (int)declaredLength.Value)];
+                    while (offset < prefix.Length)
+                    {
+                        var read = await stream.ReadAsync(prefix.AsMemory(offset)).ConfigureAwait(false);
+                        if (read == 0)
+                        {
+                            Array.Resize(ref prefix, offset);
+                            break;
+                        }
+
+                        offset += read;
+                    }
+
+                    classifyPrefix(prefix);
                 }
-                ms.Write(buffer, 0, bytesRead);
+
+                var result = new byte[(int)declaredLength.Value];
+                if (prefix != null)
+                {
+                    prefix.CopyTo(result, 0);
+                }
+
+                while (offset < result.Length)
+                {
+                    var read = await stream.ReadAsync(result.AsMemory(offset)).ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        Array.Resize(ref result, offset);
+                        break;
+                    }
+
+                    offset += read;
+                }
+
+                return result;
             }
-            return ms.ToArray();
+
+            var initialCapacity = declaredLength is > 0 and <= int.MaxValue
+                ? (int)declaredLength.Value
+                : 0;
+            using var output = initialCapacity > 0 ? new MemoryStream(initialCapacity) : new MemoryStream();
+            var buffer = ArrayPool<byte>.Shared.Rent(81920);
+            var prefixClassified = classifyPrefix == null;
+            try
+            {
+                while (true)
+                {
+                    var readSize = prefixClassified ? buffer.Length : Math.Min(512, buffer.Length);
+                    var bytesRead = await stream.ReadAsync(buffer.AsMemory(0, readSize)).ConfigureAwait(false);
+                    if (bytesRead == 0)
+                    {
+                        break;
+                    }
+
+                    if (output.Length + bytesRead > maxSize)
+                    {
+                        EngineLogCompat.Warn($"[Network.Resilience] Body limit exceeded for '{uri}' (> {maxSize}).", LogCategory.Network);
+                        throw new InvalidOperationException($"LIMIT_EXCEEDED:{maxSize}:{output.Length + bytesRead}");
+                    }
+
+                    output.Write(buffer, 0, bytesRead);
+                    if (!prefixClassified && output.Length >= 512)
+                    {
+                        classifyPrefix(output.GetBuffer().AsMemory(0, Math.Min((int)output.Length, 512)));
+                        prefixClassified = true;
+                    }
+                }
+
+                if (!prefixClassified)
+                {
+                    classifyPrefix(ReadOnlyMemory<byte>.Empty);
+                }
+
+                return output.ToArray();
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+        }
+
+        private sealed class CorbBlockedException : Exception
+        {
+            public CorbBlockedException(string message)
+                : base(message)
+            {
+            }
         }
     }
 }
-
-
