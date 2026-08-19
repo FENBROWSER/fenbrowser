@@ -1863,3 +1863,23 @@ Verification:
 - Green: the standard, bogus, empty-boundary, and pooled-reuse EOF matrix passes (`6/6`); the full `HtmlParserAdversarialStressTests` class passes (`46/46`).
 - The cumulative Core parsing, html5lib, browser-settings, parser-policy, and token-pool-allocation slice passes (`228/228`). All five parser hardening classes pass (`103/103`) in 10 consecutive fresh Release test processes (`1,030/1,030` total).
 - `dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release --no-restore --verbosity:minimal`: pass with zero warnings and zero errors.
+
+### 1.93 Bounded Streaming HTML Input (2026-08-19)
+
+- `HtmlParser.ParseStream` now feeds its `TextReader` directly into the canonical
+  tokenizer and tree builder. It no longer calls `ReadToEnd` or creates a second
+  complete document string.
+- Streaming input is read in 16 KiB chunks and releases consumed prefixes between
+  token emissions. Text-like runs are capped to the same size, bounding retained
+  source memory by the active token plus the configured parser input limit.
+- Tokenizer state, source positions, character references, attributes, raw text,
+  scripts, and plaintext continue across arbitrary reader boundaries. Stream input
+  limits stop reading after one overflow probe and report the normal degraded
+  parsing outcome.
+
+Verification:
+
+- Core and the repository test assembly build with zero errors.
+- `CanonicalHtmlParserEntrypointTests` passes (`6/6`), including seven-character
+  reader chunks, a 40,000-character text node, a split named reference, and proof
+  that the input-limit path consumes no more than the limit plus one character.

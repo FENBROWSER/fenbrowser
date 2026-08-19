@@ -4,6 +4,7 @@ using FenBrowser.Core.Logging;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Text;
 
@@ -92,6 +93,13 @@ namespace FenBrowser.Core.Parsing
             // Spec says stack of open elements is initially empty.
             // But usually we append to Document.
             // Actually, "Process Initial" handles this.
+        }
+
+        public HtmlTreeBuilder(TextReader reader)
+        {
+            _pool = new HtmlTokenPool();
+            _tokenizer = new HtmlTokenizer(reader, _pool);
+            _document = new Document();
         }
 
         public Document Build()

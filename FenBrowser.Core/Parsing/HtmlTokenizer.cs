@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Text;
 
@@ -13,12 +14,12 @@ namespace FenBrowser.Core.Parsing
     /// </summary>
     public class HtmlTokenizer
     {
-        private readonly string _input;
+        private readonly HtmlTokenizerInput _input;
         private int _position;
         private int _line = 1;
         private int _column = 1;
         private bool _previousConsumedWasCarriageReturn;
-        private readonly int _length;
+        private int _length => _input.KnownLength;
         private int _emittedTokenCount;
         private bool _emissionLimitReached;
         private bool _inputSizeLimitReached;
@@ -245,8 +246,7 @@ namespace FenBrowser.Core.Parsing
 
         public HtmlTokenizer(string input)
         {
-            _input = input ?? "";
-            _length = _input.Length;
+            _input = new HtmlTokenizerInput(input);
             _position = 0;
         }
 
@@ -255,8 +255,14 @@ namespace FenBrowser.Core.Parsing
         /// </summary>
         public HtmlTokenizer(string input, HtmlTokenPool pool)
         {
-            _input = input ?? "";
-            _length = _input.Length;
+            _input = new HtmlTokenizerInput(input);
+            _position = 0;
+            _pool = pool;
+        }
+
+        public HtmlTokenizer(TextReader reader, HtmlTokenPool pool)
+        {
+            _input = new HtmlTokenizerInput(reader);
             _position = 0;
             _pool = pool;
         }
@@ -347,8 +353,10 @@ namespace FenBrowser.Core.Parsing
             LastReasonCode = HtmlParsingReasonCode.None;
             LastReasonDetail = null;
             _attributeLimitReached = false;
+            _input.MaxLength = MaxInputLengthChars;
 
             if (!_inputSizeLimitReached &&
+                !_input.IsStreaming &&
                 MaxInputLengthChars > 0 &&
                 _length > MaxInputLengthChars)
             {
@@ -397,6 +405,7 @@ namespace FenBrowser.Core.Parsing
 
         private HtmlToken NextToken()
         {
+            _input.DiscardBefore(_position);
             // Drain any pending characters first (emitted by multi-char transitions)
             if (_pendingChars.Count > 0)
                 return EmitCharacter(_pendingChars.Dequeue());
@@ -437,7 +446,7 @@ namespace FenBrowser.Core.Parsing
                             // Same speedup pattern as ScriptData; helps any large text run.
                             int runStart = _position;
                             int p = _position;
-                            int len = _length;
+                            int len = Math.Min(_length, runStart + 16 * 1024);
                             while (p < len)
                             {
                                 char ch = _input[p];
@@ -738,7 +747,7 @@ namespace FenBrowser.Core.Parsing
                             // Batch <style>/<title>/<textarea> raw text up to next '<' or EOF.
                             int runStart = _position;
                             int p = _position;
-                            int len = _length;
+                            int len = Math.Min(_length, runStart + 16 * 1024);
                             while (p < len)
                             {
                                 char ch = _input[p];
@@ -763,7 +772,8 @@ namespace FenBrowser.Core.Parsing
                         {
                             int runStart = _position;
                             int runEnd = _position;
-                            while (runEnd < _length && _input[runEnd] != '\0')
+                            int runLimit = Math.Min(_length, runStart + 16 * 1024);
+                            while (runEnd < runLimit && _input[runEnd] != '\0')
                             {
                                 runEnd++;
                             }
@@ -877,7 +887,7 @@ namespace FenBrowser.Core.Parsing
                         {
                             int runStart = _position;
                             int p = _position;
-                            int len = _length;
+                            int len = Math.Min(_length, runStart + 16 * 1024);
                             // Scan forward to the next '<' or EOF. Inner loop is just an
                             // index advance + char compare â€” JIT optimizes to a tight scan.
                             while (p < len)
@@ -1677,7 +1687,7 @@ namespace FenBrowser.Core.Parsing
 
                             if (!_skipCurrentAttributeValue)
                             {
-                                _attrValueBuffer.Append(_input, _position, runEnd - _position);
+                                _input.AppendTo(_attrValueBuffer, _position, runEnd - _position);
                             }
                             AdvanceTo(runEnd);
                         }
@@ -1721,7 +1731,7 @@ namespace FenBrowser.Core.Parsing
 
                             if (!_skipCurrentAttributeValue)
                             {
-                                _attrValueBuffer.Append(_input, _position, runEnd - _position);
+                                _input.AppendTo(_attrValueBuffer, _position, runEnd - _position);
                             }
                             AdvanceTo(runEnd);
                         }
@@ -1777,7 +1787,7 @@ namespace FenBrowser.Core.Parsing
 
                             if (!_skipCurrentAttributeValue)
                             {
-                                _attrValueBuffer.Append(_input, _position, runEnd - _position);
+                                _input.AppendTo(_attrValueBuffer, _position, runEnd - _position);
                             }
                             AdvanceNonWhitespaceRunTo(runEnd);
                         }
@@ -2445,7 +2455,18 @@ namespace FenBrowser.Core.Parsing
             token.SourceColumn = column;
         }
 
-        private bool IsEof() => _position >= _length;
+        private bool IsEof()
+        {
+            var isEof = _input.IsEofAt(_position);
+            if (isEof && _input.LimitExceeded && !_inputSizeLimitReached)
+            {
+                _inputSizeLimitReached = true;
+                LastReasonCode = HtmlParsingReasonCode.InputSizeLimitExceeded;
+                LastReasonDetail = $"Tokenizer input exceeded configured limit {MaxInputLengthChars}.";
+                EmitError(LastReasonDetail);
+            }
+            return isEof;
+        }
 
         private void EmitError(string message)
         {
@@ -2869,4 +2890,3 @@ namespace FenBrowser.Core.Parsing
         }
     }
 }
-

@@ -163,8 +163,30 @@ namespace FenBrowser.Core.Parsing
                 throw new ArgumentNullException(nameof(reader));
             }
 
-            var html = reader.ReadToEnd();
-            return ParseDocument(html, options, out outcome);
+            options ??= new HtmlParserOptions();
+            var safeBaseUri = options.BaseUri ?? new Uri("about:blank");
+            var policy = options.SecurityPolicy?.Clone() ?? ParserSecurityPolicy.Default;
+            EmitHtmlParsingStarted(null, safeBaseUri);
+
+            try
+            {
+                var builder = new HtmlTreeBuilder(reader);
+                ConfigureBuilder(builder, options, policy);
+                var document = options.PipelineContext != null
+                    ? builder.BuildWithPipelineStages(options.PipelineContext)
+                    : builder.Build();
+
+                document.URL = safeBaseUri.AbsoluteUri;
+                document.BaseURI = safeBaseUri.AbsoluteUri;
+                outcome = CloneOutcome(builder.LastParsingOutcome);
+                EmitHtmlParsingCompleted(safeBaseUri, outcome, builder.LastBuildMetrics);
+                return document;
+            }
+            catch (Exception ex)
+            {
+                EmitHtmlParsingFailed(safeBaseUri, ex);
+                throw;
+            }
         }
 
         private static Document ParseDocumentInternal(string html, HtmlParserOptions options, out HtmlParsingOutcome outcome, out HtmlParseBuildMetrics metrics)
@@ -180,37 +202,8 @@ namespace FenBrowser.Core.Parsing
                 var scanner = new PreloadScanner(parseInput, safeBaseUri, options.Prefetcher);
                 scanner.ScanAsync();
 
-                var builder = new HtmlTreeBuilder(parseInput)
-                {
-                    MaxTokenizerEmissions = policy.HtmlMaxTokenEmissions,
-                    MaxAttributesPerTag = policy.HtmlMaxAttributesPerElement,
-                    MaxOpenElementsDepth = policy.HtmlMaxOpenElementsDepth
-                };
-
-                if (options.MaxInputLengthChars.HasValue && options.MaxInputLengthChars.Value > 0)
-                {
-                    builder.MaxInputLengthChars = options.MaxInputLengthChars.Value;
-                }
-
-                if (options.ParseCheckpointTokenInterval.HasValue)
-                {
-                    builder.ParseCheckpointTokenInterval = Math.Max(0, options.ParseCheckpointTokenInterval.Value);
-                }
-
-                if (options.InterleavedTokenBatchSize.HasValue)
-                {
-                    builder.InterleavedTokenBatchSize = Math.Max(0, options.InterleavedTokenBatchSize.Value);
-                }
-
-                if (options.ParseCheckpointCallback != null)
-                {
-                    builder.ParseCheckpointCallback = options.ParseCheckpointCallback;
-                }
-
-                if (options.ParseDocumentCheckpointCallback != null)
-                {
-                    builder.ParseDocumentCheckpointCallback = options.ParseDocumentCheckpointCallback;
-                }
+                var builder = new HtmlTreeBuilder(parseInput);
+                ConfigureBuilder(builder, options, policy);
 
                 var document = options.PipelineContext != null
                     ? builder.BuildWithPipelineStages(options.PipelineContext)
@@ -228,6 +221,37 @@ namespace FenBrowser.Core.Parsing
             {
                 EmitHtmlParsingFailed(safeBaseUri, ex);
                 throw;
+            }
+        }
+
+        private static void ConfigureBuilder(
+            HtmlTreeBuilder builder,
+            HtmlParserOptions options,
+            ParserSecurityPolicy policy)
+        {
+            builder.MaxTokenizerEmissions = policy.HtmlMaxTokenEmissions;
+            builder.MaxAttributesPerTag = policy.HtmlMaxAttributesPerElement;
+            builder.MaxOpenElementsDepth = policy.HtmlMaxOpenElementsDepth;
+
+            if (options.MaxInputLengthChars is > 0)
+            {
+                builder.MaxInputLengthChars = options.MaxInputLengthChars.Value;
+            }
+            if (options.ParseCheckpointTokenInterval.HasValue)
+            {
+                builder.ParseCheckpointTokenInterval = Math.Max(0, options.ParseCheckpointTokenInterval.Value);
+            }
+            if (options.InterleavedTokenBatchSize.HasValue)
+            {
+                builder.InterleavedTokenBatchSize = Math.Max(0, options.InterleavedTokenBatchSize.Value);
+            }
+            if (options.ParseCheckpointCallback != null)
+            {
+                builder.ParseCheckpointCallback = options.ParseCheckpointCallback;
+            }
+            if (options.ParseDocumentCheckpointCallback != null)
+            {
+                builder.ParseDocumentCheckpointCallback = options.ParseDocumentCheckpointCallback;
             }
         }
 
