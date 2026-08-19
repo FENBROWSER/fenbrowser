@@ -57,3 +57,14 @@ public enum BrowserEngineLoadState
     Failed,
     Cancelled
 }
+
+public sealed class NavigationException : Exception
+{
+    public NavigationException(Uri uri, Exception innerException)
+        : base($"Navigation to '{uri}' failed.", innerException)
+    {
+        Uri = uri ?? throw new ArgumentNullException(nameof(uri));
+    }
+
+    public Uri Uri { get; }
+}

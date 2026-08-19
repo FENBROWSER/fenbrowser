@@ -1,22 +1,25 @@
 using System;
-using System.Net;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
+using FenBrowser.Core.Parsing;
 
 namespace FenBrowser.FenEngine.Rendering;
 
 public class BrowserEngine : IBrowserEngine
 {
-    private static readonly Regex TitleRegex = new(
-        @"<title\b[^>]*>(?<title>.*?)</title>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.CultureInvariant,
-        TimeSpan.FromMilliseconds(500));
+    private static readonly Regex WhitespaceRegex = new(
+        @"\s+",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
 
     private readonly INetworkService _networkService;
     private readonly ILogger _logger;
+    private readonly object _navigationLock = new();
+    private CancellationTokenSource _activeNavigation;
+    private long _navigationGeneration;
 
     public string Title { get; private set; } = "New Tab";
     public string Url { get; private set; } = string.Empty;
@@ -37,7 +40,7 @@ public class BrowserEngine : IBrowserEngine
             throw new ArgumentException("URL cannot be null or whitespace.", nameof(url));
         }
 
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || !IsNetworkUri(uri))
         {
             throw new ArgumentException("URL must be an absolute URI.", nameof(url));
         }
@@ -49,65 +52,108 @@ public class BrowserEngine : IBrowserEngine
     {
         if (uri == null)
             throw new ArgumentNullException(nameof(uri));
-        if (!uri.IsAbsoluteUri)
-            throw new ArgumentException("URI must be absolute.", nameof(uri));
+        if (!IsNetworkUri(uri))
+            throw new ArgumentException("URI must be an absolute HTTP or HTTPS URL.", nameof(uri));
 
-        Url = uri.AbsoluteUri;
-        LastError = string.Empty;
-        LoadState = BrowserEngineLoadState.Loading;
+        var generation = Interlocked.Increment(ref _navigationGeneration);
+        var navigation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        CancellationTokenSource previous;
+        lock (_navigationLock)
+        {
+            previous = _activeNavigation;
+            _activeNavigation = navigation;
+            Url = uri.AbsoluteUri;
+            LastError = string.Empty;
+            LoadState = BrowserEngineLoadState.Loading;
+        }
+        previous?.Cancel();
         _logger.Log(LogLevel.Info, $"Loading URL: {uri.AbsoluteUri}");
 
         try
         {
-            string content = await _networkService.GetStringAsync(uri, cancellationToken).ConfigureAwait(false) ?? string.Empty;
+            string content = await _networkService.GetStringAsync(uri, navigation.Token).ConfigureAwait(false) ?? string.Empty;
+            navigation.Token.ThrowIfCancellationRequested();
             _logger.Log(LogLevel.Info, $"Content loaded, length: {content.Length}");
 
-            Title = ExtractTitle(content, uri.AbsoluteUri);
-            LoadState = BrowserEngineLoadState.Complete;
-            _logger.Log(LogLevel.Debug, $"Resolved title: {Title}");
+            var document = HtmlParser.ParseDocument(content, uri);
+            navigation.Token.ThrowIfCancellationRequested();
+            var title = ResolveTitle(document.Title, uri);
+
+            lock (_navigationLock)
+            {
+                EnsureCurrentNavigation(generation, navigation);
+                Title = title;
+                LoadState = BrowserEngineLoadState.Complete;
+            }
+            _logger.Log(LogLevel.Debug, $"Resolved title: {title}");
         }
         catch (OperationCanceledException ex)
         {
-            LastError = ex.Message;
-            Title = "Load cancelled";
-            LoadState = BrowserEngineLoadState.Cancelled;
+            lock (_navigationLock)
+            {
+                if (generation == _navigationGeneration)
+                {
+                    LastError = ex.Message;
+                    Title = "Load cancelled";
+                    LoadState = BrowserEngineLoadState.Cancelled;
+                }
+            }
             _logger.Log(LogLevel.Warn, $"Cancelled load for {uri.AbsoluteUri}");
             throw;
         }
         catch (Exception ex)
         {
-            LastError = ex.Message;
-            Title = "Error loading page";
-            LoadState = BrowserEngineLoadState.Failed;
-            _logger.LogError($"Failed to load {uri.AbsoluteUri}", ex);
-        }
-    }
-
-    private static string ExtractTitle(string html, string url)
-    {
-        if (!string.IsNullOrWhiteSpace(html))
-        {
-            var match = TitleRegex.Match(html);
-            if (match.Success)
+            lock (_navigationLock)
             {
-                string rawTitle = match.Groups["title"].Value;
-                string decodedTitle = WebUtility.HtmlDecode(rawTitle);
-                string normalizedTitle = Regex.Replace(decodedTitle ?? string.Empty, @"\s+", " ").Trim();
-                if (!string.IsNullOrWhiteSpace(normalizedTitle))
+                if (generation != _navigationGeneration || !ReferenceEquals(_activeNavigation, navigation))
                 {
-                    const int maxTitleLength = 256;
-                    return normalizedTitle.Length > maxTitleLength
-                        ? normalizedTitle.Substring(0, maxTitleLength)
-                        : normalizedTitle;
+                    throw new OperationCanceledException("Navigation was superseded.", ex, navigation.Token);
+                }
+
+                LastError = ex.Message;
+                Title = "Error loading page";
+                LoadState = BrowserEngineLoadState.Failed;
+            }
+            _logger.LogError($"Failed to load {uri.AbsoluteUri}", ex);
+            throw new NavigationException(uri, ex);
+        }
+        finally
+        {
+            lock (_navigationLock)
+            {
+                if (ReferenceEquals(_activeNavigation, navigation))
+                {
+                    _activeNavigation = null;
                 }
             }
+            navigation.Dispose();
         }
-
-        if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && !string.IsNullOrWhiteSpace(uri.Host))
-        {
-            return uri.Host;
-        }
-
-        return url;
     }
+
+    private void EnsureCurrentNavigation(long generation, CancellationTokenSource navigation)
+    {
+        if (generation != _navigationGeneration || !ReferenceEquals(_activeNavigation, navigation))
+        {
+            throw new OperationCanceledException("Navigation was superseded.", navigation.Token);
+        }
+    }
+
+    private static string ResolveTitle(string documentTitle, Uri uri)
+    {
+        var normalizedTitle = WhitespaceRegex.Replace(documentTitle ?? string.Empty, " ").Trim();
+        if (!string.IsNullOrWhiteSpace(normalizedTitle))
+        {
+            const int maxTitleLength = 256;
+            return normalizedTitle.Length > maxTitleLength
+                ? normalizedTitle.Substring(0, maxTitleLength)
+                : normalizedTitle;
+        }
+
+        return !string.IsNullOrWhiteSpace(uri.Host) ? uri.Host : uri.AbsoluteUri;
+    }
+
+    private static bool IsNetworkUri(Uri uri) =>
+        uri.IsAbsoluteUri &&
+        (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+         uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase));
 }

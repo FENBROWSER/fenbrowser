@@ -48,16 +48,18 @@ namespace FenBrowser.Tests.Rendering
         }
 
         [Fact]
-        public async Task LoadAsync_UsesErrorTitleWhenNetworkThrows()
+        public async Task LoadAsync_ThrowsTypedFailureAndUpdatesState()
         {
             var network = new StubNetworkService(_ => throw new InvalidOperationException("network down"));
             var engine = new BrowserEngine(network, new NullLogger());
 
-            await engine.LoadAsync("https://example.com/error");
+            var error = await Assert.ThrowsAsync<NavigationException>(
+                () => engine.LoadAsync("https://example.com/error"));
 
             Assert.Equal("Error loading page", engine.Title);
             Assert.Equal(BrowserEngineLoadState.Failed, engine.LoadState);
             Assert.Equal("network down", engine.LastError);
+            Assert.IsType<InvalidOperationException>(error.InnerException);
         }
 
         [Fact]
@@ -83,6 +85,32 @@ namespace FenBrowser.Tests.Rendering
             var engine = new BrowserEngine(network, new NullLogger());
 
             await Assert.ThrowsAsync<ArgumentException>(() => engine.LoadAsync("/relative/path"));
+        }
+
+        [Fact]
+        public async Task NewNavigation_CancelsOlderGenerationBeforeCommit()
+        {
+            var slowStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var network = new StubNetworkService(async (uri, token) =>
+            {
+                if (uri.AbsolutePath == "/slow")
+                {
+                    slowStarted.SetResult();
+                    await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                }
+
+                return "<title>new navigation</title>";
+            });
+            var engine = new BrowserEngine(network, new NullLogger());
+
+            var oldNavigation = engine.LoadAsync(new Uri("https://example.com/slow"));
+            await slowStarted.Task;
+            await engine.LoadAsync(new Uri("https://example.com/new"));
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => oldNavigation);
+            Assert.Equal("https://example.com/new", engine.Url);
+            Assert.Equal("new navigation", engine.Title);
+            Assert.Equal(BrowserEngineLoadState.Complete, engine.LoadState);
         }
 
         private sealed class StubNetworkService : INetworkService
