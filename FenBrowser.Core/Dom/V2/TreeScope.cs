@@ -14,8 +14,16 @@ namespace FenBrowser.Core.Dom.V2
     internal class TreeScope
     {
         private readonly ContainerNode _root;
-        private Dictionary<string, Element> _idIndex;
-        private bool _idIndexDirty = true;
+        private Dictionary<string, IdBucket> _idIndex;
+        private bool _idIndexInitialized;
+        private long _treeOrderGeneration;
+
+        private sealed class IdBucket
+        {
+            public List<Element> Elements { get; } = new();
+            public Element First { get; set; }
+            public long ResolvedGeneration { get; set; } = -1;
+        }
 
         public TreeScope(ContainerNode root)
         {
@@ -50,17 +58,14 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(id))
                 return null;
 
-            // Use index if available and clean
-            if (_idIndex != null && !_idIndexDirty)
-            {
-                _idIndex.TryGetValue(id, out var element);
-                return element;
-            }
-
-            // Rebuild index if needed
-            RebuildIdIndex();
-            _idIndex.TryGetValue(id, out var result);
-            return result;
+            EnsureIdIndex();
+            if (!_idIndex.TryGetValue(id, out var bucket) || bucket.Elements.Count == 0)
+                return null;
+            if (bucket.Elements.Count == 1)
+                return bucket.Elements[0];
+            if (bucket.ResolvedGeneration != _treeOrderGeneration)
+                ResolveFirstInTreeOrder(id, bucket);
+            return bucket.First;
         }
 
         /// <summary>
@@ -71,25 +76,20 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(id) || element == null)
                 return;
 
-            if (_idIndexDirty)
+            if (!_idIndexInitialized)
                 return;
 
-            _idIndex ??= new Dictionary<string, Element>(StringComparer.Ordinal);
-
-            if (!_idIndex.TryGetValue(id, out var existing))
+            if (!_idIndex.TryGetValue(id, out var bucket))
             {
-                _idIndex[id] = element;
-                return;
+                bucket = new IdBucket();
+                _idIndex.Add(id, bucket);
             }
 
-            if (ReferenceEquals(existing, element))
+            if (bucket.Elements.Contains(element))
                 return;
 
-            // getElementById returns the first matching element in tree order, not
-            // the element that happened to register the ID first. Once a duplicate
-            // appears we cannot determine that ordering from registration timing, so
-            // invalidate and let the next lookup rebuild by walking the actual tree.
-            _idIndexDirty = true;
+            bucket.Elements.Add(element);
+            bucket.ResolvedGeneration = -1;
         }
 
         /// <summary>
@@ -97,16 +97,23 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public void UnregisterId(string id, Element element = null)
         {
-            if (string.IsNullOrEmpty(id) || _idIndex == null)
+            if (string.IsNullOrEmpty(id) || !_idIndexInitialized || _idIndex == null)
                 return;
 
-            if (!_idIndex.TryGetValue(id, out var existing))
+            if (!_idIndex.TryGetValue(id, out var bucket))
                 return;
 
-            if (element == null || ReferenceEquals(existing, element))
+            if (element == null)
             {
-                _idIndexDirty = true;
+                _idIndex.Remove(id);
+                return;
             }
+
+            bucket.Elements.Remove(element);
+            if (bucket.Elements.Count == 0)
+                _idIndex.Remove(id);
+            else
+                bucket.ResolvedGeneration = -1;
         }
 
         /// <summary>
@@ -114,17 +121,22 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public void InvalidateIdIndex()
         {
-            _idIndexDirty = true;
+            _treeOrderGeneration++;
         }
 
-        private void RebuildIdIndex()
+        internal int FullRebuildCount { get; private set; }
+
+        private void EnsureIdIndex()
         {
-            _idIndex ??= new Dictionary<string, Element>(StringComparer.Ordinal);
+            if (_idIndexInitialized)
+                return;
+
+            _idIndex ??= new Dictionary<string, IdBucket>(StringComparer.Ordinal);
             _idIndex.Clear();
 
             if (_root is Element rootElement && !string.IsNullOrEmpty(rootElement.Id))
             {
-                _idIndex[rootElement.Id] = rootElement;
+                AddInitial(rootElement.Id, rootElement);
             }
 
             foreach (var node in _root.Descendants())
@@ -132,12 +144,48 @@ namespace FenBrowser.Core.Dom.V2
                 if (node is Element el)
                 {
                     var id = el.Id;
-                    if (!string.IsNullOrEmpty(id) && !_idIndex.ContainsKey(id))
-                        _idIndex[id] = el;
+                    if (!string.IsNullOrEmpty(id))
+                        AddInitial(id, el);
                 }
             }
 
-            _idIndexDirty = false;
+            _idIndexInitialized = true;
+            FullRebuildCount++;
+        }
+
+        private void AddInitial(string id, Element element)
+        {
+            if (!_idIndex.TryGetValue(id, out var bucket))
+            {
+                bucket = new IdBucket
+                {
+                    First = element,
+                    ResolvedGeneration = _treeOrderGeneration
+                };
+                _idIndex.Add(id, bucket);
+            }
+            bucket.Elements.Add(element);
+        }
+
+        private void ResolveFirstInTreeOrder(string id, IdBucket bucket)
+        {
+            bucket.First = null;
+            if (_root is Element rootElement && string.Equals(rootElement.Id, id, StringComparison.Ordinal))
+            {
+                bucket.First = rootElement;
+            }
+            else
+            {
+                foreach (var node in _root.Descendants())
+                {
+                    if (node is Element element && string.Equals(element.Id, id, StringComparison.Ordinal))
+                    {
+                        bucket.First = element;
+                        break;
+                    }
+                }
+            }
+            bucket.ResolvedGeneration = _treeOrderGeneration;
         }
     }
 }

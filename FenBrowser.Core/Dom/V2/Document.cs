@@ -339,6 +339,8 @@ namespace FenBrowser.Core.Dom.V2
             _treeScope?.InvalidateIdIndex();
         }
 
+        internal int IdIndexFullRebuildCount => _treeScope?.FullRebuildCount ?? 0;
+
         // --- Collections ---
 
         /// <summary>
