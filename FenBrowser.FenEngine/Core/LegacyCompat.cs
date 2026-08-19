@@ -331,7 +331,22 @@ namespace FenBrowser.FenEngine.Scripting
         public void FocusNode(Element element) => _focusNode(element);
         public object GetLayoutEngine() => null;
         public void RequestRender() => _requestRender();
-        public void InvokeOnUiThread(Action action) => _invokeOnUiThread(action);
+        public void InvokeOnUiThread(Action action)
+        {
+            if (action == null)
+            {
+                return;
+            }
+
+            var dispatcher = UiThreadHelper.TryGetDispatcher();
+            if (dispatcher != null && !UiThreadHelper.HasThreadAccess(dispatcher))
+            {
+                UiThreadHelper.RunAsync(dispatcher, null, action);
+                return;
+            }
+
+            _invokeOnUiThread(action);
+        }
     }
 }
 

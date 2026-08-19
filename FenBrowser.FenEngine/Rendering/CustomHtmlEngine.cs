@@ -641,19 +641,28 @@ private static string RemoveInlineDisplayNone(string inlineStyle)
             return promoted;
         }
 
-        private static bool IsGoogleHost(Uri baseUri)
+        private static readonly HashSet<string> GoogleCompatSites = new(StringComparer.Ordinal)
         {
-            var host = baseUri?.Host;
-            if (string.IsNullOrWhiteSpace(host))
+            "google.com", "google.co.in", "google.co.uk", "google.ca", "google.com.au",
+            "google.de", "google.fr", "google.co.jp", "google.com.br", "google.es", "google.it"
+        };
+
+        private static string GetRegistrableHost(Uri uri)
+        {
+            if (uri == null || !uri.IsAbsoluteUri)
             {
-                return false;
+                return string.Empty;
             }
 
-            host = host.ToLowerInvariant();
-            return host == "google.com" ||
-                   host.StartsWith("google.", StringComparison.Ordinal) ||
-                   host.EndsWith(".google.com", StringComparison.Ordinal) ||
-                   host.Contains(".google.", StringComparison.Ordinal);
+            var identity = SiteIdentityService.Default;
+            var host = identity.CanonicalizeHost(uri.IdnHost);
+            var registrable = identity.ComputeRegistrableDomain(host);
+            return string.IsNullOrEmpty(registrable) ? host : registrable;
+        }
+
+        private static bool IsGoogleHost(Uri baseUri)
+        {
+            return GoogleCompatSites.Contains(GetRegistrableHost(baseUri));
         }
 
         private static int RemoveGoogleAccessTroubleBanners(Node domRoot, Uri baseUri)
@@ -2803,13 +2812,14 @@ public void Dispose()
                  requestRender: ScheduleRepaintFromJs,
                  invokeOnUiThread: action =>
                  {
-                     try
+                     var disp = _uiDispatcher ?? UiThreadHelper.TryGetDispatcher();
+                     if (disp != null && !UiThreadHelper.HasThreadAccess(disp))
                      {
-                         var disp = UiThreadHelper.TryGetDispatcher();
-                         if (disp != null && !UiThreadHelper.HasThreadAccess(disp)) action();
-                         else action();
+                         UiThreadHelper.RunAsync(disp, null, action);
+                         return;
                      }
-                     catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] UI dispatch invoke failed, running inline action: {ex.Message}", LogCategory.Rendering); action(); }
+
+                     action();
                  },
                  setTitle: null,
                  alert: (msg) => { AlertTriggered?.Invoke(msg); },
@@ -2847,7 +2857,7 @@ public void Dispose()
                  },
                  scrollToElement: (el) => { }));
 
-             js.Sandbox = allowJs ? SandboxPolicy.AllowAll : SandboxPolicy.NoScripts;
+             js.Sandbox = allowJs ? SandboxPolicy.StandardPage : SandboxPolicy.NoScripts;
              js.AllowExternalScripts = allowJs;
              js.SubresourceAllowed = (u, kind) =>
              {
@@ -2923,8 +2933,7 @@ public void Dispose()
              {
                  if (baseUri != null)
                  {
-                     var host = (baseUri.Host ?? string.Empty).ToLowerInvariant();
-                     if (host.EndsWith("facebook.com", StringComparison.Ordinal))
+                     if (string.Equals(GetRegistrableHost(baseUri), "facebook.com", StringComparison.Ordinal))
                      {
                          js.PageScriptByteBudget = 512 * 1024;
                      }

@@ -1295,9 +1295,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         realm.LayoutBoxResolver = LayoutBoxResolver;
         realm.FrameScrollReader = FrameScrollReader;
         realm.FrameScrollWriter = FrameScrollWriter;
-        realm.Sandbox = Sandbox;
-        realm.AllowExternalScripts = AllowExternalScripts;
-        realm.ExecuteInlineScriptsOnInnerHTML = ExecuteInlineScriptsOnInnerHTML;
+        realm.Sandbox = realm._embeddingFrameElement?.HasAttribute("sandbox") == true
+            ? SandboxPolicy.FromIframeSandboxAttribute(realm._embeddingFrameElement.GetAttribute("sandbox"))
+            : Sandbox;
+        realm.AllowExternalScripts = AllowExternalScripts && realm.Sandbox.Allows(SandboxFeature.ExternalScripts);
+        realm.ExecuteInlineScriptsOnInnerHTML = ExecuteInlineScriptsOnInnerHTML && realm.Sandbox.Allows(SandboxFeature.InlineScripts);
+        realm.PermissionsPolicyProvider = PermissionsPolicyProvider;
         realm.WindowWidth = ResolveFrameViewportDimension(realm._embeddingFrameElement, "width", WindowWidth);
         realm.WindowHeight = ResolveFrameViewportDimension(realm._embeddingFrameElement, "height", WindowHeight);
         realm.PageScriptByteBudget = PageScriptByteBudget;

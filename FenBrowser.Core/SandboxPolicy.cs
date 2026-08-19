@@ -49,6 +49,18 @@ namespace FenBrowser.Core
         public static SandboxPolicy AllowAll { get; } =
             new SandboxPolicy(SandboxFeature.All);
 
+        public static SandboxPolicy StandardPage { get; } =
+            new SandboxPolicy(
+                SandboxFeature.Scripts |
+                SandboxFeature.InlineScripts |
+                SandboxFeature.ExternalScripts |
+                SandboxFeature.Timers |
+                SandboxFeature.Network |
+                SandboxFeature.Storage |
+                SandboxFeature.Navigation |
+                SandboxFeature.DomMutation |
+                SandboxFeature.DocumentDomain);
+
         public static SandboxPolicy NoScripts { get; } =
             new SandboxPolicy(
                 SandboxFeature.All &

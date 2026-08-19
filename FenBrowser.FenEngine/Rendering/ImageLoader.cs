@@ -32,6 +32,7 @@ namespace FenBrowser.FenEngine.Rendering
     internal class LazyImageInfo
     {
         public string Url { get; set; }
+        public string OwnerId { get; set; }
         public SKRect ElementBounds { get; set; }
         public bool LoadStarted { get; set; }
     }
@@ -43,6 +44,7 @@ namespace FenBrowser.FenEngine.Rendering
     {
         public SKBitmap[] Frames;
         public int[] Durations; // ms per frame
+        public int[] FrameEndOffsets;
         public int TotalDuration;
         public long StartTick;
         public long ByteSize;
@@ -59,18 +61,24 @@ namespace FenBrowser.FenEngine.Rendering
             if (Frames.Length == 1) return Frames[0];
             long elapsed = Environment.TickCount64 - StartTick;
             int pos = (int)(elapsed % TotalDuration);
-            int accum = 0;
-            for (int i = 0; i < Frames.Length; i++)
+            CurrentFrameIndex = ResolveFrameIndex(pos);
+            return Frames[CurrentFrameIndex];
+        }
+
+        public int ResolveFrameIndex(int position)
+        {
+            if (FrameEndOffsets == null || FrameEndOffsets.Length == 0)
             {
-                accum += Durations[i];
-                if (pos < accum)
-                {
-                    CurrentFrameIndex = i;
-                    return Frames[i];
-                }
+                return 0;
             }
-            CurrentFrameIndex = Frames.Length - 1;
-            return Frames[Frames.Length - 1];
+
+            var index = Array.BinarySearch(FrameEndOffsets, position + 1);
+            if (index < 0)
+            {
+                index = ~index;
+            }
+
+            return Math.Clamp(index, 0, Frames.Length - 1);
         }
     }
 
@@ -150,7 +158,7 @@ namespace FenBrowser.FenEngine.Rendering
             new ConcurrentDictionary<string, LazyImageInfo>();
         private static readonly HashSet<string> _pendingLoads = new HashSet<string>();
         private static readonly object _pendingLock = new object();
-        private static SKRect _currentViewport = SKRect.Empty;
+        private static readonly ConcurrentDictionary<string, SKRect> _ownerViewports = new(StringComparer.Ordinal);
         private static readonly SemaphoreSlim _loadSemaphore = new SemaphoreSlim(4); // Max concurrent loads
         
         // ========== Memory Management ==========
@@ -197,7 +205,8 @@ namespace FenBrowser.FenEngine.Rendering
         // This prevents an image arriving in tab A from making tab B think its image
         // state changed.
         private static readonly ConcurrentDictionary<string, long> _ownerCacheGenerations = new(StringComparer.Ordinal);
-        private static readonly ConcurrentDictionary<string, HashSet<string>> _imageToOwners = new(StringComparer.Ordinal);
+        private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _imageToOwners = new(StringComparer.Ordinal);
+        private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _ownerToImages = new(StringComparer.Ordinal);
 
         /// <summary>
         /// Phase 7: returns the cache generation for a specific owner. Used by
@@ -218,7 +227,7 @@ namespace FenBrowser.FenEngine.Rendering
             if (string.IsNullOrWhiteSpace(cacheKey)) return;
             if (_imageToOwners.TryGetValue(cacheKey, out var owners))
             {
-                foreach (var ownerId in owners)
+                foreach (var ownerId in owners.Keys)
                 {
                     _ownerCacheGenerations.AddOrUpdate(ownerId, 1, (_, v) => v + 1);
                 }
@@ -233,10 +242,15 @@ namespace FenBrowser.FenEngine.Rendering
         {
             if (string.IsNullOrWhiteSpace(cacheKey) || string.IsNullOrWhiteSpace(ownerId))
                 return;
-            _imageToOwners.AddOrUpdate(
+            var owners = _imageToOwners.GetOrAdd(
                 cacheKey,
-                _ => new HashSet<string>(StringComparer.Ordinal) { ownerId },
-                (_, set) => { lock (set) { set.Add(ownerId); } return set; });
+                static _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
+            owners[ownerId] = 0;
+
+            var images = _ownerToImages.GetOrAdd(
+                ownerId,
+                static _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal));
+            images[cacheKey] = 0;
         }
 
         /// <summary>
@@ -247,12 +261,20 @@ namespace FenBrowser.FenEngine.Rendering
             if (string.IsNullOrWhiteSpace(ownerId)) return;
             _ownerCacheGenerations.TryRemove(ownerId, out _);
             _animatedGifOwners.TryRemove(ownerId, out _);
-            // Clean up image-to-owner mappings.
-            foreach (var kv in _imageToOwners)
+            _ownerViewports.TryRemove(ownerId, out _);
+
+            if (_ownerToImages.TryRemove(ownerId, out var images))
             {
-                lock (kv.Value)
+                foreach (var cacheKey in images.Keys)
                 {
-                    kv.Value.Remove(ownerId);
+                    if (_imageToOwners.TryGetValue(cacheKey, out var owners))
+                    {
+                        owners.TryRemove(ownerId, out _);
+                        if (owners.IsEmpty)
+                        {
+                            _imageToOwners.TryRemove(cacheKey, out _);
+                        }
+                    }
                 }
             }
         }
@@ -412,7 +434,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// Register an image for lazy loading. Will not load until visible in viewport.
         /// </summary>
-        public static void RegisterLazyImage(string url, SKRect elementBounds, string cacheKey = null)
+        public static void RegisterLazyImage(string url, SKRect elementBounds, string cacheKey = null, string ownerId = null)
         {
             if (string.IsNullOrEmpty(url)) return;
             cacheKey ??= url;
@@ -423,6 +445,7 @@ namespace FenBrowser.FenEngine.Rendering
             _lazyRegistry[cacheKey] = new LazyImageInfo
             {
                 Url = url,
+                OwnerId = ownerId,
                 ElementBounds = elementBounds,
                 LoadStarted = false
             };
@@ -436,9 +459,9 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public static void UpdateViewport(SKRect viewportBounds)
         {
-            _currentViewport = viewportBounds;
-            
-            // Check which lazy images are now visible
+            var ownerId = _ambientContext.Value?.OwnerId ?? string.Empty;
+            _ownerViewports[ownerId] = viewportBounds;
+
             var config = NetworkConfiguration.Instance;
             var threshold = config.LazyLoadThresholdPx;
             var expandedViewport = new SKRect(
@@ -450,9 +473,12 @@ namespace FenBrowser.FenEngine.Rendering
             
             foreach (var kvp in _lazyRegistry)
             {
-                if (kvp.Value.LoadStarted) continue;
-                
-                // Check if element is within expanded viewport
+                if (kvp.Value.LoadStarted ||
+                    !string.Equals(kvp.Value.OwnerId ?? string.Empty, ownerId, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
                 if (expandedViewport.IntersectsWith(kvp.Value.ElementBounds))
                 {
                     kvp.Value.LoadStarted = true;
@@ -570,6 +596,11 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
             _animatedGifs.Clear();
+            _imageToOwners.Clear();
+            _ownerToImages.Clear();
+            _ownerViewports.Clear();
+            _ownerCacheGenerations.Clear();
+            _animatedGifOwners.Clear();
             StopGifAnimationTimer();
             
             EngineLogCompat.Info("[ImageLoader] Cache cleared", LogCategory.Rendering);
@@ -1171,19 +1202,20 @@ namespace FenBrowser.FenEngine.Rendering
                 // Check if element is currently in viewport
                 var config = NetworkConfiguration.Instance;
                 var threshold = config.LazyLoadThresholdPx;
+                var viewport = ResolveViewport(loadContext);
                 var expandedViewport = new SKRect(
-                    _currentViewport.Left - threshold,
-                    _currentViewport.Top - threshold,
-                    _currentViewport.Right + threshold,
-                    _currentViewport.Bottom + threshold
+                    viewport.Left - threshold,
+                    viewport.Top - threshold,
+                    viewport.Right + threshold,
+                    viewport.Bottom + threshold
                 );
-                
+
                 if (!expandedViewport.IsEmpty && !expandedViewport.IntersectsWith(elementBounds.Value))
                 {
                     EngineLogCompat.Debug($"[ImageLoader] Lazy defer: {url}", LogCategory.Rendering);
                     // Not in viewport - register for lazy loading
                     CapturePendingLoadContext(cacheKey, loadContext);
-                    RegisterLazyImage(url, elementBounds.Value, cacheKey);
+                    RegisterLazyImage(url, elementBounds.Value, cacheKey, loadContext?.OwnerId);
                     return null; // Renderer should show placeholder
                 }
             }
@@ -1808,6 +1840,12 @@ namespace FenBrowser.FenEngine.Rendering
             contexts[ownerId] = context;
         }
 
+        private static SKRect ResolveViewport(ImageLoaderRequestContext context)
+        {
+            var ownerId = context?.OwnerId ?? string.Empty;
+            return _ownerViewports.TryGetValue(ownerId, out var viewport) ? viewport : SKRect.Empty;
+        }
+
         private static ImageLoaderRequestContext CreateDocumentRequestContext(
             ImageLoaderRequestContext context,
             Document ownerDocument)
@@ -1994,6 +2032,13 @@ namespace FenBrowser.FenEngine.Rendering
 
             int totalDuration = durations.Sum();
             if (totalDuration <= 0) totalDuration = frames.Length * 100; // fallback 100ms each
+            var frameEndOffsets = new int[durations.Length];
+            var frameEnd = 0;
+            for (var i = 0; i < durations.Length; i++)
+            {
+                frameEnd += durations[i];
+                frameEndOffsets[i] = frameEnd;
+            }
 
             long byteSize = 0;
             foreach (var frame in frames)
@@ -2005,6 +2050,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 Frames = frames,
                 Durations = durations,
+                FrameEndOffsets = frameEndOffsets,
                 TotalDuration = totalDuration,
                 StartTick = Environment.TickCount64,
                 ByteSize = byteSize,
@@ -2062,17 +2108,10 @@ namespace FenBrowser.FenEngine.Rendering
                         double posInCycle = totalDurationMs > 0
                             ? elapsedMs % totalDurationMs
                             : 0;
-                        double accumulated = 0;
-                        int newFrameIndex = 0;
-                        for (int i = 0; i < totalFrames; i++)
-                        {
-                            accumulated += Math.Max(anim.Durations[i], 20);
-                            if (posInCycle < accumulated)
-                            {
-                                newFrameIndex = i;
-                                break;
-                            }
-                        }
+                        int newFrameIndex = anim.ResolveFrameIndex((int)posInCycle);
+                        double accumulated = anim.FrameEndOffsets != null && newFrameIndex < anim.FrameEndOffsets.Length
+                            ? anim.FrameEndOffsets[newFrameIndex]
+                            : posInCycle + 50;
 
                         // Only repaint if the frame index actually changed.
                         bool frameChanged = newFrameIndex != anim.CurrentFrameIndex;

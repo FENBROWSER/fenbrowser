@@ -345,6 +345,15 @@ namespace FenBrowser.FenEngine.Rendering
         {
             _hostViewportHintWidth = width > 0 ? width : null;
             _hostViewportHintHeight = height > 0 ? height : null;
+            if (_hostViewportHintWidth.HasValue && _hostViewportHintHeight.HasValue)
+            {
+                using var scope = EnterImageLoaderContext();
+                ImageLoader.UpdateViewport(SKRect.Create(
+                    0,
+                    0,
+                    (float)_hostViewportHintWidth.Value,
+                    (float)_hostViewportHintHeight.Value));
+            }
         }
 
         // Tracks whether the last dispatched click event allowed default action.
@@ -1443,7 +1452,7 @@ namespace FenBrowser.FenEngine.Rendering
                     detail: BuildResponseLifecycleDetail(result));
                 
                 // Parse CSP
-                if (result.Headers != null && result.Headers.TryGetValues("Content-Security-Policy", out var cspValues))
+                if (result.TryGetHeaderValues("Content-Security-Policy", out var cspValues))
                 {
                     // Multiple CSP headers are joined here until multi-policy intersection support is added.
                     CurrentPolicy = CspPolicy.Parse(string.Join(";", cspValues));
@@ -5358,7 +5367,7 @@ pre {{
 
             CspPolicy framePolicy = null;
             if (result?.Headers != null &&
-                result.Headers.TryGetValues("Content-Security-Policy", out var cspValues))
+                result.TryGetHeaderValues("Content-Security-Policy", out var cspValues))
             {
                 framePolicy = CspPolicy.Parse(string.Join(";", cspValues));
             }

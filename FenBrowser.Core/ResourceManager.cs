@@ -13,6 +13,7 @@ using FenBrowser.Core.Security;
 using FenBrowser.Core.Security.Corb;
 using FenBrowser.Core.Storage;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 
 namespace FenBrowser.Core
 {
@@ -81,6 +82,7 @@ namespace FenBrowser.Core
         public CertificateInfo Certificate;
         public System.Net.Security.SslPolicyErrors SslErrors;
         public HttpResponseHeaders Headers;
+        public IReadOnlyDictionary<string, string[]> HeaderSnapshot;
         public bool Redirected;
         public int RedirectCount;
         public IReadOnlyList<string> RedirectChain;
@@ -106,6 +108,24 @@ namespace FenBrowser.Core
 
         /// <summary>Parsed Permissions-Policy header value from the response headers.</summary>
         public Security.PermissionsPolicy PermissionsPolicy { get; set; } = Security.PermissionsPolicy.None;
+
+        public bool TryGetHeaderValues(string name, out IEnumerable<string> values)
+        {
+            if (HeaderSnapshot != null && HeaderSnapshot.TryGetValue(name, out var snapshotValues))
+            {
+                values = snapshotValues;
+                return true;
+            }
+
+            if (Headers != null && Headers.TryGetValues(name, out var liveValues))
+            {
+                values = liveValues;
+                return true;
+            }
+
+            values = Array.Empty<string>();
+            return false;
+        }
     }
 
     public sealed class ResourceManager
@@ -113,7 +133,24 @@ namespace FenBrowser.Core
         public static System.Action<string> LogSink;
 
         // Phase 2.3: Sharded Caches
-        public sealed class TextEntry { public string Body; public string ContentType; public Uri FinalUri; }
+        public sealed class TextEntry
+        {
+            public string Body;
+            public string ContentType;
+            public Uri FinalUri;
+            public int StatusCode;
+            public IReadOnlyDictionary<string, string[]> HeaderSnapshot;
+            public bool Redirected;
+            public int RedirectCount;
+            public IReadOnlyList<string> RedirectChain;
+            public XFrameOptionsPolicy XFrameOptions;
+            public string XFrameAllowFromUri;
+            public ReferrerPolicyDirective ReferrerPolicy;
+            public CrossOriginIsolationPolicy CrossOriginIsolation;
+            public string CrossOriginResourcePolicy;
+            public Security.PermissionsPolicy PermissionsPolicy;
+            public DateTimeOffset ExpiresAtUtc;
+        }
         private readonly FenBrowser.Core.Cache.ShardedCache<TextEntry> _textCache = new FenBrowser.Core.Cache.ShardedCache<TextEntry>(128);
 
         public sealed class ImgEntry { public byte[] Buffer; public string ContentType; }
@@ -321,6 +358,105 @@ public Uri LastTextResponseUri { get; private set; }
             if (string.IsNullOrWhiteSpace(contentType)) return false;
             var ct = contentType.ToLowerInvariant();
             return ct.StartsWith("text/") || ct.Contains("javascript") || ct.Contains("json");
+        }
+
+        private static IReadOnlyDictionary<string, string[]> SnapshotHeaders(HttpResponseMessage response)
+        {
+            var snapshot = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+            if (response?.Headers != null)
+            {
+                foreach (var header in response.Headers)
+                {
+                    snapshot[header.Key] = header.Value.ToArray();
+                }
+            }
+
+            if (response?.Content?.Headers != null)
+            {
+                foreach (var header in response.Content.Headers)
+                {
+                    snapshot[header.Key] = header.Value.ToArray();
+                }
+            }
+
+            return snapshot;
+        }
+
+        private static bool TryGetTextCacheExpiry(HttpResponseMessage response, out DateTimeOffset expiresAtUtc)
+        {
+            expiresAtUtc = default;
+            if (response == null || !response.IsSuccessStatusCode)
+            {
+                return false;
+            }
+
+            var cacheControl = response.Headers.CacheControl;
+            if (cacheControl?.NoStore == true || cacheControl?.NoCache == true || cacheControl?.Private == true)
+            {
+                return false;
+            }
+
+            if (response.Headers.TryGetValues("Set-Cookie", out _))
+            {
+                return false;
+            }
+
+            if (response.Headers.Vary != null && response.Headers.Vary.Count > 0)
+            {
+                return false;
+            }
+
+            var now = DateTimeOffset.UtcNow;
+            if (cacheControl?.MaxAge is TimeSpan maxAge && maxAge > TimeSpan.Zero)
+            {
+                expiresAtUtc = now + maxAge;
+                return true;
+            }
+
+            var expires = response.Content?.Headers?.Expires;
+            if (expires.HasValue && expires.Value > now)
+            {
+                expiresAtUtc = expires.Value;
+                return true;
+            }
+
+            return false;
+        }
+
+        private string BuildTextCacheKey(
+            FetchContext context,
+            string accept,
+            Uri topLevelDocumentUri,
+            string secFetchDest,
+            string fetchMode)
+        {
+            var requestUri = context?.RequestUri;
+            var credentials = context?.CredentialsMode ?? string.Empty;
+            var cookieIdentity = string.Empty;
+            if (requestUri != null && AreCredentialsAllowed(context, requestUri) && CookieJar != null)
+            {
+                var cookieHeader = CookieJar.GetRequestCookieHeader(
+                    requestUri,
+                    topLevelDocumentUri,
+                    IsTopLevelDocumentRequest(secFetchDest),
+                    context?.Method ?? HttpMethod.Get.Method);
+                if (!string.IsNullOrEmpty(cookieHeader))
+                {
+                    cookieIdentity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(cookieHeader)));
+                }
+            }
+
+            var initiator = ExtractOrigin(context?.InitiatorUri)?.AbsoluteUri ?? string.Empty;
+            return string.Join("\n", new[]
+            {
+                requestUri?.AbsoluteUri ?? string.Empty,
+                fetchMode ?? string.Empty,
+                secFetchDest ?? string.Empty,
+                credentials,
+                accept ?? string.Empty,
+                initiator,
+                cookieIdentity
+            });
         }
 
         private static void AddHeaderSafe(HttpRequestMessage req, string name, string value)
@@ -1007,26 +1143,44 @@ public Uri LastTextResponseUri { get; private set; }
             // FetchTextAsync each took their own request), and the
             // speculative preload fetch was wasted because nothing else
             // consulted the cache it warmed.
-            var cacheKey = url.ToString();
-            var cachePartition = context.NetworkPartitionKey.ToStorageKey();
-            if (_textCache.TryGet(cachePartition, cacheKey, out var cachedDetailed))
-            {
-                var cachedFinalUri = cachedDetailed.FinalUri ?? url;
-                LastTextResponseUri = cachedFinalUri;
-                return new FetchResult
-                {
-                    Status = FetchStatus.Success,
-                    Content = cachedDetailed.Body,
-                    FinalUri = cachedFinalUri,
-                    ContentType = cachedDetailed.ContentType
-                };
-            }
-
             var refererOriginal = referer;
             var topLevelDocumentUri = context.TopLevelDocumentUri ??
                 context.FrameDocumentUri ??
                 refererOriginal ??
                 url;
+            var cacheKey = BuildTextCacheKey(context, accept, topLevelDocumentUri, secFetchDest, fetchMode);
+            var cachePartition = context.NetworkPartitionKey.ToStorageKey();
+            if (_textCache.TryGet(cachePartition, cacheKey, out var cachedDetailed))
+            {
+                if (cachedDetailed.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+                {
+                    _textCache.TryRemove(cachePartition, cacheKey, out _);
+                }
+                else
+                {
+                    var cachedFinalUri = cachedDetailed.FinalUri ?? url;
+                    LastTextResponseUri = cachedFinalUri;
+                    return new FetchResult
+                    {
+                        Status = FetchStatus.Success,
+                        Content = cachedDetailed.Body,
+                        StatusCode = cachedDetailed.StatusCode,
+                        FinalUri = cachedFinalUri,
+                        ContentType = cachedDetailed.ContentType,
+                        HeaderSnapshot = cachedDetailed.HeaderSnapshot,
+                        Redirected = cachedDetailed.Redirected,
+                        RedirectCount = cachedDetailed.RedirectCount,
+                        RedirectChain = cachedDetailed.RedirectChain,
+                        XFrameOptions = cachedDetailed.XFrameOptions,
+                        XFrameAllowFromUri = cachedDetailed.XFrameAllowFromUri,
+                        ReferrerPolicy = cachedDetailed.ReferrerPolicy,
+                        CrossOriginIsolation = cachedDetailed.CrossOriginIsolation ?? new CrossOriginIsolationPolicy(),
+                        CrossOriginResourcePolicy = cachedDetailed.CrossOriginResourcePolicy,
+                        PermissionsPolicy = cachedDetailed.PermissionsPolicy ?? Security.PermissionsPolicy.None
+                    };
+                }
+            }
+
             Uri previousRequest = null;
             var redirectChain = new List<Uri>();
             if (url != null)
@@ -1143,6 +1297,8 @@ public Uri LastTextResponseUri { get; private set; }
                             current = loc;
                             redirectChain.Add(current);
                             hops++;
+                            resp.Dispose();
+                            resp = null;
                             /* [PERF-REMOVED] */
                             continue;
                         }
@@ -1190,6 +1346,7 @@ public Uri LastTextResponseUri { get; private set; }
 
                 var finalUri = resp?.RequestMessage?.RequestUri ?? current ?? url;
                 LastTextResponseUri = finalUri;
+                var headerSnapshot = SnapshotHeaders(resp);
                 // NoteHsts(resp, finalUri ?? url); // Handled by HstsHandler
 
                 var ct = resp.Content != null && resp.Content.Headers != null && resp.Content.Headers.ContentType != null ? resp.Content.Headers.ContentType.MediaType : null;
@@ -1289,6 +1446,7 @@ public Uri LastTextResponseUri { get; private set; }
                         FinalUri = finalUri,
                         ContentType = ct,
                         Headers = resp.Headers,
+                        HeaderSnapshot = headerSnapshot,
                         Redirected = redirectChain.Count > 1,
                         RedirectCount = Math.Max(0, redirectChain.Count - 1),
                         RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
@@ -1368,6 +1526,7 @@ public Uri LastTextResponseUri { get; private set; }
                         FinalUri = finalUri,
                         ContentType = effectiveMime,
                         Headers = resp.Headers,
+                        HeaderSnapshot = headerSnapshot,
                         Redirected = redirectChain.Count > 1,
                         RedirectCount = Math.Max(0, redirectChain.Count - 1),
                         RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
@@ -1384,12 +1543,28 @@ public Uri LastTextResponseUri { get; private set; }
                 // every later request (FetchCssAsync, scripts, preload, ...).
                 // Skip top-level documents so the navigated page itself isn't
                 // pinned in memory across navigations.
-                if (!IsTopLevelDocumentRequest(secFetchDest))
+                if (!IsTopLevelDocumentRequest(secFetchDest) && TryGetTextCacheExpiry(resp, out var expiresAtUtc))
                 {
                     try
                     {
-                        _textCache.Put(cachePartition, cacheKey,
-                            new TextEntry { Body = text ?? string.Empty, ContentType = effectiveMime ?? string.Empty, FinalUri = finalUri });
+                        _textCache.Put(cachePartition, cacheKey, new TextEntry
+                        {
+                            Body = text ?? string.Empty,
+                            ContentType = effectiveMime ?? string.Empty,
+                            FinalUri = finalUri,
+                            StatusCode = (int)resp.StatusCode,
+                            HeaderSnapshot = headerSnapshot,
+                            Redirected = redirectChain.Count > 1,
+                            RedirectCount = Math.Max(0, redirectChain.Count - 1),
+                            RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
+                            XFrameOptions = xFramePolicy,
+                            XFrameAllowFromUri = xFrameAllowFrom,
+                            ReferrerPolicy = referrerPolicy,
+                            CrossOriginIsolation = crossOriginIsolation,
+                            CrossOriginResourcePolicy = corpHeader,
+                            PermissionsPolicy = permissionsPolicy,
+                            ExpiresAtUtc = expiresAtUtc
+                        });
                     }
                     catch (Exception cacheEx)
                     {
@@ -1404,6 +1579,7 @@ public Uri LastTextResponseUri { get; private set; }
                     FinalUri = finalUri,
                     ContentType = effectiveMime,
                     Headers = resp.Headers,
+                        HeaderSnapshot = headerSnapshot,
                     Redirected = redirectChain.Count > 1,
                     RedirectCount = Math.Max(0, redirectChain.Count - 1),
                     RedirectChain = redirectChain.Select(u => u.AbsoluteUri).ToArray(),
@@ -2355,7 +2531,7 @@ throw new HttpRequestException($"Blocked by Content Security Policy (connect-src
             }
 
             // X-Content-Type-Options: nosniff — if set, the content-type MUST be text/css
-            if (result.Headers != null && result.Headers.TryGetValues("X-Content-Type-Options", out var xctoVals))
+            if (result.TryGetHeaderValues("X-Content-Type-Options", out var xctoVals))
             {
                 var xcto = string.Join(",", xctoVals).Trim().ToLowerInvariant();
                 if (xcto.Contains("nosniff"))
