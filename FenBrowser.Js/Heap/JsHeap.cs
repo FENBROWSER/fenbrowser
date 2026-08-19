@@ -9,6 +9,7 @@ public sealed class JsHeap
     private readonly List<int> _generations = new();
     private readonly List<bool> _isFree = new();
     private readonly Stack<int> _freeList = new();
+    private readonly List<(int Index, int Generation)> _nursery = new();
     private readonly RootSet _roots = new();
     private readonly List<IHeapRootSource> _rootSources = new();
     private readonly GcStressMode _stressMode;
@@ -21,6 +22,7 @@ public sealed class JsHeap
     private int _lastMinorMarked;
     private int _lastMinorSwept;
     private int _lastMinorPromoted;
+    private int _lastMinorScannedOldCells;
     private long _allocationCount;
     // Weak-target registry: a WeakRef or FinalizationRegistry entry holds a
     // handle to a target that must NOT keep the target alive. The target handle
@@ -36,13 +38,11 @@ public sealed class JsHeap
         public ObjectHandle Target;
         public Action? OnCollected;
     }
-    // Tier 4 #22 remembered set: Old → Young edges discovered via
-    // WriteBarrier. Indexed by Old cell index; child indices use a set so
-    // repeated stores do not turn barrier deduplication into a linear scan.
-    // Cleared and rebuilt on each major collection; entries become stale
-    // (filtered out by IsYoung/IsLiveObject) when the Young child is collected
-    // or promoted.
-    private readonly Dictionary<int, HashSet<int>> _rememberedSet = new();
+    private const int CardShift = 6;
+    private const byte DirtyCard = 1;
+    private const byte StickyCard = 2;
+    private byte[] _cards = Array.Empty<byte>();
+    private readonly List<int> _dirtyCards = new();
     // Tier 4 #22: after this many minor collections, a surviving Young cell
     // is promoted to Old. Default mirrors common nursery survival heuristics.
     public byte PromotionThreshold { get; set; } = 2;
@@ -101,14 +101,13 @@ public sealed class JsHeap
     public int LastMinorMarked => _lastMinorMarked;
     public int LastMinorSwept => _lastMinorSwept;
     public int LastMinorPromoted => _lastMinorPromoted;
+    public int LastMinorScannedOldCells => _lastMinorScannedOldCells;
     public long AllocationCount => _allocationCount;
     public int RememberedSetEdgeCount
     {
         get
         {
-            var n = 0;
-            foreach (var set in _rememberedSet.Values) n += set.Count;
-            return n;
+            return _dirtyCards.Count;
         }
     }
     public int LiveCellCount => _cells.Count(c => c is not null);
@@ -280,32 +279,12 @@ public sealed class JsHeap
         var childCell = Validate(child);
         _writeBarrierCount++;
         _writeBarrierEdges?.Add((owner, child));
-        // Tier 4 #22: remembered-set update. Only Old → Young pointers need
-        // to be remembered; Young → anything and Old → Old are already
-        // covered by the normal mark traversal.
         if (ownerCell.Tier == GenerationTier.Old && childCell.Tier == GenerationTier.Young)
         {
-            if (!_rememberedSet.TryGetValue(owner.Index, out var children))
-            {
-                children = new HashSet<int>();
-                _rememberedSet[owner.Index] = children;
-            }
-            children.Add(child.Index);
+            DirtyCardForCell(owner.Index);
         }
     }
 
-    // Tier 4 #22: minor (nursery) collection. Marks reachable Young cells
-    // starting from all real roots plus the remembered set, then sweeps
-    // unreachable Young cells. Cells that survive PromotionThreshold minor
-    // collections are promoted to Old.
-    //
-    // Correctness note: the mark traversal walks through Old cells as well,
-    // because an Old object's children may include Young objects that
-    // weren't covered by the remembered set (e.g., recently written but
-    // missed by a slow path). This makes MinorCollect a conservative
-    // superset of "scan only Young" — it costs more than the platonic
-    // ideal but cannot miss a live pointer. Future work: prune Old
-    // re-traversal once every write site goes through WriteBarrier.
     public void MinorCollect()
     {
         if (_verifyHeapBeforeGc) _verifier.Verify(this);
@@ -314,23 +293,21 @@ public sealed class JsHeap
         _lastMinorMarked = 0;
         _lastMinorSwept = 0;
         _lastMinorPromoted = 0;
+        _lastMinorScannedOldCells = 0;
 
-        for (var i = 0; i < _cells.Count; i++)
+        foreach (var (index, generation) in _nursery)
         {
-            var cell = _cells[i];
-            if (cell is not null) cell.Marked = false;
+            if ((uint)index >= (uint)_cells.Count) continue;
+            var cell = _cells[index];
+            if (cell is { Tier: GenerationTier.Young } && cell.Generation == generation)
+            {
+                cell.Marked = false;
+            }
         }
 
-        // Tier 4 #22: minor-mode tracer stops at Old cells. Soundness
-        // depends on every Old→Young pointer being in the remembered
-        // set — which is now true because JsObject.SetProperty /
-        // DefineOwnProperty / DefineOwnSymbolProperty / SetPrototype
-        // all funnel through BarrierIfObject.
         _currentMarkMinorMode = true;
         var marker = new MarkingTracer(this, minorMode: true);
-        foreach (var root in _roots.Snapshot()) marker.Trace(root);
-        foreach (var root in _roots.StringSnapshot()) marker.Trace(root);
-        foreach (var root in _roots.SymbolSnapshot()) marker.Trace(root);
+        _roots.Trace(marker);
 
         // Audit §1: external root sources (interpreter frame registers).
         for (var i = 0; i < _rootSources.Count; i++)
@@ -338,25 +315,15 @@ public sealed class JsHeap
             _rootSources[i].TraceRoots(marker);
         }
 
-        // Remembered set: every recorded Old→Young edge is treated as a root
-        // for the Young cell.
-        foreach (var (ownerIdx, children) in _rememberedSet)
-        {
-            if ((uint)ownerIdx >= (uint)_cells.Count || _cells[ownerIdx] is null) continue;
-            foreach (var childIdx in children)
-            {
-                if ((uint)childIdx >= (uint)_cells.Count) continue;
-                var childCell = _cells[childIdx];
-                if (childCell is null || childCell.Tier != GenerationTier.Young) continue;
-                marker.Trace(new ObjectHandle(childIdx, childCell.Generation));
-            }
-        }
+        ScanDirtyCards(marker);
 
-        for (var i = 0; i < _cells.Count; i++)
+        var survivors = new List<(int Index, int Generation)>(_nursery.Count);
+        foreach (var entry in _nursery)
         {
+            var i = entry.Index;
+            if ((uint)i >= (uint)_cells.Count) continue;
             var cell = _cells[i];
-            if (cell is null) continue;
-            if (cell.Tier != GenerationTier.Young) continue;
+            if (cell is null || cell.Generation != entry.Generation || cell.Tier != GenerationTier.Young) continue;
 
             if (cell.Marked)
             {
@@ -365,6 +332,11 @@ public sealed class JsHeap
                 {
                     cell.Tier = GenerationTier.Old;
                     _lastMinorPromoted++;
+                    DirtyCardForCell(i, cell.Payload is JsObject obj && obj.GetType() != typeof(JsObject));
+                }
+                else
+                {
+                    survivors.Add(entry);
                 }
             }
             else
@@ -380,8 +352,8 @@ public sealed class JsHeap
             }
         }
 
-        _lastMinorMarked = _cells.Count(c => c is not null && c.Marked);
-        PruneStaleRememberedSetEntries();
+        _nursery.Clear();
+        _nursery.AddRange(survivors);
         _currentMarkMinorMode = false;
 
         // Weak targets whose Young cell died must fire even in a minor
@@ -471,22 +443,47 @@ public sealed class JsHeap
         }
     }
 
-    private void PruneStaleRememberedSetEntries()
+    private void DirtyCardForCell(int cellIndex, bool sticky = false)
     {
-        var staleOwners = new List<int>();
-        foreach (var (ownerIdx, children) in _rememberedSet)
+        var cardIndex = cellIndex >> CardShift;
+        if (cardIndex >= _cards.Length)
         {
-            if ((uint)ownerIdx >= (uint)_cells.Count || _cells[ownerIdx] is null)
-            {
-                staleOwners.Add(ownerIdx);
-                continue;
-            }
-            children.RemoveWhere(childIdx =>
-                (uint)childIdx >= (uint)_cells.Count ||
-                _cells[childIdx] is not { Tier: GenerationTier.Young });
-            if (children.Count == 0) staleOwners.Add(ownerIdx);
+            Array.Resize(ref _cards, Math.Max(cardIndex + 1, Math.Max(4, _cards.Length * 2)));
         }
-        foreach (var o in staleOwners) _rememberedSet.Remove(o);
+
+        if ((_cards[cardIndex] & DirtyCard) == 0)
+        {
+            _cards[cardIndex] |= DirtyCard;
+            _dirtyCards.Add(cardIndex);
+        }
+        if (sticky) _cards[cardIndex] |= StickyCard;
+    }
+
+    private void ScanDirtyCards(IHeapTracer youngMarker)
+    {
+        if (_dirtyCards.Count == 0) return;
+
+        var retained = new List<int>(_dirtyCards.Count);
+        foreach (var cardIndex in _dirtyCards)
+        {
+            var cardTracer = new CardTracer(this, youngMarker);
+            var start = cardIndex << CardShift;
+            var end = Math.Min(start + (1 << CardShift), _cells.Count);
+            for (var i = start; i < end; i++)
+            {
+                if (_cells[i] is not { Tier: GenerationTier.Old } cell) continue;
+                _lastMinorScannedOldCells++;
+                cell.Payload.Trace(cardTracer);
+            }
+
+            var sticky = (_cards[cardIndex] & StickyCard) != 0;
+            var keepDirty = sticky || cardTracer.SawYoungReference;
+            _cards[cardIndex] = (byte)((sticky ? StickyCard : 0) | (keepDirty ? DirtyCard : 0));
+            if (keepDirty) retained.Add(cardIndex);
+        }
+
+        _dirtyCards.Clear();
+        _dirtyCards.AddRange(retained);
     }
 
     public void CollectGarbage()
@@ -512,18 +509,7 @@ public sealed class JsHeap
 
         // Mark from explicit roots.
         var marker = new MarkingTracer(this);
-        foreach (var root in _roots.Snapshot())
-        {
-            marker.Trace(root);
-        }
-        foreach (var root in _roots.StringSnapshot())
-        {
-            marker.Trace(root);
-        }
-        foreach (var root in _roots.SymbolSnapshot())
-        {
-            marker.Trace(root);
-        }
+        _roots.Trace(marker);
 
         // Audit §1: roots held by external subsystems (interpreter frames).
         for (var i = 0; i < _rootSources.Count; i++)
@@ -551,11 +537,26 @@ public sealed class JsHeap
         }
 
         PruneWriteBarrierEdges();
-        // Tier 4 #22: a major collection invalidates remembered-set
-        // membership for swept-away children. PruneStaleRememberedSetEntries
-        // handles partial invalidation; for a full major collection it's
-        // simpler to clear and let WriteBarrier repopulate.
-        _rememberedSet.Clear();
+        foreach (var entry in _nursery)
+        {
+            if ((uint)entry.Index >= (uint)_cells.Count) continue;
+            if (_cells[entry.Index] is { Tier: GenerationTier.Young } cell &&
+                cell.Generation == entry.Generation)
+            {
+                cell.Tier = GenerationTier.Old;
+            }
+        }
+        _nursery.Clear();
+        Array.Clear(_cards);
+        _dirtyCards.Clear();
+        for (var i = 0; i < _cells.Count; i++)
+        {
+            if (_cells[i] is { Tier: GenerationTier.Old, Payload: JsObject obj } &&
+                obj.GetType() != typeof(JsObject))
+            {
+                DirtyCardForCell(i, sticky: true);
+            }
+        }
 
         FireCollectedWeakTargets();
 
@@ -710,39 +711,45 @@ public sealed class JsHeap
     private void Mark(ObjectHandle handle)
     {
         var cell = Validate(handle);
+        if (_currentMarkMinorMode && cell.Tier == GenerationTier.Old) return;
         if (cell.Marked)
         {
             return;
         }
 
         cell.Marked = true;
-        _lastGcMarkedCells++;
+        if (_currentMarkMinorMode) _lastMinorMarked++;
+        else _lastGcMarkedCells++;
         cell.Payload.Trace(new MarkingTracer(this, _currentMarkMinorMode));
     }
 
     private void Mark(StringHandle handle)
     {
         var cell = Validate(handle);
+        if (_currentMarkMinorMode && cell.Tier == GenerationTier.Old) return;
         if (cell.Marked)
         {
             return;
         }
 
         cell.Marked = true;
-        _lastGcMarkedCells++;
+        if (_currentMarkMinorMode) _lastMinorMarked++;
+        else _lastGcMarkedCells++;
         cell.Payload.Trace(new MarkingTracer(this, _currentMarkMinorMode));
     }
 
     private void Mark(SymbolHandle handle)
     {
         var cell = Validate(handle);
+        if (_currentMarkMinorMode && cell.Tier == GenerationTier.Old) return;
         if (cell.Marked)
         {
             return;
         }
 
         cell.Marked = true;
-        _lastGcMarkedCells++;
+        if (_currentMarkMinorMode) _lastMinorMarked++;
+        else _lastGcMarkedCells++;
         cell.Payload.Trace(new MarkingTracer(this, _currentMarkMinorMode));
     }
 
@@ -783,6 +790,7 @@ public sealed class JsHeap
             });
         }
 
+        _nursery.Add((index, generation));
         return (index, generation);
     }
 
@@ -837,17 +845,6 @@ public sealed class JsHeap
     {
         private readonly JsHeap _heap;
 
-        // Minor collections used to STOP traversal at Old cells and rely on the
-        // remembered set for every Old→Young edge. That is only sound when every
-        // such edge goes through a write barrier — but internal slots (generator
-        // state, typed-array buffers, Map/Set backing stores, bound-function
-        // slots) and closure-captured environment bindings are written directly
-        // in native code with no barrier, so live Young cells reachable only
-        // through an Old owner were swept ("Stale heap handle."). Minor mode now
-        // marks straight through Old cells too — mark bits stop revisits, and
-        // the minor sweep still frees only unmarked Young cells, so the only
-        // cost is a full-heap mark instead of a young-only mark. The remembered
-        // set remains as a redundant (harmless) root source.
         private readonly bool _minorMode;
 
         public MarkingTracer(JsHeap heap, bool minorMode = false)
@@ -870,6 +867,41 @@ public sealed class JsHeap
         public void Trace(SymbolHandle handle)
         {
             _heap.Mark(handle);
+        }
+    }
+
+    private sealed class CardTracer : IHeapTracer
+    {
+        private readonly JsHeap _heap;
+        private readonly IHeapTracer _youngMarker;
+
+        public CardTracer(JsHeap heap, IHeapTracer youngMarker)
+        {
+            _heap = heap;
+            _youngMarker = youngMarker;
+        }
+
+        public bool SawYoungReference { get; private set; }
+
+        public void Trace(ObjectHandle handle)
+        {
+            if (_heap.Validate(handle).Tier != GenerationTier.Young) return;
+            SawYoungReference = true;
+            _youngMarker.Trace(handle);
+        }
+
+        public void Trace(StringHandle handle)
+        {
+            if (_heap.Validate(handle).Tier != GenerationTier.Young) return;
+            SawYoungReference = true;
+            _youngMarker.Trace(handle);
+        }
+
+        public void Trace(SymbolHandle handle)
+        {
+            if (_heap.Validate(handle).Tier != GenerationTier.Young) return;
+            SawYoungReference = true;
+            _youngMarker.Trace(handle);
         }
     }
 

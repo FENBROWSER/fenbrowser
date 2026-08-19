@@ -409,6 +409,71 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void MinorCollectionDoesNotScanCleanOldGeneration()
+    {
+        var heap = new JsHeap
+        {
+            YoungAllocationsPerMinorGc = 0,
+            PromotionThreshold = 1
+        };
+
+        for (var i = 0; i < 192; i++)
+        {
+            heap.PushRoot(heap.AllocateObject(new JsObject(), AllocationSite.Current()));
+        }
+
+        heap.MinorCollect();
+        heap.MinorCollect();
+        Assert.True(heap.LastMinorScannedOldCells >= 192);
+
+        heap.MinorCollect();
+
+        Assert.Equal(0, heap.LastMinorScannedOldCells);
+        Assert.Equal(192, heap.LiveCellCount);
+    }
+
+    [Fact]
+    public void CardBarrierKeepsYoungChildOfOldObjectAlive()
+    {
+        var heap = new JsHeap
+        {
+            YoungAllocationsPerMinorGc = 0,
+            PromotionThreshold = 1
+        };
+        var owner = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        heap.PushRoot(owner);
+        heap.MinorCollect();
+        heap.MinorCollect();
+
+        var child = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        heap.GetObject(owner).SetProperty("child", JsValue.FromObject(child));
+        heap.MinorCollect();
+
+        Assert.NotNull(heap.GetObject(child));
+        Assert.True(heap.LastMinorScannedOldCells > 0);
+    }
+
+    [Fact]
+    public void ConservativeInternalSlotCardSurvivesMajorCollection()
+    {
+        var heap = new JsHeap
+        {
+            YoungAllocationsPerMinorGc = 0,
+            PromotionThreshold = 1
+        };
+        var container = new HiddenEdgeObject();
+        var containerHandle = heap.AllocateObject(container, AllocationSite.Current());
+        heap.PushRoot(containerHandle);
+        heap.CollectGarbage();
+
+        var child = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        container.Child = child;
+        heap.MinorCollect();
+
+        Assert.NotNull(heap.GetObject(child));
+    }
+
+    [Fact]
     public void IsolateAllocatesObjectsInsideHandleScope()
     {
         var isolate = new JsIsolate(new JsHeap());
@@ -451,5 +516,16 @@ public sealed class RuntimeHeapTests
         var executeConstruct = typeof(BytecodeInterpreter).GetMethod("ExecuteConstruct", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
         Assert.NotNull(executeConstruct);
         Assert.NotNull(executeConstruct!.GetCustomAttributes(typeof(MayExecuteJsAttribute), inherit: false).SingleOrDefault());
+    }
+
+    private sealed class HiddenEdgeObject : JsObject
+    {
+        public ObjectHandle? Child { get; set; }
+
+        public override void Trace(IHeapTracer tracer)
+        {
+            base.Trace(tracer);
+            if (Child is { } child) tracer.Trace(child);
+        }
     }
 }

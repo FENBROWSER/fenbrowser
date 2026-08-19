@@ -27,6 +27,27 @@ public sealed class RootSet
         _entries.RemoveRange(mark, _entries.Count - mark);
     }
 
+    public void Trace(IHeapTracer tracer)
+    {
+        ArgumentNullException.ThrowIfNull(tracer);
+
+        foreach (var entry in _entries)
+        {
+            switch (entry.Kind)
+            {
+                case RootKind.Object:
+                    tracer.Trace(ObjectHandle.FromInt64(entry.Payload));
+                    break;
+                case RootKind.String:
+                    tracer.Trace(StringHandle.FromInt64(entry.Payload));
+                    break;
+                case RootKind.Symbol:
+                    tracer.Trace(SymbolHandle.FromInt64(entry.Payload));
+                    break;
+            }
+        }
+    }
+
     public IReadOnlyList<ObjectHandle> Snapshot()
     {
         var list = new List<ObjectHandle>();
