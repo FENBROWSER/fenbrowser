@@ -305,7 +305,6 @@ public sealed class PosixCommandSandbox : ISandbox
         if ((_profile.Capabilities & OsSandboxCapabilities.FileWrite) != 0)
         {
             AddBind(args, NormalizeDirectoryPath(_tempDirectory), writable: true);
-            AddBind(args, _homeDirectory, writable: true);
         }
 
         if ((_profile.Capabilities & (OsSandboxCapabilities.NetworkOutbound | OsSandboxCapabilities.NetworkListen)) != 0)
@@ -360,9 +359,7 @@ public sealed class PosixCommandSandbox : ISandbox
 
         if ((_profile.Capabilities & OsSandboxCapabilities.FileWrite) != 0)
         {
-            AppendSandboxPathRule(profile, "file-write*", sandboxWorkingDirectory);
             AppendSandboxPathRule(profile, "file-write*", NormalizeDirectoryPath(_tempDirectory));
-            AppendSandboxPathRule(profile, "file-write*", _homeDirectory);
         }
 
         if ((_profile.Capabilities & OsSandboxCapabilities.NetworkOutbound) != 0)
@@ -387,90 +384,13 @@ public sealed class PosixCommandSandbox : ISandbox
 
     private static IReadOnlyList<string> GetChildArguments(ProcessStartInfo childStartInfo)
     {
-        if (childStartInfo.ArgumentList.Count > 0)
+        if (!string.IsNullOrWhiteSpace(childStartInfo.Arguments))
         {
-            if (!string.IsNullOrWhiteSpace(childStartInfo.Arguments))
-            {
-                throw new InvalidOperationException(
-                    "ProcessStartInfo cannot safely specify both ArgumentList and Arguments for a sandboxed child.");
-            }
-
-            return childStartInfo.ArgumentList.ToArray();
+            throw new InvalidOperationException(
+                "Sandboxed children must use ProcessStartInfo.ArgumentList instead of the legacy Arguments string.");
         }
 
-        return SplitLegacyArguments(childStartInfo.Arguments);
-    }
-
-    private static IReadOnlyList<string> SplitLegacyArguments(string arguments)
-    {
-        if (string.IsNullOrWhiteSpace(arguments))
-        {
-            return Array.Empty<string>();
-        }
-
-        var result = new List<string>();
-        var current = new StringBuilder();
-        char quote = '\0';
-        var tokenStarted = false;
-
-        for (var i = 0; i < arguments.Length; i++)
-        {
-            var ch = arguments[i];
-
-            if (quote == '\0' && char.IsWhiteSpace(ch))
-            {
-                if (tokenStarted)
-                {
-                    result.Add(current.ToString());
-                    current.Clear();
-                    tokenStarted = false;
-                }
-                continue;
-            }
-
-            if (ch == '\'' || ch == '"')
-            {
-                if (quote == '\0')
-                {
-                    quote = ch;
-                    tokenStarted = true;
-                    continue;
-                }
-
-                if (quote == ch)
-                {
-                    quote = '\0';
-                    continue;
-                }
-            }
-
-            if (ch == '\\' && i + 1 < arguments.Length)
-            {
-                var next = arguments[i + 1];
-                if (next == '\\' || next == '\'' || next == '"' || char.IsWhiteSpace(next))
-                {
-                    current.Append(next);
-                    tokenStarted = true;
-                    i++;
-                    continue;
-                }
-            }
-
-            current.Append(ch);
-            tokenStarted = true;
-        }
-
-        if (quote != '\0')
-        {
-            throw new InvalidOperationException("Sandboxed child arguments contain an unterminated quoted argument.");
-        }
-
-        if (tokenStarted)
-        {
-            result.Add(current.ToString());
-        }
-
-        return result;
+        return childStartInfo.ArgumentList.ToArray();
     }
 
     private IDictionary<string, string> BuildSanitizedEnvironment(IDictionary<string, string?> source)
@@ -485,7 +405,7 @@ public sealed class PosixCommandSandbox : ISandbox
             "TZ"
         };
 
-        if ((_profile.Capabilities & (OsSandboxCapabilities.FileReadUser | OsSandboxCapabilities.FileWrite)) != 0)
+        if ((_profile.Capabilities & OsSandboxCapabilities.FileReadUser) != 0)
         {
             allowList.Add("HOME");
         }
@@ -513,7 +433,7 @@ public sealed class PosixCommandSandbox : ISandbox
             environment["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? "/usr/bin:/bin";
         }
 
-        if ((_profile.Capabilities & (OsSandboxCapabilities.FileReadUser | OsSandboxCapabilities.FileWrite)) != 0 &&
+        if ((_profile.Capabilities & OsSandboxCapabilities.FileReadUser) != 0 &&
             !environment.ContainsKey("HOME") &&
             !string.IsNullOrWhiteSpace(_homeDirectory))
         {
@@ -642,17 +562,17 @@ public sealed class PosixCommandSandbox : ISandbox
 
     private void BindWorkingDirectory(List<string> args, string sandboxWorkingDirectory)
     {
-        if ((_profile.Capabilities & (OsSandboxCapabilities.FileReadUser | OsSandboxCapabilities.FileWrite)) == 0)
+        if ((_profile.Capabilities & OsSandboxCapabilities.FileReadUser) == 0)
         {
             return;
         }
 
-        AddBind(args, sandboxWorkingDirectory, writable: (_profile.Capabilities & OsSandboxCapabilities.FileWrite) != 0);
+        AddBind(args, sandboxWorkingDirectory, writable: false);
     }
 
     private string ResolveSandboxWorkingDirectory(string requestedWorkingDirectory)
     {
-        if ((_profile.Capabilities & (OsSandboxCapabilities.FileReadUser | OsSandboxCapabilities.FileWrite)) == 0)
+        if ((_profile.Capabilities & OsSandboxCapabilities.FileReadUser) == 0)
         {
             return "/tmp";
         }
@@ -662,7 +582,7 @@ public sealed class PosixCommandSandbox : ISandbox
 
     private bool ShouldExposeWorkingDirectoryToSandbox(string sandboxWorkingDirectory)
     {
-        return ((_profile.Capabilities & (OsSandboxCapabilities.FileReadUser | OsSandboxCapabilities.FileWrite)) != 0) &&
+        return ((_profile.Capabilities & OsSandboxCapabilities.FileReadUser) != 0) &&
                !string.IsNullOrWhiteSpace(sandboxWorkingDirectory) &&
                !string.Equals(sandboxWorkingDirectory, "/tmp", StringComparison.Ordinal);
     }

@@ -106,11 +106,13 @@ public sealed class WindowsOsSandboxFactory : IOsSandboxFactory
                 var psi = new ProcessStartInfo
                 {
                     FileName = Environment.SystemDirectory + @"\cmd.exe",
-                    Arguments = "/c exit 0",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
                 };
+                psi.ArgumentList.Add("/c");
+                psi.ArgumentList.Add("exit");
+                psi.ArgumentList.Add("0");
 
                 using var probe = sandbox.SpawnProcess(psi);
                 if (!probe.WaitForExit(3000))

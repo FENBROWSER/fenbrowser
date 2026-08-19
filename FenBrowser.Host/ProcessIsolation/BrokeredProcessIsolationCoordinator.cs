@@ -601,11 +601,12 @@ namespace FenBrowser.Host.ProcessIsolation
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = exePath,
-                    Arguments = $"--renderer-child --tab-id={tabId}",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
                 };
+                startInfo.ArgumentList.Add("--renderer-child");
+                startInfo.ArgumentList.Add($"--tab-id={tabId}");
                 RendererChildEnvironment.ResetToSafeBase(startInfo);
                 startInfo.Environment["FEN_RENDERER_CHILD"] = "1";
                 startInfo.Environment["FEN_RENDERER_TAB_ID"] = tabId.ToString();
@@ -972,5 +973,4 @@ namespace FenBrowser.Host.ProcessIsolation
             string LastStartupFailure);
     }
 }
-
 

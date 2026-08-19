@@ -72,11 +72,11 @@ namespace FenBrowser.Host.ProcessIsolation.Network
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = exePath,
-                    Arguments = "--network-child",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
                 };
+                startInfo.ArgumentList.Add("--network-child");
 
                 startInfo.Environment["FEN_NETWORK_CHILD"] = "1";
                 startInfo.Environment["FEN_NETWORK_PARENT_PID"] = _parentPid.ToString();

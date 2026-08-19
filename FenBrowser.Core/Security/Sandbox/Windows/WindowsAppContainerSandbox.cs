@@ -193,7 +193,7 @@ public sealed class WindowsAppContainerSandbox : ISandbox
         ThrowIfDisposed();
 
         // Build the command line the same way Process.Start does for a bare executable.
-        string commandLine = BuildCommandLine(psi.FileName, psi.Arguments);
+        string commandLine = BuildCommandLine(psi);
 
         // ---------------------------------------------------------------
         //  Step 1: Query the required attribute list buffer size.
@@ -456,13 +456,58 @@ public sealed class WindowsAppContainerSandbox : ISandbox
     /// Builds a Windows-style command-line string from an executable path and arguments,
     /// quoting the executable path when it contains spaces.
     /// </summary>
-    private static string BuildCommandLine(string exePath, string arguments)
+    internal static string BuildCommandLine(ProcessStartInfo startInfo)
     {
-        // Quote the executable path if it contains spaces (same logic as .NET's Process).
-        string quoted = exePath.Contains(' ') ? $"\"{exePath}\"" : exePath;
-        if (string.IsNullOrEmpty(arguments))
-            return quoted;
-        return $"{quoted} {arguments}";
+        if (!string.IsNullOrWhiteSpace(startInfo.Arguments))
+        {
+            throw new InvalidOperationException(
+                "AppContainer children must use ProcessStartInfo.ArgumentList instead of the legacy Arguments string.");
+        }
+
+        var commandLine = new System.Text.StringBuilder(QuoteWindowsArgument(startInfo.FileName));
+        foreach (var argument in startInfo.ArgumentList)
+        {
+            commandLine.Append(' ');
+            commandLine.Append(QuoteWindowsArgument(argument));
+        }
+
+        return commandLine.ToString();
+    }
+
+    internal static string QuoteWindowsArgument(string argument)
+    {
+        if (argument.Length > 0 && argument.All(ch => !char.IsWhiteSpace(ch) && ch != '"'))
+        {
+            return argument;
+        }
+
+        var quoted = new System.Text.StringBuilder(argument.Length + 2);
+        quoted.Append('"');
+        var backslashes = 0;
+        foreach (var ch in argument)
+        {
+            if (ch == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+
+            if (ch == '"')
+            {
+                quoted.Append('\\', backslashes * 2 + 1);
+                quoted.Append('"');
+                backslashes = 0;
+                continue;
+            }
+
+            quoted.Append('\\', backslashes);
+            backslashes = 0;
+            quoted.Append(ch);
+        }
+
+        quoted.Append('\\', backslashes * 2);
+        quoted.Append('"');
+        return quoted.ToString();
     }
 
     internal static char[] BuildEnvironmentBlock(IEnumerable<KeyValuePair<string, string>> environment)

@@ -83,11 +83,11 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = exePath,
-                    Arguments = _contract.LaunchArgument,
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     WindowStyle = ProcessWindowStyle.Hidden
                 };
+                startInfo.ArgumentList.Add(_contract.LaunchArgument);
 
                 startInfo.Environment["FEN_TARGET_PARENT_PID"] = _parentPid.ToString();
                 startInfo.Environment["FEN_TARGET_PIPE_NAME"] = pipeName;

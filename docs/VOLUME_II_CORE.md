@@ -1883,3 +1883,21 @@ Verification:
 - `CanonicalHtmlParserEntrypointTests` passes (`6/6`), including seven-character
   reader chunks, a 40,000-character text node, a split named reference, and proof
   that the input-limit path consumes no more than the limit plus one character.
+
+### 1.94 Sandboxed Child Argument and Filesystem Boundaries (2026-08-19)
+
+- POSIX command sandboxes no longer grant a writable bind for the user home or
+  caller working directory. Write-capable profiles receive only the configured
+  temporary directory, while user-file read access remains independently gated.
+- Sandboxed launch rejects the legacy raw `ProcessStartInfo.Arguments` string.
+  All renderer, network, GPU, utility, and AppContainer probe launchers populate
+  `ArgumentList`, preserving argument boundaries without a second parser.
+- The AppContainer custom-spawn path now constructs a `CreateProcessW` command
+  line from `ArgumentList` using Windows backslash-and-quote rules.
+
+Verification:
+
+- Core, Host, and the repository test assembly build in Release with zero errors.
+- Sandbox policy and AppContainer command-line tests pass (`6/6`), including
+  spaces, embedded quotes, trailing backslashes, empty arguments, and rejection
+  of legacy argument strings.
