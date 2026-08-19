@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using FenBrowser.Core.Storage;
 using Xunit;
 
@@ -132,6 +134,63 @@ namespace FenBrowser.Tests.Core
                 StoragePartitionKey.FirstParty("https://example.test"));
 
             Assert.Single(sameHostCookies);
+        }
+
+        [Fact]
+        public void CookieStore_DomainCapacity_EvictsOldestCookie()
+        {
+            var store = new PartitionedCookieStore();
+            var created = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+            for (var i = 0; i <= 180; i++)
+            {
+                store.Set(new Cookie
+                {
+                    Name = $"cookie-{i}",
+                    Value = i.ToString(),
+                    Domain = "capacity.test",
+                    CreationTime = created.AddSeconds(i)
+                });
+            }
+
+            var cookies = store.GetForUrl(
+                "https://capacity.test/",
+                StoragePartitionKey.FirstParty("https://capacity.test"));
+
+            Assert.Equal(180, cookies.Count);
+            Assert.DoesNotContain(cookies, cookie => cookie.Name == "cookie-0");
+            Assert.Contains(cookies, cookie => cookie.Name == "cookie-180");
+        }
+
+        [Fact]
+        public async Task CookieStore_ConcurrentDomainMutations_RemainIsolated()
+        {
+            var store = new PartitionedCookieStore();
+            const int domainCount = 32;
+            const int cookiesPerDomain = 64;
+
+            await Task.WhenAll(Enumerable.Range(0, domainCount).Select(domain => Task.Run(() =>
+            {
+                for (var cookie = 0; cookie < cookiesPerDomain; cookie++)
+                {
+                    store.Set(new Cookie
+                    {
+                        Name = $"cookie-{cookie}",
+                        Value = $"{domain}:{cookie}",
+                        Domain = $"domain-{domain}.test"
+                    });
+                }
+            })));
+
+            for (var domain = 0; domain < domainCount; domain++)
+            {
+                var host = $"domain-{domain}.test";
+                var cookies = store.GetForUrl(
+                    $"https://{host}/",
+                    StoragePartitionKey.FirstParty($"https://{host}"));
+                Assert.Equal(cookiesPerDomain, cookies.Count);
+                Assert.All(cookies, cookie => Assert.StartsWith($"{domain}:", cookie.Value));
+            }
         }
     }
 }
