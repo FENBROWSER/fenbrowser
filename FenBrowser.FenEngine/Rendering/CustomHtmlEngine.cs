@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using System.IO;
 using System.Diagnostics;
@@ -123,6 +124,7 @@ namespace FenBrowser.FenEngine.Rendering
         private const int ImagePrewarmMaxConcurrency = 6;
         private readonly object _renderStateLock = new();
         private long _renderGeneration;
+        private NavigationTaskGroup _navigationTasks = new();
 
         public Func<Uri, Task<string>> ScriptFetcher { get; set; }
 
@@ -189,12 +191,25 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private long BeginRenderGeneration()
+        private long BeginRenderGeneration(out NavigationTaskGroup taskGroup)
         {
+            NavigationTaskGroup previous;
+            long generation;
             lock (_renderStateLock)
             {
-                return ++_renderGeneration;
+                previous = _navigationTasks;
+                taskGroup = new NavigationTaskGroup();
+                _navigationTasks = taskGroup;
+                generation = ++_renderGeneration;
             }
+
+            _ = previous.CancelAndDrainAsync().ContinueWith(
+                static (_, state) => ((NavigationTaskGroup)state).Dispose(),
+                previous,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            return generation;
         }
 
         private bool IsCurrentRenderGeneration(long renderGeneration)
@@ -270,20 +285,20 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private static Task RunDetachedAsync(Func<Task> operation)
+        private Task RunDetachedAsync(
+            Func<CancellationToken, Task> operation,
+            NavigationTaskGroup taskGroup = null)
         {
-            return Task.Factory.StartNew(async () =>
+            NavigationTaskGroup owner;
+            lock (_renderStateLock)
             {
-                try
-                {
-                    await operation().ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Warn($"[CustomHtmlEngine] Detached async operation failed: {ex.Message}", LogCategory.Rendering);
-                }
-            }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
+                owner = taskGroup ?? _navigationTasks;
+            }
+            return owner.Run(operation);
         }
+
+        private Task RunDetachedAsync(Func<Task> operation, NavigationTaskGroup taskGroup = null) =>
+            RunDetachedAsync(_ => operation(), taskGroup);
         public RenderContext? BuildRenderContext()
         {
             return _cachedRenderer?.CreateRenderContext();
@@ -510,6 +525,12 @@ public void Dispose()
         {
             try
             {
+                NavigationTaskGroup taskGroup;
+                lock (_renderStateLock)
+                {
+                    taskGroup = _navigationTasks;
+                }
+                taskGroup.Dispose();
                 _eventLoopCoordinator.SetRenderCallback(null);
                 _repaintGate.Dispose();
                 // _activeJs does not implement IDisposable, just clear ref
@@ -656,7 +677,13 @@ public void Dispose()
         // ---------------------------------------------------------
 
         // Kick off background image fetches early (img/srcset/background-image)
-        private static async Task PrewarmImagesAsync(Element root, Uri baseUri, Func<Uri, Task<Stream>> imageLoader, double? viewportWidth)
+        private async Task PrewarmImagesAsync(
+            Element root,
+            Uri baseUri,
+            Func<Uri, Task<Stream>> imageLoader,
+            double? viewportWidth,
+            CancellationToken cancellationToken,
+            NavigationTaskGroup taskGroup)
         {
             if (root == null || imageLoader == null) return;
             try
@@ -677,10 +704,12 @@ public void Dispose()
                 {
                     try
                     {
-                        await gate.WaitAsync().ConfigureAwait(false);
+                        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
                         try
                         {
-                            var data = await ImageLoader.FetchBytesForCurrentContextAsync(abs, ownerDocument).ConfigureAwait(false);
+                            var data = await ImageLoader.FetchBytesForCurrentContextAsync(abs, ownerDocument)
+                                .WaitAsync(cancellationToken)
+                                .ConfigureAwait(false);
                             if (data != null && data.Length > 0)
                             {
                                 try
@@ -706,7 +735,7 @@ public void Dispose()
                                 return;
                             }
 
-                            using var stream = await imageLoader(abs).ConfigureAwait(false);
+                            using var stream = await imageLoader(abs).WaitAsync(cancellationToken).ConfigureAwait(false);
                             if (stream != null)
                             {
                                 await ImageLoader.PrewarmImageAsync(
@@ -720,6 +749,10 @@ public void Dispose()
                         {
                             gate.Release();
                         }
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
                     }
                     catch (Exception ex)
                     {
@@ -754,6 +787,7 @@ public void Dispose()
                 // Preload/Prefetch links
                 foreach (var link in root.Descendants().OfType<Element>().Where(n => string.Equals(n.TagName, "link", StringComparison.OrdinalIgnoreCase)))
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     string rel = link.GetAttribute("rel");
                     if (rel == "preload" || rel == "prefetch")
                     {
@@ -772,6 +806,7 @@ public void Dispose()
                 // Images and Backgrounds
                 foreach (var n in root.SelfAndDescendants())
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (budget <= 0) break;
                     try
                     {
@@ -824,12 +859,13 @@ public void Dispose()
                 {
                     var eagerTasks = eagerLoads.Select(LoadAndCacheAsync).ToArray();
                     var eagerAggregate = Task.WhenAll(eagerTasks);
-                    var completed = await Task.WhenAny(eagerAggregate, Task.Delay(ImagePrewarmAwaitBudgetMs)).ConfigureAwait(false);
-                    if (completed == eagerAggregate)
+                    try
                     {
-                        await eagerAggregate.ConfigureAwait(false);
+                        await eagerAggregate
+                            .WaitAsync(TimeSpan.FromMilliseconds(ImagePrewarmAwaitBudgetMs), cancellationToken)
+                            .ConfigureAwait(false);
                     }
-                    else
+                    catch (TimeoutException)
                     {
                         EngineLogCompat.Debug(
                             $"[CustomHtmlEngine] Timed out waiting for eager image prewarm batch after {ImagePrewarmAwaitBudgetMs}ms ({eagerLoads.Count} candidate(s))",
@@ -839,8 +875,12 @@ public void Dispose()
 
                 foreach (var abs in backgroundLoads)
                 {
-                    _ = RunDetachedAsync(() => LoadAndCacheAsync(abs));
+                    _ = RunDetachedAsync(_ => LoadAndCacheAsync(abs), taskGroup);
                 }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -1709,7 +1749,8 @@ public void Dispose()
             Func<Uri, Task<string>> fetchExternalCssAsync,
             double? viewportWidth = null,
             double? viewportHeight = null,
-            long renderGeneration = 0)
+            long renderGeneration = 0,
+            CancellationToken cancellationToken = default)
         {
              try
              {
@@ -1726,6 +1767,10 @@ public void Dispose()
                      fetchExternalCssForRootAsync: FetchExternalCssForRootAsync,
                      progressiveStylesReady: progressiveStyles =>
                      {
+                         if (cancellationToken.IsCancellationRequested)
+                         {
+                             return;
+                         }
                          if (!UpdateRenderState(dom, progressiveStyles, renderGeneration))
                          {
                              return;
@@ -1735,19 +1780,12 @@ public void Dispose()
                              $"[RenderAsync] Publishing progressive local styles. Styles Count={progressiveStyles.Count}",
                              LogCategory.Rendering);
                          OnRepaintReady(dom);
-                     });
-                 var timeoutTask = Task.Delay(30000); // Increased from 10s to 30s for complex pages
-                 var completedTask = await Task.WhenAny(cssTask, timeoutTask);
-                 
-                 if (completedTask == timeoutTask)
-                 {
-                     EngineLogCompat.Warn("[RenderAsync] CSS loading timed out after 30s", LogCategory.Rendering);
-                     FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(true, 0);
-                 }
-                 else
-                 {
-                     // CRITICAL FIX: Actually store the computed styles!
-                     var cssResult = await cssTask;
+                     },
+                     cancellationToken: cancellationToken);
+                 var cssResult = await cssTask
+                     .WaitAsync(TimeSpan.FromSeconds(30), cancellationToken)
+                     .ConfigureAwait(false);
+                 cancellationToken.ThrowIfCancellationRequested();
                      var computedStyles = cssResult.Computed;
                      if (!UpdateRenderState(dom, computedStyles, renderGeneration))
                      {
@@ -1778,7 +1816,16 @@ public void Dispose()
                 // The renderer will see StyleDirty=true and invalidate layout.
                 EngineLogCompat.Debug("[RenderAsync] Triggering repaint after CSS completion", LogCategory.Rendering);
                 OnRepaintReady(dom);
-                 }
+             }
+             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+             {
+                 throw;
+             }
+             catch (TimeoutException)
+             {
+                 EngineLogCompat.Warn("[RenderAsync] CSS loading timed out after 30s", LogCategory.Rendering);
+                 FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(true, 0);
+                 throw;
              }
              catch (Exception cssEx)
              {
@@ -1839,7 +1886,18 @@ public void Dispose()
 
         internal Task PrewarmSubdocumentImagesAsync(Element root, Uri baseUri)
         {
-            return PrewarmImagesAsync(root, baseUri, _activeImageLoader, _activeViewportWidth);
+            NavigationTaskGroup taskGroup;
+            lock (_renderStateLock)
+            {
+                taskGroup = _navigationTasks;
+            }
+            return PrewarmImagesAsync(
+                root,
+                baseUri,
+                _activeImageLoader,
+                _activeViewportWidth,
+                taskGroup.Token,
+                taskGroup);
         }
 
         private async Task DrainScheduledRecascadesAsync()
@@ -2435,7 +2493,11 @@ public void Dispose()
              return js;
         }
 
-        private async Task RunScriptsAsync(IBrowserScriptEngine js, Element dom, Uri baseUri)
+        private async Task RunScriptsAsync(
+            IBrowserScriptEngine js,
+            Element dom,
+            Uri baseUri,
+            CancellationToken cancellationToken)
         {
             if (js == null) return;
             
@@ -2444,18 +2506,23 @@ public void Dispose()
             // Main page scripts own their feature-detection classes and DOM state.
             try 
             {
-                var scriptTask = RunDetachedAsync(async () => { await js.SetDomAsync(dom, baseUri).ConfigureAwait(false); });
                 var scriptTimeoutMs = Math.Max(
                     15000,
                     (int)js.RuntimeProfile.MaxExecutionTime.TotalMilliseconds * 3);
-                var timeoutTask = Task.Delay(scriptTimeoutMs); 
-                var completedTask = await Task.WhenAny(scriptTask, timeoutTask);
-                
-                if (completedTask == timeoutTask)
-                    EngineLogCompat.Warn($"[RenderAsync] Script execution timed out after {scriptTimeoutMs / 1000}s", LogCategory.Rendering);
-                else
-                    EngineLogCompat.Debug("[RenderAsync] Scripts Finished", LogCategory.Rendering);
+                using var scriptLifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                scriptLifetime.CancelAfter(scriptTimeoutMs);
+                await js.SetDomAsync(dom, baseUri, scriptLifetime.Token).ConfigureAwait(false);
+                EngineLogCompat.Debug("[RenderAsync] Scripts Finished", LogCategory.Rendering);
             } 
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                EngineLogCompat.Warn("[RenderAsync] Script execution exceeded its time budget", LogCategory.Rendering);
+                throw;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex) 
             { 
                 EngineLogCompat.Error($"[RenderAsync] Script Error: {ex.Message}", LogCategory.Rendering);
@@ -2555,7 +2622,8 @@ public void Dispose()
                 return await tcs.Task;
             }
 
-            var renderGeneration = BeginRenderGeneration();
+            var renderGeneration = BeginRenderGeneration(out var navigationTasks);
+            var cancellationToken = navigationTasks.Token;
 
             var navigationStartedAtUtc = DateTimeOffset.UtcNow;
             long allocatedBytesBefore = GC.GetTotalAllocatedBytes(precise: false);
@@ -2628,6 +2696,7 @@ public void Dispose()
 
                 // 1. Helper: Parse DOM
                 var parseResult = await RunDomParseAsync(html, baseUri, renderGeneration);
+                cancellationToken.ThrowIfCancellationRequested();
                 var dom = parseResult?.Dom;
                 if (dom == null) return null;
                 if (!TrySetActiveDom(dom, markSnapshotUnstable: true, renderGeneration))
@@ -2673,7 +2742,7 @@ public void Dispose()
                 ActivateDeclarativeShadowRoots(dom);
 
                 // 2. Helper: Load CSS
-                await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, renderGeneration);
+                await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, renderGeneration, cancellationToken);
                 if (!IsCurrentRenderGeneration(renderGeneration))
                 {
                     return null;
@@ -2747,14 +2816,15 @@ public void Dispose()
                     {
                         EngineLogCompat.Debug("[CustomHtmlEngine] Starting post-first-tree image prewarm", LogCategory.Rendering);
                         await Task.WhenAll(
-                                PrewarmImagesAsync(prewarmRoot, baseUri, imageLoader, viewportWidth),
+                                PrewarmImagesAsync(prewarmRoot, baseUri, imageLoader, viewportWidth, cancellationToken, navigationTasks),
                                 PrewarmCssBackgroundImagesAsync(
                                     prewarmStyles,
                                     baseUri,
                                     imageLoader,
                                     prewarmOwnerDocument))
+                            .WaitAsync(cancellationToken)
                             .ConfigureAwait(false);
-                    });
+                    }, navigationTasks);
                 }
 
                 // 6. Run Scripts — fire-and-forget after first paint.
@@ -2783,7 +2853,7 @@ public void Dispose()
                     {
                         try
                         {
-                            await RunScriptsAsync(js, capturedDom as Element, capturedBaseUri).ConfigureAwait(false);
+                            await RunScriptsAsync(js, capturedDom as Element, capturedBaseUri, cancellationToken).ConfigureAwait(false);
                             javascriptExecuted = true;
 
                             if (!IsCurrentRenderGeneration(renderGeneration))
@@ -2794,7 +2864,7 @@ public void Dispose()
                             if (NeedsPostScriptStyleRefresh(capturedDom, LastComputedStyles))
                             {
                                 EngineLogCompat.Debug("[RenderAsync] Recomputing CSS after script-driven DOM/style mutations", LogCategory.Rendering);
-                                await LoadCssAsync((capturedDom as Element) ?? (capturedDom as Document)?.DocumentElement, capturedBaseUri, capturedCssFetcher, capturedViewportWidth, capturedViewportHeight, renderGeneration).ConfigureAwait(false);
+                                await LoadCssAsync((capturedDom as Element) ?? (capturedDom as Document)?.DocumentElement, capturedBaseUri, capturedCssFetcher, capturedViewportWidth, capturedViewportHeight, renderGeneration, cancellationToken).ConfigureAwait(false);
                                 if (!IsCurrentRenderGeneration(renderGeneration))
                                 {
                                     return;
@@ -2808,6 +2878,9 @@ public void Dispose()
 
                             var vh2 = capturedViewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
                             await BuildVisualTreeAsync(capturedDom as Element, capturedBaseUri, capturedCssFetcher, capturedImageLoader, capturedOnNavigate, js, capturedViewportWidth, vh2, capturedOnFixedBg, includeDiagnosticsBanner: false, renderGeneration).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
                         }
                         catch (Exception bgEx)
                         {
@@ -2824,7 +2897,7 @@ public void Dispose()
                                 OnRepaintReady(_activeDom);
                             }
                         }
-                    });
+                    }, navigationTasks);
                 }
                 else
                 {
@@ -2835,6 +2908,12 @@ public void Dispose()
                      EngineLogCompat.Debug($"[RenderAsync] Scripts SKIPPED (allowJs={allowJs}) element={control!=null}", LogCategory.Rendering);
                 }
                 return element;
+            }
+            catch (OperationCanceledException) when (
+                cancellationToken.IsCancellationRequested &&
+                !IsCurrentRenderGeneration(renderGeneration))
+            {
+                return null;
             }
             finally
             {
@@ -3175,10 +3254,7 @@ public void Dispose()
                 (checkpointOrdinal % StreamingPreparseRepaintCheckpointStride) == 0;
         }
 
-                /// Convenience wrapper to kick off a render without awaiting the resulting element.
-        /// Useful for non-visual navigations when only DOM/state is needed.
-        /// </summary>
-        public void LoadHtml(
+        public Task<object> LoadHtmlAsync(
             string html,
             Uri baseUri,
             Func<Uri, Task<string>> fetchExternalCssAsync,
@@ -3187,8 +3263,15 @@ public void Dispose()
             double? viewportWidth = null,
             Action<object>? onFixedBackground = null)
         {
-            try { var _ = RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, null, onFixedBackground); }
-            catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] Fire-and-forget render launch failed: {ex.Message}", LogCategory.Rendering); }
+            return RenderAsync(
+                html,
+                baseUri,
+                fetchExternalCssAsync,
+                imageLoader,
+                onNavigate,
+                viewportWidth,
+                null,
+                onFixedBackground);
         }
 
         /// <summary>Expose the current active Lite DOM (last parsed).</summary>
@@ -3293,6 +3376,3 @@ public void Dispose()
         }
     }
 }
-
-
-

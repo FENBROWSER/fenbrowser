@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Threading;
+using System.Threading.Tasks;
 using FenBrowser.Core.Logging;
 using Silk.NET.OpenGLES;
 using Silk.NET.Windowing;
@@ -33,6 +34,7 @@ public sealed class PopupWindow : IDisposable
     private SKPicture _renderedFrame;
     private bool _renderFailed;
     private FenBrowser.FenEngine.Rendering.CustomHtmlEngine _engine;
+    private Task _contentLoadTask = Task.CompletedTask;
     private int _contentVersion;
     private int _renderedContentVersion = -1;
 
@@ -118,10 +120,11 @@ public sealed class PopupWindow : IDisposable
         }
 
         FenBrowser.FenEngine.Rendering.CustomHtmlEngine engine;
+        Task<object> renderTask;
         try
         {
             engine = new FenBrowser.FenEngine.Rendering.CustomHtmlEngine();
-            engine.LoadHtml(
+            renderTask = engine.LoadHtmlAsync(
                 html,
                 new Uri("fen://popup/" + (_name ?? "unnamed")),
                 _ => System.Threading.Tasks.Task.FromResult<string>(null),
@@ -144,18 +147,59 @@ public sealed class PopupWindow : IDisposable
             return;
         }
 
+        FenBrowser.FenEngine.Rendering.CustomHtmlEngine previousEngine;
+        int contentVersion;
         lock (_contentLock)
         {
             if (_closeRequested != 0)
             {
+                engine.Dispose();
                 return;
             }
 
+            previousEngine = _engine;
             _htmlContent = html;
-            _contentReady = true;
+            _contentReady = false;
             _renderFailed = false;
             _engine = engine;
-            unchecked { _contentVersion++; }
+            unchecked { contentVersion = ++_contentVersion; }
+            _contentLoadTask = CompleteContentLoadAsync(engine, html, contentVersion, renderTask);
+        }
+        previousEngine?.Dispose();
+    }
+
+    private async Task CompleteContentLoadAsync(
+        FenBrowser.FenEngine.Rendering.CustomHtmlEngine engine,
+        string html,
+        int contentVersion,
+        Task<object> renderTask)
+    {
+        try
+        {
+            await renderTask.ConfigureAwait(false);
+            lock (_contentLock)
+            {
+                if (ReferenceEquals(_engine, engine) && _contentVersion == contentVersion)
+                {
+                    _contentReady = true;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            lock (_contentLock)
+            {
+                if (ReferenceEquals(_engine, engine) && _contentVersion == contentVersion)
+                {
+                    _htmlContent = html;
+                    _contentReady = true;
+                    _renderFailed = true;
+                }
+            }
+            EngineLogBridge.Warn($"[PopupWindow] {_name}: LoadHtml failed: {ex.Message}", LogCategory.Rendering);
         }
     }
 
@@ -456,6 +500,14 @@ public sealed class PopupWindow : IDisposable
         _grContext = null;
         _gl?.Dispose();
         _gl = null;
+
+        FenBrowser.FenEngine.Rendering.CustomHtmlEngine engine;
+        lock (_contentLock)
+        {
+            engine = _engine;
+            _engine = null;
+        }
+        engine?.Dispose();
 
         try
         {
