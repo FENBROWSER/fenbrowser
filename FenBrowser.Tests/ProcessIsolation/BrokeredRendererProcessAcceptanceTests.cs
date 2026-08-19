@@ -37,7 +37,7 @@ public sealed class BrokeredRendererProcessAcceptanceTests
         };
         coordinator.FrameReceived += (tabId, payload) =>
         {
-            if (tabId == tab.Id && payload?.PixelData is { Length: > 0 })
+            if (tabId == tab.Id && payload?.FrameSource != null && payload.FrameSequenceNumber > 0)
             {
                 frameReady.TrySetResult(payload);
             }
@@ -81,8 +81,7 @@ public sealed class BrokeredRendererProcessAcceptanceTests
 
             Assert.Equal(320, frame.SurfaceWidth);
             Assert.True(frame.SurfaceHeight >= 200);
-            Assert.NotNull(frame.PixelData);
-            Assert.Equal((int)(frame.SurfaceWidth * frame.SurfaceHeight * 4), frame.PixelData!.Length);
+            Assert.NotNull(frame.FrameSource);
             Assert.True(frame.FrameSequenceNumber > 0);
         }
         finally

@@ -17,6 +17,11 @@ using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Host.ProcessIsolation
 {
+    public interface IRendererFrameSource
+    {
+        bool TryCopyFrame(IntPtr destination, int destinationCapacity, out int width, out int height, out uint sequence);
+    }
+
     internal enum RendererIpcMessageType
     {
         Hello,
@@ -78,7 +83,7 @@ namespace FenBrowser.Host.ProcessIsolation
         /// and discard out-of-order deliveries.
         /// </summary>
         public uint FrameSequenceNumber { get; set; }
-        internal FrameSharedMemory FrameSource { get; set; }
+        internal IRendererFrameSource FrameSource { get; set; }
         public string RequestedBy { get; set; }
         public string InvalidationReason { get; set; }
         public string RasterMode { get; set; }

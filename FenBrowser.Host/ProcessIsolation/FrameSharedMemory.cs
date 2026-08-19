@@ -13,7 +13,7 @@ namespace FenBrowser.Host.ProcessIsolation
     /// Manages a cross-process shared memory region for transferring rendered frame pixels.
     /// Each tab's region is sized to its actual window dimensions (capped at 4K UHD).
     /// </summary>
-    public sealed class FrameSharedMemory : IDisposable
+    public sealed class FrameSharedMemory : IDisposable, IRendererFrameSource
     {
         public const int MaxWidth = 3840;
         public const int MaxHeight = 2160;

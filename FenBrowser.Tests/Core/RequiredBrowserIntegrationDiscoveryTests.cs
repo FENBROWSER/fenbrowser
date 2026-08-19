@@ -33,10 +33,10 @@ public sealed class RequiredBrowserIntegrationDiscoveryTests
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "MismatchedPayloadRequestId_IsRejected"),
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "MatchingCapabilityFetchFailure_IsPropagated"),
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "AggregateResponseBodyOverLimit_IsRejected"),
-        ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "MalformedResponseBodyBase64_IsRejected"),
+        ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "ChunkedResponseBody_PreservesBinaryWireOrder"),
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "ChildDisconnectDuringFetch_FailsAsNetworkError"),
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "CallerCancellation_SendsCancelForWireRequestId"),
-        ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "OutOfOrderResponseChunk_IsRejected"),
+        ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "RequestWithoutContent_ProducesEmptyBodyFrameSequence"),
         ("FenBrowser.Tests.Core.RendererIsolationPoliciesTests", "RendererTabIsolationRegistry_UnexpectedExit_SchedulesRestartWithReplay"),
         ("FenBrowser.Tests.Architecture.RendererChildLoopIoTests", "ReadLineWithTimeoutAsync_ReusesPendingRead_AcrossTimeoutPolls")
     ];

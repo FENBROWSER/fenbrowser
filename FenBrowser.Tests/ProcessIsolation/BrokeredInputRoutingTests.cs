@@ -3,6 +3,7 @@ using System.Reflection;
 using System;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Interaction;
@@ -386,7 +387,7 @@ public sealed class BrokeredInputRoutingTests
         {
             SurfaceWidth = 2,
             SurfaceHeight = 2,
-            PixelData = CreateSolidBgraPixels(2, 2, SKColors.Red),
+            FrameSource = new TestFrameSource(CreateSolidBgraPixels(2, 2, SKColors.Red), 2, 2, 7),
             FrameSequenceNumber = 7,
             ScrollY = 120f,
             ContentHeight = 800f
@@ -429,7 +430,7 @@ public sealed class BrokeredInputRoutingTests
             {
                 SurfaceWidth = 4,
                 SurfaceHeight = 6,
-                PixelData = CreateRowBgraPixels(4, new[] { SKColors.Red, SKColors.Green, SKColors.Blue, SKColors.Yellow, SKColors.Cyan, SKColors.Lime }),
+                FrameSource = new TestFrameSource(CreateRowBgraPixels(4, new[] { SKColors.Red, SKColors.Green, SKColors.Blue, SKColors.Yellow, SKColors.Cyan, SKColors.Lime }), 4, 6, 11),
                 FrameSequenceNumber = 11,
                 ScrollY = 10f,
                 ContentHeight = 100f
@@ -499,7 +500,7 @@ public sealed class BrokeredInputRoutingTests
             {
                 SurfaceWidth = 4,
                 SurfaceHeight = 4,
-                PixelData = CreateRowBgraPixels(4, new[] { SKColors.Red, SKColors.Green, SKColors.Blue, SKColors.Yellow }),
+                FrameSource = new TestFrameSource(CreateRowBgraPixels(4, new[] { SKColors.Red, SKColors.Green, SKColors.Blue, SKColors.Yellow }), 4, 4, 11),
                 FrameSequenceNumber = 11,
                 ScrollY = 10f,
                 ContentHeight = 100f
@@ -514,7 +515,7 @@ public sealed class BrokeredInputRoutingTests
             {
                 SurfaceWidth = 4,
                 SurfaceHeight = 4,
-                PixelData = CreateSolidBgraPixels(4, 4, SKColors.Cyan),
+                FrameSource = new TestFrameSource(CreateSolidBgraPixels(4, 4, SKColors.Cyan), 4, 4, 12),
                 FrameSequenceNumber = 12,
                 ScrollY = 14f,
                 ContentHeight = 100f
@@ -783,6 +784,32 @@ public sealed class BrokeredInputRoutingTests
         }
 
         return pixels;
+    }
+
+    private sealed class TestFrameSource : IRendererFrameSource
+    {
+        private readonly byte[] _pixels;
+        private readonly int _width;
+        private readonly int _height;
+        private readonly uint _sequence;
+
+        public TestFrameSource(byte[] pixels, int width, int height, uint sequence)
+        {
+            _pixels = pixels;
+            _width = width;
+            _height = height;
+            _sequence = sequence;
+        }
+
+        public bool TryCopyFrame(IntPtr destination, int destinationCapacity, out int width, out int height, out uint sequence)
+        {
+            width = _width;
+            height = _height;
+            sequence = _sequence;
+            if (destination == IntPtr.Zero || destinationCapacity < _pixels.Length) return false;
+            Marshal.Copy(_pixels, 0, destination, _pixels.Length);
+            return true;
+        }
     }
 
     private sealed class RecordingCoordinator : IProcessIsolationCoordinator
