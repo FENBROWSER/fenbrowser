@@ -3,6 +3,7 @@ using FenBrowser.DevTools.Core.Protocol;
 using FenBrowser.DevTools.Domains;
 using FenBrowser.Core.Css;
 using FenBrowser.FenEngine.Rendering;
+using System.Threading.Channels;
 
 namespace FenBrowser.DevTools.Core;
 
@@ -10,12 +11,14 @@ namespace FenBrowser.DevTools.Core;
 /// DevTools Protocol Server.
 /// Central point for protocol communication.
 /// </summary>
-public class DevToolsServer
+public class DevToolsServer : IDisposable
 {
+    private const int JsonOutputQueueCapacity = 256;
     private readonly NodeRegistry _registry;
     private readonly MessageRouter _router;
-    private readonly List<Action<string>> _jsonOutputListeners = new();
+    private JsonOutputSubscription[] _jsonOutputListeners = Array.Empty<JsonOutputSubscription>();
     private readonly object _jsonOutputLock = new();
+    private int _disposed;
     
     // Domain handlers
     private DomDomain? _domDomain;
@@ -110,9 +113,20 @@ public class DevToolsServer
     /// </summary>
     public void OnJsonOutput(Action<string> listener)
     {
+        ArgumentNullException.ThrowIfNull(listener);
         lock (_jsonOutputLock)
         {
-            _jsonOutputListeners.Add(listener);
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            var listeners = _jsonOutputListeners;
+            if (Array.Exists(listeners, item => item.Listener == listener))
+            {
+                return;
+            }
+
+            var updated = new JsonOutputSubscription[listeners.Length + 1];
+            Array.Copy(listeners, updated, listeners.Length);
+            updated[^1] = new JsonOutputSubscription(listener, JsonOutputQueueCapacity);
+            Volatile.Write(ref _jsonOutputListeners, updated);
         }
     }
 
@@ -121,10 +135,24 @@ public class DevToolsServer
     /// </summary>
     public void RemoveJsonOutput(Action<string> listener)
     {
+        JsonOutputSubscription? removed = null;
         lock (_jsonOutputLock)
         {
-            _jsonOutputListeners.Remove(listener);
+            var listeners = _jsonOutputListeners;
+            var index = Array.FindIndex(listeners, item => item.Listener == listener);
+            if (index < 0)
+            {
+                return;
+            }
+
+            removed = listeners[index];
+            var updated = new JsonOutputSubscription[listeners.Length - 1];
+            Array.Copy(listeners, 0, updated, 0, index);
+            Array.Copy(listeners, index + 1, updated, index, listeners.Length - index - 1);
+            Volatile.Write(ref _jsonOutputListeners, updated);
         }
+
+        removed.Dispose();
     }
     
     /// <summary>
@@ -141,22 +169,9 @@ public class DevToolsServer
     /// </summary>
     private void BroadcastJson(string json)
     {
-        Action<string>[] listeners;
-        lock (_jsonOutputLock)
+        foreach (var listener in Volatile.Read(ref _jsonOutputListeners))
         {
-            listeners = _jsonOutputListeners.ToArray();
-        }
-
-        foreach (var listener in listeners)
-        {
-            try
-            {
-                listener(json);
-            }
-            catch
-            {
-                // Ignore listener errors
-            }
+            listener.TryPublish(json);
         }
     }
     
@@ -197,5 +212,90 @@ public class DevToolsServer
         _pageDomain = null;
         _overlayDomain = null;
         _fenBrowserDomain = null;
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        JsonOutputSubscription[] listeners;
+        lock (_jsonOutputLock)
+        {
+            listeners = _jsonOutputListeners;
+            Volatile.Write(ref _jsonOutputListeners, Array.Empty<JsonOutputSubscription>());
+        }
+
+        foreach (var listener in listeners)
+        {
+            listener.Dispose();
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
+    private sealed class JsonOutputSubscription : IDisposable
+    {
+        private readonly Channel<string> _queue;
+        private readonly CancellationTokenSource _cts = new();
+        private readonly Task _pump;
+        private int _disposed;
+
+        public JsonOutputSubscription(Action<string> listener, int capacity)
+        {
+            Listener = listener;
+            _queue = Channel.CreateBounded<string>(new BoundedChannelOptions(capacity)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+                SingleWriter = false,
+                AllowSynchronousContinuations = false
+            });
+            _pump = Task.Run(PumpAsync);
+        }
+
+        public Action<string> Listener { get; }
+
+        public void TryPublish(string json)
+        {
+            if (Volatile.Read(ref _disposed) == 0)
+            {
+                _queue.Writer.TryWrite(json);
+            }
+        }
+
+        private async Task PumpAsync()
+        {
+            try
+            {
+                await foreach (var json in _queue.Reader.ReadAllAsync(_cts.Token).ConfigureAwait(false))
+                {
+                    try
+                    {
+                        Listener(json);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            {
+            }
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            _queue.Writer.TryComplete();
+            _cts.Cancel();
+            _cts.Dispose();
+        }
     }
 }

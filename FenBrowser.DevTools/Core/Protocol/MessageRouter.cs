@@ -26,8 +26,9 @@ public interface IProtocolHandler
 public class MessageRouter
 {
     private readonly Dictionary<string, IProtocolHandler> _handlers = new();
-    private readonly List<Action<ProtocolEvent>> _eventListeners = new();
+    private Action<ProtocolEvent>[] _eventListeners = Array.Empty<Action<ProtocolEvent>>();
     private readonly object _lock = new();
+    private readonly SemaphoreSlim _dispatchGate = new(1, 1);
     
     /// <summary>
     /// Register a domain handler.
@@ -70,9 +71,13 @@ public class MessageRouter
         ArgumentNullException.ThrowIfNull(listener);
         lock (_lock)
         {
-            if (!_eventListeners.Contains(listener))
+            var listeners = _eventListeners;
+            if (!Array.Exists(listeners, candidate => candidate == listener))
             {
-                _eventListeners.Add(listener);
+                var updated = new Action<ProtocolEvent>[listeners.Length + 1];
+                Array.Copy(listeners, updated, listeners.Length);
+                updated[^1] = listener;
+                Volatile.Write(ref _eventListeners, updated);
             }
         }
     }
@@ -84,7 +89,17 @@ public class MessageRouter
     {
         lock (_lock)
         {
-            _eventListeners.Remove(listener);
+            var listeners = _eventListeners;
+            var index = Array.IndexOf(listeners, listener);
+            if (index < 0)
+            {
+                return;
+            }
+
+            var updated = new Action<ProtocolEvent>[listeners.Length - 1];
+            Array.Copy(listeners, 0, updated, 0, index);
+            Array.Copy(listeners, index + 1, updated, index, listeners.Length - index - 1);
+            Volatile.Write(ref _eventListeners, updated);
         }
     }
     
@@ -93,13 +108,7 @@ public class MessageRouter
     /// </summary>
     public void BroadcastEvent(ProtocolEvent evt)
     {
-        List<Action<ProtocolEvent>> listeners;
-        lock (_lock)
-        {
-            listeners = new List<Action<ProtocolEvent>>(_eventListeners);
-        }
-        
-        foreach (var listener in listeners)
+        foreach (var listener in Volatile.Read(ref _eventListeners))
         {
             try
             {
@@ -149,6 +158,7 @@ public class MessageRouter
             return ProtocolResponse.Failure(request.Id, $"Unknown domain: {domain}", -32601);
         }
         
+        await _dispatchGate.WaitAsync().ConfigureAwait(false);
         try
         {
             return await handler.HandleAsync(method, request);
@@ -156,6 +166,10 @@ public class MessageRouter
         catch (Exception ex)
         {
             return ProtocolResponse.Failure(request.Id, $"Handler error: {ex.Message}", -32603);
+        }
+        finally
+        {
+            _dispatchGate.Release();
         }
     }
     

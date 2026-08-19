@@ -15,13 +15,16 @@ public class RemoteDebugServerTransportTests
         remote.Start();
 
         using var http = new HttpClient();
-        var discoveryJson = await http.GetStringAsync(
-            $"http://127.0.0.1:{remote.Port}/json/list?token=test-token");
-        Assert.Contains($":{remote.Port}/devtools/page/1?token=test-token", discoveryJson);
+        http.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-token");
+        var discoveryJson = await http.GetStringAsync($"http://127.0.0.1:{remote.Port}/json/list");
+        Assert.Contains($":{remote.Port}/devtools/page/1", discoveryJson);
+        Assert.DoesNotContain("test-token", discoveryJson);
 
         using var socket = new ClientWebSocket();
+        socket.Options.AddSubProtocol("fenbrowser-token.test-token");
         await socket.ConnectAsync(
-            new Uri($"ws://127.0.0.1:{remote.Port}/devtools/page/1?token=test-token"),
+            new Uri($"ws://127.0.0.1:{remote.Port}/devtools/page/1"),
             CancellationToken.None);
 
         var request = Encoding.UTF8.GetBytes("""{"id":1,"method":"Missing.domain"}""");

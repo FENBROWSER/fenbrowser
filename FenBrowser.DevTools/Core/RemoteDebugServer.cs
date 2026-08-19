@@ -369,9 +369,8 @@ public sealed class RemoteDebugServer : IDisposable
             path = relativeUri.AbsolutePath;
         }
 
-        var tokenQuery = BuildTokenQuery();
         var webSocketUrl = BuildWebSocketDebuggerUrl();
-        var devToolsFrontendUrl = BuildDevToolsFrontendUrl(tokenQuery);
+        var devToolsFrontendUrl = BuildDevToolsFrontendUrl();
 
         if (string.Equals(path, "/json/version", StringComparison.OrdinalIgnoreCase))
         {
@@ -474,13 +473,16 @@ public sealed class RemoteDebugServer : IDisposable
         NetworkStream stream,
         CancellationToken cancellationToken)
     {
-        var buffer = new byte[1];
-        using var header = new MemoryStream(capacity: 1024);
+        var buffer = new byte[4096];
+        using var header = new MemoryStream(capacity: 4096);
         var state = 0;
 
         while (header.Length < MaxHttpHeaderBytes)
         {
-            var read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            var remaining = MaxHttpHeaderBytes - checked((int)header.Length);
+            var read = await stream.ReadAsync(
+                buffer.AsMemory(0, Math.Min(buffer.Length, remaining)),
+                cancellationToken).ConfigureAwait(false);
             if (read == 0)
             {
                 return header.Length == 0
@@ -488,21 +490,24 @@ public sealed class RemoteDebugServer : IDisposable
                     : throw new InvalidDataException("Connection closed before HTTP headers completed.");
             }
 
-            var value = buffer[0];
-            header.WriteByte(value);
-            state = state switch
+            for (var index = 0; index < read; index++)
             {
-                0 when value == (byte)'\r' => 1,
-                1 when value == (byte)'\n' => 2,
-                2 when value == (byte)'\r' => 3,
-                3 when value == (byte)'\n' => 4,
-                _ when value == (byte)'\r' => 1,
-                _ => 0
-            };
+                var value = buffer[index];
+                header.WriteByte(value);
+                state = state switch
+                {
+                    0 when value == (byte)'\r' => 1,
+                    1 when value == (byte)'\n' => 2,
+                    2 when value == (byte)'\r' => 3,
+                    3 when value == (byte)'\n' => 4,
+                    _ when value == (byte)'\r' => 1,
+                    _ => 0
+                };
 
-            if (state == 4)
-            {
-                return Encoding.ASCII.GetString(header.GetBuffer(), 0, checked((int)header.Length));
+                if (state == 4)
+                {
+                    return Encoding.ASCII.GetString(header.GetBuffer(), 0, checked((int)header.Length));
+                }
             }
         }
 
@@ -1009,66 +1014,13 @@ public sealed class RemoteDebugServer : IDisposable
         }
     }
 
-    private string BuildTokenQuery()
-    {
-        if (EmitTokenInUrls)
-        {
-            return "?token=" + Uri.EscapeDataString(_authToken);
-        }
-
-        return string.Empty;
-    }
-
-    private bool EmitTokenInUrls { get; } =
-        string.Equals(
-            Environment.GetEnvironmentVariable("FEN_REMOTE_DEBUG_TOKEN_IN_URL"),
-            "1",
-            StringComparison.OrdinalIgnoreCase);
-
     private string BuildWebSocketDebuggerUrl()
-        => $"ws://{_advertisedHost}:{Port}/devtools/page/1{BuildTokenQuery()}";
+        => $"ws://{_advertisedHost}:{Port}/devtools/page/1";
 
-    private string BuildDevToolsFrontendUrl(string tokenQuery)
+    private string BuildDevToolsFrontendUrl()
     {
-        var wsTarget = $"{_advertisedHost}:{Port}/devtools/page/1{tokenQuery}";
+        var wsTarget = $"{_advertisedHost}:{Port}/devtools/page/1";
         return $"/devtools/inspector.html?ws={Uri.EscapeDataString(wsTarget)}";
-    }
-
-    private static string GetTokenFromTarget(string requestTarget)
-    {
-        if (string.IsNullOrEmpty(requestTarget))
-        {
-            return null;
-        }
-
-        var uriText =
-            requestTarget.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-            requestTarget.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
-                ? requestTarget
-                : "http://localhost" + requestTarget;
-
-        if (!Uri.TryCreate(uriText, UriKind.Absolute, out var uri) ||
-            string.IsNullOrEmpty(uri.Query))
-        {
-            return null;
-        }
-
-        var query = uri.Query.TrimStart('?').Split(
-            '&',
-            StringSplitOptions.RemoveEmptyEntries);
-        foreach (var pair in query)
-        {
-            var keyValue = pair.Split('=', 2);
-            if (keyValue.Length >= 1 &&
-                string.Equals(keyValue[0], "token", StringComparison.OrdinalIgnoreCase))
-            {
-                return keyValue.Length == 2
-                    ? Uri.UnescapeDataString(keyValue[1])
-                    : string.Empty;
-            }
-        }
-
-        return null;
     }
 
     private static bool ConstantTimeEquals(string left, string right)
@@ -1087,6 +1039,11 @@ public sealed class RemoteDebugServer : IDisposable
     private bool IsAuthorizedRequest(string request)
     {
         var headers = ParseHeaders(request);
+        if (!IsValidHost(headers) || !IsValidOrigin(headers))
+        {
+            return false;
+        }
+
         if (headers.TryGetValue("X-Fen-Debug-Token", out var headerToken) &&
             ConstantTimeEquals(headerToken, _authToken))
         {
@@ -1102,9 +1059,46 @@ public sealed class RemoteDebugServer : IDisposable
             return true;
         }
 
-        return ConstantTimeEquals(
-            GetTokenFromTarget(GetRequestTarget(request)),
-            _authToken);
+        if (headers.TryGetValue("Sec-WebSocket-Protocol", out var protocols))
+        {
+            foreach (var protocol in protocols.Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                const string prefix = "fenbrowser-token.";
+                var candidate = protocol.Trim();
+                if (candidate.StartsWith(prefix, StringComparison.Ordinal) &&
+                    ConstantTimeEquals(candidate[prefix.Length..], _authToken))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private bool IsValidHost(IReadOnlyDictionary<string, string> headers)
+    {
+        if (!headers.TryGetValue("Host", out var host) ||
+            !Uri.TryCreate("http://" + host.Trim(), UriKind.Absolute, out var uri) ||
+            uri.Port != Port)
+        {
+            return false;
+        }
+
+        return string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+               IPAddress.TryParse(uri.Host, out var address) && IPAddress.IsLoopback(address);
+    }
+
+    private static bool IsValidOrigin(IReadOnlyDictionary<string, string> headers)
+    {
+        if (!headers.TryGetValue("Origin", out var origin))
+        {
+            return true;
+        }
+
+        return Uri.TryCreate(origin, UriKind.Absolute, out var uri) &&
+               (string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+                IPAddress.TryParse(uri.Host, out var address) && IPAddress.IsLoopback(address));
     }
 
     private static byte[] EncodeTextFrame(string message)
