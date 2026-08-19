@@ -14,6 +14,7 @@ using FenBrowser.Core.Security.Corb;
 using FenBrowser.Core.Storage;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
+using System.Globalization;
 
 namespace FenBrowser.Core
 {
@@ -260,6 +261,7 @@ public Uri LastTextResponseUri { get; private set; }
 
         private readonly bool _isPrivate;
         private static int _policyBindingDiagnosticsLogged;
+        private static long _nextRequestId;
         private static readonly CorbFilter SharedCorbFilter = new();
 
         public CspPolicy ActivePolicy { get; set; }
@@ -2435,32 +2437,47 @@ throw new HttpRequestException($"Blocked by Content Security Policy (connect-src
 
         private async Task<HttpResponseMessage> SendRequestTrackedAsync(HttpRequestMessage req, CancellationToken token)
         {
-            // Generate a tracking ID
-            string id = Guid.NewGuid().ToString("N");
-            
+            var id = System.Threading.Interlocked.Increment(ref _nextRequestId);
+
             try
             {
                 /* [PERF-REMOVED] */
-                NetworkRequestStarting?.Invoke(id, req);
+                PublishNetworkEvent(NetworkRequestStarting, id, req, "starting");
                 
                 var resp = await _client.SendAsync(req, token).ConfigureAwait(false);
                 
                 /* [PERF-REMOVED] */
-                try
-                {
-                    NetworkRequestCompleted?.Invoke(id, resp);
-                }
-                catch (Exception) 
-                {
-                    /* [PERF-REMOVED] */
-                }
+                PublishNetworkEvent(NetworkRequestCompleted, id, resp, "completed");
                 return resp;
             }
             catch (Exception ex)
             {
                 /* [PERF-REMOVED] */
-                NetworkRequestFailed?.Invoke(id, ex);
+                PublishNetworkEvent(NetworkRequestFailed, id, ex, "failed");
                 throw;
+            }
+        }
+
+        private static void PublishNetworkEvent<T>(Action<string, T> listeners, long requestId, T payload, string phase)
+        {
+            if (listeners == null)
+            {
+                return;
+            }
+
+            var externalId = requestId.ToString(CultureInfo.InvariantCulture);
+            foreach (Action<string, T> listener in listeners.GetInvocationList())
+            {
+                try
+                {
+                    listener(externalId, payload);
+                }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Debug(
+                        $"[Network] Request {phase} subscriber failed: {ex.GetType().Name}",
+                        LogCategory.Network);
+                }
             }
         }
         public Task<string> FetchCssAsync(Uri url)

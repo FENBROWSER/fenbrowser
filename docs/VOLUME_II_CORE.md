@@ -1901,3 +1901,20 @@ Verification:
 - Sandbox policy and AppContainer command-line tests pass (`6/6`), including
   spaces, embedded quotes, trailing backslashes, empty arguments, and rejection
   of legacy argument strings.
+
+### 1.95 Async-Only Network Response Ownership (2026-08-19)
+
+- Internal request correlation now uses a monotonic numeric ID. The ID becomes a
+  string only when an external telemetry listener is present.
+- Network lifecycle listeners are isolated individually; a throwing diagnostic
+  subscriber cannot fail a request, replace its transport exception, or prevent
+  later listeners from receiving the event.
+- Response-owned streams reject synchronous read/write/flush operations. Async
+  operations reuse the response lifetime token without allocating a linked token
+  source unless the caller supplies an independent cancellation token.
+
+Verification:
+
+- Core builds in Release with zero warnings and errors.
+- Focused network tests cover non-throwing telemetry delivery, numeric request IDs,
+  async body reads, and rejection of synchronous body reads.

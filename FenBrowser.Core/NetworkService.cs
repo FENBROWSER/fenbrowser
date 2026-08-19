@@ -238,12 +238,11 @@ public class NetworkService : INetworkService
             set => _inner.Position = value;
         }
 
-        public override void Flush() => _inner.Flush();
+        public override void Flush() => throw SyncIoNotSupported();
         public override Task FlushAsync(CancellationToken cancellationToken) =>
             FlushWithLifetimeTimeoutAsync(cancellationToken);
-        public override int Read(byte[] buffer, int offset, int count) =>
-            _inner.Read(buffer, offset, count);
-        public override int Read(Span<byte> buffer) => _inner.Read(buffer);
+        public override int Read(byte[] buffer, int offset, int count) => throw SyncIoNotSupported();
+        public override int Read(Span<byte> buffer) => throw SyncIoNotSupported();
         public override Task<int> ReadAsync(
             byte[] buffer,
             int offset,
@@ -256,9 +255,8 @@ public class NetworkService : INetworkService
             ReadMemoryWithLifetimeTimeoutAsync(buffer, cancellationToken);
         public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
         public override void SetLength(long value) => _inner.SetLength(value);
-        public override void Write(byte[] buffer, int offset, int count) =>
-            _inner.Write(buffer, offset, count);
-        public override void Write(ReadOnlySpan<byte> buffer) => _inner.Write(buffer);
+        public override void Write(byte[] buffer, int offset, int count) => throw SyncIoNotSupported();
+        public override void Write(ReadOnlySpan<byte> buffer) => throw SyncIoNotSupported();
         public override Task WriteAsync(
             byte[] buffer,
             int offset,
@@ -276,22 +274,46 @@ public class NetworkService : INetworkService
             int count,
             CancellationToken cancellationToken)
         {
-            using var linked = CreateOperationCancellation(cancellationToken);
-            return await _inner.ReadAsync(buffer, offset, count, linked.Token).ConfigureAwait(false);
+            CancellationTokenSource linked = null;
+            try
+            {
+                var token = GetOperationCancellation(cancellationToken, ref linked);
+                return await _inner.ReadAsync(buffer, offset, count, token).ConfigureAwait(false);
+            }
+            finally
+            {
+                linked?.Dispose();
+            }
         }
 
         private async ValueTask<int> ReadMemoryWithLifetimeTimeoutAsync(
             Memory<byte> buffer,
             CancellationToken cancellationToken)
         {
-            using var linked = CreateOperationCancellation(cancellationToken);
-            return await _inner.ReadAsync(buffer, linked.Token).ConfigureAwait(false);
+            CancellationTokenSource linked = null;
+            try
+            {
+                var token = GetOperationCancellation(cancellationToken, ref linked);
+                return await _inner.ReadAsync(buffer, token).ConfigureAwait(false);
+            }
+            finally
+            {
+                linked?.Dispose();
+            }
         }
 
         private async Task FlushWithLifetimeTimeoutAsync(CancellationToken cancellationToken)
         {
-            using var linked = CreateOperationCancellation(cancellationToken);
-            await _inner.FlushAsync(linked.Token).ConfigureAwait(false);
+            CancellationTokenSource linked = null;
+            try
+            {
+                var token = GetOperationCancellation(cancellationToken, ref linked);
+                await _inner.FlushAsync(token).ConfigureAwait(false);
+            }
+            finally
+            {
+                linked?.Dispose();
+            }
         }
 
         private async Task WriteWithLifetimeTimeoutAsync(
@@ -300,27 +322,53 @@ public class NetworkService : INetworkService
             int count,
             CancellationToken cancellationToken)
         {
-            using var linked = CreateOperationCancellation(cancellationToken);
-            await _inner.WriteAsync(buffer, offset, count, linked.Token).ConfigureAwait(false);
+            CancellationTokenSource linked = null;
+            try
+            {
+                var token = GetOperationCancellation(cancellationToken, ref linked);
+                await _inner.WriteAsync(buffer, offset, count, token).ConfigureAwait(false);
+            }
+            finally
+            {
+                linked?.Dispose();
+            }
         }
 
         private async ValueTask WriteMemoryWithLifetimeTimeoutAsync(
             ReadOnlyMemory<byte> buffer,
             CancellationToken cancellationToken)
         {
-            using var linked = CreateOperationCancellation(cancellationToken);
-            await _inner.WriteAsync(buffer, linked.Token).ConfigureAwait(false);
+            CancellationTokenSource linked = null;
+            try
+            {
+                var token = GetOperationCancellation(cancellationToken, ref linked);
+                await _inner.WriteAsync(buffer, token).ConfigureAwait(false);
+            }
+            finally
+            {
+                linked?.Dispose();
+            }
         }
 
-        private CancellationTokenSource CreateOperationCancellation(CancellationToken cancellationToken)
+        private CancellationToken GetOperationCancellation(
+            CancellationToken cancellationToken,
+            ref CancellationTokenSource linked)
         {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(ResponseOwnedStream));
 
-            return cancellationToken.CanBeCanceled
-                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetimeTimeout.Token)
-                : CancellationTokenSource.CreateLinkedTokenSource(_lifetimeTimeout.Token);
+            var lifetimeToken = _lifetimeTimeout.Token;
+            if (!cancellationToken.CanBeCanceled || cancellationToken == lifetimeToken)
+                return lifetimeToken;
+            if (!lifetimeToken.CanBeCanceled)
+                return cancellationToken;
+
+            linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lifetimeToken);
+            return linked.Token;
         }
+
+        private static NotSupportedException SyncIoNotSupported() =>
+            new("Browser response streams require asynchronous I/O.");
 
         protected override void Dispose(bool disposing)
         {

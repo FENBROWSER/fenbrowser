@@ -97,6 +97,40 @@ public sealed class ResourceManagerFetchContextTests
     }
 
     [Fact]
+    public async Task RequestTelemetry_CannotChangeFetchOutcome_AndUsesNumericIds()
+    {
+        using var client = new HttpClient(new StubHandler(request => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            RequestMessage = request,
+            Content = new StringContent("ok")
+        }));
+        var manager = new ResourceManager(client, isPrivate: true);
+        string startedId = null;
+        string completedId = null;
+        manager.NetworkRequestStarting += (_, _) => throw new InvalidOperationException("diagnostic failure");
+        manager.NetworkRequestStarting += (id, _) => startedId = id;
+        manager.NetworkRequestCompleted += (_, _) => throw new InvalidOperationException("diagnostic failure");
+        manager.NetworkRequestCompleted += (id, _) => completedId = id;
+
+        var result = await manager.FetchTextDetailedAsync(new FetchContext
+        {
+            RequestUri = new Uri("https://telemetry.example.test/resource.js"),
+            InitiatorUri = new Uri("https://telemetry.example.test/page"),
+            FrameDocumentUri = new Uri("https://telemetry.example.test/page"),
+            TopLevelDocumentUri = new Uri("https://telemetry.example.test/page"),
+            Destination = "script",
+            Mode = "no-cors",
+            CredentialsMode = "include",
+            Method = "GET"
+        });
+
+        Assert.Equal(FetchStatus.Success, result.Status);
+        Assert.Equal(startedId, completedId);
+        Assert.True(long.TryParse(startedId, out var requestId));
+        Assert.True(requestId > 0);
+    }
+
+    [Fact]
     public async Task FetchCssAsync_UsesExplicitFrameAndReferrerPolicy()
     {
         HttpRequestMessage observed = null;
