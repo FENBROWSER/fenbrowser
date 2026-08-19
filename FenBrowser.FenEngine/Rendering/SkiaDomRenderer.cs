@@ -735,17 +735,12 @@ namespace FenBrowser.FenEngine.Rendering
                             {
                                 var sb = new System.Text.StringBuilder();
                                 DumpDom(root, 0, sb, styles, _boxes);
-                                System.IO.File.WriteAllText(DiagnosticPaths.GetRootArtifactPath("dom_dump.txt"), sb.ToString());
                                 _lastDomDumpWatch.Restart();
-
-                                if (FenBrowser.Core.Logging.DebugConfig.LogDomTree)
-                                {
-                                    EngineLogCompat.Debug($"[SkiaDomRenderer] DOM Dump: {sb}", LogCategory.Rendering);
-                                }
+                                EngineLogCompat.Debug($"[SkiaDomRenderer] Bounded DOM structure: {sb}", LogCategory.Rendering);
                             }
                             catch (Exception ex)
                             {
-                                EngineLogCompat.Warn($"[SkiaDomRenderer] DOM dump write failed: {ex.Message}", LogCategory.Rendering);
+                                EngineLogCompat.Warn($"[SkiaDomRenderer] DOM diagnostics failed: {ex.Message}", LogCategory.Rendering);
                             }
                         }
 
@@ -2635,14 +2630,18 @@ namespace FenBrowser.FenEngine.Rendering
         private static void DumpDom(Node root, int startDepth, System.Text.StringBuilder sb, Dictionary<Node, CssComputed> styles, IReadOnlyDictionary<Node, Layout.BoxModel> boxes = null)
         {
             if (root == null) return;
-            
+
+            const int maxNodes = 2000;
+            const int maxCharacters = 256 * 1024;
+            var visited = 0;
             var stack = new Stack<(Node node, int depth)>();
             stack.Push((root, startDepth));
             
-            while (stack.Count > 0)
+            while (stack.Count > 0 && visited < maxNodes && sb.Length < maxCharacters)
             {
                 var (node, depth) = stack.Pop();
                 if (node == null) continue;
+                visited++;
                 
                 string tag = (node as Element)?.NodeName ?? (node.IsText() ? "#text" : node.NodeName);
                 int childCount = node.ChildNodes?.Length ?? 0;
@@ -2661,7 +2660,9 @@ namespace FenBrowser.FenEngine.Rendering
                     sb.Append($" [Box: {box.ContentBox.Width:F1}x{box.ContentBox.Height:F1} @ {box.ContentBox.Left:F1},{box.ContentBox.Top:F1}]");
                 }
 
-                // Add Attributes info for Elements
+                // Attribute names are useful for structure diagnostics. Values are
+                // deliberately omitted because they commonly contain credentials,
+                // tokens, user input, and private URLs.
                 if (node is Element el && el.HasAttributes())
                 {
                     sb.Append(" {");
@@ -2669,7 +2670,7 @@ namespace FenBrowser.FenEngine.Rendering
                     foreach (var attr in el.Attributes)
                     {
                         if (!first) sb.Append(", ");
-                        sb.Append($"{attr.Name}='{attr.Value}'");
+                        sb.Append(attr.Name).Append("=<redacted>");
                         first = false;
                     }
                     sb.Append("}");
@@ -2677,8 +2678,7 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 if (node is Text t && !string.IsNullOrWhiteSpace(t.Data))
                 {
-                    string snippet = t.Data.Length > 20 ? t.Data.Substring(0, 20) + "..." : t.Data;
-                    sb.Append(" [").Append(snippet.Replace("\r", "").Replace("\n", " ")).Append("]");
+                    sb.Append(" [text length=").Append(t.Data.Length).Append(']');
                 }
                 sb.AppendLine();
                 
@@ -2690,6 +2690,11 @@ namespace FenBrowser.FenEngine.Rendering
                         stack.Push((node.ChildNodes[i], depth + 1));
                     }
                 }
+            }
+
+            if (stack.Count > 0)
+            {
+                sb.AppendLine($"[DOM DUMP TRUNCATED: nodes={visited}, chars={sb.Length}]");
             }
         }
         
@@ -2938,7 +2943,6 @@ namespace FenBrowser.FenEngine.Rendering
         }
     }
 }
-
 
 
 

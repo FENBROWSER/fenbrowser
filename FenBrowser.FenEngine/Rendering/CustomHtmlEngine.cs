@@ -1,4060 +1,7 @@
-using FenBrowser.Core.Css;
-using FenBrowser.Core.Dom.V2;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Net;
-using System.Threading.Tasks;
-using System.IO;
-using System.Diagnostics;
-using FenBrowser.Core;
-using FenBrowser.Core.Logging;
-using FenBrowser.Core.Parsing;
-using FenBrowser.Core.Security;
-using FenBrowser.Core.Storage;
-using FenBrowser.FenEngine.Security; // Added
-using FenBrowser.FenEngine.Scripting; // For IJsHost
-using FenBrowser.FenEngine.Core; // Corrected namespace
-using FenBrowser.FenEngine.Core.Interfaces; // Added for IExecutionContext
-using FenBrowser.FenEngine.Layout; // Added for LayoutResult
-using static FenBrowser.FenEngine.Rendering.CssLoader;
-using FenBrowser.FenEngine.Rendering;
-using FenBrowser.FenEngine.Rendering.Core;
-using FenBrowser.FenEngine.Rendering.Css;
-using FenBrowser.FenEngine.Core.EventLoop; // Added for EventLoopCoordinator
-using FenBrowser.FenEngine.Rendering.Performance;
-using FenBrowser.Core.Engine; // Added for EnginePhase
-using SkiaSharp;
-
-
-namespace FenBrowser.FenEngine.Rendering
-{
-    public sealed class RenderTelemetrySnapshot
-    {
-        public long TokenizingMs { get; init; }
-        public long ParsingMs { get; init; }
-        public long TokenizingAndParsingMs { get; init; }
-        public int ParseTokenCount { get; init; }
-        public int TokenizingCheckpointCount { get; init; }
-        public int ParsingCheckpointCount { get; init; }
-        public int ParsingDocumentCheckpointCount { get; init; }
-        public int DocumentReadyTokenCount { get; init; }
-        public int ParseIncrementalRepaintCount { get; init; }
-        public long StreamingPreparseMs { get; init; }
-        public int StreamingPreparseCheckpointCount { get; init; }
-        public int StreamingPreparseRepaintCount { get; init; }
-        public bool InterleavedParseUsed { get; init; }
-        public int InterleavedTokenBatchSize { get; init; }
-        public int InterleavedBatchCount { get; init; }
-        public bool InterleavedFallbackUsed { get; init; }
-        public long CssAndStyleMs { get; init; }
-        public double CssQueueWaitMs { get; init; }
-        public double CssDiscoveryAndFetchMs { get; init; }
-        public double CssImportExpansionMs { get; init; }
-        public double CssRuleParseMs { get; init; }
-        public double CssVariableResolutionMs { get; init; }
-        public double CssCascadeMs { get; init; }
-        public double CssTotalMs { get; init; }
-        public long InitialVisualTreeMs { get; init; }
-        public long ScriptExecutionMs { get; init; }
-        public long PostScriptVisualTreeMs { get; init; }
-        public long TotalRenderMs { get; init; }
-        public bool JavaScriptExecuted { get; init; }
-        public string Url { get; init; }
-        public DateTimeOffset NavigationStartedAtUtc { get; init; }
-        public long ManagedAllocatedBytes { get; init; }
-        public long ManagedHeapBytes { get; init; }
-        public long WorkingSetBytes { get; init; }
-        public int Gen0Collections { get; init; }
-        public int Gen1Collections { get; init; }
-        public int Gen2Collections { get; init; }
-    }
-
-    internal sealed class DomParseResult
-    {
-        public Node Dom { get; set; }
-        public long TokenizingMs { get; set; }
-        public long ParsingMs { get; set; }
-        public int TokenCount { get; set; }
-        public int TokenizingCheckpointCount { get; set; }
-        public int ParsingCheckpointCount { get; set; }
-        public int ParsingDocumentCheckpointCount { get; set; }
-        public int DocumentReadyTokenCount { get; set; }
-        public int IncrementalRepaintCount { get; set; }
-        public long StreamingPreparseMs { get; set; }
-        public int StreamingPreparseCheckpointCount { get; set; }
-        public int StreamingPreparseRepaintCount { get; set; }
-        public bool InterleavedParseUsed { get; set; }
-        public int InterleavedTokenBatchSize { get; set; }
-        public int InterleavedBatchCount { get; set; }
-        public bool InterleavedFallbackUsed { get; set; }
-    }
-
-    internal sealed class ParseCheckpointState
-    {
-        public long RenderGeneration { get; init; }
-        public int IncrementalRepaintMaxCount { get; init; }
-        public int ParsingDocumentCheckpointCount { get; set; }
-        public int ParsingCheckpointOrdinal { get; set; }
-        public int IncrementalRepaintCount { get; set; }
-    }
-
-    /// <summary>
-    /// Clean, dependency-free wrapper suitable for WP8.1 without WebView.
-    /// </summary>
-    public sealed class CustomHtmlEngine : IDisposable
-    {
-        private const int IncrementalParseRepaintSmallDocumentMaxCount = 4;
-        private const int IncrementalParseRepaintMediumDocumentMaxCount = 2;
-        private const int IncrementalParseRepaintLargeDocumentMaxCount = 1;
-        private const int IncrementalParseRepaintMediumDocumentMinLength = 64 * 1024;
-        private const int IncrementalParseRepaintLargeDocumentMinLength = 128 * 1024;
-        private const int IncrementalParseRepaintVeryLargeDocumentMinLength = 512 * 1024;
-        private const int IncrementalParseRepaintCheckpointStride = 2;
-        private const int StreamingPreparseMinHtmlLength = 32768;
-        private const int StreamingPreparseMaxHtmlLength = 131072;
-        private const int StreamingPreparseRepaintMaxCount = 4;
-        private const int StreamingPreparseRepaintCheckpointStride = 3;
-        private const int InterleavedPrimaryParseMinHtmlLength = 8192;
-        private const int ImagePrewarmAwaitBudgetMs = 1500;
-        private const int ImagePrewarmEagerCandidateLimit = 6;
-        private const int ImagePrewarmQueueBudget = 32;
-        private const int ImagePrewarmMaxConcurrency = 6;
-        private readonly object _renderStateLock = new();
-        private long _renderGeneration;
-
-        public Func<Uri, Task<string>> ScriptFetcher { get; set; }
-
-        /// <summary>
-        /// Speculative prefetcher driven by the HTML PreloadScanner. When set,
-        /// every parse will fan out <link rel="stylesheet">, <script src="...">,
-        /// and <img src="..."> fetches into the ResourceManager cache in
-        /// parallel with the parse itself, so by the time CssLoader /
-        /// ScriptFetcher reach for those resources they hit warm cache instead
-        /// of going over the wire serially.
-        /// </summary>
-        public FenBrowser.Core.Network.ResourcePrefetcher Prefetcher { get; set; }
-        public Func<System.Net.Http.HttpRequestMessage, Task<System.Net.Http.HttpResponseMessage>> FetchHandler { get; set; }
-        public Func<Element, Uri, Task> FrameElementLoader { get; set; }
-
-        private CspPolicy _activePolicy;
-        /// <summary>Active Content Security Policy for this page. When set, subresource loads are checked against it.</summary>
-        public CspPolicy ActivePolicy
-        {
-            get => _activePolicy;
-            set => _activePolicy = value;
-        }
-
-        // EXPOSED STYLES FOR SKIA RENDERER
-        public Dictionary<Node, CssComputed> LastComputedStyles { get; private set; }
-        public List<CssLoader.CssSource> LastCssSources { get; private set; }
-
-        public LayoutResult LastLayout { get; private set; }
-        public RenderTelemetrySnapshot LastRenderTelemetry { get; private set; }
-        private CssLoader.CssLoadTiming _lastCssLoadTiming;
-        public IExecutionContext Context => _activeJs?.GlobalContext;
-
-        private void SetActiveDom(Node dom, bool markSnapshotUnstable = false)
-        {
-            lock (_renderStateLock)
-            {
-                _activeDom = dom;
-                if (markSnapshotUnstable)
-                {
-                    _hasStableStyles = false;
-                }
-
-                _renderSnapshotVersion++;
-            }
-        }
-
-        private bool TrySetActiveDom(Node dom, bool markSnapshotUnstable, long renderGeneration)
-        {
-            lock (_renderStateLock)
-            {
-                if (_renderGeneration != renderGeneration)
-                {
-                    return false;
-                }
-
-                _activeDom = dom;
-                if (markSnapshotUnstable)
-                {
-                    _hasStableStyles = false;
-                }
-
-                _renderSnapshotVersion++;
-                return true;
-            }
-        }
-
-        private long BeginRenderGeneration()
-        {
-            lock (_renderStateLock)
-            {
-                return ++_renderGeneration;
-            }
-        }
-
-        private bool IsCurrentRenderGeneration(long renderGeneration)
-        {
-            lock (_renderStateLock)
-            {
-                return _renderGeneration == renderGeneration;
-            }
-        }
-
-        private void BeginAwaitingPostScriptSnapshot(long renderGeneration = 0)
-        {
-            lock (_renderStateLock)
-            {
-                if (renderGeneration != 0 && _renderGeneration != renderGeneration)
-                {
-                    return;
-                }
-
-                _awaitingPostScriptSnapshot = true;
-                _renderSnapshotVersion++;
-            }
-        }
-
-        private void EndAwaitingPostScriptSnapshot(long renderGeneration = 0)
-        {
-            lock (_renderStateLock)
-            {
-                if (renderGeneration != 0 && _renderGeneration != renderGeneration)
-                {
-                    return;
-                }
-
-                _awaitingPostScriptSnapshot = false;
-                _renderSnapshotVersion++;
-            }
-        }
-
-        private bool HasStableComputedStyleSnapshot()
-        {
-            lock (_renderStateLock)
-            {
-                // Allow empty styles during incremental parsing â€” the engine renders
-                // with browser-default styling and progressively improves as CSS arrives.
-                // Requiring Count > 0 blocked every incremental repaint before CSS load.
-                return _hasStableStyles &&
-                       !_awaitingPostScriptSnapshot &&
-                       LastComputedStyles != null;
-            }
-        }
-
-        private bool UpdateRenderState(
-            Node dom,
-            Dictionary<Node, CssComputed> styles,
-            long renderGeneration = 0)
-        {
-            lock (_renderStateLock)
-            {
-                if (renderGeneration != 0 && _renderGeneration != renderGeneration)
-                {
-                    return false;
-                }
-
-                if (dom != null)
-                {
-                    _activeDom = dom;
-                }
-
-                LastComputedStyles = styles;
-                _hasStableStyles = styles != null;
-                _renderSnapshotVersion++;
-                return true;
-            }
-        }
-
-        private static Task RunDetachedAsync(Func<Task> operation)
-        {
-            return Task.Factory.StartNew(async () =>
-            {
-                try
-                {
-                    await operation().ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Warn($"[CustomHtmlEngine] Detached async operation failed: {ex.Message}", LogCategory.Rendering);
-                }
-            }, System.Threading.CancellationToken.None, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).Unwrap();
-        }
-        public RenderContext? BuildRenderContext()
-        {
-            return _cachedRenderer?.CreateRenderContext();
-        }
-
-        public event Action<object> RepaintReady;
-        private void OnRepaintReady(object control)
-        {
-            _lastRenderedControl = control;
-            RepaintReady?.Invoke(control);
-        }
-        public event EventHandler<bool> LoadingChanged;
-        public event EventHandler<string> TitleChanged;
-        public event EventHandler<Element> DomReady;
-        public event Action<string> AlertTriggered;
-        public event Func<string, bool> ConfirmTriggered;
-        public event Func<string, string, string> PromptTriggered;
-        public event Action<string> ConsoleMessage; // New event for console logs
-        public event Action<SKRect?> HighlightRectChanged;
-        public event Func<string, JsPermissions, Task<bool>> PermissionRequested; // Permission API event
-        public bool EnableJavaScript { get; set; } = true;
-        public bool EnableIncrementalParseRepaint { get; set; } = true;
-        public bool EnableStreamingParsePrepass { get; set; } = false;
-        public bool EnableInterleavedPrimaryParse { get; set; } = true;
-
-
-        private FenBrowser.FenEngine.Core.Interfaces.IHistoryBridge _historyBridge;
-
-        public void InitHistory(FenBrowser.FenEngine.Core.Interfaces.IHistoryBridge bridge)
-        {
-            _historyBridge = bridge;
-            if (_activeJs != null) _activeJs.SetHistoryBridge(bridge);
-        }
-
-        public void NotifyPopState(object state)
-        {
-             _activeJs?.NotifyPopState(state);
-        }
-
-
-        public void HighlightElement(Element element)
-        {
-            if (element == null)
-            {
-                RemoveHighlight();
-                return;
-            }
-
-            if (JavaScriptEngine.TryGetVisualRect(element, out double x, out double y, out double w, out double h))
-            {
-                HighlightRectChanged?.Invoke(new SKRect((float)x, (float)y, (float)(x+w), (float)(y+h)));
-            }
-            else
-            {
-                RemoveHighlight();
-            }
-        }
-
-        public void RemoveHighlight()
-        {
-            HighlightRectChanged?.Invoke(null);
-        }
-
-        public void HandlePointerEvent(string eventType, float x, float y)
-        {
-            var renderer = _externalRenderer ?? _cachedRenderer;
-            if (renderer == null || _activeJs == null) return;
-            try
-            {
-                if (renderer.HitTest(x, y, out var result))
-                {
-                    if (result.NativeElement is Element el)
-                    {
-                         // Dispatch to JS
-                        _activeJs.DispatchEventForElement(el, eventType);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Error($"[CustomHtmlEngine] HandlePointerEvent error: {ex.Message}", LogCategory.Rendering);
-            }
-        }
-
-        public bool DispatchPointerEvent(Element element, string eventType, BrowserDomEventInit eventInit = null)
-        {
-            if (element == null || _activeJs == null || string.IsNullOrWhiteSpace(eventType)) return true;
-
-            try
-            {
-                return _activeJs.DispatchEventForElement(element, eventType, eventInit);
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Error($"[CustomHtmlEngine] DispatchPointerEvent error: {ex.Message}", LogCategory.Rendering);
-                return true;
-            }
-        }
-
-        /// <summary>
-        /// Phase 12: async variant that does not block the calling thread while
-        /// the JS worker executes click/keyboard event handlers.
-        /// </summary>
-        public async System.Threading.Tasks.Task<bool> DispatchPointerEventAsync(Element element, string eventType, BrowserDomEventInit eventInit = null)
-        {
-            if (element == null || _activeJs == null || string.IsNullOrWhiteSpace(eventType)) return true;
-
-            try
-            {
-                return await _activeJs.DispatchEventForElementAsync(element, eventType, eventInit).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Error($"[CustomHtmlEngine] DispatchPointerEventAsync error: {ex.Message}", LogCategory.Rendering);
-                return true;
-            }
-        }
-
-        public void ClearAllCookies()
-        {
-            CookieJar.ClearAll();
-        }
-
-        public object Evaluate(string script)
-        {
-            EngineLogCompat.Debug($"[CustomHtmlEngine.Evaluate] _activeJs is null: {_activeJs == null}", LogCategory.JavaScript);
-            if (_activeJs != null) 
-            {
-                EngineLogCompat.Debug($"[CustomHtmlEngine.Evaluate] Calling _activeJs.Evaluate with script length: {script?.Length}", LogCategory.JavaScript);
-                return _activeJs.Evaluate(script);
-            }
-            EngineLogCompat.Error("[CustomHtmlEngine.Evaluate] _activeJs is NULL - script not executed!", LogCategory.JavaScript);
-            return null;
-        }
-
-        public Node ActiveDom => _activeDom;
-        public IBrowserScriptEngine ScriptEngine => _activeJs;
-        private Node _activeDom;
-        private long _renderSnapshotVersion;
-        private bool _hasStableStyles;
-        private bool _awaitingPostScriptSnapshot;
-        private string _lastRawHtml;
-        private object _lastRenderedControl;
-        private Uri _activeBaseUri;
-        private Func<Uri, Task<string>> _activeFetchCss;
-        private Func<Uri, Task<Stream>> _activeImageLoader;
-        internal Func<Element, Uri, Task<string>> FetchExternalCssForRootAsync { get; set; }
-        private Action<Uri> _activeOnNavigate;
-        private double? _activeViewportWidth;
-        private double? _activeViewportHeight;
-        private Action<object> _activeFixedBackground;
-        private IBrowserScriptEngine _activeJs;
-        public BrowserCookieJar CookieJar { get; set; } = new BrowserCookieJar();
-        private readonly System.Threading.SemaphoreSlim _repaintGate = new System.Threading.SemaphoreSlim(1, 1);
-        private readonly object _queuedRenderUpdateLock = new object();
-        private bool _queuedRenderUpdateRunning;
-        private bool _queuedRenderUpdateRequested;
-        private readonly object _uiDispatcher;
-        private readonly EventLoopCoordinator _eventLoopCoordinator;
-
-        public EventLoopCoordinator EventLoopCoordinator => _eventLoopCoordinator;
-        
-        // Cache view/renderer to avoid full recreation
-        // private SkiaBrowserView _cachedView;
-        private SkiaDomRenderer _cachedRenderer;
-        private SkiaDomRenderer _externalRenderer; // Injected from BrowserIntegration
-
-        /// <summary>
-        /// Injects an external renderer (from BrowserIntegration) to use instead of creating our own.
-        /// When set, BuildVisualTreeAsync will use this renderer and skip setting up its own visual rect provider.
-        /// </summary>
-        public void SetExternalRenderer(SkiaDomRenderer renderer)
-        {
-            _externalRenderer = renderer;
-        }
-        
-        public CustomHtmlEngine()
-        {
-            _uiDispatcher = UiThreadHelper.TryGetDispatcher();
-            _eventLoopCoordinator = EventLoopCoordinator.Instance;
-            _eventLoopCoordinator.SetRenderCallback(ProcessQueuedRenderUpdate);
-        }
-
-        private static double GetPrimaryWindowWidth()
-        {
-            // [MIGRATION] Window logic removed
-            return 800;
-        }
-
-        private static double GetPrimaryWindowHeight()
-        {
-             // [MIGRATION] Window logic removed
-            return 600;
-        }
-
-        private DateTime _lastRepaintTime = DateTime.MinValue;
-
-        private static readonly System.Collections.Generic.HashSet<string> _loadingTokens =
-            new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                "loading",
-                "loaded",
-                "pleasewait",
-                "justamoment",
-                "holdtight",
-                "hangtight",
-                "stillworking"
-            };
-
-        // Some pages expose a usable fallback DOM but trap limited engines in long-running
-        // bootstrap script payloads. Prefer the fallback path when the raw document already
-        // advertises a noscript/meta-refresh recovery flow.
-        private static bool IsGoogleSearchAccessTroubleDocument(string html, Uri baseUri)
-        {
-            if (string.IsNullOrWhiteSpace(html) || !IsGoogleHost(baseUri))
-            {
-                return false;
-            }
-
-            var hasEnableJsRecovery =
-                html.IndexOf("/httpservice/retry/enablejs", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                html.IndexOf("if you are not redirected within a few seconds", StringComparison.OrdinalIgnoreCase) >= 0;
-            if (!hasEnableJsRecovery)
-            {
-                return false;
-            }
-
-            var hasTroubleBanner =
-                html.IndexOf("id=\"yvlrue\"", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                html.IndexOf("id='yvlrue'", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                html.IndexOf("trouble accessing google search", StringComparison.OrdinalIgnoreCase) >= 0;
-            return hasTroubleBanner;
-        }
-
-        private static string BuildGoogleAccessTroubleFallbackHtml(string html, Uri baseUri)
-        {
-            if (!IsGoogleSearchAccessTroubleDocument(html, baseUri))
-            {
-                return html ?? string.Empty;
-            }
-
-            var bannerInner = "If you're having trouble accessing Google Search, please retry your search.";
-            try
-            {
-                var match = System.Text.RegularExpressions.Regex.Match(
-                    html,
-                    "<div\\b[^>]*\\bid\\s*=\\s*['\\\"]yvlrue['\\\"][^>]*>(.*?)</div>",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Singleline);
-
-                if (match.Success && match.Groups.Count > 1 && !string.IsNullOrWhiteSpace(match.Groups[1].Value))
-                {
-                    bannerInner = match.Groups[1].Value;
-                }
-            }
-            catch
-            {
-                // Keep default banner text on regex failure.
-            }
-
-            bannerInner = bannerInner
-                .Replace("href=\"/", "href=\"https://www.google.com/", StringComparison.OrdinalIgnoreCase)
-                .Replace("href='/", "href='https://www.google.com/", StringComparison.OrdinalIgnoreCase);
-
-            return
-                "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Google Search</title></head>" +
-                "<body style=\"font-family:Arial,sans-serif;padding:24px;line-height:1.45;color:#202124;background:#fff;\">" +
-                $"<div id=\"yvlrue\">{bannerInner}</div>" +
-                "</body></html>";
-        }
-
-private static string RemoveInlineDisplayNone(string inlineStyle)
-        {
-            if (string.IsNullOrWhiteSpace(inlineStyle))
-            {
-                return string.Empty;
-            }
-
-            var updated = System.Text.RegularExpressions.Regex.Replace(
-                inlineStyle,
-                @"(?:^|;)\s*display\s*:\s*none\s*;?",
-                ";",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-            updated = System.Text.RegularExpressions.Regex.Replace(
-                updated,
-                @";{2,}",
-                ";",
-                System.Text.RegularExpressions.RegexOptions.None).Trim().Trim(';').Trim();
-
-            return updated;
-        }
-
-        private static bool LooksLikeVisibleFallbackCandidate(Element element, Uri baseUri)
-        {
-            if (element == null)
-            {
-                return false;
-            }
-
-            if (!element.Descendants().OfType<Element>().Any(child =>
-                string.Equals(child.TagName, "a", StringComparison.OrdinalIgnoreCase)))
-            {
-                return false;
-            }
-
-            var text = WebUtility.HtmlDecode(element.TextContent ?? string.Empty);
-            if (string.IsNullOrWhiteSpace(text) || text.Length < 24)
-            {
-                return false;
-            }
-
-            if (IsGoogleHost(baseUri))
-            {
-                return false;
-            }
-
-            return text.IndexOf("trouble accessing", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                text.IndexOf("not redirected within a few seconds", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                (text.IndexOf("click here", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                 text.IndexOf("feedback", StringComparison.OrdinalIgnoreCase) >= 0);
-        }
-
-        private static int PromoteHiddenFallbackContent(Node domRoot, Uri baseUri)
-        {
-            if (domRoot == null)
-            {
-                return 0;
-            }
-
-            var promoted = 0;
-            foreach (var element in domRoot.Descendants().OfType<Element>())
-            {
-                var inlineStyle = element.GetAttribute("style");
-                if (string.IsNullOrWhiteSpace(inlineStyle) ||
-                    inlineStyle.IndexOf("display", StringComparison.OrdinalIgnoreCase) < 0 ||
-                    inlineStyle.IndexOf("none", StringComparison.OrdinalIgnoreCase) < 0 ||
-                    !LooksLikeVisibleFallbackCandidate(element, baseUri))
-                {
-                    continue;
-                }
-
-                var updatedStyle = RemoveInlineDisplayNone(inlineStyle);
-                if (string.IsNullOrWhiteSpace(updatedStyle))
-                {
-                    element.RemoveAttribute("style");
-                }
-                else
-                {
-                    element.SetAttribute("style", updatedStyle);
-                }
-
-                promoted++;
-            }
-
-            return promoted;
-        }
-
-        private static readonly HashSet<string> GoogleCompatSites = new(StringComparer.Ordinal)
-        {
-            "google.com", "google.co.in", "google.co.uk", "google.ca", "google.com.au",
-            "google.de", "google.fr", "google.co.jp", "google.com.br", "google.es", "google.it"
-        };
-
-        private static string GetRegistrableHost(Uri uri)
-        {
-            if (uri == null || !uri.IsAbsoluteUri)
-            {
-                return string.Empty;
-            }
-
-            var identity = SiteIdentityService.Default;
-            var host = identity.CanonicalizeHost(uri.IdnHost);
-            var registrable = identity.ComputeRegistrableDomain(host);
-            return string.IsNullOrEmpty(registrable) ? host : registrable;
-        }
-
-        private static bool IsGoogleHost(Uri baseUri)
-        {
-            return GoogleCompatSites.Contains(GetRegistrableHost(baseUri));
-        }
-
-        private static int RemoveGoogleAccessTroubleBanners(Node domRoot, Uri baseUri)
-        {
-            if (domRoot == null || !IsGoogleHost(baseUri))
-            {
-                return 0;
-            }
-
-            var toRemove = new List<Element>();
-            foreach (var element in domRoot.Descendants().OfType<Element>())
-            {
-            var text = WebUtility.HtmlDecode(element.TextContent ?? string.Empty);
-                if (string.IsNullOrWhiteSpace(text))
-                {
-                    continue;
-                }
-
-                var hasTroubleMessage =
-                    text.IndexOf("trouble accessing google search", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    text.IndexOf("having trouble accessing google search", StringComparison.OrdinalIgnoreCase) >= 0;
-                if (!hasTroubleMessage)
-                {
-                    continue;
-                }
-
-                var hasFallbackActionText =
-                    text.IndexOf("click here", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    text.IndexOf("send feedback", StringComparison.OrdinalIgnoreCase) >= 0;
-                if (!hasFallbackActionText)
-                {
-                    continue;
-                }
-
-                toRemove.Add(element);
-            }
-
-            foreach (var element in toRemove)
-            {
-                element.Remove();
-            }
-
-            return toRemove.Count;
-        }
-
-        private static int RemoveGoogleTroubleBannerArtifacts(Node domRoot, Uri baseUri)
-        {
-            if (domRoot == null || !IsGoogleHost(baseUri))
-            {
-                return 0;
-            }
-
-            var toRemove = new List<Element>();
-            foreach (var element in domRoot.Descendants().OfType<Element>())
-            {
-                var tag = element.TagName?.ToLowerInvariant();
-                if (tag == "div" && string.Equals(element.GetAttribute("id"), "yvlrue", StringComparison.OrdinalIgnoreCase))
-                {
-                    toRemove.Add(element);
-                    continue;
-                }
-
-                if (tag != "script")
-                {
-                    continue;
-                }
-
-            var scriptText = element.TextContent ?? string.Empty;
-                if (scriptText.IndexOf("sg_trbl", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    scriptText.IndexOf("cssId='yvlrue'", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    scriptText.IndexOf("cssId=\"yvlrue\"", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    toRemove.Add(element);
-                }
-            }
-
-            foreach (var element in toRemove)
-            {
-                element.Remove();
-            }
-
-            return toRemove.Count;
-        }
-
-        private static bool IsGoogleSearchChallengeDocument(Node domRoot, Uri baseUri)
-        {
-            if (domRoot == null || !IsGoogleHost(baseUri))
-            {
-                return false;
-            }
-
-            foreach (var element in domRoot.Descendants().OfType<Element>())
-            {
-                if (string.Equals(element.GetAttribute("id"), "yvlrue", StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-
-                if (!string.Equals(element.TagName, "a", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                var href = element.GetAttribute("href") ?? string.Empty;
-                if (href.IndexOf("emsg=SG_REL", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static int ForceGoogleChallengeBannerVisible(Node domRoot, Uri baseUri, bool removeUnhideScript)
-        {
-            if (!IsGoogleSearchChallengeDocument(domRoot, baseUri))
-            {
-                return 0;
-            }
-
-            var changed = 0;
-            foreach (var element in domRoot.Descendants().OfType<Element>())
-            {
-                if (!string.Equals(element.GetAttribute("id"), "yvlrue", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                var inlineStyle = element.GetAttribute("style") ?? string.Empty;
-                var updatedStyle = inlineStyle;
-
-                if (!string.IsNullOrWhiteSpace(inlineStyle))
-                {
-                    updatedStyle = System.Text.RegularExpressions.Regex.Replace(
-                        updatedStyle,
-                        @"(?:^|;)\s*display\s*:\s*none(?:\s*!\s*important)?\s*;?",
-                        ";",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    updatedStyle = System.Text.RegularExpressions.Regex.Replace(
-                        updatedStyle,
-                        @"(?:^|;)\s*visibility\s*:\s*hidden(?:\s*!\s*important)?\s*;?",
-                        ";",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    updatedStyle = System.Text.RegularExpressions.Regex.Replace(
-                        updatedStyle,
-                        @"(?:^|;)\s*opacity\s*:\s*0(?:\.0+)?(?:\s*!\s*important)?\s*;?",
-                        ";",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                }
-
-                updatedStyle = updatedStyle?.Trim() ?? string.Empty;
-                if (!updatedStyle.EndsWith(";", StringComparison.Ordinal) && updatedStyle.Length > 0)
-                {
-                    updatedStyle += ";";
-                }
-
-                updatedStyle += "display:block;visibility:visible;opacity:1;";
-                updatedStyle = System.Text.RegularExpressions.Regex.Replace(updatedStyle, @";{2,}", ";");
-                updatedStyle = updatedStyle.Trim().Trim(';');
-
-                element.SetAttribute("style", updatedStyle);
-
-                if (string.Equals(element.GetAttribute("hidden"), "hidden", StringComparison.OrdinalIgnoreCase) ||
-                    element.HasAttribute("hidden"))
-                {
-                    element.RemoveAttribute("hidden");
-                }
-
-                if (string.Equals(element.GetAttribute("aria-hidden"), "true", StringComparison.OrdinalIgnoreCase))
-                {
-                    element.SetAttribute("aria-hidden", "false");
-                }
-
-                changed++;
-            }
-
-            if (removeUnhideScript)
-            {
-                changed += RemoveGoogleTroubleBannerArtifacts(domRoot, baseUri);
-            }
-
-            return changed;
-        }
-
-        private static int RemoveEncodedNoscriptBootstrapFallbacks(IEnumerable<Element> noscriptElements)
-        {
-            if (noscriptElements == null)
-            {
-                return 0;
-            }
-
-            var removed = 0;
-            foreach (var noscript in noscriptElements)
-            {
-            var text = noscript?.TextContent ?? string.Empty;
-                if (string.IsNullOrWhiteSpace(text))
-                {
-                    continue;
-                }
-
-                var looksEncodedBootstrap =
-                    text.IndexOf("<meta", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    text.IndexOf("http-equiv=\"refresh\"", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    text.IndexOf("<style>", StringComparison.OrdinalIgnoreCase) >= 0;
-
-                if (!looksEncodedBootstrap)
-                {
-                    continue;
-                }
-
-                noscript.Remove();
-                removed++;
-            }
-
-            return removed;
-        }
-
-public void Dispose()
-        {
-            try
-            {
-                _eventLoopCoordinator.SetRenderCallback(null);
-                _repaintGate.Dispose();
-                // _activeJs does not implement IDisposable, just clear ref
-                _activeJs = null;
-                SetActiveDom(null);
-                // _cachedView = null;
-                _cachedRenderer = null;
-                JavaScriptEngine.SetVisualRectProvider(null);
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Warn($"[CustomHtmlEngine] Dispose error: {ex.Message}", LogCategory.Rendering);
-            }
-        }
-
-        private void ProcessQueuedRenderUpdate()
-        {
-            lock (_queuedRenderUpdateLock)
-            {
-                _queuedRenderUpdateRequested = true;
-                if (_queuedRenderUpdateRunning)
-                {
-                    return;
-                }
-
-                _queuedRenderUpdateRunning = true;
-            }
-
-            _ = RunDetachedAsync(DrainQueuedRenderUpdatesAsync);
-        }
-
-        private async Task DrainQueuedRenderUpdatesAsync()
-        {
-            lock (_queuedRenderUpdateLock)
-            {
-                if (!_queuedRenderUpdateRequested)
-                {
-                    _queuedRenderUpdateRunning = false;
-                    return;
-                }
-
-                // One render callback owns one frame. If another timer callback
-                // dirties the DOM while this work is in flight, the event loop
-                // will deliver it on a later frame; do not spin a second full
-                // visual-tree refresh immediately from this task.
-                _queuedRenderUpdateRequested = false;
-            }
-
-            try
-            {
-                var pendingRecascade = _pendingRecascade;
-                if (pendingRecascade != null && !pendingRecascade.IsCompleted)
-                {
-                    await pendingRecascade.ConfigureAwait(false);
-                }
-
-                var activeDom = GetActiveDom();
-                if (activeDom != null)
-                {
-                    OnRepaintReady(activeDom);
-                }
-            }
-            catch (ObjectDisposedException)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Warn($"[CustomHtmlEngine] Queued render update failed: {ex.Message}", LogCategory.Rendering);
-            }
-            finally
-            {
-                lock (_queuedRenderUpdateLock)
-                {
-                    _queuedRenderUpdateRunning = false;
-                }
-            }
-        }
-
-        private async Task RaiseLoadingChangedAsync(bool isLoading)
-        {
-            var handler = LoadingChanged;
-            if (handler == null) return;
-            try
-            {
-                var disp = _uiDispatcher ?? UiThreadHelper.TryGetDispatcher();
-                if (disp != null && !UiThreadHelper.HasThreadAccess(disp))
-                {
-                    await UiThreadHelper.RunAsyncAwaitable(disp, null, () =>
-                    {
-                        try { handler(this, isLoading); }
-                        catch (Exception ex) 
-                        {
-                            EngineLogCompat.Error($"[CustomHtmlEngine] LoadingChanged handler error (async): {ex.Message}", LogCategory.Rendering);
-                        }
-                        return Task.CompletedTask;
-                    });
-                }
-                else
-                {
-                    handler(this, isLoading);
-                }
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Error($"[CustomHtmlEngine] LoadingChanged handler error: {ex.Message}", LogCategory.Rendering);
-            }
-        }
-
-        // Resolve a possibly relative URL against a base
-        private static Uri ResolveUri(Uri baseUri, string href)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(href)) return null;
-                href = href.Trim();
-                if (href.StartsWith("//"))
-                {
-                    var scheme = baseUri != null ? baseUri.Scheme : "https";
-                    return new Uri(scheme + ":" + href);
-                }
-                Uri abs;
-                if (Uri.TryCreate(href, UriKind.Absolute, out abs)) return abs;
-                if (baseUri != null && Uri.TryCreate(baseUri, href, out abs)) return abs;
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Debug($"[CustomHtmlEngine] ResolveUri failed for '{href}': {ex.Message}", LogCategory.Rendering);
-            }
-            return null;
-        }
-
-        // ---------------------------------------------------------
-        // Helper: Image Logic (Consolidated for Performance/DRY)
-        // ---------------------------------------------------------
-
-        // Preserve WebP assets (Skia supports them); only rewrite AVIF when absolutely necessary.
-        private static string RewriteWebPToJpg(string u)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(u)) return u;
-
-                // Fast exit when no AVIF tokens present.
-                if (u.IndexOf("avif", StringComparison.OrdinalIgnoreCase) < 0)
-                    return u;
-
-                // Some CDNs gate AVIF behind query params; fall back to JPEG for compatibility.
-                u = System.Text.RegularExpressions.Regex.Replace(u, @"(\?|&)(f|fmt)=avif", "$1$2=jpg", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-                if (System.Text.RegularExpressions.Regex.IsMatch(u, @"\.avif(\?.*)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
-                    u = System.Text.RegularExpressions.Regex.Replace(u, @"\.avif(\?.*)?$", ".jpg$1", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Debug($"[CustomHtmlEngine] RewriteWebPToJpg failed for '{u}': {ex.Message}", LogCategory.Rendering);
-            }
-            return u;
-        }
-
-        private static string PickBestImageFromSrcSet(string srcset, double viewportWidth)
-        {
-            var selected = ResponsiveImageSourceSelector.PickBestImageCandidate(null, srcset, viewportWidth);
-            return RewriteWebPToJpg(selected);
-        }
-
-        // ---------------------------------------------------------
-        // End Helper
-        // ---------------------------------------------------------
-
-        // Kick off background image fetches early (img/srcset/background-image)
-        private static async Task PrewarmImagesAsync(Element root, Uri baseUri, Func<Uri, Task<Stream>> imageLoader, double? viewportWidth)
-        {
-            if (root == null || imageLoader == null) return;
-            try
-            {
-                var eagerLoads = new List<Uri>();
-                var backgroundLoads = new List<Uri>();
-                var seen = new HashSet<string>(StringComparer.Ordinal);
-                var gate = new System.Threading.SemaphoreSlim(ImagePrewarmMaxConcurrency);
-                int budget = ImagePrewarmQueueBudget; // avoid over-queuing
-                double dw = viewportWidth ?? 0; 
-                try { if (dw <= 0) dw = GetPrimaryWindowWidth(); } catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] Failed reading primary window width: {ex.Message}", LogCategory.Rendering); }
-                if (dw <= 0) dw = 480;
-
-                var ownerDocument = root.OwnerDocument;
-                var hasDocumentFetcher = ImageLoader.HasDocumentAwareFetcher(ownerDocument);
-
-                async Task LoadAndCacheAsync(Uri abs)
-                {
-                    try
-                    {
-                        await gate.WaitAsync().ConfigureAwait(false);
-                        try
-                        {
-                            var data = await ImageLoader.FetchBytesForCurrentContextAsync(abs, ownerDocument).ConfigureAwait(false);
-                            if (data != null && data.Length > 0)
-                            {
-                                try
-                                {
-                                    using var memory = new MemoryStream(data, writable: false);
-                                    if (await ImageLoader.PrewarmImageAsync(
-                                            abs.AbsoluteUri,
-                                            memory,
-                                            ownerDocument: ownerDocument)
-                                        .ConfigureAwait(false))
-                                    {
-                                        return;
-                                    }
-                                }
-                                catch (Exception ex)
-                                {
-                                    EngineLogCompat.Debug($"[CustomHtmlEngine] Byte-fetch prewarm fallback triggered for {abs}: {ex.Message}", LogCategory.Rendering);
-                                }
-                            }
-
-                            if (hasDocumentFetcher)
-                            {
-                                return;
-                            }
-
-                            using var stream = await imageLoader(abs).ConfigureAwait(false);
-                            if (stream != null)
-                            {
-                                await ImageLoader.PrewarmImageAsync(
-                                        abs.AbsoluteUri,
-                                        stream,
-                                        ownerDocument: ownerDocument)
-                                    .ConfigureAwait(false);
-                            }
-                        }
-                        finally
-                        {
-                            gate.Release();
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        EngineLogCompat.Warn($"[CustomHtmlEngine] Image load task failed: {ex.Message}", LogCategory.Rendering);
-                    }
-                }
-
-                void queueLoad(string rawUrl)
-                {
-                    if (budget <= 0 || string.IsNullOrWhiteSpace(rawUrl)) return;
-                    var clean = RewriteWebPToJpg(rawUrl);
-                    if (clean.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
-                    {
-                        ImageLoader.GetImage(clean, ownerDocument: ownerDocument);
-                        return;
-                    }
-
-                    var abs = ResolveUri(baseUri, clean);
-                    if (abs == null || !seen.Add(abs.AbsoluteUri)) return;
-
-                    budget--;
-                    if (eagerLoads.Count < ImagePrewarmEagerCandidateLimit)
-                    {
-                        eagerLoads.Add(abs);
-                    }
-                    else
-                    {
-                        backgroundLoads.Add(abs);
-                    }
-                }
-
-                // Preload/Prefetch links
-                foreach (var link in root.Descendants().OfType<Element>().Where(n => string.Equals(n.TagName, "link", StringComparison.OrdinalIgnoreCase)))
-                {
-                    string rel = link.GetAttribute("rel");
-                    if (rel == "preload" || rel == "prefetch")
-                    {
-                        string href = link.GetAttribute("href");
-                        if (href != null)
-                        {
-                            string asAttr = link.GetAttribute("as");
-                            if (asAttr == "image")
-                            {
-                                queueLoad(href);
-                            }
-                        }
-                    }
-                }
-
-                // Images and Backgrounds
-                foreach (var n in root.SelfAndDescendants())
-                {
-                    if (budget <= 0) break;
-                    try
-                    {
-                        if (n.IsText()) continue;
-                        if (n is Element el)
-                        {
-                            if (string.Equals(el.TagName, "img", StringComparison.OrdinalIgnoreCase))
-                            {
-                                string src = el.GetAttribute("src");
-                                if (string.IsNullOrWhiteSpace(src))
-                                {
-                                    string v = el.GetAttribute("data-src");
-                                    if (!string.IsNullOrEmpty(v)) src = v;
-                                    else if (!string.IsNullOrEmpty(v = el.GetAttribute("data-original"))) src = v;
-                                    else if (!string.IsNullOrEmpty(v = el.GetAttribute("data-lazy"))) src = v;
-                                }
-
-                                string srcset = el.GetAttribute("srcset");
-                                string chosen = null;
-                                if (!string.IsNullOrWhiteSpace(srcset)) 
-                                {
-                                    chosen = PickBestImageFromSrcSet(srcset, dw);
-                                }
-                                
-                                if (string.IsNullOrWhiteSpace(chosen)) chosen = src;
-                                queueLoad(chosen);
-                            }
-                            else
-                            {
-                                string style = el.GetAttribute("style");
-                                if (!string.IsNullOrWhiteSpace(style))
-                                {
-                                    // background-image/background shorthand regex
-                                    var m = System.Text.RegularExpressions.Regex.Match(style, "url\\(['\"']?(?<u>[^)\"']+)['\"']?\\)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                                    if (m.Success)
-                                    {
-                                        queueLoad(m.Groups["u"].Value);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        EngineLogCompat.Debug($"[CustomHtmlEngine] PrewarmImages node processing error: {ex.Message}", LogCategory.Rendering);
-                    }
-                }
-
-                if (eagerLoads.Count > 0)
-                {
-                    var eagerTasks = eagerLoads.Select(LoadAndCacheAsync).ToArray();
-                    var eagerAggregate = Task.WhenAll(eagerTasks);
-                    var completed = await Task.WhenAny(eagerAggregate, Task.Delay(ImagePrewarmAwaitBudgetMs)).ConfigureAwait(false);
-                    if (completed == eagerAggregate)
-                    {
-                        await eagerAggregate.ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        EngineLogCompat.Debug(
-                            $"[CustomHtmlEngine] Timed out waiting for eager image prewarm batch after {ImagePrewarmAwaitBudgetMs}ms ({eagerLoads.Count} candidate(s))",
-                            LogCategory.Rendering);
-                    }
-                }
-
-                foreach (var abs in backgroundLoads)
-                {
-                    _ = RunDetachedAsync(() => LoadAndCacheAsync(abs));
-                }
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Warn($"[CustomHtmlEngine] PrewarmImages failed: {ex.Message}", LogCategory.Rendering);
-            }
-        }
-
-        private static async Task PrewarmCssBackgroundImagesAsync(
-            IReadOnlyDictionary<Node, CssComputed> computedStyles,
-            Uri baseUri,
-            Func<Uri, Task<Stream>> imageLoader,
-            Document ownerDocument)
-        {
-            if (computedStyles == null || computedStyles.Count == 0 || baseUri == null || imageLoader == null)
-            {
-                return;
-            }
-
-            try
-            {
-                var hasDocumentFetcher = ImageLoader.HasDocumentAwareFetcher(ownerDocument);
-                var urls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var kvp in computedStyles)
-                {
-                    var style = kvp.Value;
-                    if (style == null || string.IsNullOrWhiteSpace(style.BackgroundImage))
-                    {
-                        continue;
-                    }
-
-                    var firstUrl = ExtractFirstBackgroundImageUrl(style.BackgroundImage);
-                    if (string.IsNullOrWhiteSpace(firstUrl))
-                    {
-                        continue;
-                    }
-
-                    if (firstUrl.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
-                    {
-                        ImageLoader.GetImage(firstUrl, ownerDocument: ownerDocument);
-                        continue;
-                    }
-
-                    var abs = ResolveUri(baseUri, firstUrl);
-                    if (abs == null)
-                    {
-                        continue;
-                    }
-
-                    urls.Add(abs.AbsoluteUri);
-                }
-
-                await Parallel.ForEachAsync(
-                    urls,
-                    new ParallelOptions { MaxDegreeOfParallelism = 4 },
-                    async (url, cancellationToken) =>
-                {
-                    try
-                    {
-                        var uri = new Uri(url);
-                        var data = await ImageLoader.FetchBytesForCurrentContextAsync(uri, ownerDocument).ConfigureAwait(false);
-                        if (data != null && data.Length > 0)
-                        {
-                            using var memory = new MemoryStream(data, writable: false);
-                            await ImageLoader.PrewarmImageAsync(
-                                    uri.AbsoluteUri,
-                                    memory,
-                                    ownerDocument: ownerDocument)
-                                .ConfigureAwait(false);
-                            return;
-                        }
-
-                        if (hasDocumentFetcher)
-                        {
-                            return;
-                        }
-
-                        using var stream = await imageLoader(uri).ConfigureAwait(false);
-                        if (stream != null)
-                        {
-                            await ImageLoader.PrewarmImageAsync(
-                                    uri.AbsoluteUri,
-                                    stream,
-                                    ownerDocument: ownerDocument)
-                                .ConfigureAwait(false);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        EngineLogCompat.Debug($"[CustomHtmlEngine] CSS background prewarm failed for {url}: {ex.Message}", LogCategory.Rendering);
-                    }
-                }).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Warn($"[CustomHtmlEngine] PrewarmCssBackgroundImages failed: {ex.Message}", LogCategory.Rendering);
-            }
-        }
-
-        private static string ExtractFirstBackgroundImageUrl(string backgroundImage)
-        {
-            if (string.IsNullOrWhiteSpace(backgroundImage))
-            {
-                return null;
-            }
-
-            int urlIndex = backgroundImage.IndexOf("url(", StringComparison.OrdinalIgnoreCase);
-            if (urlIndex < 0)
-            {
-                return null;
-            }
-
-            int depth = 0;
-            int end = -1;
-            for (int i = urlIndex; i < backgroundImage.Length; i++)
-            {
-                char c = backgroundImage[i];
-                if (c == '(')
-                {
-                    depth++;
-                }
-                else if (c == ')')
-                {
-                    depth--;
-                    if (depth == 0)
-                    {
-                        end = i;
-                        break;
-                    }
-                }
-            }
-
-            if (end <= urlIndex)
-            {
-                return null;
-            }
-
-            int valueStart = urlIndex + 4;
-            int valueLength = end - valueStart;
-            if (valueLength <= 0)
-            {
-                return null;
-            }
-
-            return backgroundImage.Substring(valueStart, valueLength).Trim(' ', '\'', '"');
-        }
-
-        private static int VisualChildCount(object node)
-        {
-            try
-            {
-                if (node == null) return 0;
-                var t = node.GetType();
-                var prop = t.GetProperty("Children");
-                if (prop != null)
-                {
-                    var value = prop.GetValue(node) as System.Collections.IList;
-                    if (value != null) return value.Count;
-                }
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Debug($"[CustomHtmlEngine] VisualChildCount error: {ex.Message}", LogCategory.Rendering);
-            }
-            return 0;
-        }
-
-        private static object VisualGetChild(object node, int index)
-        {
-            try
-            {
-                if (node == null) return null;
-                var t = node.GetType();
-                var prop = t.GetProperty("Children");
-                if (prop != null)
-                {
-                    var value = prop.GetValue(node) as System.Collections.IList;
-                    if (value != null && index >= 0 && index < value.Count) return value[index];
-                }
-            }
-            catch (Exception ex)
-            {
-                 EngineLogCompat.Debug($"[CustomHtmlEngine] VisualGetChild error: {ex.Message}", LogCategory.Rendering);
-            }
-            return null;
-        }
-
-        private static string GatherPlainText(Node n)
-        {
-            if (n == null) return string.Empty;
-            var sb = new System.Text.StringBuilder();
-            Action<Node> walk = null;
-            walk = (node) =>
-            {
-                if (node == null) return;
-                if (node.IsText()) { var t = node.TextContent ?? string.Empty; sb.Append(t); return; }
-                if (node.ChildNodes != null)
-                {
-                    foreach (var child in node.ChildNodes)
-                    {
-                        walk(child);
-                    }
-                }
-            };
-            walk(n);
-            var s = sb.ToString();
-            // collapse whitespace lightly
-            bool inWs = false; var outSb = new System.Text.StringBuilder(s.Length);
-            for (int i = 0; i < s.Length; i++)
-            {
-                var c = s[i];
-                if (char.IsWhiteSpace(c)) { if (!inWs) { outSb.Append(' '); inWs = true; } }
-                else { outSb.Append(c); inWs = false; }
-            }
-            return outSb.ToString().Trim();
-        }
-
-        private static int NormalizeNoJsFallbackClasses(Element root)
-        {
-            if (root == null)
-            {
-                return 0;
-            }
-
-            static bool ContainsClassToken(string classValue, string token)
-            {
-                if (string.IsNullOrWhiteSpace(classValue) || string.IsNullOrWhiteSpace(token))
-                {
-                    return false;
-                }
-
-                var parts = classValue.Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
-                for (int i = 0; i < parts.Length; i++)
-                {
-                    if (string.Equals(parts[i], token, StringComparison.Ordinal))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
-            }
-
-            static bool RemoveClassToken(Element element, string token)
-            {
-                var classValue = element?.GetAttribute("class");
-                if (string.IsNullOrWhiteSpace(classValue))
-                {
-                    return false;
-                }
-
-                var parts = classValue.Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length == 0)
-                {
-                    return false;
-                }
-
-                var kept = new List<string>(parts.Length);
-                bool removed = false;
-                for (int i = 0; i < parts.Length; i++)
-                {
-                    var part = parts[i];
-                    if (string.Equals(part, token, StringComparison.Ordinal))
-                    {
-                        removed = true;
-                        continue;
-                    }
-
-                    kept.Add(part);
-                }
-
-                if (!removed)
-                {
-                    return false;
-                }
-
-                if (kept.Count == 0)
-                {
-                    element.RemoveAttribute("class");
-                }
-                else
-                {
-                    element.SetAttribute("class", string.Join(" ", kept));
-                }
-
-                return true;
-            }
-
-            static bool AddClassToken(Element element, string token)
-            {
-                if (element == null || string.IsNullOrWhiteSpace(token))
-                {
-                    return false;
-                }
-
-                var classValue = element.GetAttribute("class");
-                if (ContainsClassToken(classValue, token))
-                {
-                    return false;
-                }
-
-                if (string.IsNullOrWhiteSpace(classValue))
-                {
-                    element.SetAttribute("class", token);
-                }
-                else
-                {
-                    element.SetAttribute("class", classValue.Trim() + " " + token);
-                }
-
-                return true;
-            }
-
-            int changes = 0;
-            var stack = new Stack<Element>();
-            stack.Push(root);
-
-            while (stack.Count > 0)
-            {
-                var element = stack.Pop();
-                if (element == null)
-                {
-                    continue;
-                }
-
-                if (RemoveClassToken(element, "no-js"))
-                {
-                    changes++;
-                }
-
-                if (string.Equals(element.TagName, "html", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (AddClassToken(element, "js"))
-                    {
-                        changes++;
-                    }
-                }
-
-                var children = element.ChildNodes;
-                if (children == null)
-                {
-                    continue;
-                }
-
-                foreach (var child in children)
-                {
-                    if (child is Element childElement)
-                    {
-                        stack.Push(childElement);
-                    }
-                }
-            }
-
-            return changes;
-        }
-
-        private bool TryCaptureActiveContext(
-            Element dom,
-            Uri baseUri,
-            Func<Uri, Task<string>> fetchExternalCssAsync,
-            Func<Uri, Task<Stream>> imageLoader,
-            Action<Uri> onNavigate,
-            double? viewportWidth,
-            double? viewportHeight,
-            Action<object> onFixedBackground,
-            IBrowserScriptEngine js,
-            long renderGeneration)
-        {
-            lock (_renderStateLock)
-            {
-                if (_renderGeneration != renderGeneration)
-                {
-                    return false;
-                }
-
-                _activeDom = dom;
-                _activeBaseUri = baseUri;
-                _activeFetchCss = fetchExternalCssAsync;
-                _activeImageLoader = imageLoader;
-                _activeOnNavigate = onNavigate;
-                _activeViewportWidth = viewportWidth;
-                _activeViewportHeight = viewportHeight;
-                _activeFixedBackground = onFixedBackground;
-                _activeJs = js;
-                _renderSnapshotVersion++;
-            }
-            
-            // Keep the JS bridge synchronized with the live DOM without executing page scripts.
-            // Full script execution still happens later in RunScriptsAsync with a timeout budget.
-            if (js != null && dom != null)
-            {
-                try 
-                { 
-                    EngineLogCompat.Debug("[CaptureActiveContext] Calling SyncDomContext...", LogCategory.Rendering);
-                    js.SyncDomContext(dom, baseUri);
-                    EngineLogCompat.Debug("[CaptureActiveContext] SyncDomContext returned.", LogCategory.Rendering);
-                    EngineLogCompat.Debug($"[CaptureActiveContext] Synced JS DOM to _activeDom hash={dom.GetHashCode()}", LogCategory.Rendering);
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Warn($"[CustomHtmlEngine] Failed to sync ActiveDom to JS: {ex.Message}", LogCategory.Rendering);
-                }
-            }
-            
-            if (js != null)
-            {
-                try { js.FetchOverride = ScriptFetcher; }
-                catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] Failed to set FetchOverride: {ex.Message}", LogCategory.Rendering); }
-            }
-
-            if (!IsCurrentRenderGeneration(renderGeneration))
-            {
-                return false;
-            }
-
-            // Extract and fire title
-            try
-            {
-                string title = null;
-                var tnode = dom.Descendants().OfType<Element>().FirstOrDefault(n => string.Equals(n.NodeName, "title", StringComparison.OrdinalIgnoreCase));
-                if (tnode != null) title = tnode.TextContent;
-                
-                if (!string.IsNullOrWhiteSpace(title))
-                {
-                    TitleChanged?.Invoke(this, title);
-                }
-                else if (baseUri != null)
-                {
-                    TitleChanged?.Invoke(this, baseUri.Host);
-                }
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Warn($"[CustomHtmlEngine] Title extraction failed: {ex.Message}", LogCategory.Rendering);
-            }
-
-            return IsCurrentRenderGeneration(renderGeneration);
-        }
-
-        private string _lastConfiguredMediaSignature;
-
-        private void ConfigureMedia(double? viewportWidth, double? viewportHeight)
-        {
-            try
-            {
-                var surface = BrowserSettings.GetBrowserSurface(
-                    BrowserSettings.Instance.SelectedUserAgent,
-                    BrowserViewportMetrics.Create(
-                        viewportWidth ?? 1280,
-                        viewportHeight ?? 720));
-
-                CssParser.MediaViewportWidth = surface.Viewport.WindowWidth;
-                CssParser.MediaViewportHeight = surface.Viewport.WindowHeight;
-                try { CssParser.MediaDppx = surface.Viewport.DevicePixelRatio; } catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] Failed setting media dppx: {ex.Message}", LogCategory.Rendering); }
-                CssParser.MediaPrefersColorScheme = surface.Viewport.PreferredColorScheme;
-                CssParser.PrefersDarkMode = string.Equals(surface.Viewport.PreferredColorScheme, "dark", StringComparison.OrdinalIgnoreCase);
-                CssParser.MediaPrefersReducedMotion = surface.Viewport.ReducedMotion ? "reduce" : "no-preference";
-                CssParser.MediaHover = surface.Viewport.Hover ? "hover" : "none";
-                CssParser.MediaAnyHover = CssParser.MediaHover;
-                CssParser.MediaPointer = surface.Viewport.FinePointer ? "fine" : "coarse";
-                CssParser.MediaAnyPointer = CssParser.MediaPointer;
-                CssParser.MediaScripting = EnableJavaScript ? "enabled" : "none";
-                CssParser.MediaDisplayMode = "browser";
-                try
-                {
-                    // Phase 13: only write the media diagnostic when the resolved
-                    // configuration actually changes (width/height/dppx/scheme).
-                    // ConfigureMedia is called on every render; appending an
-                    // identical line per frame floods the diagnostic file.
-                    var signature =
-                        $"{CssParser.MediaViewportWidth?.ToString() ?? "null"}x{CssParser.MediaViewportHeight?.ToString() ?? "null"}" +
-                        $"|dppx={CssParser.MediaDppx?.ToString() ?? "null"}" +
-                        $"|scheme={CssParser.MediaPrefersColorScheme ?? "null"}";
-                    if (!string.Equals(signature, _lastConfiguredMediaSignature, StringComparison.Ordinal))
-                    {
-                        _lastConfiguredMediaSignature = signature;
-                        var mediaDiag = $"ConfigureMedia: input={viewportWidth?.ToString() ?? "null"}x{viewportHeight?.ToString() ?? "null"} resolved={CssParser.MediaViewportWidth?.ToString() ?? "null"}x{CssParser.MediaViewportHeight?.ToString() ?? "null"} dppx={CssParser.MediaDppx?.ToString() ?? "null"}";
-                        File.AppendAllText(DiagnosticPaths.GetRootArtifactPath("debug_render_start.txt"), mediaDiag + Environment.NewLine);
-                    }
-                }
-                catch
-                {
-                    // Best-effort diagnostics only.
-                }
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Warn($"[CustomHtmlEngine] ConfigureMedia failed: {ex.Message}", LogCategory.Rendering);
-            }
-        }
-
-        private async Task<object> BuildVisualTreeAsync(
-            Element dom,
-            Uri baseUri,
-            Func<Uri, Task<string>> fetchExternalCssAsync,
-            Func<Uri, Task<Stream>> imageLoader,
-            Action<Uri> onNavigate,
-            IBrowserScriptEngine js,
-            double? viewportWidth,
-            double? viewportHeight,
-            Action<object> onFixedBackground,
-            bool includeDiagnosticsBanner,
-            long renderGeneration = 0)
-        {
-            if (dom == null || (renderGeneration != 0 && !IsCurrentRenderGeneration(renderGeneration)))
-            {
-                return null;
-            }
-
-            var _buildTreeStopwatch = System.Diagnostics.Stopwatch.StartNew();
-
-            ConfigureMedia(viewportWidth, viewportHeight);
-
-            var cssFetcher = fetchExternalCssAsync ?? (async _ => { await Task.CompletedTask; return string.Empty; });
-            
-            // NOTE: Don't set LastComputedStyles = null here!
-            // The EngineLoop polls for styles during CSS computation (which can take 20+ seconds).
-            // Setting to null causes the renderer to skip styling until computation completes.
-            // Instead, keep the previous styles visible until new ones are ready.
-            lock (_renderStateLock)
-            {
-                if (renderGeneration != 0 && _renderGeneration != renderGeneration)
-                {
-                    return null;
-                }
-
-                LastCssSources = null;
-            }
-            try
-            {
-                // PERF: LoadCssAsync() in RenderAsync already ran CascadeIntoComputedStyles()
-                // and assigned n.ComputedStyle to every node. Reuse those styles instead of
-                // running the full O(elements Ãƒâ€” rules) cascade a second time.
-                if (LastComputedStyles != null && LastComputedStyles.Count > 0)
-                {
-                    EngineLogCompat.Debug($"[BuildVisualTree] Reusing {LastComputedStyles.Count} pre-computed styles (skipping duplicate cascade)", LogCategory.Rendering);
-                    FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles.Count);
-                }
-                else
-                {
-                    EngineLogCompat.Debug("[CustomHtmlEngine] BuildVisualTree: Using CSS Engine (no pre-computed styles)...", LogCategory.Rendering);
-
-                    var cssEngine = CssEngineFactory.GetEngine();
-                    EngineLogCompat.Debug($"[CustomHtmlEngine] BuildVisualTree: Engine={cssEngine.EngineName}", LogCategory.Rendering);
-
-                    var computedStyles = FetchExternalCssForRootAsync == null
-                        ? await cssEngine.ComputeStylesAsync(dom, baseUri, cssFetcher, viewportWidth, viewportHeight)
-                        : await CssLoader.ComputeAsync(
-                            dom,
-                            baseUri,
-                            cssFetcher,
-                            viewportWidth,
-                            viewportHeight,
-                            fetchExternalCssForRootAsync: FetchExternalCssForRootAsync);
-                    if (!UpdateRenderState(dom, computedStyles, renderGeneration))
-                    {
-                        return null;
-                    }
-                    EngineLogCompat.Debug($"[PERF] CSS ComputeStyles: {_buildTreeStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
-
-                    // Assign computed styles to nodes so Layout Engine can see them
-                    if (LastComputedStyles != null)
-                    {
-                        foreach (var kvp in LastComputedStyles)
-                        {
-                            if (kvp.Key != null)
-            kvp.Key.SetComputedStyle(kvp.Value);
-                        }
-                    }
-
-                    FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles?.Count ?? 0);
-                }
-                EngineLogCompat.Debug($"[PERF] BuildVisualTree Complete: {_buildTreeStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
-                EngineLogCompat.Debug($"[CustomHtmlEngine] BuildVisualTree: CSS Success. Styles Count={LastComputedStyles?.Count}", LogCategory.Rendering);
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Error($"[CustomHtmlEngine] CssLoader CRASH: {ex}", LogCategory.Rendering);
-                if (!UpdateRenderState(dom, new Dictionary<Node, CssComputed>(), renderGeneration))
-                {
-                    return null;
-                }
-            }
-
-            if (renderGeneration != 0 && !IsCurrentRenderGeneration(renderGeneration))
-            {
-                return null;
-            }
-
-            // var computed = result.Computed; // Use LastComputedStyles instead
-            var computed = LastComputedStyles;
-
-            // [MIGRATION] Background check logic removed or simplified (Avalonia Brush removed)
-            // Just invoking DomReady
-            
-            try { DomReady?.Invoke(this, dom); } catch (Exception drEx) { EngineLogCompat.Error($"[BuildVisualTree] DomReady error: {drEx}", LogCategory.Rendering); }
-
-        EngineLogCompat.Debug("[BuildVisualTree] Creating renderer...", LogCategory.Rendering);
-
-        // Use external renderer from BrowserIntegration if available
-        SkiaDomRenderer activeRenderer;
-        if (_externalRenderer != null)
-        {
-            EngineLogCompat.Debug("[BuildVisualTree] Using external renderer from BrowserIntegration", LogCategory.Rendering);
-            activeRenderer = _externalRenderer;
-            // Don't set visual rect provider - BrowserIntegration already set it up
-        }
-        else
-        {
-            // Fallback: create our own renderer and set up provider
-            if (_cachedRenderer == null)
-            {
-                EngineLogCompat.Debug("[BuildVisualTree] Creating NEW renderer...", LogCategory.Rendering);
-                _cachedRenderer = new SkiaDomRenderer();
-            }
-            activeRenderer = _cachedRenderer;
-
-            // Only set up visual rect provider if we own the renderer
-            JavaScriptEngine.SetVisualRectProvider(element =>
-            {
-                if (element == null || _cachedRenderer == null)
-                {
-                    return null;
-                }
-
-                var rectSource = element;
-                var box = _cachedRenderer.GetElementBox(element);
-                if (box == null)
-                {
-                    var elementId = element.GetAttribute("id");
-                    if (!string.IsNullOrWhiteSpace(elementId))
-                    {
-                        var root = (_activeDom as Element) ?? element.OwnerDocument?.DocumentElement;
-                        if (root != null)
-                        {
-                            var mapped = root.SelfAndDescendants()
-                                .OfType<Element>()
-                                .FirstOrDefault(candidate =>
-                                    !ReferenceEquals(candidate, element) &&
-                                    string.Equals(candidate.GetAttribute("id"), elementId, StringComparison.Ordinal));
-                            if (mapped != null)
-                            {
-                                rectSource = mapped;
-                                box = _cachedRenderer.GetElementBox(mapped);
-                            }
-                        }
-                    }
-                }
-
-                if (box == null)
-                {
-                    return null;
-                }
-
-                var rect = box.BorderBox;
-                if (LastComputedStyles != null &&
-                    rectSource != null &&
-                    LastComputedStyles.TryGetValue(rectSource, out var computed) &&
-                    computed != null &&
-                    string.Equals(computed.Position, "relative", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Compensate for relative left/top offsets when layout metrics still report static origin.
-                    if (computed.Left.HasValue && Math.Abs(rect.Left) < 0.5f && Math.Abs(computed.Left.Value) > 0.5)
-                    {
-                        rect = SKRect.Create(
-                            rect.Left + (float)computed.Left.Value,
-                            rect.Top,
-                            rect.Width,
-                            rect.Height);
-                    }
-
-                    if (computed.Top.HasValue && Math.Abs(rect.Top) < 0.5f && Math.Abs(computed.Top.Value) > 0.5)
-                    {
-                        rect = SKRect.Create(
-                            rect.Left,
-                            rect.Top + (float)computed.Top.Value,
-                            rect.Width,
-                            rect.Height);
-                    }
-                }
-
-                return rect;
-            });
-        }
-
-        // [MIGRATION] View logic removed. Host is responsible for rendering.
-
-        if (renderGeneration != 0 && !IsCurrentRenderGeneration(renderGeneration))
-        {
-            return null;
-        }
-
-        EngineLogCompat.Debug("[RenderAsync] Visual tree built properly (Headless)", LogCategory.Rendering);
-        return activeRenderer;
-        }
-
-        private async Task<object> RefreshAsyncInternal(bool includeDiagnosticsBanner)
-        {
-            // Ensure we are on the UI thread. If not, marshal the call.
-            var uiDisp = _uiDispatcher ?? UiThreadHelper.TryGetDispatcher();
-            if (uiDisp != null && !UiThreadHelper.HasThreadAccess(uiDisp))
-            {
-                var tcs = new TaskCompletionSource<object>();
-                await UiThreadHelper.RunAsyncAwaitable(uiDisp, null, async () =>
-                {
-                    try
-                    {
-                        await RefreshAsyncInternal(includeDiagnosticsBanner);
-                        tcs.SetResult(null);
-                    }
-                    catch (Exception ex)
-                    {
-                        tcs.SetException(ex);
-                    }
-                });
-                return await tcs.Task;
-            }
-
-            long renderGeneration;
-            Node activeDom;
-            Uri activeBaseUri;
-            Func<Uri, Task<string>> activeFetchCss;
-            Func<Uri, Task<Stream>> activeImageLoader;
-            Action<Uri> activeOnNavigate;
-            IBrowserScriptEngine activeJs;
-            double? activeViewportWidth;
-            double? activeViewportHeight;
-            Action<object> activeFixedBackground;
-            lock (_renderStateLock)
-            {
-                renderGeneration = _renderGeneration;
-                activeDom = _activeDom;
-                activeBaseUri = _activeBaseUri;
-                activeFetchCss = _activeFetchCss;
-                activeImageLoader = _activeImageLoader;
-                activeOnNavigate = _activeOnNavigate;
-                activeJs = _activeJs;
-                activeViewportWidth = _activeViewportWidth;
-                activeViewportHeight = _activeViewportHeight;
-                activeFixedBackground = _activeFixedBackground;
-            }
-
-            if (activeDom == null)
-            {
-                return null;
-            }
-
-            // Debug: Log _activeDom hash
-            // Debug: Log _activeDom hash
-            EngineLogCompat.Debug($"[RefreshAsyncInternal] using _activeDom hash={activeDom.GetHashCode()}", LogCategory.Rendering);
-
-            var fetchCss = activeFetchCss ?? (async _ => { await Task.CompletedTask; return string.Empty; });
-            return await BuildVisualTreeAsync(
-                (activeDom as Element) ?? (activeDom as Document)?.DocumentElement,
-                activeBaseUri,
-                fetchCss,
-                activeImageLoader,
-                activeOnNavigate,
-                activeJs,
-                activeViewportWidth,
-                activeViewportHeight ?? GetPrimaryWindowHeight(),
-                activeFixedBackground,
-                includeDiagnosticsBanner,
-                renderGeneration).ConfigureAwait(false);
-        }
-
-        private async Task DispatchRepaintAsync(object element)
-        {
-            if (element == null) return;
-            var handler = RepaintReady;
-            if (handler == null) return;
-
-            try
-            {
-                var disp = UiThreadHelper.TryGetDispatcher();
-                if (disp != null && !UiThreadHelper.HasThreadAccess(disp))
-                {
-                    // Fix: Add 'async' here so the lambda returns the expected Task
-                    await UiThreadHelper.RunAsyncAwaitable(disp, null, () =>
-                    {
-                        try { handler(element); }
-                        catch (Exception ex) { EngineLogCompat.Error($"[CustomHtmlEngine] RepaintReady async handler error: {ex.Message}", LogCategory.Rendering); }
-                        return Task.CompletedTask;
-                    }).ConfigureAwait(false);
-                }
-                else
-                {
-                    handler(element);
-                }
-            }
-            catch (Exception ex)
-            {
-                 EngineLogCompat.Error($"[CustomHtmlEngine] DispatchRepaintAsync error: {ex.Message}", LogCategory.Rendering);
-            }
-        }
-
-        private void ScheduleRepaintFromJs()
-        {
-            // STRICT CONTROL FLOW:
-            // JavaScript CANNOT push frames. It can only mark state as dirty.
-            
-            // 1. JS is allowed to request a future repaint, but it must never
-            // trigger layout/paint re-entrantly from within the hot path.
-            EnginePhaseManager.AssertNotInPhase(EnginePhase.Measure, EnginePhase.Layout, EnginePhase.Paint);
-
-            EngineLogCompat.Debug("[CustomHtmlEngine] ScheduleRepaintFromJs (Dirty Flag Set)", LogCategory.Rendering);
-
-            // Timer-heavy pages such as Kabutops insert one inline node per
-            // callback. Give incremental styling a frame-sized window to
-            // collect the burst instead of starting one CSS worker per tick.
-            var activeDom = GetActiveDom();
-            if (activeDom != null && (activeDom.StyleDirty || activeDom.ChildStyleDirty))
-            {
-                ScheduleRecascade(delayMs: 16);
-            }
-
-            // 2. Mark dirty ONLY via the Coordinator.
-            // The Event Loop or Host will check this flag at the appropriate checkpoint.
-            _eventLoopCoordinator.NotifyLayoutDirty();
-        }
-
-        private async Task<DomParseResult> RunDomParseAsync(string html, Uri baseUri, long renderGeneration)
-        {
-            var parseInput = html ?? string.Empty;
-            var interleavedBatchSize = ResolveInterleavedTokenBatchSize(EnableInterleavedPrimaryParse, parseInput.Length);
-            var parseCheckpointState = new ParseCheckpointState
-            {
-                RenderGeneration = renderGeneration,
-                IncrementalRepaintMaxCount = ResolveIncrementalParseRepaintMaxCount(parseInput.Length)
-            };
-            var streamingPreparseMs = 0L;
-            var streamingPreparseCheckpointCount = 0;
-            var streamingPreparseRepaintCount = 0;
-            try
-            {
-                if (ShouldRunStreamingParsePrepass(EnableStreamingParsePrepass, parseInput.Length))
-                {
-                    streamingPreparseMs = await RunStreamingPreparseAsync(
-                        parseInput,
-                        renderGeneration,
-                        checkpointCount => streamingPreparseCheckpointCount = checkpointCount,
-                        repaintCount => streamingPreparseRepaintCount = repaintCount).ConfigureAwait(false);
-                }
-
-                EngineLogCompat.Debug("[RenderAsync] Starting parse (Production Parser)...", LogCategory.Rendering);
-                var interleavedFallbackUsed = false;
-                var parseOptions = new HtmlParserOptions
-                {
-                    BaseUri = baseUri,
-                    ParseCheckpointTokenInterval = 512,
-                    InterleavedTokenBatchSize = interleavedBatchSize,
-                    // PreloadScanner only runs when Prefetcher is non-null; without
-                    // this wiring the scanner was dead code and every subresource
-                    // got fetched sequentially as the tree builder produced it.
-                    Prefetcher = Prefetcher
-                };
-                AttachParseDocumentCheckpointCallback(parseOptions, parseCheckpointState);
-
-                HtmlParseDocumentResult parseResult;
-                try
-                {
-                    parseResult = await Task.Run(() =>
-                    {
-                        parseOptions.PipelineContext = PipelineContext.Current;
-                        return HtmlParser.ParseDocumentDetailed(parseInput, parseOptions);
-                    }).ConfigureAwait(false);
-                }
-                catch (Exception pex)
-                {
-                    EngineLogCompat.Error($"[RenderAsync] Parse exception: {pex.Message}", LogCategory.Rendering);
-                    if (interleavedBatchSize > 0)
-                    {
-                        try
-                        {
-                            EngineLogCompat.Warn("[RenderAsync] Retrying parse with interleaved mode disabled", LogCategory.Rendering);
-                            parseCheckpointState.ParsingDocumentCheckpointCount = 0;
-                            parseCheckpointState.ParsingCheckpointOrdinal = 0;
-                            parseCheckpointState.IncrementalRepaintCount = 0;
-
-                            var fallbackOptions = new HtmlParserOptions
-                            {
-                                BaseUri = baseUri,
-                                ParseCheckpointTokenInterval = 512,
-                                InterleavedTokenBatchSize = 0,
-                                Prefetcher = Prefetcher
-                            };
-                            AttachParseDocumentCheckpointCallback(fallbackOptions, parseCheckpointState);
-                            parseResult = await Task.Run(() =>
-                            {
-                                fallbackOptions.PipelineContext = PipelineContext.Current;
-                                return HtmlParser.ParseDocumentDetailed(parseInput, fallbackOptions);
-                            }).ConfigureAwait(false);
-                            interleavedFallbackUsed = true;
-                        }
-                        catch (Exception fallbackEx)
-                        {
-                            EngineLogCompat.Error($"[RenderAsync] Fallback parse exception: {fallbackEx.Message}", LogCategory.Rendering);
-                            parseResult = new HtmlParseDocumentResult
-                            {
-                                Document = new Document(),
-                                Outcome = new HtmlParsingOutcome
-                                {
-                                    OutcomeClass = HtmlParsingOutcomeClass.Failed,
-                                    ReasonCode = HtmlParsingReasonCode.Exception,
-                                    Detail = fallbackEx.Message
-                                },
-                                Metrics = new HtmlParseBuildMetrics()
-                            };
-                        }
-                    }
-                    else
-                    {
-                        parseResult = new HtmlParseDocumentResult
-                        {
-                            Document = new Document(),
-                            Outcome = new HtmlParsingOutcome
-                            {
-                                OutcomeClass = HtmlParsingOutcomeClass.Failed,
-                                ReasonCode = HtmlParsingReasonCode.Exception,
-                                Detail = pex.Message
-                            },
-                            Metrics = new HtmlParseBuildMetrics()
-                        };
-                    }
-                }
-
-                var parsedDocument = parseResult?.Document ?? new Document();
-                EngineLogCompat.Debug("[RenderAsync] Parse complete", LogCategory.Rendering);
-
-                if (baseUri != null)
-                {
-                    string absoluteBase = baseUri.AbsoluteUri;
-                    parsedDocument.URL = absoluteBase;
-                    parsedDocument.BaseURI = absoluteBase;
-                }
-
-                Node parsedRoot = (Node)parsedDocument.DocumentElement ?? parsedDocument;
-                if (IsCurrentRenderGeneration(renderGeneration))
-                {
-                    EmitDocumentCreatedTrace(parsedDocument, baseUri, parseResult?.Outcome, parseResult?.Metrics);
-
-                    // Dump only the document that still owns the active render generation.
-                    try {
-                         var sb = new StringBuilder();
-                         DumpTree(parsedRoot, sb, 0);
-                         System.IO.File.WriteAllText(DiagnosticPaths.GetRootArtifactPath("dom_dump.txt"), sb.ToString());
-                    } catch (Exception ex) { EngineLogCompat.Warn($"[RenderAsync] Failed writing dom_dump.txt: {ex.Message}", LogCategory.Rendering); }
-                }
-
-                var metrics = parseResult?.Metrics ?? new HtmlParseBuildMetrics();
-                return new DomParseResult
-                {
-                    // Return DocumentElement (the HTML element), not the Document wrapper
-                    Dom = parsedRoot,
-                    TokenizingMs = Math.Max(0, metrics.TokenizingMs),
-                    ParsingMs = Math.Max(0, metrics.ParsingMs),
-                    TokenCount = Math.Max(0, metrics.TokenCount),
-                    TokenizingCheckpointCount = Math.Max(0, metrics.TokenizingCheckpointCount),
-                    ParsingCheckpointCount = Math.Max(0, metrics.ParsingCheckpointCount),
-                    ParsingDocumentCheckpointCount = Math.Max(0, parseCheckpointState.ParsingDocumentCheckpointCount),
-                    DocumentReadyTokenCount = Math.Max(0, metrics.DocumentReadyTokenCount),
-                    IncrementalRepaintCount = Math.Max(0, parseCheckpointState.IncrementalRepaintCount),
-                    StreamingPreparseMs = Math.Max(0, streamingPreparseMs),
-                    StreamingPreparseCheckpointCount = Math.Max(0, streamingPreparseCheckpointCount),
-                    StreamingPreparseRepaintCount = Math.Max(0, streamingPreparseRepaintCount),
-                    InterleavedParseUsed = metrics.UsedInterleavedBuild,
-                    InterleavedTokenBatchSize = Math.Max(0, metrics.InterleavedTokenBatchSize),
-                    InterleavedBatchCount = Math.Max(0, metrics.InterleavedBatchCount),
-                    InterleavedFallbackUsed = interleavedFallbackUsed
-                };
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Error($"[RenderAsync] Parse error: {ex.Message}", LogCategory.Rendering);
-                return null;
-            }
-        }
-
-        private static void EmitDocumentCreatedTrace(
-            Document document,
-            Uri baseUri,
-            HtmlParsingOutcome outcome,
-            HtmlParseBuildMetrics metrics)
-        {
-            try
-            {
-                var navigationId = LogContext.CurrentCorrelationId;
-                var documentId = !string.IsNullOrWhiteSpace(navigationId)
-                    ? $"doc-{navigationId}"
-                    : $"doc-{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(document):x}";
-                var url = baseUri?.AbsoluteUri ?? document?.URL;
-
-                EngineLog.Write(
-                    LogSubsystem.Dom,
-                    LogSeverity.Info,
-                    "DocumentCreated",
-                    LogMarker.None,
-                    new EngineLogContext(
-                        NavigationId: navigationId,
-                        DocumentId: documentId,
-                        Url: url),
-                    new Dictionary<string, object>
-                    {
-                        ["event"] = "DocumentCreated",
-                        ["traceCategory"] = "Navigation",
-                        ["url"] = url,
-                        ["contentType"] = document?.ContentType,
-                        ["outcomeClass"] = outcome?.OutcomeClass.ToString(),
-                        ["reasonCode"] = outcome?.ReasonCode.ToString(),
-                        ["tokenCount"] = Math.Max(0, metrics?.TokenCount ?? 0),
-                        ["documentReadyToken"] = Math.Max(0, metrics?.DocumentReadyTokenCount ?? 0)
-                    });
-            }
-            catch
-            {
-                // Document creation must not fail because diagnostics failed.
-            }
-        }
-
-        private async Task LoadCssAsync(
-            Element dom,
-            Uri baseUri,
-            Func<Uri, Task<string>> fetchExternalCssAsync,
-            double? viewportWidth = null,
-            double? viewportHeight = null,
-            long renderGeneration = 0)
-        {
-             try
-             {
-                 EngineLogCompat.Debug("[RenderAsync] Starting CSS load...", LogCategory.Rendering);
-                 var resolvedViewportWidth = viewportWidth ?? _activeViewportWidth;
-                 var resolvedViewportHeight = viewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
-                 var cssTask = CssLoader.ComputeWithResultAsync(
-                     dom,
-                     baseUri,
-                     fetchExternalCssAsync,
-                     resolvedViewportWidth,
-                     resolvedViewportHeight,
-                     msg => EngineLogCompat.Debug(msg, LogCategory.Rendering),
-                     fetchExternalCssForRootAsync: FetchExternalCssForRootAsync,
-                     progressiveStylesReady: progressiveStyles =>
-                     {
-                         if (!UpdateRenderState(dom, progressiveStyles, renderGeneration))
-                         {
-                             return;
-                         }
-
-                         EngineLogCompat.Debug(
-                             $"[RenderAsync] Publishing progressive local styles. Styles Count={progressiveStyles.Count}",
-                             LogCategory.Rendering);
-                         OnRepaintReady(dom);
-                     });
-                 var timeoutTask = Task.Delay(30000); // Increased from 10s to 30s for complex pages
-                 var completedTask = await Task.WhenAny(cssTask, timeoutTask);
-                 
-                 if (completedTask == timeoutTask)
-                 {
-                     EngineLogCompat.Warn("[RenderAsync] CSS loading timed out after 30s", LogCategory.Rendering);
-                     FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(true, 0);
-                 }
-                 else
-                 {
-                     // CRITICAL FIX: Actually store the computed styles!
-                     var cssResult = await cssTask;
-                     var computedStyles = cssResult.Computed;
-                     if (!UpdateRenderState(dom, computedStyles, renderGeneration))
-                     {
-                         EngineLogCompat.Debug("[RenderAsync] Ignoring stale CSS result from an older render generation", LogCategory.Rendering);
-                         return;
-                     }
-                     _lastCssLoadTiming = cssResult.Timing;
-                     EngineLogCompat.Info($"[RenderAsync] CSS loading complete. Styles Count={LastComputedStyles?.Count ?? 0}", LogCategory.Rendering);
-                     FenBrowser.Core.Verification.ContentVerifier.RegisterCssState(false, LastComputedStyles?.Count ?? 0);
-
-                // Assign computed styles to DOM nodes so the renderer can access them via
-                // Node.ComputedStyle even when the styles dict is not passed directly.
-                if (LastComputedStyles != null)
-                {
-                    foreach (var kvp in LastComputedStyles)
-                        if (kvp.Key != null) kvp.Key.SetComputedStyle(kvp.Value);
-                }
-
-                // DO NOT clear dirty flags here - let the renderer see them and clear after processing.
-                // The renderer needs to see StyleDirty=true to know it must recompute layout.
-                // ClearStyleDirtyFlags(dom); // REMOVED - causes race condition
-
-                // Sync _activeDom to the real parsed DOM (dom parameter) so that when
-                // OnRepaintReady fires, GetActiveDom() returns the same tree whose nodes
-                // are the keys in LastComputedStyles.
-
-                // CRITICAL FIX: Trigger repaint after CSS completes so layout re-runs with styles
-                // The renderer will see StyleDirty=true and invalidate layout.
-                EngineLogCompat.Debug("[RenderAsync] Triggering repaint after CSS completion", LogCategory.Rendering);
-                OnRepaintReady(dom);
-                 }
-             }
-             catch (Exception cssEx)
-             {
-                 EngineLogCompat.Error($"[RenderAsync] CSS error: {cssEx.Message}", LogCategory.Rendering);
-                 // Ensure we have at least an empty styles dictionary so the renderer
-                 // doesn't treat the page as completely unstyled (which collapses iframes etc.)
-                 if (LastComputedStyles == null && dom != null)
-                 {
-                     UpdateRenderState(dom, new Dictionary<Node, CssComputed>(), renderGeneration);
-                 }
-             }
-        }
-
-        // --- Dynamic re-cascade (hover/focus/DOM mutations) ---
-
-        // Holds the in-flight re-cascade task so we don't stack them up.
-        private volatile Task _pendingRecascade = null;
-        private readonly object _recascadeScheduleLock = new object();
-        private bool _recascadeWorkerRunning;
-        private bool _recascadeRequested;
-        private int _recascadeDelayMs;
-
-        /// <summary>
-        /// Schedule a CSS re-cascade on the current DOM using cached render parameters.
-        /// Safe to call from any thread (e.g. ElementStateManager.OnStateChanged).
-        /// If a re-cascade is already in-flight, the call is a no-op; the next
-        /// RepaintReady that fires after the in-flight task completes will carry the
-        /// freshest styles.
-        /// </summary>
-        /// <summary>
-        /// Tracks whether a full recascade is needed (stylesheet change) vs incremental (DOM mutation).
-        /// </summary>
-        private volatile bool _fullRecascadeRequired;
-
-        public void ScheduleRecascade(bool fullRecascade = false, int delayMs = 0)
-        {
-            if (_activeDom == null || _activeBaseUri == null || _activeFetchCss == null)
-                return;
-
-            lock (_recascadeScheduleLock)
-            {
-                _recascadeRequested = true;
-                if (fullRecascade)
-                {
-                    _fullRecascadeRequired = true;
-                }
-                _recascadeDelayMs = Math.Max(_recascadeDelayMs, Math.Max(0, delayMs));
-
-                if (_recascadeWorkerRunning)
-                {
-                    return;
-                }
-
-                _recascadeWorkerRunning = true;
-                _pendingRecascade = RunDetachedAsync(DrainScheduledRecascadesAsync);
-            }
-        }
-
-        internal Task PrewarmSubdocumentImagesAsync(Element root, Uri baseUri)
-        {
-            return PrewarmImagesAsync(root, baseUri, _activeImageLoader, _activeViewportWidth);
-        }
-
-        private async Task DrainScheduledRecascadesAsync()
-        {
-            while (true)
-            {
-                bool fullRecascade;
-                int delayMs;
-                lock (_recascadeScheduleLock)
-                {
-                    if (!_recascadeRequested)
-                    {
-                        _recascadeWorkerRunning = false;
-                        return;
-                    }
-
-                    _recascadeRequested = false;
-                    fullRecascade = _fullRecascadeRequired;
-                    _fullRecascadeRequired = false;
-                    delayMs = _recascadeDelayMs;
-                    _recascadeDelayMs = 0;
-                }
-
-                if (delayMs > 0)
-                {
-                    await Task.Delay(delayMs).ConfigureAwait(false);
-                }
-
-                try
-                {
-                    if (fullRecascade)
-                    {
-                        EngineLogCompat.Info("[CustomHtmlEngine] Full recascade (stylesheet change)", LogCategory.CSS);
-                        await RecascadeAsync().ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        await IncrementalRecascadeAsync().ConfigureAwait(false);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Warn(
-                        $"[CustomHtmlEngine] RecascadeAsync failed: {ex.Message}",
-                        LogCategory.Rendering);
-                }
-            }
-        }
-
-        /// <summary>
-        /// Waits for any scheduled style recascade and synchronously refreshes the
-        /// renderer's geometry snapshot. WebDriver uses this before reading an
-        /// element rectangle or deriving an in-view click center.
-        /// </summary>
-        public async Task FlushPendingLayoutAsync()
-        {
-            var pendingRecascade = _pendingRecascade;
-            if (pendingRecascade != null)
-            {
-                await pendingRecascade.ConfigureAwait(false);
-            }
-
-            var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
-            var renderer = _externalRenderer ?? _cachedRenderer;
-            if (root == null || renderer == null)
-            {
-                return;
-            }
-
-            renderer.EnsureLayout(
-                root,
-                LastComputedStyles,
-                (float)(_activeViewportWidth ?? 1920),
-                (float)(_activeViewportHeight ?? GetPrimaryWindowHeight()),
-                _activeBaseUri?.AbsoluteUri);
-        }
-
-        private void FlushPendingLayoutForScript()
-        {
-            var pendingRecascade = _pendingRecascade;
-            if (pendingRecascade != null && !pendingRecascade.IsCompleted)
-            {
-                pendingRecascade.GetAwaiter().GetResult();
-            }
-
-            var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
-            var renderer = _externalRenderer ?? _cachedRenderer;
-            if (root == null || renderer == null ||
-                (!root.StyleDirty && !root.ChildStyleDirty &&
-                 !root.LayoutDirty && !root.ChildLayoutDirty))
-            {
-                return;
-            }
-
-            renderer.EnsureLayout(
-                root,
-                LastComputedStyles,
-                (float)(_activeViewportWidth ?? 1920),
-                (float)(_activeViewportHeight ?? GetPrimaryWindowHeight()),
-                _activeBaseUri?.AbsoluteUri);
-        }
-
-        /// <summary>
-        /// Re-runs the CSS cascade on the currently active DOM using cached parameters.
-        /// Updates LastComputedStyles and fires RepaintReady so the engine loop redraws.
-        /// </summary>
-        public async Task RecascadeAsync()
-        {
-            long renderGeneration;
-            Node activeDom;
-            Uri activeBaseUri;
-            Func<Uri, Task<string>> activeFetchCss;
-            lock (_renderStateLock)
-            {
-                renderGeneration = _renderGeneration;
-                activeDom = _activeDom;
-                activeBaseUri = _activeBaseUri;
-                activeFetchCss = _activeFetchCss;
-            }
-
-            var domEl = (activeDom as FenBrowser.Core.Dom.V2.Element)
-                     ?? (activeDom as FenBrowser.Core.Dom.V2.Document)?.DocumentElement;
-            if (domEl == null || activeBaseUri == null || activeFetchCss == null)
-            {
-                return;
-            }
-
-            await LoadCssAsync(domEl, activeBaseUri, activeFetchCss, renderGeneration: renderGeneration).ConfigureAwait(false);
-        }
-
-        /// <summary>
-        /// Walks the DOM using ChildStyleDirty flags to find dirty subtree roots,
-        /// recascades only those subtrees, then fires OnRepaintReady.
-        /// Falls back to full recascade if >30% of tree is dirty.
-        /// </summary>
-        private async Task IncrementalRecascadeAsync()
-        {
-            long renderGeneration;
-            Node activeDom;
-            Func<Uri, Task<string>> activeFetchCss;
-            double? activeViewportWidth;
-            double? activeViewportHeight;
-            lock (_renderStateLock)
-            {
-                renderGeneration = _renderGeneration;
-                activeDom = _activeDom;
-                activeFetchCss = _activeFetchCss;
-                activeViewportWidth = _activeViewportWidth;
-                activeViewportHeight = _activeViewportHeight;
-            }
-
-            var domEl = (activeDom as FenBrowser.Core.Dom.V2.Element)
-                     ?? (activeDom as FenBrowser.Core.Dom.V2.Document)?.DocumentElement;
-            if (domEl == null || activeFetchCss == null) return;
-
-            // Collect dirty subtree roots by walking ChildStyleDirty flags
-            var dirtyRoots = new List<Element>();
-            int totalElements = 0;
-            CollectDirtySubtrees(domEl, dirtyRoots, ref totalElements);
-
-            // Fallback: if >60% dirty, full recascade is cheaper than incremental.
-            // Most JS-driven DOM mutations affect <5% of elements (class toggle, style
-            // change on a single element).  The old 30% threshold was too conservative
-            // and caused full recascades for small mutations on medium pages.
-            if (totalElements > 0 && dirtyRoots.Count > totalElements * 0.6)
-            {
-                EngineLogCompat.Info($"[CustomHtmlEngine] Incremental too broad ({dirtyRoots.Count}/{totalElements} dirty) â€” falling back to full recascade", LogCategory.CSS);
-                await RecascadeAsync().ConfigureAwait(false);
-                return;
-            }
-
-            if (dirtyRoots.Count == 0)
-            {
-                // No dirty nodes â€” still fire repaint in case layout changed
-                EngineLogCompat.Debug(
-                    "[CustomHtmlEngine] Incremental recascade found no dirty roots; skipping no-op recascade.",
-                    LogCategory.CSS);
-                return;
-            }
-
-            EngineLogCompat.Info(
-                $"[CustomHtmlEngine] Incremental recascade: Processing {dirtyRoots.Count} dirty subtree(s)...",
-                LogCategory.CSS);
-
-            foreach (var root in dirtyRoots)
-            {
-                try
-                {
-                    // Collect rules from the owning document, but cascade only the dirty
-                    // subtree. Author styles normally live in <head>, outside a dirty body
-                    // descendant, so using the dirty root for both loses selector rules.
-                    var subtreeBaseUri = ResolveBaseUriForRecascadeRoot(root);
-                    var stylesheetRoot = root.OwnerDocument?.DocumentElement ?? domEl;
-                    var subtreeStyles = await CssLoader.ComputeSubtreeAsync(
-                        stylesheetRoot,
-                        root,
-                        subtreeBaseUri,
-                        activeFetchCss,
-                        activeViewportWidth,
-                        activeViewportHeight,
-                        fetchExternalCssForRootAsync: FetchExternalCssForRootAsync).ConfigureAwait(false);
-                    
-                    if (subtreeStyles != null)
-                    {
-                        lock (_renderStateLock)
-                        {
-                            if (_renderGeneration != renderGeneration)
-                            {
-                                return;
-                            }
-
-                            // Merge into main styles dictionary
-                            foreach (var kvp in subtreeStyles)
-                            {
-                                LastComputedStyles[kvp.Key] = kvp.Value;
-                                kvp.Key.SetComputedStyle(kvp.Value);
-                            }
-                        }
-
-                        // The cascade has replaced style objects for this subtree.
-                        // Preserve a layout/paint invalidation after clearing the style
-                        // flags below so the renderer cannot reuse geometry produced
-                        // from the previous computed styles (notably resized iframes).
-                        root.MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
-                    }
-                    
-                    ClearStyleDirtyFlags(root);
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Warn($"[CustomHtmlEngine] Incremental subtree recascade failed for <{root.TagName}>: {ex.Message}", LogCategory.CSS);
-                }
-            }
-
-            // Trigger repaint with updated styles
-            if (IsCurrentRenderGeneration(renderGeneration))
-            {
-                OnRepaintReady(domEl);
-            }
-        }
-
-        /// <summary>
-        /// Walks the DOM tree using ChildStyleDirty flags. Prunes branches where ChildStyleDirty=false.
-        /// Collects the shallowest dirty Elements as subtree roots.
-        /// </summary>
-        private Uri ResolveBaseUriForRecascadeRoot(Node root)
-        {
-            var document = root as FenBrowser.Core.Dom.V2.Document ?? root?.OwnerDocument;
-            var baseText = document != null && !string.IsNullOrWhiteSpace(document.BaseURI)
-                ? document.BaseURI
-                : document?.URL;
-
-            if (!string.IsNullOrWhiteSpace(baseText) &&
-                Uri.TryCreate(baseText, UriKind.Absolute, out var parsed))
-            {
-                return parsed;
-            }
-
-            return _activeBaseUri;
-        }
-
-        private static void CollectDirtySubtrees(Element root, List<Element> dirtyRoots, ref int totalElements)
-        {
-            var stack = new Stack<Node>();
-            stack.Push(root);
-            while (stack.Count > 0)
-            {
-                var node = stack.Pop();
-                if (node is not Element el)
-                {
-                    if (node is FenBrowser.Core.Dom.V2.Document ||
-                        node is FenBrowser.Core.Dom.V2.DocumentFragment)
-                    {
-                        if (!node.StyleDirty && !node.ChildStyleDirty)
-                            continue;
-
-                        var nodeChildren = node.ChildNodes;
-                        for (int i = nodeChildren.Length - 1; i >= 0; i--)
-                        {
-                            stack.Push(nodeChildren[i]);
-                        }
-                    }
-
-                    continue;
-                }
-                totalElements++;
-
-                if (el.StyleDirty)
-                {
-                    // This element is dirty â€” add it as a subtree root (don't recurse into children,
-                    // because RecascadeSubtree will handle the full subtree)
-                    dirtyRoots.Add(el);
-                    continue;
-                }
-
-                if (!el.ChildStyleDirty)
-                    continue; // Prune: no dirty descendants in this branch
-
-                // Walk children looking for dirty nodes
-                var children = el.ChildNodes;
-                for (int i = children.Length - 1; i >= 0; i--)
-                {
-                    if (children[i] is Element ||
-                        children[i] is FenBrowser.Core.Dom.V2.Document ||
-                        children[i] is FenBrowser.Core.Dom.V2.DocumentFragment)
-                    {
-                        stack.Push(children[i]);
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Re-cascades a single dirty subtree: recomputes ComputedStyle for each element
-        /// using its inline styles and inherited parent style. Clears StyleDirty flags.
-        /// </summary>
-        private static bool NeedsPostScriptStyleRefresh(
-            Node root,
-            IReadOnlyDictionary<Node, CssComputed> computedStyles)
-        {
-            if (root == null)
-            {
-                return false;
-            }
-
-            if (root.StyleDirty || root.ChildStyleDirty)
-            {
-                return true;
-            }
-
-            if (computedStyles == null || computedStyles.Count == 0)
-            {
-                return true;
-            }
-
-            return HasNodeMissingComputedStyle(root, computedStyles);
-        }
-
-        private static bool HasNodeMissingComputedStyle(
-            Node node,
-            IReadOnlyDictionary<Node, CssComputed> computedStyles)
-        {
-            if (node == null)
-            {
-                return false;
-            }
-
-            if (!computedStyles.ContainsKey(node))
-            {
-                return true;
-            }
-
-            var children = node.ChildNodes;
-            if (children == null || children.Length == 0)
-            {
-                return false;
-            }
-
-            for (int i = 0; i < children.Length; i++)
-            {
-                if (HasNodeMissingComputedStyle(children[i], computedStyles))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static void ClearStyleDirtyFlags(Node root)
-        {
-            if (root == null)
-            {
-                return;
-            }
-
-            var stack = new Stack<Node>();
-            stack.Push(root);
-            while (stack.Count > 0)
-            {
-                var node = stack.Pop();
-                node.ClearDirty(InvalidationKind.Style);
-
-                var children = node.ChildNodes;
-                if (children == null || children.Length == 0)
-                {
-                    continue;
-                }
-
-                for (int i = children.Length - 1; i >= 0; i--)
-                {
-                    if (children[i] != null)
-                    {
-                        stack.Push(children[i]);
-                    }
-                }
-            }
-        }
-
-        private IBrowserScriptEngine SetupJavaScriptEngine(
-             Uri baseUri,
-             Action<Uri> onNavigate, 
-             bool allowJs, 
-             Func<Uri, Task<string>> fetchExternalCssAsync,
-             double? viewportWidth,
-             double? viewportHeight)
-        {
-             if (!allowJs) return null;
-
-             EngineLogCompat.Debug("[CustomHtmlEngine] Creating browser script engine...", LogCategory.Rendering);
-             var js = BrowserScriptEngineRuntime.Create(new JsHostAdapter(
-                 navigate: onNavigate,
-                 post: (_, __) => { },
-                 status: _ => { },
-                 requestRender: ScheduleRepaintFromJs,
-                 invokeOnUiThread: action =>
-                 {
-                     var disp = _uiDispatcher ?? UiThreadHelper.TryGetDispatcher();
-                     if (disp != null && !UiThreadHelper.HasThreadAccess(disp))
-                     {
-                         UiThreadHelper.RunAsync(disp, null, action);
-                         return;
-                     }
-
-                     action();
-                 },
-                 setTitle: null,
-                 alert: (msg) => { AlertTriggered?.Invoke(msg); },
-                 confirm: (msg) =>
-                 {
-                     var handler = ConfirmTriggered;
-                     if (handler != null)
-                     {
-                         return handler(msg);
-                     }
-
-                     AlertTriggered?.Invoke(msg);
-                     return true;
-                 },
-                 prompt: (msg, defaultValue) =>
-                 {
-                     var handler = PromptTriggered;
-                     if (handler != null)
-                     {
-                         return handler(msg, defaultValue);
-                     }
-
-                     AlertTriggered?.Invoke(msg);
-                     return defaultValue ?? string.Empty;
-                 },
-                 log: (msg) =>
-                 {
-                     try
-                     {
-                         FenBrowser.FenEngine.Diagnostics.JsDiagnosticsRecorder.RecordConsole(
-                             "log", msg, baseUri?.AbsoluteUri);
-                     }
-                     catch { /* diagnostics must never break a navigation */ }
-                     ConsoleMessage?.Invoke(msg);
-                 },
-                 scrollToElement: (el) => { }));
-
-             js.Sandbox = allowJs ? SandboxPolicy.StandardPage : SandboxPolicy.NoScripts;
-             js.AllowExternalScripts = allowJs;
-             js.SubresourceAllowed = (u, kind) =>
-             {
-                 if (!allowJs) return false;
-                 if (ActivePolicy != null)
-                 {
-                     string directive = kind switch
-                     {
-                         "script" => "script-src",
-                         "style" => "style-src",
-                         "img" => "img-src",
-                         "font" => "font-src",
-                         "media" => "media-src",
-                         "connect" => "connect-src",
-                         "frame" => "frame-src",
-                         "object" => "object-src",
-                         _ => "default-src"
-                     };
-                    return ActivePolicy.IsAllowed(directive, u, baseUri);
-                 }
-                 return true;
-             };
-             js.ExecuteInlineScriptsOnInnerHTML = allowJs;
-
-             // Wire up CSP Nonce check
-             js.NonceAllowed = (nonce) =>
-             {
-                 if (!allowJs) return false;
-                 if (ActivePolicy != null)
-                 {
-                    bool allowed = ActivePolicy.IsAllowed("script-src", null, nonce, baseUri, isInline: true);
-                     if (allowed && nonce == "wrong456") 
-                     {
-                          EngineLogCompat.Error($"[CSP-CRITICAL] Nonce 'wrong456' ALLOWED! ActivePolicy hash={ActivePolicy.GetHashCode()}", LogCategory.Rendering);
-                          // Dump directives
-                          foreach (var d in ActivePolicy.Directives)
-                          {
-                              EngineLogCompat.Error($"  [DIR] {d.Key}: Sources={string.Join(",",d.Value.Sources)} Nonces={string.Join(",",d.Value.Nonces)}", LogCategory.Rendering);
-                          }
-                     }
-                     return allowed;
-                 }
-                 // No CSP policy from HTTP header or meta tag Ã¢â‚¬â€ permissively allow inline scripts.
-                 // This is correct behavior; the warning was misleading noise.
-                 EngineLogCompat.Debug("[CSP] No ActivePolicy during nonce check Ã¢â‚¬â€ permissively allowing inline script.", LogCategory.Rendering);
-                 return true;
-             };
-             
-             // Wire up permission requests
-             js.PermissionRequested += async (origin, perm) => 
-             {
-                 if (PermissionRequested != null) return await PermissionRequested(origin, perm);
-                 return false;
-             };
-
-             js.CookieReadBridge = scope => CookieJar.GetDocumentCookieString(scope, _activeBaseUri ?? scope);
-             js.CookieWriteBridge = (scope, cookieString) =>
-                 CookieJar.SetDocumentCookie(scope, cookieString, _activeBaseUri ?? scope, BrowserSettings.Instance.BlockThirdPartyCookies);
-             js.RequestRender = ScheduleRepaintFromJs;
-             js.FlushPendingLayout = FlushPendingLayoutForScript;
-             js.FrameElementLoader = FrameElementLoader;
-
-             if (ScriptFetcher != null)
-             {
-                 js.ExternalScriptFetcher = async (u, referer2) =>
-                 {
-                     return await ScriptFetcher(u).ConfigureAwait(false);
-                 };
-             }
-
-             // Domain-specific tuning
-             try
-             {
-                 if (baseUri != null)
-                 {
-                     if (string.Equals(GetRegistrableHost(baseUri), "facebook.com", StringComparison.Ordinal))
-                     {
-                         js.PageScriptByteBudget = 512 * 1024;
-                     }
-                 }
-             }
-             catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] Domain tuning failed: {ex.Message}", LogCategory.Rendering); }
-
-             if (js != null)
-             {
-                 js.FetchHandler = FetchHandler;
-                 // [Compliance] Inject Window Dimensions
-                if (viewportWidth.HasValue) js.WindowWidth = viewportWidth.Value;
-                if (viewportHeight.HasValue) js.WindowHeight = viewportHeight.Value;
-                // Wire layout box resolution for getBoundingClientRect / offsetHeight etc.
-                // Use a late-bound lookup so scripts that run after layout completes
-                // (setTimeout, event handlers, React hydration) see real box geometry.
-                js.LayoutBoxResolver = el => _cachedRenderer?.GetElementBox(el);
-                js.FrameScrollReader = el =>
-                {
-                    var renderer = _externalRenderer ?? _cachedRenderer;
-                    var offset = renderer?.ScrollManager.GetScrollOffset(el) ?? (0f, 0f);
-                    return (offset.x, offset.y);
-                };
-                js.FrameScrollWriter = (el, x, y) =>
-                    (_externalRenderer ?? _cachedRenderer)?.ScrollManager.SetScrollPosition(el, (float)x, (float)y);
-
-                // Capture every uncaught script exception to logs/js_diagnostics.log.
-                // This is how we find out *why* a heavily-fenced site (x.com, etc.)
-                // bailed during boot - the engine logs are noisy and the failure
-                // line is buried; the diagnostics file is the single place to look.
-                try
-                {
-                    var ctx = js.GlobalContext;
-                    if (ctx != null)
-                    {
-                        var pageUrl = baseUri?.AbsoluteUri;
-                        ctx.OnUncaughtException = (thrown, src) =>
-                        {
-                            try
-                            {
-                                FenBrowser.FenEngine.Diagnostics.JsDiagnosticsRecorder
-                                    .RecordException(thrown, src, pageUrl);
-                            }
-                            catch { /* never break a navigation on a diagnostics path */ }
-                        };
-                    }
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Warn($"[CustomHtmlEngine] Failed to wire JS exception recorder: {ex.Message}", LogCategory.JavaScript);
-                }
-            }
-
-             return js;
-        }
-
-        private async Task RunScriptsAsync(IBrowserScriptEngine js, Element dom, Uri baseUri)
-        {
-            if (js == null) return;
-            
-            EngineLogCompat.Info("[RenderAsync] Running Scripts (starting execution)", LogCategory.Rendering);
-
-            // 1. Detection helper
-            try
-            {
-                 var detectionHelper = @"
-(function() {
-    try {
-        var html = document.documentElement;
-        if (html) {
-            html.className = html.className.replace('no-js', 'js');
-            if (html.className.indexOf('js') < 0) html.className += ' js';
-        }
-        // DISABLED: FenBrowser keeps noscript visible for fallback content
-        // var nojs = document.getElementsByTagName('noscript');
-        // for (var i = 0; i < nojs.length; i++) {
-        //     if (nojs[i] && nojs[i].style) nojs[i].style.display = 'none';
-        // }
-        var jsEnabled = document.querySelectorAll('.js-enabled, .with-js, [data-js]');
-        for (var i = 0; i < jsEnabled.length; i++) {
-            if (jsEnabled[i] && jsEnabled[i].style) jsEnabled[i].style.display = '';
-        }
-    } catch(e) {}
-})();";
-                 js.Evaluate(detectionHelper);
-                 EngineLogCompat.Debug("[RenderAsync] Detection helper script executed", LogCategory.Rendering);
-            }
-            catch (Exception dhEx)
-            {
-                 EngineLogCompat.Warn($"[RenderAsync] Detection helper error: {dhEx.Message}", LogCategory.Rendering);
-            }
-
-            // 2. Main Page Scripts
-            try 
-            {
-                var scriptTask = RunDetachedAsync(async () => { await js.SetDomAsync(dom, baseUri).ConfigureAwait(false); });
-                var scriptTimeoutMs = Math.Max(
-                    15000,
-                    (int)js.RuntimeProfile.MaxExecutionTime.TotalMilliseconds * 3);
-                var timeoutTask = Task.Delay(scriptTimeoutMs); 
-                var completedTask = await Task.WhenAny(scriptTask, timeoutTask);
-                
-                if (completedTask == timeoutTask)
-                    EngineLogCompat.Warn($"[RenderAsync] Script execution timed out after {scriptTimeoutMs / 1000}s", LogCategory.Rendering);
-                else
-                    EngineLogCompat.Debug("[RenderAsync] Scripts Finished", LogCategory.Rendering);
-            } 
-            catch (Exception ex) 
-            { 
-                EngineLogCompat.Error($"[RenderAsync] Script Error: {ex.Message}", LogCategory.Rendering);
-            }
-        }
-        
-        public async Task<object> RefreshAsync(bool includeDiagnosticsBanner = false)
-        {
-            await _repaintGate.WaitAsync().ConfigureAwait(false);
-            try
-            {
-                return await RefreshAsyncInternal(includeDiagnosticsBanner).ConfigureAwait(false);
-            }
-            finally
-            {
-                _repaintGate.Release();
-            }
-        }
-
-                /// Render HTML into a XAML element using the managed engine pipeline.
-        /// </summary>
-        private static void ActivateDeclarativeShadowRoots(Node dom)
-        {
-            if (dom == null)
-            {
-                return;
-            }
-
-            try
-            {
-                var templates = dom.Descendants().OfType<Element>()
-                    .Where(n => string.Equals(n.TagName, "template", StringComparison.OrdinalIgnoreCase) &&
-                                n.HasAttribute("shadowrootmode"))
-                    .ToList();
-                foreach (var template in templates)
-                {
-                    var parent = template.ParentElement;
-                    var mode = template.GetAttribute("shadowrootmode")?.Trim();
-                    if (parent == null || (mode != "open" && mode != "closed"))
-                    {
-                        continue;
-                    }
-
-                    try
-                    {
-                        var shadow = parent.AttachShadow(new ShadowRootInit
-                        {
-                            Mode = mode == "open" ? ShadowRootMode.Open : ShadowRootMode.Closed
-                        });
-                        foreach (var child in template.ChildNodes.ToList())
-                        {
-                            shadow.AppendChild(child);
-                        }
-                        template.Remove();
-                    }
-                    catch (Exception dsdEx)
-                    {
-                        EngineLogCompat.Warn($"[DSD] Failed to attach shadow root: {dsdEx.Message}", LogCategory.Rendering);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Warn($"[CustomHtmlEngine] Declarative shadow DOM processing failed: {ex.Message}", LogCategory.Rendering);
-            }
-        }
-
-        public async Task<object> RenderAsync(
-            string html,
-            Uri baseUri,
-            Func<Uri, Task<string>> fetchExternalCssAsync,
-            Func<Uri, Task<Stream>> imageLoader,
-            Action<Uri> onNavigate,
-            double? viewportWidth = null,
-            double? viewportHeight = null,
-            Action<object>? onFixedBackground = null,
-            bool? forceJavascript = null,
-            bool disableAutoFallback = false)
-        {
-            // Ensure we are on the UI thread. If not, marshal the call.
-            var uiDisp = _uiDispatcher ?? UiThreadHelper.TryGetDispatcher();
-            if (uiDisp != null && !UiThreadHelper.HasThreadAccess(uiDisp))
-            {
-                var tcs = new TaskCompletionSource<object>();
-                await UiThreadHelper.RunAsyncAwaitable(uiDisp, null, async () =>
-                {
-                    try
-                    {
-                        var result = await RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, viewportHeight, onFixedBackground, forceJavascript, disableAutoFallback);
-                        tcs.SetResult(result);
-                    }
-                    catch (Exception ex)
-                    {
-                        tcs.SetException(ex);
-                    }
-                });
-                return await tcs.Task;
-            }
-
-            var renderGeneration = BeginRenderGeneration();
-
-            var navigationStartedAtUtc = DateTimeOffset.UtcNow;
-            long allocatedBytesBefore = GC.GetTotalAllocatedBytes(precise: false);
-            int gen0Before = GC.CollectionCount(0);
-            int gen1Before = GC.CollectionCount(1);
-            int gen2Before = GC.CollectionCount(2);
-            var _pageLoadStopwatch = System.Diagnostics.Stopwatch.StartNew();
-            long lastStageMarkMs = 0;
-            long tokenizingMs = 0;
-            long parsingMs = 0;
-            long tokenizingAndParsingMs = 0;
-            int parseTokenCount = 0;
-            int tokenizingCheckpointCount = 0;
-            int parsingCheckpointCount = 0;
-            int parsingDocumentCheckpointCount = 0;
-            int documentReadyTokenCount = 0;
-            int incrementalParseRepaintCount = 0;
-            long streamingPreparseMs = 0;
-            int streamingPreparseCheckpointCount = 0;
-            int streamingPreparseRepaintCount = 0;
-            bool interleavedParseUsed = false;
-            int interleavedTokenBatchSize = 0;
-            int interleavedBatchCount = 0;
-            bool interleavedFallbackUsed = false;
-            long cssAndStyleMs = 0;
-            long initialVisualTreeMs = 0;
-            long scriptExecutionMs = 0;
-            long postScriptVisualTreeMs = 0;
-            bool javascriptExecuted = false;
-            _lastCssLoadTiming = null;
-            
-            try
-            {
-                await RaiseLoadingChangedAsync(true);
-                EngineLogCompat.Info($"[CustomHtmlEngine] RenderAsync Start. HTML Length: {html?.Length ?? 0}", LogCategory.Rendering);
-                lock (_renderStateLock)
-                {
-                    if (_renderGeneration != renderGeneration)
-                    {
-                        return null;
-                    }
-
-                    _hasStableStyles = false;
-                    _lastRawHtml = html;
-                    _renderSnapshotVersion++;
-                }
-
-                const int MaxHtmlSize = 50 * 1024 * 1024;
-                if (!string.IsNullOrEmpty(html) && html.Length > MaxHtmlSize)
-                {
-                    EngineLogCompat.Warn($"[RenderAsync] HTML too large: {html.Length} bytes, truncating to {MaxHtmlSize}", LogCategory.Rendering);
-                    html = html.Substring(0, MaxHtmlSize);
-                }
-
-                // Seed an empty-but-stable style snapshot so incremental-parse repaints
-                // (TryEmitIncrementalParseRepaint) fire during RunDomParseAsync instead of
-                // being gated out by HasStableComputedStyleSnapshot.  Without this, the page
-                // stays blank until the entire parse completes â€” which looks like a freeze
-                // on heavy pages (github.com, etc.).
-                lock (_renderStateLock)
-                {
-                    if (_renderGeneration != renderGeneration)
-                    {
-                        return null;
-                    }
-
-                    LastComputedStyles ??= new Dictionary<Node, CssComputed>();
-                    _hasStableStyles = true;
-                }
-
-                // 1. Helper: Parse DOM
-                var parseResult = await RunDomParseAsync(html, baseUri, renderGeneration);
-                var dom = parseResult?.Dom;
-                if (dom == null) return null;
-                if (!TrySetActiveDom(dom, markSnapshotUnstable: true, renderGeneration))
-                {
-                    return null;
-                }
-                tokenizingMs = Math.Max(0, parseResult?.TokenizingMs ?? 0);
-                parsingMs = Math.Max(0, parseResult?.ParsingMs ?? 0);
-                parseTokenCount = Math.Max(0, parseResult?.TokenCount ?? 0);
-                tokenizingCheckpointCount = Math.Max(0, parseResult?.TokenizingCheckpointCount ?? 0);
-                parsingCheckpointCount = Math.Max(0, parseResult?.ParsingCheckpointCount ?? 0);
-                parsingDocumentCheckpointCount = Math.Max(0, parseResult?.ParsingDocumentCheckpointCount ?? 0);
-                documentReadyTokenCount = Math.Max(0, parseResult?.DocumentReadyTokenCount ?? 0);
-                incrementalParseRepaintCount = Math.Max(0, parseResult?.IncrementalRepaintCount ?? 0);
-                streamingPreparseMs = Math.Max(0, parseResult?.StreamingPreparseMs ?? 0);
-                streamingPreparseCheckpointCount = Math.Max(0, parseResult?.StreamingPreparseCheckpointCount ?? 0);
-                streamingPreparseRepaintCount = Math.Max(0, parseResult?.StreamingPreparseRepaintCount ?? 0);
-                interleavedParseUsed = parseResult?.InterleavedParseUsed ?? false;
-                interleavedTokenBatchSize = Math.Max(0, parseResult?.InterleavedTokenBatchSize ?? 0);
-                interleavedBatchCount = Math.Max(0, parseResult?.InterleavedBatchCount ?? 0);
-                interleavedFallbackUsed = parseResult?.InterleavedFallbackUsed ?? false;
-
-                const bool shouldNormalizeNoJsFallback = true;
-                {
-                    var normalizeRoot = (dom as Element) ?? (dom as Document)?.DocumentElement;
-                    var normalizedNoJsClassCount = NormalizeNoJsFallbackClasses(normalizeRoot);
-                    if (normalizedNoJsClassCount > 0)
-                    {
-                        EngineLogCompat.Debug(
-                            $"[RenderAsync] Normalized no-js fallback classes on {normalizedNoJsClassCount} node(s)",
-                            LogCategory.Rendering);
-                    }
-                }
-                
-        // PROGRESSIVE RENDERING: Fire first paint immediately with DOM.
-        // This ensures the page appears as soon as HTML is parsed.
-        // CSS arrives asynchronously and progressively improves the rendering.
-        lock (_renderStateLock)
-        {
-            if (_renderGeneration != renderGeneration)
-            {
-                return null;
-            }
-
-            LastComputedStyles = new Dictionary<Node, CssComputed>();
-            _hasStableStyles = true; // Mark as stable so BrowserIntegration uses these styles
-            _renderSnapshotVersion++;
-        }
-            OnRepaintReady(dom);
-            EngineLogCompat.Debug("[PROGRESSIVE] First paint fired immediately after DOM parse", LogCategory.Rendering);
-
-            // CSS loading continues asynchronously; LoadCssAsync will fire RepaintReady
-            // when CSS completes via UpdateRenderState -> OnRepaintReady sequence.
-            // No additional fire-and-forget needed - the event-driven flow handles updates.
-                
-                var elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
-                tokenizingAndParsingMs = Math.Max(0, tokenizingMs + parsingMs);
-                if (tokenizingAndParsingMs <= 0)
-                {
-                    tokenizingAndParsingMs = Math.Max(0, elapsed - lastStageMarkMs);
-                }
-                lastStageMarkMs = elapsed;
-                EngineLogCompat.Debug(
-                    $"[PERF] DOM Parse: total={elapsed}ms tokenizing={tokenizingMs}ms parsing={parsingMs}ms tokens={parseTokenCount} docReadyToken={documentReadyTokenCount} parseRepaints={incrementalParseRepaintCount} streaming(ms={streamingPreparseMs},cp={streamingPreparseCheckpointCount},rp={streamingPreparseRepaintCount}) interleaved(used={(interleavedParseUsed ? 1 : 0)},batch={interleavedTokenBatchSize},chunks={interleavedBatchCount},fallback={(interleavedFallbackUsed ? 1 : 0)}) checkpoints(t={tokenizingCheckpointCount},p={parsingCheckpointCount},dom={parsingDocumentCheckpointCount})",
-                    LogCategory.Rendering);
-
-                bool allowJs = EnableJavaScript;
-                if (forceJavascript.HasValue) allowJs = forceJavascript.Value;
-
-                var isGoogleSearchChallenge = IsGoogleSearchChallengeDocument(dom, baseUri);
-                var googleChallengeSanitized = allowJs
-                    ? 0
-                    : ForceGoogleChallengeBannerVisible(dom, baseUri, removeUnhideScript: true);
-                if (googleChallengeSanitized > 0)
-                {
-                    EngineLogCompat.Info($"[CustomHtmlEngine] GoogleChallengeSanitizeApplied changes={googleChallengeSanitized}", LogCategory.Rendering);
-                }
-
-                bool deferStableSnapshotUntilPostScript = allowJs;
-                if (deferStableSnapshotUntilPostScript)
-                {
-                    BeginAwaitingPostScriptSnapshot(renderGeneration);
-                }
-
-                ActivateDeclarativeShadowRoots(dom);
-
-                // 2. Helper: Load CSS
-                await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, renderGeneration);
-                if (!IsCurrentRenderGeneration(renderGeneration))
-                {
-                    return null;
-                }
-                if (shouldNormalizeNoJsFallback)
-                {
-                    var normalizeRootAfterCss = (dom as Element) ?? (dom as Document)?.DocumentElement;
-                    var normalizedAfterCss = NormalizeNoJsFallbackClasses(normalizeRootAfterCss);
-                    if (normalizedAfterCss > 0)
-                    {
-                        EngineLogCompat.Debug(
-                            $"[RenderAsync] Recomputing CSS after late no-js normalization on {normalizedAfterCss} node(s)",
-                            LogCategory.Rendering);
-                        await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, renderGeneration);
-                        if (!IsCurrentRenderGeneration(renderGeneration))
-                        {
-                            return null;
-                        }
-                    }
-                }
-                elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
-                cssAndStyleMs = Math.Max(0, elapsed - lastStageMarkMs);
-                lastStageMarkMs = elapsed;
-                EngineLogCompat.Debug($"[PERF] CSS Load: {elapsed}ms", LogCategory.Rendering);
-
-                // 2.5. Security: CSP Meta Parsing
-                ActivePolicy = null;
-                try
-                {
-                    // Scan HEAD for <meta http-equiv="Content-Security-Policy">
-                    // Simple search in all descendants or just head? Descendants is safer if HEAD parsing is loose.
-                    var metaCsp = dom.Descendants().OfType<Element>()
-                        .FirstOrDefault(n => 
-                            string.Equals(n.TagName, "meta", StringComparison.OrdinalIgnoreCase) &&
-                            n.GetAttribute("http-equiv") != null && 
-                            string.Equals(n.GetAttribute("http-equiv"), "Content-Security-Policy", StringComparison.OrdinalIgnoreCase));
-                    
-                    if (metaCsp != null && metaCsp.GetAttribute("content") != null)
-                    {
-                         var cspContent = metaCsp.GetAttribute("content");
-                         ActivePolicy = CspPolicy.Parse(cspContent);
-                         EngineLogCompat.Info($"[Security] Active CSP from Meta: {cspContent}", LogCategory.Rendering);
-                    }
-                }
-                catch (Exception cspEx)
-                {
-                    EngineLogCompat.Warn($"[Security] Failed to parse CSP meta: {cspEx.Message}", LogCategory.Rendering);
-                }
-
-                // HTML spec Ã‚Â§4.12.1: When scripting is enabled, <noscript> must not render.
-                // Remove noscript elements entirely when JS is on to prevent their raw HTML-encoded
-                // fallback content (scripts, styles, inline HTML strings) from leaking into the page.
-                if (allowJs)
-                {
-                    try
-                    {
-                        var noscripts = dom.Descendants().OfType<Element>()
-                            .Where(n => string.Equals(n.TagName, "noscript", StringComparison.OrdinalIgnoreCase))
-                            .ToList();
-                        foreach (var ns in noscripts) ns.Remove();
-                        if (noscripts.Count > 0)
-                            EngineLogCompat.Debug($"[CustomHtmlEngine] Removed {noscripts.Count} <noscript> element(s) (JS on Ã¢â‚¬â€ spec Ã‚Â§4.12.1)", LogCategory.Rendering);
-                    }
-                    catch (Exception nsEx)
-                    {
-                        EngineLogCompat.Warn($"[CustomHtmlEngine] Failed to remove noscript elements: {nsEx.Message}", LogCategory.Rendering);
-                    }
-                }
-                else
-                {
-                    // JS is disabled Ã¢â‚¬â€ noscript content should be visible.
-                    // FIX: Google Search puts <style>table,div,span,p{display:none}</style> inside <noscript>.
-                    // Since we render <noscript>, this style applies globally and hides everything.
-                    // Remove only harmful <style> tags from <noscript> when keeping noscript visible.
-                    try
-                    {
-                        var fallbackDomMutated = false;
-                        var noscriptElements = dom.Descendants().OfType<Element>()
-                            .Where(n => string.Equals(n.TagName, "noscript", StringComparison.OrdinalIgnoreCase))
-                            .ToList();
-                        foreach (var ns in noscriptElements)
-                        {
-                            var stylesInNoscript = ns.Descendants().OfType<Element>()
-                                .Where(s => string.Equals(s.TagName, "style", StringComparison.OrdinalIgnoreCase))
-                                .ToList();
-                            foreach (var style in stylesInNoscript)
-                            {
-                                EngineLogCompat.Debug($"[CustomHtmlEngine] Removing harmful <style> from <noscript>", LogCategory.Rendering);
-                                style.Remove();
-                                fallbackDomMutated = true;
-                            }
-                        }
-
-                        if (isGoogleSearchChallenge)
-                        {
-                            var removedGoogleBootstrap = RemoveEncodedNoscriptBootstrapFallbacks(noscriptElements);
-                            if (removedGoogleBootstrap > 0)
-                            {
-                                fallbackDomMutated = true;
-                                EngineLogCompat.Debug(
-                                    $"[CustomHtmlEngine] Removed {removedGoogleBootstrap} encoded Google Search challenge bootstrap <noscript> block(s)",
-                                    LogCategory.Rendering);
-                            }
-                        }
-
-                        var promotedFallbacks = PromoteHiddenFallbackContent(dom, baseUri);
-                        if (promotedFallbacks > 0)
-                        {
-                            var removedNoscriptBootstrap = RemoveEncodedNoscriptBootstrapFallbacks(noscriptElements);
-                            fallbackDomMutated = true;
-                            EngineLogCompat.Debug(
-                                $"[CustomHtmlEngine] Promoted {promotedFallbacks} hidden fallback block(s); removed {removedNoscriptBootstrap} encoded <noscript> bootstrap block(s)",
-                                LogCategory.Rendering);
-                        }
-
-                        if (fallbackDomMutated)
-                        {
-                            await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, renderGeneration);
-                            if (!IsCurrentRenderGeneration(renderGeneration))
-                            {
-                                return null;
-                            }
-                            EngineLogCompat.Debug("[CustomHtmlEngine] Recomputed CSS after fallback DOM sanitization", LogCategory.Rendering);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        EngineLogCompat.Warn($"[CustomHtmlEngine] Failed to sanitize noscript: {ex.Message}", LogCategory.Rendering);
-                    }
-                }
-
-                var renderJs = SetupJavaScriptEngine(baseUri, onNavigate, allowJs, fetchExternalCssAsync, viewportWidth, viewportHeight);
-                EngineLogCompat.Info($"[RenderAsync] JS Engine setup complete. ActiveJs={(renderJs != null ? "yes" : "no")} allowJs={allowJs}", LogCategory.Rendering);
-                if (renderJs != null && _historyBridge != null) renderJs.SetHistoryBridge(_historyBridge);
-                if (renderJs == null && deferStableSnapshotUntilPostScript)
-                {
-                    EndAwaitingPostScriptSnapshot(renderGeneration);
-                    deferStableSnapshotUntilPostScript = false;
-                }
-                EngineLogCompat.Debug($"[PERF] JS Setup: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
-
-                var cssFetcher = fetchExternalCssAsync ?? (async _ => { await Task.CompletedTask; return string.Empty; });
-                if (!TryCaptureActiveContext(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, viewportWidth, viewportHeight, onFixedBackground, renderJs, renderGeneration))
-                {
-                    return null;
-                }
-
-                EngineLogCompat.Debug("[CustomHtmlEngine] Calling BuildVisualTreeAsync...", LogCategory.Rendering);
-                var vh = viewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
-                var control = await BuildVisualTreeAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, renderJs, viewportWidth, vh, onFixedBackground, includeDiagnosticsBanner: false, renderGeneration).ConfigureAwait(false);
-                if (!IsCurrentRenderGeneration(renderGeneration))
-                {
-                    return null;
-                }
-                elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
-                initialVisualTreeMs = Math.Max(0, elapsed - lastStageMarkMs);
-                lastStageMarkMs = elapsed;
-                EngineLogCompat.Debug($"[PERF] Visual Tree 1: {elapsed}ms", LogCategory.Rendering);
-
-                // Image fetch/decode is not an interactive-readiness prerequisite.
-                // Start it only after the first visual tree is available so it cannot
-                // consume the initial frame's CPU/network budget.
-                if (imageLoader != null)
-                {
-                    var prewarmRoot = (dom as Element) ?? (dom as Document)?.DocumentElement;
-                    var prewarmStyles = LastComputedStyles;
-                    var prewarmOwnerDocument = (dom as Document) ?? dom.OwnerDocument;
-                    _ = RunDetachedAsync(async () =>
-                    {
-                        EngineLogCompat.Debug("[CustomHtmlEngine] Starting post-first-tree image prewarm", LogCategory.Rendering);
-                        await Task.WhenAll(
-                                PrewarmImagesAsync(prewarmRoot, baseUri, imageLoader, viewportWidth),
-                                PrewarmCssBackgroundImagesAsync(
-                                    prewarmStyles,
-                                    baseUri,
-                                    imageLoader,
-                                    prewarmOwnerDocument))
-                            .ConfigureAwait(false);
-                    });
-                }
-
-                // 6. Run Scripts â€” fire-and-forget after first paint.
-                // Real browsers show DOM+CSS immediately and let JS run in the
-                // background.  Blocking navigation on 70+ module scripts (github.com)
-                // made the browser appear frozen for 45-80 s.  Now the page becomes
-                // interactive as soon as the first visual tree is ready; scripts,
-                // post-script style refresh, and the second visual tree rebuild
-                // happen off the critical path.
-                object element = control;
-                if (renderJs != null)
-                {
-                    var js = renderJs;
-                    var capturedDom = dom;
-                    var capturedBaseUri = baseUri;
-                    var capturedCssFetcher = fetchExternalCssAsync;
-                    var capturedImageLoader = imageLoader;
-                    var capturedOnNavigate = onNavigate;
-                    var capturedViewportWidth = viewportWidth;
-                    var capturedViewportHeight = viewportHeight;
-                    var capturedOnFixedBg = onFixedBackground;
-                    var capturedShouldNormalize = shouldNormalizeNoJsFallback;
-                    var capturedDeferSnapshot = deferStableSnapshotUntilPostScript;
-
-                    // Run scripts + post-script work in background.
-                    _ = RunDetachedAsync(async () =>
-                    {
-                        try
-                        {
-                            await RunScriptsAsync(js, capturedDom as Element, capturedBaseUri).ConfigureAwait(false);
-                            javascriptExecuted = true;
-
-                            if (!IsCurrentRenderGeneration(renderGeneration))
-                            {
-                                return;
-                            }
-
-                            if (capturedShouldNormalize)
-                            {
-                                var normalizeRoot = (capturedDom as Element) ?? (capturedDom as Document)?.DocumentElement;
-                                NormalizeNoJsFallbackClasses(normalizeRoot);
-                            }
-                            ForceGoogleChallengeBannerVisible(capturedDom, capturedBaseUri, removeUnhideScript: false);
-
-                            if (NeedsPostScriptStyleRefresh(capturedDom, LastComputedStyles))
-                            {
-                                EngineLogCompat.Debug("[RenderAsync] Recomputing CSS after script-driven DOM/style mutations", LogCategory.Rendering);
-                                await LoadCssAsync((capturedDom as Element) ?? (capturedDom as Document)?.DocumentElement, capturedBaseUri, capturedCssFetcher, capturedViewportWidth, capturedViewportHeight, renderGeneration).ConfigureAwait(false);
-                                if (!IsCurrentRenderGeneration(renderGeneration))
-                                {
-                                    return;
-                                }
-                            }
-
-                            if (!IsCurrentRenderGeneration(renderGeneration))
-                            {
-                                return;
-                            }
-
-                            var vh2 = capturedViewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
-                            await BuildVisualTreeAsync(capturedDom as Element, capturedBaseUri, capturedCssFetcher, capturedImageLoader, capturedOnNavigate, js, capturedViewportWidth, vh2, capturedOnFixedBg, includeDiagnosticsBanner: false, renderGeneration).ConfigureAwait(false);
-                        }
-                        catch (Exception bgEx)
-                        {
-                            EngineLogCompat.Warn($"[RenderAsync] Background script/post-script work failed: {bgEx.Message}", LogCategory.Rendering);
-                        }
-                        finally
-                        {
-                            if (capturedDeferSnapshot)
-                            {
-                                EndAwaitingPostScriptSnapshot(renderGeneration);
-                            }
-                            if (IsCurrentRenderGeneration(renderGeneration))
-                            {
-                                OnRepaintReady(_activeDom);
-                            }
-                        }
-                    });
-                }
-                else
-                {
-                     if (deferStableSnapshotUntilPostScript)
-                     {
-                         EndAwaitingPostScriptSnapshot(renderGeneration);
-                     }
-                     EngineLogCompat.Debug($"[RenderAsync] Scripts SKIPPED (allowJs={allowJs}) element={control!=null}", LogCategory.Rendering);
-                }
-                return element;
-            }
-            finally
-            {
-                var totalRenderMs = _pageLoadStopwatch.ElapsedMilliseconds;
-                long workingSetBytes;
-                using (var process = System.Diagnostics.Process.GetCurrentProcess())
-                {
-                    workingSetBytes = process.WorkingSet64;
-                }
-
-                var telemetry = new RenderTelemetrySnapshot
-                {
-                    TokenizingMs = tokenizingMs,
-                    ParsingMs = parsingMs,
-                    TokenizingAndParsingMs = tokenizingAndParsingMs,
-                    ParseTokenCount = parseTokenCount,
-                    TokenizingCheckpointCount = tokenizingCheckpointCount,
-                    ParsingCheckpointCount = parsingCheckpointCount,
-                    ParsingDocumentCheckpointCount = parsingDocumentCheckpointCount,
-                    DocumentReadyTokenCount = documentReadyTokenCount,
-                    ParseIncrementalRepaintCount = incrementalParseRepaintCount,
-                    StreamingPreparseMs = streamingPreparseMs,
-                    StreamingPreparseCheckpointCount = streamingPreparseCheckpointCount,
-                    StreamingPreparseRepaintCount = streamingPreparseRepaintCount,
-                    InterleavedParseUsed = interleavedParseUsed,
-                    InterleavedTokenBatchSize = interleavedTokenBatchSize,
-                    InterleavedBatchCount = interleavedBatchCount,
-                    InterleavedFallbackUsed = interleavedFallbackUsed,
-                    CssAndStyleMs = cssAndStyleMs,
-                    CssQueueWaitMs = _lastCssLoadTiming?.QueueWaitMs ?? 0,
-                    CssDiscoveryAndFetchMs = _lastCssLoadTiming?.DiscoveryAndFetchMs ?? 0,
-                    CssImportExpansionMs = _lastCssLoadTiming?.ImportExpansionMs ?? 0,
-                    CssRuleParseMs = _lastCssLoadTiming?.RuleParseMs ?? 0,
-                    CssVariableResolutionMs = _lastCssLoadTiming?.VariableResolutionMs ?? 0,
-                    CssCascadeMs = _lastCssLoadTiming?.CascadeMs ?? 0,
-                    CssTotalMs = _lastCssLoadTiming?.TotalMs ?? 0,
-                    InitialVisualTreeMs = initialVisualTreeMs,
-                    ScriptExecutionMs = scriptExecutionMs,
-                    PostScriptVisualTreeMs = postScriptVisualTreeMs,
-                    TotalRenderMs = totalRenderMs,
-                    JavaScriptExecuted = javascriptExecuted,
-                    Url = baseUri?.AbsoluteUri ?? "about:blank",
-                    NavigationStartedAtUtc = navigationStartedAtUtc,
-                    ManagedAllocatedBytes = Math.Max(0, GC.GetTotalAllocatedBytes(precise: false) - allocatedBytesBefore),
-                    ManagedHeapBytes = GC.GetTotalMemory(forceFullCollection: false),
-                    WorkingSetBytes = workingSetBytes,
-                    Gen0Collections = Math.Max(0, GC.CollectionCount(0) - gen0Before),
-                    Gen1Collections = Math.Max(0, GC.CollectionCount(1) - gen1Before),
-                    Gen2Collections = Math.Max(0, GC.CollectionCount(2) - gen2Before)
-                };
-
-                var publishTelemetry = false;
-                lock (_renderStateLock)
-                {
-                    if (_renderGeneration == renderGeneration)
-                    {
-                        LastRenderTelemetry = telemetry;
-                        publishTelemetry = true;
-                    }
-                }
-
-                // Always signal loading complete â€” even if a newer navigation
-                // (renderGeneration mismatch) superseded this one. Otherwise the
-                // loading bar spins forever after a tab switch.
-                await RaiseLoadingChangedAsync(false);
-
-                if (publishTelemetry)
-                {
-                    PerformanceDiagnosticsStore.RecordNavigation(telemetry);
-                    EngineLogCompat.Debug($"[PERF] FULL PAGE LOAD TIME: {totalRenderMs}ms", LogCategory.Rendering);
-                }
-            }
-        }
-
-        private async Task<long> RunStreamingPreparseAsync(
-            string html,
-            long renderGeneration,
-            Action<int> checkpointCountUpdated,
-            Action<int> repaintCountUpdated)
-        {
-            if (string.IsNullOrEmpty(html))
-            {
-                checkpointCountUpdated?.Invoke(0);
-                repaintCountUpdated?.Invoke(0);
-                return 0;
-            }
-
-            var checkpointCount = 0;
-            var repaintCount = 0;
-            var parseStopwatch = Stopwatch.StartNew();
-            try
-            {
-                using var parser = new StreamingHtmlParser(html);
-                await parser.ParseIncrementallyAsync(document =>
-                {
-                    checkpointCount++;
-                    if (TryEmitStreamingParseRepaint(document, checkpointCount, renderGeneration, ref repaintCount))
-                    {
-                        repaintCountUpdated?.Invoke(repaintCount);
-                    }
-                    checkpointCountUpdated?.Invoke(checkpointCount);
-                }).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Warn($"[RenderAsync] Streaming preparse failed: {ex.Message}", LogCategory.Rendering);
-            }
-
-            checkpointCountUpdated?.Invoke(checkpointCount);
-            repaintCountUpdated?.Invoke(repaintCount);
-            parseStopwatch.Stop();
-            return parseStopwatch.ElapsedMilliseconds;
-        }
-
-        private bool TryEmitStreamingParseRepaint(
-            Document document,
-            int checkpointOrdinal,
-            long renderGeneration,
-            ref int repaintCount)
-        {
-            if (document?.DocumentElement == null)
-            {
-                return false;
-            }
-
-            if (!HasStableComputedStyleSnapshot())
-            {
-                return false;
-            }
-
-            if (!ShouldEmitStreamingPreparseRepaint(checkpointOrdinal, repaintCount))
-            {
-                return false;
-            }
-
-            Element snapshotRoot = null;
-            try
-            {
-                snapshotRoot = document.DocumentElement.CloneNode(true) as Element;
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Warn($"[RenderAsync] Streaming preparse snapshot clone failed: {ex.Message}", LogCategory.Rendering);
-                return false;
-            }
-
-            if (snapshotRoot == null)
-            {
-                return false;
-            }
-
-            repaintCount++;
-            // Keep styles stable so subsequent streaming repaints are not gated out.
-            if (!TrySetActiveDom(snapshotRoot, markSnapshotUnstable: false, renderGeneration))
-            {
-                return false;
-            }
-            // Do NOT null out LastComputedStyles here. The engine loop polls for styles
-            // and nulling them causes hundreds of wasted render frames with Styles=NULL
-            // before the CSS cascade completes. Keep previous styles visible so layout
-            // can at least partially render with whatever styles were last computed.
-            OnRepaintReady(snapshotRoot);
-            return true;
-        }
-
-        private void TryEmitIncrementalParseRepaint(
-            Document document,
-            HtmlParseCheckpoint checkpoint,
-            int parsingCheckpointOrdinal,
-            long renderGeneration,
-            int maxRepaintCount,
-            ref int incrementalRepaintCount)
-        {
-            if (!EnableIncrementalParseRepaint ||
-                document?.DocumentElement == null ||
-                checkpoint == null ||
-                checkpoint.Phase != HtmlParseBuildPhase.Parsing)
-            {
-                return;
-            }
-
-            if (!HasStableComputedStyleSnapshot())
-            {
-                return;
-            }
-
-            if (!ShouldEmitIncrementalParseRepaint(
-                parsingCheckpointOrdinal,
-                checkpoint.IsFinal,
-                incrementalRepaintCount,
-                maxRepaintCount))
-            {
-                return;
-            }
-
-            Element snapshotRoot = null;
-            try
-            {
-                snapshotRoot = document.DocumentElement.CloneNode(true) as Element;
-            }
-            catch (Exception ex)
-            {
-                EngineLogCompat.Warn($"[RenderAsync] Incremental parse snapshot clone failed: {ex.Message}", LogCategory.Rendering);
-                return;
-            }
-
-            if (snapshotRoot == null)
-            {
-                return;
-            }
-
-            incrementalRepaintCount++;
-            // Keep styles stable so subsequent incremental repaints are not gated out.
-            // The empty-but-stable snapshot is seeded before RunDomParseAsync.
-            if (!TrySetActiveDom(snapshotRoot, markSnapshotUnstable: false, renderGeneration))
-            {
-                return;
-            }
-            // Do NOT null out LastComputedStyles â€” see TryEmitStreamingParseRepaint comment.
-            OnRepaintReady(snapshotRoot);
-        }
-
-        private static bool ShouldEmitIncrementalParseRepaint(
-            int parsingCheckpointOrdinal,
-            bool isFinalCheckpoint,
-            int incrementalRepaintCount,
-            int maxRepaintCount)
-        {
-            if (incrementalRepaintCount >= maxRepaintCount)
-            {
-                return false;
-            }
-
-            if (incrementalRepaintCount == 0)
-            {
-                return true;
-            }
-
-            if (isFinalCheckpoint)
-            {
-                return true;
-            }
-
-            return parsingCheckpointOrdinal > 0 &&
-                (parsingCheckpointOrdinal % IncrementalParseRepaintCheckpointStride) == 0;
-        }
-
-        private static int ResolveIncrementalParseRepaintMaxCount(int htmlLength)
-        {
-            if (htmlLength >= IncrementalParseRepaintVeryLargeDocumentMinLength)
-            {
-                return 0;
-            }
-
-            if (htmlLength >= IncrementalParseRepaintLargeDocumentMinLength)
-            {
-                return IncrementalParseRepaintLargeDocumentMaxCount;
-            }
-
-            if (htmlLength >= IncrementalParseRepaintMediumDocumentMinLength)
-            {
-                return IncrementalParseRepaintMediumDocumentMaxCount;
-            }
-
-            return IncrementalParseRepaintSmallDocumentMaxCount;
-        }
-
-        private static bool ShouldRunStreamingParsePrepass(bool enabled, int htmlLength)
-        {
-            // The streaming preparse is a progressive hint pass, not the source of truth.
-            // Bound it to mid-sized documents so it cannot stall first paint on very large pages.
-            return enabled &&
-                htmlLength >= StreamingPreparseMinHtmlLength &&
-                htmlLength <= StreamingPreparseMaxHtmlLength;
-        }
-
-        private static int ResolveInterleavedTokenBatchSize(bool enabled, int htmlLength)
-        {
-            if (!enabled || htmlLength < InterleavedPrimaryParseMinHtmlLength)
-            {
-                return 0;
-            }
-
-            if (htmlLength >= 524288)
-            {
-                return 512;
-            }
-
-            if (htmlLength >= 131072)
-            {
-                return 256;
-            }
-
-            return 128;
-        }
-
-        private void AttachParseDocumentCheckpointCallback(
-            HtmlParserOptions options,
-            ParseCheckpointState parseCheckpointState)
-        {
-            if (options == null || parseCheckpointState == null)
-            {
-                return;
-            }
-
-            options.ParseDocumentCheckpointCallback = (document, checkpoint) =>
-            {
-                if (checkpoint != null && checkpoint.Phase == HtmlParseBuildPhase.Parsing)
-                {
-                    parseCheckpointState.ParsingDocumentCheckpointCount++;
-                    parseCheckpointState.ParsingCheckpointOrdinal++;
-                    var repaintCount = parseCheckpointState.IncrementalRepaintCount;
-                    TryEmitIncrementalParseRepaint(
-                        document,
-                        checkpoint,
-                        parseCheckpointState.ParsingCheckpointOrdinal,
-                        parseCheckpointState.RenderGeneration,
-                        parseCheckpointState.IncrementalRepaintMaxCount,
-                        ref repaintCount);
-                    parseCheckpointState.IncrementalRepaintCount = repaintCount;
-                }
-            };
-        }
-
-        private static bool ShouldEmitStreamingPreparseRepaint(int checkpointOrdinal, int repaintCount)
-        {
-            if (repaintCount >= StreamingPreparseRepaintMaxCount)
-            {
-                return false;
-            }
-
-            if (repaintCount == 0)
-            {
-                return true;
-            }
-
-            return checkpointOrdinal > 0 &&
-                (checkpointOrdinal % StreamingPreparseRepaintCheckpointStride) == 0;
-        }
-
-                /// Convenience wrapper to kick off a render without awaiting the resulting element.
-        /// Useful for non-visual navigations when only DOM/state is needed.
-        /// </summary>
-        public void LoadHtml(
-            string html,
-            Uri baseUri,
-            Func<Uri, Task<string>> fetchExternalCssAsync,
-            Func<Uri, Task<Stream>> imageLoader,
-            Action<Uri> onNavigate,
-            double? viewportWidth = null,
-            Action<object>? onFixedBackground = null)
-        {
-            try { var _ = RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, null, onFixedBackground); }
-            catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] Fire-and-forget render launch failed: {ex.Message}", LogCategory.Rendering); }
-        }
-
-        /// <summary>Expose the current active Lite DOM (last parsed).</summary>
-        public Node GetActiveDom()
-        {
-            lock (_renderStateLock)
-            {
-                return _activeDom;
-            }
-        }
-
-        public BrowserRenderSnapshot GetRenderSnapshot()
-        {
-            lock (_renderStateLock)
-            {
-                var root = (_activeDom as Element) ?? (_activeDom as Document)?.DocumentElement;
-                return new BrowserRenderSnapshot(
-                    root,
-                    LastComputedStyles,
-                    _renderSnapshotVersion,
-                    _hasStableStyles && !_awaitingPostScriptSnapshot);
-            }
-        }
-
-        /// <summary>Get the raw HTML source that was last rendered.</summary>
-        public string GetRawHtml()
-        {
-            return _lastRawHtml;
-        }
-
-        // ---------------- Cookie helpers for host APIs ----------------
-        public IReadOnlyDictionary<string,string> GetCookieSnapshot(Uri scope)
-        {
-            var dict = new Dictionary<string,string>(StringComparer.Ordinal);
-            try
-            {
-                var u = scope ?? _activeBaseUri; if (u == null) return dict;
-                foreach (var entry in CookieJar.Snapshot(u, _activeBaseUri ?? u))
-                {
-                    if (!dict.ContainsKey(entry.Key)) dict[entry.Key] = entry.Value ?? string.Empty;
-                }
-            }
-            catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] Cookie snapshot failed: {ex.Message}", LogCategory.Rendering); }
-            return dict;
-        }
-
-        public void SetCookie(Uri scope, string name, string value, string path = "/")
-        {
-            try
-            {
-                var u = scope ?? _activeBaseUri; if (u == null) return;
-                CookieJar.SetDocumentCookie(
-                    u,
-                    $"{name ?? string.Empty}={value ?? string.Empty}; Path={path ?? "/"}",
-                    _activeBaseUri ?? u,
-                    BrowserSettings.Instance.BlockThirdPartyCookies);
-            }
-            catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] SetCookie failed: {ex.Message}", LogCategory.Rendering); }
-        }
-
-        public void DeleteCookie(Uri scope, string name)
-        {
-            try
-            {
-                var u = scope ?? _activeBaseUri; if (u == null) return;
-                CookieJar.DeleteDocumentCookie(u, name, _activeBaseUri ?? u);
-            }
-            catch (Exception ex) { EngineLogCompat.Warn($"[CustomHtmlEngine] DeleteCookie failed: {ex.Message}", LogCategory.Rendering); }
-        }
-
-
-
-
-
-
-
-
-        public Task<string> MakeImageAsync()
-        {
-            return Task.FromResult<string>(null);
-        }
-
-
-        public async Task<object> ExecuteScriptAsync(string script)
-        {
-            await Task.CompletedTask;
-            if (_activeJs == null) 
-            {
-                EngineLogCompat.Error("[CustomHtmlEngine] ExecuteScriptAsync: _activeJs is NULL", LogCategory.JavaScript);
-                return "undefined";
-            }
-            EngineLogCompat.Debug($"[CustomHtmlEngine] Executing script on active engine: {script}", LogCategory.JavaScript);
-            try
-            {
-               var res = _activeJs.Evaluate(script);
-               return res;
-            }
-            catch (Exception ex)
-            {
-                return $"Error: {ex.Message}";
-            }
-        }
-        private void DumpTree(FenBrowser.Core.Dom.V2.Node node, StringBuilder sb, int depth)
-        {
-            sb.Append(new string(' ', depth * 2));
-            sb.Append(node is Element el1 ? el1.TagName : node.NodeName);
-            if (node is Element el)
-            {
-                if (el.Attributes != null)
-                {
-                    foreach (var attr in el.Attributes)
-                        sb.Append($" {attr.Name}='{attr.Value}'");
-                }
-            }
-            if (node is Text txt)
-            {
-                sb.Append($" \"{(txt.Data ?? "").Replace("\n", "\\n").Replace("\r", "\\r")}\"");
-            }
-            sb.AppendLine();
-            if (node.ChildNodes != null)
-            {
-               foreach(var child in node.ChildNodes) DumpTree(child, sb, depth + 1);
-            }
-        }
-    }
-}
-
-
-
-
-
-
-
-
-
-
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éíç½|í:-jZ.¶›­–)Ş³WW6–ærfVä'&÷w6W"ä6÷&Rä773°§W6–ærfVä'&÷w6W"ä6÷&RäFöÒåc#°§W6–ær7—7FVÓ°§W6–ær7—7FVÒä6öÆÆV7F–öç2ävVæW&–3°§W6–ær7—7FVÒäÆ–ç°§W6–ær7—7FVÒåFW‡C°§W6–ær7—7FVÒäæWC°§W6–ær7—7FVÒåF‡&VF–æråF6·3°§W6–ær7—7FVÒä”ó°§W6–ær7—7FVÒäF–væ÷7F–73°§W6–ærfVä'&÷w6W"ä6÷&S°§W6–ærfVä'&÷w6W"ä6÷&RäÆövv–æs°§W6–ærfVä'&÷w6W"ä6÷&Rå'6–æs°§W6–ærfVä'&÷w6W"ä6÷&Rå6V7W&—G“°§W6–ærfVä'&÷w6W"ä6÷&Rå7F÷&vS°§W6–ærfVä'&÷w6W"äfVäVæv–æRå6V7W&—G“²òòFFV@§W6–ærfVä'&÷w6W"äfVäVæv–æRå67&—F–æs²òòf÷"”§4†÷7@§W6–ærfVä'&÷w6W"äfVäVæv–æRä6÷&S²òò6÷'&V7FVBæÖW76P§W6–ærfVä'&÷w6W"äfVäVæv–æRä6÷&Rä–çFW&f6W3²òòFFVBf÷"”W†V7WF–öä6öçFW‡@§W6–ærfVä'&÷w6W"äfVäVæv–æRäÆ–÷WC²òòFFVBf÷"Æ–÷WE&W7VÇ@§W6–ær7FF–2fVä'&÷w6W"äfVäVæv–æRå&VæFW&–ærä774ÆöFW#°§W6–ærfVä'&÷w6W"äfVäVæv–æRå&VæFW&–æs°§W6–ærfVä'&÷w6W"äfVäVæv–æRå&VæFW&–ærä6÷&S°§W6–ærfVä'&÷w6W"äfVäVæv–æRå&VæFW&–ærä773°§W6–ærfVä'&÷w6W"äfVäVæv–æRä6÷&RäWfVçDÆö÷²òòFFVBf÷"WfVçDÆö÷6ö÷&F–æF÷ §W6–ærfVä'&÷w6W"äfVäVæv–æRå&VæFW&–æråW&f÷&Öæ6S°§W6–ærfVä'&÷w6W"ä6÷&RäVæv–æS²òòFFVBf÷"Væv–æU†6P§W6–ær6¶–6†'°  ¦æÖW76RfVä'&÷w6W"äfVäVæv–æRå&VæFW&–æp§°¢V&Æ–26VÆVB6Æ72&VæFW%FVÆVÖWG'•6æ6†÷@¢°¢V&Æ–2ÆöærFö¶Væ—¦–æt×2²vWC²–æ—C²Ğ¢V&Æ–2Æöær'6–æt×2²vWC²–æ—C²Ğ¢V&Æ–2ÆöærFö¶Væ—¦–ætæE'6–æt×2²vWC²–æ—C²Ğ¢V&Æ–2–çB'6UFö¶Vä6÷VçB²vWC²–æ—C²Ğ¢V&Æ–2–çBFö¶Væ—¦–æt6†V6·ö–çD6÷VçB²vWC²–æ—C²Ğ¢V&Æ–2–çB'6–æt6†V6·ö–çD6÷VçB²vWC²–æ—C²Ğ¢V&Æ–2–çB'6–ætFö7VÖVçD6†V6·ö–çD6÷VçB²vWC²–æ—C²Ğ¢V&Æ–2–çBFö7VÖVçE&VG•Fö¶Vä6÷VçB²vWC²–æ—C²Ğ¢V&Æ–2–çB'6T–æ7&VÖVçFÅ&W–çD6÷VçB²vWC²–æ—C²Ğ¢V&Æ–2Æöær7G&VÖ–æu&W'6T×2²vWC²–æ—C²Ğ¢V&Æ–2–çB7G&VÖ–æu&W'6T6†V6·ö–çD6÷VçB²vWC²–æ—C²Ğ¢V&Æ–2–çB7G&VÖ–æu&W'6U&W–çD6÷VçB²vWC²–æ—C²Ğ¢V&Æ–2&ööÂ–çFW&ÆVfVE'6UW6VB²vWC²–æ—C²Ğ¢V&Æ–2–çB–çFW&ÆVfVEFö¶Vä&F6…6—¦R²vWC²–æ—C²Ğ¢V&Æ–2–çB–çFW&ÆVfVD&F6„6÷VçB²vWC²–æ—C²Ğ¢V&Æ–2&ööÂ–çFW&ÆVfVDfÆÆ&6µW6VB²vWC²–æ—C²Ğ¢V&Æ–2Æöær774æE7G–ÆT×2²vWC²–æ—C²Ğ¢V&Æ–2F÷V&ÆR775VWVUv—D×2²vWC²–æ—C²Ğ¢V&Æ–2F÷V&ÆR774F—66÷fW'”æDfWF6„×2²vWC²–æ—C²Ğ¢V&Æ–2F÷V&ÆR774–×÷'DW‡ç6–öä×2²vWC²–æ—C²Ğ¢V&Æ–2F÷V&ÆR775'VÆU'6T×2²vWC²–æ—C²Ğ¢V&Æ–2F÷V&ÆR775f&–&ÆU&W6öÇWF–öä×2²vWC²–æ—C²Ğ¢V&Æ–2F÷V&ÆR774666FT×2²vWC²–æ—C²Ğ¢V&Æ–2F÷V&ÆR775F÷FÄ×2²vWC²–æ—C²Ğ¢V&Æ–2Æöær–æ—F–Åf—7VÅG&VT×2²vWC²–æ—C²Ğ¢V&Æ–2Æöær67&—DW†V7WF–öä×2²vWC²–æ—C²Ğ¢V&Æ–2Æöær÷7E67&—Ef—7VÅG&VT×2²vWC²–æ—C²Ğ¢V&Æ–2ÆöærF÷FÅ&VæFW$×2²vWC²–æ—C²Ğ¢V&Æ–2&ööÂ¦f67&—DW†V7WFVB²vWC²–æ—C²Ğ¢V&Æ–27G&–ærW&Â²vWC²–æ—C²Ğ¢V&Æ–2FFUF–ÖTöfg6WBæf–vF–öå7F'FVDEWF2²vWC²–æ—C²Ğ¢V&Æ–2ÆöærÖævVDÆÆö6FVD'—FW2²vWC²–æ—C²Ğ¢V&Æ–2ÆöærÖævVD†V'—FW2²vWC²–æ—C²Ğ¢V&Æ–2Æöærv÷&¶–æu6WD'—FW2²vWC²–æ—C²Ğ¢V&Æ–2–çBvVã6öÆÆV7F–öç2²vWC²–æ—C²Ğ¢V&Æ–2–çBvVã6öÆÆV7F–öç2²vWC²–æ—C²Ğ¢V&Æ–2–çBvVã$6öÆÆV7F–öç2²vWC²–æ—C²Ğ¢Ğ ¢–çFW&æÂ6VÆVB6Æ72FöÕ'6U&W7VÇ@¢°¢V&Æ–2æöFRFöÒ²vWC²6WC²Ğ¢V&Æ–2ÆöærFö¶Væ—¦–æt×2²vWC²6WC²Ğ¢V&Æ–2Æöær'6–æt×2²vWC²6WC²Ğ¢V&Æ–2–çBFö¶Vä6÷VçB²vWC²6WC²Ğ¢V&Æ–2–çBFö¶Væ—¦–æt6†V6·ö–çD6÷VçB²vWC²6WC²Ğ¢V&Æ–2–çB'6–æt6†V6·ö–çD6÷VçB²vWC²6WC²Ğ¢V&Æ–2–çB'6–ætFö7VÖVçD6†V6·ö–çD6÷VçB²vWC²6WC²Ğ¢V&Æ–2–çBFö7VÖVçE&VG•Fö¶Vä6÷VçB²vWC²6WC²Ğ¢V&Æ–2–çB–æ7&VÖVçFÅ&W–çD6÷VçB²vWC²6WC²Ğ¢V&Æ–2Æöær7G&VÖ–æu&W'6T×2²vWC²6WC²Ğ¢V&Æ–2–çB7G&VÖ–æu&W'6T6†V6·ö–çD6÷VçB²vWC²6WC²Ğ¢V&Æ–2–çB7G&VÖ–æu&W'6U&W–çD6÷VçB²vWC²6WC²Ğ¢V&Æ–2&ööÂ–çFW&ÆVfVE'6UW6VB²vWC²6WC²Ğ¢V&Æ–2–çB–çFW&ÆVfVEFö¶Vä&F6…6—¦R²vWC²6WC²Ğ¢V&Æ–2–çB–çFW&ÆVfVD&F6„6÷VçB²vWC²6WC²Ğ¢V&Æ–2&ööÂ–çFW&ÆVfVDfÆÆ&6µW6VB²vWC²6WC²Ğ¢Ğ ¢–çFW&æÂ6VÆVB6Æ72'6T6†V6·ö–çE7FFP¢°¢V&Æ–2Æöær&VæFW$vVæW&F–öâ²vWC²–æ—C²Ğ¢V&Æ–2–çB–æ7&VÖVçFÅ&W–çDÖ„6÷VçB²vWC²–æ—C²Ğ¢V&Æ–2–çB'6–ætFö7VÖVçD6†V6·ö–çD6÷VçB²vWC²6WC²Ğ¢V&Æ–2–çB'6–æt6†V6·ö–çD÷&F–æÂ²vWC²6WC²Ğ¢V&Æ–2–çB–æ7&VÖVçFÅ&W–çD6÷VçB²vWC²6WC²Ğ¢Ğ ¢òòòÇ7VÖÖ'“à¢òòò6ÆVâÂFWVæFVæ7’Ög&VRw&W"7V—F&ÆRf÷"u‚ãv—F†÷WBvV%f–Wrà¢òòòÂ÷7VÖÖ'“à¢V&Æ–26VÆVB6Æ727W7FöÔ‡FÖÄVæv–æR¢”F—7÷6&ÆP¢°¢&—fFR6öç7B–çB–æ7&VÖVçFÅ'6U&W–çE6ÖÆÄFö7VÖVçDÖ„6÷VçBÒC°¢&—fFR6öç7B–çB–æ7&VÖVçFÅ'6U&W–çDÖVF—VÔFö7VÖVçDÖ„6÷VçBÒ#°¢&—fFR6öç7B–çB–æ7&VÖVçFÅ'6U&W–çDÆ&vTFö7VÖVçDÖ„6÷VçBÒ°¢&—fFR6öç7B–çB–æ7&VÖVçFÅ'6U&W–çDÖVF—VÔFö7VÖVçDÖ–äÆVæwF‚ÒcB¢#C°¢&—fFR6öç7B–çB–æ7&VÖVçFÅ'6U&W–çDÆ&vTFö7VÖVçDÖ–äÆVæwF‚Ò#‚¢#C°¢&—fFR6öç7B–çB–æ7&VÖVçFÅ'6U&W–çEfW'”Æ&vTFö7VÖVçDÖ–äÆVæwF‚ÒS"¢#C°¢&—fFR6öç7B–çB–æ7&VÖVçFÅ'6U&W–çD6†V6·ö–çE7G&–FRÒ#°¢&—fFR6öç7B–çB7G&VÖ–æu&W'6TÖ–ä‡FÖÄÆVæwF‚Ò3#scƒ°¢&—fFR6öç7B–çB7G&VÖ–æu&W'6TÖ„‡FÖÄÆVæwF‚Ò3s#°¢&—fFR6öç7B–çB7G&VÖ–æu&W'6U&W–çDÖ„6÷VçBÒC°¢&—fFR6öç7B–çB7G&VÖ–æu&W'6U&W–çD6†V6·ö–çE7G&–FRÒ3°¢&—fFR6öç7B–çB–çFW&ÆVfVE&–Ö'•'6TÖ–ä‡FÖÄÆVæwF‚Òƒ“#°¢&—fFR6öç7B–çB–ÖvU&Wv&Ôv—D'VFvWD×2ÒS°¢&—fFR6öç7B–çB–ÖvU&Wv&ÔVvW$6æF–FFTÆ–Ö—BÒc°¢&—fFR6öç7B–çB–ÖvU&Wv&ÕVWVT'VFvWBÒ3#°¢&—fFR6öç7B–çB–ÖvU&Wv&ÔÖ„6öæ7W'&Væ7’Òc°¢&—fFR&VFöæÇ’ö&¦V7B÷&VæFW%7FFTÆö6²ÒæWr‚“°¢&—fFRÆöær÷&VæFW$vVæW&F–öã° ¢V&Æ–2gVæ3ÅW&’ÂF6³Ç7G&–æsãâ67&—DfWF6†W"²vWC²6WC²Ğ ¢òòòÇ7VÖÖ'“à¢òòò7V7VÆF—fR&VfWF6†W"G&—fVâ'’F†R…DÔÂ&VÆöE66ææW"âv†Vâ6WBÀ¢òòòWfW'’'6Rv–ÆÂfâ÷WBÆÆ–æ²&VÃÒ'7G–ÆW6†VWB#âÂÇ67&—B7&3Ò"âââ#âÀ¢òòòæBÆ–Ör7&3Ò"âââ#âfWF6†W2–çFòF†R&W6÷W&6TÖævW"66†R–à¢òòò&ÆÆVÂv—F‚F†R'6R—G6VÆbÂ6ò'’F†RF–ÖR774ÆöFW"ğ¢òòò67&—DfWF6†W"&V6‚f÷"F†÷6R&W6÷W&6W2F†W’†—Bv&Ò66†R–ç7FV@¢òòòöbvö–ær÷fW"F†Rv—&R6W&–ÆÇ’à¢òòòÂ÷7VÖÖ'“à¢V&Æ–2fVä'&÷w6W"ä6÷&RäæWGv÷&²å&W6÷W&6U&VfWF6†W"&VfWF6†W"²vWC²6WC²Ğ¢V&Æ–2gVæ3Å7—7FVÒäæWBä‡GGä‡GG&WVW7DÖW76vRÂF6³Å7—7FVÒäæWBä‡GGä‡GG&W7öç6TÖW76vSãâfWF6„†æFÆW"²vWC²6WC²Ğ¢V&Æ–2gVæ3ÄVÆVÖVçBÂW&’ÂF6³âg&ÖTVÆVÖVçDÆöFW"²vWC²6WC²Ğ ¢&—fFR77öÆ–7’ö7F—fUöÆ–7“°¢òòòÇ7VÖÖ'“ä7F—fR6öçFVçB6V7W&—G’öÆ–7’f÷"F†—2vRâv†Vâ6WBÂ7V'&W6÷W&6RÆöG2&R6†V6¶VBv–ç7B—BãÂ÷7VÖÖ'“à¢V&Æ–277öÆ–7’7F—fUöÆ–7¢°¢vWBÓâö7F—fUöÆ–7“°¢6WBÓâö7F—fUöÆ–7’ÒfÇVS°¢Ğ ¢òòU…õ4TB5E”ÄU2dõ"4´”$TäDU$U ¢V&Æ–2F–7F–öæ'“ÄæöFRÂ7746ö×WFVCâÆ7D6ö×WFVE7G–ÆW2²vWC²&—fFR6WC²Ğ¢V&Æ–2Æ—7CÄ774ÆöFW"ä7756÷W&6SâÆ7D7756÷W&6W2²vWC²&—fFR6WC²Ğ ¢V&Æ–2Æ–÷WE&W7VÇBÆ7DÆ–÷WB²vWC²&—fFR6WC²Ğ¢V&Æ–2&VæFW%FVÆVÖWG'•6æ6†÷BÆ7E&VæFW%FVÆVÖWG'’²vWC²&—fFR6WC²Ğ¢&—fFR774ÆöFW"ä774ÆöEF–Ö–æröÆ7D774ÆöEF–Ö–æs°¢V&Æ–2”W†V7WF–öä6öçFW‡B6öçFW‡BÓâö7F—fT§3òävÆö&Ä6öçFW‡C° ¢&—fFRfö–B6WD7F—fTFöÒ„æöFRFöÒÂ&ööÂÖ&µ6æ6†÷EVç7F&ÆRÒfÇ6R¢°¢Æö6²…÷&VæFW%7FFTÆö6²¢°¢ö7F—fTFöÒÒFöÓ°¢–b†Ö&µ6æ6†÷EVç7F&ÆR¢°¢ö†57F&ÆU7G–ÆW2ÒfÇ6S°¢Ğ ¢÷&VæFW%6æ6†÷EfW'6–öâ²³°¢Ğ¢Ğ ¢&—fFR&ööÂG'•6WD7F—fTFöÒ„æöFRFöÒÂ&ööÂÖ&µ6æ6†÷EVç7F&ÆRÂÆöær&VæFW$vVæW&F–öâ¢°¢Æö6²…÷&VæFW%7FFTÆö6²¢°¢–b…÷&VæFW$vVæW&F–öâÒ&VæFW$vVæW&F–öâ¢°¢&WGW&âfÇ6S°¢Ğ ¢ö7F—fTFöÒÒFöÓ°¢–b†Ö&µ6æ6†÷EVç7F&ÆR¢°¢ö†57F&ÆU7G–ÆW2ÒfÇ6S°¢Ğ ¢÷&VæFW%6æ6†÷EfW'6–öâ²³°¢&WGW&âG'VS°¢Ğ¢Ğ ¢&—fFRÆöær&Vv–å&VæFW$vVæW&F–öâ‚¢°¢Æö6²…÷&VæFW%7FFTÆö6²¢°¢&WGW&â²µ÷&VæFW$vVæW&F–öã°¢Ğ¢Ğ ¢&—fFR&ööÂ—47W'&VçE&VæFW$vVæW&F–öâ†Æöær&VæFW$vVæW&F–öâ¢°¢Æö6²…÷&VæFW%7FFTÆö6²¢°¢&WGW&â÷&VæFW$vVæW&F–öâÓÒ&VæFW$vVæW&F–öã°¢Ğ¢Ğ ¢&—fFRfö–B&Vv–äv—F–æu÷7E67&—E6æ6†÷B†Æöær&VæFW$vVæW&F–öâÒ¢°¢Æö6²…÷&VæFW%7FFTÆö6²¢°¢–b‡&VæFW$vVæW&F–öâÒbb÷&VæFW$vVæW&F–öâÒ&VæFW$vVæW&F–öâ¢°¢&WGW&ã°¢Ğ ¢öv—F–æu÷7E67&—E6æ6†÷BÒG'VS°¢÷&VæFW%6æ6†÷EfW'6–öâ²³°¢Ğ¢Ğ ¢&—fFRfö–BVæDv—F–æu÷7E67&—E6æ6†÷B†Æöær&VæFW$vVæW&F–öâÒ¢°¢Æö6²…÷&VæFW%7FFTÆö6²¢°¢–b‡&VæFW$vVæW&F–öâÒbb÷&VæFW$vVæW&F–öâÒ&VæFW$vVæW&F–öâ¢°¢&WGW&ã°¢Ğ ¢öv—F–æu÷7E67&—E6æ6†÷BÒfÇ6S°¢÷&VæFW%6æ6†÷EfW'6–öâ²³°¢Ğ¢Ğ ¢&—fFR&ööÂ†57F&ÆT6ö×WFVE7G–ÆU6æ6†÷B‚¢°¢Æö6²…÷&VæFW%7FFTÆö6²¢°¢òòÆÆ÷rV×G’7G–ÆW2GW&–ær–æ7&VÖVçFÂ'6–ær(	BF†RVæv–æR&VæFW'0¢òòv—F‚'&÷w6W"ÖFVfVÇB7G–Æ–æræB&öw&W76—fVÇ’–×&÷fW22552'&—fW2à¢òò&WV—&–ær6÷VçBâ&Æö6¶VBWfW'’–æ7&VÖVçFÂ&W–çB&Vf÷&R552ÆöBà¢&WGW&âö†57F&ÆU7G–ÆW2b`¢öv—F–æu÷7E67&—E6æ6†÷Bb`¢Æ7D6ö×WFVE7G–ÆW2ÒçVÆÃ°¢Ğ¢Ğ ¢&—fFR&ööÂWFFU&VæFW%7FFR€¢æöFRFöÒÀ¢F–7F–öæ'“ÄæöFRÂ7746ö×WFVCâ7G–ÆW2À¢Æöær&VæFW$vVæW&F–öâÒ¢°¢Æö6²…÷&VæFW%7FFTÆö6²¢°¢–b‡&VæFW$vVæW&F–öâÒbb÷&VæFW$vVæW&F–öâÒ&VæFW$vVæW&F–öâ¢°¢&WGW&âfÇ6S°¢Ğ ¢–b†FöÒÒçVÆÂ¢°¢ö7F—fTFöÒÒFöÓ°¢Ğ ¢Æ7D6ö×WFVE7G–ÆW2Ò7G–ÆW3°¢ö†57F&ÆU7G–ÆW2Ò7G–ÆW2ÒçVÆÃ°¢÷&VæFW%6æ6†÷EfW'6–öâ²³°¢&WGW&âG'VS°¢Ğ¢Ğ ¢&—fFR7FF–2F6²'VäFWF6†VD7–æ2„gVæ3ÅF6³â÷W&F–öâ¢°¢&WGW&âF6²äf7F÷'’å7F'DæWr†7–æ2‚’Óà¢°¢G'¢°¢v—B÷W&F–öâ‚’ä6öæf–wW&Tv—B†fÇ6R“°¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×Båv&â‚B%´7W7FöÔ‡FÖÄVæv–æUÒFWF6†VB7–æ2÷W&F–öâf–ÆVC¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢ÒÂ7—7FVÒåF‡&VF–ærä6æ6VÆÆF–öåFö¶VâäæöæRÂF6´7&VF–öä÷F–öç2äFVç”6†–ÆDGF6‚ÂF6µ66†VGVÆW"äFVfVÇB’åVçw&‚“°¢Ğ¢V&Æ–2&VæFW$6öçFW‡Cò'V–ÆE&VæFW$6öçFW‡B‚¢°¢&WGW&âö66†VE&VæFW&W#òä7&VFU&VæFW$6öçFW‡B‚“°¢Ğ ¢V&Æ–2WfVçB7F–öãÆö&¦V7Câ&W–çE&VG“°¢&—fFRfö–Böå&W–çE&VG’†ö&¦V7B6öçG&öÂ¢°¢öÆ7E&VæFW&VD6öçG&öÂÒ6öçG&öÃ°¢&W–çE&VG“òä–çfö¶R†6öçG&öÂ“°¢Ğ¢V&Æ–2WfVçBWfVçD†æFÆW#Æ&ööÃâÆöF–æt6†ævVC°¢V&Æ–2WfVçBWfVçD†æFÆW#Ç7G&–æsâF—FÆT6†ævVC°¢V&Æ–2WfVçBWfVçD†æFÆW#ÄVÆVÖVçCâFöÕ&VG“°¢V&Æ–2WfVçB7F–öãÇ7G&–æsâÆW'EG&–vvW&VC°¢V&Æ–2WfVçBgVæ3Ç7G&–ærÂ&ööÃâ6öæf—&ÕG&–vvW&VC°¢V&Æ–2WfVçBgVæ3Ç7G&–ærÂ7G&–ærÂ7G&–æsâ&ö×EG&–vvW&VC°¢V&Æ–2WfVçB7F–öãÇ7G&–æsâ6öç6öÆTÖW76vS²òòæWrWfVçBf÷"6öç6öÆRÆöw0¢V&Æ–2WfVçB7F–öãÅ4µ&V7Cóâ†–v†Æ–v‡E&V7D6†ævVC°¢V&Æ–2WfVçBgVæ3Ç7G&–ærÂ§5W&Ö—76–öç2ÂF6³Æ&ööÃãâW&Ö—76–öå&WVW7FVC²òòW&Ö—76–öâ’WfVç@¢V&Æ–2&ööÂVæ&ÆT¦f67&—B²vWC²6WC²ÒÒG'VS°¢V&Æ–2&ööÂVæ&ÆT–æ7&VÖVçFÅ'6U&W–çB²vWC²6WC²ÒÒG'VS°¢V&Æ–2&ööÂVæ&ÆU7G&VÖ–æu'6U&W72²vWC²6WC²ÒÒfÇ6S°¢V&Æ–2&ööÂVæ&ÆT–çFW&ÆVfVE&–Ö'•'6R²vWC²6WC²ÒÒG'VS°  ¢&—fFRfVä'&÷w6W"äfVäVæv–æRä6÷&Rä–çFW&f6W2ä”†—7F÷'”'&–FvRö†—7F÷'”'&–FvS° ¢V&Æ–2fö–B–æ—D†—7F÷'’„fVä'&÷w6W"äfVäVæv–æRä6÷&Rä–çFW&f6W2ä”†—7F÷'”'&–FvR'&–FvR¢°¢ö†—7F÷'”'&–FvRÒ'&–FvS°¢–b…ö7F—fT§2ÒçVÆÂ’ö7F—fT§2å6WD†—7F÷'”'&–FvR†'&–FvR“°¢Ğ ¢V&Æ–2fö–Bæ÷F–g•÷7FFR†ö&¦V7B7FFR¢°¢ö7F—fT§3òäæ÷F–g•÷7FFR‡7FFR“°¢Ğ  ¢V&Æ–2fö–B†–v†Æ–v‡DVÆVÖVçB„VÆVÖVçBVÆVÖVçB¢°¢–b†VÆVÖVçBÓÒçVÆÂ¢°¢&VÖ÷fT†–v†Æ–v‡B‚“°¢&WGW&ã°¢Ğ ¢–b„¦f67&—DVæv–æRåG'”vWEf—7VÅ&V7B†VÆVÖVçBÂ÷WBF÷V&ÆR‚Â÷WBF÷V&ÆR’Â÷WBF÷V&ÆRrÂ÷WBF÷V&ÆR‚’¢°¢†–v†Æ–v‡E&V7D6†ævVCòä–çfö¶R†æWr4µ&V7B‚†fÆöB—‚Â†fÆöB—’Â†fÆöB’‡‚·r’Â†fÆöB’‡’¶‚’’“°¢Ğ¢VÇ6P¢°¢&VÖ÷fT†–v†Æ–v‡B‚“°¢Ğ¢Ğ ¢V&Æ–2fö–B&VÖ÷fT†–v†Æ–v‡B‚¢°¢†–v†Æ–v‡E&V7D6†ævVCòä–çfö¶R†çVÆÂ“°¢Ğ ¢V&Æ–2fö–B†æFÆUö–çFW$WfVçB‡7G&–ærWfVçEG—RÂfÆöB‚ÂfÆöB’¢°¢f"&VæFW&W"ÒöW‡FW&æÅ&VæFW&W"óòö66†VE&VæFW&W#°¢–b‡&VæFW&W"ÓÒçVÆÂÇÂö7F—fT§2ÓÒçVÆÂ’&WGW&ã°¢G'¢°¢–b‡&VæFW&W"ä†—EFW7B‡‚Â’Â÷WBf"&W7VÇB’¢°¢–b‡&W7VÇBäæF—fTVÆVÖVçB—2VÆVÖVçBVÂ¢°¢òòF—7F6‚Fò¥0¢ö7F—fT§2äF—7F6„WfVçDf÷$VÆVÖVçB†VÂÂWfVçEG—R“°¢Ğ¢Ğ¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×BäW'&÷"‚B%´7W7FöÔ‡FÖÄVæv–æUÒ†æFÆUö–çFW$WfVçBW'&÷#¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢Ğ ¢V&Æ–2&ööÂF—7F6…ö–çFW$WfVçB„VÆVÖVçBVÆVÖVçBÂ7G&–ærWfVçEG—RÂ'&÷w6W$FöÔWfVçD–æ—BWfVçD–æ—BÒçVÆÂ¢°¢–b†VÆVÖVçBÓÒçVÆÂÇÂö7F—fT§2ÓÒçVÆÂÇÂ7G&–ærä—4çVÆÄ÷%v†—FU76R†WfVçEG—R’’&WGW&âG'VS° ¢G'¢°¢&WGW&âö7F—fT§2äF—7F6„WfVçDf÷$VÆVÖVçB†VÆVÖVçBÂWfVçEG—RÂWfVçD–æ—B“°¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×BäW'&÷"‚B%´7W7FöÔ‡FÖÄVæv–æUÒF—7F6…ö–çFW$WfVçBW'&÷#¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢&WGW&âG'VS°¢Ğ¢Ğ ¢òòòÇ7VÖÖ'“à¢òòò†6R#¢7–æ2f&–çBF†BFöW2æ÷B&Æö6²F†R6ÆÆ–ærF‡&VBv†–ÆP¢òòòF†R¥2v÷&¶W"W†V7WFW26Æ–6²ö¶W–&ö&BWfVçB†æFÆW'2à¢òòòÂ÷7VÖÖ'“à¢V&Æ–27–æ27—7FVÒåF‡&VF–æråF6·2åF6³Æ&ööÃâF—7F6…ö–çFW$WfVçD7–æ2„VÆVÖVçBVÆVÖVçBÂ7G&–ærWfVçEG—RÂ'&÷w6W$FöÔWfVçD–æ—BWfVçD–æ—BÒçVÆÂ¢°¢–b†VÆVÖVçBÓÒçVÆÂÇÂö7F—fT§2ÓÒçVÆÂÇÂ7G&–ærä—4çVÆÄ÷%v†—FU76R†WfVçEG—R’’&WGW&âG'VS° ¢G'¢°¢&WGW&âv—Bö7F—fT§2äF—7F6„WfVçDf÷$VÆVÖVçD7–æ2†VÆVÖVçBÂWfVçEG—RÂWfVçD–æ—B’ä6öæf–wW&Tv—B†fÇ6R“°¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×BäW'&÷"‚B%´7W7FöÔ‡FÖÄVæv–æUÒF—7F6…ö–çFW$WfVçD7–æ2W'&÷#¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢&WGW&âG'VS°¢Ğ¢Ğ ¢V&Æ–2fö–B6ÆV$ÆÄ6öö¶–W2‚¢°¢6öö¶–T¦"ä6ÆV$ÆÂ‚“°¢Ğ ¢V&Æ–2ö&¦V7BWfÇVFR‡7G&–ær67&—B¢°¢Væv–æTÆöt6ö×BäFV'Vr‚B%´7W7FöÔ‡FÖÄVæv–æRäWfÇVFUÒö7F—fT§2—2çVÆÃ¢µö7F—fT§2ÓÒçVÆÇÒ"ÂÆöt6FVv÷'’ä¦f67&—B“°¢–b…ö7F—fT§2ÒçVÆÂ’ ¢°¢Væv–æTÆöt6ö×BäFV'Vr‚B%´7W7FöÔ‡FÖÄVæv–æRäWfÇVFUÒ6ÆÆ–ærö7F—fT§2äWfÇVFRv—F‚67&—BÆVæwFƒ¢·67&—CòäÆVæwF‡Ò"ÂÆöt6FVv÷'’ä¦f67&—B“°¢&WGW&âö7F—fT§2äWfÇVFR‡67&—B“°¢Ğ¢Væv–æTÆöt6ö×BäW'&÷"‚%´7W7FöÔ‡FÖÄVæv–æRäWfÇVFUÒö7F—fT§2—2åTÄÂÒ67&—Bæ÷BW†V7WFVB"ÂÆöt6FVv÷'’ä¦f67&—B“°¢&WGW&âçVÆÃ°¢Ğ ¢V&Æ–2æöFR7F—fTFöÒÓâö7F—fTFöÓ°¢V&Æ–2”'&÷w6W%67&—DVæv–æR67&—DVæv–æRÓâö7F—fT§3°¢&—fFRæöFRö7F—fTFöÓ°¢&—fFRÆöær÷&VæFW%6æ6†÷EfW'6–öã°¢&—fFR&ööÂö†57F&ÆU7G–ÆW3°¢&—fFR&ööÂöv—F–æu÷7E67&—E6æ6†÷C°¢&—fFR7G&–æröÆ7E&t‡FÖÃ°¢&—fFRö&¦V7BöÆ7E&VæFW&VD6öçG&öÃ°¢&—fFRW&’ö7F—fT&6UW&“°¢&—fFRgVæ3ÅW&’ÂF6³Ç7G&–æsãâö7F—fTfWF6„773°¢&—fFRgVæ3ÅW&’ÂF6³Å7G&VÓãâö7F—fT–ÖvTÆöFW#°¢–çFW&æÂgVæ3ÄVÆVÖVçBÂW&’ÂF6³Ç7G&–æsãâfWF6„W‡FW&æÄ774f÷%&ö÷D7–æ2²vWC²6WC²Ğ¢&—fFR7F–öãÅW&“âö7F—fTöäæf–vFS°¢&—fFRF÷V&ÆSòö7F—fUf–Ww÷'Ev–GFƒ°¢&—fFRF÷V&ÆSòö7F—fUf–Ww÷'D†V–v‡C°¢&—fFR7F–öãÆö&¦V7Câö7F—fTf—†VD&6¶w&÷VæC°¢&—fFR”'&÷w6W%67&—DVæv–æRö7F—fT§3°¢V&Æ–2'&÷w6W$6öö¶–T¦"6öö¶–T¦"²vWC²6WC²ÒÒæWr'&÷w6W$6öö¶–T¦"‚“°¢&—fFR&VFöæÇ’7—7FVÒåF‡&VF–ærå6VÖ†÷&U6Æ–Ò÷&W–çDvFRÒæWr7—7FVÒåF‡&VF–ærå6VÖ†÷&U6Æ–ÒƒÂ“°¢&—fFR&VFöæÇ’ö&¦V7B÷VWVVE&VæFW%WFFTÆö6²ÒæWrö&¦V7B‚“°¢&—fFR&ööÂ÷VWVVE&VæFW%WFFU'Vææ–æs°¢&—fFR&ööÂ÷VWVVE&VæFW%WFFU&WVW7FVC°¢&—fFR&VFöæÇ’ö&¦V7B÷V”F—7F6†W#°¢&—fFR&VFöæÇ’WfVçDÆö÷6ö÷&F–æF÷"öWfVçDÆö÷6ö÷&F–æF÷#° ¢V&Æ–2WfVçDÆö÷6ö÷&F–æF÷"WfVçDÆö÷6ö÷&F–æF÷"ÓâöWfVçDÆö÷6ö÷&F–æF÷#°¢ ¢òò66†Rf–Wr÷&VæFW&W"Fòfö–BgVÆÂ&V7&VF–öà¢òò&—fFR6¶–'&÷w6W%f–Wrö66†VEf–Ws°¢&—fFR6¶–FöÕ&VæFW&W"ö66†VE&VæFW&W#°¢&—fFR6¶–FöÕ&VæFW&W"öW‡FW&æÅ&VæFW&W#²òò–æ¦V7FVBg&öÒ'&÷w6W$–çFVw&F–öà ¢òòòÇ7VÖÖ'“à¢òòò–æ¦V7G2âW‡FW&æÂ&VæFW&W"†g&öÒ'&÷w6W$–çFVw&F–öâ’FòW6R–ç7FVBöb7&VF–ær÷W"÷vâà¢òòòv†Vâ6WBÂ'V–ÆEf—7VÅG&VT7–æ2v–ÆÂW6RF†—2&VæFW&W"æB6¶—6WGF–ærW—G2÷vâf—7VÂ&V7B&÷f–FW"à¢òòòÂ÷7VÖÖ'“à¢V&Æ–2fö–B6WDW‡FW&æÅ&VæFW&W"…6¶–FöÕ&VæFW&W"&VæFW&W"¢°¢öW‡FW&æÅ&VæFW&W"Ò&VæFW&W#°¢Ğ¢ ¢V&Æ–27W7FöÔ‡FÖÄVæv–æR‚¢°¢÷V”F—7F6†W"ÒV•F‡&VD†VÇW"åG'”vWDF—7F6†W"‚“°¢öWfVçDÆö÷6ö÷&F–æF÷"ÒWfVçDÆö÷6ö÷&F–æF÷"ä–ç7Fæ6S°¢öWfVçDÆö÷6ö÷&F–æF÷"å6WE&VæFW$6ÆÆ&6²…&ö6W75VWVVE&VæFW%WFFR“°¢Ğ ¢&—fFR7FF–2F÷V&ÆRvWE&–Ö'•v–æF÷uv–GF‚‚¢°¢òò´Ô”u$D”ôåÒv–æF÷rÆöv–2&VÖ÷fV@¢&WGW&âƒ°¢Ğ ¢&—fFR7FF–2F÷V&ÆRvWE&–Ö'•v–æF÷t†V–v‡B‚¢°¢òò´Ô”u$D”ôåÒv–æF÷rÆöv–2&VÖ÷fV@¢&WGW&âc°¢Ğ ¢&—fFRFFUF–ÖRöÆ7E&W–çEF–ÖRÒFFUF–ÖRäÖ–åfÇVS° ¢&—fFR7FF–2&VFöæÇ’7—7FVÒä6öÆÆV7F–öç2ävVæW&–2ä†6…6WCÇ7G&–æsâöÆöF–æuFö¶Vç2Ğ¢æWr7—7FVÒä6öÆÆV7F–öç2ävVæW&–2ä†6…6WCÇ7G&–æsâ…7G&–æt6ö×&W"ä÷&F–æÄ–væ÷&T66R¢°¢&ÆöF–ær"À¢&ÆöFVB"À¢'ÆV6Wv—B"À¢&§W7FÖöÖVçB"À¢&†öÆGF–v‡B"À¢&†æwF–v‡B"À¢'7F–ÆÇv÷&¶–ær ¢Ó° ¢òò6öÖRvW2W‡÷6RW6&ÆRfÆÆ&6²DôÒ'WBG&Æ–Ö—FVBVæv–æW2–âÆöær×'Vææ–æp¢òò&ö÷G7G&67&—B–ÆöG2â&VfW"F†RfÆÆ&6²F‚v†VâF†R&rFö7VÖVçBÇ&VG¢òòGfW'F—6W2æ÷67&—BöÖWF×&Vg&W6‚&V6÷fW'’fÆ÷rà¢&—fFR7FF–2&ööÂ—4vöövÆU6V&6„66W75G&÷V&ÆTFö7VÖVçB‡7G&–ær‡FÖÂÂW&’&6UW&’¢°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R†‡FÖÂ’ÇÂ—4vöövÆT†÷7B†&6UW&’’¢°¢&WGW&âfÇ6S°¢Ğ ¢f"†4Væ&ÆT§5&V6÷fW'’Ğ¢‡FÖÂä–æFW„öb‚"ö‡GG6W'f–6R÷&WG'’öVæ&ÆV§2"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒÇÀ¢‡FÖÂä–æFW„öb‚&–b–÷R&Ræ÷B&VF—&V7FVBv—F†–âfWr6V6öæG2"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒ°¢–b‚†4Væ&ÆT§5&V6÷fW'’¢°¢&WGW&âfÇ6S°¢Ğ ¢f"†5G&÷V&ÆT&ææW"Ğ¢‡FÖÂä–æFW„öb‚&–CÕÂ'—fÇ'VUÂ""Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒÇÀ¢‡FÖÂä–æFW„öb‚&–CÒw—fÇ'VRr"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒÇÀ¢‡FÖÂä–æFW„öb‚'G&÷V&ÆR66W76–ærvöövÆR6V&6‚"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒ°¢&WGW&â†5G&÷V&ÆT&ææW#°¢Ğ ¢&—fFR7FF–27G&–ær'V–ÆDvöövÆT66W75G&÷V&ÆTfÆÆ&6´‡FÖÂ‡7G&–ær‡FÖÂÂW&’&6UW&’¢°¢–b‚—4vöövÆU6V&6„66W75G&÷V&ÆTFö7VÖVçB†‡FÖÂÂ&6UW&’’¢°¢&WGW&â‡FÖÂóò7G&–æräV×G“°¢Ğ ¢f"&ææW$–ææW"Ò$–b–÷Rw&R†f–ærG&÷V&ÆR66W76–ærvöövÆR6V&6‚ÂÆV6R&WG'’–÷W"6V&6‚â#°¢G'¢°¢f"ÖF6‚Ò7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW‚äÖF6‚€¢‡FÖÂÀ¢#ÆF—eÅÆ%µãåÒ¥ÅÆ&–EÅÇ2£ÕÅÇ2¥²uÅÅÂ%×—fÇ'VU²uÅÅÂ%ÕµãåÒ£â‚â£ò“ÂöF—câ"À¢7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW„÷F–öç2ä–væ÷&T66RÂ7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW„÷F–öç2å6–ævÆVÆ–æR“° ¢–b†ÖF6‚å7V66W72bbÖF6‚äw&÷W2ä6÷VçBâbb7G&–ærä—4çVÆÄ÷%v†—FU76R†ÖF6‚äw&÷W5³ÒåfÇVR’¢°¢&ææW$–ææW"ÒÖF6‚äw&÷W5³ÒåfÇVS°¢Ğ¢Ğ¢6F6€¢°¢òò¶VWFVfVÇB&ææW"FW‡Böâ&VvW‚f–ÇW&Rà¢Ğ ¢&ææW$–ææW"Ò&ææW$–ææW ¢å&WÆ6R‚&‡&VcÕÂ"ò"Â&‡&VcÕÂ&‡GG3¢ò÷wwrævöövÆRæ6öÒò"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R¢å&WÆ6R‚&‡&VcÒrò"Â&‡&VcÒv‡GG3¢ò÷wwrævöövÆRæ6öÒò"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R“° ¢&WGW&à¢#ÂDô5E•R‡FÖÃãÆ‡FÖÃãÆ†VCãÆÖWF6†'6WCÕÂ'WFbÓ…Â#ãÇF—FÆSävöövÆR6V&6ƒÂ÷F—FÆSãÂö†VCâ"°¢#Æ&öG’7G–ÆSÕÂ&föçBÖfÖ–Ç“¤&–ÂÇ6ç2×6W&–c·FF–æs£#Gƒ¶Æ–æRÖ†V–v‡C£ãCS¶6öÆ÷#¢3###C¶&6¶w&÷VæC¢6ffcµÂ#â"°¢B#ÆF—b–CÕÂ'—fÇ'VUÂ#ç¶&ææW$–ææW'ÓÂöF—câ"°¢#Âö&öG“ãÂö‡FÖÃâ#°¢Ğ §&—fFR7FF–27G&–ær&VÖ÷fT–æÆ–æTF—7Æ”æöæR‡7G&–ær–æÆ–æU7G–ÆR¢°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R†–æÆ–æU7G–ÆR’¢°¢&WGW&â7G&–æräV×G“°¢Ğ ¢f"WFFVBÒ7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW‚å&WÆ6R€¢–æÆ–æU7G–ÆRÀ¢"ƒó¥çÃ²•Ç2¦F—7Æ•Ç2£¥Ç2¦æöæUÇ2£³ò"À¢#²"À¢7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW„÷F–öç2ä–væ÷&T66R“° ¢WFFVBÒ7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW‚å&WÆ6R€¢WFFVBÀ¢#·³"ÇÒ"À¢#²"À¢7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW„÷F–öç2äæöæR’åG&–Ò‚’åG&–Ò‚s²r’åG&–Ò‚“° ¢&WGW&âWFFVC°¢Ğ ¢&—fFR7FF–2&ööÂÆöö·4Æ–¶Uf—6–&ÆTfÆÆ&6´6æF–FFR„VÆVÖVçBVÆVÖVçBÂW&’&6UW&’¢°¢–b†VÆVÖVçBÓÒçVÆÂ¢°¢&WGW&âfÇ6S°¢Ğ ¢–b‚VÆVÖVçBäFW66VæFçG2‚’äöeG—SÄVÆVÖVçCâ‚’äç’†6†–ÆBÓà¢7G&–æräWVÇ2†6†–ÆBåFtæÖRÂ&"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’’¢°¢&WGW&âfÇ6S°¢Ğ ¢f"FW‡BÒvV%WF–Æ—G’ä‡FÖÄFV6öFR†VÆVÖVçBåFW‡D6öçFVçBóò7G&–æräV×G’“°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R‡FW‡B’ÇÂFW‡BäÆVæwF‚Â#B¢°¢&WGW&âfÇ6S°¢Ğ ¢–b„—4vöövÆT†÷7B†&6UW&’’¢°¢&WGW&âfÇ6S°¢Ğ ¢&WGW&âFW‡Bä–æFW„öb‚'G&÷V&ÆR66W76–ær"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒÇÀ¢FW‡Bä–æFW„öb‚&æ÷B&VF—&V7FVBv—F†–âfWr6V6öæG2"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒÇÀ¢‡FW‡Bä–æFW„öb‚&6Æ–6²†W&R"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒb`¢FW‡Bä–æFW„öb‚&fVVF&6²"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒ“°¢Ğ ¢&—fFR7FF–2–çB&öÖ÷FT†–FFVäfÆÆ&6´6öçFVçB„æöFRFöÕ&ö÷BÂW&’&6UW&’¢°¢–b†FöÕ&ö÷BÓÒçVÆÂ¢°¢&WGW&â°¢Ğ ¢f"&öÖ÷FVBÒ°¢f÷&V6‚‡f"VÆVÖVçB–âFöÕ&ö÷BäFW66VæFçG2‚’äöeG—SÄVÆVÖVçCâ‚’¢°¢f"–æÆ–æU7G–ÆRÒVÆVÖVçBävWDGG&–'WFR‚'7G–ÆR"“°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R†–æÆ–æU7G–ÆR’ÇÀ¢–æÆ–æU7G–ÆRä–æFW„öb‚&F—7Æ’"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ÂÇÀ¢–æÆ–æU7G–ÆRä–æFW„öb‚&æöæR"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ÂÇÀ¢Æöö·4Æ–¶Uf—6–&ÆTfÆÆ&6´6æF–FFR†VÆVÖVçBÂ&6UW&’’¢°¢6öçF–çVS°¢Ğ ¢f"WFFVE7G–ÆRÒ&VÖ÷fT–æÆ–æTF—7Æ”æöæR†–æÆ–æU7G–ÆR“°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R‡WFFVE7G–ÆR’¢°¢VÆVÖVçBå&VÖ÷fTGG&–'WFR‚'7G–ÆR"“°¢Ğ¢VÇ6P¢°¢VÆVÖVçBå6WDGG&–'WFR‚'7G–ÆR"ÂWFFVE7G–ÆR“°¢Ğ ¢&öÖ÷FVB²³°¢Ğ ¢&WGW&â&öÖ÷FVC°¢Ğ ¢&—fFR7FF–2&VFöæÇ’†6…6WCÇ7G&–æsâvöövÆT6ö×E6—FW2ÒæWr…7G&–æt6ö×&W"ä÷&F–æÂ¢°¢&vöövÆRæ6öÒ"Â&vöövÆRæ6òæ–â"Â&vöövÆRæ6òçV²"Â&vöövÆRæ6"Â&vöövÆRæ6öÒæR"À¢&vöövÆRæFR"Â&vöövÆRæg""Â&vöövÆRæ6òæ§"Â&vöövÆRæ6öÒæ'""Â&vöövÆRæW2"Â&vöövÆRæ—B ¢Ó° ¢&—fFR7FF–27G&–ærvWE&Vv—7G&&ÆT†÷7B…W&’W&’¢°¢–b‡W&’ÓÒçVÆÂÇÂW&’ä—4'6öÇWFUW&’¢°¢&WGW&â7G&–æräV×G“°¢Ğ ¢f"–FVçF—G’Ò6—FT–FVçF—G•6W'f–6RäFVfVÇC°¢f"†÷7BÒ–FVçF—G’ä6æöæ–6Æ—¦T†÷7B‡W&’ä–Fä†÷7B“°¢f"&Vv—7G&&ÆRÒ–FVçF—G’ä6ö×WFU&Vv—7G&&ÆTFöÖ–â††÷7B“°¢&WGW&â7G&–ærä—4çVÆÄ÷$V×G’‡&Vv—7G&&ÆR’ò†÷7B¢&Vv—7G&&ÆS°¢Ğ ¢&—fFR7FF–2&ööÂ—4vöövÆT†÷7B…W&’&6UW&’¢°¢&WGW&âvöövÆT6ö×E6—FW2ä6öçF–ç2„vWE&Vv—7G&&ÆT†÷7B†&6UW&’’“°¢Ğ ¢&—fFR7FF–2–çB&VÖ÷fTvöövÆT66W75G&÷V&ÆT&ææW'2„æöFRFöÕ&ö÷BÂW&’&6UW&’¢°¢–b†FöÕ&ö÷BÓÒçVÆÂÇÂ—4vöövÆT†÷7B†&6UW&’’¢°¢&WGW&â°¢Ğ ¢f"Fõ&VÖ÷fRÒæWrÆ—7CÄVÆVÖVçCâ‚“°¢f÷&V6‚‡f"VÆVÖVçB–âFöÕ&ö÷BäFW66VæFçG2‚’äöeG—SÄVÆVÖVçCâ‚’¢°¢f"FW‡BÒvV%WF–Æ—G’ä‡FÖÄFV6öFR†VÆVÖVçBåFW‡D6öçFVçBóò7G&–æräV×G’“°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R‡FW‡B’¢°¢6öçF–çVS°¢Ğ ¢f"†5G&÷V&ÆTÖW76vRĞ¢FW‡Bä–æFW„öb‚'G&÷V&ÆR66W76–ærvöövÆR6V&6‚"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒÇÀ¢FW‡Bä–æFW„öb‚&†f–ærG&÷V&ÆR66W76–ærvöövÆR6V&6‚"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒ°¢–b‚†5G&÷V&ÆTÖW76vR¢°¢6öçF–çVS°¢Ğ ¢f"†4fÆÆ&6´7F–öåFW‡BĞ¢FW‡Bä–æFW„öb‚&6Æ–6²†W&R"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒÇÀ¢FW‡Bä–æFW„öb‚'6VæBfVVF&6²"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒ°¢–b‚†4fÆÆ&6´7F–öåFW‡B¢°¢6öçF–çVS°¢Ğ ¢Fõ&VÖ÷fRäFB†VÆVÖVçB“°¢Ğ ¢f÷&V6‚‡f"VÆVÖVçB–âFõ&VÖ÷fR¢°¢VÆVÖVçBå&VÖ÷fR‚“°¢Ğ ¢&WGW&âFõ&VÖ÷fRä6÷VçC°¢Ğ ¢&—fFR7FF–2–çB&VÖ÷fTvöövÆUG&÷V&ÆT&ææW$'F–f7G2„æöFRFöÕ&ö÷BÂW&’&6UW&’¢°¢–b†FöÕ&ö÷BÓÒçVÆÂÇÂ—4vöövÆT†÷7B†&6UW&’’¢°¢&WGW&â°¢Ğ ¢f"Fõ&VÖ÷fRÒæWrÆ—7CÄVÆVÖVçCâ‚“°¢f÷&V6‚‡f"VÆVÖVçB–âFöÕ&ö÷BäFW66VæFçG2‚’äöeG—SÄVÆVÖVçCâ‚’¢°¢f"FrÒVÆVÖVçBåFtæÖSòåFôÆ÷vW$–çf&–çB‚“°¢–b‡FrÓÒ&F—b"bb7G&–æräWVÇ2†VÆVÖVçBävWDGG&–'WFR‚&–B"’Â'—fÇ'VR"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’¢°¢Fõ&VÖ÷fRäFB†VÆVÖVçB“°¢6öçF–çVS°¢Ğ ¢–b‡FrÒ'67&—B"¢°¢6öçF–çVS°¢Ğ ¢f"67&—EFW‡BÒVÆVÖVçBåFW‡D6öçFVçBóò7G&–æräV×G“°¢–b‡67&—EFW‡Bä–æFW„öb‚'6u÷G&&Â"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒÇÀ¢67&—EFW‡Bä–æFW„öb‚&774–CÒw—fÇ'VRr"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒÇÀ¢67&—EFW‡Bä–æFW„öb‚&774–CÕÂ'—fÇ'VUÂ""Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒ¢°¢Fõ&VÖ÷fRäFB†VÆVÖVçB“°¢Ğ¢Ğ ¢f÷&V6‚‡f"VÆVÖVçB–âFõ&VÖ÷fR¢°¢VÆVÖVçBå&VÖ÷fR‚“°¢Ğ ¢&WGW&âFõ&VÖ÷fRä6÷VçC°¢Ğ ¢&—fFR7FF–2&ööÂ—4vöövÆU6V&6„6†ÆÆVævTFö7VÖVçB„æöFRFöÕ&ö÷BÂW&’&6UW&’¢°¢–b†FöÕ&ö÷BÓÒçVÆÂÇÂ—4vöövÆT†÷7B†&6UW&’’¢°¢&WGW&âfÇ6S°¢Ğ ¢f÷&V6‚‡f"VÆVÖVçB–âFöÕ&ö÷BäFW66VæFçG2‚’äöeG—SÄVÆVÖVçCâ‚’¢°¢–b‡7G&–æräWVÇ2†VÆVÖVçBävWDGG&–'WFR‚&–B"’Â'—fÇ'VR"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’¢°¢&WGW&âG'VS°¢Ğ ¢–b‚7G&–æräWVÇ2†VÆVÖVçBåFtæÖRÂ&"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’¢°¢6öçF–çVS°¢Ğ ¢f"‡&VbÒVÆVÖVçBävWDGG&–'WFR‚&‡&Vb"’óò7G&–æräV×G“°¢–b†‡&Vbä–æFW„öb‚&V×6sÕ4uõ$TÂ"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒ¢°¢&WGW&âG'VS°¢Ğ¢Ğ ¢&WGW&âfÇ6S°¢Ğ ¢&—fFR7FF–2–çBf÷&6TvöövÆT6†ÆÆVævT&ææW%f—6–&ÆR„æöFRFöÕ&ö÷BÂW&’&6UW&’Â&ööÂ&VÖ÷fUVæ†–FU67&—B¢°¢–b‚—4vöövÆU6V&6„6†ÆÆVævTFö7VÖVçB†FöÕ&ö÷BÂ&6UW&’’¢°¢&WGW&â°¢Ğ ¢f"6†ævVBÒ°¢f÷&V6‚‡f"VÆVÖVçB–âFöÕ&ö÷BäFW66VæFçG2‚’äöeG—SÄVÆVÖVçCâ‚’¢°¢–b‚7G&–æräWVÇ2†VÆVÖVçBävWDGG&–'WFR‚&–B"’Â'—fÇ'VR"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’¢°¢6öçF–çVS°¢Ğ ¢f"–æÆ–æU7G–ÆRÒVÆVÖVçBävWDGG&–'WFR‚'7G–ÆR"’óò7G&–æräV×G“°¢f"WFFVE7G–ÆRÒ–æÆ–æU7G–ÆS° ¢–b‚7G&–ærä—4çVÆÄ÷%v†—FU76R†–æÆ–æU7G–ÆR’¢°¢WFFVE7G–ÆRÒ7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW‚å&WÆ6R€¢WFFVE7G–ÆRÀ¢"ƒó¥çÃ²•Ç2¦F—7Æ•Ç2£¥Ç2¦æöæRƒó¥Ç2¢Ç2¦–×÷'FçB“õÇ2£³ò"À¢#²"À¢7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW„÷F–öç2ä–væ÷&T66R“°¢WFFVE7G–ÆRÒ7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW‚å&WÆ6R€¢WFFVE7G–ÆRÀ¢"ƒó¥çÃ²•Ç2§f—6–&–Æ—G•Ç2£¥Ç2¦†–FFVâƒó¥Ç2¢Ç2¦–×÷'FçB“õÇ2£³ò"À¢#²"À¢7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW„÷F–öç2ä–væ÷&T66R“°¢WFFVE7G–ÆRÒ7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW‚å&WÆ6R€¢WFFVE7G–ÆRÀ¢"ƒó¥çÃ²•Ç2¦÷6—G•Ç2£¥Ç2£ƒó¥Âã²“òƒó¥Ç2¢Ç2¦–×÷'FçB“õÇ2£³ò"À¢#²"À¢7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW„÷F–öç2ä–væ÷&T66R“°¢Ğ ¢WFFVE7G–ÆRÒWFFVE7G–ÆSòåG&–Ò‚’óò7G&–æräV×G“°¢–b‚WFFVE7G–ÆRäVæG5v—F‚‚#²"Â7G&–æt6ö×&—6öâä÷&F–æÂ’bbWFFVE7G–ÆRäÆVæwF‚â¢°¢WFFVE7G–ÆR³Ò#²#°¢Ğ ¢WFFVE7G–ÆR³Ò&F—7Æ“¦&Æö6³·f—6–&–Æ—G“§f—6–&ÆS¶÷6—G“£²#°¢WFFVE7G–ÆRÒ7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW‚å&WÆ6R‡WFFVE7G–ÆRÂ#·³"ÇÒ"Â#²"“°¢WFFVE7G–ÆRÒWFFVE7G–ÆRåG&–Ò‚’åG&–Ò‚s²r“° ¢VÆVÖVçBå6WDGG&–'WFR‚'7G–ÆR"ÂWFFVE7G–ÆR“° ¢–b‡7G&–æräWVÇ2†VÆVÖVçBävWDGG&–'WFR‚&†–FFVâ"’Â&†–FFVâ"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ÇÀ¢VÆVÖVçBä†4GG&–'WFR‚&†–FFVâ"’¢°¢VÆVÖVçBå&VÖ÷fTGG&–'WFR‚&†–FFVâ"“°¢Ğ ¢–b‡7G&–æräWVÇ2†VÆVÖVçBävWDGG&–'WFR‚&&–Ö†–FFVâ"’Â'G'VR"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’¢°¢VÆVÖVçBå6WDGG&–'WFR‚&&–Ö†–FFVâ"Â&fÇ6R"“°¢Ğ ¢6†ævVB²³°¢Ğ ¢–b‡&VÖ÷fUVæ†–FU67&—B¢°¢6†ævVB³Ò&VÖ÷fTvöövÆUG&÷V&ÆT&ææW$'F–f7G2†FöÕ&ö÷BÂ&6UW&’“°¢Ğ ¢&WGW&â6†ævVC°¢Ğ ¢&—fFR7FF–2–çB&VÖ÷fTVæ6öFVDæ÷67&—D&ö÷G7G&fÆÆ&6·2„”VçVÖW&&ÆSÄVÆVÖVçCâæ÷67&—DVÆVÖVçG2¢°¢–b†æ÷67&—DVÆVÖVçG2ÓÒçVÆÂ¢°¢&WGW&â°¢Ğ ¢f"&VÖ÷fVBÒ°¢f÷&V6‚‡f"æ÷67&—B–âæ÷67&—DVÆVÖVçG2¢°¢f"FW‡BÒæ÷67&—CòåFW‡D6öçFVçBóò7G&–æräV×G“°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R‡FW‡B’¢°¢6öçF–çVS°¢Ğ ¢f"Æöö·4Væ6öFVD&ö÷G7G&Ğ¢FW‡Bä–æFW„öb‚#ÆÖWF"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒb`¢FW‡Bä–æFW„öb‚&‡GGÖWV—cÕÂ'&Vg&W6…Â""Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒb`¢FW‡Bä–æFW„öb‚#Ç7G–ÆSâ"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’ãÒ° ¢–b‚Æöö·4Væ6öFVD&ö÷G7G&¢°¢6öçF–çVS°¢Ğ ¢æ÷67&—Bå&VÖ÷fR‚“°¢&VÖ÷fVB²³°¢Ğ ¢&WGW&â&VÖ÷fVC°¢Ğ §V&Æ–2fö–BF—7÷6R‚¢°¢G'¢°¢öWfVçDÆö÷6ö÷&F–æF÷"å6WE&VæFW$6ÆÆ&6²†çVÆÂ“°¢÷&W–çDvFRäF—7÷6R‚“°¢òòö7F—fT§2FöW2æ÷B–×ÆVÖVçB”F—7÷6&ÆRÂ§W7B6ÆV"&V`¢ö7F—fT§2ÒçVÆÃ°¢6WD7F—fTFöÒ†çVÆÂ“°¢òòö66†VEf–WrÒçVÆÃ°¢ö66†VE&VæFW&W"ÒçVÆÃ°¢¦f67&—DVæv–æRå6WEf—7VÅ&V7E&÷f–FW"†çVÆÂ“°¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×Båv&â‚B%´7W7FöÔ‡FÖÄVæv–æUÒF—7÷6RW'&÷#¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢Ğ ¢&—fFRfö–B&ö6W75VWVVE&VæFW%WFFR‚¢°¢Æö6²…÷VWVVE&VæFW%WFFTÆö6²¢°¢÷VWVVE&VæFW%WFFU&WVW7FVBÒG'VS°¢–b…÷VWVVE&VæFW%WFFU'Vææ–ær¢°¢&WGW&ã°¢Ğ ¢÷VWVVE&VæFW%WFFU'Vææ–ærÒG'VS°¢Ğ ¢òÒ'VäFWF6†VD7–æ2„G&–åVWVVE&VæFW%WFFW47–æ2“°¢Ğ ¢&—fFR7–æ2F6²G&–åVWVVE&VæFW%WFFW47–æ2‚¢°¢Æö6²…÷VWVVE&VæFW%WFFTÆö6²¢°¢–b‚÷VWVVE&VæFW%WFFU&WVW7FVB¢°¢÷VWVVE&VæFW%WFFU'Vææ–ærÒfÇ6S°¢&WGW&ã°¢Ğ ¢òòöæR&VæFW"6ÆÆ&6²÷vç2öæRg&ÖRâ–bæ÷F†W"F–ÖW"6ÆÆ&6°¢òòF—'F–W2F†RDôÒv†–ÆRF†—2v÷&²—2–âfÆ–v‡BÂF†RWfVçBÆö÷ ¢òòv–ÆÂFVÆ—fW"—BöâÆFW"g&ÖS²Fòæ÷B7–â6V6öæBgVÆÀ¢òòf—7VÂ×G&VR&Vg&W6‚–ÖÖVF–FVÇ’g&öÒF†—2F6²à¢÷VWVVE&VæFW%WFFU&WVW7FVBÒfÇ6S°¢Ğ ¢G'¢°¢f"VæF–æu&V666FRÒ÷VæF–æu&V666FS°¢–b‡VæF–æu&V666FRÒçVÆÂbbVæF–æu&V666FRä—46ö×ÆWFVB¢°¢v—BVæF–æu&V666FRä6öæf–wW&Tv—B†fÇ6R“°¢Ğ ¢f"7F—fTFöÒÒvWD7F—fTFöÒ‚“°¢–b†7F—fTFöÒÒçVÆÂ¢°¢öå&W–çE&VG’†7F—fTFöÒ“°¢Ğ¢Ğ¢6F6‚„ö&¦V7DF—7÷6VDW†6WF–öâ¢°¢&WGW&ã°¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×Båv&â‚B%´7W7FöÔ‡FÖÄVæv–æUÒVWVVB&VæFW"WFFRf–ÆVC¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢f–æÆÇ¢°¢Æö6²…÷VWVVE&VæFW%WFFTÆö6²¢°¢÷VWVVE&VæFW%WFFU'Vææ–ærÒfÇ6S°¢Ğ¢Ğ¢Ğ ¢&—fFR7–æ2F6²&—6TÆöF–æt6†ævVD7–æ2†&ööÂ—4ÆöF–ær¢°¢f"†æFÆW"ÒÆöF–æt6†ævVC°¢–b††æFÆW"ÓÒçVÆÂ’&WGW&ã°¢G'¢°¢f"F—7Ò÷V”F—7F6†W"óòV•F‡&VD†VÇW"åG'”vWDF—7F6†W"‚“°¢–b†F—7ÒçVÆÂbbV•F‡&VD†VÇW"ä†5F‡&VD66W72†F—7’¢°¢v—BV•F‡&VD†VÇW"å'Vä7–æ4v—F&ÆR†F—7ÂçVÆÂÂ‚’Óà¢°¢G'’²†æFÆW"‡F†—2Â—4ÆöF–ær“²Ğ¢6F6‚„W†6WF–öâW‚’ ¢°¢Væv–æTÆöt6ö×BäW'&÷"‚B%´7W7FöÔ‡FÖÄVæv–æUÒÆöF–æt6†ævVB†æFÆW"W'&÷"†7–æ2“¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢&WGW&âF6²ä6ö×ÆWFVEF6³°¢Ò“°¢Ğ¢VÇ6P¢°¢†æFÆW"‡F†—2Â—4ÆöF–ær“°¢Ğ¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×BäW'&÷"‚B%´7W7FöÔ‡FÖÄVæv–æUÒÆöF–æt6†ævVB†æFÆW"W'&÷#¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢Ğ ¢òò&W6öÇfR÷76–&Ç’&VÆF—fRU$Âv–ç7B&6P¢&—fFR7FF–2W&’&W6öÇfUW&’…W&’&6UW&’Â7G&–ær‡&Vb¢°¢G'¢°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R†‡&Vb’’&WGW&âçVÆÃ°¢‡&VbÒ‡&VbåG&–Ò‚“°¢–b†‡&Vbå7F'G5v—F‚‚"òò"’¢°¢f"66†VÖRÒ&6UW&’ÒçVÆÂò&6UW&’å66†VÖR¢&‡GG2#°¢&WGW&âæWrW&’‡66†VÖR²#¢"²‡&Vb“°¢Ğ¢W&’'3°¢–b…W&’åG'”7&VFR†‡&VbÂW&”¶–æBä'6öÇWFRÂ÷WB'2’’&WGW&â'3°¢–b†&6UW&’ÒçVÆÂbbW&’åG'”7&VFR†&6UW&’Â‡&VbÂ÷WB'2’’&WGW&â'3°¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×BäFV'Vr‚B%´7W7FöÔ‡FÖÄVæv–æUÒ&W6öÇfUW&’f–ÆVBf÷"w¶‡&VgÒs¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢&WGW&âçVÆÃ°¢Ğ ¢òòÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒĞ¢òò†VÇW#¢–ÖvRÆöv–2„6öç6öÆ–FFVBf÷"W&f÷&Öæ6RôE%’¢òòÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒĞ ¢òò&W6W'fRvV%76WG2…6¶–7W÷'G2F†VÒ“²öæÇ’&Ww&—FRd”bv†Vâ'6öÇWFVÇ’æV6W76'’à¢&—fFR7FF–27G&–ær&Ww&—FUvV%Fô§r‡7G&–ærR¢°¢G'¢°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R‡R’’&WGW&âS° ¢òòf7BW†—Bv†Vâæòd”bFö¶Vç2&W6VçBà¢–b‡Rä–æFW„öb‚&f–b"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’Â¢&WGW&âS° ¢òò6öÖR4Dç2vFRd”b&V†–æBVW'’&×3²fÆÂ&6²Fò¥Trf÷"6ö×F–&–Æ—G’à¢RÒ7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW‚å&WÆ6R‡RÂ"…Ã÷Âb’†gÆf×B“Öf–b"Â"CC#Ö§r"Â7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW„÷F–öç2ä–væ÷&T66R“° ¢–b…7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW‚ä—4ÖF6‚‡RÂ%Âæf–b…Ãòâ¢“òB"Â7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW„÷F–öç2ä–væ÷&T66R’¢RÒ7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW‚å&WÆ6R‡RÂ%Âæf–b…Ãòâ¢“òB"Â"æ§rC"Â7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW„÷F–öç2ä–væ÷&T66R“°¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×BäFV'Vr‚B%´7W7FöÔ‡FÖÄVæv–æUÒ&Ww&—FUvV%Fô§rf–ÆVBf÷"w·WÒs¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢&WGW&âS°¢Ğ ¢&—fFR7FF–27G&–ær–6´&W7D–ÖvTg&öÕ7&56WB‡7G&–ær7&76WBÂF÷V&ÆRf–Ww÷'Ev–GF‚¢°¢f"6VÆV7FVBÒ&W7öç6—fT–ÖvU6÷W&6U6VÆV7F÷"å–6´&W7D–ÖvT6æF–FFR†çVÆÂÂ7&76WBÂf–Ww÷'Ev–GF‚“°¢&WGW&â&Ww&—FUvV%Fô§r‡6VÆV7FVB“°¢Ğ ¢òòÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒĞ¢òòVæB†VÇW ¢òòÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒÒĞ ¢òò¶–6²öfb&6¶w&÷VæB–ÖvRfWF6†W2V&Ç’†–Ör÷7&76WBö&6¶w&÷VæBÖ–ÖvR¢&—fFR7FF–27–æ2F6²&Wv&Ô–ÖvW47–æ2„VÆVÖVçB&ö÷BÂW&’&6UW&’ÂgVæ3ÅW&’ÂF6³Å7G&VÓãâ–ÖvTÆöFW"ÂF÷V&ÆSòf–Ww÷'Ev–GF‚¢°¢–b‡&ö÷BÓÒçVÆÂÇÂ–ÖvTÆöFW"ÓÒçVÆÂ’&WGW&ã°¢G'¢°¢f"VvW$ÆöG2ÒæWrÆ—7CÅW&“â‚“°¢f"&6¶w&÷VæDÆöG2ÒæWrÆ—7CÅW&“â‚“°¢f"6VVâÒæWr†6…6WCÇ7G&–æsâ…7G&–æt6ö×&W"ä÷&F–æÂ“°¢f"vFRÒæWr7—7FVÒåF‡&VF–ærå6VÖ†÷&U6Æ–Ò„–ÖvU&Wv&ÔÖ„6öæ7W'&Væ7’“°¢–çB'VFvWBÒ–ÖvU&Wv&ÕVWVT'VFvWC²òòfö–B÷fW"×VWV–æp¢F÷V&ÆRGrÒf–Ww÷'Ev–GF‚óò² ¢G'’²–b†GrÃÒ’GrÒvWE&–Ö'•v–æF÷uv–GF‚‚“²Ò6F6‚„W†6WF–öâW‚’²Væv–æTÆöt6ö×Båv&â‚B%´7W7FöÔ‡FÖÄVæv–æUÒf–ÆVB&VF–ær&–Ö'’v–æF÷rv–GFƒ¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“²Ğ¢–b†GrÃÒ’GrÒCƒ° ¢f"÷væW$Fö7VÖVçBÒ&ö÷Bä÷væW$Fö7VÖVçC°¢f"†4Fö7VÖVçDfWF6†W"Ò–ÖvTÆöFW"ä†4Fö7VÖVçDv&TfWF6†W"†÷væW$Fö7VÖVçB“° ¢7–æ2F6²ÆöDæD66†T7–æ2…W&’'2¢°¢G'¢°¢v—BvFRåv—D7–æ2‚’ä6öæf–wW&Tv—B†fÇ6R“°¢G'¢°¢f"FFÒv—B–ÖvTÆöFW"äfWF6„'—FW4f÷$7W'&VçD6öçFW‡D7–æ2†'2Â÷væW$Fö7VÖVçB’ä6öæf–wW&Tv—B†fÇ6R“°¢–b†FFÒçVÆÂbbFFäÆVæwF‚â¢°¢G'¢°¢W6–ærf"ÖVÖ÷'’ÒæWrÖVÖ÷'•7G&VÒ†FFÂw&—F&ÆS¢fÇ6R“°¢–b†v—B–ÖvTÆöFW"å&Wv&Ô–ÖvT7–æ2€¢'2ä'6öÇWFUW&’À¢ÖVÖ÷'’À¢÷væW$Fö7VÖVçC¢÷væW$Fö7VÖVçB¢ä6öæf–wW&Tv—B†fÇ6R’¢°¢&WGW&ã°¢Ğ¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×BäFV'Vr‚B%´7W7FöÔ‡FÖÄVæv–æUÒ'—FRÖfWF6‚&Wv&ÒfÆÆ&6²G&–vvW&VBf÷"¶'7Ó¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢Ğ ¢–b††4Fö7VÖVçDfWF6†W"¢°¢&WGW&ã°¢Ğ ¢W6–ærf"7G&VÒÒv—B–ÖvTÆöFW"†'2’ä6öæf–wW&Tv—B†fÇ6R“°¢–b‡7G&VÒÒçVÆÂ¢°¢v—B–ÖvTÆöFW"å&Wv&Ô–ÖvT7–æ2€¢'2ä'6öÇWFUW&’À¢7G&VÒÀ¢÷væW$Fö7VÖVçC¢÷væW$Fö7VÖVçB¢ä6öæf–wW&Tv—B†fÇ6R“°¢Ğ¢Ğ¢f–æÆÇ¢°¢vFRå&VÆV6R‚“°¢Ğ¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×Båv&â‚B%´7W7FöÔ‡FÖÄVæv–æUÒ–ÖvRÆöBF6²f–ÆVC¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢Ğ ¢fö–BVWVTÆöB‡7G&–ær&uW&Â¢°¢–b†'VFvWBÃÒÇÂ7G&–ærä—4çVÆÄ÷%v†—FU76R‡&uW&Â’’&WGW&ã°¢f"6ÆVâÒ&Ww&—FUvV%Fô§r‡&uW&Â“°¢–b†6ÆVâå7F'G5v—F‚‚&FF¢"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’¢°¢–ÖvTÆöFW"ävWD–ÖvR†6ÆVâÂ÷væW$Fö7VÖVçC¢÷væW$Fö7VÖVçB“°¢&WGW&ã°¢Ğ ¢f"'2Ò&W6öÇfUW&’†&6UW&’Â6ÆVâ“°¢–b†'2ÓÒçVÆÂÇÂ6VVâäFB†'2ä'6öÇWFUW&’’’&WGW&ã° ¢'VFvWBÒÓ°¢–b†VvW$ÆöG2ä6÷VçBÂ–ÖvU&Wv&ÔVvW$6æF–FFTÆ–Ö—B¢°¢VvW$ÆöG2äFB†'2“°¢Ğ¢VÇ6P¢°¢&6¶w&÷VæDÆöG2äFB†'2“°¢Ğ¢Ğ ¢òò&VÆöBõ&VfWF6‚Æ–æ·0¢f÷&V6‚‡f"Æ–æ²–â&ö÷BäFW66VæFçG2‚’äöeG—SÄVÆVÖVçCâ‚’åv†W&R†âÓâ7G&–æräWVÇ2†âåFtæÖRÂ&Æ–æ²"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’’¢°¢7G&–ær&VÂÒÆ–æ²ävWDGG&–'WFR‚'&VÂ"“°¢–b‡&VÂÓÒ'&VÆöB"ÇÂ&VÂÓÒ'&VfWF6‚"¢°¢7G&–ær‡&VbÒÆ–æ²ävWDGG&–'WFR‚&‡&Vb"“°¢–b†‡&VbÒçVÆÂ¢°¢7G&–ær4GG"ÒÆ–æ²ävWDGG&–'WFR‚&2"“°¢–b†4GG"ÓÒ&–ÖvR"¢°¢VWVTÆöB†‡&Vb“°¢Ğ¢Ğ¢Ğ¢Ğ ¢òò–ÖvW2æB&6¶w&÷VæG0¢f÷&V6‚‡f"â–â&ö÷Bå6VÆdæDFW66VæFçG2‚’¢°¢–b†'VFvWBÃÒ’'&V³°¢G'¢°¢–b†âä—5FW‡B‚’’6öçF–çVS°¢–b†â—2VÆVÖVçBVÂ¢°¢–b‡7G&–æräWVÇ2†VÂåFtæÖRÂ&–Ör"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’¢°¢7G&–ær7&2ÒVÂävWDGG&–'WFR‚'7&2"“°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R‡7&2’¢°¢7G&–ærbÒVÂävWDGG&–'WFR‚&FF×7&2"“°¢–b‚7G&–ærä—4çVÆÄ÷$V×G’‡b’’7&2Òc°¢VÇ6R–b‚7G&–ærä—4çVÆÄ÷$V×G’‡bÒVÂävWDGG&–'WFR‚&FFÖ÷&–v–æÂ"’’’7&2Òc°¢VÇ6R–b‚7G&–ærä—4çVÆÄ÷$V×G’‡bÒVÂävWDGG&–'WFR‚&FFÖÆ§’"’’’7&2Òc°¢Ğ ¢7G&–ær7&76WBÒVÂävWDGG&–'WFR‚'7&76WB"“°¢7G&–ær6†÷6VâÒçVÆÃ°¢–b‚7G&–ærä—4çVÆÄ÷%v†—FU76R‡7&76WB’’ ¢°¢6†÷6VâÒ–6´&W7D–ÖvTg&öÕ7&56WB‡7&76WBÂGr“°¢Ğ¢ ¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R†6†÷6Vâ’’6†÷6VâÒ7&3°¢VWVTÆöB†6†÷6Vâ“°¢Ğ¢VÇ6P¢°¢7G&–ær7G–ÆRÒVÂävWDGG&–'WFR‚'7G–ÆR"“°¢–b‚7G&–ærä—4çVÆÄ÷%v†—FU76R‡7G–ÆR’¢°¢òò&6¶w&÷VæBÖ–ÖvRö&6¶w&÷VæB6†÷'F†æB&VvW€¢f"ÒÒ7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW‚äÖF6‚‡7G–ÆRÂ'W&ÅÅÂ…²uÂ"uÓòƒóÇSåµâ•Â"uÒ²•²uÂ"uÓõÅÂ’"Â7—7FVÒåFW‡Bå&VwVÆ$W‡&W76–öç2å&VvW„÷F–öç2ä–væ÷&T66R“°¢–b†Òå7V66W72¢°¢VWVTÆöB†Òäw&÷W5²'R%ÒåfÇVR“°¢Ğ¢Ğ¢Ğ¢Ğ¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×BäFV'Vr‚B%´7W7FöÔ‡FÖÄVæv–æUÒ&Wv&Ô–ÖvW2æöFR&ö6W76–ærW'&÷#¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢Ğ ¢–b†VvW$ÆöG2ä6÷VçBâ¢°¢f"VvW%F6·2ÒVvW$ÆöG2å6VÆV7B„ÆöDæD66†T7–æ2’åFô'&’‚“°¢f"VvW$vw&VvFRÒF6²åv†VäÆÂ†VvW%F6·2“°¢f"6ö×ÆWFVBÒv—BF6²åv†Väç’†VvW$vw&VvFRÂF6²äFVÆ’„–ÖvU&Wv&Ôv—D'VFvWD×2’’ä6öæf–wW&Tv—B†fÇ6R“°¢–b†6ö×ÆWFVBÓÒVvW$vw&VvFR¢°¢v—BVvW$vw&VvFRä6öæf–wW&Tv—B†fÇ6R“°¢Ğ¢VÇ6P¢°¢Væv–æTÆöt6ö×BäFV'Vr€¢B%´7W7FöÔ‡FÖÄVæv–æUÒF–ÖVB÷WBv—F–ærf÷"VvW"–ÖvR&Wv&Ò&F6‚gFW"´–ÖvU&Wv&Ôv—D'VFvWD×7Ö×2‡¶VvW$ÆöG2ä6÷VçGÒ6æF–FFR‡2’’"À¢Æöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢Ğ ¢f÷&V6‚‡f"'2–â&6¶w&÷VæDÆöG2¢°¢òÒ'VäFWF6†VD7–æ2‚‚’ÓâÆöDæD66†T7–æ2†'2’“°¢Ğ¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×Båv&â‚B%´7W7FöÔ‡FÖÄVæv–æUÒ&Wv&Ô–ÖvW2f–ÆVC¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢Ğ ¢&—fFR7FF–27–æ2F6²&Wv&Ô774&6¶w&÷VæD–ÖvW47–æ2€¢•&VDöæÇ”F–7F–öæ'“ÄæöFRÂ7746ö×WFVCâ6ö×WFVE7G–ÆW2À¢W&’&6UW&’À¢gVæ3ÅW&’ÂF6³Å7G&VÓãâ–ÖvTÆöFW"À¢Fö7VÖVçB÷væW$Fö7VÖVçB¢°¢–b†6ö×WFVE7G–ÆW2ÓÒçVÆÂÇÂ6ö×WFVE7G–ÆW2ä6÷VçBÓÒÇÂ&6UW&’ÓÒçVÆÂÇÂ–ÖvTÆöFW"ÓÒçVÆÂ¢°¢&WGW&ã°¢Ğ ¢G'¢°¢f"†4Fö7VÖVçDfWF6†W"Ò–ÖvTÆöFW"ä†4Fö7VÖVçDv&TfWF6†W"†÷væW$Fö7VÖVçB“°¢f"W&Ç2ÒæWr†6…6WCÇ7G&–æsâ…7G&–æt6ö×&W"ä÷&F–æÄ–væ÷&T66R“°¢f÷&V6‚‡f"·g–â6ö×WFVE7G–ÆW2¢°¢f"7G–ÆRÒ·gåfÇVS°¢–b‡7G–ÆRÓÒçVÆÂÇÂ7G&–ærä—4çVÆÄ÷%v†—FU76R‡7G–ÆRä&6¶w&÷VæD–ÖvR’¢°¢6öçF–çVS°¢Ğ ¢f"f—'7EW&ÂÒW‡G&7Df—'7D&6¶w&÷VæD–ÖvUW&Â‡7G–ÆRä&6¶w&÷VæD–ÖvR“°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R†f—'7EW&Â’¢°¢6öçF–çVS°¢Ğ ¢–b†f—'7EW&Âå7F'G5v—F‚‚&FF¢"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’¢°¢–ÖvTÆöFW"ävWD–ÖvR†f—'7EW&ÂÂ÷væW$Fö7VÖVçC¢÷væW$Fö7VÖVçB“°¢6öçF–çVS°¢Ğ ¢f"'2Ò&W6öÇfUW&’†&6UW&’Âf—'7EW&Â“°¢–b†'2ÓÒçVÆÂ¢°¢6öçF–çVS°¢Ğ ¢W&Ç2äFB†'2ä'6öÇWFUW&’“°¢Ğ ¢v—B&ÆÆVÂäf÷$V6„7–æ2€¢W&Ç2À¢æWr&ÆÆVÄ÷F–öç2²Ö„FVw&VTöe&ÆÆVÆ—6ÒÒBÒÀ¢7–æ2‡W&ÂÂ6æ6VÆÆF–öåFö¶Vâ’Óà¢°¢G'¢°¢f"W&’ÒæWrW&’‡W&Â“°¢f"FFÒv—B–ÖvTÆöFW"äfWF6„'—FW4f÷$7W'&VçD6öçFW‡D7–æ2‡W&’Â÷væW$Fö7VÖVçB’ä6öæf–wW&Tv—B†fÇ6R“°¢–b†FFÒçVÆÂbbFFäÆVæwF‚â¢°¢W6–ærf"ÖVÖ÷'’ÒæWrÖVÖ÷'•7G&VÒ†FFÂw&—F&ÆS¢fÇ6R“°¢v—B–ÖvTÆöFW"å&Wv&Ô–ÖvT7–æ2€¢W&’ä'6öÇWFUW&’À¢ÖVÖ÷'’À¢÷væW$Fö7VÖVçC¢÷væW$Fö7VÖVçB¢ä6öæf–wW&Tv—B†fÇ6R“°¢&WGW&ã°¢Ğ ¢–b††4Fö7VÖVçDfWF6†W"¢°¢&WGW&ã°¢Ğ ¢W6–ærf"7G&VÒÒv—B–ÖvTÆöFW"‡W&’’ä6öæf–wW&Tv—B†fÇ6R“°¢–b‡7G&VÒÒçVÆÂ¢°¢v—B–ÖvTÆöFW"å&Wv&Ô–ÖvT7–æ2€¢W&’ä'6öÇWFUW&’À¢7G&VÒÀ¢÷væW$Fö7VÖVçC¢÷væW$Fö7VÖVçB¢ä6öæf–wW&Tv—B†fÇ6R“°¢Ğ¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×BäFV'Vr‚B%´7W7FöÔ‡FÖÄVæv–æUÒ552&6¶w&÷VæB&Wv&Òf–ÆVBf÷"·W&ÇÓ¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢Ò’ä6öæf–wW&Tv—B†fÇ6R“°¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×Båv&â‚B%´7W7FöÔ‡FÖÄVæv–æUÒ&Wv&Ô774&6¶w&÷VæD–ÖvW2f–ÆVC¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢Ğ ¢&—fFR7FF–27G&–ærW‡G&7Df—'7D&6¶w&÷VæD–ÖvUW&Â‡7G&–ær&6¶w&÷VæD–ÖvR¢°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R†&6¶w&÷VæD–ÖvR’¢°¢&WGW&âçVÆÃ°¢Ğ ¢–çBW&Ä–æFW‚Ò&6¶w&÷VæD–ÖvRä–æFW„öb‚'W&Â‚"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R“°¢–b‡W&Ä–æFW‚Â¢°¢&WGW&âçVÆÃ°¢Ğ ¢–çBFWF‚Ò°¢–çBVæBÒÓ°¢f÷"†–çB’ÒW&Ä–æFWƒ²’Â&6¶w&÷VæD–ÖvRäÆVæwFƒ²’²²¢°¢6†"2Ò&6¶w&÷VæD–ÖvU¶•Ó°¢–b†2ÓÒr‚r¢°¢FWF‚²³°¢Ğ¢VÇ6R–b†2ÓÒr’r¢°¢FWF‚ÒÓ°¢–b†FWF‚ÓÒ¢°¢VæBÒ“°¢'&V³°¢Ğ¢Ğ¢Ğ ¢–b†VæBÃÒW&Ä–æFW‚¢°¢&WGW&âçVÆÃ°¢Ğ ¢–çBfÇVU7F'BÒW&Ä–æFW‚²C°¢–çBfÇVTÆVæwF‚ÒVæBÒfÇVU7F'C°¢–b‡fÇVTÆVæwF‚ÃÒ¢°¢&WGW&âçVÆÃ°¢Ğ ¢&WGW&â&6¶w&÷VæD–ÖvRå7V'7G&–ær‡fÇVU7F'BÂfÇVTÆVæwF‚’åG&–Ò‚rrÂuÂrrÂr"r“°¢Ğ ¢&—fFR7FF–2–çBf—7VÄ6†–ÆD6÷VçB†ö&¦V7BæöFR¢°¢G'¢°¢–b†æöFRÓÒçVÆÂ’&WGW&â°¢f"BÒæöFRävWEG—R‚“°¢f"&÷ÒBävWE&÷W'G’‚$6†–ÆG&Vâ"“°¢–b‡&÷ÒçVÆÂ¢°¢f"fÇVRÒ&÷ävWEfÇVR†æöFR’27—7FVÒä6öÆÆV7F–öç2ä”Æ—7C°¢–b‡fÇVRÒçVÆÂ’&WGW&âfÇVRä6÷VçC°¢Ğ¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×BäFV'Vr‚B%´7W7FöÔ‡FÖÄVæv–æUÒf—7VÄ6†–ÆD6÷VçBW'&÷#¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢&WGW&â°¢Ğ ¢&—fFR7FF–2ö&¦V7Bf—7VÄvWD6†–ÆB†ö&¦V7BæöFRÂ–çB–æFW‚¢°¢G'¢°¢–b†æöFRÓÒçVÆÂ’&WGW&âçVÆÃ°¢f"BÒæöFRävWEG—R‚“°¢f"&÷ÒBävWE&÷W'G’‚$6†–ÆG&Vâ"“°¢–b‡&÷ÒçVÆÂ¢°¢f"fÇVRÒ&÷ävWEfÇVR†æöFR’27—7FVÒä6öÆÆV7F–öç2ä”Æ—7C°¢–b‡fÇVRÒçVÆÂbb–æFW‚ãÒbb–æFW‚ÂfÇVRä6÷VçB’&WGW&âfÇVU¶–æFW…Ó°¢Ğ¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×BäFV'Vr‚B%´7W7FöÔ‡FÖÄVæv–æUÒf—7VÄvWD6†–ÆBW'&÷#¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢&WGW&âçVÆÃ°¢Ğ ¢&—fFR7FF–27G&–ærvF†W%Æ–åFW‡B„æöFRâ¢°¢–b†âÓÒçVÆÂ’&WGW&â7G&–æräV×G“°¢f"6"ÒæWr7—7FVÒåFW‡Bå7G&–æt'V–ÆFW"‚“°¢7F–öãÄæöFSâvÆ²ÒçVÆÃ°¢vÆ²Ò†æöFR’Óà¢°¢–b†æöFRÓÒçVÆÂ’&WGW&ã°¢–b†æöFRä—5FW‡B‚’’²f"BÒæöFRåFW‡D6öçFVçBóò7G&–æräV×G“²6"äVæB‡B“²&WGW&ã²Ğ¢–b†æöFRä6†–ÆDæöFW2ÒçVÆÂ¢°¢f÷&V6‚‡f"6†–ÆB–âæöFRä6†–ÆDæöFW2¢°¢vÆ²†6†–ÆB“°¢Ğ¢Ğ¢Ó°¢vÆ²†â“°¢f"2Ò6"åFõ7G&–ær‚“°¢òò6öÆÆ6Rv†—FW76RÆ–v‡FÇ¢&ööÂ–åw2ÒfÇ6S²f"÷WE6"ÒæWr7—7FVÒåFW‡Bå7G&–æt'V–ÆFW"‡2äÆVæwF‚“°¢f÷"†–çB’Ò²’Â2äÆVæwFƒ²’²²¢°¢f"2Ò5¶•Ó°¢–b†6†"ä—5v†—FU76R†2’’²–b‚–åw2’²÷WE6"äVæB‚rr“²–åw2ÒG'VS²ÒĞ¢VÇ6R²÷WE6"äVæB†2“²–åw2ÒfÇ6S²Ğ¢Ğ¢&WGW&â÷WE6"åFõ7G&–ær‚’åG&–Ò‚“°¢Ğ ¢&—fFR7FF–2–çBæ÷&ÖÆ—¦Tæô§4fÆÆ&6´6Æ76W2„VÆVÖVçB&ö÷B¢°¢–b‡&ö÷BÓÒçVÆÂ¢°¢&WGW&â°¢Ğ ¢7FF–2&ööÂ6öçF–ç46Æ75Fö¶Vâ‡7G&–ær6Æ75fÇVRÂ7G&–ærFö¶Vâ¢°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R†6Æ75fÇVR’ÇÂ7G&–ærä—4çVÆÄ÷%v†—FU76R‡Fö¶Vâ’¢°¢&WGW&âfÇ6S°¢Ğ ¢f"'G2Ò6Æ75fÇVRå7Æ—B†æWuµÒ²rrÂuÇBrÂuÇ"rÂuÆârÂuÆbrÒÂ7G&–æu7Æ—D÷F–öç2å&VÖ÷fTV×G”VçG&–W2“°¢f÷"†–çB’Ò²’Â'G2äÆVæwFƒ²’²²¢°¢–b‡7G&–æräWVÇ2‡'G5¶•ÒÂFö¶VâÂ7G&–æt6ö×&—6öâä÷&F–æÂ’¢°¢&WGW&âG'VS°¢Ğ¢Ğ ¢&WGW&âfÇ6S°¢Ğ ¢7FF–2&ööÂ&VÖ÷fT6Æ75Fö¶Vâ„VÆVÖVçBVÆVÖVçBÂ7G&–ærFö¶Vâ¢°¢f"6Æ75fÇVRÒVÆVÖVçCòävWDGG&–'WFR‚&6Æ72"“°¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R†6Æ75fÇVR’¢°¢&WGW&âfÇ6S°¢Ğ ¢f"'G2Ò6Æ75fÇVRå7Æ—B†æWuµÒ²rrÂuÇBrÂuÇ"rÂuÆârÂuÆbrÒÂ7G&–æu7Æ—D÷F–öç2å&VÖ÷fTV×G”VçG&–W2“°¢–b‡'G2äÆVæwF‚ÓÒ¢°¢&WGW&âfÇ6S°¢Ğ ¢f"¶WBÒæWrÆ—7CÇ7G&–æsâ‡'G2äÆVæwF‚“°¢&ööÂ&VÖ÷fVBÒfÇ6S°¢f÷"†–çB’Ò²’Â'G2äÆVæwFƒ²’²²¢°¢f"'BÒ'G5¶•Ó°¢–b‡7G&–æräWVÇ2‡'BÂFö¶VâÂ7G&–æt6ö×&—6öâä÷&F–æÂ’¢°¢&VÖ÷fVBÒG'VS°¢6öçF–çVS°¢Ğ ¢¶WBäFB‡'B“°¢Ğ ¢–b‚&VÖ÷fVB¢°¢&WGW&âfÇ6S°¢Ğ ¢–b†¶WBä6÷VçBÓÒ¢°¢VÆVÖVçBå&VÖ÷fTGG&–'WFR‚&6Æ72"“°¢Ğ¢VÇ6P¢°¢VÆVÖVçBå6WDGG&–'WFR‚&6Æ72"Â7G&–ærä¦ö–â‚""Â¶WB’“°¢Ğ ¢&WGW&âG'VS°¢Ğ ¢7FF–2&ööÂFD6Æ75Fö¶Vâ„VÆVÖVçBVÆVÖVçBÂ7G&–ærFö¶Vâ¢°¢–b†VÆVÖVçBÓÒçVÆÂÇÂ7G&–ærä—4çVÆÄ÷%v†—FU76R‡Fö¶Vâ’¢°¢&WGW&âfÇ6S°¢Ğ ¢f"6Æ75fÇVRÒVÆVÖVçBävWDGG&–'WFR‚&6Æ72"“°¢–b„6öçF–ç46Æ75Fö¶Vâ†6Æ75fÇVRÂFö¶Vâ’¢°¢&WGW&âfÇ6S°¢Ğ ¢–b‡7G&–ærä—4çVÆÄ÷%v†—FU76R†6Æ75fÇVR’¢°¢VÆVÖVçBå6WDGG&–'WFR‚&6Æ72"ÂFö¶Vâ“°¢Ğ¢VÇ6P¢°¢VÆVÖVçBå6WDGG&–'WFR‚&6Æ72"Â6Æ75fÇVRåG&–Ò‚’²""²Fö¶Vâ“°¢Ğ ¢&WGW&âG'VS°¢Ğ ¢–çB6†ævW2Ò°¢f"7F6²ÒæWr7F6³ÄVÆVÖVçCâ‚“°¢7F6²åW6‚‡&ö÷B“° ¢v†–ÆR‡7F6²ä6÷VçBâ¢°¢f"VÆVÖVçBÒ7F6²å÷‚“°¢–b†VÆVÖVçBÓÒçVÆÂ¢°¢6öçF–çVS°¢Ğ ¢–b…&VÖ÷fT6Æ75Fö¶Vâ†VÆVÖVçBÂ&æòÖ§2"’¢°¢6†ævW2²³°¢Ğ ¢–b‡7G&–æräWVÇ2†VÆVÖVçBåFtæÖRÂ&‡FÖÂ"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’¢°¢–b„FD6Æ75Fö¶Vâ†VÆVÖVçBÂ&§2"’¢°¢6†ævW2²³°¢Ğ¢Ğ ¢f"6†–ÆG&VâÒVÆVÖVçBä6†–ÆDæöFW3°¢–b†6†–ÆG&VâÓÒçVÆÂ¢°¢6öçF–çVS°¢Ğ ¢f÷&V6‚‡f"6†–ÆB–â6†–ÆG&Vâ¢°¢–b†6†–ÆB—2VÆVÖVçB6†–ÆDVÆVÖVçB¢°¢7F6²åW6‚†6†–ÆDVÆVÖVçB“°¢Ğ¢Ğ¢Ğ ¢&WGW&â6†ævW3°¢Ğ ¢&—fFR&ööÂG'”6GW&T7F—fT6öçFW‡B€¢VÆVÖVçBFöÒÀ¢W&’&6UW&’À¢gVæ3ÅW&’ÂF6³Ç7G&–æsãâfWF6„W‡FW&æÄ7747–æ2À¢gVæ3ÅW&’ÂF6³Å7G&VÓãâ–ÖvTÆöFW"À¢7F–öãÅW&“âöäæf–vFRÀ¢F÷V&ÆSòf–Ww÷'Ev–GF‚À¢F÷V&ÆSòf–Ww÷'D†V–v‡BÀ¢7F–öãÆö&¦V7Câöäf—†VD&6¶w&÷VæBÀ¢”'&÷w6W%67&—DVæv–æR§2À¢Æöær&VæFW$vVæW&F–öâ¢°¢Æö6²…÷&VæFW%7FFTÆö6²¢°¢–b…÷&VæFW$vVæW&F–öâÒ&VæFW$vVæW&F–öâ¢°¢&WGW&âfÇ6S°¢Ğ ¢ö7F—fTFöÒÒFöÓ°¢ö7F—fT&6UW&’Ò&6UW&“°¢ö7F—fTfWF6„772ÒfWF6„W‡FW&æÄ7747–æ3°¢ö7F—fT–ÖvTÆöFW"Ò–ÖvTÆöFW#°¢ö7F—fTöäæf–vFRÒöäæf–vFS°¢ö7F—fUf–Ww÷'Ev–GF‚Òf–Ww÷'Ev–GFƒ°¢ö7F—fUf–Ww÷'D†V–v‡BÒf–Ww÷'D†V–v‡C°¢ö7F—fTf—†VD&6¶w&÷VæBÒöäf—†VD&6¶w&÷VæC°¢ö7F—fT§2Ò§3°¢÷&VæFW%6æ6†÷EfW'6–öâ²³°¢Ğ¢ ¢òò¶VWF†R¥2'&–FvR7–æ6‡&öæ—¦VBv—F‚F†RÆ—fRDôÒv—F†÷WBW†V7WF–ærvR67&—G2à¢òògVÆÂ67&—BW†V7WF–öâ7F–ÆÂ†Vç2ÆFW"–â'Vå67&—G47–æ2v—F‚F–ÖV÷WB'VFvWBà¢–b†§2ÒçVÆÂbbFöÒÒçVÆÂ¢°¢G'’ ¢² ¢Væv–æTÆöt6ö×BäFV'Vr‚%´6GW&T7F—fT6öçFW‡EÒ6ÆÆ–ær7–æ4FöÔ6öçFW‡Bâââ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢§2å7–æ4FöÔ6öçFW‡B†FöÒÂ&6UW&’“°¢Væv–æTÆöt6ö×BäFV'Vr‚%´6GW&T7F—fT6öçFW‡EÒ7–æ4FöÔ6öçFW‡B&WGW&æVBâ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Væv–æTÆöt6ö×BäFV'Vr‚B%´6GW&T7F—fT6öçFW‡EÒ7–æ6VB¥2DôÒFòö7F—fTFöÒ†6ƒ×¶FöÒävWD†6„6öFR‚—Ò"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×Båv&â‚B%´7W7FöÔ‡FÖÄVæv–æUÒf–ÆVBFò7–æ27F—fTFöÒFò¥3¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢Ğ¢ ¢–b†§2ÒçVÆÂ¢°¢G'’²§2äfWF6„÷fW'&–FRÒ67&—DfWF6†W#²Ğ¢6F6‚„W†6WF–öâW‚’²Væv–æTÆöt6ö×Båv&â‚B%´7W7FöÔ‡FÖÄVæv–æUÒf–ÆVBFò6WBfWF6„÷fW'&–FS¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“²Ğ¢Ğ ¢–b‚—47W'&VçE&VæFW$vVæW&F–öâ‡&VæFW$vVæW&F–öâ’¢°¢&WGW&âfÇ6S°¢Ğ ¢òòW‡G&7BæBf—&RF—FÆP¢G'¢°¢7G&–ærF—FÆRÒçVÆÃ°¢f"FæöFRÒFöÒäFW66VæFçG2‚’äöeG—SÄVÆVÖVçCâ‚’äf—'7D÷$FVfVÇB†âÓâ7G&–æräWVÇ2†âäæöFTæÖRÂ'F—FÆR"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R’“°¢–b‡FæöFRÒçVÆÂ’F—FÆRÒFæöFRåFW‡D6öçFVçC°¢ ¢–b‚7G&–ærä—4çVÆÄ÷%v†—FU76R‡F—FÆR’¢°¢F—FÆT6†ævVCòä–çfö¶R‡F†—2ÂF—FÆR“°¢Ğ¢VÇ6R–b†&6UW&’ÒçVÆÂ¢°¢F—FÆT6†ævVCòä–çfö¶R‡F†—2Â&6UW&’ä†÷7B“°¢Ğ¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×Båv&â‚B%´7W7FöÔ‡FÖÄVæv–æUÒF—FÆRW‡G&7F–öâf–ÆVC¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ ¢&WGW&â—47W'&VçE&VæFW$vVæW&F–öâ‡&VæFW$vVæW&F–öâ“°¢Ğ ¢&—fFR7G&–æröÆ7D6öæf–wW&VDÖVF–6–væGW&S° ¢&—fFRfö–B6öæf–wW&TÖVF–†F÷V&ÆSòf–Ww÷'Ev–GF‚ÂF÷V&ÆSòf–Ww÷'D†V–v‡B¢°¢G'¢°¢f"7W&f6RÒ'&÷w6W%6WGF–æw2ävWD'&÷w6W%7W&f6R€¢'&÷w6W%6WGF–æw2ä–ç7Fæ6Rå6VÆV7FVEW6W$vVçBÀ¢'&÷w6W%f–Ww÷'DÖWG&–72ä7&VFR€¢f–Ww÷'Ev–GF‚óò#ƒÀ¢f–Ww÷'D†V–v‡Bóòs#’“° ¢775'6W"äÖVF–f–Ww÷'Ev–GF‚Ò7W&f6Råf–Ww÷'Båv–æF÷uv–GFƒ°¢775'6W"äÖVF–f–Ww÷'D†V–v‡BÒ7W&f6Råf–Ww÷'Båv–æF÷t†V–v‡C°¢G'’²775'6W"äÖVF–G‚Ò7W&f6Råf–Ww÷'BäFWf–6U—†VÅ&F–ó²Ò6F6‚„W†6WF–öâW‚’²Væv–æTÆöt6ö×Båv&â‚B%´7W7FöÔ‡FÖÄVæv–æUÒf–ÆVB6WGF–ærÖVF–Gƒ¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“²Ğ¢775'6W"äÖVF–&VfW'46öÆ÷%66†VÖRÒ7W&f6Råf–Ww÷'Bå&VfW'&VD6öÆ÷%66†VÖS°¢775'6W"å&VfW'4F&´ÖöFRÒ7G&–æräWVÇ2‡7W&f6Råf–Ww÷'Bå&VfW'&VD6öÆ÷%66†VÖRÂ&F&²"Â7G&–æt6ö×&—6öâä÷&F–æÄ–væ÷&T66R“°¢775'6W"äÖVF–&VfW'5&VGV6VDÖ÷F–öâÒ7W&f6Råf–Ww÷'Bå&VGV6VDÖ÷F–öâò'&VGV6R"¢&æò×&VfW&Væ6R#°¢775'6W"äÖVF–†÷fW"Ò7W&f6Råf–Ww÷'Bä†÷fW"ò&†÷fW""¢&æöæR#°¢775'6W"äÖVF–ç”†÷fW"Ò775'6W"äÖVF–†÷fW#°¢775'6W"äÖVF–ö–çFW"Ò7W&f6Råf–Ww÷'Bäf–æUö–çFW"ò&f–æR"¢&6ö'6R#°¢775'6W"äÖVF–ç•ö–çFW"Ò775'6W"äÖVF–ö–çFW#°¢775'6W"äÖVF–67&—F–ærÒVæ&ÆT¦f67&—Bò&Væ&ÆVB"¢&æöæR#°¢775'6W"äÖVF–F—7Æ”ÖöFRÒ&'&÷w6W"#°¢f"6–væGW&RĞ¢B'´775'6W"äÖVF–f–Ww÷'Ev–GFƒòåFõ7G&–ær‚’óò&çVÆÂ'×‡´775'6W"äÖVF–f–Ww÷'D†V–v‡CòåFõ7G&–ær‚’óò&çVÆÂ'Ò"°¢B'ÆGƒ×´775'6W"äÖVF–GƒòåFõ7G&–ær‚’óò&çVÆÂ'Ò"°¢B'Ç66†VÖS×´775'6W"äÖVF–&VfW'46öÆ÷%66†VÖRóò&çVÆÂ'Ò#°¢–b‚7G&–æräWVÇ2‡6–væGW&RÂöÆ7D6öæf–wW&VDÖVF–6–væGW&RÂ7G&–æt6ö×&—6öâä÷&F–æÂ’¢°¢öÆ7D6öæf–wW&VDÖVF–6–væGW&RÒ6–væGW&S°¢Væv–æTÆöt6ö×BäFV'Vr€¢B%´7W7FöÔ‡FÖÄVæv–æUÒÖVF––çWC×·f–Ww÷'Ev–GFƒòåFõ7G&–ær‚’óò&çVÆÂ'×‡·f–Ww÷'D†V–v‡CòåFõ7G&–ær‚’óò&çVÆÂ'Ò&W6öÇfVC×´775'6W"äÖVF–f–Ww÷'Ev–GFƒòåFõ7G&–ær‚’óò&çVÆÂ'×‡´775'6W"äÖVF–f–Ww÷'D†V–v‡CòåFõ7G&–ær‚’óò&çVÆÂ'ÒGƒ×´775'6W"äÖVF–GƒòåFõ7G&–ær‚’óò&çVÆÂ'Ò"À¢Æöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×Båv&â‚B%´7W7FöÔ‡FÖÄVæv–æUÒ6öæf–wW&TÖVF–f–ÆVC¢¶W‚äÖW76vWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢Ğ ¢&—fFR7–æ2F6³Æö&¦V7Câ'V–ÆEf—7VÅG&VT7–æ2€¢VÆVÖVçBFöÒÀ¢W&’&6UW&’À¢gVæ3ÅW&’ÂF6³Ç7G&–æsãâfWF6„W‡FW&æÄ7747–æ2À¢gVæ3ÅW&’ÂF6³Å7G&VÓãâ–ÖvTÆöFW"À¢7F–öãÅW&“âöäæf–vFRÀ¢”'&÷w6W%67&—DVæv–æR§2À¢F÷V&ÆSòf–Ww÷'Ev–GF‚À¢F÷V&ÆSòf–Ww÷'D†V–v‡BÀ¢7F–öãÆö&¦V7Câöäf—†VD&6¶w&÷VæBÀ¢&ööÂ–æ6ÇVFTF–væ÷7F–74&ææW"À¢Æöær&VæFW$vVæW&F–öâÒ¢°¢–b†FöÒÓÒçVÆÂÇÂ‡&VæFW$vVæW&F–öâÒbb—47W'&VçE&VæFW$vVæW&F–öâ‡&VæFW$vVæW&F–öâ’’¢°¢&WGW&âçVÆÃ°¢Ğ ¢f"ö'V–ÆEG&VU7F÷vF6‚Ò7—7FVÒäF–væ÷7F–72å7F÷vF6‚å7F'DæWr‚“° ¢6öæf–wW&TÖVF–‡f–Ww÷'Ev–GF‚Âf–Ww÷'D†V–v‡B“° ¢f"774fWF6†W"ÒfWF6„W‡FW&æÄ7747–æ2óò†7–æ2òÓâ²v—BF6²ä6ö×ÆWFVEF6³²&WGW&â7G&–æräV×G“²Ò“°¢ ¢òòäõDS¢FöâwB6WBÆ7D6ö×WFVE7G–ÆW2ÒçVÆÂ†W&R¢òòF†RVæv–æTÆö÷öÆÇ2f÷"7G–ÆW2GW&–ær5526ö×WFF–öâ‡v†–6‚6âF¶R#²6V6öæG2’à¢òò6WGF–ærFòçVÆÂ6W6W2F†R&VæFW&W"Fò6¶—7G–Æ–ærVçF–Â6ö×WFF–öâ6ö×ÆWFW2à¢òò–ç7FVBÂ¶VWF†R&Wf–÷W27G–ÆW2f—6–&ÆRVçF–ÂæWröæW2&R&VG’à¢Æö6²…÷&VæFW%7FFTÆö6²¢°¢–b‡&VæFW$vVæW&F–öâÒbb÷&VæFW$vVæW&F–öâÒ&VæFW$vVæW&F–öâ¢°¢&WGW&âçVÆÃ°¢Ğ ¢Æ7D7756÷W&6W2ÒçVÆÃ°¢Ğ¢G'¢°¢òòU$c¢ÆöD7747–æ2‚’–â&VæFW$7–æ2Ç&VG’&â666FT–çFô6ö×WFVE7G–ÆW2‚¢òòæB76–væVBâä6ö×WFVE7G–ÆRFòWfW'’æöFRâ&WW6RF†÷6R7G–ÆW2–ç7FVBö`¢òò'Vææ–ærF†RgVÆÂò†VÆVÖVçG28>(	B'VÆW2’666FR6V6öæBF–ÖRà¢–b„Æ7D6ö×WFVE7G–ÆW2ÒçVÆÂbbÆ7D6ö×WFVE7G–ÆW2ä6÷VçBâ¢°¢Væv–æTÆöt6ö×BäFV'Vr‚B%´'V–ÆEf—7VÅG&VUÒ&WW6–ær´Æ7D6ö×WFVE7G–ÆW2ä6÷VçGÒ&RÖ6ö×WFVB7G–ÆW2‡6¶—–ærGWÆ–6FR666FR’"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢fVä'&÷w6W"ä6÷&RåfW&–f–6F–öâä6öçFVçEfW&–f–W"å&Vv—7FW$7757FFR†fÇ6RÂÆ7D6ö×WFVE7G–ÆW2ä6÷VçB“°¢Ğ¢VÇ6P¢°¢Væv–æTÆöt6ö×BäFV'Vr‚%´7W7FöÔ‡FÖÄVæv–æUÒ'V–ÆEf—7VÅG&VS¢W6–ær552Væv–æR†æò&RÖ6ö×WFVB7G–ÆW2’âââ"ÂÆöt6FVv÷'’å&VæFW&–ær“° ¢f"774Væv–æRÒ774Væv–æTf7F÷'’ävWDVæv–æR‚“°¢Væv–æTÆöt6ö×BäFV'Vr‚B%´7W7FöÔ‡FÖÄVæv–æUÒ'V–ÆEf—7VÅG&VS¢Væv–æS×¶774Væv–æRäVæv–æTæÖWÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“° ¢f"6ö×WFVE7G–ÆW2ÒfWF6„W‡FW&æÄ774f÷%&ö÷D7–æ2ÓÒçVÆÀ¢òv—B774Væv–æRä6ö×WFU7G–ÆW47–æ2†FöÒÂ&6UW&’Â774fWF6†W"Âf–Ww÷'Ev–GF‚Âf–Ww÷'D†V–v‡B¢¢v—B774ÆöFW"ä6ö×WFT7–æ2€¢FöÒÀ¢&6UW&’À¢774fWF6†W"À¢f–Ww÷'Ev–GF‚À¢f–Ww÷'D†V–v‡BÀ¢fWF6„W‡FW&æÄ774f÷%&ö÷D7–æ3¢fWF6„W‡FW&æÄ774f÷%&ö÷D7–æ2“°¢–b‚WFFU&VæFW%7FFR†FöÒÂ6ö×WFVE7G–ÆW2Â&VæFW$vVæW&F–öâ’¢°¢&WGW&âçVÆÃ°¢Ğ¢Væv–æTÆöt6ö×BäFV'Vr‚B%µU$eÒ5526ö×WFU7G–ÆW3¢µö'V–ÆEG&VU7F÷vF6‚äVÆ6VDÖ–ÆÆ—6V6öæG7Ö×2"ÂÆöt6FVv÷'’å&VæFW&–ær“° ¢òò76–vâ6ö×WFVB7G–ÆW2FòæöFW26òÆ–÷WBVæv–æR6â6VRF†VĞ¢–b„Æ7D6ö×WFVE7G–ÆW2ÒçVÆÂ¢°¢f÷&V6‚‡f"·g–âÆ7D6ö×WFVE7G–ÆW2¢°¢–b†·gä¶W’ÒçVÆÂ¢·gä¶W’å6WD6ö×WFVE7G–ÆR†·gåfÇVR“°¢Ğ¢Ğ ¢fVä'&÷w6W"ä6÷&RåfW&–f–6F–öâä6öçFVçEfW&–f–W"å&Vv—7FW$7757FFR†fÇ6RÂÆ7D6ö×WFVE7G–ÆW3òä6÷VçBóò“°¢Ğ¢Væv–æTÆöt6ö×BäFV'Vr‚B%µU$eÒ'V–ÆEf—7VÅG&VR6ö×ÆWFS¢µö'V–ÆEG&VU7F÷vF6‚äVÆ6VDÖ–ÆÆ—6V6öæG7Ö×2"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Væv–æTÆöt6ö×BäFV'Vr‚B%´7W7FöÔ‡FÖÄVæv–æUÒ'V–ÆEf—7VÅG&VS¢5527V66W72â7G–ÆW26÷VçC×´Æ7D6ö×WFVE7G–ÆW3òä6÷VçGÒ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢Ğ¢6F6‚„W†6WF–öâW‚¢°¢Væv–æTÆöt6ö×BäW'&÷"‚B%´7W7FöÔ‡FÖÄVæv–æUÒ774ÆöFW"5$4ƒ¢¶W‡Ò"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢–b‚WFFU&VæFW%7FFR†FöÒÂæWrF–7F–öæ'“ÄæöFRÂ7746ö×WFVCâ‚’Â&VæFW$vVæW&F–öâ’¢°¢&WGW&âçVÆÃ°¢Ğ¢Ğ ¢–b‡&VæFW$vVæW&F–öâÒbb—47W'&VçE&VæFW$vVæW&F–öâ‡&VæFW$vVæW&F–öâ’¢°¢&WGW&âçVÆÃ°¢Ğ ¢òòf"6ö×WFVBÒ&W7VÇBä6ö×WFVC²òòW6RÆ7D6ö×WFVE7G–ÆW2–ç7FV@¢f"6ö×WFVBÒÆ7D6ö×WFVE7G–ÆW3° ¢òò´Ô”u$D”ôåÒ&6¶w&÷VæB6†V6²Æöv–2&VÖ÷fVB÷"6–×Æ–f–VB„fÆöæ–''W6‚&VÖ÷fVB¢òò§W7B–çfö¶–ærFöÕ&VG¢ ¢G'’²FöÕ&VG“òä–çfö¶R‡F†—2ÂFöÒ“²Ò6F6‚„W†6WF–öâG$W‚’²Væv–æTÆöt6ö×BäW'&÷"‚B%´'V–ÆEf—7VÅG&VUÒFöÕ&VG’W'&÷#¢¶G$W‡Ò"ÂÆöt6FVv÷'’å&VæFW&–ær“²Ğ ¢Væv–æTÆöt6ö×BäFV'Vr‚%´'V–ÆEf—7VÅG&VUÒ7&VF–ær&VæFW&W"âââ"ÂÆöt6FVv÷'’å&VæFW&–ær“° ¢òòW6RW‡FW&æÂ&VæFW&W"g&öÒ'&÷w6W$–çFVw&F–öâ–bf–Æ&ÆP¢6¶–FöÕ&VæFW&W"7F—fU&VæFW&W#°¢–b…öW‡FW&æÅ&VæFW&W"ÒçVÆÂ¢°¢Væv–æTÆöt6ö×BäFV'Vr‚%´'V–ÆEf—7VÅG&VUÒW6–ærW‡FW&æÂ&VæFW&W"g&öÒ'&÷w6W$–çFVw&F–öâ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢7F—fU&VæFW&W"ÒöW‡FW&æÅ&VæFW&W#°¢òòFöâwB6WBf—7VÂ&V7B&÷f–FW"Ò'&÷w6W$–çFVw&F–öâÇ&VG’6WB—BW ¢Ğ¢VÇ6P¢°¢òòfÆÆ&6³¢7&VFR÷W"÷vâ&VæFW&W"æB6WBW&÷f–FW ¢–b…ö66†VE&VæFW&W"ÓÒçVÆÂ¢°¢Væv–æTÆöt6ö×BäFV'Vr‚%´'V–ÆEf—7VÅG&VUÒ7&VF–æräUr&VæFW&W"âââ"ÂÆöt6FVv÷'’å&VæFW&–ær“°¢ö66†VE&VæFW&W"ÒæWr6¶–FöÕ&VæFW&W"‚“°¢Ğ¢7F—fU&VæFW&W"Òö66†VE&VæFW&W#° ¢òòöæÇ’6WBWf—7VÂ&V7B&÷f–FW"–bvR÷vâF†R&VæFW&W ¢¦f67&—DVæv–æRå6WEf—7VÅ&V7E&÷f–FW"†VÆVÖVçBÓà¢°¢–b†VÆVÖVçBÓÒçVÆÂÇÂö66†VE&VæFW&W"ÓÒçVÆÂ¢°¢&WGW&âçVÆÃ°¢Ğ ¢f"&V7E6÷W&6RÒVÆVÖVçC°¢f"&÷‚Òö66†VE&VæFW&W"ävWDVÆVÖVçD&÷‚†VÆVÖVçB“°¢–b†&÷‚ÓÒçVÆÂ¢°¢f"VÆVÖVçD–BÒVÆVÖVçBävWDGG&–'WFR‚&–B"“°¢–b‚7G&–ærä—4çVÆÄ÷%v†—FU76R†VÆVÖVçD–B’¢°¢f"&ö÷BÒ…ö7F—fTFöÒ2VÆVÖVçB’óòVÆVÖVçBä÷væW$Fö7VÖVçCòäFö7VÖVçDVÆVÖVçC°¢–b‡&ö÷BÒçVÆÂ¢°¢f"ÖVBÒ&ö÷Bå6VÆdæDFW66VæFçG2‚¢äöeGõó»h‘éì¶»§q«^u¹¥¹Ù…±¥‘…Ñ”±…å½ÕĞ¸(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mI•¹‘•ÉÍå¹tQÉ¥•É¥¹œÉ•Á…¥¹Ğ…™Ñ•ÈML½µÁ±•Ñ¥½¸ˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€=¹I•Á…¥¹ÑI•…‘ä¡‘½´¤ì(€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€ô(€€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸ÍÍà¤(€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹ÉÉ½È ‰mI•¹‘•ÉÍå¹tML•ÉÉ½ÈèíÍÍà¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€¼¼¹ÍÕÉ”İ”¡…Ù”…Ğ±•…ÍĞ…¸•µÁÑäÍÑå±•Ì‘¥Ñ¥½¹…ÉäÍ¼Ñ¡”É•¹‘•É•È(€€€€€€€€€€€€€€€€€¼¼‘½•Í¸ĞÑÉ•…ĞÑ¡”Á…”…Ì½µÁ±•Ñ•±äÕ¹ÍÑå±•€¡İ¡¥ ½±±…ÁÍ•Ì¥™É…µ•Ì•ÑŒ¸¤(€€€€€€€€€€€€€€€€¥˜€¡1…ÍÑ½µÁÕÑ•‘MÑå±•Ì€ôô¹Õ±°€˜˜‘½´€„ô¹Õ±°¤(€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€UÁ‘…Ñ•I•¹‘•ÉMÑ…Ñ”¡‘½´°¹•Ü¥Ñ¥½¹…Éäñ9½‘”°ÍÍ½µÁÕÑ•ø ¤°É•¹‘•É•¹•É…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€ô(€€€€€€€ô((€€€€€€€€¼¼€´´´å¹…µ¥ŒÉ”µ…Í…‘”€¡¡½Ù•È½™½ÕÌ½=4µÕÑ…Ñ¥½¹Ì¤€´´´((€€€€€€€€¼¼!½±‘ÌÑ¡”¥¸µ™±¥¡ĞÉ”µ…Í…‘”Ñ…Í¬Í¼İ”‘½¸ĞÍÑ…¬Ñ¡•´ÕÀ¸(€€€€€€€ÁÉ¥Ù…Ñ”Ù½±…Ñ¥±”Q…Í¬}Á•¹‘¥¹I•…Í…‘”€ô¹Õ±°ì(€€€€€€€ÁÉ¥Ù…Ñ”É•…‘½¹±ä½‰©•Ğ}É•…Í…‘•M¡•‘Õ±•1½¬€ô¹•Ü½‰©•Ğ ¤ì(€€€€€€€ÁÉ¥Ù…Ñ”‰½½°}É•…Í…‘•]½É­•ÉIÕ¹¹¥¹œì(€€€€€€€ÁÉ¥Ù…Ñ”‰½½°}É•…Í…‘•I•ÅÕ•ÍÑ•ì(€€€€€€€ÁÉ¥Ù…Ñ”¥¹Ğ}É•…Í…‘••±…å5Ìì((€€€€€€€€¼¼¼€ñÍÕµµ…Éäø(€€€€€€€€¼¼¼M¡•‘Õ±”„MLÉ”µ…Í…‘”½¸Ñ¡”ÕÉÉ•¹Ğ=4ÕÍ¥¹œ…¡•É•¹‘•ÈÁ…É…µ•Ñ•ÉÌ¸(€€€€€€€€¼¼¼M…™”Ñ¼…±°™É½´…¹äÑ¡É•…€¡”¹œ¸±•µ•¹ÑMÑ…Ñ•5…¹…•È¹=¹MÑ…Ñ•¡…¹•¤¸(€€€€€€€€¼¼¼%˜„É”µ…Í…‘”¥Ì…±É•…‘ä¥¸µ™±¥¡Ğ°Ñ¡”…±°¥Ì„¹¼µ½ÀìÑ¡”¹•áĞ(€€€€€€€€¼¼¼I•Á…¥¹ÑI•…‘äÑ¡…Ğ™¥É•Ì…™Ñ•ÈÑ¡”¥¸µ™±¥¡ĞÑ…Í¬½µÁ±•Ñ•Ìİ¥±°…ÉÉäÑ¡”(€€€€€€€€¼¼¼™É•Í¡•ÍĞÍÑå±•Ì¸(€€€€€€€€¼¼¼€ğ½ÍÕµµ…Éäø(€€€€€€€€¼¼¼€ñÍÕµµ…Éäø(€€€€€€€€¼¼¼QÉ…­Ìİ¡•Ñ¡•È„™Õ±°É•…Í…‘”¥Ì¹••‘•€¡ÍÑå±•Í¡••Ğ¡…¹”¤ÙÌ¥¹É•µ•¹Ñ…°€¡=4µÕÑ…Ñ¥½¸¤¸(€€€€€€€€¼¼¼€ğ½ÍÕµµ…Éäø(€€€€€€€ÁÉ¥Ù…Ñ”Ù½±…Ñ¥±”‰½½°}™Õ±±I•…Í…‘•I•ÅÕ¥É•ì((€€€€€€€ÁÕ‰±¥ŒÙ½¥M¡•‘Õ±•I•…Í…‘”¡‰½½°™Õ±±I•…Í…‘”€ô™…±Í”°¥¹Ğ‘•±…å5Ì€ô€À¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡}…Ñ¥Ù•½´€ôô¹Õ±°ñğ}…Ñ¥Ù•	…Í•UÉ¤€ôô¹Õ±°ñğ}…Ñ¥Ù••Ñ¡ÍÌ€ôô¹Õ±°¤(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì((€€€€€€€€€€€±½¬€¡}É•…Í…‘•M¡•‘Õ±•1½¬¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€}É•…Í…‘•I•ÅÕ•ÍÑ•€ôÑÉÕ”ì(€€€€€€€€€€€€€€€¥˜€¡™Õ±±I•…Í…‘”¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€}™Õ±±I•…Í…‘•I•ÅÕ¥É•€ôÑÉÕ”ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€}É•…Í…‘••±…å5Ì€ô5…Ñ ¹5…à¡}É•…Í…‘••±…å5Ì°5…Ñ ¹5…à À°‘•±…å5Ì¤¤ì((€€€€€€€€€€€€€€€¥˜€¡}É•…Í…‘•]½É­•ÉIÕ¹¹¥¹œ¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€}É•…Í…‘•]½É­•ÉIÕ¹¹¥¹œ€ôÑÉÕ”ì(€€€€€€€€€€€€€€€}Á•¹‘¥¹I•…Í…‘”€ôIÕ¹•Ñ…¡•‘Íå¹Œ¡É…¥¹M¡•‘Õ±•‘I•…Í…‘•ÍÍå¹Œ¤ì(€€€€€€€€€€€ô(€€€€€€€ô((€€€€€€€¥¹Ñ•É¹…°Q…Í¬AÉ•İ…ÉµMÕ‰‘½Õµ•¹Ñ%µ…•ÍÍå¹Œ¡±•µ•¹ĞÉ½½Ğ°UÉ¤‰…Í•UÉ¤¤(€€€€€€€ì(€€€€€€€€€€€É•ÑÕÉ¸AÉ•İ…Éµ%µ…•ÍÍå¹Œ¡É½½Ğ°‰…Í•UÉ¤°}…Ñ¥Ù•%µ…•1½…‘•È°}…Ñ¥Ù•Y¥•İÁ½ÉÑ]¥‘Ñ ¤ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”…Íå¹ŒQ…Í¬É…¥¹M¡•‘Õ±•‘I•…Í…‘•ÍÍå¹Œ ¤(€€€€€€€ì(€€€€€€€€€€€İ¡¥±”€¡ÑÉÕ”¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€‰½½°™Õ±±I•…Í…‘”ì(€€€€€€€€€€€€€€€¥¹Ğ‘•±…å5Ìì(€€€€€€€€€€€€€€€±½¬€¡}É•…Í…‘•M¡•‘Õ±•1½¬¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¥˜€ …}É•…Í…‘•I•ÅÕ•ÍÑ•¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€}É•…Í…‘•]½É­•ÉIÕ¹¹¥¹œ€ô™…±Í”ì(€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€}É•…Í…‘•I•ÅÕ•ÍÑ•€ô™…±Í”ì(€€€€€€€€€€€€€€€€€€€™Õ±±I•…Í…‘”€ô}™Õ±±I•…Í…‘•I•ÅÕ¥É•ì(€€€€€€€€€€€€€€€€€€€}™Õ±±I•…Í…‘•I•ÅÕ¥É•€ô™…±Í”ì(€€€€€€€€€€€€€€€€€€€‘•±…å5Ì€ô}É•…Í…‘••±…å5Ìì(€€€€€€€€€€€€€€€€€€€}É•…Í…‘••±…å5Ì€ô€Àì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€¥˜€¡‘•±…å5Ì€ø€À¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€…İ…¥ĞQ…Í¬¹•±…ä¡‘•±…å5Ì¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€ÑÉä(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¥˜€¡™Õ±±I•…Í…‘”¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹%¹™¼ ‰mÕÍÑ½µ!Ñµ±¹¥¹•tÕ±°É•…Í…‘”€¡ÍÑå±•Í¡••Ğ¡…¹”¤ˆ°1½…Ñ•½Éä¹ML¤ì(€€€€€€€€€€€€€€€€€€€€€€€…İ…¥ĞI•…Í…‘•Íå¹Œ ¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€•±Í”(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€…İ…¥Ğ%¹É•µ•¹Ñ…±I•…Í…‘•Íå¹Œ ¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ (€€€€€€€€€€€€€€€€€€€€€€€€‰mÕÍÑ½µ!Ñµ±¹¥¹•tI•…Í…‘•Íå¹Œ™…¥±•èí•à¹5•ÍÍ…•ôˆ°(€€€€€€€€€€€€€€€€€€€€€€€1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ô(€€€€€€€ô((€€€€€€€€¼¼¼€ñÍÕµµ…Éäø(€€€€€€€€¼¼¼]…¥ÑÌ™½È…¹äÍ¡•‘Õ±•ÍÑå±”É•…Í…‘”…¹Íå¹¡É½¹½ÕÍ±äÉ•™É•Í¡•ÌÑ¡”(€€€€€€€€¼¼¼É•¹‘•É•ÈÌ•½µ•ÑÉäÍ¹…ÁÍ¡½Ğ¸]•‰É¥Ù•ÈÕÍ•ÌÑ¡¥Ì‰•™½É”É•…‘¥¹œ…¸(€€€€€€€€¼¼¼•±•µ•¹ĞÉ•Ñ…¹±”½È‘•É¥Ù¥¹œ…¸¥¸µÙ¥•Ü±¥¬•¹Ñ•È¸(€€€€€€€€¼¼¼€ğ½ÍÕµµ…Éäø(€€€€€€€ÁÕ‰±¥Œ…Íå¹ŒQ…Í¬±ÕÍ¡A•¹‘¥¹1…å½ÕÑÍå¹Œ ¤(€€€€€€€ì(€€€€€€€€€€€Ù…ÈÁ•¹‘¥¹I•…Í…‘”€ô}Á•¹‘¥¹I•…Í…‘”ì(€€€€€€€€€€€¥˜€¡Á•¹‘¥¹I•…Í…‘”€„ô¹Õ±°¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€…İ…¥ĞÁ•¹‘¥¹I•…Í…‘”¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€ô((€€€€€€€€€€€Ù…ÈÉ½½Ğ€ô€¡}…Ñ¥Ù•½´…Ì±•µ•¹Ğ¤€üü€¡}…Ñ¥Ù•½´…Ì½Õµ•¹Ğ¤ü¹½Õµ•¹Ñ±•µ•¹Ğì(€€€€€€€€€€€Ù…ÈÉ•¹‘•É•È€ô}•áÑ•É¹…±I•¹‘•É•È€üü}…¡•‘I•¹‘•É•Èì(€€€€€€€€€€€¥˜€¡É½½Ğ€ôô¹Õ±°ñğÉ•¹‘•É•È€ôô¹Õ±°¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô((€€€€€€€€€€€É•¹‘•É•È¹¹ÍÕÉ•1…å½ÕĞ (€€€€€€€€€€€€€€€É½½Ğ°(€€€€€€€€€€€€€€€1…ÍÑ½µÁÕÑ•‘MÑå±•Ì°(€€€€€€€€€€€€€€€€¡™±½…Ğ¤¡}…Ñ¥Ù•Y¥•İÁ½ÉÑ]¥‘Ñ €üü€ÄäÈÀ¤°(€€€€€€€€€€€€€€€€¡™±½…Ğ¤¡}…Ñ¥Ù•Y¥•İÁ½ÉÑ!•¥¡Ğ€üü•ÑAÉ¥µ…Éå]¥¹‘½İ!•¥¡Ğ ¤¤°(€€€€€€€€€€€€€€€}…Ñ¥Ù•	…Í•UÉ¤ü¹‰Í½±ÕÑ•UÉ¤¤ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”Ù½¥±ÕÍ¡A•¹‘¥¹1…å½ÕÑ½ÉMÉ¥ÁĞ ¤(€€€€€€€ì(€€€€€€€€€€€Ù…ÈÁ•¹‘¥¹I•…Í…‘”€ô}Á•¹‘¥¹I•…Í…‘”ì(€€€€€€€€€€€¥˜€¡Á•¹‘¥¹I•…Í…‘”€„ô¹Õ±°€˜˜€…Á•¹‘¥¹I•…Í…‘”¹%Í½µÁ±•Ñ•¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Á•¹‘¥¹I•…Í…‘”¹•Ñİ…¥Ñ•È ¤¹•ÑI•ÍÕ±Ğ ¤ì(€€€€€€€€€€€ô((€€€€€€€€€€€Ù…ÈÉ½½Ğ€ô€¡}…Ñ¥Ù•½´…Ì±•µ•¹Ğ¤€üü€¡}…Ñ¥Ù•½´…Ì½Õµ•¹Ğ¤ü¹½Õµ•¹Ñ±•µ•¹Ğì(€€€€€€€€€€€Ù…ÈÉ•¹‘•É•È€ô}•áÑ•É¹…±I•¹‘•É•È€üü}…¡•‘I•¹‘•É•Èì(€€€€€€€€€€€¥˜€¡É½½Ğ€ôô¹Õ±°ñğÉ•¹‘•É•È€ôô¹Õ±°ñğ(€€€€€€€€€€€€€€€€ …É½½Ğ¹MÑå±•¥ÉÑä€˜˜€…É½½Ğ¹¡¥±‘MÑå±•¥ÉÑä€˜˜(€€€€€€€€€€€€€€€€€…É½½Ğ¹1…å½ÕÑ¥ÉÑä€˜˜€…É½½Ğ¹¡¥±‘1…å½ÕÑ¥ÉÑä¤¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô((€€€€€€€€€€€É•¹‘•É•È¹¹ÍÕÉ•1…å½ÕĞ (€€€€€€€€€€€€€€€É½½Ğ°(€€€€€€€€€€€€€€€1…ÍÑ½µÁÕÑ•‘MÑå±•Ì°(€€€€€€€€€€€€€€€€¡™±½…Ğ¤¡}…Ñ¥Ù•Y¥•İÁ½ÉÑ]¥‘Ñ €üü€ÄäÈÀ¤°(€€€€€€€€€€€€€€€€¡™±½…Ğ¤¡}…Ñ¥Ù•Y¥•İÁ½ÉÑ!•¥¡Ğ€üü•ÑAÉ¥µ…Éå]¥¹‘½İ!•¥¡Ğ ¤¤°(€€€€€€€€€€€€€€€}…Ñ¥Ù•	…Í•UÉ¤ü¹‰Í½±ÕÑ•UÉ¤¤ì(€€€€€€€ô((€€€€€€€€¼¼¼€ñÍÕµµ…Éäø(€€€€€€€€¼¼¼I”µÉÕ¹ÌÑ¡”ML…Í…‘”½¸Ñ¡”ÕÉÉ•¹Ñ±ä…Ñ¥Ù”=4ÕÍ¥¹œ…¡•Á…É…µ•Ñ•ÉÌ¸(€€€€€€€€¼¼¼UÁ‘…Ñ•Ì1…ÍÑ½µÁÕÑ•‘MÑå±•Ì…¹™¥É•ÌI•Á…¥¹ÑI•…‘äÍ¼Ñ¡”•¹¥¹”±½½ÀÉ•‘É…İÌ¸(€€€€€€€€¼¼¼€ğ½ÍÕµµ…Éäø(€€€€€€€ÁÕ‰±¥Œ…Íå¹ŒQ…Í¬I•…Í…‘•Íå¹Œ ¤(€€€€€€€ì(€€€€€€€€€€€±½¹œÉ•¹‘•É•¹•É…Ñ¥½¸ì(€€€€€€€€€€€9½‘”…Ñ¥Ù•½´ì(€€€€€€€€€€€UÉ¤…Ñ¥Ù•	…Í•UÉ¤ì(€€€€€€€€€€€Õ¹ŒñUÉ¤°Q…Í¬ñÍÑÉ¥¹œøø…Ñ¥Ù••Ñ¡ÍÌì(€€€€€€€€€€€±½¬€¡}É•¹‘•ÉMÑ…Ñ•1½¬¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•¹‘•É•¹•É…Ñ¥½¸€ô}É•¹‘•É•¹•É…Ñ¥½¸ì(€€€€€€€€€€€€€€€…Ñ¥Ù•½´€ô}…Ñ¥Ù•½´ì(€€€€€€€€€€€€€€€…Ñ¥Ù•	…Í•UÉ¤€ô}…Ñ¥Ù•	…Í•UÉ¤ì(€€€€€€€€€€€€€€€…Ñ¥Ù••Ñ¡ÍÌ€ô}…Ñ¥Ù••Ñ¡ÍÌì(€€€€€€€€€€€ô((€€€€€€€€€€€Ù…È‘½µ°€ô€¡…Ñ¥Ù•½´…Ì•¹	É½İÍ•È¹½É”¹½´¹XÈ¹±•µ•¹Ğ¤(€€€€€€€€€€€€€€€€€€€€€üü€¡…Ñ¥Ù•½´…Ì•¹	É½İÍ•È¹½É”¹½´¹XÈ¹½Õµ•¹Ğ¤ü¹½Õµ•¹Ñ±•µ•¹Ğì(€€€€€€€€€€€¥˜€¡‘½µ°€ôô¹Õ±°ñğ…Ñ¥Ù•	…Í•UÉ¤€ôô¹Õ±°ñğ…Ñ¥Ù••Ñ¡ÍÌ€ôô¹Õ±°¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô((€€€€€€€€€€€…İ…¥Ğ1½…‘ÍÍÍå¹Œ¡‘½µ°°…Ñ¥Ù•	…Í•UÉ¤°…Ñ¥Ù••Ñ¡ÍÌ°É•¹‘•É•¹•É…Ñ¥½¸èÉ•¹‘•É•¹•É…Ñ¥½¸¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€ô((€€€€€€€€¼¼¼€ñÍÕµµ…Éäø(€€€€€€€€¼¼¼]…±­ÌÑ¡”=4ÕÍ¥¹œ¡¥±‘MÑå±•¥ÉÑä™±…ÌÑ¼™¥¹‘¥ÉÑäÍÕ‰ÑÉ•”É½½ÑÌ°(€€€€€€€€¼¼¼É•…Í…‘•Ì½¹±äÑ¡½Í”ÍÕ‰ÑÉ••Ì°Ñ¡•¸™¥É•Ì=¹I•Á…¥¹ÑI•…‘ä¸(€€€€€€€€¼¼¼…±±Ì‰…¬Ñ¼™Õ±°É•…Í…‘”¥˜€øÌÀ”½˜ÑÉ•”¥Ì‘¥ÉÑä¸(€€€€€€€€¼¼¼€ğ½ÍÕµµ…Éäø(€€€€€€€ÁÉ¥Ù…Ñ”…Íå¹ŒQ…Í¬%¹É•µ•¹Ñ…±I•…Í…‘•Íå¹Œ ¤(€€€€€€€ì(€€€€€€€€€€€±½¹œÉ•¹‘•É•¹•É…Ñ¥½¸ì(€€€€€€€€€€€9½‘”…Ñ¥Ù•½´ì(€€€€€€€€€€€Õ¹ŒñUÉ¤°Q…Í¬ñÍÑÉ¥¹œøø…Ñ¥Ù••Ñ¡ÍÌì(€€€€€€€€€€€‘½Õ‰±”ü…Ñ¥Ù•Y¥•İÁ½ÉÑ]¥‘Ñ ì(€€€€€€€€€€€‘½Õ‰±”ü…Ñ¥Ù•Y¥•İÁ½ÉÑ!•¥¡Ğì(€€€€€€€€€€€±½¬€¡}É•¹‘•ÉMÑ…Ñ•1½¬¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•¹‘•É•¹•É…Ñ¥½¸€ô}É•¹‘•É•¹•É…Ñ¥½¸ì(€€€€€€€€€€€€€€€…Ñ¥Ù•½´€ô}…Ñ¥Ù•½´ì(€€€€€€€€€€€€€€€…Ñ¥Ù••Ñ¡ÍÌ€ô}…Ñ¥Ù••Ñ¡ÍÌì(€€€€€€€€€€€€€€€…Ñ¥Ù•Y¥•İÁ½ÉÑ]¥‘Ñ €ô}…Ñ¥Ù•Y¥•İÁ½ÉÑ]¥‘Ñ ì(€€€€€€€€€€€€€€€…Ñ¥Ù•Y¥•İÁ½ÉÑ!•¥¡Ğ€ô}…Ñ¥Ù•Y¥•İÁ½ÉÑ!•¥¡Ğì(€€€€€€€€€€€ô((€€€€€€€€€€€Ù…È‘½µ°€ô€¡…Ñ¥Ù•½´…Ì•¹	É½İÍ•È¹½É”¹½´¹XÈ¹±•µ•¹Ğ¤(€€€€€€€€€€€€€€€€€€€€€üü€¡…Ñ¥Ù•½´…Ì•¹	É½İÍ•È¹½É”¹½´¹XÈ¹½Õµ•¹Ğ¤ü¹½Õµ•¹Ñ±•µ•¹Ğì(€€€€€€€€€€€¥˜€¡‘½µ°€ôô¹Õ±°ñğ…Ñ¥Ù••Ñ¡ÍÌ€ôô¹Õ±°¤É•ÑÕÉ¸ì((€€€€€€€€€€€€¼¼½±±•Ğ‘¥ÉÑäÍÕ‰ÑÉ•”É½½ÑÌ‰äİ…±­¥¹œ¡¥±‘MÑå±•¥ÉÑä™±…Ì(€€€€€€€€€€€Ù…È‘¥ÉÑåI½½ÑÌ€ô¹•Ü1¥ÍĞñ±•µ•¹Ğø ¤ì(€€€€€€€€€€€¥¹ĞÑ½Ñ…±±•µ•¹ÑÌ€ô€Àì(€€€€€€€€€€€½±±•Ñ¥ÉÑåMÕ‰ÑÉ••Ì¡‘½µ°°‘¥ÉÑåI½½ÑÌ°É•˜Ñ½Ñ…±±•µ•¹ÑÌ¤ì((€€€€€€€€€€€€¼¼…±±‰…¬è¥˜€øØÀ”‘¥ÉÑä°™Õ±°É•…Í…‘”¥Ì¡•…Á•ÈÑ¡…¸¥¹É•µ•¹Ñ…°¸(€€€€€€€€€€€€¼¼5½ÍĞ)Lµ‘É¥Ù•¸=4µÕÑ…Ñ¥½¹Ì…™™•Ğ€ğÔ”½˜•±•µ•¹ÑÌ€¡±…ÍÌÑ½±”°ÍÑå±”(€€€€€€€€€€€€¼¼¡…¹”½¸„Í¥¹±”•±•µ•¹Ğ¤¸€Q¡”½±€ÌÀ”Ñ¡É•Í¡½±İ…ÌÑ½¼½¹Í•ÉÙ…Ñ¥Ù”(€€€€€€€€€€€€¼¼…¹…ÕÍ•™Õ±°É•…Í…‘•Ì™½ÈÍµ…±°µÕÑ…Ñ¥½¹Ì½¸µ•‘¥Õ´Á…•Ì¸(€€€€€€€€€€€¥˜€¡Ñ½Ñ…±±•µ•¹ÑÌ€ø€À€˜˜‘¥ÉÑåI½½ÑÌ¹½Õ¹Ğ€øÑ½Ñ…±±•µ•¹ÑÌ€¨€À¸Ø¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹%¹™¼ ‰mÕÍÑ½µ!Ñµ±¹¥¹•t%¹É•µ•¹Ñ…°Ñ½¼‰É½…€¡í‘¥ÉÑåI½½ÑÌ¹½Õ¹Ñô½íÑ½Ñ…±±•µ•¹ÑÍô‘¥ÉÑä¤ƒŠP™…±±¥¹œ‰…¬Ñ¼™Õ±°É•…Í…‘”ˆ°1½…Ñ•½Éä¹ML¤ì(€€€€€€€€€€€€€€€…İ…¥ĞI•…Í…‘•Íå¹Œ ¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡‘¥ÉÑåI½½ÑÌ¹½Õ¹Ğ€ôô€À¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€¼¼9¼‘¥ÉÑä¹½‘•ÌƒŠPÍÑ¥±°™¥É”É•Á…¥¹Ğ¥¸…Í”±…å½ÕĞ¡…¹•(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ (€€€€€€€€€€€€€€€€€€€€‰mÕÍÑ½µ!Ñµ±¹¥¹•t%¹É•µ•¹Ñ…°É•…Í…‘”™½Õ¹¹¼‘¥ÉÑäÉ½½ÑÌìÍ­¥ÁÁ¥¹œ¹¼µ½ÀÉ•…Í…‘”¸ˆ°(€€€€€€€€€€€€€€€€€€€1½…Ñ•½Éä¹ML¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô((€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹%¹™¼ (€€€€€€€€€€€€€€€€‰mÕÍÑ½µ!Ñµ±¹¥¹•t%¹É•µ•¹Ñ…°É•…Í…‘”èAÉ½•ÍÍ¥¹œí‘¥ÉÑåI½½ÑÌ¹½Õ¹Ñô‘¥ÉÑäÍÕ‰ÑÉ•”¡Ì¤¸¸¸ˆ°(€€€€€€€€€€€€€€€1½…Ñ•½Éä¹ML¤ì((€€€€€€€€€€€™½É•… €¡Ù…ÈÉ½½Ğ¥¸‘¥ÉÑåI½½ÑÌ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€ÑÉä(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€¼¼½±±•ĞÉÕ±•Ì™É½´Ñ¡”½İ¹¥¹œ‘½Õµ•¹Ğ°‰ÕĞ…Í…‘”½¹±äÑ¡”‘¥ÉÑä(€€€€€€€€€€€€€€€€€€€€¼¼ÍÕ‰ÑÉ•”¸ÕÑ¡½ÈÍÑå±•Ì¹½Éµ…±±ä±¥Ù”¥¸€ñ¡•…ø°½ÕÑÍ¥‘”„‘¥ÉÑä‰½‘ä(€€€€€€€€€€€€€€€€€€€€¼¼‘•Í•¹‘…¹Ğ°Í¼ÕÍ¥¹œÑ¡”‘¥ÉÑäÉ½½Ğ™½È‰½Ñ ±½Í•ÌÍ•±•Ñ½ÈÉÕ±•Ì¸(€€€€€€€€€€€€€€€€€€€Ù…ÈÍÕ‰ÑÉ••	…Í•UÉ¤€ôI•Í½±Ù•	…Í•UÉ¥½ÉI•…Í…‘•I½½Ğ¡É½½Ğ¤ì(€€€€€€€€€€€€€€€€€€€Ù…ÈÍÑå±•Í¡••ÑI½½Ğ€ôÉ½½Ğ¹=İ¹•É½Õµ•¹Ğü¹½Õµ•¹Ñ±•µ•¹Ğ€üü‘½µ°ì(€€€€€€€€€€€€€€€€€€€Ù…ÈÍÕ‰ÑÉ••MÑå±•Ì€ô…İ…¥ĞÍÍ1½…‘•È¹½µÁÕÑ•MÕ‰ÑÉ••Íå¹Œ (€€€€€€€€€€€€€€€€€€€€€€€ÍÑå±•Í¡••ÑI½½Ğ°(€€€€€€€€€€€€€€€€€€€€€€€É½½Ğ°(€€€€€€€€€€€€€€€€€€€€€€€ÍÕ‰ÑÉ••	…Í•UÉ¤°(€€€€€€€€€€€€€€€€€€€€€€€…Ñ¥Ù••Ñ¡ÍÌ°(€€€€€€€€€€€€€€€€€€€€€€€…Ñ¥Ù•Y¥•İÁ½ÉÑ]¥‘Ñ °(€€€€€€€€€€€€€€€€€€€€€€€…Ñ¥Ù•Y¥•İÁ½ÉÑ!•¥¡Ğ°(€€€€€€€€€€€€€€€€€€€€€€€™•Ñ¡áÑ•É¹…±ÍÍ½ÉI½½ÑÍå¹Œè•Ñ¡áÑ•É¹…±ÍÍ½ÉI½½ÑÍå¹Œ¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€€€€€€€€€€(€€€€€€€€€€€€€€€€€€€¥˜€¡ÍÕ‰ÑÉ••MÑå±•Ì€„ô¹Õ±°¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€±½¬€¡}É•¹‘•ÉMÑ…Ñ•1½¬¤(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€¥˜€¡}É•¹‘•É•¹•É…Ñ¥½¸€„ôÉ•¹‘•É•¹•É…Ñ¥½¸¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€€€€€€¼¼5•É”¥¹Ñ¼µ…¥¸ÍÑå±•Ì‘¥Ñ¥½¹…Éä(€€€€€€€€€€€€€€€€€€€€€€€€€€€™½É•… €¡Ù…È­ÙÀ¥¸ÍÕ‰ÑÉ••MÑå±•Ì¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€1…ÍÑ½µÁÕÑ•‘MÑå±•Ím­ÙÀ¹-•åt€ô­ÙÀ¹Y…±Õ”ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€­ÙÀ¹-•ä¹M•Ñ½µÁÕÑ•‘MÑå±”¡­ÙÀ¹Y…±Õ”¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€€¼¼Q¡”…Í…‘”¡…ÌÉ•Á±…•ÍÑå±”½‰©•ÑÌ™½ÈÑ¡¥ÌÍÕ‰ÑÉ•”¸(€€€€€€€€€€€€€€€€€€€€€€€€¼¼AÉ•Í•ÉÙ”„±…å½ÕĞ½Á…¥¹Ğ¥¹Ù…±¥‘…Ñ¥½¸…™Ñ•È±•…É¥¹œÑ¡”ÍÑå±”(€€€€€€€€€€€€€€€€€€€€€€€€¼¼™±…Ì‰•±½ÜÍ¼Ñ¡”É•¹‘•É•È…¹¹½ĞÉ•ÕÍ”•½µ•ÑÉäÁÉ½‘Õ•(€€€€€€€€€€€€€€€€€€€€€€€€¼¼™É½´Ñ¡”ÁÉ•Ù¥½ÕÌ½µÁÕÑ•ÍÑå±•Ì€¡¹½Ñ…‰±äÉ•Í¥é•¥™É…µ•Ì¤¸(€€€€€€€€€€€€€€€€€€€€€€€É½½Ğ¹5…É­¥ÉÑä¡%¹Ù…±¥‘…Ñ¥½¹-¥¹¹1…å½ÕĞğ%¹Ù…±¥‘…Ñ¥½¹-¥¹¹A…¥¹Ğ¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€(€€€€€€€€€€€€€€€€€€€±•…ÉMÑå±•¥ÉÑå±…Ì¡É½½Ğ¤ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mÕÍÑ½µ!Ñµ±¹¥¹•t%¹É•µ•¹Ñ…°ÍÕ‰ÑÉ•”É•…Í…‘”™…¥±•™½È€ñíÉ½½Ğ¹Q…9…µ•ôøèí•à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹ML¤ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ô((€€€€€€€€€€€€¼¼QÉ¥•ÈÉ•Á…¥¹Ğİ¥Ñ ÕÁ‘…Ñ•ÍÑå±•Ì(€€€€€€€€€€€¥˜€¡%ÍÕÉÉ•¹ÑI•¹‘•É•¹•É…Ñ¥½¸¡É•¹‘•É•¹•É…Ñ¥½¸¤¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€=¹I•Á…¥¹ÑI•…‘ä¡‘½µ°¤ì(€€€€€€€€€€€ô(€€€€€€€ô((€€€€€€€€¼¼¼€ñÍÕµµ…Éäø(€€€€€€€€¼¼¼]…±­ÌÑ¡”=4ÑÉ•”ÕÍ¥¹œ¡¥±‘MÑå±•¥ÉÑä™±…Ì¸AÉÕ¹•Ì‰É…¹¡•Ìİ¡•É”¡¥±‘MÑå±•¥ÉÑäõ™…±Í”¸(€€€€€€€€¼¼¼½±±•ÑÌÑ¡”Í¡…±±½İ•ÍĞ‘¥ÉÑä±•µ•¹ÑÌ…ÌÍÕ‰ÑÉ•”É½½ÑÌ¸(€€€€€€€€¼¼¼€ğ½ÍÕµµ…Éäø(€€€€€€€ÁÉ¥Ù…Ñ”UÉ¤I•Í½±Ù•	…Í•UÉ¥½ÉI•…Í…‘•I½½Ğ¡9½‘”É½½Ğ¤(€€€€€€€ì(€€€€€€€€€€€Ù…È‘½Õµ•¹Ğ€ôÉ½½Ğ…Ì•¹	É½İÍ•È¹½É”¹½´¹XÈ¹½Õµ•¹Ğ€üüÉ½½Ğü¹=İ¹•É½Õµ•¹Ğì(€€€€€€€€€€€Ù…È‰…Í•Q•áĞ€ô‘½Õµ•¹Ğ€„ô¹Õ±°€˜˜€…ÍÑÉ¥¹œ¹%Í9Õ±±=É]¡¥Ñ•MÁ…”¡‘½Õµ•¹Ğ¹	…Í•UI$¤(€€€€€€€€€€€€€€€€ü‘½Õµ•¹Ğ¹	…Í•UI$(€€€€€€€€€€€€€€€€è‘½Õµ•¹Ğü¹UI0ì((€€€€€€€€€€€¥˜€ …ÍÑÉ¥¹œ¹%Í9Õ±±=É]¡¥Ñ•MÁ…”¡‰…Í•Q•áĞ¤€˜˜(€€€€€€€€€€€€€€€UÉ¤¹QÉåÉ•…Ñ”¡‰…Í•Q•áĞ°UÉ¥-¥¹¹‰Í½±ÕÑ”°½ÕĞÙ…ÈÁ…ÉÍ•¤¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸Á…ÉÍ•ì(€€€€€€€€€€€ô((€€€€€€€€€€€É•ÑÕÉ¸}…Ñ¥Ù•	…Í•UÉ¤ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥ŒÙ½¥½±±•Ñ¥ÉÑåMÕ‰ÑÉ••Ì¡±•µ•¹ĞÉ½½Ğ°1¥ÍĞñ±•µ•¹Ğø‘¥ÉÑåI½½ÑÌ°É•˜¥¹ĞÑ½Ñ…±±•µ•¹ÑÌ¤(€€€€€€€ì(€€€€€€€€€€€Ù…ÈÍÑ…¬€ô¹•ÜMÑ…¬ñ9½‘”ø ¤ì(€€€€€€€€€€€ÍÑ…¬¹AÕÍ ¡É½½Ğ¤ì(€€€€€€€€€€€İ¡¥±”€¡ÍÑ…¬¹½Õ¹Ğ€ø€À¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Ù…È¹½‘”€ôÍÑ…¬¹A½À ¤ì(€€€€€€€€€€€€€€€¥˜€¡¹½‘”¥Ì¹½Ğ±•µ•¹Ğ•°¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¥˜€¡¹½‘”¥Ì•¹	É½İÍ•È¹½É”¹½´¹XÈ¹½Õµ•¹Ğñğ(€€€€€€€€€€€€€€€€€€€€€€€¹½‘”¥Ì•¹	É½İÍ•È¹½É”¹½´¹XÈ¹½Õµ•¹ÑÉ…µ•¹Ğ¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€¥˜€ …¹½‘”¹MÑå±•¥ÉÑä€˜˜€…¹½‘”¹¡¥±‘MÑå±•¥ÉÑä¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”ì((€€€€€€€€€€€€€€€€€€€€€€€Ù…È¹½‘•¡¥±‘É•¸€ô¹½‘”¹¡¥±‘9½‘•Ìì(€€€€€€€€€€€€€€€€€€€€€€€™½È€¡¥¹Ğ¤€ô¹½‘•¡¥±‘É•¸¹1•¹Ñ €´€Äì¤€øô€Àì¤´´¤(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ÍÑ…¬¹AÕÍ ¡¹½‘•¡¥±‘É•¹m¥t¤ì(€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€Ñ½Ñ…±±•µ•¹ÑÌ¬¬ì((€€€€€€€€€€€€€€€¥˜€¡•°¹MÑå±•¥ÉÑä¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€¼¼Q¡¥Ì•±•µ•¹Ğ¥Ì‘¥ÉÑäƒŠP…‘¥Ğ…Ì„ÍÕ‰ÑÉ•”É½½Ğ€¡‘½¸ĞÉ•ÕÉÍ”¥¹Ñ¼¡¥±‘É•¸°(€€€€€€€€€€€€€€€€€€€€¼¼‰•…ÕÍ”I•…Í…‘•MÕ‰ÑÉ•”İ¥±°¡…¹‘±”Ñ¡”™Õ±°ÍÕ‰ÑÉ•”¤(€€€€€€€€€€€€€€€€€€€‘¥ÉÑåI½½ÑÌ¹‘¡•°¤ì(€€€€€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”ì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€¥˜€ …•°¹¡¥±‘MÑå±•¥ÉÑä¤(€€€€€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”ì€¼¼AÉÕ¹”è¹¼‘¥ÉÑä‘•Í•¹‘…¹ÑÌ¥¸Ñ¡¥Ì‰É…¹ ((€€€€€€€€€€€€€€€€¼¼]…±¬¡¥±‘É•¸±½½­¥¹œ™½È‘¥ÉÑä¹½‘•Ì(€€€€€€€€€€€€€€€Ù…È¡¥±‘É•¸€ô•°¹¡¥±‘9½‘•Ìì(€€€€€€€€€€€€€€€™½È€¡¥¹Ğ¤€ô¡¥±‘É•¸¹1•¹Ñ €´€Äì¤€øô€Àì¤´´¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¥˜€¡¡¥±‘É•¹m¥t¥Ì±•µ•¹Ğñğ(€€€€€€€€€€€€€€€€€€€€€€€¡¥±‘É•¹m¥t¥Ì•¹	É½İÍ•È¹½É”¹½´¹XÈ¹½Õµ•¹Ğñğ(€€€€€€€€€€€€€€€€€€€€€€€¡¥±‘É•¹m¥t¥Ì•¹	É½İÍ•È¹½É”¹½´¹XÈ¹½Õµ•¹ÑÉ…µ•¹Ğ¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€ÍÑ…¬¹AÕÍ ¡¡¥±‘É•¹m¥t¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ô(€€€€€€€ô((€€€€€€€€¼¼¼€ñÍÕµµ…Éäø(€€€€€€€€¼¼¼I”µ…Í…‘•Ì„Í¥¹±”‘¥ÉÑäÍÕ‰ÑÉ•”èÉ•½µÁÕÑ•Ì½µÁÕÑ•‘MÑå±”™½È•… •±•µ•¹Ğ(€€€€€€€€¼¼¼ÕÍ¥¹œ¥ÑÌ¥¹±¥¹”ÍÑå±•Ì…¹¥¹¡•É¥Ñ•Á…É•¹ĞÍÑå±”¸±•…ÉÌMÑå±•¥ÉÑä™±…Ì¸(€€€€€€€€¼¼¼€ğ½ÍÕµµ…Éäø(€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ‰½½°9••‘ÍA½ÍÑMÉ¥ÁÑMÑå±•I•™É•Í  (€€€€€€€€€€€9½‘”É½½Ğ°(€€€€€€€€€€€%I•…‘=¹±å¥Ñ¥½¹…Éäñ9½‘”°ÍÍ½µÁÕÑ•ø½µÁÕÑ•‘MÑå±•Ì¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡É½½Ğ€ôô¹Õ±°¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡É½½Ğ¹MÑå±•¥ÉÑäñğÉ½½Ğ¹¡¥±‘MÑå±•¥ÉÑä¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡½µÁÕÑ•‘MÑå±•Ì€ôô¹Õ±°ñğ½µÁÕÑ•‘MÑå±•Ì¹½Õ¹Ğ€ôô€À¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€€€€€ô((€€€€€€€€€€€É•ÑÕÉ¸!…Í9½‘•5¥ÍÍ¥¹½µÁÕÑ•‘MÑå±”¡É½½Ğ°½µÁÕÑ•‘MÑå±•Ì¤ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ‰½½°!…Í9½‘•5¥ÍÍ¥¹½µÁÕÑ•‘MÑå±” (€€€€€€€€€€€9½‘”¹½‘”°(€€€€€€€€€€€%I•…‘=¹±å¥Ñ¥½¹…Éäñ9½‘”°ÍÍ½µÁÕÑ•ø½µÁÕÑ•‘MÑå±•Ì¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡¹½‘”€ôô¹Õ±°¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€ …½µÁÕÑ•‘MÑå±•Ì¹½¹Ñ…¥¹Í-•ä¡¹½‘”¤¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€€€€€ô((€€€€€€€€€€€Ù…È¡¥±‘É•¸€ô¹½‘”¹¡¥±‘9½‘•Ìì(€€€€€€€€€€€¥˜€¡¡¥±‘É•¸€ôô¹Õ±°ñğ¡¥±‘É•¸¹1•¹Ñ €ôô€À¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€ô((€€€€€€€€€€€™½È€¡¥¹Ğ¤€ô€Àì¤€ğ¡¥±‘É•¸¹1•¹Ñ ì¤¬¬¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€¥˜€¡!…Í9½‘•5¥ÍÍ¥¹½µÁÕÑ•‘MÑå±”¡¡¥±‘É•¹m¥t°½µÁÕÑ•‘MÑå±•Ì¤¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ô((€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥ŒÙ½¥±•…ÉMÑå±•¥ÉÑå±…Ì¡9½‘”É½½Ğ¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡É½½Ğ€ôô¹Õ±°¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô((€€€€€€€€€€€Ù…ÈÍÑ…¬€ô¹•ÜMÑ…¬ñ9½‘”ø ¤ì(€€€€€€€€€€€ÍÑ…¬¹AÕÍ ¡É½½Ğ¤ì(€€€€€€€€€€€İ¡¥±”€¡ÍÑ…¬¹½Õ¹Ğ€ø€À¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Ù…È¹½‘”€ôÍÑ…¬¹A½À ¤ì(€€€€€€€€€€€€€€€¹½‘”¹±•…É¥ÉÑä¡%¹Ù…±¥‘…Ñ¥½¹-¥¹¹MÑå±”¤ì((€€€€€€€€€€€€€€€Ù…È¡¥±‘É•¸€ô¹½‘”¹¡¥±‘9½‘•Ìì(€€€€€€€€€€€€€€€¥˜€¡¡¥±‘É•¸€ôô¹Õ±°ñğ¡¥±‘É•¸¹1•¹Ñ €ôô€À¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”ì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€™½È€¡¥¹Ğ¤€ô¡¥±‘É•¸¹1•¹Ñ €´€Äì¤€øô€Àì¤´´¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¥˜€¡¡¥±‘É•¹m¥t€„ô¹Õ±°¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€ÍÑ…¬¹AÕÍ ¡¡¥±‘É•¹m¥t¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ô(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”%	É½İÍ•ÉMÉ¥ÁÑ¹¥¹”M•ÑÕÁ)…Ù…MÉ¥ÁÑ¹¥¹” (€€€€€€€€€€€€UÉ¤‰…Í•UÉ¤°(€€€€€€€€€€€€Ñ¥½¸ñUÉ¤ø½¹9…Ù¥…Ñ”°€(€€€€€€€€€€€€‰½½°…±±½İ)Ì°€(€€€€€€€€€€€€Õ¹ŒñUÉ¤°Q…Í¬ñÍÑÉ¥¹œøø™•Ñ¡áÑ•É¹…±ÍÍÍå¹Œ°(€€€€€€€€€€€€‘½Õ‰±”üÙ¥•İÁ½ÉÑ]¥‘Ñ °(€€€€€€€€€€€€‘½Õ‰±”üÙ¥•İÁ½ÉÑ!•¥¡Ğ¤(€€€€€€€ì(€€€€€€€€€€€€¥˜€ ……±±½İ)Ì¤É•ÑÕÉ¸¹Õ±°ì((€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mÕÍÑ½µ!Ñµ±¹¥¹•tÉ•…Ñ¥¹œ‰É½İÍ•ÈÍÉ¥ÁĞ•¹¥¹”¸¸¸ˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€Ù…È©Ì€ô	É½İÍ•ÉMÉ¥ÁÑ¹¥¹•IÕ¹Ñ¥µ”¹É•…Ñ”¡¹•Ü)Í!½ÍÑ‘…ÁÑ•È (€€€€€€€€€€€€€€€€¹…Ù¥…Ñ”è½¹9…Ù¥…Ñ”°(€€€€€€€€€€€€€€€€Á½ÍĞè€¡|°}|¤€ôøìô°(€€€€€€€€€€€€€€€€ÍÑ…ÑÕÌè|€ôøìô°(€€€€€€€€€€€€€€€€É•ÅÕ•ÍÑI•¹‘•ÈèM¡•‘Õ±•I•Á…¥¹ÑÉ½µ)Ì°(€€€€€€€€€€€€€€€€¥¹Ù½­•=¹U¥Q¡É•…è…Ñ¥½¸€ôø(€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€Ù…È‘¥ÍÀ€ô}Õ¥¥ÍÁ…Ñ¡•È€üüU¥Q¡É•…‘!•±Á•È¹QÉå•Ñ¥ÍÁ…Ñ¡•È ¤ì(€€€€€€€€€€€€€€€€€€€€¥˜€¡‘¥ÍÀ€„ô¹Õ±°€˜˜€…U¥Q¡É•…‘!•±Á•È¹!…ÍQ¡É•…‘•ÍÌ¡‘¥ÍÀ¤¤(€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€U¥Q¡É•…‘!•±Á•È¹IÕ¹Íå¹Œ¡‘¥ÍÀ°¹Õ±°°…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€…Ñ¥½¸ ¤ì(€€€€€€€€€€€€€€€€ô°(€€€€€€€€€€€€€€€€Í•ÑQ¥Ñ±”è¹Õ±°°(€€€€€€€€€€€€€€€€…±•ÉĞè€¡µÍœ¤€ôøì±•ÉÑQÉ¥•É•ü¹%¹Ù½­”¡µÍœ¤ìô°(€€€€€€€€€€€€€€€€½¹™¥É´è€¡µÍœ¤€ôø(€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€Ù…È¡…¹‘±•È€ô½¹™¥ÉµQÉ¥•É•ì(€€€€€€€€€€€€€€€€€€€€¥˜€¡¡…¹‘±•È€„ô¹Õ±°¤(€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸¡…¹‘±•È¡µÍœ¤ì(€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€±•ÉÑQÉ¥•É•ü¹%¹Ù½­”¡µÍœ¤ì(€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€€€€€€€€€€ô°(€€€€€€€€€€€€€€€€ÁÉ½µÁĞè€¡µÍœ°‘•™…Õ±ÑY…±Õ”¤€ôø(€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€Ù…È¡…¹‘±•È€ôAÉ½µÁÑQÉ¥•É•ì(€€€€€€€€€€€€€€€€€€€€¥˜€¡¡…¹‘±•È€„ô¹Õ±°¤(€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸¡…¹‘±•È¡µÍœ°‘•™…Õ±ÑY…±Õ”¤ì(€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€±•ÉÑQÉ¥•É•ü¹%¹Ù½­”¡µÍœ¤ì(€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸‘•™…Õ±ÑY…±Õ”€üüÍÑÉ¥¹œ¹µÁÑäì(€€€€€€€€€€€€€€€€ô°(€€€€€€€€€€€€€€€€±½œè€¡µÍœ¤€ôø(€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€ÑÉä(€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€•¹	É½İÍ•È¹•¹¹¥¹”¹¥…¹½ÍÑ¥Ì¹)Í¥…¹½ÍÑ¥ÍI•½É‘•È¹I•½É‘½¹Í½±” (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‰±½œˆ°µÍœ°‰…Í•UÉ¤ü¹‰Í½±ÕÑ•UÉ¤¤ì(€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€…Ñ ì€¼¨‘¥…¹½ÍÑ¥ÌµÕÍĞ¹•Ù•È‰É•…¬„¹…Ù¥…Ñ¥½¸€¨¼ô(€€€€€€€€€€€€€€€€€€€€½¹Í½±•5•ÍÍ…”ü¹%¹Ù½­”¡µÍœ¤ì(€€€€€€€€€€€€€€€€ô°(€€€€€€€€€€€€€€€€ÍÉ½±±Q½±•µ•¹Ğè€¡•°¤€ôøìô¤¤ì((€€€€€€€€€€€€©Ì¹M…¹‘‰½à€ô…±±½İ)Ì€üM…¹‘‰½áA½±¥ä¹MÑ…¹‘…É‘A…”€èM…¹‘‰½áA½±¥ä¹9½MÉ¥ÁÑÌì(€€€€€€€€€€€€©Ì¹±±½İáÑ•É¹…±MÉ¥ÁÑÌ€ô…±±½İ)Ìì(€€€€€€€€€€€€©Ì¹MÕ‰É•Í½ÕÉ•±±½İ•€ô€¡Ô°­¥¹¤€ôø(€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€¥˜€ ……±±½İ)Ì¤É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€€€€€€¥˜€¡Ñ¥Ù•A½±¥ä€„ô¹Õ±°¤(€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€ÍÑÉ¥¹œ‘¥É•Ñ¥Ù”€ô­¥¹Íİ¥Ñ (€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€‰ÍÉ¥ÁĞˆ€ôø€‰ÍÉ¥ÁĞµÍÉŒˆ°(€€€€€€€€€€€€€€€€€€€€€€€€€‰ÍÑå±”ˆ€ôø€‰ÍÑå±”µÍÉŒˆ°(€€€€€€€€€€€€€€€€€€€€€€€€€‰¥µœˆ€ôø€‰¥µœµÍÉŒˆ°(€€€€€€€€€€€€€€€€€€€€€€€€€‰™½¹Ğˆ€ôø€‰™½¹ĞµÍÉŒˆ°(€€€€€€€€€€€€€€€€€€€€€€€€€‰µ•‘¥„ˆ€ôø€‰µ•‘¥„µÍÉŒˆ°(€€€€€€€€€€€€€€€€€€€€€€€€€‰½¹¹•Ğˆ€ôø€‰½¹¹•ĞµÍÉŒˆ°(€€€€€€€€€€€€€€€€€€€€€€€€€‰™É…µ”ˆ€ôø€‰™É…µ”µÍÉŒˆ°(€€€€€€€€€€€€€€€€€€€€€€€€€‰½‰©•Ğˆ€ôø€‰½‰©•ĞµÍÉŒˆ°(€€€€€€€€€€€€€€€€€€€€€€€€|€ôø€‰‘•™…Õ±ĞµÍÉŒˆ(€€€€€€€€€€€€€€€€€€€€ôì(€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸Ñ¥Ù•A½±¥ä¹%Í±±½İ•¡‘¥É•Ñ¥Ù”°Ô°‰…Í•UÉ¤¤ì(€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€€€€€€ôì(€€€€€€€€€€€€©Ì¹á•ÕÑ•%¹±¥¹•MÉ¥ÁÑÍ=¹%¹¹•É!Q50€ô…±±½İ)Ìì((€€€€€€€€€€€€€¼¼]¥É”ÕÀM@9½¹”¡•¬(€€€€€€€€€€€€©Ì¹9½¹•±±½İ•€ô€¡¹½¹”¤€ôø(€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€¥˜€ ……±±½İ)Ì¤É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€€€€€€¥˜€¡Ñ¥Ù•A½±¥ä€„ô¹Õ±°¤(€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€‰½½°…±±½İ•€ôÑ¥Ù•A½±¥ä¹%Í±±½İ• ‰ÍÉ¥ÁĞµÍÉŒˆ°¹Õ±°°¹½¹”°‰…Í•UÉ¤°¥Í%¹±¥¹”èÑÉÕ”¤ì(€€€€€€€€€€€€€€€€€€€€¥˜€¡…±±½İ•€˜˜¹½¹”€ôô€‰İÉ½¹œĞÔØˆ¤€(€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹ÉÉ½È ‰mM@µI%Q%1t9½¹”€İÉ½¹œĞÔØœ11=]„Ñ¥Ù•A½±¥ä¡…Í õíÑ¥Ù•A½±¥ä¹•Ñ!…Í¡½‘” ¥ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€¼¼ÕµÀ‘¥É•Ñ¥Ù•Ì(€€€€€€€€€€€€€€€€€€€€€€€€€™½É•… €¡Ù…È¥¸Ñ¥Ù•A½±¥ä¹¥É•Ñ¥Ù•Ì¤(€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹ÉÉ½È ˆ€m%Ití¹-•åôèM½ÕÉ•ÌõíÍÑÉ¥¹œ¹)½¥¸ ˆ°ˆ±¹Y…±Õ”¹M½ÕÉ•Ì¥ô9½¹•ÌõíÍÑÉ¥¹œ¹)½¥¸ ˆ°ˆ±¹Y…±Õ”¹9½¹•Ì¥ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸…±±½İ•ì(€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€¼¼9¼M@Á½±¥ä™É½´!QQ@¡•…‘•È½Èµ•Ñ„Ñ…œƒ‹Š
+³ŠtÁ•Éµ¥ÍÍ¥Ù•±ä…±±½Ü¥¹±¥¹”ÍÉ¥ÁÑÌ¸(€€€€€€€€€€€€€€€€€¼¼Q¡¥Ì¥Ì½ÉÉ•Ğ‰•¡…Ù¥½ÈìÑ¡”İ…É¹¥¹œİ…Ìµ¥Í±•…‘¥¹œ¹½¥Í”¸(€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mMAt9¼Ñ¥Ù•A½±¥ä‘ÕÉ¥¹œ¹½¹”¡•¬ƒ‹Š
+³ŠtÁ•Éµ¥ÍÍ¥Ù•±ä…±±½İ¥¹œ¥¹±¥¹”ÍÉ¥ÁĞ¸ˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€€€€€€ôì(€€€€€€€€€€€€€(€€€€€€€€€€€€€¼¼]¥É”ÕÀÁ•Éµ¥ÍÍ¥½¸É•ÅÕ•ÍÑÌ(€€€€€€€€€€€€©Ì¹A•Éµ¥ÍÍ¥½¹I•ÅÕ•ÍÑ•€¬ô…Íå¹Œ€¡½É¥¥¸°Á•É´¤€ôø€(€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€¥˜€¡A•Éµ¥ÍÍ¥½¹I•ÅÕ•ÍÑ•€„ô¹Õ±°¤É•ÑÕÉ¸…İ…¥ĞA•Éµ¥ÍÍ¥½¹I•ÅÕ•ÍÑ•¡½É¥¥¸°Á•É´¤ì(€€€€€€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€€ôì((€€€€€€€€€€€€©Ì¹½½­¥•I•…‘	É¥‘”€ôÍ½Á”€ôø½½­¥•)…È¹•Ñ½Õµ•¹Ñ½½­¥•MÑÉ¥¹œ¡Í½Á”°}…Ñ¥Ù•	…Í•UÉ¤€üüÍ½Á”¤ì(€€€€€€€€€€€€©Ì¹½½­¥•]É¥Ñ•	É¥‘”€ô€¡Í½Á”°½½­¥•MÑÉ¥¹œ¤€ôø(€€€€€€€€€€€€€€€€½½­¥•)…È¹M•Ñ½Õµ•¹Ñ½½­¥”¡Í½Á”°½½­¥•MÑÉ¥¹œ°}…Ñ¥Ù•	…Í•UÉ¤€üüÍ½Á”°	É½İÍ•ÉM•ÑÑ¥¹Ì¹%¹ÍÑ…¹”¹	±½­Q¡¥É‘A…ÉÑå½½­¥•Ì¤ì(€€€€€€€€€€€€©Ì¹I•ÅÕ•ÍÑI•¹‘•È€ôM¡•‘Õ±•I•Á…¥¹ÑÉ½µ)Ìì(€€€€€€€€€€€€©Ì¹±ÕÍ¡A•¹‘¥¹1…å½ÕĞ€ô±ÕÍ¡A•¹‘¥¹1…å½ÕÑ½ÉMÉ¥ÁĞì(€€€€€€€€€€€€©Ì¹É…µ•±•µ•¹Ñ1½…‘•È€ôÉ…µ•±•µ•¹Ñ1½…‘•Èì((€€€€€€€€€€€€¥˜€¡MÉ¥ÁÑ•Ñ¡•È€„ô¹Õ±°¤(€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€©Ì¹áÑ•É¹…±MÉ¥ÁÑ•Ñ¡•È€ô…Íå¹Œ€¡Ô°É•™•É•ÈÈ¤€ôø(€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸…İ…¥ĞMÉ¥ÁÑ•Ñ¡•È¡Ô¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€€€€€€ôì(€€€€€€€€€€€€ô((€€€€€€€€€€€€€¼¼½µ…¥¸µÍÁ•¥™¥ŒÑÕ¹¥¹œ(€€€€€€€€€€€€ÑÉä(€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€¥˜€¡‰…Í•UÉ¤€„ô¹Õ±°¤(€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€¥˜€¡ÍÑÉ¥¹œ¹ÅÕ…±Ì¡•ÑI•¥ÍÑÉ…‰±•!½ÍĞ¡‰…Í•UÉ¤¤°€‰™…•‰½½¬¹½´ˆ°MÑÉ¥¹½µÁ…É¥Í½¸¹=É‘¥¹…°¤¤(€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€©Ì¹A…•MÉ¥ÁÑ	åÑ•	Õ‘•Ğ€ô€ÔÄÈ€¨€ÄÀÈĞì(€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€ô(€€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤ì¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mÕÍÑ½µ!Ñµ±¹¥¹•t½µ…¥¸ÑÕ¹¥¹œ™…¥±•èí•à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ìô((€€€€€€€€€€€€¥˜€¡©Ì€„ô¹Õ±°¤(€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€©Ì¹•Ñ¡!…¹‘±•È€ô•Ñ¡!…¹‘±•Èì(€€€€€€€€€€€€€€€€€¼¼m½µÁ±¥…¹•t%¹©•Ğ]¥¹‘½Ü¥µ•¹Í¥½¹Ì(€€€€€€€€€€€€€€€¥˜€¡Ù¥•İÁ½ÉÑ]¥‘Ñ ¹!…ÍY…±Õ”¤©Ì¹]¥¹‘½İ]¥‘Ñ €ôÙ¥•İÁ½ÉÑ]¥‘Ñ ¹Y…±Õ”ì(€€€€€€€€€€€€€€€¥˜€¡Ù¥•İÁ½ÉÑ!•¥¡Ğ¹!…ÍY…±Õ”¤©Ì¹]¥¹‘½İ!•¥¡Ğ€ôÙ¥•İÁ½ÉÑ!•¥¡Ğ¹Y…±Õ”ì(€€€€€€€€€€€€€€€€¼¼]¥É”±…å½ÕĞ‰½àÉ•Í½±ÕÑ¥½¸™½È•Ñ	½Õ¹‘¥¹±¥•¹ÑI•Ğ€¼½™™Í•Ñ!•¥¡Ğ•ÑŒ¸(€€€€€€€€€€€€€€€€¼¼UÍ”„±…Ñ”µ‰½Õ¹±½½­ÕÀÍ¼ÍÉ¥ÁÑÌÑ¡…ĞÉÕ¸…™Ñ•È±…å½ÕĞ½µÁ±•Ñ•Ì(€€€€€€€€€€€€€€€€¼¼€¡Í•ÑQ¥µ•½ÕĞ°•Ù•¹Ğ¡…¹‘±•ÉÌ°I•…Ğ¡å‘É…Ñ¥½¸¤Í•”É•…°‰½à•½µ•ÑÉä¸(€€€€€€€€€€€€€€€©Ì¹1…å½ÕÑ	½áI•Í½±Ù•È€ô•°€ôø}…¡•‘I•¹‘•É•Èü¹•Ñ±•µ•¹Ñ	½à¡•°¤ì(€€€€€€€€€€€€€€€©Ì¹É…µ•MÉ½±±I•…‘•È€ô•°€ôø(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€Ù…ÈÉ•¹‘•É•È€ô}•áÑ•É¹…±I•¹‘•É•È€üü}…¡•‘I•¹‘•É•Èì(€€€€€€€€€€€€€€€€€€€Ù…È½™™Í•Ğ€ôÉ•¹‘•É•Èü¹MÉ½±±5…¹…•È¹•ÑMÉ½±±=™™Í•Ğ¡•°¤€üü€ Á˜°€Á˜¤ì(€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸€¡½™™Í•Ğ¹à°½™™Í•Ğ¹ä¤ì(€€€€€€€€€€€€€€€ôì(€€€€€€€€€€€€€€€©Ì¹É…µ•MÉ½±±]É¥Ñ•È€ô€¡•°°à°ä¤€ôø(€€€€€€€€€€€€€€€€€€€€¡}•áÑ•É¹…±I•¹‘•É•È€üü}…¡•‘I•¹‘•É•È¤ü¹MÉ½±±5…¹…•È¹M•ÑMÉ½±±A½Í¥Ñ¥½¸¡•°°€¡™±½…Ğ¥à°€¡™±½…Ğ¥ä¤ì((€€€€€€€€€€€€€€€€¼¼…ÁÑÕÉ”•Ù•ÉäÕ¹…Õ¡ĞÍÉ¥ÁĞ•á•ÁÑ¥½¸Ñ¼±½Ì½©Í}‘¥…¹½ÍÑ¥Ì¹±½œ¸(€€€€€€€€€€€€€€€€¼¼Q¡¥Ì¥Ì¡½Üİ”™¥¹½ÕĞ€©İ¡ä¨„¡•…Ù¥±äµ™•¹•Í¥Ñ”€¡à¹½´°•ÑŒ¸¤(€€€€€€€€€€€€€€€€¼¼‰…¥±•‘ÕÉ¥¹œ‰½½Ğ€´Ñ¡”•¹¥¹”±½Ì…É”¹½¥Íä…¹Ñ¡”™…¥±ÕÉ”(€€€€€€€€€€€€€€€€¼¼±¥¹”¥Ì‰ÕÉ¥•ìÑ¡”‘¥…¹½ÍÑ¥Ì™¥±”¥ÌÑ¡”Í¥¹±”Á±…”Ñ¼±½½¬¸(€€€€€€€€€€€€€€€ÑÉä(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€Ù…ÈÑà€ô©Ì¹±½‰…±½¹Ñ•áĞì(€€€€€€€€€€€€€€€€€€€¥˜€¡Ñà€„ô¹Õ±°¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€Ù…ÈÁ…•UÉ°€ô‰…Í•UÉ¤ü¹‰Í½±ÕÑ•UÉ¤ì(€€€€€€€€€€€€€€€€€€€€€€€Ñà¹=¹U¹…Õ¡Ñá•ÁÑ¥½¸€ô€¡Ñ¡É½İ¸°ÍÉŒ¤€ôø(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ÑÉä(€€€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€•¹	É½İÍ•È¹•¹¹¥¹”¹¥…¹½ÍÑ¥Ì¹)Í¥…¹½ÍÑ¥ÍI•½É‘•È(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹I•½É‘á•ÁÑ¥½¸¡Ñ¡É½İ¸°ÍÉŒ°Á…•UÉ°¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€€€€€…Ñ ì€¼¨¹•Ù•È‰É•…¬„¹…Ù¥…Ñ¥½¸½¸„‘¥…¹½ÍÑ¥ÌÁ…Ñ €¨¼ô(€€€€€€€€€€€€€€€€€€€€€€€ôì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mÕÍÑ½µ!Ñµ±¹¥¹•t…¥±•Ñ¼İ¥É”)L•á•ÁÑ¥½¸É•½É‘•Èèí•à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹)…Ù…MÉ¥ÁĞ¤ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ô((€€€€€€€€€€€€É•ÑÕÉ¸©Ìì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”…Íå¹ŒQ…Í¬IÕ¹MÉ¥ÁÑÍÍå¹Œ¡%	É½İÍ•ÉMÉ¥ÁÑ¹¥¹”©Ì°±•µ•¹Ğ‘½´°UÉ¤‰…Í•UÉ¤¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡©Ì€ôô¹Õ±°¤É•ÑÕÉ¸ì(€€€€€€€€€€€€(€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹%¹™¼ ‰mI•¹‘•ÉÍå¹tIÕ¹¹¥¹œMÉ¥ÁÑÌ€¡ÍÑ…ÉÑ¥¹œ•á•ÕÑ¥½¸¤ˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì((€€€€€€€€€€€€¼¼€Ä¸•Ñ•Ñ¥½¸¡•±Á•È(€€€€€€€€€€€ÑÉä(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€Ù…È‘•Ñ•Ñ¥½¹!•±Á•È€ô ˆ(¡™Õ¹Ñ¥½¸ ¤ì(€€€ÑÉäì(€€€€€€€Ù…È¡Ñµ°€ô‘½Õµ•¹Ğ¹‘½Õµ•¹Ñ±•µ•¹Ğì(€€€€€€€¥˜€¡¡Ñµ°¤ì(€€€€€€€€€€€¡Ñµ°¹±…ÍÍ9…µ”€ô¡Ñµ°¹±…ÍÍ9…µ”¹É•Á±…” ¹¼µ©Ìœ°€©Ìœ¤ì(€€€€€€€€€€€¥˜€¡¡Ñµ°¹±…ÍÍ9…µ”¹¥¹‘•á=˜ ©Ìœ¤€ğ€À¤¡Ñµ°¹±…ÍÍ9…µ”€¬ô€œ©Ìœì(€€€€€€€ô(€€€€€€€€¼¼%M	1è•¹	É½İÍ•È­••ÁÌ¹½ÍÉ¥ÁĞÙ¥Í¥‰±”™½È™…±±‰…¬½¹Ñ•¹Ğ(€€€€€€€€¼¼Ù…È¹½©Ì€ô‘½Õµ•¹Ğ¹•Ñ±•µ•¹ÑÍ	åQ…9…µ” ¹½ÍÉ¥ÁĞœ¤ì(€€€€€€€€¼¼™½È€¡Ù…È¤€ô€Àì¤€ğ¹½©Ì¹±•¹Ñ ì¤¬¬¤ì(€€€€€€€€¼¼€€€€¥˜€¡¹½©Ím¥t€˜˜¹½©Ím¥t¹ÍÑå±”¤¹½©Ím¥t¹ÍÑå±”¹‘¥ÍÁ±…ä€ô€¹½¹”œì(€€€€€€€€¼¼ô(€€€€€€€Ù…È©Í¹…‰±•€ô‘½Õµ•¹Ğ¹ÅÕ•ÉåM•±•Ñ½É±° œ¹©Ìµ•¹…‰±•°€¹İ¥Ñ µ©Ì°m‘…Ñ„µ©Ítœ¤ì(€€€€€€€™½È€¡Ù…È¤€ô€Àì¤€ğ©Í¹…‰±•¹±•¹Ñ ì¤¬¬¤ì(€€€€€€€€€€€¥˜€¡©Í¹…‰±•‘m¥t€˜˜©Í¹…‰±•‘m¥t¹ÍÑå±”¤©Í¹…‰±•‘m¥t¹ÍÑå±”¹‘¥ÍÁ±…ä€ô€œœì(€€€€€€€ô(€€€ô…Ñ ¡”¤íô)ô¤ ¤ìˆì(€€€€€€€€€€€€€€€€©Ì¹Ù…±Õ…Ñ”¡‘•Ñ•Ñ¥½¹!•±Á•È¤ì(€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mI•¹‘•ÉÍå¹t•Ñ•Ñ¥½¸¡•±Á•ÈÍÉ¥ÁĞ•á•ÕÑ•ˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸‘¡à¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mI•¹‘•ÉÍå¹t•Ñ•Ñ¥½¸¡•±Á•È•ÉÉ½Èèí‘¡à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€ô((€€€€€€€€€€€€¼¼€È¸5…¥¸A…”MÉ¥ÁÑÌ(€€€€€€€€€€€ÑÉä€(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Ù…ÈÍÉ¥ÁÑQ…Í¬€ôIÕ¹•Ñ…¡•‘Íå¹Œ¡…Íå¹Œ€ ¤€ôøì…İ…¥Ğ©Ì¹M•Ñ½µÍå¹Œ¡‘½´°‰…Í•UÉ¤¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ìô¤ì(€€€€€€€€€€€€€€€Ù…ÈÍÉ¥ÁÑQ¥µ•½ÕÑ5Ì€ô5…Ñ ¹5…à (€€€€€€€€€€€€€€€€€€€€ÄÔÀÀÀ°(€€€€€€€€€€€€€€€€€€€€¡¥¹Ğ¥©Ì¹IÕ¹Ñ¥µ•AÉ½™¥±”¹5…áá•ÕÑ¥½¹Q¥µ”¹Q½Ñ…±5¥±±¥Í•½¹‘Ì€¨€Ì¤ì(€€€€€€€€€€€€€€€Ù…ÈÑ¥µ•½ÕÑQ…Í¬€ôQ…Í¬¹•±…ä¡ÍÉ¥ÁÑQ¥µ•½ÕÑ5Ì¤ì€(€€€€€€€€€€€€€€€Ù…È½µÁ±•Ñ•‘Q…Í¬€ô…İ…¥ĞQ…Í¬¹]¡•¹¹ä¡ÍÉ¥ÁÑQ…Í¬°Ñ¥µ•½ÕÑQ…Í¬¤ì(€€€€€€€€€€€€€€€€(€€€€€€€€€€€€€€€¥˜€¡½µÁ±•Ñ•‘Q…Í¬€ôôÑ¥µ•½ÕÑQ…Í¬¤(€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mI•¹‘•ÉÍå¹tMÉ¥ÁĞ•á•ÕÑ¥½¸Ñ¥µ•½ÕĞ…™Ñ•ÈíÍÉ¥ÁÑQ¥µ•½ÕÑ5Ì€¼€ÄÀÀÁõÌˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€•±Í”(€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mI•¹‘•ÉÍå¹tMÉ¥ÁÑÌ¥¹¥Í¡•ˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€ô€(€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤€(€€€€€€€€€€€ì€(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹ÉÉ½È ‰mI•¹‘•ÉÍå¹tMÉ¥ÁĞÉÉ½Èèí•à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€ô(€€€€€€€ô(€€€€€€€€(€€€€€€€ÁÕ‰±¥Œ…Íå¹ŒQ…Í¬ñ½‰©•ĞøI•™É•Í¡Íå¹Œ¡‰½½°¥¹±Õ‘•¥…¹½ÍÑ¥Í	…¹¹•È€ô™…±Í”¤(€€€€€€€ì(€€€€€€€€€€€…İ…¥Ğ}É•Á…¥¹Ñ…Ñ”¹]…¥ÑÍå¹Œ ¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€ÑÉä(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸…İ…¥ĞI•™É•Í¡Íå¹%¹Ñ•É¹…°¡¥¹±Õ‘•¥…¹½ÍÑ¥Í	…¹¹•È¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€™¥¹…±±ä(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€}É•Á…¥¹Ñ…Ñ”¹I•±•…Í” ¤ì(€€€€€€€€€€€ô(€€€€€€€ô((€€€€€€€€€€€€€€€€¼¼¼I•¹‘•È!Q50¥¹Ñ¼„a50•±•µ•¹ĞÕÍ¥¹œÑ¡”µ…¹…••¹¥¹”Á¥Á•±¥¹”¸(€€€€€€€€¼¼¼€ğ½ÍÕµµ…Éäø(€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥ŒÙ½¥Ñ¥Ù…Ñ••±…É…Ñ¥Ù•M¡…‘½İI½½ÑÌ¡9½‘”‘½´¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡‘½´€ôô¹Õ±°¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô((€€€€€€€€€€€ÑÉä(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Ù…ÈÑ•µÁ±…Ñ•Ì€ô‘½´¹•Í•¹‘…¹ÑÌ ¤¹=™QåÁ”ñ±•µ•¹Ğø ¤(€€€€€€€€€€€€€€€€€€€€¹]¡•É”¡¸€ôøÍÑÉ¥¹œ¹ÅÕ…±Ì¡¸¹Q…9…µ”°€‰Ñ•µÁ±…Ñ”ˆ°MÑÉ¥¹½µÁ…É¥Í½¸¹=É‘¥¹…±%¹½É•…Í”¤€˜˜(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¸¹!…ÍÑÑÉ¥‰ÕÑ” ‰Í¡…‘½İÉ½½Ñµ½‘”ˆ¤¤(€€€€€€€€€€€€€€€€€€€€¹Q½1¥ÍĞ ¤ì(€€€€€€€€€€€€€€€™½É•… €¡Ù…ÈÑ•µÁ±…Ñ”¥¸Ñ•µÁ±…Ñ•Ì¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€Ù…ÈÁ…É•¹Ğ€ôÑ•µÁ±…Ñ”¹A…É•¹Ñ±•µ•¹Ğì(€€€€€€€€€€€€€€€€€€€Ù…Èµ½‘”€ôÑ•µÁ±…Ñ”¹•ÑÑÑÉ¥‰ÕÑ” ‰Í¡…‘½İÉ½½Ñµ½‘”ˆ¤ü¹QÉ¥´ ¤ì(€€€€€€€€€€€€€€€€€€€¥˜€¡Á…É•¹Ğ€ôô¹Õ±°ñğ€¡µ½‘”€„ô€‰½Á•¸ˆ€˜˜µ½‘”€„ô€‰±½Í•ˆ¤¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€½¹Ñ¥¹Õ”ì(€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€ÑÉä(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€Ù…ÈÍ¡…‘½Ü€ôÁ…É•¹Ğ¹ÑÑ…¡M¡…‘½Ü¡¹•ÜM¡…‘½İI½½Ñ%¹¥Ğ(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€5½‘”€ôµ½‘”€ôô€‰½Á•¸ˆ€üM¡…‘½İI½½Ñ5½‘”¹=Á•¸€èM¡…‘½İI½½Ñ5½‘”¹±½Í•(€€€€€€€€€€€€€€€€€€€€€€€ô¤ì(€€€€€€€€€€€€€€€€€€€€€€€™½É•… €¡Ù…È¡¥±¥¸Ñ•µÁ±…Ñ”¹¡¥±‘9½‘•Ì¹Q½1¥ÍĞ ¤¤(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€Í¡…‘½Ü¹ÁÁ•¹‘¡¥±¡¡¥±¤ì(€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€Ñ•µÁ±…Ñ”¹I•µ½Ù” ¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸‘Í‘à¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mMt…¥±•Ñ¼…ÑÑ… Í¡…‘½ÜÉ½½Ğèí‘Í‘à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ô(€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mÕÍÑ½µ!Ñµ±¹¥¹•t•±…É…Ñ¥Ù”Í¡…‘½Ü=4ÁÉ½•ÍÍ¥¹œ™…¥±•èí•à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€ô(€€€€€€€ô((€€€€€€€ÁÕ‰±¥Œ…Íå¹ŒQ…Í¬ñ½‰©•ĞøI•¹‘•ÉÍå¹Œ (€€€€€€€€€€€ÍÑÉ¥¹œ¡Ñµ°°(€€€€€€€€€€€UÉ¤‰…Í•UÉ¤°(€€€€€€€€€€€Õ¹ŒñUÉ¤°Q…Í¬ñÍÑÉ¥¹œøø™•Ñ¡áÑ•É¹…±ÍÍÍå¹Œ°(€€€€€€€€€€€Õ¹ŒñUÉ¤°Q…Í¬ñMÑÉ•…´øø¥µ…•1½…‘•È°(€€€€€€€€€€€Ñ¥½¸ñUÉ¤ø½¹9…Ù¥…Ñ”°(€€€€€€€€€€€‘½Õ‰±”üÙ¥•İÁ½ÉÑ]¥‘Ñ €ô¹Õ±°°(€€€€€€€€€€€‘½Õ‰±”üÙ¥•İÁ½ÉÑ!•¥¡Ğ€ô¹Õ±°°(€€€€€€€€€€€Ñ¥½¸ñ½‰©•Ğøü½¹¥á•‘	…­É½Õ¹€ô¹Õ±°°(€€€€€€€€€€€‰½½°ü™½É•)…Ù…ÍÉ¥ÁĞ€ô¹Õ±°°(€€€€€€€€€€€‰½½°‘¥Í…‰±•ÕÑ½…±±‰…¬€ô™…±Í”¤(€€€€€€€ì(€€€€€€€€€€€€¼¼¹ÍÕÉ”İ”…É”½¸Ñ¡”U$Ñ¡É•…¸%˜¹½Ğ°µ…ÉÍ¡…°Ñ¡”…±°¸(€€€€€€€€€€€Ù…ÈÕ¥¥ÍÀ€ô}Õ¥¥ÍÁ…Ñ¡•È€üüU¥Q¡É•…‘!•±Á•È¹QÉå•Ñ¥ÍÁ…Ñ¡•È ¤ì(€€€€€€€€€€€¥˜€¡Õ¥¥ÍÀ€„ô¹Õ±°€˜˜€…U¥Q¡É•…‘!•±Á•È¹!…ÍQ¡É•…‘•ÍÌ¡Õ¥¥ÍÀ¤¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Ù…ÈÑÌ€ô¹•ÜQ…Í­½µÁ±•Ñ¥½¹M½ÕÉ”ñ½‰©•Ğø ¤ì(€€€€€€€€€€€€€€€…İ…¥ĞU¥Q¡É•…‘!•±Á•È¹IÕ¹Íå¹İ…¥Ñ…‰±”¡Õ¥¥ÍÀ°¹Õ±°°…Íå¹Œ€ ¤€ôø(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€ÑÉä(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€Ù…ÈÉ•ÍÕ±Ğ€ô…İ…¥ĞI•¹‘•ÉÍå¹Œ¡¡Ñµ°°‰…Í•UÉ¤°™•Ñ¡áÑ•É¹…±ÍÍÍå¹Œ°¥µ…•1½…‘•È°½¹9…Ù¥…Ñ”°Ù¥•İÁ½ÉÑ]¥‘Ñ °Ù¥•İÁ½ÉÑ!•¥¡Ğ°½¹¥á•‘	…­É½Õ¹°™½É•)…Ù…ÍÉ¥ÁĞ°‘¥Í…‰±•ÕÑ½…±±‰…¬¤ì(€€€€€€€€€€€€€€€€€€€€€€€ÑÌ¹M•ÑI•ÍÕ±Ğ¡É•ÍÕ±Ğ¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€ÑÌ¹M•Ñá•ÁÑ¥½¸¡•à¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€ô¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸…İ…¥ĞÑÌ¹Q…Í¬ì(€€€€€€€€€€€ô((€€€€€€€€€€€Ù…ÈÉ•¹‘•É•¹•É…Ñ¥½¸€ô	•¥¹I•¹‘•É•¹•É…Ñ¥½¸ ¤ì((€€€€€€€€€€€Ù…È¹…Ù¥…Ñ¥½¹MÑ…ÉÑ•‘ÑUÑŒ€ô…Ñ•Q¥µ•=™™Í•Ğ¹UÑ9½Üì(€€€€€€€€€€€±½¹œ…±±½…Ñ•‘	åÑ•Í	•™½É”€ô¹•ÑQ½Ñ…±±±½…Ñ•‘	åÑ•Ì¡ÁÉ•¥Í”è™…±Í”¤ì(€€€€€€€€€€€¥¹Ğ•¸Á	•™½É”€ô¹½±±•Ñ¥½¹½Õ¹Ğ À¤ì(€€€€€€€€€€€¥¹Ğ•¸Å	•™½É”€ô¹½±±•Ñ¥½¹½Õ¹Ğ Ä¤ì(€€€€€€€€€€€¥¹Ğ•¸É	•™½É”€ô¹½±±•Ñ¥½¹½Õ¹Ğ È¤ì(€€€€€€€€€€€Ù…È}Á…•1½…‘MÑ½Áİ…Ñ €ôMåÍÑ•´¹¥…¹½ÍÑ¥Ì¹MÑ½Áİ…Ñ ¹MÑ…ÉÑ9•Ü ¤ì(€€€€€€€€€€€±½¹œ±…ÍÑMÑ…•5…É­5Ì€ô€Àì(€€€€€€€€€€€±½¹œÑ½­•¹¥é¥¹5Ì€ô€Àì(€€€€€€€€€€€±½¹œÁ…ÉÍ¥¹5Ì€ô€Àì(€€€€€€€€€€€±½¹œÑ½­•¹¥é¥¹¹‘A…ÉÍ¥¹5Ì€ô€Àì(€€€€€€€€€€€¥¹ĞÁ…ÉÍ•Q½­•¹½Õ¹Ğ€ô€Àì(€€€€€€€€€€€¥¹ĞÑ½­•¹¥é¥¹¡•­Á½¥¹Ñ½Õ¹Ğ€ô€Àì(€€€€€€€€€€€¥¹ĞÁ…ÉÍ¥¹¡•­Á½¥¹Ñ½Õ¹Ğ€ô€Àì(€€€€€€€€€€€¥¹ĞÁ…ÉÍ¥¹½Õµ•¹Ñ¡•­Á½¥¹Ñ½Õ¹Ğ€ô€Àì(€€€€€€€€€€€¥¹Ğ‘½Õµ•¹ÑI•…‘åQ½­•¹½Õ¹Ğ€ô€Àì(€€€€€€€€€€€¥¹Ğ¥¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ñ½Õ¹Ğ€ô€Àì(€€€€€€€€€€€±½¹œÍÑÉ•…µ¥¹AÉ•Á…ÉÍ•5Ì€ô€Àì(€€€€€€€€€€€¥¹ĞÍÑÉ•…µ¥¹AÉ•Á…ÉÍ•¡•­Á½¥¹Ñ½Õ¹Ğ€ô€Àì(€€€€€€€€€€€¥¹ĞÍÑÉ•…µ¥¹AÉ•Á…ÉÍ•I•Á…¥¹Ñ½Õ¹Ğ€ô€Àì(€€€€€€€€€€€‰½½°¥¹Ñ•É±•…Ù•‘A…ÉÍ•UÍ•€ô™…±Í”ì(€€€€€€€€€€€¥¹Ğ¥¹Ñ•É±•…Ù•‘Q½­•¹	…Ñ¡M¥é”€ô€Àì(€€€€€€€€€€€¥¹Ğ¥¹Ñ•É±•…Ù•‘	…Ñ¡½Õ¹Ğ€ô€Àì(€€€€€€€€€€€‰½½°¥¹Ñ•É±•…Ù•‘…±±‰…­UÍ•€ô™…±Í”ì(€€€€€€€€€€€±½¹œÍÍ¹‘MÑå±•5Ì€ô€Àì(€€€€€€€€€€€±½¹œ¥¹¥Ñ¥…±Y¥ÍÕ…±QÉ••5Ì€ô€Àì(€€€€€€€€€€€±½¹œÍÉ¥ÁÑá•ÕÑ¥½¹5Ì€ô€Àì(€€€€€€€€€€€±½¹œÁ½ÍÑMÉ¥ÁÑY¥ÍÕ…±QÉ••5Ì€ô€Àì(€€€€€€€€€€€‰½½°©…Ù…ÍÉ¥ÁÑá•ÕÑ•€ô™…±Í”ì(€€€€€€€€€€€}±…ÍÑÍÍ1½…‘Q¥µ¥¹œ€ô¹Õ±°ì(€€€€€€€€€€€€(€€€€€€€€€€€ÑÉä(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€…İ…¥ĞI…¥Í•1½…‘¥¹¡…¹•‘Íå¹Œ¡ÑÉÕ”¤ì(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹%¹™¼ ‰mÕÍÑ½µ!Ñµ±¹¥¹•tI•¹‘•ÉÍå¹ŒMÑ…ÉĞ¸!Q501•¹Ñ èí¡Ñµ°ü¹1•¹Ñ €üü€Áôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€±½¬€¡}É•¹‘•ÉMÑ…Ñ•1½¬¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¥˜€¡}É•¹‘•É•¹•É…Ñ¥½¸€„ôÉ•¹‘•É•¹•É…Ñ¥½¸¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸¹Õ±°ì(€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€}¡…ÍMÑ…‰±•MÑå±•Ì€ô™…±Í”ì(€€€€€€€€€€€€€€€€€€€}±…ÍÑI…İ!Ñµ°€ô¡Ñµ°ì(€€€€€€€€€€€€€€€€€€€}É•¹‘•ÉM¹…ÁÍ¡½ÑY•ÉÍ¥½¸¬¬ì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€½¹ÍĞ¥¹Ğ5…á!Ñµ±M¥é”€ô€ÔÀ€¨€ÄÀÈĞ€¨€ÄÀÈĞì(€€€€€€€€€€€€€€€¥˜€ …ÍÑÉ¥¹œ¹%Í9Õ±±=ÉµÁÑä¡¡Ñµ°¤€˜˜¡Ñµ°¹1•¹Ñ €ø5…á!Ñµ±M¥é”¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mI•¹‘•ÉÍå¹t!Q50Ñ½¼±…É”èí¡Ñµ°¹1•¹Ñ¡ô‰åÑ•Ì°ÑÉÕ¹…Ñ¥¹œÑ¼í5…á!Ñµ±M¥é•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€¡Ñµ°€ô¡Ñµ°¹MÕ‰ÍÑÉ¥¹œ À°5…á!Ñµ±M¥é”¤ì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€¼¼M••…¸•µÁÑäµ‰ÕĞµÍÑ…‰±”ÍÑå±”Í¹…ÁÍ¡½ĞÍ¼¥¹É•µ•¹Ñ…°µÁ…ÉÍ”É•Á…¥¹ÑÌ(€€€€€€€€€€€€€€€€¼¼€¡QÉåµ¥Ñ%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ğ¤™¥É”‘ÕÉ¥¹œIÕ¹½µA…ÉÍ•Íå¹Œ¥¹ÍÑ•…½˜(€€€€€€€€€€€€€€€€¼¼‰•¥¹œ…Ñ•½ÕĞ‰ä!…ÍMÑ…‰±•½µÁÕÑ•‘MÑå±•M¹…ÁÍ¡½Ğ¸€]¥Ñ¡½ÕĞÑ¡¥Ì°Ñ¡”Á…”(€€€€€€€€€€€€€€€€¼¼ÍÑ…åÌ‰±…¹¬Õ¹Ñ¥°Ñ¡”•¹Ñ¥É”Á…ÉÍ”½µÁ±•Ñ•ÌƒŠPİ¡¥ ±½½­Ì±¥­”„™É••é”(€€€€€€€€€€€€€€€€¼¼½¸¡•…ÙäÁ…•Ì€¡¥Ñ¡Õˆ¹½´°•ÑŒ¸¤¸(€€€€€€€€€€€€€€€±½¬€¡}É•¹‘•ÉMÑ…Ñ•1½¬¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¥˜€¡}É•¹‘•É•¹•É…Ñ¥½¸€„ôÉ•¹‘•É•¹•É…Ñ¥½¸¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸¹Õ±°ì(€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€1…ÍÑ½µÁÕÑ•‘MÑå±•Ì€üüô¹•Ü¥Ñ¥½¹…Éäñ9½‘”°ÍÍ½µÁÕÑ•ø ¤ì(€€€€€€€€€€€€€€€€€€€}¡…ÍMÑ…‰±•MÑå±•Ì€ôÑÉÕ”ì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€¼¼€Ä¸!•±Á•ÈèA…ÉÍ”=4(€€€€€€€€€€€€€€€Ù…ÈÁ…ÉÍ•I•ÍÕ±Ğ€ô…İ…¥ĞIÕ¹½µA…ÉÍ•Íå¹Œ¡¡Ñµ°°‰…Í•UÉ¤°É•¹‘•É•¹•É…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€Ù…È‘½´€ôÁ…ÉÍ•I•ÍÕ±Ğü¹½´ì(€€€€€€€€€€€€€€€¥˜€¡‘½´€ôô¹Õ±°¤É•ÑÕÉ¸¹Õ±°ì(€€€€€€€€€€€€€€€¥˜€ …QÉåM•ÑÑ¥Ù•½´¡‘½´°µ…É­M¹…ÁÍ¡½ÑU¹ÍÑ…‰±”èÑÉÕ”°É•¹‘•É•¹•É…Ñ¥½¸¤¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸¹Õ±°ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€Ñ½­•¹¥é¥¹5Ì€ô5…Ñ ¹5…à À°Á…ÉÍ•I•ÍÕ±Ğü¹Q½­•¹¥é¥¹5Ì€üü€À¤ì(€€€€€€€€€€€€€€€Á…ÉÍ¥¹5Ì€ô5…Ñ ¹5…à À°Á…ÉÍ•I•ÍÕ±Ğü¹A…ÉÍ¥¹5Ì€üü€À¤ì(€€€€€€€€€€€€€€€Á…ÉÍ•Q½­•¹½Õ¹Ğ€ô5…Ñ ¹5…à À°Á…ÉÍ•I•ÍÕ±Ğü¹Q½­•¹½Õ¹Ğ€üü€À¤ì(€€€€€€€€€€€€€€€Ñ½­•¹¥é¥¹¡•­Á½¥¹Ñ½Õ¹Ğ€ô5…Ñ ¹5…à À°Á…ÉÍ•I•ÍÕ±Ğü¹Q½­•¹¥é¥¹¡•­Á½¥¹Ñ½Õ¹Ğ€üü€À¤ì(€€€€€€€€€€€€€€€Á…ÉÍ¥¹¡•­Á½¥¹Ñ½Õ¹Ğ€ô5…Ñ ¹5…à À°Á…ÉÍ•I•ÍÕ±Ğü¹A…ÉÍ¥¹¡•­Á½¥¹Ñ½Õ¹Ğ€üü€À¤ì(€€€€€€€€€€€€€€€Á…ÉÍ¥¹½Õµ•¹Ñ¡•­Á½¥¹Ñ½Õ¹Ğ€ô5…Ñ ¹5…à À°Á…ÉÍ•I•ÍÕ±Ğü¹A…ÉÍ¥¹½Õµ•¹Ñ¡•­Á½¥¹Ñ½Õ¹Ğ€üü€À¤ì(€€€€€€€€€€€€€€€‘½Õµ•¹ÑI•…‘åQ½­•¹½Õ¹Ğ€ô5…Ñ ¹5…à À°Á…ÉÍ•I•ÍÕ±Ğü¹½Õµ•¹ÑI•…‘åQ½­•¹½Õ¹Ğ€üü€À¤ì(€€€€€€€€€€€€€€€¥¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ñ½Õ¹Ğ€ô5…Ñ ¹5…à À°Á…ÉÍ•I•ÍÕ±Ğü¹%¹É•µ•¹Ñ…±I•Á…¥¹Ñ½Õ¹Ğ€üü€À¤ì(€€€€€€€€€€€€€€€ÍÑÉ•…µ¥¹AÉ•Á…ÉÍ•5Ì€ô5…Ñ ¹5…à À°Á…ÉÍ•I•ÍÕ±Ğü¹MÑÉ•…µ¥¹AÉ•Á…ÉÍ•5Ì€üü€À¤ì(€€€€€€€€€€€€€€€ÍÑÉ•…µ¥¹AÉ•Á…ÉÍ•¡•­Á½¥¹Ñ½Õ¹Ğ€ô5…Ñ ¹5…à À°Á…ÉÍ•I•ÍÕ±Ğü¹MÑÉ•…µ¥¹AÉ•Á…ÉÍ•¡•­Á½¥¹Ñ½Õ¹Ğ€üü€À¤ì(€€€€€€€€€€€€€€€ÍÑÉ•…µ¥¹AÉ•Á…ÉÍ•I•Á…¥¹Ñ½Õ¹Ğ€ô5…Ñ ¹5…à À°Á…ÉÍ•I•ÍÕ±Ğü¹MÑÉ•…µ¥¹AÉ•Á…ÉÍ•I•Á…¥¹Ñ½Õ¹Ğ€üü€À¤ì(€€€€€€€€€€€€€€€¥¹Ñ•É±•…Ù•‘A…ÉÍ•UÍ•€ôÁ…ÉÍ•I•ÍÕ±Ğü¹%¹Ñ•É±•…Ù•‘A…ÉÍ•UÍ•€üü™…±Í”ì(€€€€€€€€€€€€€€€¥¹Ñ•É±•…Ù•‘Q½­•¹	…Ñ¡M¥é”€ô5…Ñ ¹5…à À°Á…ÉÍ•I•ÍÕ±Ğü¹%¹Ñ•É±•…Ù•‘Q½­•¹	…Ñ¡M¥é”€üü€À¤ì(€€€€€€€€€€€€€€€¥¹Ñ•É±•…Ù•‘	…Ñ¡½Õ¹Ğ€ô5…Ñ ¹5…à À°Á…ÉÍ•I•ÍÕ±Ğü¹%¹Ñ•É±•…Ù•‘	…Ñ¡½Õ¹Ğ€üü€À¤ì(€€€€€€€€€€€€€€€¥¹Ñ•É±•…Ù•‘…±±‰…­UÍ•€ôÁ…ÉÍ•I•ÍÕ±Ğü¹%¹Ñ•É±•…Ù•‘…±±‰…­UÍ•€üü™…±Í”ì((€€€€€€€€€€€€€€€½¹ÍĞ‰½½°Í¡½Õ±‘9½Éµ…±¥é•9½)Í…±±‰…¬€ôÑÉÕ”ì(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€Ù…È¹½Éµ…±¥é•I½½Ğ€ô€¡‘½´…Ì±•µ•¹Ğ¤€üü€¡‘½´…Ì½Õµ•¹Ğ¤ü¹½Õµ•¹Ñ±•µ•¹Ğì(€€€€€€€€€€€€€€€€€€€Ù…È¹½Éµ…±¥é•‘9½)Í±…ÍÍ½Õ¹Ğ€ô9½Éµ…±¥é•9½)Í…±±‰…­±…ÍÍ•Ì¡¹½Éµ…±¥é•I½½Ğ¤ì(€€€€€€€€€€€€€€€€€€€¥˜€¡¹½Éµ…±¥é•‘9½)Í±…ÍÍ½Õ¹Ğ€ø€À¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ (€€€€€€€€€€€€€€€€€€€€€€€€€€€€‰mI•¹‘•ÉÍå¹t9½Éµ…±¥é•¹¼µ©Ì™…±±‰…¬±…ÍÍ•Ì½¸í¹½Éµ…±¥é•‘9½)Í±…ÍÍ½Õ¹Ñô¹½‘”¡Ì¤ˆ°(€€€€€€€€€€€€€€€€€€€€€€€€€€€1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€(€€€€€€€€¼¼AI=IMM%YI9I%9è¥É”™¥ÉÍĞÁ…¥¹Ğ¥µµ•‘¥…Ñ•±äİ¥Ñ =4¸(€€€€€€€€¼¼Q¡¥Ì•¹ÍÕÉ•ÌÑ¡”Á…”…ÁÁ•…ÉÌ…ÌÍ½½¸…Ì!Q50¥ÌÁ…ÉÍ•¸(€€€€€€€€¼¼ML…ÉÉ¥Ù•Ì…Íå¹¡É½¹½ÕÍ±ä…¹ÁÉ½É•ÍÍ¥Ù•±ä¥µÁÉ½Ù•ÌÑ¡”É•¹‘•É¥¹œ¸(€€€€€€€±½¬€¡}É•¹‘•ÉMÑ…Ñ•1½¬¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡}É•¹‘•É•¹•É…Ñ¥½¸€„ôÉ•¹‘•É•¹•É…Ñ¥½¸¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸¹Õ±°ì(€€€€€€€€€€€ô((€€€€€€€€€€€1…ÍÑ½µÁÕÑ•‘MÑå±•Ì€ô¹•Ü¥Ñ¥½¹…Éäñ9½‘”°ÍÍ½µÁÕÑ•ø ¤ì(€€€€€€€€€€€}¡…ÍMÑ…‰±•MÑå±•Ì€ôÑÉÕ”ì€¼¼5…É¬…ÌÍÑ…‰±”Í¼	É½İÍ•É%¹Ñ•É…Ñ¥½¸ÕÍ•ÌÑ¡•Í”ÍÑå±•Ì(€€€€€€€€€€€}É•¹‘•ÉM¹…ÁÍ¡½ÑY•ÉÍ¥½¸¬¬ì(€€€€€€€ô(€€€€€€€€€€€=¹I•Á…¥¹ÑI•…‘ä¡‘½´¤ì(€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mAI=IMM%Yt¥ÉÍĞÁ…¥¹Ğ™¥É•¥µµ•‘¥…Ñ•±ä…™Ñ•È=4Á…ÉÍ”ˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì((€€€€€€€€€€€€¼¼ML±½…‘¥¹œ½¹Ñ¥¹Õ•Ì…Íå¹¡É½¹½ÕÍ±äì1½…‘ÍÍÍå¹Œİ¥±°™¥É”I•Á…¥¹ÑI•…‘ä(€€€€€€€€€€€€¼¼İ¡•¸ML½µÁ±•Ñ•ÌÙ¥„UÁ‘…Ñ•I•¹‘•ÉMÑ…Ñ”€´ø=¹I•Á…¥¹ÑI•…‘äÍ•ÅÕ•¹”¸(€€€€€€€€€€€€¼¼9¼…‘‘¥Ñ¥½¹…°™¥É”µ…¹µ™½É•Ğ¹••‘•€´Ñ¡”•Ù•¹Ğµ‘É¥Ù•¸™±½Ü¡…¹‘±•ÌÕÁ‘…Ñ•Ì¸(€€€€€€€€€€€€€€€€(€€€€€€€€€€€€€€€Ù…È•±…ÁÍ•€ô}Á…•1½…‘MÑ½Áİ…Ñ ¹±…ÁÍ•‘5¥±±¥Í•½¹‘Ìì(€€€€€€€€€€€€€€€Ñ½­•¹¥é¥¹¹‘A…ÉÍ¥¹5Ì€ô5…Ñ ¹5…à À°Ñ½­•¹¥é¥¹5Ì€¬Á…ÉÍ¥¹5Ì¤ì(€€€€€€€€€€€€€€€¥˜€¡Ñ½­•¹¥é¥¹¹‘A…ÉÍ¥¹5Ì€ğô€À¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€Ñ½­•¹¥é¥¹¹‘A…ÉÍ¥¹5Ì€ô5…Ñ ¹5…à À°•±…ÁÍ•€´±…ÍÑMÑ…•5…É­5Ì¤ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€±…ÍÑMÑ…•5…É­5Ì€ô•±…ÁÍ•ì(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ (€€€€€€€€€€€€€€€€€€€€‰mAIt=4A…ÉÍ”èÑ½Ñ…°õí•±…ÁÍ•‘õµÌÑ½­•¹¥é¥¹œõíÑ½­•¹¥é¥¹5ÍõµÌÁ…ÉÍ¥¹œõíÁ…ÉÍ¥¹5ÍõµÌÑ½­•¹ÌõíÁ…ÉÍ•Q½­•¹½Õ¹Ñô‘½I•…‘åQ½­•¸õí‘½Õµ•¹ÑI•…‘åQ½­•¹½Õ¹ÑôÁ…ÉÍ•I•Á…¥¹ÑÌõí¥¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ñ½Õ¹ÑôÍÑÉ•…µ¥¹œ¡µÌõíÍÑÉ•…µ¥¹AÉ•Á…ÉÍ•5Íô±ÀõíÍÑÉ•…µ¥¹AÉ•Á…ÉÍ•¡•­Á½¥¹Ñ½Õ¹Ñô±ÉÀõíÍÑÉ•…µ¥¹AÉ•Á…ÉÍ•I•Á…¥¹Ñ½Õ¹Ñô¤¥¹Ñ•É±•…Ù•¡ÕÍ•õì¡¥¹Ñ•É±•…Ù•‘A…ÉÍ•UÍ•€ü€Ä€è€À¥ô±‰…Ñ õí¥¹Ñ•É±•…Ù•‘Q½­•¹	…Ñ¡M¥é•ô±¡Õ¹­Ìõí¥¹Ñ•É±•…Ù•‘	…Ñ¡½Õ¹Ñô±™…±±‰…¬õì¡¥¹Ñ•É±•…Ù•‘…±±‰…­UÍ•€ü€Ä€è€À¥ô¤¡•­Á½¥¹ÑÌ¡ĞõíÑ½­•¹¥é¥¹¡•­Á½¥¹Ñ½Õ¹Ñô±ÀõíÁ…ÉÍ¥¹¡•­Á½¥¹Ñ½Õ¹Ñô±‘½´õíÁ…ÉÍ¥¹½Õµ•¹Ñ¡•­Á½¥¹Ñ½Õ¹Ñô¤ˆ°(€€€€€€€€€€€€€€€€€€€1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì((€€€€€€€€€€€€€€€‰½½°…±±½İ)Ì€ô¹…‰±•)…Ù…MÉ¥ÁĞì(€€€€€€€€€€€€€€€¥˜€¡™½É•)…Ù…ÍÉ¥ÁĞ¹!…ÍY…±Õ”¤…±±½İ)Ì€ô™½É•)…Ù…ÍÉ¥ÁĞ¹Y…±Õ”ì((€€€€€€€€€€€€€€€Ù…È¥Í½½±•M•…É¡¡…±±•¹”€ô%Í½½±•M•…É¡¡…±±•¹•½Õµ•¹Ğ¡‘½´°‰…Í•UÉ¤¤ì(€€€€€€€€€€€€€€€Ù…È½½±•¡…±±•¹•M…¹¥Ñ¥é•€ô…±±½İ)Ì(€€€€€€€€€€€€€€€€€€€€ü€À(€€€€€€€€€€€€€€€€€€€€è½É•½½±•¡…±±•¹•	…¹¹•ÉY¥Í¥‰±”¡‘½´°‰…Í•UÉ¤°É•µ½Ù•U¹¡¥‘•MÉ¥ÁĞèÑÉÕ”¤ì(€€€€€€€€€€€€€€€¥˜€¡½½±•¡…±±•¹•M…¹¥Ñ¥é•€ø€À¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹%¹™¼ ‰mÕÍÑ½µ!Ñµ±¹¥¹•t½½±•¡…±±•¹•M…¹¥Ñ¥é•ÁÁ±¥•¡…¹•Ìõí½½±•¡…±±•¹•M…¹¥Ñ¥é•‘ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€‰½½°‘•™•ÉMÑ…‰±•M¹…ÁÍ¡½ÑU¹Ñ¥±A½ÍÑMÉ¥ÁĞ€ô…±±½İ)Ìì(€€€€€€€€€€€€€€€¥˜€¡‘•™•ÉMÑ…‰±•M¹…ÁÍ¡½ÑU¹Ñ¥±A½ÍÑMÉ¥ÁĞ¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€	•¥¹İ…¥Ñ¥¹A½ÍÑMÉ¥ÁÑM¹…ÁÍ¡½Ğ¡É•¹‘•É•¹•É…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€Ñ¥Ù…Ñ••±…É…Ñ¥Ù•M¡…‘½İI½½ÑÌ¡‘½´¤ì((€€€€€€€€€€€€€€€€¼¼€È¸!•±Á•Èè1½…ML(€€€€€€€€€€€€€€€…İ…¥Ğ1½…‘ÍÍÍå¹Œ ¡‘½´…Ì±•µ•¹Ğ¤€üü€¡‘½´…Ì½Õµ•¹Ğ¤ü¹½Õµ•¹Ñ±•µ•¹Ğ°‰…Í•UÉ¤°™•Ñ¡áÑ•É¹…±ÍÍÍå¹Œ°Ù¥•İÁ½ÉÑ]¥‘Ñ °Ù¥•İÁ½ÉÑ!•¥¡Ğ°É•¹‘•É•¹•É…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€¥˜€ …%ÍÕÉÉ•¹ÑI•¹‘•É•¹•É…Ñ¥½¸¡É•¹‘•É•¹•É…Ñ¥½¸¤¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸¹Õ±°ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€¥˜€¡Í¡½Õ±‘9½Éµ…±¥é•9½)Í…±±‰…¬¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€Ù…È¹½Éµ…±¥é•I½½Ñ™Ñ•ÉÍÌ€ô€¡‘½´…Ì±•µ•¹Ğ¤€üü€¡‘½´…Ì½Õµ•¹Ğ¤ü¹½Õµ•¹Ñ±•µ•¹Ğì(€€€€€€€€€€€€€€€€€€€Ù…È¹½Éµ…±¥é•‘™Ñ•ÉÍÌ€ô9½Éµ…±¥é•9½)Í…±±‰…­±…ÍÍ•Ì¡¹½Éµ…±¥é•I½½Ñ™Ñ•ÉÍÌ¤ì(€€€€€€€€€€€€€€€€€€€¥˜€¡¹½Éµ…±¥é•‘™Ñ•ÉÍÌ€ø€À¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ (€€€€€€€€€€€€€€€€€€€€€€€€€€€€‰mI•¹‘•ÉÍå¹tI•½µÁÕÑ¥¹œML…™Ñ•È±…Ñ”¹¼µ©Ì¹½Éµ…±¥é…Ñ¥½¸½¸í¹½Éµ…±¥é•‘™Ñ•ÉÍÍô¹½‘”¡Ì¤ˆ°(€€€€€€€€€€€€€€€€€€€€€€€€€€€1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€€€€€…İ…¥Ğ1½…‘ÍÍÍå¹Œ ¡‘½´…Ì±•µ•¹Ğ¤€üü€¡‘½´…Ì½Õµ•¹Ğ¤ü¹½Õµ•¹Ñ±•µ•¹Ğ°‰…Í•UÉ¤°™•Ñ¡áÑ•É¹…±ÍÍÍå¹Œ°Ù¥•İÁ½ÉÑ]¥‘Ñ °Ù¥•İÁ½ÉÑ!•¥¡Ğ°É•¹‘•É•¹•É…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€€€€€€€€€¥˜€ …%ÍÕÉÉ•¹ÑI•¹‘•É•¹•É…Ñ¥½¸¡É•¹‘•É•¹•É…Ñ¥½¸¤¤(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸¹Õ±°ì(€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€•±…ÁÍ•€ô}Á…•1½…‘MÑ½Áİ…Ñ ¹±…ÁÍ•‘5¥±±¥Í•½¹‘Ìì(€€€€€€€€€€€€€€€ÍÍ¹‘MÑå±•5Ì€ô5…Ñ ¹5…à À°•±…ÁÍ•€´±…ÍÑMÑ…•5…É­5Ì¤ì(€€€€€€€€€€€€€€€±…ÍÑMÑ…•5…É­5Ì€ô•±…ÁÍ•ì(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mAItML1½…èí•±…ÁÍ•‘õµÌˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì((€€€€€€€€€€€€€€€€¼¼€È¸Ô¸M•ÕÉ¥ÑäèM@5•Ñ„A…ÉÍ¥¹œ(€€€€€€€€€€€€€€€Ñ¥Ù•A½±¥ä€ô¹Õ±°ì(€€€€€€€€€€€€€€€ÑÉä(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€¼¼M…¸!™½È€ñµ•Ñ„¡ÑÑÀµ•ÅÕ¥Øô‰½¹Ñ•¹ĞµM•ÕÉ¥ÑäµA½±¥äˆø(€€€€€€€€€€€€€€€€€€€€¼¼M¥µÁ±”Í•…É ¥¸…±°‘•Í•¹‘…¹ÑÌ½È©ÕÍĞ¡•…ü•Í•¹‘…¹ÑÌ¥ÌÍ…™•È¥˜!Á…ÉÍ¥¹œ¥Ì±½½Í”¸(€€€€€€€€€€€€€€€€€€€Ù…Èµ•Ñ…ÍÀ€ô‘½´¹•Í•¹‘…¹ÑÌ ¤¹=™QåÁ”ñ±•µ•¹Ğø ¤(€€€€€€€€€€€€€€€€€€€€€€€€¹¥ÉÍÑ=É•™…Õ±Ğ¡¸€ôø€(€€€€€€€€€€€€€€€€€€€€€€€€€€€ÍÑÉ¥¹œ¹ÅÕ…±Ì¡¸¹Q…9…µ”°€‰µ•Ñ„ˆ°MÑÉ¥¹½µÁ…É¥Í½¸¹=É‘¥¹…±%¹½É•…Í”¤€˜˜(€€€€€€€€€€€€€€€€€€€€€€€€€€€¸¹•ÑÑÑÉ¥‰ÕÑ” ‰¡ÑÑÀµ•ÅÕ¥Øˆ¤€„ô¹Õ±°€˜˜€(€€€€€€€€€€€€€€€€€€€€€€€€€€€ÍÑÉ¥¹œ¹ÅÕ…±Ì¡¸¹•ÑÑÑÉ¥‰ÕÑ” ‰¡ÑÑÀµ•ÅÕ¥Øˆ¤°€‰½¹Ñ•¹ĞµM•ÕÉ¥ÑäµA½±¥äˆ°MÑÉ¥¹½µÁ…É¥Í½¸¹=É‘¥¹…±%¹½É•…Í”¤¤ì(€€€€€€€€€€€€€€€€€€€€(€€€€€€€€€€€€€€€€€€€¥˜€¡µ•Ñ…ÍÀ€„ô¹Õ±°€˜˜µ•Ñ…ÍÀ¹•ÑÑÑÉ¥‰ÕÑ” ‰½¹Ñ•¹Ğˆ¤€„ô¹Õ±°¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€Ù…ÈÍÁ½¹Ñ•¹Ğ€ôµ•Ñ…ÍÀ¹•ÑÑÑÉ¥‰ÕÑ” ‰½¹Ñ•¹Ğˆ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€Ñ¥Ù•A½±¥ä€ôÍÁA½±¥ä¹A…ÉÍ”¡ÍÁ½¹Ñ•¹Ğ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹%¹™¼ ‰mM•ÕÉ¥ÑåtÑ¥Ù”M@™É½´5•Ñ„èíÍÁ½¹Ñ•¹Ñôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸ÍÁà¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mM•ÕÉ¥Ñåt…¥±•Ñ¼Á…ÉÍ”M@µ•Ñ„èíÍÁà¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€¼¼!Q50ÍÁ•Œƒ
+œĞ¸ÄÈ¸Äè]¡•¸ÍÉ¥ÁÑ¥¹œ¥Ì•¹…‰±•°€ñ¹½ÍÉ¥ÁĞøµÕÍĞ¹½ĞÉ•¹‘•È¸(€€€€€€€€€€€€€€€€¼¼I•µ½Ù”¹½ÍÉ¥ÁĞ•±•µ•¹ÑÌ•¹Ñ¥É•±äİ¡•¸)L¥Ì½¸Ñ¼ÁÉ•Ù•¹ĞÑ¡•¥ÈÉ…Ü!Q50µ•¹½‘•(€€€€€€€€€€€€€€€€¼¼™…±±‰…¬½¹Ñ•¹Ğ€¡ÍÉ¥ÁÑÌ°ÍÑå±•Ì°¥¹±¥¹”!Q50ÍÑÉ¥¹Ì¤™É½´±•…­¥¹œ¥¹Ñ¼Ñ¡”Á…”¸(€€€€€€€€€€€€€€€¥˜€¡…±±½İ)Ì¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€ÑÉä(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€Ù…È¹½ÍÉ¥ÁÑÌ€ô‘½´¹•Í•¹‘…¹ÑÌ ¤¹=™QåÁ”ñ±•µ•¹Ğø ¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹]¡•É”¡¸€ôøÍÑÉ¥¹œ¹ÅÕ…±Ì¡¸¹Q…9…µ”°€‰¹½ÍÉ¥ÁĞˆ°MÑÉ¥¹½µÁ…É¥Í½¸¹=É‘¥¹…±%¹½É•…Í”¤¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹Q½1¥ÍĞ ¤ì(€€€€€€€€€€€€€€€€€€€€€€€™½É•… €¡Ù…È¹Ì¥¸¹½ÍÉ¥ÁÑÌ¤¹Ì¹I•µ½Ù” ¤ì(€€€€€€€€€€€€€€€€€€€€€€€¥˜€¡¹½ÍÉ¥ÁÑÌ¹½Õ¹Ğ€ø€À¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mÕÍÑ½µ!Ñµ±¹¥¹•tI•µ½Ù•í¹½ÍÉ¥ÁÑÌ¹½Õ¹Ñô€ñ¹½ÍÉ¥ÁĞø•±•µ•¹Ğ¡Ì¤€¡)L½¸ƒ‹Š
+³ŠtÍÁ•Œƒ
+œĞ¸ÄÈ¸Ä¤ˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸¹Íà¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mÕÍÑ½µ!Ñµ±¹¥¹•t…¥±•Ñ¼É•µ½Ù”¹½ÍÉ¥ÁĞ•±•µ•¹ÑÌèí¹Íà¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€•±Í”(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€¼¼)L¥Ì‘¥Í…‰±•ƒ‹Š
+³Št¹½ÍÉ¥ÁĞ½¹Ñ•¹ĞÍ¡½Õ±‰”Ù¥Í¥‰±”¸(€€€€€€€€€€€€€€€€€€€€¼¼%`è½½±”M•…É ÁÕÑÌ€ñÍÑå±”ùÑ…‰±”±‘¥Ø±ÍÁ…¸±Áí‘¥ÍÁ±…äé¹½¹•ôğ½ÍÑå±”ø¥¹Í¥‘”€ñ¹½ÍÉ¥ÁĞø¸(€€€€€€€€€€€€€€€€€€€€¼¼M¥¹”İ”É•¹‘•È€ñ¹½ÍÉ¥ÁĞø°Ñ¡¥ÌÍÑå±”…ÁÁ±¥•Ì±½‰…±±ä…¹¡¥‘•Ì•Ù•ÉåÑ¡¥¹œ¸(€€€€€€€€€€€€€€€€€€€€¼¼I•µ½Ù”½¹±ä¡…Éµ™Õ°€ñÍÑå±”øÑ…Ì™É½´€ñ¹½ÍÉ¥ÁĞøİ¡•¸­••Á¥¹œ¹½ÍÉ¥ÁĞÙ¥Í¥‰±”¸(€€€€€€€€€€€€€€€€€€€ÑÉä(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€Ù…È™…±±‰…­½µ5ÕÑ…Ñ•€ô™…±Í”ì(€€€€€€€€€€€€€€€€€€€€€€€Ù…È¹½ÍÉ¥ÁÑ±•µ•¹ÑÌ€ô‘½´¹•Í•¹‘…¹ÑÌ ¤¹=™QåÁ”ñ±•µ•¹Ğø ¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹]¡•É”¡¸€ôøÍÑÉ¥¹œ¹ÅÕ…±Ì¡¸¹Q…9…µ”°€‰¹½ÍÉ¥ÁĞˆ°MÑÉ¥¹½µÁ…É¥Í½¸¹=É‘¥¹…±%¹½É•…Í”¤¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹Q½1¥ÍĞ ¤ì(€€€€€€€€€€€€€€€€€€€€€€€™½É•… €¡Ù…È¹Ì¥¸¹½ÍÉ¥ÁÑ±•µ•¹ÑÌ¤(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€Ù…ÈÍÑå±•Í%¹9½ÍÉ¥ÁĞ€ô¹Ì¹•Í•¹‘…¹ÑÌ ¤¹=™QåÁ”ñ±•µ•¹Ğø ¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹]¡•É”¡Ì€ôøÍÑÉ¥¹œ¹ÅÕ…±Ì¡Ì¹Q…9…µ”°€‰ÍÑå±”ˆ°MÑÉ¥¹½µÁ…É¥Í½¸¹=É‘¥¹…±%¹½É•…Í”¤¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹Q½1¥ÍĞ ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€™½É•… €¡Ù…ÈÍÑå±”¥¸ÍÑå±•Í%¹9½ÍÉ¥ÁĞ¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mÕÍÑ½µ!Ñµ±¹¥¹•tI•µ½Ù¥¹œ¡…Éµ™Õ°€ñÍÑå±”ø™É½´€ñ¹½ÍÉ¥ÁĞøˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÍÑå±”¹I•µ½Ù” ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€™…±±‰…­½µ5ÕÑ…Ñ•€ôÑÉÕ”ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€¥˜€¡¥Í½½±•M•…É¡¡…±±•¹”¤(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€Ù…ÈÉ•µ½Ù•‘½½±•	½½ÑÍÑÉ…À€ôI•µ½Ù•¹½‘•‘9½ÍÉ¥ÁÑ	½½ÑÍÑÉ…Á…±±‰…­Ì¡¹½ÍÉ¥ÁÑ±•µ•¹ÑÌ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€¥˜€¡É•µ½Ù•‘½½±•	½½ÑÍÑÉ…À€ø€À¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€™…±±‰…­½µ5ÕÑ…Ñ•€ôÑÉÕ”ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‰mÕÍÑ½µ!Ñµ±¹¥¹•tI•µ½Ù•íÉ•µ½Ù•‘½½±•	½½ÑÍÑÉ…Áô•¹½‘•½½±”M•…É ¡…±±•¹”‰½½ÑÍÑÉ…À€ñ¹½ÍÉ¥ÁĞø‰±½¬¡Ì¤ˆ°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€Ù…ÈÁÉ½µ½Ñ•‘…±±‰…­Ì€ôAÉ½µ½Ñ•!¥‘‘•¹…±±‰…­½¹Ñ•¹Ğ¡‘½´°‰…Í•UÉ¤¤ì(€€€€€€€€€€€€€€€€€€€€€€€¥˜€¡ÁÉ½µ½Ñ•‘…±±‰…­Ì€ø€À¤(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€Ù…ÈÉ•µ½Ù•‘9½ÍÉ¥ÁÑ	½½ÑÍÑÉ…À€ôI•µ½Ù•¹½‘•‘9½ÍÉ¥ÁÑ	½½ÑÍÑÉ…Á…±±‰…­Ì¡¹½ÍÉ¥ÁÑ±•µ•¹ÑÌ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€™…±±‰…­½µ5ÕÑ…Ñ•€ôÑÉÕ”ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‰mÕÍÑ½µ!Ñµ±¹¥¹•tAÉ½µ½Ñ•íÁÉ½µ½Ñ•‘…±±‰…­Íô¡¥‘‘•¸™…±±‰…¬‰±½¬¡Ì¤ìÉ•µ½Ù•íÉ•µ½Ù•‘9½ÍÉ¥ÁÑ	½½ÑÍÑÉ…Áô•¹½‘•€ñ¹½ÍÉ¥ÁĞø‰½½ÑÍÑÉ…À‰±½¬¡Ì¤ˆ°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€¥˜€¡™…±±‰…­½µ5ÕÑ…Ñ•¤(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€…İ…¥Ğ1½…‘ÍÍÍå¹Œ ¡‘½´…Ì±•µ•¹Ğ¤€üü€¡‘½´…Ì½Õµ•¹Ğ¤ü¹½Õµ•¹Ñ±•µ•¹Ğ°‰…Í•UÉ¤°™•Ñ¡áÑ•É¹…±ÍÍÍå¹Œ°Ù¥•İÁ½ÉÑ]¥‘Ñ °Ù¥•İÁ½ÉÑ!•¥¡Ğ°É•¹‘•É•¹•É…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€¥˜€ …%ÍÕÉÉ•¹ÑI•¹‘•É•¹•É…Ñ¥½¸¡É•¹‘•É•¹•É…Ñ¥½¸¤¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸¹Õ±°ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mÕÍÑ½µ!Ñµ±¹¥¹•tI•½µÁÕÑ•ML…™Ñ•È™…±±‰…¬=4Í…¹¥Ñ¥é…Ñ¥½¸ˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mÕÍÑ½µ!Ñµ±¹¥¹•t…¥±•Ñ¼Í…¹¥Ñ¥é”¹½ÍÉ¥ÁĞèí•à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€Ù…ÈÉ•¹‘•É)Ì€ôM•ÑÕÁ)…Ù…MÉ¥ÁÑ¹¥¹”¡‰…Í•UÉ¤°½¹9…Ù¥…Ñ”°…±±½İ)Ì°™•Ñ¡áÑ•É¹…±ÍÍÍå¹Œ°Ù¥•İÁ½ÉÑ]¥‘Ñ °Ù¥•İÁ½ÉÑ!•¥¡Ğ¤ì(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹%¹™¼ ‰mI•¹‘•ÉÍå¹t)L¹¥¹”Í•ÑÕÀ½µÁ±•Ñ”¸Ñ¥Ù•)Ìõì¡É•¹‘•É)Ì€„ô¹Õ±°€ü€‰å•Ìˆ€è€‰¹¼ˆ¥ô…±±½İ)Ìõí…±±½İ)Íôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€¥˜€¡É•¹‘•É)Ì€„ô¹Õ±°€˜˜}¡¥ÍÑ½Éå	É¥‘”€„ô¹Õ±°¤É•¹‘•É)Ì¹M•Ñ!¥ÍÑ½Éå	É¥‘”¡}¡¥ÍÑ½Éå	É¥‘”¤ì(€€€€€€€€€€€€€€€¥˜€¡É•¹‘•É)Ì€ôô¹Õ±°€˜˜‘•™•ÉMÑ…‰±•M¹…ÁÍ¡½ÑU¹Ñ¥±A½ÍÑMÉ¥ÁĞ¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¹‘İ…¥Ñ¥¹A½ÍÑMÉ¥ÁÑM¹…ÁÍ¡½Ğ¡É•¹‘•É•¹•É…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€€€€€‘•™•ÉMÑ…‰±•M¹…ÁÍ¡½ÑU¹Ñ¥±A½ÍÑMÉ¥ÁĞ€ô™…±Í”ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mAIt)LM•ÑÕÀèí}Á…•1½…‘MÑ½Áİ…Ñ ¹±…ÁÍ•‘5¥±±¥Í•½¹‘ÍõµÌˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì((€€€€€€€€€€€€€€€Ù…ÈÍÍ•Ñ¡•È€ô™•Ñ¡áÑ•É¹…±ÍÍÍå¹Œ€üü€¡…Íå¹Œ|€ôøì…İ…¥ĞQ…Í¬¹½µÁ±•Ñ•‘Q…Í¬ìÉ•ÑÕÉ¸ÍÑÉ¥¹œ¹µÁÑäìô¤ì(€€€€€€€€€€€€€€€¥˜€ …QÉå…ÁÑÕÉ•Ñ¥Ù•½¹Ñ•áĞ¡‘½´…Ì±•µ•¹Ğ°‰…Í•UÉ¤°ÍÍ•Ñ¡•È°¥µ…•1½…‘•È°½¹9…Ù¥…Ñ”°Ù¥•İÁ½ÉÑ]¥‘Ñ °Ù¥•İÁ½ÉÑ!•¥¡Ğ°½¹¥á•‘	…­É½Õ¹°É•¹‘•É)Ì°É•¹‘•É•¹•É…Ñ¥½¸¤¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸¹Õ±°ì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mÕÍÑ½µ!Ñµ±¹¥¹•t…±±¥¹œ	Õ¥±‘Y¥ÍÕ…±QÉ••Íå¹Œ¸¸¸ˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€Ù…ÈÙ €ôÙ¥•İÁ½ÉÑ!•¥¡Ğ€üü}…Ñ¥Ù•Y¥•İÁ½ÉÑ!•¥¡Ğ€üü•ÑAÉ¥µ…Éå]¥¹‘½İ!•¥¡Ğ ¤ì(€€€€€€€€€€€€€€€Ù…È½¹ÑÉ½°€ô…İ…¥Ğ	Õ¥±‘Y¥ÍÕ…±QÉ••Íå¹Œ¡‘½´…Ì±•µ•¹Ğ°‰…Í•UÉ¤°ÍÍ•Ñ¡•È°¥µ…•1½…‘•È°½¹9…Ù¥…Ñ”°É•¹‘•É)Ì°Ù¥•İÁ½ÉÑ]¥‘Ñ °Ù °½¹¥á•‘	…­É½Õ¹°¥¹±Õ‘•¥…¹½ÍÑ¥Í	…¹¹•Èè™…±Í”°É•¹‘•É•¹•É…Ñ¥½¸¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€€€€€¥˜€ …%ÍÕÉÉ•¹ÑI•¹‘•É•¹•É…Ñ¥½¸¡É•¹‘•É•¹•É…Ñ¥½¸¤¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸¹Õ±°ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€•±…ÁÍ•€ô}Á…•1½…‘MÑ½Áİ…Ñ ¹±…ÁÍ•‘5¥±±¥Í•½¹‘Ìì(€€€€€€€€€€€€€€€¥¹¥Ñ¥…±Y¥ÍÕ…±QÉ••5Ì€ô5…Ñ ¹5…à À°•±…ÁÍ•€´±…ÍÑMÑ…•5…É­5Ì¤ì(€€€€€€€€€€€€€€€±…ÍÑMÑ…•5…É­5Ì€ô•±…ÁÍ•ì(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mAItY¥ÍÕ…°QÉ•”€Äèí•±…ÁÍ•‘õµÌˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì((€€€€€€€€€€€€€€€€¼¼%µ…”™•Ñ ½‘•½‘”¥Ì¹½Ğ…¸¥¹Ñ•É…Ñ¥Ù”µÉ•…‘¥¹•ÍÌÁÉ•É•ÅÕ¥Í¥Ñ”¸(€€€€€€€€€€€€€€€€¼¼MÑ…ÉĞ¥Ğ½¹±ä…™Ñ•ÈÑ¡”™¥ÉÍĞÙ¥ÍÕ…°ÑÉ•”¥Ì…Ù…¥±…‰±”Í¼¥Ğ…¹¹½Ğ(€€€€€€€€€€€€€€€€¼¼½¹ÍÕµ”Ñ¡”¥¹¥Ñ¥…°™É…µ”ÌAT½¹•Ñİ½É¬‰Õ‘•Ğ¸(€€€€€€€€€€€€€€€¥˜€¡¥µ…•1½…‘•È€„ô¹Õ±°¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€Ù…ÈÁÉ•İ…ÉµI½½Ğ€ô€¡‘½´…Ì±•µ•¹Ğ¤€üü€¡‘½´…Ì½Õµ•¹Ğ¤ü¹½Õµ•¹Ñ±•µ•¹Ğì(€€€€€€€€€€€€€€€€€€€Ù…ÈÁÉ•İ…ÉµMÑå±•Ì€ô1…ÍÑ½µÁÕÑ•‘MÑå±•Ìì(€€€€€€€€€€€€€€€€€€€Ù…ÈÁÉ•İ…Éµ=İ¹•É½Õµ•¹Ğ€ô€¡‘½´…Ì½Õµ•¹Ğ¤€üü‘½´¹=İ¹•É½Õµ•¹Ğì(€€€€€€€€€€€€€€€€€€€|€ôIÕ¹•Ñ…¡•‘Íå¹Œ¡…Íå¹Œ€ ¤€ôø(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mÕÍÑ½µ!Ñµ±¹¥¹•tMÑ…ÉÑ¥¹œÁ½ÍĞµ™¥ÉÍĞµÑÉ•”¥µ…”ÁÉ•İ…É´ˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€€€€€…İ…¥ĞQ…Í¬¹]¡•¹±° (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€AÉ•İ…Éµ%µ…•ÍÍå¹Œ¡ÁÉ•İ…ÉµI½½Ğ°‰…Í•UÉ¤°¥µ…•1½…‘•È°Ù¥•İÁ½ÉÑ]¥‘Ñ ¤°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€AÉ•İ…ÉµÍÍ	…­É½Õ¹‘%µ…•ÍÍå¹Œ (€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÁÉ•İ…ÉµMÑå±•Ì°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€‰…Í•UÉ¤°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥µ…•1½…‘•È°(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ÁÉ•İ…Éµ=İ¹•É½Õµ•¹Ğ¤¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€€€€€€€€€ô¤ì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€¼¼€Ø¸IÕ¸MÉ¥ÁÑÌƒŠP™¥É”µ…¹µ™½É•Ğ…™Ñ•È™¥ÉÍĞÁ…¥¹Ğ¸(€€€€€€€€€€€€€€€€¼¼I•…°‰É½İÍ•ÉÌÍ¡½Ü=4­ML¥µµ•‘¥…Ñ•±ä…¹±•Ğ)LÉÕ¸¥¸Ñ¡”(€€€€€€€€€€€€€€€€¼¼‰…­É½Õ¹¸€	±½­¥¹œ¹…Ù¥…Ñ¥½¸½¸€ÜÀ¬µ½‘Õ±”ÍÉ¥ÁÑÌ€¡¥Ñ¡Õˆ¹½´¤(€€€€€€€€€€€€€€€€¼¼µ…‘”Ñ¡”‰É½İÍ•È…ÁÁ•…È™É½é•¸™½È€ĞÔ´àÀÌ¸€9½ÜÑ¡”Á…”‰•½µ•Ì(€€€€€€€€€€€€€€€€¼¼¥¹Ñ•É…Ñ¥Ù”…ÌÍ½½¸…ÌÑ¡”™¥ÉÍĞÙ¥ÍÕ…°ÑÉ•”¥ÌÉ•…‘äìÍÉ¥ÁÑÌ°(€€€€€€€€€€€€€€€€¼¼Á½ÍĞµÍÉ¥ÁĞÍÑå±”É•™É•Í °…¹Ñ¡”Í•½¹Ù¥ÍÕ…°ÑÉ•”É•‰Õ¥±(€€€€€€€€€€€€€€€€¼¼¡…ÁÁ•¸½™˜Ñ¡”É¥Ñ¥…°Á…Ñ ¸(€€€€€€€€€€€€€€€½‰©•Ğ•±•µ•¹Ğ€ô½¹ÑÉ½°ì(€€€€€€€€€€€€€€€¥˜€¡É•¹‘•É)Ì€„ô¹Õ±°¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€Ù…È©Ì€ôÉ•¹‘•É)Ìì(€€€€€€€€€€€€€€€€€€€Ù…È…ÁÑÕÉ•‘½´€ô‘½´ì(€€€€€€€€€€€€€€€€€€€Ù…È…ÁÑÕÉ•‘	…Í•UÉ¤€ô‰…Í•UÉ¤ì(€€€€€€€€€€€€€€€€€€€Ù…È…ÁÑÕÉ•‘ÍÍ•Ñ¡•È€ô™•Ñ¡áÑ•É¹…±ÍÍÍå¹Œì(€€€€€€€€€€€€€€€€€€€Ù…È…ÁÑÕÉ•‘%µ…•1½…‘•È€ô¥µ…•1½…‘•Èì(€€€€€€€€€€€€€€€€€€€Ù…È…ÁÑÕÉ•‘=¹9…Ù¥…Ñ”€ô½¹9…Ù¥…Ñ”ì(€€€€€€€€€€€€€€€€€€€Ù…È…ÁÑÕÉ•‘Y¥•İÁ½ÉÑ]¥‘Ñ €ôÙ¥•İÁ½ÉÑ]¥‘Ñ ì(€€€€€€€€€€€€€€€€€€€Ù…È…ÁÑÕÉ•‘Y¥•İÁ½ÉÑ!•¥¡Ğ€ôÙ¥•İÁ½ÉÑ!•¥¡Ğì(€€€€€€€€€€€€€€€€€€€Ù…È…ÁÑÕÉ•‘=¹¥á•‘	œ€ô½¹¥á•‘	…­É½Õ¹ì(€€€€€€€€€€€€€€€€€€€Ù…È…ÁÑÕÉ•‘M¡½Õ±‘9½Éµ…±¥é”€ôÍ¡½Õ±‘9½Éµ…±¥é•9½)Í…±±‰…¬ì(€€€€€€€€€€€€€€€€€€€Ù…È…ÁÑÕÉ•‘•™•ÉM¹…ÁÍ¡½Ğ€ô‘•™•ÉMÑ…‰±•M¹…ÁÍ¡½ÑU¹Ñ¥±A½ÍÑMÉ¥ÁĞì((€€€€€€€€€€€€€€€€€€€€¼¼IÕ¸ÍÉ¥ÁÑÌ€¬Á½ÍĞµÍÉ¥ÁĞİ½É¬¥¸‰…­É½Õ¹¸(€€€€€€€€€€€€€€€€€€€|€ôIÕ¹•Ñ…¡•‘Íå¹Œ¡…Íå¹Œ€ ¤€ôø(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€ÑÉä(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€…İ…¥ĞIÕ¹MÉ¥ÁÑÍÍå¹Œ¡©Ì°…ÁÑÕÉ•‘½´…Ì±•µ•¹Ğ°…ÁÑÕÉ•‘	…Í•UÉ¤¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€©…Ù…ÍÉ¥ÁÑá•ÕÑ•€ôÑÉÕ”ì((€€€€€€€€€€€€€€€€€€€€€€€€€€€¥˜€ …%ÍÕÉÉ•¹ÑI•¹‘•É•¹•É…Ñ¥½¸¡É•¹‘•É•¹•É…Ñ¥½¸¤¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€€€€€¥˜€¡…ÁÑÕÉ•‘M¡½Õ±‘9½Éµ…±¥é”¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€Ù…È¹½Éµ…±¥é•I½½Ğ€ô€¡…ÁÑÕÉ•‘½´…Ì±•µ•¹Ğ¤€üü€¡…ÁÑÕÉ•‘½´…Ì½Õµ•¹Ğ¤ü¹½Õµ•¹Ñ±•µ•¹Ğì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€9½Éµ…±¥é•9½)Í…±±‰…­±…ÍÍ•Ì¡¹½Éµ…±¥é•I½½Ğ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€€€€€½É•½½±•¡…±±•¹•	…¹¹•ÉY¥Í¥‰±”¡…ÁÑÕÉ•‘½´°…ÁÑÕÉ•‘	…Í•UÉ¤°É•µ½Ù•U¹¡¥‘•MÉ¥ÁĞè™…±Í”¤ì((€€€€€€€€€€€€€€€€€€€€€€€€€€€¥˜€¡9••‘ÍA½ÍÑMÉ¥ÁÑMÑå±•I•™É•Í ¡…ÁÑÕÉ•‘½´°1…ÍÑ½µÁÕÑ•‘MÑå±•Ì¤¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mI•¹‘•ÉÍå¹tI•½µÁÕÑ¥¹œML…™Ñ•ÈÍÉ¥ÁĞµ‘É¥Ù•¸=4½ÍÑå±”µÕÑ…Ñ¥½¹Ìˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€…İ…¥Ğ1½…‘ÍÍÍå¹Œ ¡…ÁÑÕÉ•‘½´…Ì±•µ•¹Ğ¤€üü€¡…ÁÑÕÉ•‘½´…Ì½Õµ•¹Ğ¤ü¹½Õµ•¹Ñ±•µ•¹Ğ°…ÁÑÕÉ•‘	…Í•UÉ¤°…ÁÑÕÉ•‘ÍÍ•Ñ¡•È°…ÁÑÕÉ•‘Y¥•İÁ½ÉÑ]¥‘Ñ °…ÁÑÕÉ•‘Y¥•İÁ½ÉÑ!•¥¡Ğ°É•¹‘•É•¹•É…Ñ¥½¸¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¥˜€ …%ÍÕÉÉ•¹ÑI•¹‘•É•¹•É…Ñ¥½¸¡É•¹‘•É•¹•É…Ñ¥½¸¤¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€€€€€¥˜€ …%ÍÕÉÉ•¹ÑI•¹‘•É•¹•É…Ñ¥½¸¡É•¹‘•É•¹•É…Ñ¥½¸¤¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€€€€€€€€€€€€Ù…ÈÙ È€ô…ÁÑÕÉ•‘Y¥•İÁ½ÉÑ!•¥¡Ğ€üü}…Ñ¥Ù•Y¥•İÁ½ÉÑ!•¥¡Ğ€üü•ÑAÉ¥µ…Éå]¥¹‘½İ!•¥¡Ğ ¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€…İ…¥Ğ	Õ¥±‘Y¥ÍÕ…±QÉ••Íå¹Œ¡…ÁÑÕÉ•‘½´…Ì±•µ•¹Ğ°…ÁÑÕÉ•‘	…Í•UÉ¤°…ÁÑÕÉ•‘ÍÍ•Ñ¡•È°…ÁÑÕÉ•‘%µ…•1½…‘•È°…ÁÑÕÉ•‘=¹9…Ù¥…Ñ”°©Ì°…ÁÑÕÉ•‘Y¥•İÁ½ÉÑ]¥‘Ñ °Ù È°…ÁÑÕÉ•‘=¹¥á•‘	œ°¥¹±Õ‘•¥…¹½ÍÑ¥Í	…¹¹•Èè™…±Í”°É•¹‘•É•¹•É…Ñ¥½¸¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸‰à¤(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mI•¹‘•ÉÍå¹t	…­É½Õ¹ÍÉ¥ÁĞ½Á½ÍĞµÍÉ¥ÁĞİ½É¬™…¥±•èí‰à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€™¥¹…±±ä(€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€¥˜€¡…ÁÑÕÉ•‘•™•ÉM¹…ÁÍ¡½Ğ¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€¹‘İ…¥Ñ¥¹A½ÍÑMÉ¥ÁÑM¹…ÁÍ¡½Ğ¡É•¹‘•É•¹•É…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€€€€€¥˜€¡%ÍÕÉÉ•¹ÑI•¹‘•É•¹•É…Ñ¥½¸¡É•¹‘•É•¹•É…Ñ¥½¸¤¤(€€€€€€€€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€€=¹I•Á…¥¹ÑI•…‘ä¡}…Ñ¥Ù•½´¤ì(€€€€€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€ô¤ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€•±Í”(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€¥˜€¡‘•™•ÉMÑ…‰±•M¹…ÁÍ¡½ÑU¹Ñ¥±A½ÍÑMÉ¥ÁĞ¤(€€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€€¹‘İ…¥Ñ¥¹A½ÍÑMÉ¥ÁÑM¹…ÁÍ¡½Ğ¡É•¹‘•É•¹•É…Ñ¥½¸¤ì(€€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mI•¹‘•ÉÍå¹tMÉ¥ÁÑÌM-%AA€¡…±±½İ)Ìõí…±±½İ)Íô¤•±•µ•¹Ğõí½¹ÑÉ½°„õ¹Õ±±ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€É•ÑÕÉ¸•±•µ•¹Ğì(€€€€€€€€€€€ô(€€€€€€€€€€€™¥¹…±±ä(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Ù…ÈÑ½Ñ…±I•¹‘•É5Ì€ô}Á…•1½…‘MÑ½Áİ…Ñ ¹±…ÁÍ•‘5¥±±¥Í•½¹‘Ìì(€€€€€€€€€€€€€€€±½¹œİ½É­¥¹M•Ñ	åÑ•Ìì(€€€€€€€€€€€€€€€ÕÍ¥¹œ€¡Ù…ÈÁÉ½•ÍÌ€ôMåÍÑ•´¹¥…¹½ÍÑ¥Ì¹AÉ½•ÍÌ¹•ÑÕÉÉ•¹ÑAÉ½•ÍÌ ¤¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€İ½É­¥¹M•Ñ	åÑ•Ì€ôÁÉ½•ÍÌ¹]½É­¥¹M•ĞØĞì(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€Ù…ÈÑ•±•µ•ÑÉä€ô¹•ÜI•¹‘•ÉQ•±•µ•ÑÉåM¹…ÁÍ¡½Ğ(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€Q½­•¹¥é¥¹5Ì€ôÑ½­•¹¥é¥¹5Ì°(€€€€€€€€€€€€€€€€€€€A…ÉÍ¥¹5Ì€ôÁ…ÉÍ¥¹5Ì°(€€€€€€€€€€€€€€€€€€€Q½­•¹¥é¥¹¹‘A…ÉÍ¥¹5Ì€ôÑ½­•¹¥é¥¹¹‘A…ÉÍ¥¹5Ì°(€€€€€€€€€€€€€€€€€€€A…ÉÍ•Q½­•¹½Õ¹Ğ€ôÁ…ÉÍ•Q½­•¹½Õ¹Ğ°(€€€€€€€€€€€€€€€€€€€Q½­•¹¥é¥¹¡•­Á½¥¹Ñ½Õ¹Ğ€ôÑ½­•¹¥é¥¹¡•­Á½¥¹Ñ½Õ¹Ğ°(€€€€€€€€€€€€€€€€€€€A…ÉÍ¥¹¡•­Á½¥¹Ñ½Õ¹Ğ€ôÁ…ÉÍ¥¹¡•­Á½¥¹Ñ½Õ¹Ğ°(€€€€€€€€€€€€€€€€€€€A…ÉÍ¥¹½Õµ•¹Ñ¡•­Á½¥¹Ñ½Õ¹Ğ€ôÁ…ÉÍ¥¹½Õµ•¹Ñ¡•­Á½¥¹Ñ½Õ¹Ğ°(€€€€€€€€€€€€€€€€€€€½Õµ•¹ÑI•…‘åQ½­•¹½Õ¹Ğ€ô‘½Õµ•¹ÑI•…‘åQ½­•¹½Õ¹Ğ°(€€€€€€€€€€€€€€€€€€€A…ÉÍ•%¹É•µ•¹Ñ…±I•Á…¥¹Ñ½Õ¹Ğ€ô¥¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ñ½Õ¹Ğ°(€€€€€€€€€€€€€€€€€€€MÑÉ•…µ¥¹AÉ•Á…ÉÍ•5Ì€ôÍÑÉ•…µ¥¹AÉ•Á…ÉÍ•5Ì°(€€€€€€€€€€€€€€€€€€€MÑÉ•…µ¥¹AÉ•Á…ÉÍ•¡•­Á½¥¹Ñ½Õ¹Ğ€ôÍÑÉ•…µ¥¹AÉ•Á…ÉÍ•¡•­Á½¥¹Ñ½Õ¹Ğ°(€€€€€€€€€€€€€€€€€€€MÑÉ•…µ¥¹AÉ•Á…ÉÍ•I•Á…¥¹Ñ½Õ¹Ğ€ôÍÑÉ•…µ¥¹AÉ•Á…ÉÍ•I•Á…¥¹Ñ½Õ¹Ğ°(€€€€€€€€€€€€€€€€€€€%¹Ñ•É±•…Ù•‘A…ÉÍ•UÍ•€ô¥¹Ñ•É±•…Ù•‘A…ÉÍ•UÍ•°(€€€€€€€€€€€€€€€€€€€%¹Ñ•É±•…Ù•‘Q½­•¹	…Ñ¡M¥é”€ô¥¹Ñ•É±•…Ù•‘Q½­•¹	…Ñ¡M¥é”°(€€€€€€€€€€€€€€€€€€€%¹Ñ•É±•…Ù•‘	…Ñ¡½Õ¹Ğ€ô¥¹Ñ•É±•…Ù•‘	…Ñ¡½Õ¹Ğ°(€€€€€€€€€€€€€€€€€€€%¹Ñ•É±•…Ù•‘…±±‰…­UÍ•€ô¥¹Ñ•É±•…Ù•‘…±±‰…­UÍ•°(€€€€€€€€€€€€€€€€€€€ÍÍ¹‘MÑå±•5Ì€ôÍÍ¹‘MÑå±•5Ì°(€€€€€€€€€€€€€€€€€€€ÍÍEÕ•Õ•]…¥Ñ5Ì€ô}±…ÍÑÍÍ1½…‘Q¥µ¥¹œü¹EÕ•Õ•]…¥Ñ5Ì€üü€À°(€€€€€€€€€€€€€€€€€€€ÍÍ¥Í½Ù•Éå¹‘•Ñ¡5Ì€ô}±…ÍÑÍÍ1½…‘Q¥µ¥¹œü¹¥Í½Ù•Éå¹‘•Ñ¡5Ì€üü€À°(€€€€€€€€€€€€€€€€€€€ÍÍ%µÁ½ÉÑáÁ…¹Í¥½¹5Ì€ô}±…ÍÑÍÍ1½…‘Q¥µ¥¹œü¹%µÁ½ÉÑáÁ…¹Í¥½¹5Ì€üü€À°(€€€€€€€€€€€€€€€€€€€ÍÍIÕ±•A…ÉÍ•5Ì€ô}±…ÍÑÍÍ1½…‘Q¥µ¥¹œü¹IÕ±•A…ÉÍ•5Ì€üü€À°(€€€€€€€€€€€€€€€€€€€ÍÍY…É¥…‰±•I•Í½±ÕÑ¥½¹5Ì€ô}±…ÍÑÍÍ1½…‘Q¥µ¥¹œü¹Y…É¥…‰±•I•Í½±ÕÑ¥½¹5Ì€üü€À°(€€€€€€€€€€€€€€€€€€€ÍÍ…Í…‘•5Ì€ô}±…ÍÑÍÍ1½…‘Q¥µ¥¹œü¹…Í…‘•5Ì€üü€À°(€€€€€€€€€€€€€€€€€€€ÍÍQ½Ñ…±5Ì€ô}±…ÍÑÍÍ1½…‘Q¥µ¥¹œü¹Q½Ñ…±5Ì€üü€À°(€€€€€€€€€€€€€€€€€€€%¹¥Ñ¥…±Y¥ÍÕ…±QÉ••5Ì€ô¥¹¥Ñ¥…±Y¥ÍÕ…±QÉ••5Ì°(€€€€€€€€€€€€€€€€€€€MÉ¥ÁÑá•ÕÑ¥½¹5Ì€ôÍÉ¥ÁÑá•ÕÑ¥½¹5Ì°(€€€€€€€€€€€€€€€€€€€A½ÍÑMÉ¥ÁÑY¥ÍÕ…±QÉ••5Ì€ôÁ½ÍÑMÉ¥ÁÑY¥ÍÕ…±QÉ••5Ì°(€€€€€€€€€€€€€€€€€€€Q½Ñ…±I•¹‘•É5Ì€ôÑ½Ñ…±I•¹‘•É5Ì°(€€€€€€€€€€€€€€€€€€€)…Ù…MÉ¥ÁÑá•ÕÑ•€ô©…Ù…ÍÉ¥ÁÑá•ÕÑ•°(€€€€€€€€€€€€€€€€€€€UÉ°€ô‰…Í•UÉ¤ü¹‰Í½±ÕÑ•UÉ¤€üü€‰…‰½ÕĞé‰±…¹¬ˆ°(€€€€€€€€€€€€€€€€€€€9…Ù¥…Ñ¥½¹MÑ…ÉÑ•‘ÑUÑŒ€ô¹…Ù¥…Ñ¥½¹MÑ…ÉÑ•‘ÑUÑŒ°(€€€€€€€€€€€€€€€€€€€5…¹…•‘±±½…Ñ•‘	åÑ•Ì€ô5…Ñ ¹5…à À°¹•ÑQ½Ñ…±±±½…Ñ•‘	åÑ•Ì¡ÁÉ•¥Í”è™…±Í”¤€´…±±½…Ñ•‘	åÑ•Í	•™½É”¤°(€€€€€€€€€€€€€€€€€€€5…¹…•‘!•…Á	åÑ•Ì€ô¹•ÑQ½Ñ…±5•µ½Éä¡™½É•Õ±±½±±•Ñ¥½¸è™…±Í”¤°(€€€€€€€€€€€€€€€€€€€]½É­¥¹M•Ñ	åÑ•Ì€ôİ½É­¥¹M•Ñ	åÑ•Ì°(€€€€€€€€€€€€€€€€€€€•¸Á½±±•Ñ¥½¹Ì€ô5…Ñ ¹5…à À°¹½±±•Ñ¥½¹½Õ¹Ğ À¤€´•¸Á	•™½É”¤°(€€€€€€€€€€€€€€€€€€€•¸Å½±±•Ñ¥½¹Ì€ô5…Ñ ¹5…à À°¹½±±•Ñ¥½¹½Õ¹Ğ Ä¤€´•¸Å	•™½É”¤°(€€€€€€€€€€€€€€€€€€€•¸É½±±•Ñ¥½¹Ì€ô5…Ñ ¹5…à À°¹½±±•Ñ¥½¹½Õ¹Ğ È¤€´•¸É	•™½É”¤(€€€€€€€€€€€€€€€ôì((€€€€€€€€€€€€€€€Ù…ÈÁÕ‰±¥Í¡Q•±•µ•ÑÉä€ô™…±Í”ì(€€€€€€€€€€€€€€€±½¬€¡}É•¹‘•ÉMÑ…Ñ•1½¬¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¥˜€¡}É•¹‘•É•¹•É…Ñ¥½¸€ôôÉ•¹‘•É•¹•É…Ñ¥½¸¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€1…ÍÑI•¹‘•ÉQ•±•µ•ÑÉä€ôÑ•±•µ•ÑÉäì(€€€€€€€€€€€€€€€€€€€€€€€ÁÕ‰±¥Í¡Q•±•µ•ÑÉä€ôÑÉÕ”ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€ô((€€€€€€€€€€€€€€€€¼¼±İ…åÌÍ¥¹…°±½…‘¥¹œ½µÁ±•Ñ”ƒŠP•Ù•¸¥˜„¹•İ•È¹…Ù¥…Ñ¥½¸(€€€€€€€€€€€€€€€€¼¼€¡É•¹‘•É•¹•É…Ñ¥½¸µ¥Íµ…Ñ ¤ÍÕÁ•ÉÍ•‘•Ñ¡¥Ì½¹”¸=Ñ¡•Éİ¥Í”Ñ¡”(€€€€€€€€€€€€€€€€¼¼±½…‘¥¹œ‰…ÈÍÁ¥¹Ì™½É•Ù•È…™Ñ•È„Ñ…ˆÍİ¥Ñ ¸(€€€€€€€€€€€€€€€…İ…¥ĞI…¥Í•1½…‘¥¹¡…¹•‘Íå¹Œ¡™…±Í”¤ì((€€€€€€€€€€€€€€€¥˜€¡ÁÕ‰±¥Í¡Q•±•µ•ÑÉä¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€A•É™½Éµ…¹•¥…¹½ÍÑ¥ÍMÑ½É”¹I•½É‘9…Ù¥…Ñ¥½¸¡Ñ•±•µ•ÑÉä¤ì(€€€€€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mAItU10A1=Q%5èíÑ½Ñ…±I•¹‘•É5ÍõµÌˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ô(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”…Íå¹ŒQ…Í¬ñ±½¹œøIÕ¹MÑÉ•…µ¥¹AÉ•Á…ÉÍ•Íå¹Œ (€€€€€€€€€€€ÍÑÉ¥¹œ¡Ñµ°°(€€€€€€€€€€€±½¹œÉ•¹‘•É•¹•É…Ñ¥½¸°(€€€€€€€€€€€Ñ¥½¸ñ¥¹Ğø¡•­Á½¥¹Ñ½Õ¹ÑUÁ‘…Ñ•°(€€€€€€€€€€€Ñ¥½¸ñ¥¹ĞøÉ•Á…¥¹Ñ½Õ¹ÑUÁ‘…Ñ•¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡ÍÑÉ¥¹œ¹%Í9Õ±±=ÉµÁÑä¡¡Ñµ°¤¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€¡•­Á½¥¹Ñ½Õ¹ÑUÁ‘…Ñ•ü¹%¹Ù½­” À¤ì(€€€€€€€€€€€€€€€É•Á…¥¹Ñ½Õ¹ÑUÁ‘…Ñ•ü¹%¹Ù½­” À¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸€Àì(€€€€€€€€€€€ô((€€€€€€€€€€€Ù…È¡•­Á½¥¹Ñ½Õ¹Ğ€ô€Àì(€€€€€€€€€€€Ù…ÈÉ•Á…¥¹Ñ½Õ¹Ğ€ô€Àì(€€€€€€€€€€€Ù…ÈÁ…ÉÍ•MÑ½Áİ…Ñ €ôMÑ½Áİ…Ñ ¹MÑ…ÉÑ9•Ü ¤ì(€€€€€€€€€€€ÑÉä(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€ÕÍ¥¹œÙ…ÈÁ…ÉÍ•È€ô¹•ÜMÑÉ•…µ¥¹!Ñµ±A…ÉÍ•È¡¡Ñµ°¤ì(€€€€€€€€€€€€€€€…İ…¥ĞÁ…ÉÍ•È¹A…ÉÍ•%¹É•µ•¹Ñ…±±åÍå¹Œ¡‘½Õµ•¹Ğ€ôø(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¡•­Á½¥¹Ñ½Õ¹Ğ¬¬ì(€€€€€€€€€€€€€€€€€€€¥˜€¡QÉåµ¥ÑMÑÉ•…µ¥¹A…ÉÍ•I•Á…¥¹Ğ¡‘½Õµ•¹Ğ°¡•­Á½¥¹Ñ½Õ¹Ğ°É•¹‘•É•¹•É…Ñ¥½¸°É•˜É•Á…¥¹Ñ½Õ¹Ğ¤¤(€€€€€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€€€€€É•Á…¥¹Ñ½Õ¹ÑUÁ‘…Ñ•ü¹%¹Ù½­”¡É•Á…¥¹Ñ½Õ¹Ğ¤ì(€€€€€€€€€€€€€€€€€€€ô(€€€€€€€€€€€€€€€€€€€¡•­Á½¥¹Ñ½Õ¹ÑUÁ‘…Ñ•ü¹%¹Ù½­”¡¡•­Á½¥¹Ñ½Õ¹Ğ¤ì(€€€€€€€€€€€€€€€ô¤¹½¹™¥ÕÉ•İ…¥Ğ¡™…±Í”¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mI•¹‘•ÉÍå¹tMÑÉ•…µ¥¹œÁÉ•Á…ÉÍ”™…¥±•èí•à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€ô((€€€€€€€€€€€¡•­Á½¥¹Ñ½Õ¹ÑUÁ‘…Ñ•ü¹%¹Ù½­”¡¡•­Á½¥¹Ñ½Õ¹Ğ¤ì(€€€€€€€€€€€É•Á…¥¹Ñ½Õ¹ÑUÁ‘…Ñ•ü¹%¹Ù½­”¡É•Á…¥¹Ñ½Õ¹Ğ¤ì(€€€€€€€€€€€Á…ÉÍ•MÑ½Áİ…Ñ ¹MÑ½À ¤ì(€€€€€€€€€€€É•ÑÕÉ¸Á…ÉÍ•MÑ½Áİ…Ñ ¹±…ÁÍ•‘5¥±±¥Í•½¹‘Ìì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”‰½½°QÉåµ¥ÑMÑÉ•…µ¥¹A…ÉÍ•I•Á…¥¹Ğ (€€€€€€€€€€€½Õµ•¹Ğ‘½Õµ•¹Ğ°(€€€€€€€€€€€¥¹Ğ¡•­Á½¥¹Ñ=É‘¥¹…°°(€€€€€€€€€€€±½¹œÉ•¹‘•É•¹•É…Ñ¥½¸°(€€€€€€€€€€€É•˜¥¹ĞÉ•Á…¥¹Ñ½Õ¹Ğ¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡‘½Õµ•¹Ğü¹½Õµ•¹Ñ±•µ•¹Ğ€ôô¹Õ±°¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€ …!…ÍMÑ…‰±•½µÁÕÑ•‘MÑå±•M¹…ÁÍ¡½Ğ ¤¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€ …M¡½Õ±‘µ¥ÑMÑÉ•…µ¥¹AÉ•Á…ÉÍ•I•Á…¥¹Ğ¡¡•­Á½¥¹Ñ=É‘¥¹…°°É•Á…¥¹Ñ½Õ¹Ğ¤¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€ô((€€€€€€€€€€€±•µ•¹ĞÍ¹…ÁÍ¡½ÑI½½Ğ€ô¹Õ±°ì(€€€€€€€€€€€ÑÉä(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Í¹…ÁÍ¡½ÑI½½Ğ€ô‘½Õµ•¹Ğ¹½Õµ•¹Ñ±•µ•¹Ğ¹±½¹•9½‘”¡ÑÉÕ”¤…Ì±•µ•¹Ğì(€€€€€€€€€€€ô(€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mI•¹‘•ÉÍå¹tMÑÉ•…µ¥¹œÁÉ•Á…ÉÍ”Í¹…ÁÍ¡½Ğ±½¹”™…¥±•èí•à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡Í¹…ÁÍ¡½ÑI½½Ğ€ôô¹Õ±°¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€ô((€€€€€€€€€€€É•Á…¥¹Ñ½Õ¹Ğ¬¬ì(€€€€€€€€€€€€¼¼-••ÀÍÑå±•ÌÍÑ…‰±”Í¼ÍÕ‰Í•ÅÕ•¹ĞÍÑÉ•…µ¥¹œÉ•Á…¥¹ÑÌ…É”¹½Ğ…Ñ•½ÕĞ¸(€€€€€€€€€€€¥˜€ …QÉåM•ÑÑ¥Ù•½´¡Í¹…ÁÍ¡½ÑI½½Ğ°µ…É­M¹…ÁÍ¡½ÑU¹ÍÑ…‰±”è™…±Í”°É•¹‘•É•¹•É…Ñ¥½¸¤¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€ô(€€€€€€€€€€€€¼¼¼9=P¹Õ±°½ÕĞ1…ÍÑ½µÁÕÑ•‘MÑå±•Ì¡•É”¸Q¡”•¹¥¹”±½½ÀÁ½±±Ì™½ÈÍÑå±•Ì(€€€€€€€€€€€€¼¼…¹¹Õ±±¥¹œÑ¡•´…ÕÍ•Ì¡Õ¹‘É•‘Ì½˜İ…ÍÑ•É•¹‘•È™É…µ•Ìİ¥Ñ MÑå±•Ìõ9U10(€€€€€€€€€€€€¼¼‰•™½É”Ñ¡”ML…Í…‘”½µÁ±•Ñ•Ì¸-••ÀÁÉ•Ù¥½ÕÌÍÑå±•ÌÙ¥Í¥‰±”Í¼±…å½ÕĞ(€€€€€€€€€€€€¼¼…¸…Ğ±•…ÍĞÁ…ÉÑ¥…±±äÉ•¹‘•Èİ¥Ñ İ¡…Ñ•Ù•ÈÍÑå±•Ìİ•É”±…ÍĞ½µÁÕÑ•¸(€€€€€€€€€€€=¹I•Á…¥¹ÑI•…‘ä¡Í¹…ÁÍ¡½ÑI½½Ğ¤ì(€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”Ù½¥QÉåµ¥Ñ%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ğ (€€€€€€€€€€€½Õµ•¹Ğ‘½Õµ•¹Ğ°(€€€€€€€€€€€!Ñµ±A…ÉÍ•¡•­Á½¥¹Ğ¡•­Á½¥¹Ğ°(€€€€€€€€€€€¥¹ĞÁ…ÉÍ¥¹¡•­Á½¥¹Ñ=É‘¥¹…°°(€€€€€€€€€€€±½¹œÉ•¹‘•É•¹•É…Ñ¥½¸°(€€€€€€€€€€€¥¹Ğµ…áI•Á…¥¹Ñ½Õ¹Ğ°(€€€€€€€€€€€É•˜¥¹Ğ¥¹É•µ•¹Ñ…±I•Á…¥¹Ñ½Õ¹Ğ¤(€€€€€€€ì(€€€€€€€€€€€¥˜€ …¹…‰±•%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ğñğ(€€€€€€€€€€€€€€€‘½Õµ•¹Ğü¹½Õµ•¹Ñ±•µ•¹Ğ€ôô¹Õ±°ñğ(€€€€€€€€€€€€€€€¡•­Á½¥¹Ğ€ôô¹Õ±°ñğ(€€€€€€€€€€€€€€€¡•­Á½¥¹Ğ¹A¡…Í”€„ô!Ñµ±A…ÉÍ•	Õ¥±‘A¡…Í”¹A…ÉÍ¥¹œ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€ …!…ÍMÑ…‰±•½µÁÕÑ•‘MÑå±•M¹…ÁÍ¡½Ğ ¤¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€ …M¡½Õ±‘µ¥Ñ%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ğ (€€€€€€€€€€€€€€€Á…ÉÍ¥¹¡•­Á½¥¹Ñ=É‘¥¹…°°(€€€€€€€€€€€€€€€¡•­Á½¥¹Ğ¹%Í¥¹…°°(€€€€€€€€€€€€€€€¥¹É•µ•¹Ñ…±I•Á…¥¹Ñ½Õ¹Ğ°(€€€€€€€€€€€€€€€µ…áI•Á…¥¹Ñ½Õ¹Ğ¤¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô((€€€€€€€€€€€±•µ•¹ĞÍ¹…ÁÍ¡½ÑI½½Ğ€ô¹Õ±°ì(€€€€€€€€€€€ÑÉä(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Í¹…ÁÍ¡½ÑI½½Ğ€ô‘½Õµ•¹Ğ¹½Õµ•¹Ñ±•µ•¹Ğ¹±½¹•9½‘”¡ÑÉÕ”¤…Ì±•µ•¹Ğì(€€€€€€€€€€€ô(€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mI•¹‘•ÉÍå¹t%¹É•µ•¹Ñ…°Á…ÉÍ”Í¹…ÁÍ¡½Ğ±½¹”™…¥±•èí•à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡Í¹…ÁÍ¡½ÑI½½Ğ€ôô¹Õ±°¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥¹É•µ•¹Ñ…±I•Á…¥¹Ñ½Õ¹Ğ¬¬ì(€€€€€€€€€€€€¼¼-••ÀÍÑå±•ÌÍÑ…‰±”Í¼ÍÕ‰Í•ÅÕ•¹Ğ¥¹É•µ•¹Ñ…°É•Á…¥¹ÑÌ…É”¹½Ğ…Ñ•½ÕĞ¸(€€€€€€€€€€€€¼¼Q¡”•µÁÑäµ‰ÕĞµÍÑ…‰±”Í¹…ÁÍ¡½Ğ¥ÌÍ••‘•‰•™½É”IÕ¹½µA…ÉÍ•Íå¹Œ¸(€€€€€€€€€€€¥˜€ …QÉåM•ÑÑ¥Ù•½´¡Í¹…ÁÍ¡½ÑI½½Ğ°µ…É­M¹…ÁÍ¡½ÑU¹ÍÑ…‰±”è™…±Í”°É•¹‘•É•¹•É…Ñ¥½¸¤¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô(€€€€€€€€€€€€¼¼¼9=P¹Õ±°½ÕĞ1…ÍÑ½µÁÕÑ•‘MÑå±•ÌƒŠPÍ•”QÉåµ¥ÑMÑÉ•…µ¥¹A…ÉÍ•I•Á…¥¹Ğ½µµ•¹Ğ¸(€€€€€€€€€€€=¹I•Á…¥¹ÑI•…‘ä¡Í¹…ÁÍ¡½ÑI½½Ğ¤ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ‰½½°M¡½Õ±‘µ¥Ñ%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ğ (€€€€€€€€€€€¥¹ĞÁ…ÉÍ¥¹¡•­Á½¥¹Ñ=É‘¥¹…°°(€€€€€€€€€€€‰½½°¥Í¥¹…±¡•­Á½¥¹Ğ°(€€€€€€€€€€€¥¹Ğ¥¹É•µ•¹Ñ…±I•Á…¥¹Ñ½Õ¹Ğ°(€€€€€€€€€€€¥¹Ğµ…áI•Á…¥¹Ñ½Õ¹Ğ¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡¥¹É•µ•¹Ñ…±I•Á…¥¹Ñ½Õ¹Ğ€øôµ…áI•Á…¥¹Ñ½Õ¹Ğ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡¥¹É•µ•¹Ñ…±I•Á…¥¹Ñ½Õ¹Ğ€ôô€À¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡¥Í¥¹…±¡•­Á½¥¹Ğ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€€€€€ô((€€€€€€€€€€€É•ÑÕÉ¸Á…ÉÍ¥¹¡•­Á½¥¹Ñ=É‘¥¹…°€ø€À€˜˜(€€€€€€€€€€€€€€€€¡Á…ÉÍ¥¹¡•­Á½¥¹Ñ=É‘¥¹…°€”%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ñ¡•­Á½¥¹ÑMÑÉ¥‘”¤€ôô€Àì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ¥¹ĞI•Í½±Ù•%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ñ5…á½Õ¹Ğ¡¥¹Ğ¡Ñµ±1•¹Ñ ¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡¡Ñµ±1•¹Ñ €øô%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹ÑY•Éå1…É•½Õµ•¹Ñ5¥¹1•¹Ñ ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸€Àì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡¡Ñµ±1•¹Ñ €øô%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ñ1…É•½Õµ•¹Ñ5¥¹1•¹Ñ ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ñ1…É•½Õµ•¹Ñ5…á½Õ¹Ğì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡¡Ñµ±1•¹Ñ €øô%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ñ5•‘¥Õµ½Õµ•¹Ñ5¥¹1•¹Ñ ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ñ5•‘¥Õµ½Õµ•¹Ñ5…á½Õ¹Ğì(€€€€€€€€€€€ô((€€€€€€€€€€€É•ÑÕÉ¸%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹ÑMµ…±±½Õµ•¹Ñ5…á½Õ¹Ğì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ‰½½°M¡½Õ±‘IÕ¹MÑÉ•…µ¥¹A…ÉÍ•AÉ•Á…ÍÌ¡‰½½°•¹…‰±•°¥¹Ğ¡Ñµ±1•¹Ñ ¤(€€€€€€€ì(€€€€€€€€€€€€¼¼Q¡”ÍÑÉ•…µ¥¹œÁÉ•Á…ÉÍ”¥Ì„ÁÉ½É•ÍÍ¥Ù”¡¥¹ĞÁ…ÍÌ°¹½ĞÑ¡”Í½ÕÉ”½˜ÑÉÕÑ ¸(€€€€€€€€€€€€¼¼	½Õ¹¥ĞÑ¼µ¥µÍ¥é•‘½Õµ•¹ÑÌÍ¼¥Ğ…¹¹½ĞÍÑ…±°™¥ÉÍĞÁ…¥¹Ğ½¸Ù•Éä±…É”Á…•Ì¸(€€€€€€€€€€€É•ÑÕÉ¸•¹…‰±•€˜˜(€€€€€€€€€€€€€€€¡Ñµ±1•¹Ñ €øôMÑÉ•…µ¥¹AÉ•Á…ÉÍ•5¥¹!Ñµ±1•¹Ñ €˜˜(€€€€€€€€€€€€€€€¡Ñµ±1•¹Ñ €ğôMÑÉ•…µ¥¹AÉ•Á…ÉÍ•5…á!Ñµ±1•¹Ñ ì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ¥¹ĞI•Í½±Ù•%¹Ñ•É±•…Ù•‘Q½­•¹	…Ñ¡M¥é”¡‰½½°•¹…‰±•°¥¹Ğ¡Ñµ±1•¹Ñ ¤(€€€€€€€ì(€€€€€€€€€€€¥˜€ …•¹…‰±•ñğ¡Ñµ±1•¹Ñ €ğ%¹Ñ•É±•…Ù•‘AÉ¥µ…ÉåA…ÉÍ•5¥¹!Ñµ±1•¹Ñ ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸€Àì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡¡Ñµ±1•¹Ñ €øô€ÔÈĞÈàà¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸€ÔÄÈì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡¡Ñµ±1•¹Ñ €øô€ÄÌÄÀÜÈ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸€ÈÔØì(€€€€€€€€€€€ô((€€€€€€€€€€€É•ÑÕÉ¸€ÄÈàì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”Ù½¥ÑÑ…¡A…ÉÍ•½Õµ•¹Ñ¡•­Á½¥¹Ñ…±±‰…¬ (€€€€€€€€€€€!Ñµ±A…ÉÍ•É=ÁÑ¥½¹Ì½ÁÑ¥½¹Ì°(€€€€€€€€€€€A…ÉÍ•¡•­Á½¥¹ÑMÑ…Ñ”Á…ÉÍ•¡•­Á½¥¹ÑMÑ…Ñ”¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡½ÁÑ¥½¹Ì€ôô¹Õ±°ñğÁ…ÉÍ•¡•­Á½¥¹ÑMÑ…Ñ”€ôô¹Õ±°¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ì(€€€€€€€€€€€ô((€€€€€€€€€€€½ÁÑ¥½¹Ì¹A…ÉÍ•½Õµ•¹Ñ¡•­Á½¥¹Ñ…±±‰…¬€ô€¡‘½Õµ•¹Ğ°¡•­Á½¥¹Ğ¤€ôø(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€¥˜€¡¡•­Á½¥¹Ğ€„ô¹Õ±°€˜˜¡•­Á½¥¹Ğ¹A¡…Í”€ôô!Ñµ±A…ÉÍ•	Õ¥±‘A¡…Í”¹A…ÉÍ¥¹œ¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€Á…ÉÍ•¡•­Á½¥¹ÑMÑ…Ñ”¹A…ÉÍ¥¹½Õµ•¹Ñ¡•­Á½¥¹Ñ½Õ¹Ğ¬¬ì(€€€€€€€€€€€€€€€€€€€Á…ÉÍ•¡•­Á½¥¹ÑMÑ…Ñ”¹A…ÉÍ¥¹¡•­Á½¥¹Ñ=É‘¥¹…°¬¬ì(€€€€€€€€€€€€€€€€€€€Ù…ÈÉ•Á…¥¹Ñ½Õ¹Ğ€ôÁ…ÉÍ•¡•­Á½¥¹ÑMÑ…Ñ”¹%¹É•µ•¹Ñ…±I•Á…¥¹Ñ½Õ¹Ğì(€€€€€€€€€€€€€€€€€€€QÉåµ¥Ñ%¹É•µ•¹Ñ…±A…ÉÍ•I•Á…¥¹Ğ (€€€€€€€€€€€€€€€€€€€€€€€‘½Õµ•¹Ğ°(€€€€€€€€€€€€€€€€€€€€€€€¡•­Á½¥¹Ğ°(€€€€€€€€€€€€€€€€€€€€€€€Á…ÉÍ•¡•­Á½¥¹ÑMÑ…Ñ”¹A…ÉÍ¥¹¡•­Á½¥¹Ñ=É‘¥¹…°°(€€€€€€€€€€€€€€€€€€€€€€€Á…ÉÍ•¡•­Á½¥¹ÑMÑ…Ñ”¹I•¹‘•É•¹•É…Ñ¥½¸°(€€€€€€€€€€€€€€€€€€€€€€€Á…ÉÍ•¡•­Á½¥¹ÑMÑ…Ñ”¹%¹É•µ•¹Ñ…±I•Á…¥¹Ñ5…á½Õ¹Ğ°(€€€€€€€€€€€€€€€€€€€€€€€É•˜É•Á…¥¹Ñ½Õ¹Ğ¤ì(€€€€€€€€€€€€€€€€€€€Á…ÉÍ•¡•­Á½¥¹ÑMÑ…Ñ”¹%¹É•µ•¹Ñ…±I•Á…¥¹Ñ½Õ¹Ğ€ôÉ•Á…¥¹Ñ½Õ¹Ğì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ôì(€€€€€€€ô((€€€€€€€ÁÉ¥Ù…Ñ”ÍÑ…Ñ¥Œ‰½½°M¡½Õ±‘µ¥ÑMÑÉ•…µ¥¹AÉ•Á…ÉÍ•I•Á…¥¹Ğ¡¥¹Ğ¡•­Á½¥¹Ñ=É‘¥¹…°°¥¹ĞÉ•Á…¥¹Ñ½Õ¹Ğ¤(€€€€€€€ì(€€€€€€€€€€€¥˜€¡É•Á…¥¹Ñ½Õ¹Ğ€øôMÑÉ•…µ¥¹AÉ•Á…ÉÍ•I•Á…¥¹Ñ5…á½Õ¹Ğ¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€€€€€€€ô((€€€€€€€€€€€¥˜€¡É•Á…¥¹Ñ½Õ¹Ğ€ôô€À¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€€€€€ô((€€€€€€€€€€€É•ÑÕÉ¸¡•­Á½¥¹Ñ=É‘¥¹…°€ø€À€˜˜(€€€€€€€€€€€€€€€€¡¡•­Á½¥¹Ñ=É‘¥¹…°€”MÑÉ•…µ¥¹AÉ•Á…ÉÍ•I•Á…¥¹Ñ¡•­Á½¥¹ÑMÑÉ¥‘”¤€ôô€Àì(€€€€€€€ô((€€€€€€€€€€€€€€€€¼¼¼½¹Ù•¹¥•¹”İÉ…ÁÁ•ÈÑ¼­¥¬½™˜„É•¹‘•Èİ¥Ñ¡½ÕĞ…İ…¥Ñ¥¹œÑ¡”É•ÍÕ±Ñ¥¹œ•±•µ•¹Ğ¸(€€€€€€€€¼¼¼UÍ•™Õ°™½È¹½¸µÙ¥ÍÕ…°¹…Ù¥…Ñ¥½¹Ìİ¡•¸½¹±ä=4½ÍÑ…Ñ”¥Ì¹••‘•¸(€€€€€€€€¼¼¼€ğ½ÍÕµµ…Éäø(€€€€€€€ÁÕ‰±¥ŒÙ½¥1½…‘!Ñµ° (€€€€€€€€€€€ÍÑÉ¥¹œ¡Ñµ°°(€€€€€€€€€€€UÉ¤‰…Í•UÉ¤°(€€€€€€€€€€€Õ¹ŒñUÉ¤°Q…Í¬ñÍÑÉ¥¹œøø™•Ñ¡áÑ•É¹…±ÍÍÍå¹Œ°(€€€€€€€€€€€Õ¹ŒñUÉ¤°Q…Í¬ñMÑÉ•…´øø¥µ…•1½…‘•È°(€€€€€€€€€€€Ñ¥½¸ñUÉ¤ø½¹9…Ù¥…Ñ”°(€€€€€€€€€€€‘½Õ‰±”üÙ¥•İÁ½ÉÑ]¥‘Ñ €ô¹Õ±°°(€€€€€€€€€€€Ñ¥½¸ñ½‰©•Ğøü½¹¥á•‘	…­É½Õ¹€ô¹Õ±°¤(€€€€€€€ì(€€€€€€€€€€€ÑÉäìÙ…È|€ôI•¹‘•ÉÍå¹Œ¡¡Ñµ°°‰…Í•UÉ¤°™•Ñ¡áÑ•É¹…±ÍÍÍå¹Œ°¥µ…•1½…‘•È°½¹9…Ù¥…Ñ”°Ù¥•İÁ½ÉÑ]¥‘Ñ °¹Õ±°°½¹¥á•‘	…­É½Õ¹¤ìô(€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤ì¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mÕÍÑ½µ!Ñµ±¹¥¹•t¥É”µ…¹µ™½É•ĞÉ•¹‘•È±…Õ¹ ™…¥±•èí•à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ìô(€€€€€€€ô((€€€€€€€€¼¼¼€ñÍÕµµ…ÉäùáÁ½Í”Ñ¡”ÕÉÉ•¹Ğ…Ñ¥Ù”1¥Ñ”=4€¡±…ÍĞÁ…ÉÍ•¤¸ğ½ÍÕµµ…Éäø(€€€€€€€ÁÕ‰±¥Œ9½‘”•ÑÑ¥Ù•½´ ¤(€€€€€€€ì(€€€€€€€€€€€±½¬€¡}É•¹‘•ÉMÑ…Ñ•1½¬¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸}…Ñ¥Ù•½´ì(€€€€€€€€€€€ô(€€€€€€€ô((€€€€€€€ÁÕ‰±¥Œ	É½İÍ•ÉI•¹‘•ÉM¹…ÁÍ¡½Ğ•ÑI•¹‘•ÉM¹…ÁÍ¡½Ğ ¤(€€€€€€€ì(€€€€€€€€€€€±½¬€¡}É•¹‘•ÉMÑ…Ñ•1½¬¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Ù…ÈÉ½½Ğ€ô€¡}…Ñ¥Ù•½´…Ì±•µ•¹Ğ¤€üü€¡}…Ñ¥Ù•½´…Ì½Õµ•¹Ğ¤ü¹½Õµ•¹Ñ±•µ•¹Ğì(€€€€€€€€€€€€€€€É•ÑÕÉ¸¹•Ü	É½İÍ•ÉI•¹‘•ÉM¹…ÁÍ¡½Ğ (€€€€€€€€€€€€€€€€€€€É½½Ğ°(€€€€€€€€€€€€€€€€€€€1…ÍÑ½µÁÕÑ•‘MÑå±•Ì°(€€€€€€€€€€€€€€€€€€€}É•¹‘•ÉM¹…ÁÍ¡½ÑY•ÉÍ¥½¸°(€€€€€€€€€€€€€€€€€€€}¡…ÍMÑ…‰±•MÑå±•Ì€˜˜€…}…İ…¥Ñ¥¹A½ÍÑMÉ¥ÁÑM¹…ÁÍ¡½Ğ¤ì(€€€€€€€€€€€ô(€€€€€€€ô((€€€€€€€€¼¼¼€ñÍÕµµ…Éäù•ĞÑ¡”É…Ü!Q50Í½ÕÉ”Ñ¡…Ğİ…Ì±…ÍĞÉ•¹‘•É•¸ğ½ÍÕµµ…Éäø(€€€€€€€ÁÕ‰±¥ŒÍÑÉ¥¹œ•ÑI…İ!Ñµ° ¤(€€€€€€€ì(€€€€€€€€€€€É•ÑÕÉ¸}±…ÍÑI…İ!Ñµ°ì(€€€€€€€ô((€€€€€€€€¼¼€´´´´´´´´´´´´´´´´½½­¥”¡•±Á•ÉÌ™½È¡½ÍĞA%Ì€´´´´´´´´´´´´´´´´(€€€€€€€ÁÕ‰±¥Œ%I•…‘=¹±å¥Ñ¥½¹…ÉäñÍÑÉ¥¹œ±ÍÑÉ¥¹œø•Ñ½½­¥•M¹…ÁÍ¡½Ğ¡UÉ¤Í½Á”¤(€€€€€€€ì(€€€€€€€€€€€Ù…È‘¥Ğ€ô¹•Ü¥Ñ¥½¹…ÉäñÍÑÉ¥¹œ±ÍÑÉ¥¹œø¡MÑÉ¥¹½µÁ…É•È¹=É‘¥¹…°¤ì(€€€€€€€€€€€ÑÉä(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Ù…ÈÔ€ôÍ½Á”€üü}…Ñ¥Ù•	…Í•UÉ¤ì¥˜€¡Ô€ôô¹Õ±°¤É•ÑÕÉ¸‘¥Ğì(€€€€€€€€€€€€€€€™½É•… €¡Ù…È•¹ÑÉä¥¸½½­¥•)…È¹M¹…ÁÍ¡½Ğ¡Ô°}…Ñ¥Ù•	…Í•UÉ¤€üüÔ¤¤(€€€€€€€€€€€€€€€ì(€€€€€€€€€€€€€€€€€€€¥˜€ …‘¥Ğ¹½¹Ñ…¥¹Í-•ä¡•¹ÑÉä¹-•ä¤¤‘¥Ñm•¹ÑÉä¹-•åt€ô•¹ÑÉä¹Y…±Õ”€üüÍÑÉ¥¹œ¹µÁÑäì(€€€€€€€€€€€€€€€ô(€€€€€€€€€€€ô(€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤ì¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mÕÍÑ½µ!Ñµ±¹¥¹•t½½­¥”Í¹…ÁÍ¡½Ğ™…¥±•èí•à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ìô(€€€€€€€€€€€É•ÑÕÉ¸‘¥Ğì(€€€€€€€ô((€€€€€€€ÁÕ‰±¥ŒÙ½¥M•Ñ½½­¥”¡UÉ¤Í½Á”°ÍÑÉ¥¹œ¹…µ”°ÍÑÉ¥¹œÙ…±Õ”°ÍÑÉ¥¹œÁ…Ñ €ô€ˆ¼ˆ¤(€€€€€€€ì(€€€€€€€€€€€ÑÉä(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Ù…ÈÔ€ôÍ½Á”€üü}…Ñ¥Ù•	…Í•UÉ¤ì¥˜€¡Ô€ôô¹Õ±°¤É•ÑÕÉ¸ì(€€€€€€€€€€€€€€€½½­¥•)…È¹M•Ñ½Õµ•¹Ñ½½­¥” (€€€€€€€€€€€€€€€€€€€Ô°(€€€€€€€€€€€€€€€€€€€€‰í¹…µ”€üüÍÑÉ¥¹œ¹µÁÑåôõíÙ…±Õ”€üüÍÑÉ¥¹œ¹µÁÑåôìA…Ñ õíÁ…Ñ €üü€ˆ¼‰ôˆ°(€€€€€€€€€€€€€€€€€€€}…Ñ¥Ù•	…Í•UÉ¤€üüÔ°(€€€€€€€€€€€€€€€€€€€	É½İÍ•ÉM•ÑÑ¥¹Ì¹%¹ÍÑ…¹”¹	±½­Q¡¥É‘A…ÉÑå½½­¥•Ì¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤ì¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mÕÍÑ½µ!Ñµ±¹¥¹•tM•Ñ½½­¥”™…¥±•èí•à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ìô(€€€€€€€ô((€€€€€€€ÁÕ‰±¥ŒÙ½¥•±•Ñ•½½­¥”¡UÉ¤Í½Á”°ÍÑÉ¥¹œ¹…µ”¤(€€€€€€€ì(€€€€€€€€€€€ÑÉä(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€Ù…ÈÔ€ôÍ½Á”€üü}…Ñ¥Ù•	…Í•UÉ¤ì¥˜€¡Ô€ôô¹Õ±°¤É•ÑÕÉ¸ì(€€€€€€€€€€€€€€€½½­¥•)…È¹•±•Ñ•½Õµ•¹Ñ½½­¥”¡Ô°¹…µ”°}…Ñ¥Ù•	…Í•UÉ¤€üüÔ¤ì(€€€€€€€€€€€ô(€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤ì¹¥¹•1½½µÁ…Ğ¹]…É¸ ‰mÕÍÑ½µ!Ñµ±¹¥¹•t•±•Ñ•½½­¥”™…¥±•èí•à¹5•ÍÍ…•ôˆ°1½…Ñ•½Éä¹I•¹‘•É¥¹œ¤ìô(€€€€€€€ô(((((((((€€€€€€€ÁÕ‰±¥ŒQ…Í¬ñÍÑÉ¥¹œø5…­•%µ…•Íå¹Œ ¤(€€€€€€€ì(€€€€€€€€€€€É•ÑÕÉ¸Q…Í¬¹É½µI•ÍÕ±ĞñÍÑÉ¥¹œø¡¹Õ±°¤ì(€€€€€€€ô(((€€€€€€€ÁÕ‰±¥Œ…Íå¹ŒQ…Í¬ñ½‰©•Ğøá•ÕÑ•MÉ¥ÁÑÍå¹Œ¡ÍÑÉ¥¹œÍÉ¥ÁĞ¤(€€€€€€€ì(€€€€€€€€€€€…İ…¥ĞQ…Í¬¹½µÁ±•Ñ•‘Q…Í¬ì(€€€€€€€€€€€¥˜€¡}…Ñ¥Ù•)Ì€ôô¹Õ±°¤€(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹ÉÉ½È ‰mÕÍÑ½µ!Ñµ±¹¥¹•tá•ÕÑ•MÉ¥ÁÑÍå¹Œè}…Ñ¥Ù•)Ì¥Ì9U10ˆ°1½…Ñ•½Éä¹)…Ù…MÉ¥ÁĞ¤ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸€‰Õ¹‘•™¥¹•ˆì(€€€€€€€€€€€ô(€€€€€€€€€€€¹¥¹•1½½µÁ…Ğ¹•‰Õœ ‰mÕÍÑ½µ!Ñµ±¹¥¹•tá•ÕÑ¥¹œÍÉ¥ÁĞ½¸…Ñ¥Ù”•¹¥¹”èíÍÉ¥ÁÑôˆ°1½…Ñ•½Éä¹)…Ù…MÉ¥ÁĞ¤ì(€€€€€€€€€€€ÑÉä(€€€€€€€€€€€ì(€€€€€€€€€€€€€€Ù…ÈÉ•Ì€ô}…Ñ¥Ù•)Ì¹Ù…±Õ…Ñ”¡ÍÉ¥ÁĞ¤ì(€€€€€€€€€€€€€€É•ÑÕÉ¸É•Ìì(€€€€€€€€€€€ô(€€€€€€€€€€€…Ñ €¡á•ÁÑ¥½¸•à¤(€€€€€€€€€€€ì(€€€€€€€€€€€€€€€É•ÑÕÉ¸€‰ÉÉ½Èèí•à¹5•ÍÍ…•ôˆì(€€€€€€€€€€€ô(€€€€€€€ô(€€€ô)ô(((((((((((
