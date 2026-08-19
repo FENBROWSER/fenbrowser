@@ -8,7 +8,6 @@
     <Nullable>annotations</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <NoWarn>$(NoWarn);NU1605</NoWarn>
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <Version>0.1.0-alpha</Version>
     <AssemblyVersion>0.1.0.0</AssemblyVersion>
@@ -19,7 +18,6 @@
     <Deterministic>true</Deterministic>
     <DebugType>portable</DebugType>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
-    <BuildInParallel>false</BuildInParallel>
   </PropertyGroup>
 
   <ItemGroup>
@@ -52,20 +50,10 @@
     <PackageReference Include="SkiaSharp.HarfBuzz" Version="4.148.0" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="4.148.0" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.148.0" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="2.88.7" ExcludeAssets="all" PrivateAssets="all" />
     <PackageReference Include="SkiaSharp.NativeAssets.macOS" Version="4.148.0" />
     <PackageReference Include="Topten.RichTextKit" Version="0.4.167" />
   </ItemGroup>
-
-  <Target Name="CleanupLogs" BeforeTargets="Build">
-    <Exec Command="if exist &quot;$(MSBuildProjectDirectory)\..\cleanup_logs.bat&quot; call &quot;$(MSBuildProjectDirectory)\..\cleanup_logs.bat&quot;" IgnoreExitCode="true" />
-  </Target>
-
-  <Target Name="BumpMainThreadStack" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT'">
-    <PropertyGroup>
-      <ExePath>$(TargetDir)$(AssemblyName).exe</ExePath>
-    </PropertyGroup>
-    <Exec Command="for /f &quot;tokens=*&quot; %25%25i in ('&quot;%25ProgramFiles(x86)%25\Microsoft Visual Studio\Installer\vswhere.exe&quot; -latest -find VC\Tools\MSVC\*\bin\Hostx64\x64\editbin.exe ^| findstr /v /i preview') do (&quot;%25%25i&quot; /STACK:16777216 &quot;$(ExePath)&quot; &gt;nul 2&gt;&amp;1 &amp;&amp; goto :done) %26 :done" IgnoreExitCode="true" Condition="Exists('$(ExePath)')" />
-  </Target>
 
   <Target Name="UseCurrentSkiaNativeAssetForLinuxPublish" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' == 'linux-x64'">
     <Copy

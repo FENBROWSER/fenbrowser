@@ -75,10 +75,6 @@ namespace FenBrowser.Host
             return StartupMode.Browser;
         }
 
-        // Sentinel so the relaunch shim does not recurse if a hosting environment
-        // already gave us a fat-enough stack.
-        private const string LargeStackEnvVar = "FENBROWSER_LARGE_STACK_HOSTED";
-        private const int LargeStackBytes = 16 * 1024 * 1024;
         internal const float BrokeredFrameScrollOverdrawFraction = 0.5f;
         internal const float BrokeredFrameScrollOverdrawMinPixels = 128f;
         internal const float BrokeredFrameScrollOverdrawMaxPixels = 512f;
@@ -103,53 +99,6 @@ namespace FenBrowser.Host
 
         public static async Task Main(string[] args)
         {
-            // The .NET main thread inherits its stack from the PE header
-            // SizeOfStackReserve, which is 1 MB by default on x64 Windows.
-            // Modern SPA JS frameworks (React/Vue/Angular) recurse through
-            // paint/layout/event chains on this thread and blow the 1 MB cap,
-            // producing silent-exit StackOverflowExceptions that don't even
-            // raise a managed handler. To eliminate that whole class of failure
-            // regardless of launcher (VS F5, `dotnet run`, direct .exe, editbin
-            // patched or not), re-enter Main on a worker thread with an explicit
-            // 16 MB stack. Keep the original main thread blocked on the worker
-            // so the process lifetime, console handlers, and CTRL-C semantics
-            // continue to be owned by it.
-            string pidEnvVar = LargeStackEnvVar + "_" + System.Diagnostics.Process.GetCurrentProcess().Id;
-            if (Environment.GetEnvironmentVariable(pidEnvVar) != "1")
-            {
-                Environment.SetEnvironmentVariable(pidEnvVar, "1");
-                int exitCode = 0;
-                Exception capturedException = null;
-                var worker = new Thread(
-                    () =>
-                    {
-                        try
-                        {
-                            MainCore(args).GetAwaiter().GetResult();
-                        }
-                        catch (Exception ex)
-                        {
-                            capturedException = ex;
-                            exitCode = 1;
-                        }
-                    },
-                    LargeStackBytes)
-                {
-                    Name = "FenBrowser-Main",
-                    IsBackground = false
-                };
-                worker.Start();
-                worker.Join();
-                if (capturedException != null)
-                {
-                    // Surface the underlying error the same way an unhandled
-                    // exception on the original main thread would have.
-                    throw capturedException;
-                }
-                Environment.ExitCode = exitCode;
-                return;
-            }
-
             await MainCore(args).ConfigureAwait(false);
         }
 
@@ -404,16 +353,10 @@ namespace FenBrowser.Host
 
             if (string.IsNullOrWhiteSpace(pipeName) || string.IsNullOrWhiteSpace(authToken))
             {
-                // Compatibility fallback if IPC is not configured.
-                while (true)
-                {
-                    if (!IsParentAlive(parentPid))
-                    {
-                        break;
-                    }
-                    await Task.Delay(500).ConfigureAwait(false);
-                }
-                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, $"[RendererChild] Exiting for tab={tabId}");
+                EngineLog.Write(
+                    LogSubsystem.ProcessIsolation,
+                    LogSeverity.Warn,
+                    $"[RendererChild] Missing authenticated IPC startup data for tab={tabId}; exiting.");
                 return;
             }
 

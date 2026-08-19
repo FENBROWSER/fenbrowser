@@ -520,17 +520,7 @@ public class BrowserIntegration : IDisposable
         
         _browser.ConsoleMessage += msg => ConsoleMessage?.Invoke(msg);
         
-        // Start Engine Thread.
-        // Use a 16 MB stack instead of the .NET default (~1 MB on Windows). Browser
-        // engines routinely run page JS whose execution chains through host callbacks
-        // (event dispatch → DOM mutation → style/layout invalidation → user JS again),
-        // and large React/Angular bundles can produce native-recursion depths well
-        // past 1 MB before the engine's own heap-frame stack ever notices. V8 uses
-        // 1 MB but JS recursion stays on its own internal stack; our cross-cutting
-        // C# helpers cannot. 16 MB matches what Chromium reserves for its renderer
-        // threads on Windows.
-        const int EngineThreadStackBytes = 16 * 1024 * 1024;
-        _engineThread = new Thread(EngineLoop, EngineThreadStackBytes) { IsBackground = true, Name = "FenEngine-Render" };
+        _engineThread = new Thread(EngineLoop) { IsBackground = true, Name = "FenEngine-Render" };
         _engineThread.Start();
         
         // Timer to poll for missed updates (conservative 500ms - event-driven is primary)
@@ -1956,12 +1946,12 @@ public class BrowserIntegration : IDisposable
                     {
                         canvas.Save();
                         canvas.Translate(0, -scrollDelta);
-                        canvas.DrawBitmap(_remoteFrameBitmap, 0, 0);
+                        canvas.DrawBitmap(_remoteFrameBitmap, 0, 0, SKSamplingOptions.Default);
                         canvas.Restore();
                     }
                     else
                     {
-                        canvas.DrawBitmap(_remoteFrameBitmap, 0, 0);
+                        canvas.DrawBitmap(_remoteFrameBitmap, 0, 0, SKSamplingOptions.Default);
                     }
 
                     return;
@@ -2170,7 +2160,7 @@ public class BrowserIntegration : IDisposable
                 // The compositor applies the identical transform in its frame
                 // lease (see the scrollDelta / Translate block above).
                 float scrollDelta = _scrollY - previousCommittedScrollY;
-                canvas.DrawImage(reusableSeedImage, 0, -scrollDelta);
+                canvas.DrawImage(reusableSeedImage, 0, -scrollDelta, SKSamplingOptions.Default);
             }
 
             // Adjust for scroll

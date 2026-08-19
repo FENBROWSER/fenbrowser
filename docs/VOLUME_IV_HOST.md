@@ -1412,6 +1412,30 @@ Verification:
 Verification:
 
 - `HostExecutablePathResolverTests`, `RendererChildEnvironmentTests`, and `WindowsAppContainerEnvironmentTests` pass `3/3`.
+
+### 6.63 Deterministic Host Build and Startup (2026-08-19)
+
+- Host and test projects no longer disable parallel MSBuild execution, and the
+  Host no longer suppresses package downgrade diagnostics globally.
+- Removed the platform-specific log cleanup and `editbin` post-build commands.
+  A build now produces the same executable without silently depending on local
+  batch files or Visual Studio installation paths.
+- Startup runs once on the runtime-owned main thread. Engine and compositor
+  workers use normal runtime stack policy instead of reserving 16 MiB per thread.
+- Renderer child mode exits immediately when its authenticated pipe name or token
+  is absent; it no longer remains alive in a compatibility idle loop.
+- Updated Host drawing calls to the current explicit Skia sampling API.
+- Prevented `Svg.Skia`'s legacy SkiaSharp 2.88 Linux runtime asset from flowing
+  into Host and test outputs. Linux now loads the native 4.148 asset matching the
+  managed SkiaSharp assembly instead of failing during static initialization.
+
+Verification:
+
+- Release restore/build runs with package downgrade diagnostics enabled and no
+  shell-command syntax failures or deprecated Skia drawing warnings. Project files
+  no longer force serialization; constrained builders may still cap MSBuild nodes.
+- Brokered-frame and retained-frame Skia tests pass (`4/4`) with the resolved
+  native asset.
 - The focused process slice passes `43`, fails `0`, and skips the one blocked real-process acceptance test; all four new tests appear in `--list-tests`.
 - `FenBrowser.Host` Release builds with `496` warnings and `0` errors.
 

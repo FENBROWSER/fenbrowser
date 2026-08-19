@@ -121,6 +121,7 @@
     <PackageReference Include="HarfBuzzSharp" Version="14.2.0" />
     <PackageReference Include="SkiaSharp" Version="4.148.0" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.148.0" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" Version="2.88.7" ExcludeAssets="all" PrivateAssets="all" />
     <PackageReference Include="SkiaSharp.HarfBuzz" Version="4.148.0" />
     <PackageReference Include="Svg.Skia" Version="5.1.1" />
   </ItemGroup>

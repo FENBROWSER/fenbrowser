@@ -59,11 +59,7 @@ public sealed class CompositorThread : IDisposable
             (long)Math.Ceiling(_targetFrameInterval.TotalSeconds * Stopwatch.Frequency));
         _compositorWorkSubmitter = compositorWorkSubmitter ?? new GpuCompositorWorkSubmitter();
 
-        // Temporary resilience budget until the remaining recursive paint/layout walks
-        // are converted to explicit work stacks. Do not raise this further to solve
-        // site-specific failures; excessive logical depth belongs in engine limits.
-        const int CompositorStackBytes = 16 * 1024 * 1024;
-        _thread = new Thread(ThreadMain, CompositorStackBytes)
+        _thread = new Thread(ThreadMain)
         {
             IsBackground = true,
             Name = "FenHost-Compositor"

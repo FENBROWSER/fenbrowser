@@ -32,6 +32,15 @@
           "SkiaSharp": "4.148.0"
         }
       },
+      "SkiaSharp.NativeAssets.Linux": {
+        "type": "Direct",
+        "requested": "[2.88.7, )",
+        "resolved": "2.88.7",
+        "contentHash": "i9VitS7/5D8Te3B1Gu7F6kakW9PYVnI3YC6MoR6NidreD9hDl1EIOQEBaa0eBsOsWNX5Bz92OVf6+7KbDrJvyg==",
+        "dependencies": {
+          "SkiaSharp": "2.88.7"
+        }
+      },
       "SkiaSharp.NativeAssets.Linux.NoDependencies": {
         "type": "Direct",
         "requested": "[4.148.0, )",
