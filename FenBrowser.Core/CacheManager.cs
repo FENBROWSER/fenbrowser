@@ -143,17 +143,14 @@ namespace FenBrowser.Core
 
             var bytesToFree = current - targetBytes;
             var freedTotal = 0L;
-            var partitions = _tabPartitions.Values
-                .OrderBy(p => p.LastAccessTime)
-                .ToList();
-
-            foreach (var partition in partitions)
+            var partitions = new PriorityQueue<TabCachePartition, long>();
+            foreach (var partition in _tabPartitions.Values)
             {
-                if (freedTotal >= bytesToFree)
-                {
-                    break;
-                }
+                partitions.Enqueue(partition, partition.LastAccessTime.Ticks);
+            }
 
+            while (freedTotal < bytesToFree && partitions.TryDequeue(out var partition, out _))
+            {
                 var freed = partition.EvictOldest(bytesToFree - freedTotal);
                 freedTotal = SaturatingAdd(freedTotal, freed);
             }
@@ -489,17 +486,14 @@ namespace FenBrowser.Core
             lock (_gate)
             {
                 var freed = 0L;
-                var oldest = _textCache
-                    .OrderBy(x => x.Value.LastAccessUtcTicks)
-                    .ToList();
-
-                foreach (var item in oldest)
+                var oldest = new PriorityQueue<KeyValuePair<string, TextCacheEntry>, long>();
+                foreach (var item in _textCache)
                 {
-                    if (freed >= targetBytes)
-                    {
-                        break;
-                    }
+                    oldest.Enqueue(item, item.Value.LastAccessUtcTicks);
+                }
 
+                while (freed < targetBytes && oldest.TryDequeue(out var item, out _))
+                {
                     if (_textCache.TryRemove(item.Key, out var entry))
                     {
                         freed = SaturatingAddPositive(freed, entry.ByteSize);

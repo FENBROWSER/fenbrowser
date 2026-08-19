@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 
@@ -22,14 +23,24 @@ namespace FenBrowser.Core.Cache
             public Shard(int capacity)
             {
                 Capacity = capacity;
-                Map = new Dictionary<CacheKey, LinkedListNode<KeyValuePair<CacheKey, T>>>(capacity);
-                Lru = new LinkedList<KeyValuePair<CacheKey, T>>();
+                Map = new ConcurrentDictionary<CacheKey, CacheEntry>();
             }
 
             public int Capacity { get; }
-            public object SyncRoot { get; } = new();
-            public Dictionary<CacheKey, LinkedListNode<KeyValuePair<CacheKey, T>>> Map { get; }
-            public LinkedList<KeyValuePair<CacheKey, T>> Lru { get; }
+            public object WriteLock { get; } = new();
+            public ConcurrentDictionary<CacheKey, CacheEntry> Map { get; }
+        }
+
+        private sealed class CacheEntry
+        {
+            public CacheEntry(T value, long accessSequence)
+            {
+                Value = value;
+                LastAccessSequence = accessSequence;
+            }
+
+            public T Value;
+            public long LastAccessSequence;
         }
 
         private readonly int _capacity;
@@ -37,12 +48,13 @@ namespace FenBrowser.Core.Cache
         private long _hitCount;
         private long _missCount;
         private long _evictionCount;
+        private long _accessSequence;
 
         public ShardedCache(int capacity)
         {
             _capacity = capacity > 0 ? capacity : 128;
 
-            var shardCount = Math.Min(DefaultShardCount, _capacity);
+            var shardCount = Math.Min(DefaultShardCount, Math.Max(1, _capacity / 16));
             _shards = new Shard[shardCount];
 
             var baseCapacity = _capacity / shardCount;
@@ -69,37 +81,39 @@ namespace FenBrowser.Core.Cache
             var key = new CacheKey(partition, url);
             var shard = GetShard(key);
 
-            lock (shard.SyncRoot)
+            var accessSequence = Interlocked.Increment(ref _accessSequence);
+            lock (shard.WriteLock)
             {
-                if (shard.Map.TryGetValue(key, out var existingNode))
+                if (shard.Map.TryGetValue(key, out var existing))
                 {
-                    // Updating an existing entry must not temporarily count as a
-                    // second entry or trigger an unnecessary eviction.
-                    existingNode.Value = new KeyValuePair<CacheKey, T>(key, value);
-                    shard.Lru.Remove(existingNode);
-                    shard.Lru.AddFirst(existingNode);
+                    existing.Value = value;
+                    Volatile.Write(ref existing.LastAccessSequence, accessSequence);
                     return;
                 }
 
-                var node = new LinkedListNode<KeyValuePair<CacheKey, T>>(
-                    new KeyValuePair<CacheKey, T>(key, value));
-                shard.Lru.AddFirst(node);
-                shard.Map.Add(key, node);
+                shard.Map[key] = new CacheEntry(value, accessSequence);
 
                 while (shard.Map.Count > shard.Capacity)
                 {
-                    var last = shard.Lru.Last;
-                    if (last == null)
+                    CacheKey oldestKey = default;
+                    var oldestSequence = long.MaxValue;
+                    var found = false;
+                    foreach (var candidate in shard.Map)
                     {
-                        // Map/list divergence would indicate an internal cache bug.
-                        // Clear the shard rather than leave it permanently over limit.
-                        shard.Map.Clear();
-                        shard.Lru.Clear();
+                        var sequence = Volatile.Read(ref candidate.Value.LastAccessSequence);
+                        if (sequence < oldestSequence)
+                        {
+                            oldestSequence = sequence;
+                            oldestKey = candidate.Key;
+                            found = true;
+                        }
+                    }
+
+                    if (!found || !shard.Map.TryRemove(oldestKey, out _))
+                    {
                         break;
                     }
 
-                    shard.Map.Remove(last.Value.Key);
-                    shard.Lru.RemoveLast();
                     Interlocked.Increment(ref _evictionCount);
                 }
             }
@@ -110,16 +124,14 @@ namespace FenBrowser.Core.Cache
             var key = new CacheKey(partition, url);
             var shard = GetShard(key);
 
-            lock (shard.SyncRoot)
+            if (shard.Map.TryGetValue(key, out var entry))
             {
-                if (shard.Map.TryGetValue(key, out var node))
-                {
-                    shard.Lru.Remove(node);
-                    shard.Lru.AddFirst(node);
-                    Interlocked.Increment(ref _hitCount);
-                    value = node.Value.Value;
-                    return true;
-                }
+                Volatile.Write(
+                    ref entry.LastAccessSequence,
+                    Interlocked.Increment(ref _accessSequence));
+                Interlocked.Increment(ref _hitCount);
+                value = entry.Value;
+                return true;
             }
 
             Interlocked.Increment(ref _missCount);
@@ -131,10 +143,7 @@ namespace FenBrowser.Core.Cache
         {
             var key = new CacheKey(partition, url);
             var shard = GetShard(key);
-            lock (shard.SyncRoot)
-            {
-                return shard.Map.ContainsKey(key);
-            }
+            return shard.Map.ContainsKey(key);
         }
 
         public bool TryRemove(string partition, string url, out T value)
@@ -142,15 +151,10 @@ namespace FenBrowser.Core.Cache
             var key = new CacheKey(partition, url);
             var shard = GetShard(key);
 
-            lock (shard.SyncRoot)
+            if (shard.Map.TryRemove(key, out var entry))
             {
-                if (shard.Map.TryGetValue(key, out var node))
-                {
-                    shard.Map.Remove(key);
-                    shard.Lru.Remove(node);
-                    value = node.Value.Value;
-                    return true;
-                }
+                value = entry.Value;
+                return true;
             }
 
             value = default;
@@ -159,15 +163,9 @@ namespace FenBrowser.Core.Cache
 
         public void Clear()
         {
-            // Shards are independent; never hold more than one shard lock at a time.
-            // That keeps Clear from introducing a lock-order dependency with hot gets.
             foreach (var shard in _shards)
             {
-                lock (shard.SyncRoot)
-                {
-                    shard.Map.Clear();
-                    shard.Lru.Clear();
-                }
+                shard.Map.Clear();
             }
         }
 
@@ -178,10 +176,7 @@ namespace FenBrowser.Core.Cache
                 var count = 0;
                 foreach (var shard in _shards)
                 {
-                    lock (shard.SyncRoot)
-                    {
-                        count += shard.Map.Count;
-                    }
+                    count += shard.Map.Count;
                 }
 
                 return count;

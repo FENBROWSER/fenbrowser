@@ -47,12 +47,13 @@ namespace FenBrowser.Tests.Core
             using var resp = new HttpResponseMessage(HttpStatusCode.OK);
             resp.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { MaxAge = TimeSpan.FromMinutes(5) };
 
-            cache.StoreBytes(req, resp, body);
+            cache.StoreOwnedBytes(req, resp, body);
 
             using var req2 = new HttpRequestMessage(HttpMethod.Get, uri);
             var result = await cache.GetBufferAsync(null, req2);
 
-            Assert.Equal(body, result);
+            Assert.True(result.HasValue);
+            Assert.Equal(body, result.Value.ToArray());
         }
 
         // ------------------------------------------------------------------ no-store

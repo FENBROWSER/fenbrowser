@@ -47,7 +47,7 @@ namespace FenBrowser.Core.Compat
             return entry.BodyString;
         }
 
-        public async Task<byte[]> GetBufferAsync(HttpClient? client, HttpRequestMessage req)
+        public async Task<ReadOnlyMemory<byte>?> GetBufferAsync(HttpClient? client, HttpRequestMessage req)
         {
             var key = CacheKey(req);
             if (key == null || BypassesCache(req)) return null;
@@ -66,7 +66,7 @@ namespace FenBrowser.Core.Compat
             }
 
             entry.LastAccess = DateTimeOffset.UtcNow;
-            return CloneBytes(entry.BodyBytes);
+            return entry.BodyBytes;
         }
 
         public void StoreString(HttpRequestMessage req, HttpResponseMessage resp, string body)
@@ -80,15 +80,12 @@ namespace FenBrowser.Core.Compat
             Store(CacheKey(req), entry);
         }
 
-        public void StoreBytes(HttpRequestMessage req, HttpResponseMessage resp, byte[] body)
+        public void StoreOwnedBytes(HttpRequestMessage req, HttpResponseMessage resp, ReadOnlyMemory<byte> body)
         {
-            if (body == null || body.Length > MaxBodyBytes) return;
+            if (body.Length > MaxBodyBytes) return;
             var entry = TryBuildEntry(req, resp);
             if (entry == null) return;
-
-            // The cache owns its representation. Retaining the caller's mutable array
-            // let later caller writes silently corrupt every future cache hit.
-            entry.BodyBytes = (byte[])body.Clone();
+            entry.BodyBytes = body;
             Store(CacheKey(req), entry);
         }
 
@@ -220,7 +217,7 @@ namespace FenBrowser.Core.Compat
             }
         }
 
-        private async Task<byte[]?> RevalidateBufferAsync(HttpClient client, HttpRequestMessage original, CachedEntry entry)
+        private async Task<ReadOnlyMemory<byte>?> RevalidateBufferAsync(HttpClient client, HttpRequestMessage original, CachedEntry entry)
         {
             try
             {
@@ -230,7 +227,7 @@ namespace FenBrowser.Core.Compat
                 if (resp.StatusCode == System.Net.HttpStatusCode.NotModified)
                 {
                     RefreshEntry(entry, resp);
-                    return CloneBytes(entry.BodyBytes);
+                    return entry.BodyBytes;
                 }
 
                 if (IsSupportedFullResponseStatus((int)resp.StatusCode))
@@ -248,7 +245,7 @@ namespace FenBrowser.Core.Compat
                         return null;
                     }
 
-                    StoreBytes(original, resp, body);
+                    StoreOwnedBytes(original, resp, body);
                     return body;
                 }
 
@@ -257,7 +254,7 @@ namespace FenBrowser.Core.Compat
             }
             catch
             {
-                if (!entry.MustRevalidate) return CloneBytes(entry.BodyBytes);
+                if (!entry.MustRevalidate) return entry.BodyBytes;
                 return null;
             }
         }
@@ -376,9 +373,6 @@ namespace FenBrowser.Core.Compat
         private static bool HasAnyVary(HttpResponseMessage resp)
             => resp?.Headers?.Vary is { Count: > 0 };
 
-        private static byte[]? CloneBytes(byte[]? value)
-            => value == null ? null : (byte[])value.Clone();
-
         private sealed class CachedEntry
         {
             public string Url { get; set; } = "";
@@ -390,7 +384,7 @@ namespace FenBrowser.Core.Compat
             public string? ETag { get; set; }
             public DateTimeOffset? LastModified { get; set; }
             public string? BodyString { get; set; }
-            public byte[]? BodyBytes { get; set; }
+            public ReadOnlyMemory<byte>? BodyBytes { get; set; }
 
             public bool IsFresh()
             {
