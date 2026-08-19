@@ -782,7 +782,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (string.IsNullOrWhiteSpace(currentName) || currentName.Equals("none", StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                var keyframes = CssLoader.GetKeyframes(currentName);
+                var keyframes = CssLoader.GetKeyframes(currentName, element);
                 if (keyframes == null)
                 {
                     EngineLogCompat.Debug($"[Animation] Keyframes not found: {currentName}", LogCategory.Layout);

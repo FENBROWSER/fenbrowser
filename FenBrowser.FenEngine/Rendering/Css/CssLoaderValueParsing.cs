@@ -87,7 +87,7 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 var num = s.Substring(0, s.Length - 3).Trim();
                 double v;
-                if (TryDouble(num, out v)) { px = v * _rootFontSize; return true; }
+                if (TryDouble(num, out v)) { px = v * ActiveDocumentCssState.RootFontSize; return true; }
                 return false;
             }
 

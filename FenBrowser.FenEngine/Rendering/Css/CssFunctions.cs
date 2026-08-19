@@ -531,9 +531,10 @@ namespace FenBrowser.FenEngine.Rendering
             if (!varName.StartsWith("--")) return fallback ?? null;
             
             string resolved = null;
-            lock (_customProperties)
+            var state = ActiveDocumentCssState;
+            lock (state.CustomProperties)
             {
-                _customProperties.TryGetValue(varName, out resolved);
+                state.CustomProperties.TryGetValue(varName, out resolved);
             }
             
             if (!string.IsNullOrWhiteSpace(resolved))
