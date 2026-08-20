@@ -2626,9 +2626,15 @@ throw new HttpRequestException($"Blocked by Content Security Policy (connect-src
             Action<ReadOnlyMemory<byte>> classifyPrefix = null)
         {
             if (resp.Content == null) return Array.Empty<byte>();
-            using var stream = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
             var declaredLength = resp.Content.Headers.ContentLength;
-            if (declaredLength is >= 0 and <= int.MaxValue && declaredLength <= maxSize)
+            if (declaredLength is > 0 && declaredLength > maxSize)
+            {
+                EngineLogCompat.Warn($"[Network.Resilience] Declared body length exceeds limit for '{uri}' ({declaredLength} > {maxSize}).", LogCategory.Network);
+                throw new InvalidOperationException($"LIMIT_EXCEEDED:{maxSize}:{declaredLength}");
+            }
+
+            using var stream = await resp.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            if (declaredLength is >= 0 and <= int.MaxValue)
             {
                 var offset = 0;
                 byte[] prefix = null;
@@ -2671,10 +2677,7 @@ throw new HttpRequestException($"Blocked by Content Security Policy (connect-src
                 return result;
             }
 
-            var initialCapacity = declaredLength is > 0 and <= int.MaxValue
-                ? (int)declaredLength.Value
-                : 0;
-            using var output = initialCapacity > 0 ? new MemoryStream(initialCapacity) : new MemoryStream();
+            using var output = new MemoryStream();
             var buffer = ArrayPool<byte>.Shared.Rent(81920);
             var prefixClassified = classifyPrefix == null;
             try
