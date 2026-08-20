@@ -83,7 +83,8 @@ namespace FenBrowser.Core.Security
             bool isEval = false,
             string nonce = null,
             string elementHash = null,
-            string elementTrustedType = null)
+            string elementTrustedType = null,
+            CspScriptProvenance provenance = CspScriptProvenance.Unknown)
         {
             if (csp == null) return true;
             return csp.IsAllowed(
@@ -94,7 +95,8 @@ namespace FenBrowser.Core.Security
                 isInline,
                 isEval,
                 elementHash,
-                elementTrustedType);
+                elementTrustedType,
+                provenance);
         }
 
         public static bool IsEvalAllowedByCsp(CspPolicy csp, Uri documentOrigin, string elementTrustedType = null)

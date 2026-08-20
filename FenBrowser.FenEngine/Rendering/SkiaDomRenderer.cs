@@ -1831,7 +1831,9 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 var parent = dirtyRoot.ParentElement;
-                if (parent == null || !_boxes.TryGetValue(parent, out var parentBox))
+                if (parent == null ||
+                    !_boxes.TryGetValue(parent, out var parentBox) ||
+                    !_boxes.TryGetValue(dirtyRoot, out var previousRootBox))
                 {
                     return false;
                 }
@@ -1854,8 +1856,8 @@ namespace FenBrowser.FenEngine.Rendering
                 var layoutEngine = GetOrCreateLayoutEngine(styles, baseUrl);
                 var partial = layoutEngine.ComputeLayout(
                     dirtyRoot,
-                    0,
-                    0,
+                    previousRootBox.BorderBox.Left,
+                    previousRootBox.BorderBox.Top,
                     availableWidth,
                     availableHeight: availableHeight,
                     deadline: CreateLayoutDeadline("RenderFrame.IncrementalLayout"));
@@ -1881,7 +1883,13 @@ namespace FenBrowser.FenEngine.Rendering
                     mergedRects[rectEntry.Key] = rectEntry.Value;
                 }
 
-                workingContentHeight = Math.Max(workingContentHeight, partial.ContentHeight);
+                foreach (var geometry in partial.ElementRects.Values)
+                {
+                    if (float.IsFinite(geometry.Bottom))
+                    {
+                        workingContentHeight = Math.Max(workingContentHeight, geometry.Bottom);
+                    }
+                }
                 appliedRoots++;
             }
 
@@ -2063,33 +2071,11 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (isolatedRoot == null)
             {
-                // Bottleneck 3: when the dirty element is in-flow with no
-                // formatting-context ancestor, use the dirty element itself as
-                // the isolation root, provided it has a parent with a layout box.
-                // This avoids falling back to full layout just because the page
-                // has no BFC-creating wrapper around the changed content.
-                // Only safe when no style change forced the full-layout plan
-                // (the BuildIncrementalLayoutPlan caller already checked that).
-                if (dirtyRoot.ParentElement != null && dirtyRoot.ParentElement != documentRoot)
-                {
-                    isolatedRoot = dirtyRoot;
-                }
-                else
-                {
-                    return false;
-                }
+                return false;
             }
 
             if (ReferenceEquals(isolatedRoot, documentRoot) || isolatedRoot.ParentElement == null)
             {
-                // If we promoted dirtyRoot itself as the isolation root and it
-                // sits directly under the document, it's still workable — the
-                // parent box comes from the document body.
-                if (isolatedRoot == dirtyRoot && dirtyRoot.ParentElement != null)
-                {
-                    return true;
-                }
-
                 return false;
             }
 

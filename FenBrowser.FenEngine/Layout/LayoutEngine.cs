@@ -133,8 +133,17 @@ namespace FenBrowser.FenEngine.Layout
             deadline?.Check();
 
             // 2. Prepare Root Layout State
-            availableWidth = Math.Max(availableWidth, _context.ViewportWidth);
-            availableHeight = Math.Max(availableHeight, _context.ViewportHeight);
+            var isDocumentLayout = node is Document || layoutRoot.ParentNode is Document;
+            if (isDocumentLayout)
+            {
+                availableWidth = Math.Max(availableWidth, _context.ViewportWidth);
+                availableHeight = Math.Max(availableHeight, _context.ViewportHeight);
+            }
+            else
+            {
+                availableWidth = Math.Max(1f, availableWidth);
+                availableHeight = Math.Max(1f, availableHeight);
+            }
 
             var initialState = new FenBrowser.FenEngine.Layout.Contexts.LayoutState(
                 new SKSize(availableWidth, availableHeight),
@@ -172,6 +181,25 @@ namespace FenBrowser.FenEngine.Layout
                 CollectBoxesAbsolute(rootBox, accumulatedBoxes, 0, 0);
 
                 RelayoutNestedBrowsingContexts(layoutRoot, elementRects, accumulatedBoxes, deadline);
+
+                if (x != 0f || y != 0f)
+                {
+                    foreach (var box in accumulatedBoxes.Values)
+                    {
+                        Contexts.LayoutBoxOps.ShiftBoxModel(box, x, y);
+                    }
+
+                    var keys = elementRects.Keys.ToArray();
+                    foreach (var element in keys)
+                    {
+                        var geometry = elementRects[element];
+                        elementRects[element] = new ElementGeometry(
+                            geometry.X + x,
+                            geometry.Y + y,
+                            geometry.Width,
+                            geometry.Height);
+                    }
+                }
             }
 
             _generatedBoxes = accumulatedBoxes;

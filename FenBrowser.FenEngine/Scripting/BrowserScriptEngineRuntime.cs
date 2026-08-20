@@ -3427,6 +3427,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 // instructions is ~5-10 s of interpreted bytecode on a modern
                 // CPU — enough for even the largest page bundles to finish.
                 InstructionBudget = FenJsBrowserInstructionBudget,
+                ExposeSharedArrayBuffer = Sandbox.Allows(SandboxFeature.SharedArrayBuffer) &&
+                    DocumentSecurityContext?.Allows(SandboxFeature.SharedArrayBuffer) == true,
                 InterruptCallback = () => !_executionCancellation.IsCancellationRequested,
                 MaxCallDepth = 1024,
                 ParserMaxRecursionDepth = FenJsBrowserParserMaxRecursionDepth
@@ -5669,15 +5671,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     // response headers; absent explicit headers the default is not isolated.
     private bool IsCrossOriginIsolatedContext(Uri baseUri)
     {
-        if (DocumentSecurityContext != null)
+        if (!Sandbox.Allows(SandboxFeature.CrossOriginIsolated))
         {
-            return DocumentSecurityContext.Allows(SandboxFeature.CrossOriginIsolated);
+            return false;
         }
 
-        // Fallback: local documents (file:, localhost) are treated as isolated
-        // for development parity, matching the "potentially trustworthy origin"
-        // carve-out that browsers apply to isSecureContext.
-        return IsPotentiallyTrustworthyOrigin(baseUri);
+        return DocumentSecurityContext?.Allows(SandboxFeature.CrossOriginIsolated) == true;
     }
 
     // W3C High Resolution Time / Performance Timeline. SPA frameworks (React, and

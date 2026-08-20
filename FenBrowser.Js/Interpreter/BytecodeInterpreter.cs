@@ -374,6 +374,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     // Plan §14.2: instruction budget. Zero = no limit.
     public int InstructionBudget { get; set; }
+    public bool ExposeSharedArrayBuffer { get; set; } = true;
     public Func<bool>? InterruptCallback { get; set; }
     private int _instructionCount;
 
@@ -5633,8 +5634,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             .Register(new AggregateErrorBuiltin())
             .Register(new GeneratorBuiltin())
             .Register(new GeneratorFunctionBuiltin())
-            .Register(new ArrayBufferBuiltin())
-            .Register(new SharedArrayBufferBuiltin())
+            .Register(new ArrayBufferBuiltin());
+
+        if (ExposeSharedArrayBuffer)
+        {
+            registry.Register(new SharedArrayBufferBuiltin());
+        }
+
+        registry
             .Register(new DataViewBuiltin())
             .Register(new TypedArrayBuiltin())
             .Register(new AtomicsBuiltin())

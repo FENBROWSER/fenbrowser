@@ -74,6 +74,13 @@ namespace FenBrowser.Core.Security
         };
     }
 
+    public enum CspScriptProvenance
+    {
+        Unknown,
+        ParserInserted,
+        TrustedDynamic
+    }
+
     public class CspPolicy
     {
         private IReadOnlyList<CspPolicy> _additionalPolicies = Array.Empty<CspPolicy>();
@@ -111,12 +118,29 @@ namespace FenBrowser.Core.Security
         /// <summary>
         /// Check if a resource is allowed with explicit nonce and origin context.
         /// </summary>
-        public bool IsAllowed(string directiveName, Uri url, string nonce, Uri origin, bool isInline = false, bool isEval = false, string elementHash = null, string elementTrustedType = null)
+        public bool IsAllowed(
+            string directiveName,
+            Uri url,
+            string nonce,
+            Uri origin,
+            bool isInline = false,
+            bool isEval = false,
+            string elementHash = null,
+            string elementTrustedType = null,
+            CspScriptProvenance scriptProvenance = CspScriptProvenance.Unknown)
         {
             if (Directives.Count != 0)
             {
                 var directive = ResolveEffectiveDirective(directiveName);
-                if (directive != null && !directive.IsAllowed(url, nonce, isInline, isEval, origin, elementHash, elementTrustedType))
+                if (directive != null && !directive.IsAllowed(
+                    url,
+                    nonce,
+                    isInline,
+                    isEval,
+                    origin,
+                    elementHash,
+                    elementTrustedType,
+                    scriptProvenance))
                 {
                     return false;
                 }
@@ -124,7 +148,16 @@ namespace FenBrowser.Core.Security
 
             foreach (var policy in _additionalPolicies)
             {
-                if (!policy.IsAllowed(directiveName, url, nonce, origin, isInline, isEval, elementHash, elementTrustedType))
+                if (!policy.IsAllowed(
+                    directiveName,
+                    url,
+                    nonce,
+                    origin,
+                    isInline,
+                    isEval,
+                    elementHash,
+                    elementTrustedType,
+                    scriptProvenance))
                 {
                     return false;
                 }
@@ -362,7 +395,15 @@ namespace FenBrowser.Core.Security
             return null;
         }
 
-        public bool IsAllowed(Uri url, string nonce, bool isInline = false, bool isEval = false, Uri origin = null, string elementHash = null, string elementTrustedType = null)
+        public bool IsAllowed(
+            Uri url,
+            string nonce,
+            bool isInline = false,
+            bool isEval = false,
+            Uri origin = null,
+            string elementHash = null,
+            string elementTrustedType = null,
+            CspScriptProvenance scriptProvenance = CspScriptProvenance.Unknown)
         {
             if (Sources.Contains("'none'")) return false;
 
@@ -406,10 +447,11 @@ namespace FenBrowser.Core.Security
             // 5. URL Check
             if (url == null) return false; 
 
-            // strict-dynamic requires script provenance tracking. Do not pretend the
-            // keyword itself authorizes a URL; nonce/hash checks above remain enforced
-            // while URL source matching continues for compatibility until provenance
-            // is represented by the caller.
+            var hasNonceOrHashSource = Nonces.Count > 0 || Hashes.Count > 0;
+            if (HasStrictDynamic && hasNonceOrHashSource && IsScriptDirective(Name))
+            {
+                return scriptProvenance == CspScriptProvenance.TrustedDynamic;
+            }
 
             if (Sources.Contains("*")) return true;
 
@@ -423,13 +465,20 @@ namespace FenBrowser.Core.Security
             {
                 if (src == "*") return true;
                 if (src.StartsWith("'", StringComparison.Ordinal)) continue; // keywords
-                if (MatchesSourceExpression(src, url)) return true;
+                if (MatchesSourceExpression(src, url, origin)) return true;
             }
 
             return false;
         }
 
-        private static bool MatchesSourceExpression(string source, Uri url)
+        private static bool IsScriptDirective(string directiveName)
+        {
+            return string.Equals(directiveName, CspDirectiveNames.ScriptSrc, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(directiveName, CspDirectiveNames.ScriptSrcElem, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(directiveName, CspDirectiveNames.ScriptSrcAttr, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool MatchesSourceExpression(string source, Uri url, Uri protectedResource)
         {
             if (string.IsNullOrWhiteSpace(source) || url == null || !url.IsAbsoluteUri)
             {
@@ -443,10 +492,9 @@ namespace FenBrowser.Core.Security
                 src.IndexOf('/') < 0 &&
                 src.IndexOf("[", StringComparison.Ordinal) < 0)
             {
-                return string.Equals(
-                    url.Scheme,
+                return SchemeMatches(
                     src.Substring(0, src.Length - 1),
-                    StringComparison.OrdinalIgnoreCase);
+                    url.Scheme);
             }
 
             string srcHost = src;
@@ -497,12 +545,14 @@ namespace FenBrowser.Core.Security
 
             if (string.IsNullOrWhiteSpace(srcHost)) return false;
 
-            if (explicitScheme && !string.Equals(url.Scheme, srcScheme, StringComparison.OrdinalIgnoreCase))
+            var effectiveSourceScheme = explicitScheme ? srcScheme : protectedResource?.Scheme;
+            if (string.IsNullOrWhiteSpace(effectiveSourceScheme) ||
+                !SchemeMatches(effectiveSourceScheme, url.Scheme))
             {
                 return false;
             }
 
-            if (!PortMatches(url, srcScheme, srcPort, explicitScheme))
+            if (!PortMatches(url, srcPort))
             {
                 return false;
             }
@@ -529,25 +579,35 @@ namespace FenBrowser.Core.Security
             return PathMatches(url, srcPath);
         }
 
-        private static bool PortMatches(Uri url, string sourceScheme, string sourcePort, bool explicitScheme)
+        private static bool PortMatches(Uri url, string sourcePort)
         {
-            var urlPort = url.IsDefaultPort ? GetDefaultPort(url.Scheme) : url.Port;
-
             if (!string.IsNullOrEmpty(sourcePort))
             {
                 if (sourcePort == "*") return true;
+                var urlPort = url.IsDefaultPort ? GetDefaultPort(url.Scheme) : url.Port;
                 return int.TryParse(sourcePort, out var parsedPort) &&
                        parsedPort >= 0 && parsedPort <= 65535 &&
                        parsedPort == urlPort;
             }
 
-            // A scheme-qualified host source with no explicit port is constrained to
-            // that scheme's default port. Preserve existing host-only behavior where
-            // the protected resource's scheme is not available to this directive.
-            if (!explicitScheme) return true;
+            return url.IsDefaultPort;
+        }
 
-            var expectedPort = GetDefaultPort(sourceScheme);
-            return expectedPort < 0 || urlPort == expectedPort;
+        private static bool SchemeMatches(string sourceScheme, string targetScheme)
+        {
+            if (string.Equals(sourceScheme, targetScheme, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (string.Equals(sourceScheme, "http", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(targetScheme, "https", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return string.Equals(sourceScheme, "ws", StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(targetScheme, "wss", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool PathMatches(Uri url, string sourcePath)
