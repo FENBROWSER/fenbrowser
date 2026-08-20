@@ -6,8 +6,6 @@ namespace FenBrowser.Core.Network.Handlers
 {
     public class PrivacyHandler : INetworkHandler
     {
-        private static readonly StringComparison HostComparison = StringComparison.OrdinalIgnoreCase;
-
         public async Task HandleAsync(NetworkContext context, Func<Task> next, CancellationToken ct)
         {
             ArgumentNullException.ThrowIfNull(context);
@@ -97,52 +95,10 @@ namespace FenBrowser.Core.Network.Handlers
             }
 
             return request.Headers.Referrer != null &&
-                   !IsSameSite(request.Headers.Referrer, requestUri);
-        }
-
-        // Legacy fallback only. The normal browser path uses typed FetchContext above.
-        // This remains approximate until the shared PSL-backed SchemefulSite service is
-        // introduced; do not reuse it for new browser security decisions.
-        private static bool IsSameSite(Uri left, Uri right)
-        {
-            if (left is null || right is null)
-            {
-                return false;
-            }
-
-            var leftHost = NormalizeHost(left);
-            var rightHost = NormalizeHost(right);
-            if (string.IsNullOrWhiteSpace(leftHost) || string.IsNullOrWhiteSpace(rightHost))
-            {
-                return false;
-            }
-
-            if (string.Equals(leftHost, rightHost, HostComparison))
-            {
-                return true;
-            }
-
-            var leftHostType = Uri.CheckHostName(leftHost);
-            var rightHostType = Uri.CheckHostName(rightHost);
-            if (leftHostType == UriHostNameType.IPv4 || leftHostType == UriHostNameType.IPv6 ||
-                rightHostType == UriHostNameType.IPv4 || rightHostType == UriHostNameType.IPv6)
-            {
-                return false;
-            }
-
-            return IsSubdomainOrSame(leftHost, rightHost) || IsSubdomainOrSame(rightHost, leftHost);
-        }
-
-        private static string NormalizeHost(Uri uri)
-        {
-            return (uri?.IdnHost ?? string.Empty).Trim().TrimEnd('.').ToLowerInvariant();
-        }
-
-        private static bool IsSubdomainOrSame(string host, string root)
-        {
-            return host.Length > root.Length
-                && host.EndsWith(root, HostComparison)
-                && host[host.Length - root.Length - 1] == '.';
+                   string.Equals(
+                       BrowserRequestHeaderPolicy.DetermineSite(request.Headers.Referrer, requestUri),
+                       "cross-site",
+                       StringComparison.Ordinal);
         }
     }
 }
