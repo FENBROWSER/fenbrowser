@@ -4415,6 +4415,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 "alert",
                 (_, args) =>
                 {
+                    if (!AllowsEmbeddingSandboxFlag(IframeSandboxFlags.Modals))
+                    {
+                        return JsValue.Undefined;
+                    }
+
                     var msg = args.Count > 0 ? ToDialogString(args[0]) : "";
                     _host.Alert(msg);
                     PostDialogAsync("alert", msg, "");
@@ -4427,6 +4432,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 "confirm",
                 (_, args) =>
                 {
+                    if (!AllowsEmbeddingSandboxFlag(IframeSandboxFlags.Modals))
+                    {
+                        return JsValue.FromBoolean(false);
+                    }
+
                     var msg = args.Count > 0 ? ToDialogString(args[0]) : "";
                     var accepted = _host.Confirm(msg);
                     PostDialogAsync("confirm", msg, "");
@@ -4439,6 +4449,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 "prompt",
                 (_, args) =>
                 {
+                    if (!AllowsEmbeddingSandboxFlag(IframeSandboxFlags.Modals))
+                    {
+                        return JsValue.Null;
+                    }
+
                     var msg = args.Count > 0 ? ToDialogString(args[0]) : "";
                     var def = args.Count > 1 && args[1].Tag != FenBrowser.Js.Runtime.JsValueTag.Undefined ? ToDialogString(args[1]) : "";
                     var response = _host.Prompt(msg, def);
@@ -4455,6 +4470,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 "open",
                 (_, args) =>
                 {
+                    if (!AllowsEmbeddingSandboxPopup())
+                    {
+                        return JsValue.Null;
+                    }
+
                     var url = args.Count > 0 ? ToDialogString(args[0]) : "";
                     var name = args.Count > 1 ? ToDialogString(args[1]) : "";
                     var features = args.Count > 2 ? ToDialogString(args[2]) : "";
@@ -15955,6 +15975,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             ["SHOW_DOCUMENT_FRAGMENT"] = JsValue.FromInt32((int)NodeFilterShow.DocumentFragment),
             ["SHOW_NOTATION"] = JsValue.FromInt32((int)NodeFilterShow.Notation)
         });
+    }
+
+    private bool AllowsEmbeddingSandboxFlag(IframeSandboxFlags requiredFlag)
+    {
+        if (_embeddingFrameElement == null || !_embeddingFrameElement.HasAttribute("sandbox"))
+        {
+            return true;
+        }
+
+        var flags = SandboxPolicy.ParseIframeSandboxFlags(_embeddingFrameElement.GetAttribute("sandbox"));
+        return (flags & requiredFlag) == requiredFlag;
+    }
+
+    private bool AllowsEmbeddingSandboxPopup()
+    {
+        if (_embeddingFrameElement == null || !_embeddingFrameElement.HasAttribute("sandbox"))
+        {
+            return true;
+        }
+
+        var flags = SandboxPolicy.ParseIframeSandboxFlags(_embeddingFrameElement.GetAttribute("sandbox"));
+        return (flags & IframeSandboxFlags.Popups) != 0 &&
+               (flags & IframeSandboxFlags.PopupsToEscapeSandbox) != 0;
     }
 
     private void NavigateOwningBrowsingContext(Uri targetUri)

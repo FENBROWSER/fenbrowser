@@ -2240,6 +2240,11 @@ pre {{
                 return false;
             }
 
+            if (!IsIframeSandboxPopupAllowed(element))
+            {
+                return true;
+            }
+
             var bridge = JsDialogBridge.OpenWindow;
             if (bridge == null)
             {
@@ -2251,6 +2256,26 @@ pre {{
                 args.Count > 0 ? args[0] : string.Empty,
                 args.Count > 1 ? args[1] : string.Empty,
                 args.Count > 2 ? args[2] : string.Empty);
+            return true;
+        }
+
+        private static bool IsIframeSandboxPopupAllowed(Element element)
+        {
+            var cursor = element?.ParentNode;
+            while (cursor != null)
+            {
+                if (cursor is Element frame &&
+                    string.Equals(frame.TagName, "iframe", StringComparison.OrdinalIgnoreCase) &&
+                    frame.HasAttribute("sandbox"))
+                {
+                    var flags = SandboxPolicy.ParseIframeSandboxFlags(frame.GetAttribute("sandbox"));
+                    return (flags & IframeSandboxFlags.Popups) != 0 &&
+                           (flags & IframeSandboxFlags.PopupsToEscapeSandbox) != 0;
+                }
+
+                cursor = cursor.ParentNode;
+            }
+
             return true;
         }
 
