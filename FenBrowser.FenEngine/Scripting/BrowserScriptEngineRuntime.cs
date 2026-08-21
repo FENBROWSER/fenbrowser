@@ -3427,7 +3427,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 // instructions is ~5-10 s of interpreted bytecode on a modern
                 // CPU — enough for even the largest page bundles to finish.
                 InstructionBudget = FenJsBrowserInstructionBudget,
-                ExposeSharedArrayBuffer = Sandbox.Allows(SandboxFeature.SharedArrayBuffer) &&
+                // Fail closed while unassigned: the constructor runs this before the
+                // owner assigns Sandbox/DocumentSecurityContext; BindFenJsDomContext
+                // re-runs the session reset per document with the real policies.
+                ExposeSharedArrayBuffer = Sandbox?.Allows(SandboxFeature.SharedArrayBuffer) == true &&
                     DocumentSecurityContext?.Allows(SandboxFeature.SharedArrayBuffer) == true,
                 InterruptCallback = () => !_executionCancellation.IsCancellationRequested,
                 MaxCallDepth = 1024,
@@ -5691,7 +5694,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     // response headers; absent explicit headers the default is not isolated.
     private bool IsCrossOriginIsolatedContext(Uri baseUri)
     {
-        if (!Sandbox.Allows(SandboxFeature.CrossOriginIsolated))
+        if (Sandbox?.Allows(SandboxFeature.CrossOriginIsolated) != true)
         {
             return false;
         }
