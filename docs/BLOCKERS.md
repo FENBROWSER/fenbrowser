@@ -19,7 +19,7 @@ Snapshot date: 2026-07-16. These blockers do not prevent local diagnostic work. 
 - Area: production process default
 - Status: BLOCKED_NEEDS_HUMAN_DECISION
 - Decision required: Decide whether production defaults to brokered mode, in-process mode, or a platform-qualified policy.
-- Current evidence: an unset environment value selects in-process mode; brokered mode is opt-in and has renderer/network/GPU/utility code.
+- Current evidence: `ProcessIsolationCoordinatorFactory.CreateFromEnvironment` defaults to brokered mode when `FEN_PROCESS_ISOLATION` is unset (`CreateFromEnvironment_DefaultsToBrokeredMode` pins this in source; the Host test tree is on the TEST-001 excluded inventory), and `ChromeManager` selects the coordinator through this factory. Brokered mode is therefore the production default; in-process mode is opt-out via `FEN_PROCESS_ISOLATION=in-process`. The decision still required from a human is whether brokered-by-default may ship before `BLOCK-PROC-002` runtime ACL provisioning makes strict AppContainer renderer startup work in development checkouts.
 - Security consequence: the default determines whether a malicious page shares the UI process.
 - Work allowed before decision: brokered smoke tests, crash recovery tests, and trace export.
 - Work blocked: changing the default or claiming renderer isolation is the production security boundary.
