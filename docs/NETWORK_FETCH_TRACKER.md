@@ -1,6 +1,6 @@
 # FenBrowser Network, Fetch, Cookie, and Storage Tracker
 
-Status: INTEGRATED for current in-process real-site loading; broker enforcement is STUBBED. Snapshot date: 2026-07-14.
+Status: INTEGRATED for current in-process real-site loading; broker enforcement is STUBBED; JS-visible CORS response filtering is STUBBED. Snapshot date: 2026-08-22.
 
 ## Current evidence
 
@@ -12,9 +12,9 @@ The current Google bundle recorded 27 requests and rendered the main page. Its s
 | --- | --- | --- | --- |
 | URL/HTTP/TLS and redirects | INTEGRATED | Real pages load through current resource path | Redirect/error/MIME trace reductions |
 | Resource loader visibility | INTEGRATED | Bundle contains request records | Stable request IDs across discovery/fetch/script/style |
-| Fetch API | INTEGRATED | Manual browser API path exists | Selected local WPT for body/headers/abort/error behavior |
+| Fetch API | INTEGRATED | Manual browser API path exists; same-origin WPT subtests pass (`fetch/api/cors/cors-basic.any.js`, 2026-08-22 runs) | `no-cors` opaque filtering, `Response.type`, body/headers/abort/error behavior |
 | XHR | IMPLEMENTED | Source exists, with some project exclusions | Compile-path audit and local WPT |
-| CORS | INTEGRATED | Policy surfaces exist | Negative/positive selected WPT and policy decision trace |
+| CORS | STUBBED | Policy surfaces exist but are not wired into the JS-visible fetch path: cross-origin requests without CORS headers resolve instead of rejecting, and CORS responses report `type` undefined (15 classified subtest failures in `20260822_fetch_cors_gate_run1/-run2`) | Wire mode/credentials enforcement plus `basic`/`cors`/`opaque` response filtering into the fetch handler; rerun the slice twice |
 | Cookies | INTEGRATED | Cookie surfaces exist | SameSite/domain/path/redirect real tests and redacted trace |
 | Cache | IMPLEMENTED | Cache surfaces exist | Revalidation/vary/partition behavior tests |
 | `localStorage` / `sessionStorage` | INTEGRATED | Page APIs exist | Origin/navigation/quota/error reductions |

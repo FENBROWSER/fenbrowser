@@ -99,6 +99,18 @@ Any future Test262 invocation must use the local `C:/Users/udayk/Videos/test262`
 
 The current selected browser-integration matrix uses local WPT revision `88152b842c3f60c2a5f95e0106ded4a375f710b0` and FenBrowser `b4581fd89e3ab16d7a478a907dfc15d1443e03c9`, Release, one process, and explicit in-process mode. `Results/wpt/selected/20260821_lifecycle_gate_run2/` and `Results/wpt/selected/20260821_lifecycle_gate_run3/` each completed four starts and four ends, classify `DOMTokenList-stringifier.html`, `DOMTokenList-value.html`, `checkbox-click-events.html`, and the document-lifecycle file `html/dom/documents/resource-metadata-management/document-readyState.html` as Pass, exit 0, and contain zero unexpected tests, unexpected subtests, crashes, timeouts, WebDriver failures, harness failures, or category ambiguity. The lifecycle file previously timed out at FenBrowser `437f1bb9` (`20260805_lifecycle_run1`) with created-document readyState reporting `loading` and `DOMParser` undefined; both root causes are fixed by created-document readiness plus the XML DOM parser behind `DOMParser`, protected by `FenJsDocumentReadyStateTests` (4 tests).
 
+### Fetch/CORS classification slice (2026-08-22)
+
+Two identical runs at FenBrowser `eb74bec0` (working tree carrying diagnostic-only gc-stress and WebDriver automation-pinning changes; recorded truthfully as dirty) and local WPT `88152b84`: `Results/wpt/selected/20260822_fetch_cors_gate_run1/` and `-run2/`. Each run executed the four lifecycle-gate files plus `fetch/api/cors/cors-basic.any.js`, producing six starts/six ends with statuses OK:5 TIMEOUT:1 and byte-identical failure sets of 16 records (1 unexpected test, 15 unexpected subtests). The four retained gate files remain all-Pass. Classification of the CORS slice:
+
+| Bucket | Subtests | Observation | Root cause area |
+| --- | --- | --- | --- |
+| `no-cors` opaque filtering | 5 | Opaque-filtered response exposes `status` 200 instead of 0 | Response filtering for `mode: "no-cors"` is not applied |
+| CORS enforcement (negative) | 5 | Cross-origin request without CORS headers resolves instead of rejecting | CORS policy surfaces are not wired into the JS-visible fetch path |
+| `Response.type` | 5 | Successful CORS response reports `type` undefined instead of `"cors"` | Response type (`basic`/`cors`/`opaque`) never set on constructed responses |
+
+Same-origin subtests pass, so basic same-origin fetch behavior is intact. The `.any.js` worker scope (`cors-basic.any.worker.html`) times out wholesale and classifies as a dedicated-worker capability gap, not an engine assertion failure; it stays out of any passing gate until workers exist. The file joins the four-file passing gate only after FETCH-001 fixes the three buckets; until then the evidence lives in the two run bundles above.
+
 ## Real-site and diagnostic evidence
 
 | Target | Evidence | Observed result | Status |

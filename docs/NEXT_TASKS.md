@@ -1,6 +1,6 @@
 # FenBrowser Dependency-Ready Next Tasks
 
-Snapshot date: 2026-07-15. Only tasks whose current dependencies are satisfied are listed. Order follows the diagnostic-first mission; it is not a calendar plan.
+Snapshot date: 2026-08-22. Only tasks whose current dependencies are satisfied are listed. Order follows the diagnostic-first mission; it is not a calendar plan.
 
 ## Task TRACE-001
 
@@ -170,19 +170,45 @@ Risk Level: Low
 Dependencies: Local WPT checkout and category runner/results exist
 Files likely involved: `FenBrowser.Tooling/WptToolRunner.cs`, active DOM token-list bindings, `Results/wpt/selected/`, `docs/TEST_BASELINE.md`
 Specs/references: Local `C:\Users\udayk\Videos\wpt`; DOM, HTML, Fetch, Web IDL, CSSOM, UI Events
-Current behavior: Two clean runs at FenBrowser `b4581fd8` and local WPT `88152b84` each complete the same four selected files with four passes, exit 0, and zero unexpected tests or subtests. The gate now covers DOM token-list stringifier/value, checkbox click activation, and the document-lifecycle file `html/dom/documents/resource-metadata-management/document-readyState.html`. That lifecycle file previously timed out at `437f1bb9` because created documents (`createHTMLDocument`/`createDocument`) reported `loading`, `DOMParser` was undefined, and readystatechange ordering was unproven; FenBrowser `b4581fd8` fixes all three root causes (created-document readiness transitions plus the XML DOM parser behind `DOMParser`) with `FenJsDocumentReadyStateTests` regression protection. There are no crashes, timeouts, WebDriver failures, harness failures, or unclassified category errors.
+Current behavior: The four-file lifecycle gate (DOM token-list stringifier/value, checkbox click activation, `document-readyState.html`) passes cleanly in repeated runs at local WPT `88152b84`. The fetch/CORS slice was added and exactly classified at FenBrowser `eb74bec0`: `Results/wpt/selected/20260822_fetch_cors_gate_run1/` and `-run2/` produce byte-identical failure sets of 16 records across three root-cause buckets (`no-cors` opaque filtering absent; cross-origin requests without CORS headers not rejected; `Response.type` never set) plus a wholesale dedicated-worker scope timeout classified as a capability gap. Same-origin fetch subtests pass. See `docs/TEST_BASELINE.md` for the classification table.
 Expected behavior: A small repeatable category set covers lifecycle, event loop, DOM/events, fetch/CORS, CSSOM/geometry, and forms with per-test terminal results.
 Reproduction: Run the existing local category runner for the selected categories only.
 Root cause hypothesis: The initial DOM/forms gate is closed. The retained broad aggregate still mixes capability and infrastructure classes, so expansion must remain file-scoped and classification-first.
-Implementation plan: Preserve this exact four-file gate, then add fetch/CORS, cookies, CSSOM/geometry, and layout files one dependency-ready slice at a time without mixing infrastructure failures with engine assertions.
+Implementation plan: Preserve the exact passing gate, then add cookies, CSSOM/geometry, and layout files one dependency-ready slice at a time without mixing infrastructure failures with engine assertions. CORS slice joins the passing gate only after FETCH-001 clears its three buckets.
 Tests required: The selected WPT categories themselves plus runner self-check.
-Evidence required: `Results/wpt/selected/20260821_lifecycle_gate_run2/`, `Results/wpt/selected/20260821_lifecycle_gate_run3/`, focused local reductions, and updated exact classifications.
-Security impact: Include at least one same-origin/CORS negative slice.
+Evidence required: `Results/wpt/selected/20260821_lifecycle_gate_run2/`, `Results/wpt/selected/20260821_lifecycle_gate_run3/`, `Results/wpt/selected/20260822_fetch_cors_gate_run1/`, `Results/wpt/selected/20260822_fetch_cors_gate_run2/`, focused local reductions, and updated exact classifications.
+Security impact: The CORS negative slice now exists and documents that enforcement is currently bypassed in the JS-visible path; FETCH-001 owns the Priority 0 adjacent fix.
 Performance impact: Record hangs/timeouts as diagnostic signals, not benchmarks.
 Compatibility impact: Prioritizes browser integration over obscure conformance.
 Known risks: Runner infrastructure may dominate failure counts.
 Blockers: None
-Next action: Select one deterministic fetch/CORS or cookies file from the local WPT checkout, run it with the existing four-file gate twice, and classify any failure before widening further.
+Next action: Select one deterministic cookies or CSSOM/geometry file from the local WPT checkout, run it with the existing gate twice, and classify any failure before widening further.
+
+## Task FETCH-001
+
+Task ID: FETCH-001
+Title: Wire CORS enforcement and response filtering into the JS-visible fetch path
+Area: Fetch / CORS / security
+Owner Agent: Network Agent
+Status: RESEARCHED
+Priority: 1
+Risk Level: Medium
+Dependencies: Two-run exact-classification evidence exists (`Results/wpt/selected/20260822_fetch_cors_gate_run1/-run2`); same-origin fetch path works
+Files likely involved: `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs` (JS-visible fetch handler), `FenBrowser.FenEngine/Rendering/BrowserApi.cs` (`FetchHandler` wiring), `FenBrowser.Core` resource/network policy surfaces
+Specs/references: Fetch Standard (response filtering, basic/cors/opaque response types, CORS check); HTML Standard (sec-fetch mode); `docs/NETWORK_FETCH_TRACKER.md`
+Current behavior: Cross-origin `fetch(url)` resolves even when the server forbids CORS (5 subtests expect rejection with TypeError). `no-cors` mode exposes real status 200 instead of an opaque-filtered response with status 0. Successful CORS responses report `Response.type` undefined instead of `"cors"`. Policy surfaces exist in the resource layer but do not reach the JS-visible Response construction path.
+Expected behavior: `fetch` applies mode/credentials checks against the resource-layer CORS decision; responses are filtered per mode so scripts observe `type` of `basic`/`cors`/`opaque`, opaque responses expose status 0 with blocked body/headers, and forbidden cross-origin reads reject with TypeError.
+Reproduction: Run the five-file gate twice per WPT-001; inspect the three buckets in `wpt.failures.json`.
+Root cause hypothesis: The JS-side fetch implementation constructs Response values directly from successful HTTP results without consulting the resource layer's CORS verdict or applying any response filter.
+Implementation plan: Thread mode/credentials into `FetchHandler`; map the resource-layer CORS decision to reject-with-TypeError; introduce a response filter step that stamps `type` and applies opaque/basic filtering before Response construction; keep same-origin behavior unchanged.
+Tests required: The cors-basic slice rerun twice to green; local reduction fixture for no-cors opacity and forbidden-CORS rejection; regression test that same-origin `Response.type` is `basic`.
+Evidence required: Before: the two 2026-08-22 run bundles; after: two green runs of the six-file gate plus a local fixture bundle showing correct types/statuses.
+Security impact: Priority 0 adjacent — this closes the gap where script can read cross-origin response data the server did not expose via CORS headers.
+Performance impact: Filtering is O(1) metadata work on the existing response object; no extra network round trips.
+Compatibility impact: Aligns JS-visible fetch semantics with browsers; sites relying on unrestricted cross-origin reads will surface errors, which matches standard behavior.
+Known risks: Overly strict enforcement could break current real-site loads if any same-site asset is served from a sibling origin without CORS headers; verify against the Google bundle before/after.
+Blockers: None for the fix itself; the file is currently contended by another active session, so coordinate before editing `BrowserScriptEngineRuntime.cs`.
+Next action: Implement the response filter and CORS wiring, add the local reduction fixture, then move `fetch/api/cors/cors-basic.any.js` into the passing gate after two green runs.
 
 ## Task PROC-001
 
