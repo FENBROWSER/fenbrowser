@@ -156,7 +156,7 @@ Performance impact: Record input-to-visible-update and input-to-request latency.
 Compatibility impact: Directly validates real-site usability.
 Known risks: Site variation, consent UI, or network challenge; retain exact URL/run evidence.
 Blockers: Google's current HTTP 429 challenge prevents normal search-result rendering; this is external security behavior and is not an engine blocker or bypass target.
-Next action: Expand the selected WPT matrix by one deterministic HTML lifecycle file and preserve the same two-run exact-classification evidence.
+Next action: The lifecycle WPT slice is closed (see WPT-001); continue with its fetch/CORS or cookies slice and preserve the same two-run exact-classification evidence.
 
 ## Task WPT-001
 
@@ -170,19 +170,19 @@ Risk Level: Low
 Dependencies: Local WPT checkout and category runner/results exist
 Files likely involved: `FenBrowser.Tooling/WptToolRunner.cs`, active DOM token-list bindings, `Results/wpt/selected/`, `docs/TEST_BASELINE.md`
 Specs/references: Local `C:\Users\udayk\Videos\wpt`; DOM, HTML, Fetch, Web IDL, CSSOM, UI Events
-Current behavior: Two clean runs at FenBrowser `76bfb832` and local WPT `88152b84` each complete the same three selected DOM/forms files with three passes, exit 0, and zero unexpected tests or subtests. There are no crashes, timeouts, WebDriver failures, harness failures, or unclassified category errors.
+Current behavior: Two clean runs at FenBrowser `b4581fd8` and local WPT `88152b84` each complete the same four selected files with four passes, exit 0, and zero unexpected tests or subtests. The gate now covers DOM token-list stringifier/value, checkbox click activation, and the document-lifecycle file `html/dom/documents/resource-metadata-management/document-readyState.html`. That lifecycle file previously timed out at `437f1bb9` because created documents (`createHTMLDocument`/`createDocument`) reported `loading`, `DOMParser` was undefined, and readystatechange ordering was unproven; FenBrowser `b4581fd8` fixes all three root causes (created-document readiness transitions plus the XML DOM parser behind `DOMParser`) with `FenJsDocumentReadyStateTests` regression protection. There are no crashes, timeouts, WebDriver failures, harness failures, or unclassified category errors.
 Expected behavior: A small repeatable category set covers lifecycle, event loop, DOM/events, fetch/CORS, CSSOM/geometry, and forms with per-test terminal results.
 Reproduction: Run the existing local category runner for the selected categories only.
 Root cause hypothesis: The initial DOM/forms gate is closed. The retained broad aggregate still mixes capability and infrastructure classes, so expansion must remain file-scoped and classification-first.
-Implementation plan: Preserve this exact three-file gate, then add lifecycle, fetch/CORS, cookies, CSSOM/geometry, and layout files one dependency-ready slice at a time without mixing infrastructure failures with engine assertions.
+Implementation plan: Preserve this exact four-file gate, then add fetch/CORS, cookies, CSSOM/geometry, and layout files one dependency-ready slice at a time without mixing infrastructure failures with engine assertions.
 Tests required: The selected WPT categories themselves plus runner self-check.
-Evidence required: `Results/wpt/selected/20260716_checkbox_clean_run1/`, `Results/wpt/selected/20260716_checkbox_clean_run2/`, focused local reductions, and updated exact classifications.
+Evidence required: `Results/wpt/selected/20260821_lifecycle_gate_run2/`, `Results/wpt/selected/20260821_lifecycle_gate_run3/`, focused local reductions, and updated exact classifications.
 Security impact: Include at least one same-origin/CORS negative slice.
 Performance impact: Record hangs/timeouts as diagnostic signals, not benchmarks.
 Compatibility impact: Prioritizes browser integration over obscure conformance.
 Known risks: Runner infrastructure may dominate failure counts.
 Blockers: None
-Next action: Select one deterministic HTML document-lifecycle file from the local WPT checkout, run it with the existing three-file gate twice, and classify any failure before widening further.
+Next action: Select one deterministic fetch/CORS or cookies file from the local WPT checkout, run it with the existing four-file gate twice, and classify any failure before widening further.
 
 ## Task PROC-001
 

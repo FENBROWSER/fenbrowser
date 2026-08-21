@@ -1,6 +1,6 @@
 # FenBrowser Test Baseline
 
-Snapshot date: 2026-07-14; focused build/test and selected WPT evidence revalidated 2026-07-16. All paths and results are local. No conformance data in this file was fetched from the internet.
+Snapshot date: 2026-07-14; focused build/test and selected WPT evidence revalidated 2026-08-21. All paths and results are local. No conformance data in this file was fetched from the internet.
 
 ## Verification run in this audit
 
@@ -97,7 +97,7 @@ Any future Test262 invocation must use the local `C:/Users/udayk/Videos/test262`
 | Aggregate pass rate | 61.91% |
 | Category errors | 17 |
 
-The current selected browser-integration matrix uses local WPT revision `88152b842c3f60c2a5f95e0106ded4a375f710b0` and FenBrowser `76bfb83290b65dab532acc81560236523ab64995`, Release, one process, and the default in-process mode. `Results/wpt/selected/20260716_checkbox_clean_run1/` and `Results/wpt/selected/20260716_checkbox_clean_run2/` each completed three starts and three ends in 11.70 s and 11.59 s respectively. Both classify `DOMTokenList-stringifier.html`, `DOMTokenList-value.html`, and `checkbox-click-events.html` as Pass, exit 0, and contain zero unexpected tests, unexpected subtests, crashes, timeouts, WebDriver failures, harness failures, or category ambiguity.
+The current selected browser-integration matrix uses local WPT revision `88152b842c3f60c2a5f95e0106ded4a375f710b0` and FenBrowser `b4581fd89e3ab16d7a478a907dfc15d1443e03c9`, Release, one process, and explicit in-process mode. `Results/wpt/selected/20260821_lifecycle_gate_run2/` and `Results/wpt/selected/20260821_lifecycle_gate_run3/` each completed four starts and four ends, classify `DOMTokenList-stringifier.html`, `DOMTokenList-value.html`, `checkbox-click-events.html`, and the document-lifecycle file `html/dom/documents/resource-metadata-management/document-readyState.html` as Pass, exit 0, and contain zero unexpected tests, unexpected subtests, crashes, timeouts, WebDriver failures, harness failures, or category ambiguity. The lifecycle file previously timed out at FenBrowser `437f1bb9` (`20260805_lifecycle_run1`) with created-document readyState reporting `loading` and `DOMParser` undefined; both root causes are fixed by created-document readiness plus the XML DOM parser behind `DOMParser`, protected by `FenJsDocumentReadyStateTests` (4 tests).
 
 ## Real-site and diagnostic evidence
 
