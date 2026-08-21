@@ -1,6 +1,9 @@
 @echo off
 setlocal EnableExtensions
 rem FenJS is now the sole browser JS runtime — no legacy fallback.
+rem Capture the script directory before any shift: shift promotes %1 into %0,
+rem which would make %~dp0 resolve against a stale argument instead of here.
+set "SCRIPT_DIR=%~dp0"
 set "PORT="
 if /I "%~1"=="--port" (
   set "PORT=%~2"
@@ -16,7 +19,7 @@ if not defined PORT (
   echo [wpt-webdriver-launcher] Missing --port argument 1>&2
   exit /b 2
 )
-set "REPO_ROOT=%~dp0.."
+set "REPO_ROOT=%SCRIPT_DIR%.."
 set "TOOLING_EXE=%REPO_ROOT%\FenBrowser.Tooling\bin\Release\net10.0\FenBrowser.Tooling.exe"
 if defined FEN_WPT_TOOLING_EXE set "TOOLING_EXE=%FEN_WPT_TOOLING_EXE%"
 if not exist "%TOOLING_EXE%" set "TOOLING_EXE=%REPO_ROOT%\FenBrowser.Tooling\bin\Debug\net10.0\FenBrowser.Tooling.exe"
