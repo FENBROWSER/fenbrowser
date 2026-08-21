@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.Host.ProcessIsolation;
 using FenBrowser.Host.Tabs;
 using FenBrowser.WebDriver.Commands;
 using FenBrowser.WebDriver.Protocol;
@@ -59,6 +60,20 @@ namespace FenBrowser.Host.WebDriver
         {
             return await RunOnMainThread(async () =>
             {
+                var activeTab = GetActiveTabOrThrow();
+                // With an out-of-process renderer the navigation commits inside
+                // the renderer child; the committed URL reaches the UI through
+                // metadata sync (BrowserIntegration.CurrentUrl), while the local
+                // engine's current URI stays on the previous document.
+                if (ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+                {
+                    var tabUrl = activeTab.Url;
+                    if (!string.IsNullOrWhiteSpace(tabUrl))
+                    {
+                        return tabUrl;
+                    }
+                }
+
                 var host = GetActiveHostOrThrow();
                 var currentUrl = await host.GetCurrentUrlAsync().ConfigureAwait(false);
                 return string.IsNullOrWhiteSpace(currentUrl) ? "about:blank" : currentUrl;
