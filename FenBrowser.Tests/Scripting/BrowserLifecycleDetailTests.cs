@@ -78,6 +78,42 @@ public sealed class BrowserLifecycleDetailTests
         }
     }
 
+    [Fact]
+    public async Task CompletedDocument_FiresReadyStateChangeAroundDOMContentLoadedAndLoad()
+    {
+        var baseUri = new Uri("https://fixture.test/lifecycle-readystatechange.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><script>" +
+                "globalThis.__timeline = [];" +
+                "document.addEventListener('readystatechange', function () { globalThis.__timeline.push('rs:' + document.readyState); });" +
+                "document.addEventListener('DOMContentLoaded', function () { globalThis.__timeline.push('dcl'); });" +
+                "window.onload = function () { globalThis.__timeline.push('load'); };" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            // HTML end steps: readystatechange(interactive) precedes
+            // DOMContentLoaded; readystatechange(complete) precedes load.
+            Assert.Equal("rs:interactive", engine.Evaluate("globalThis.__timeline[0]")?.ToString());
+            Assert.Equal("dcl", engine.Evaluate("globalThis.__timeline[1]")?.ToString());
+            Assert.Equal("rs:complete", engine.Evaluate("globalThis.__timeline[2]")?.ToString());
+            Assert.Equal("load", engine.Evaluate("globalThis.__timeline[3]")?.ToString());
+            Assert.Equal("4", engine.Evaluate("String(globalThis.__timeline.length)")?.ToString());
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
     private static JsHostAdapter CreateHost() =>
         new(
             navigate: _ => { },

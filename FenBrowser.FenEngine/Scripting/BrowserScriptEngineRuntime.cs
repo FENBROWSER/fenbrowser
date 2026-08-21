@@ -11667,6 +11667,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
 
         SetDocumentReadyState("interactive");
+        FireDocumentReadyStateChange(document);
         var domContentLoadedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
         UpdateEventLoopSnapshot(snapshot =>
         {
@@ -11688,9 +11689,33 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             ToHostOrNull(document, HostObjectKind.DomDocument));
 
         SetDocumentReadyState("complete");
+        FireDocumentReadyStateChange(document);
         InvokeBodyOnloadAttribute(document);
         DispatchWindowLoadHandlers();
         MarkEventLoopCompleted();
+    }
+
+    /// <summary>
+    /// Fires the <c>readystatechange</c> event at the document after a readyState
+    /// transition (HTML: the document fires readystatechange whenever its
+    /// readiness changes, including the interactive and complete transitions).
+    /// </summary>
+    private void FireDocumentReadyStateChange(Document document)
+    {
+        var docHost = ToHostOrNull(document, HostObjectKind.DomDocument);
+        var eventValue = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["type"] = JsValue.FromString("readystatechange"),
+            ["target"] = docHost,
+            ["currentTarget"] = docHost
+        });
+        DispatchBrowserEvent(_documentEventListeners, "readystatechange", docHost, eventValue);
+
+        var handler = GetStoredHostPropertyOrUndefined(document, "onreadystatechange");
+        if (handler.Tag != JsValueTag.Undefined && _interpreter.CanCallValue(handler))
+        {
+            TryInvokeFenJsEventCallback(handler, docHost, eventValue, "readystatechange");
+        }
     }
 
     private JsValue GetStoredHostPropertyOrUndefined(object receiver, string property)
@@ -17150,7 +17175,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     value = JsValue.Null;
                     return true;
                 case "readyState":
-                    value = JsValue.FromString(_owner.GetDocumentReadyState());
+                    // Only the active page document follows the engine navigation
+                    // lifecycle; documents created via DOMImplementation carry their
+                    // own complete readyState per HTML spec (resource-metadata
+                    // management).
+                    var currentDomRoot = _owner._currentDomRoot;
+                    var isActivePageDocument = ReferenceEquals(document, currentDomRoot)
+                        || (currentDomRoot?.OwnerDocument != null && ReferenceEquals(document, currentDomRoot.OwnerDocument));
+                    value = JsValue.FromString(
+                        isActivePageDocument
+                            ? _owner.GetDocumentReadyState()
+                            : document.ReadyState.ToString().ToLowerInvariant());
                     return true;
                 case "compatMode":
                     value = JsValue.FromString("CSS1Compat");
