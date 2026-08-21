@@ -4030,6 +4030,34 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 },
                 length: 2));
 
+        // ── DOMParser parse bridge ──
+        // Parses XML (or HTML for the text/html MIME type) into a wrapped V2
+        // Document host object. Malformed XML returns a <parsererror> error
+        // document instead of throwing, matching browser-observable behavior.
+        _interpreter.RegisterGlobalValue(
+            "__fenParseDocument",
+            _interpreter.AllocateNativeFunction(
+                "__fenParseDocument",
+                (_, args) =>
+                {
+                    var source = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                    var mimeType = args.Count > 1 ? CoerceToHostString(args[1]) : "application/xml";
+
+                    Document parsedDocument;
+                    if (string.Equals(mimeType, "text/html", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var baseUri = _currentBaseUri ?? new Uri("about:blank");
+                        parsedDocument = new HtmlParser(source, baseUri).Parse();
+                    }
+                    else
+                    {
+                        parsedDocument = XmlDomParser.ParseWithErrorDocument(source);
+                    }
+
+                    return ToHostOrNull(parsedDocument, HostObjectKind.DomDocument);
+                },
+                length: 2));
+
         // ── IndexedDB persistence bridge ──
         // Register C# native functions that the JS IDB implementation calls for
         // persistent storage. The JS side falls back to in-memory when these are
@@ -7840,6 +7868,32 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     get: function () { return this._pairs.length; },
                     configurable: true
                 });
+
+                // DOMParser: parses XML MIME types through the native XML parser
+                // and text/html through the HTML parser. Malformed XML yields a
+                // <parsererror> error document per browser-observable behavior.
+                globalThis.DOMParser = function DOMParser() {
+                    if (!(this instanceof DOMParser)) {
+                        throw new TypeError("Failed to construct 'DOMParser': Please use the 'new' operator.");
+                    }
+                };
+
+                DOMParser.prototype.parseFromString = function parseFromString(str, type) {
+                    if (arguments.length < 2) {
+                        throw new TypeError("Failed to execute 'parseFromString' on 'DOMParser': 2 arguments required, but only " + arguments.length + " present.");
+                    }
+
+                    var mimeType = String(type);
+                    var isXml = mimeType === 'text/xml'
+                        || mimeType === 'application/xml'
+                        || mimeType === 'application/xhtml+xml'
+                        || (mimeType.length > 4 && mimeType.slice(-4) === '+xml');
+                    if (mimeType !== 'text/html' && !isXml) {
+                        throw new TypeError("Failed to execute 'parseFromString' on 'DOMParser': The given MIME type is not supported.");
+                    }
+
+                    return __fenParseDocument(String(str), mimeType);
+                };
 
                 globalThis.URL = function URL(input, base) {
                     if (!(this instanceof URL)) {

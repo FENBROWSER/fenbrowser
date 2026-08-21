@@ -114,6 +114,40 @@ public sealed class BrowserLifecycleDetailTests
         }
     }
 
+    [Fact]
+    public async Task CreatedDocument_ReportsOwnCompleteReadinessDuringActiveLoading()
+    {
+        var baseUri = new Uri("https://fixture.test/lifecycle-created-readystate.html");
+        try
+        {
+            BrowserScriptEngineRuntime.Reset();
+            var document = new HtmlParser(
+                "<html><body><script>" +
+                "document.addEventListener('DOMContentLoaded', function () {" +
+                "  globalThis.__activeReadyState = document.readyState;" +
+                "  globalThis.__createdReadyState = document.implementation.createHTMLDocument('x').readyState;" +
+                "});" +
+                "</script></body></html>",
+                baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            // The active page document follows the engine navigation lifecycle;
+            // documents created via DOMImplementation are complete as soon as
+            // they exist (HTML: resource-metadata management).
+            Assert.Equal("interactive", engine.Evaluate("globalThis.__activeReadyState")?.ToString());
+            Assert.Equal("complete", engine.Evaluate("globalThis.__createdReadyState")?.ToString());
+        }
+        finally
+        {
+            BrowserScriptEngineRuntime.Reset();
+        }
+    }
+
     private static JsHostAdapter CreateHost() =>
         new(
             navigate: _ => { },
