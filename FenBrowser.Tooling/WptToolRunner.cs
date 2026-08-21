@@ -955,7 +955,9 @@ namespace FenBrowser.Tooling
         private static string ResolveProcessMode()
         {
             var configured = Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION");
-            return string.IsNullOrWhiteSpace(configured) ? "in-process (default)" : configured.Trim();
+            // The isolation factory defaults to brokered when unset; keep the
+            // recorded label truthful about which mode the browser will use.
+            return string.IsNullOrWhiteSpace(configured) ? "brokered (default)" : configured.Trim();
         }
 
         private static WptOptions ParseOptions(string[] args)
