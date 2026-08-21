@@ -1279,6 +1279,12 @@ public static class RegExpCompiler
                     pos += 4;
                 }
                 return true;
+            case '0':
+                // \0 is the NUL escape (U+0000), matching RegexParser.ParseClassAtom;
+                // treating it as the digit character made valid ranges like [\0-\x1f]
+                // validate as inverted ('0' > '\x1f').
+                codePoint = 0;
+                return true;
             default:
                 codePoint = escaped;
                 return true;
