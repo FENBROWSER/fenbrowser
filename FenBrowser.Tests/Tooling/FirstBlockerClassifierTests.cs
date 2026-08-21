@@ -107,6 +107,86 @@ public sealed class FirstBlockerClassifierTests
         Assert.Equal(["lifecycle sample disagrees"], result.ContradictoryArtifactWarnings);
     }
 
+    public static TheoryData<string, FirstBlockerInput> AllResultShapes => new()
+    {
+        { "none", BootInput() },
+        { "blocker", BootInput() with { ResponseReceived = false, Evidence = [Required("navigation-1", "Navigation", "Core/Network", "ResponseReceived", 1)] } },
+        { "insufficient-evidence", BootInput() with { ContradictoryArtifactWarnings = ["lifecycle sample disagrees"] } }
+    };
+
+    [Theory]
+    [MemberData(nameof(AllResultShapes))]
+    public void Classify_EveryResultShapeCarriesStableSchemaVersion(
+        string expectedResult,
+        FirstBlockerInput input)
+    {
+        var result = FirstBlockerClassifier.Classify(input);
+
+        Assert.Equal(expectedResult, result.Result);
+        Assert.Equal(1, result.SchemaVersion);
+    }
+
+    [Fact]
+    public void Classify_MalformedTimestampEvidenceIsDeterministicAndCausalBySequence()
+    {
+        var input = BootInput() with
+        {
+            RequiredScriptsExecuted = false,
+            Evidence =
+            [
+                new FirstBlockerEvidence(
+                    "script-malformed",
+                    "ECMAScriptSemantics",
+                    "FenEngine/Scripting",
+                    "RequiredScriptsExecuted",
+                    8,
+                    "not-a-timestamp",
+                    true,
+                    "script threw")
+            ]
+        };
+
+        var first = FirstBlockerClassifier.Classify(input);
+        var second = FirstBlockerClassifier.Classify(input);
+
+        Assert.Equal("blocker", first.Result);
+        Assert.Equal("RequiredScriptsExecuted", first.MilestoneBlocked);
+        // An unparseable timestamp must not fabricate clock evidence, but
+        // sequence ordering alone still identifies the causal record.
+        Assert.Equal(string.Empty, first.FirstCausalTimestampUtc);
+        Assert.Empty(first.EvidenceQualityWarnings);
+        // Determinism is asserted on the serialized artifact: record equality
+        // would compare List members by reference.
+        Assert.Equal(
+            System.Text.Json.JsonSerializer.Serialize(first),
+            System.Text.Json.JsonSerializer.Serialize(second));
+    }
+
+    [Fact]
+    public void Classify_MalformedArtifactCollectionsAreToleratedAndNormalized()
+    {
+        var result = FirstBlockerClassifier.Classify(BootInput() with
+        {
+            NonFatalFailures = null,
+            ContradictoryArtifactWarnings = null,
+            MissingRequiredArtifacts = ["  ", "trace.jsonl", "trace.jsonl", null],
+            Evidence = null
+        });
+
+        Assert.Equal("insufficient-evidence", result.Result);
+        Assert.Equal("ArtifactCompleteness", result.MilestoneBlocked);
+        // Whitespace and duplicate names are normalized; null entries dropped.
+        Assert.Equal(["Required artifact missing: trace.jsonl."], result.EvidenceQualityWarnings);
+        Assert.Empty(result.ContradictoryArtifactWarnings);
+        Assert.Empty(result.NonFatalRemainingFailures);
+    }
+
+    [Fact]
+    public void Classify_NullInputThrows()
+    {
+        Assert.Throws<ArgumentNullException>(() => FirstBlockerClassifier.Classify(null));
+    }
+
     private static FirstBlockerInput BootInput() => new(
         NavigationRequested: true,
         ResponseReceived: true,

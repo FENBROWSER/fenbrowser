@@ -218,7 +218,12 @@ public static class FirstBlockerClassifier
             SubsystemOwner: owner,
             MilestoneBlocked: milestone,
             FirstCausalSequence: causal?.Sequence > 0 ? causal.Sequence : null,
-            FirstCausalTimestampUtc: causal?.TimestampUtc ?? string.Empty,
+            // The typed artifact promises UTC; never echo an unvalidated
+            // source timestamp into it.
+            FirstCausalTimestampUtc:
+                causal != null && TryParseTimestamp(causal.TimestampUtc, out _)
+                    ? causal.TimestampUtc
+                    : string.Empty,
             EvidenceIds: evidenceIds,
             Confidence: confidence,
             Explanation: explanation,
