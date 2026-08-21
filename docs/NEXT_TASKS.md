@@ -182,7 +182,7 @@ Performance impact: Record hangs/timeouts as diagnostic signals, not benchmarks.
 Compatibility impact: Prioritizes browser integration over obscure conformance.
 Known risks: Runner infrastructure may dominate failure counts.
 Blockers: None
-Next action: Select one deterministic cookies or CSSOM/geometry file from the local WPT checkout, run it with the existing gate twice, and classify any failure before widening further.
+Next action: The fetch/CORS and cookies slices are classified (see FETCH-001 and FRAME-001). Select one deterministic CSSOM/geometry file from the local WPT checkout, run it with the existing gate twice, and classify any failure before widening further.
 
 ## Task FETCH-001
 
@@ -209,6 +209,32 @@ Compatibility impact: Aligns JS-visible fetch semantics with browsers; sites rel
 Known risks: Overly strict enforcement could break current real-site loads if any same-site asset is served from a sibling origin without CORS headers; verify against the Google bundle before/after.
 Blockers: None for the fix itself; the file is currently contended by another active session, so coordinate before editing `BrowserScriptEngineRuntime.cs`.
 Next action: Implement the response filter and CORS wiring, add the local reduction fixture, then move `fetch/api/cors/cors-basic.any.js` into the passing gate after two green runs.
+
+## Task FRAME-001
+
+Task ID: FRAME-001
+Title: Dispatch load event on iframe elements when child documents finish loading
+Area: DOM / frames / real-site boot
+Owner Agent: Browser Integration Agent
+Status: RESEARCHED
+Priority: 1
+Risk Level: Medium
+Dependencies: Child-frame navigation and parsing exist (trace-proven); local reduction bundle exists
+Files likely involved: `FenBrowser.FenEngine/Rendering/BrowserApi.cs` (frame loading path), `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs` (event dispatch), `FenBrowser.Core` DOM element types
+Specs/references: HTML Standard (iframe load event steps); `docs/DOM_API_TRACKER.md`
+Current behavior: When an `<iframe>` navigates, the engine loads and parses the child document and runs child-frame `SetDomAsyncCore`, but the parent's iframe element never receives a `load` event. Reduction `logs/fixtures/iframe_cookie_chain_probe.html` + bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_iframe_cookie_chain_probe.html/20260821T191845Z/`: rendered status remains `parent-script-ran`; no exceptions; no missing-API records. This silently hangs WPT `cookies/attributes/invalid.html` at its first helper (`getAndExpireCookiesForDefaultPathTest` awaits an iframe load) and blocks every site that gates boot on iframe loads (ads, analytics, payment iframes).
+Expected behavior: After a child frame's document completes loading, the parent's iframe element dispatches `load` (bubbling per spec through the frame tree); removing/re-navigating re-dispatches; about:blank initial-about-blank semantics apply.
+Reproduction: Run `debug-site file:///...logs/fixtures/iframe_cookie_chain_probe.html 12000` and observe status text never advances past `parent-script-ran`.
+Root cause hypothesis: The frame-loading path completes child document setup but has no step mapping child-document completion to a parent-element event dispatch.
+Implementation plan: Hook child-document completion (the point where child SetDom/lifecycle reaches complete) to dispatch `load` on the owning HTMLIFrameElement in the parent realm; add regression fixture asserting listener invocation order relative to parent `load`.
+Tests required: Local reduction goes green end-to-end (`expire-done|fetch-status=200|document-cookie=...` chain); new unit test for load dispatch on child completion; rerun cookies gate slice twice.
+Evidence required: Before: the reduction bundle above; after: green reduction bundle plus two-run gate evidence with `invalid.html` classified Pass or exactly classified further.
+Security impact: None directly; enables future sandboxed-iframe attribute enforcement work on the same code path.
+Performance impact: One event dispatch per frame load; negligible.
+Compatibility impact: Unblocks the WPT cookies family and common third-party embed boot patterns.
+Known risks: Child-frame script context sharing (child SetDomAsyncCore against the shared engine) may need its own lifecycle separation; verify no double dispatch across re-navigation.
+Blockers: `BrowserScriptEngineRuntime.cs` is currently contended by another active session; coordinate before editing.
+Next action: Implement parent-element load dispatch on child completion with the reduction as acceptance, then rerun the cookies slice twice.
 
 ## Task PROC-001
 

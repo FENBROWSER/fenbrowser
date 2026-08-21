@@ -13,6 +13,7 @@ This tracker separates implementation presence from browser-like binding behavio
 | Selector APIs | INTEGRATED | Style/real-site paths depend on selectors | WPT selector API slice plus `--inspect-selector` command |
 | Collections and liveness | INTEGRATED | Host-backed `HTMLCollection` iteration is tested through direct, `for...of`, and spread paths; mutation liveness is unverified | NodeList coverage, mutation liveness, descriptors, and selected WPT |
 | `EventTarget` and propagation | INTEGRATED | Browser/input/event paths exist | Capture/target/bubble/cancel/default-action matrix |
+| Child-frame events (`HTMLIFrameElement` load) | STUBBED | Child documents load and parse (trace-proven in `20260821T191845Z` reduction bundle), but the parent iframe element never receives `load`; hangs WPT cookies family and iframe-gated site boot | Dispatch parent-element `load` on child-document completion; see `NEXT_TASKS.md` FRAME-001 |
 | Mouse/keyboard/input/focus events | TESTED | Compiled local acceptance covers hit-tested pointer/mouse order, focus, key/beforeinput/input/change delivery, and cancellation | Automated Google click/type/submit trace |
 | `MutationObserver` | IMPLEMENTED | Source surface exists | Microtask delivery/order/disconnect reductions |
 | Custom elements | IMPLEMENTED | Source surface exists | Reaction-stack and upgrade timing WPT |

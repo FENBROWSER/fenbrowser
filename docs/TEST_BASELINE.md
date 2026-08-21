@@ -111,6 +111,10 @@ Two identical runs at FenBrowser `eb74bec0` (working tree carrying diagnostic-on
 
 Same-origin subtests pass, so basic same-origin fetch behavior is intact. The `.any.js` worker scope (`cors-basic.any.worker.html`) times out wholesale and classifies as a dedicated-worker capability gap, not an engine assertion failure; it stays out of any passing gate until workers exist. The file joins the four-file passing gate only after FETCH-001 fixes the three buckets; until then the evidence lives in the two run bundles above.
 
+### Cookies classification slice (2026-08-22)
+
+One run of the four-file gate plus `cookies/attributes/invalid.html`: `Results/wpt/selected/20260822_cookies_gate_run1/`. The gate files remain all-Pass; the cookies file times out wholesale with zero recorded subtests (`ExecuteAsyncScript` never completes within its 60s budget). Local reduction: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_iframe_cookie_chain_probe.html/20260821T191845Z/`. The trace proves iframe navigation starts, the child document parses, and child-frame `SetDomAsyncCore` runs, but the parent's `HTMLIFrameElement` never receives a `load` event, so the first helper in `cookies/resources/cookie-test.js` (`getAndExpireCookiesForDefaultPathTest`, which awaits an iframe load) blocks forever. First fatal blocker bucket: F (DOM API failure — child-frame load-event dispatch missing). No JS exceptions and no missing-API records are produced; the hang is silent. Two artifact-quality observations recorded alongside: the bundle's `dom_dump.txt` contained unrelated foreign-site content while `raw_source.html`/`rendered_text.txt` were correct (dump-scope integrity needs review), and network capture recorded zero requests including known subresources. The cookies file joins the passing gate only after iframe `load` dispatch exists.
+
 ## Real-site and diagnostic evidence
 
 | Target | Evidence | Observed result | Status |
