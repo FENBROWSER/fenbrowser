@@ -2300,7 +2300,7 @@ namespace FenBrowser.Tooling
             {
                 if (File.Exists(sourcePath))
                 {
-                    File.Copy(sourcePath, destinationPath, overwrite: true);
+                    LogArtifacts.Copy(sourcePath, destinationPath);
                 }
             }
             catch
@@ -2331,7 +2331,7 @@ namespace FenBrowser.Tooling
                 var sourcePath = Path.Combine(DiagnosticPaths.GetLogsDirectory(), sourceName);
                 if (File.Exists(sourcePath))
                 {
-                    File.Copy(sourcePath, destinationPath, overwrite: true);
+                    LogArtifacts.Copy(sourcePath, destinationPath);
                 }
             }
             catch
@@ -2357,7 +2357,7 @@ namespace FenBrowser.Tooling
 
                 if (latest != null)
                 {
-                    File.Copy(latest.FullName, destinationPath, overwrite: true);
+                    LogArtifacts.Copy(latest.FullName, destinationPath);
                 }
             }
             catch
@@ -2386,7 +2386,7 @@ namespace FenBrowser.Tooling
 
                 if (latest != null)
                 {
-                    File.Copy(latest.FullName, destinationPath, overwrite: true);
+                    LogArtifacts.Copy(latest.FullName, destinationPath);
                 }
             }
             catch

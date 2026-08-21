@@ -219,8 +219,9 @@ public sealed class LoggingNoiseRegressionTests
 
             Assert.True(EngineLog.Flush(TimeSpan.FromSeconds(2)));
 
-            // File must be readable immediately after flush.
-            var lines = File.ReadAllLines(tracePath);
+            // File must be readable immediately after flush; the sink keeps its
+            // write handle open, so the read must tolerate the active writer.
+            var lines = LogArtifacts.ReadAllLines(tracePath);
             Assert.Equal(16, lines.Length);
 
             // Each line must be valid JSON.
@@ -268,7 +269,7 @@ public sealed class LoggingNoiseRegressionTests
 
             Assert.True(EngineLog.Flush(TimeSpan.FromSeconds(2)));
 
-            var lines = File.ReadAllLines(tracePath);
+            var lines = LogArtifacts.ReadAllLines(tracePath);
             Assert.Single(lines);
 
             using var doc = JsonDocument.Parse(lines[0]);

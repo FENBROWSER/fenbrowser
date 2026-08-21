@@ -110,7 +110,7 @@ A missing property is not fatal merely because it was read. It becomes a fatal c
 | Artifact | Status | Contract |
 | --- | --- | --- |
 | `summary.md`, `summary.json` | INTEGRATED | Human and machine run summary |
-| `trace.jsonl`, `logs.ndjson` | INTEGRATED | Structured event streams, flushed through the run boundary |
+| `trace.jsonl`, `logs.ndjson` | INTEGRATED | Structured event streams, flushed through the run boundary. The file sink keeps its write handle open across the flush barrier, so artifact readers/copiers must use writer-tolerant share modes (`LogArtifacts` in Core); plain `File.Copy`/`File.ReadAllLines` fail on Windows while logging is active |
 | `console.log`, `exceptions.json` | INTEGRATED | Console plus typed callback exception records with agreeing totals |
 | `network.json` | INTEGRATED | Requests, responses, failures, policy disposition |
 | `missing_apis.json` | TESTED | Schema-v2 object retains up to 512 ordered rich tracker records, reports total/retained/truncated counts, preserves navigation-scoped identity plus assignment, descriptor/property-check, descriptor-target, and bounded boolean function-prototype-marker evidence, and excludes legacy/unclassified observations from standards priority |

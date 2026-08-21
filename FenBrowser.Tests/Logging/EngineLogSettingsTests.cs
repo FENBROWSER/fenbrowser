@@ -327,7 +327,7 @@ public class EngineLogSettingsTests
             }
 
             Assert.True(EngineLog.Flush(TimeSpan.FromSeconds(2)));
-            Assert.Equal(64, File.ReadAllLines(tracePath).Length);
+            Assert.Equal(64, LogArtifacts.ReadAllLines(tracePath).Length);
         }
         finally
         {
