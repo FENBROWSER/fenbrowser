@@ -35,6 +35,21 @@ namespace FenBrowser.Tests.Diagnostics
             _originalLogCookies = BrowserSettings.Instance.Logging.LogCookies;
             BrowserSettings.Instance.Logging.LogCookies = true;
 
+            // The compatibility event pipeline is process-global; other tests may
+            // have reconfigured or disabled it. Configure explicitly so these
+            // assertions depend on this test's state only.
+            EngineLog.Configure(new EngineLoggingOptions
+            {
+                Enabled = true,
+                GlobalMinimumSeverity = LogSeverity.Trace,
+                EnableConsoleSink = false,
+                EnableDebugSink = false,
+                EnableNdjsonSink = false,
+                EnableRingBufferSink = true,
+                EnableTraceSink = false
+            });
+            EngineLog.ClearCompatibilityBuffer();
+
             _handler = entry =>
             {
                 lock (_captured)
@@ -49,6 +64,15 @@ namespace FenBrowser.Tests.Diagnostics
         {
             LogManager.LogEntryAdded -= _handler;
             BrowserSettings.Instance.Logging.LogCookies = _originalLogCookies;
+            EngineLog.Configure(new EngineLoggingOptions
+            {
+                Enabled = false,
+                EnableConsoleSink = false,
+                EnableDebugSink = false,
+                EnableNdjsonSink = false,
+                EnableRingBufferSink = false,
+                EnableTraceSink = false
+            });
         }
 
         [Fact]

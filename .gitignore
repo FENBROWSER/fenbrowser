@@ -45,6 +45,7 @@ bld/
 !scripts/resolve-paths.ps1
 !scripts/run-regexp-chunked.ps1
 !scripts/run_test262_tui.ps1
+!scripts/test_inventory.ps1
 !scripts/run_test262_web.ps1
 *.py
 !scripts/test262_dashboard.py

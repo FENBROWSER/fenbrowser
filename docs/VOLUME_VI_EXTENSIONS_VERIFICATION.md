@@ -4396,3 +4396,22 @@ Verification:
 
 - Release build of `scripts/BenchCSS/BenchCSS.csproj`: pass (zero errors).
 - One run over `Results/html-tokenizer-bench/benchmark-corpus.html` processed 6,860 style blocks with stable counts of 130,339 tokens and 6,860 parsed rules.
+
+## 6.192 Excluded-Test Inventory And Cookie-Diagnostics Discovery Guard (2026-08-21)
+
+- `scripts/test_inventory.ps1` deterministically parses `FenBrowser.Tests.csproj` `Compile Remove` patterns minus explicit re-includes and writes schema `fenbrowser.test-inventory/1` reports (`excluded_tests.md`/`.json`) under `Results/test-inventory/`. Current snapshot: 243 of 538 test sources excluded across 16 groups; 295 active.
+- The diagnostic subset selection is complete for the `Diagnostics/` tree: `Diagnostics/CookieDiagnosticsTests.cs` is included on the active surface with five PII-safe cookie-ingress/egress/redaction/rejection regression facts; `Diagnostics/NavigationGlobalsProbeTests.cs` stays excluded because its production probe type was removed.
+- `RequiredBrowserIntegrationDiscoveryTests` now also requires all five cookie-diagnostics facts as compiled, xunit-attributed, discoverable tests, protecting the slice against silent de-activation by the broad remove patterns (37 required contracts total).
+- Focused command for the diagnostic/browser-integration surface: `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter "FullyQualifiedName~RequiredBrowserIntegrationDiscoveryTests|FullyQualifiedName~CookieDiagnosticsTests|FullyQualifiedName~EventLoopTraceTests"`.
+
+Verification:
+
+- `powershell -NoProfile -File scripts/test_inventory.ps1`: reported "Excluded 243 of 538 sources across 16 groups" and wrote both report files.
+- `dotnet test ... --filter "FullyQualifiedName~CookieDiagnosticsTests"`: pass (`5/5`, zero failed/skipped).
+- `dotnet test ... --filter "FullyQualifiedName~SharedArrayBuffer|FullyQualifiedName~CrossOriginIsolated"`: pass (`8/8`) after the fail-closed sandbox-policy read fix.
+- `dotnet test ... --filter "FullyQualifiedName~RequiredBrowserIntegrationDiscoveryTests|FullyQualifiedName~CookieDiagnosticsTests|FullyQualifiedName~EventLoopTraceTests"`: pass (`8/8`, zero failed/skipped) with the extended guard.
+
+Addendum (same day, full-suite evidence):
+
+- The first full-suite run exposed a real isolation defect: the four event-emitting cookie tests passed focused but failed in-suite with empty captures because the process-global EngineLog pipeline had been reconfigured or disabled by tests outside any non-parallel collection. The fix follows the established `MissingApiTrackerTests` pattern: the fixture configures `EngineLog` explicitly (enabled, Trace minimum, ring buffer) in its constructor and disables it in `Dispose`, so its assertions depend only on the fixture's own state.
+- Full-suite Release runs at this tree: 292 failures before the fixture fix, then 108-112 after, with zero cookie-diagnostics failures. A clean-HEAD worktree baseline (no working-tree changes) produced 282 failures at the same commit, confirming the residual instability is pre-existing cross-collection global-state racing (EngineLog configuration, `BrowserSettings`, LogManager events), not a product regression. Recorded in `docs/KNOWN_GAPS.md`; per-fixture self-configuration is the required pattern for any new global-state-dependent test until collections are consolidated.

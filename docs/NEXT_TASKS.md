@@ -86,25 +86,25 @@ Task ID: TEST-001
 Title: Put diagnostic and browser-integration regressions on a discovered test surface
 Area: Verification infrastructure
 Owner Agent: Conformance Agent
-Status: RESEARCHED
+Status: TESTED
 Priority: 1
 Risk Level: Medium
 Dependencies: `FenBrowser.Tests` builds and focused included tests pass
 Files likely involved: `FenBrowser.Tests/FenBrowser.Tests.csproj`, diagnostic/event-loop test files or a new focused test project
 Specs/references: `docs/VOLUME_VI_EXTENSIONS_VERIFICATION.md`; `docs/DEFINITION_OF_DONE.md`
-Current behavior: `Engine/**`, `DOM/**`, `WebAPIs/**`, `Integration/**`, `Diagnostics/**`, `Rendering/**`, `Host/**`, and other directories are excluded. Release discovery finds missing-API and renderer metadata tests but not event-loop trace or real-site rendering diagnostics.
-Expected behavior: Tests that protect TRACE-001 through TRACE-003 are compiled, discoverable, and run by one small documented command.
-Reproduction: Compare `dotnet test --list-tests` output for named diagnostic test classes against source files.
-Root cause hypothesis: Broad compile-removal patterns silently disconnect high-value regression files from the active test assembly.
-Implementation plan: Inventory excluded tests and dependencies; choose the smallest coherent included project/surface; include only required files; resolve compile failures without broad production refactors; document the focused command.
+Current behavior: The TRACE-001 through TRACE-003 regression suites (event-loop trace, callback-failure provenance, missing-API classification, first-blocker classifier, bundle artifact contracts) are compiled and discovered, protected by `RequiredBrowserIntegrationDiscoveryTests`. `scripts/test_inventory.ps1` now generates the deterministic excluded-source inventory (`Results/test-inventory/`, schema fenbrowser.test-inventory/1): 243 of 538 sources excluded across 16 groups. The PII-safe cookie diagnostics regression (`Diagnostics/CookieDiagnosticsTests.cs`, 5 tests) is surfaced and joins the non-parallel EngineLog collection with explicit per-test `EngineLog.Configure`; it passes focused and in the full-suite run.
+Expected behavior: Tests that protect TRACE-001 through TRACE-003 are compiled, discoverable, and run by one small documented command; the excluded surface is inventoried by script rather than folklore.
+Reproduction: `powershell -ExecutionPolicy Bypass -File scripts/test_inventory.ps1`; `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --filter "FullyQualifiedName~CookieDiagnostics"`.
+Root cause hypothesis: Resolved for the diagnostic subset. Broad compile-removal patterns remain for legacy trees (Engine 110, Rendering 47, DOM 16 files) pending independent review.
+Implementation plan: Inventory produced; diagnostic subset active. Remaining exclusions require per-group compile-dependency review before inclusion.
 Tests required: Test discovery assertion/list plus execution of the selected diagnostic slice.
 Evidence required: Before/after discovered-test list and green focused run with exact counts.
-Security impact: Enables deny-path and redaction regression tests.
+Security impact: Enables deny-path and redaction regression tests (cookie PII redaction now active).
 Performance impact: Keep the default focused slice bounded; no full-suite requirement.
 Compatibility impact: Verification-only.
-Known risks: Surfacing stale tests that describe obsolete architecture.
+Known risks: Full-suite runs still show ~108 nondeterministic failures from cross-collection global-state races (EngineLog/process-wide singletons); this is recorded as its own follow-up and does not affect focused slices.
 Blockers: None
-Next action: Produce an excluded-test inventory grouped by compile dependency and select the diagnostic subset only.
+Next action: Group-review the remaining 243 excluded sources by compile dependency (start with `Diagnostics/NavigationGlobalsProbeTests.cs`, which references the removed production probe type and needs a decision: restore the probe or retire the test).
 
 ## Task TRACE-004
 
