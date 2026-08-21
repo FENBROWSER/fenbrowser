@@ -216,25 +216,50 @@ Task ID: FRAME-001
 Title: Dispatch load event on iframe elements when child documents finish loading
 Area: DOM / frames / real-site boot
 Owner Agent: Browser Integration Agent
-Status: RESEARCHED
+Status: TESTED
 Priority: 1
 Risk Level: Medium
 Dependencies: Child-frame navigation and parsing exist (trace-proven); local reduction bundle exists
-Files likely involved: `FenBrowser.FenEngine/Rendering/BrowserApi.cs` (frame loading path), `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs` (event dispatch), `FenBrowser.Core` DOM element types
+Files likely involved: `FenBrowser.FenEngine/Rendering/BrowserApi.cs` (`LoadFrameElementAsync`), `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs` (event dispatch)
 Specs/references: HTML Standard (iframe load event steps); `docs/DOM_API_TRACKER.md`
-Current behavior: When an `<iframe>` navigates, the engine loads and parses the child document and runs child-frame `SetDomAsyncCore`, but the parent's iframe element never receives a `load` event. Reduction `logs/fixtures/iframe_cookie_chain_probe.html` + bundle `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_iframe_cookie_chain_probe.html/20260821T191845Z/`: rendered status remains `parent-script-ran`; no exceptions; no missing-API records. This silently hangs WPT `cookies/attributes/invalid.html` at its first helper (`getAndExpireCookiesForDefaultPathTest` awaits an iframe load) and blocks every site that gates boot on iframe loads (ads, analytics, payment iframes).
-Expected behavior: After a child frame's document completes loading, the parent's iframe element dispatches `load` (bubbling per spec through the frame tree); removing/re-navigating re-dispatches; about:blank initial-about-blank semantics apply.
-Reproduction: Run `debug-site file:///...logs/fixtures/iframe_cookie_chain_probe.html 12000` and observe status text never advances past `parent-script-ran`.
-Root cause hypothesis: The frame-loading path completes child document setup but has no step mapping child-document completion to a parent-element event dispatch.
-Implementation plan: Hook child-document completion (the point where child SetDom/lifecycle reaches complete) to dispatch `load` on the owning HTMLIFrameElement in the parent realm; add regression fixture asserting listener invocation order relative to parent `load`.
-Tests required: Local reduction goes green end-to-end (`expire-done|fetch-status=200|document-cookie=...` chain); new unit test for load dispatch on child completion; rerun cookies gate slice twice.
-Evidence required: Before: the reduction bundle above; after: green reduction bundle plus two-run gate evidence with `invalid.html` classified Pass or exactly classified further.
+Current behavior: FIXED. `LoadFrameElementAsync` now dispatches a non-bubbling, non-cancelable `load` event on the parent iframe element after the child document attaches and its scripts initialize. Reduction evidence before: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_fixtures_iframe_cookie_chain_probe.html/20260821T191845Z/` (status frozen at `parent-script-ran`). After: `.../20260821T194355Z/` renders `parent-script-ran|doc-capture-load|iframe-load|cw=object|getCookies-missing|timer-alive` — both document-capture and element listeners fire, `contentWindow` resolves, no exceptions.
+Expected behavior: After a child frame's document completes loading, the parent's iframe element dispatches `load`; re-navigation re-dispatches after the stale-document guard.
+Reproduction: Run `debug-site file:///...logs/fixtures/iframe_cookie_chain_probe.html 12000` and read the status div chain.
+Root cause: The frame-loading path completed child document setup without mapping child completion to a parent-element event dispatch.
+Implementation plan: Done in `BrowserApi.DispatchFrameLoadCompleted`. Remaining follow-ups tracked separately: regression protection needs either a BrowserHost-level harness test or inclusion of the already-written excluded assertions in `FenBrowser.Tests/Engine/JavaScriptEngineLifecycleTests.cs` (iframe onload cases exist there but the whole `Engine/**` tree is compile-excluded — see TEST-001).
+Tests required: Included regression test for load dispatch on child completion (pending harness/exclusion decision); rerun cookies gate slice after WINDOW-001.
+Evidence required: Before/after reduction bundles above; clean rebuild note — Tooling runs debug-site in-process, so Tooling must be rebuilt to pick up FenEngine changes (stale-binary trap cost several diagnostic cycles here).
 Security impact: None directly; enables future sandboxed-iframe attribute enforcement work on the same code path.
 Performance impact: One event dispatch per frame load; negligible.
-Compatibility impact: Unblocks the WPT cookies family and common third-party embed boot patterns.
-Known risks: Child-frame script context sharing (child SetDomAsyncCore against the shared engine) may need its own lifecycle separation; verify no double dispatch across re-navigation.
-Blockers: `BrowserScriptEngineRuntime.cs` is currently contended by another active session; coordinate before editing.
-Next action: Implement parent-element load dispatch on child completion with the reduction as acceptance, then rerun the cookies slice twice.
+Compatibility impact: Unblocks iframe-gated boot patterns; the WPT cookies family now progresses past its first helper only after WINDOW-001 exposes cross-frame functions.
+Known risks: Double dispatch across re-navigation guarded by the existing `IsFrameScriptsHydratedForUri` early-return; failure-path frames (fetch errors) intentionally do not dispatch yet — spec says error pages load, so revisit when error-page documents exist.
+Blockers: None
+Next action: WINDOW-001 (cross-frame `contentWindow` function exposure) before rerunning the cookies gate slice.
+
+## Task WINDOW-001
+
+Task ID: WINDOW-001
+Title: Expose child-frame script functions through contentWindow
+Area: DOM / frames / cross-realm bindings
+Owner Agent: Bindings Agent
+Status: RESEARCHED
+Priority: 2
+Risk Level: Medium
+Dependencies: FRAME-001 landed; reduction shows `cw=object|getCookies-missing`
+Files likely involved: `FenBrowser.FenEngine/Rendering/BrowserApi.cs`, `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs` (frame facade/window proxy surfaces; `IFrameInterpreterIsolationTests` shows `_iframeRealms`)
+Specs/references: HTML Standard (WindowProxy, same-origin cross-window property access); `docs/MEMORY_MODEL.md`
+Current behavior: `iframe.contentWindow` returns an object, but functions defined by the child frame's scripts (e.g. WPT cookie helpers' `getCookies`) are not reachable through it, so helper chains like echo-cookie.html + `win.getCookies()` cannot run.
+Expected behavior: Same-origin access through `contentWindow` reaches the child realm's globals (functions, variables) with correct wrapper identity; cross-origin access stays blocked per origin policy.
+Reproduction: The reduction fixture marks `getCookies-missing`.
+Root cause hypothesis: The window facade exposed to parents does not forward property gets into the child frame realm's global object.
+Implementation plan: Route same-origin `contentWindow` property gets/sets to the child realm's global with identity caching; keep postMessage path intact; enforce origin checks before forwarding.
+Tests required: Extend the reduction chain to reach `expire-done`; include IFrameInterpreterIsolation/RealmSecurity suites; then rerun the cookies WPT slice twice.
+Security impact: Cross-origin leakage risk if origin checks are skipped; negative tests required before DONE.
+Performance impact: One indirection per property access; negligible.
+Compatibility impact: Required by WPT cookies helpers and common embed APIs (Stripe/analytics windows).
+Known risks: Realm lifetime management — child realm must live while parent holds contentWindow (memory-model review per BLOCK-MEM-001 adjacency).
+Blockers: `BrowserScriptEngineRuntime.cs` contention with another active session may still apply.
+Next action: Implement same-origin forwarding behind origin checks with the reduction chain as acceptance.
 
 ## Task PROC-001
 

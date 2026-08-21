@@ -5122,6 +5122,7 @@ pre {{
                 frameElement.MarkDirty(InvalidationKind.Style | InvalidationKind.Layout | InvalidationKind.Paint);
                 _engine.ScheduleRecascade(fullRecascade: true);
                 SyncScriptContextToSelectedBrowsingContext();
+                DispatchFrameLoadCompleted(frameElement, finalUri);
                 TryLogInfo(
                     $"[BrowserHost] iframe document attached final='{finalUri}' root='{parsedRoot.TagName}'",
                     LogCategory.Navigation);
@@ -5129,6 +5130,25 @@ pre {{
             catch (Exception ex)
             {
                 TryLogWarn($"[BrowserHost] failed loading iframe '{frameUri}': {ex.Message}", LogCategory.Navigation);
+            }
+        }
+
+        private void DispatchFrameLoadCompleted(Element frameElement, Uri frameUri)
+        {
+            // HTML: when a child frame document finishes loading, the parent's
+            // iframe element receives a `load` event (no bubbling, not cancelable).
+            // Pages commonly gate boot on this event; without it they hang silently.
+            try
+            {
+                var eventContext = _engine.Context as FenBrowser.FenEngine.Core.ExecutionContext
+                    ?? new FenBrowser.FenEngine.Core.ExecutionContext();
+                DispatchDomEvent(frameElement, "load", eventContext, bubbles: false);
+            }
+            catch (Exception ex)
+            {
+                TryLogWarn(
+                    $"[BrowserHost] failed dispatching iframe load for '{frameUri}': {ex.Message}",
+                    LogCategory.Navigation);
             }
         }
 
