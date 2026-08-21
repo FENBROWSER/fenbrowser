@@ -398,10 +398,79 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         public void Dispose() => Timer?.Dispose();
     }
 
+    private sealed class FenJsPinScope : IDisposable
+    {
+        private readonly FenJsBrowserScriptEngine _owner;
+
+        public FenJsPinScope(FenJsBrowserScriptEngine owner, int generation, ObjectHandle[] handles)
+        {
+            _owner = owner;
+            Generation = generation;
+            Handles = handles;
+        }
+
+        public int Generation { get; }
+
+        public ObjectHandle[] Handles { get; }
+
+        public void Dispose() => _owner._fenJsPinScopes.TryRemove(this, out _);
+    }
+
+    // Pins object-tagged values for the lifetime of the returned scope. Values
+    // without an object handle (numbers, strings, undefined, host objects) need
+    // no heap rooting; a null scope is returned when nothing requires pinning.
+    private IDisposable PinFenJsValues(params JsValue[] values)
+    {
+        if (values == null || values.Length == 0)
+        {
+            return null;
+        }
+
+        ObjectHandle[] handles = null;
+        var objectCount = 0;
+        for (var i = 0; i < values.Length; i++)
+        {
+            if (values[i].Tag == JsValueTag.Object)
+            {
+                objectCount++;
+            }
+        }
+
+        if (objectCount > 0)
+        {
+            handles = new ObjectHandle[objectCount];
+            var write = 0;
+            for (var i = 0; i < values.Length; i++)
+            {
+                if (values[i].Tag == JsValueTag.Object)
+                {
+                    handles[write++] = values[i].AsObjectHandle();
+                }
+            }
+        }
+
+        if (handles == null)
+        {
+            return null;
+        }
+
+        var scope = new FenJsPinScope(this, _fenJsSessionGeneration, handles);
+        _fenJsPinScopes[scope] = 1;
+        return scope;
+    }
+
     private readonly object _fenJsLock = new();
     private readonly object _windowMessageQueueLock = new();
     private Task _windowMessageDeliveryTail = Task.CompletedTask;
     private readonly ConcurrentDictionary<long, FenJsTimerRegistration> _fenJsTimers = new();
+    // JsValues held only by C# locals across a worker-thread marshal (event
+    // facades, queued message payloads, restored window.event values) are
+    // invisible to the FenJS GC root set, so a collection triggered by other
+    // engine work can sweep them and the later use throws "Stale heap handle".
+    // Pin scopes keep those handles traced from creation until the marshaled
+    // work completes. Scopes are generation-tagged so a session reset (new
+    // heap) never traces old-heap handles.
+    private readonly ConcurrentDictionary<FenJsPinScope, byte> _fenJsPinScopes = new();
     private long _fenJsTimerIdCounter;
     private long _diagnosticCookieCaptureCounter;
     private JsValue _fenJsGlobalThis = JsValue.Undefined;
@@ -533,6 +602,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             {
                 TraceJsRoot(tracer, registration.WindowContext.WindowTarget);
                 TraceBrowserEventListeners(tracer, registration.WindowContext.WindowListeners);
+            }
+        }
+
+        var currentSessionGeneration = _fenJsSessionGeneration;
+        foreach (var pinScope in _fenJsPinScopes.Keys)
+        {
+            if (pinScope.Generation != currentSessionGeneration)
+            {
+                continue;
+            }
+
+            for (var i = 0; i < pinScope.Handles.Length; i++)
+            {
+                tracer.Trace(pinScope.Handles[i]);
             }
         }
 
@@ -1454,6 +1537,27 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
 
         return defaultTimeoutMs;
+    }
+
+    // Diagnostic knob: FEN_FENJS_GC_STRESS=before-every-alloc|after-every-alloc|random
+    // drives the FenJs heap with the same stress modes the Js shell exposes, so
+    // unrooted host-to-JS value windows reproduce deterministically in tests and
+    // site triage instead of only under real-site allocation pressure.
+    private static GcStressMode ResolveFenJsGcStressMode()
+    {
+        var configured = Environment.GetEnvironmentVariable("FEN_FENJS_GC_STRESS");
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return GcStressMode.None;
+        }
+
+        return configured.Trim().ToLowerInvariant() switch
+        {
+            "before-every-alloc" => GcStressMode.BeforeEveryAlloc,
+            "after-every-alloc" => GcStressMode.AfterEveryAlloc,
+            "random" => GcStressMode.Random,
+            _ => GcStressMode.None
+        };
     }
 
     private object EvaluateWithFenJs(string script)
@@ -3409,7 +3513,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             {
                 ParserMaxRecursionDepth = FenJsBrowserParserMaxRecursionDepth
             };
-            _interpreter = new BytecodeInterpreter
+            var gcStressMode = ResolveFenJsGcStressMode();
+            _interpreter = new BytecodeInterpreter(
+                gcStressMode == GcStressMode.None ? null : new JsHeap(gcStressMode))
             {
                 HostObjectTable = new HostObjectTable(),
                 HostHooks = _hostHooks,
@@ -3452,6 +3558,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             _windowEventListeners.Clear();
             _visualViewportEventListeners.Clear();
             _embeddedParentWindowListeners.Clear();
+            // Pin scopes from the previous session reference old-heap handles;
+            // the new heap's marker validates every traced handle and would
+            // treat them as fatal. The generation bump below already makes
+            // them invisible to tracing; clearing also releases their memory.
+            _fenJsPinScopes.Clear();
             _hostCallableCache = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             _hostPropertyStore = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             _missingHostPropertyReads = new ConditionalWeakTable<object, HashSet<string>>();
@@ -6529,6 +6640,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         var callbackThis = windowContext?.WindowTarget ?? _fenJsGlobalThis;
         callbackProvenance ??= CaptureCallbackProvenance(callback);
+
+        // Keep the callback, receiver, and arguments traced across the worker
+        // marshal; freshly allocated argument facades (timer payloads, Mutation
+        //Observer record arrays) have no other GC root until execution begins.
+        var pinnedValues = new JsValue[(args?.Count ?? 0) + 2];
+        pinnedValues[0] = callback;
+        pinnedValues[1] = callbackThis;
+        for (var i = 0; i < (args?.Count ?? 0); i++)
+        {
+            pinnedValues[2 + i] = args[i];
+        }
+        using var marshalPins = PinFenJsValues(pinnedValues);
+
         try
         {
             RunFenJsWithLargeStack<object>(() =>
@@ -13631,18 +13755,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         var origin = sourceOriginOverride ?? GetMessageSourceOrigin(sourceWindow);
         var exposedSourceWindow = GetMessageSourceForTarget(sourceWindow, targetWindow);
         var sessionGeneration = _fenJsSessionGeneration;
+        // The payload values are captured by the delivery continuation, which
+        // may sit queued across arbitrary engine activity; without a pin a
+        // collection can sweep them before delivery runs.
+        var deliveryPins = PinFenJsValues(data, exposedSourceWindow, targetWindow, ports);
         lock (_windowMessageQueueLock)
         {
             _windowMessageDeliveryTail = _windowMessageDeliveryTail.ContinueWith(
                 _ =>
                 {
-                    if (sessionGeneration != _fenJsSessionGeneration)
-                    {
-                        return;
-                    }
-
                     try
                     {
+                        if (sessionGeneration != _fenJsSessionGeneration)
+                        {
+                            return;
+                        }
+
+                        try
+                        {
                         RunFenJsWithLargeStack<object>(() =>
                         {
                             lock (_fenJsLock)
@@ -13678,6 +13808,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
                     try { RequestRender?.Invoke(); }
                     catch { /* render request is best-effort */ }
+                    }
+                    finally
+                    {
+                        deliveryPins?.Dispose();
+                    }
                 },
                 CancellationToken.None,
                 TaskContinuationOptions.None,
@@ -14424,6 +14559,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             createdEventValue = true;
         }
 
+        // The facade lives only in C# locals between listener invocations; keep
+        // it traced so a collection triggered by one listener cannot sweep it
+        // before the next listener (or the post-dispatch default handling) runs.
+        using var dispatchPins = PinFenJsValues(eventValue, currentTarget);
+
         if (createdEventValue)
         {
             _interpreter.SetObjectProperty(eventValue, "target", currentTarget);
@@ -14714,13 +14854,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private void InvokeFenJsCallback(JsValue callback, JsValue thisValue, JsValue eventValue)
     {
+        // Snapshot the previous global event before marshaling so its handle can
+        // be pinned for the whole invocation; reading it back in the finally
+        // block would otherwise restore a value a collection may have swept.
+        JsValue previousEvent;
+        lock (_fenJsLock)
+        {
+            previousEvent = _interpreter.TryReadGlobalValue("event", out var existingEvent)
+                ? existingEvent
+                : JsValue.Undefined;
+        }
+
+        using var pins = PinFenJsValues(callback, thisValue, eventValue, previousEvent);
         RunFenJsWithLargeStack<object>(() =>
         {
             lock (_fenJsLock)
             {
-                var previousEvent = _interpreter.TryReadGlobalValue("event", out var existingEvent)
-                    ? existingEvent
-                    : JsValue.Undefined;
                 _interpreter.RegisterGlobalValue("event", eventValue);
                 try
                 {

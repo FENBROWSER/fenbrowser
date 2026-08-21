@@ -313,3 +313,58 @@ Compatibility impact: Measurement only.
 Known risks: Diagnostic builds, cold caches, or network variation can distort results.
 Blockers: None
 Next action: Lock run metadata and `performance.json` schema on the local fixture before profiling Google.
+
+## Task BIND-002
+
+Task ID: BIND-002
+Title: Implement PerformanceObserver constructor surface
+Area: WebIDL / performance timeline bindings
+Owner Agent: Bindings Agent
+Status: NOT_STARTED
+Priority: 2
+Risk Level: Low
+Dependencies: None; missing-API tracking and host-object plumbing are INTEGRATED
+Files likely involved: FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs (global installation), FenBrowser.FenEngine/WebAPIs performance surface, WebIdlMemberCatalog/HostApiSurfaceCatalog, included binding tests
+Specs/references: Performance Timeline Level 2; User Timing; local WPT checkout C:\Users\udayk\Videos\wpt (performance-timeline/)
+Current behavior: 
+ew PerformanceObserver(cb) throws ReferenceError: PerformanceObserver is not defined. MediaWiki's experiment bootstrap (suggestionMode.js -> getRawHeader) constructs it inside a Promise executor, producing 4 unhandled promise rejections per Wikipedia load (after-bundle logs/real-site/en.wikipedia.org/20260821T191613Z/exceptions.json); the missing-API tracker already classifies it as a standard API.
+Expected behavior: Constructor requires a callable callback (TypeError otherwise). Instances expose observe(options), disconnect(), 	akeRecords(); observe validates entryTypes/	ype per spec (throw TypeError on empty/invalid rather than silently no-op) and may deliver an empty buffer until mark/paint entry sources exist. Registration updates the missing-API catalog so Wikipedia observations stop being reported as missing.
+Reproduction: Load the Wikipedia after-bundle reproduction command; or evaluate 	ypeof PerformanceObserver and 
+ew PerformanceObserver(()=>{}) in the Tooling harness.
+Root cause: The global was never installed; no observer registry exists behind the existing performance object.
+Implementation plan: Install a native constructor backed by a small observer host (bounded record buffer, callback delivery queued through the engine event loop like MutationObserver delivery); wire supported entry types to whatever the existing performance.mark/paint telemetry can emit today, leaving undeliverable entry types registered-but-empty rather than stubbed-with-fake-data; add tracker/catalog metadata.
+Tests required: Constructor arity/TypeError cases, observe validation (empty entryTypes, unknown type), disconnect idempotence, takeRecords drain, callback delivery via performance.mark + matching entry type, missing-API regression flipping to implemented.
+Evidence required: Local fixture bundle with zero new missing-API observations for PerformanceObserver; focused tests green.
+Security impact: None beyond existing callback sandboxing; callbacks must run under the standard engine lock and session-generation guards.
+Performance impact: Observer records must stay bounded (reuse MutationObserver-style caps).
+Compatibility impact: Removes 4 real-site promise rejections per Wikipedia load.
+Known risks: Overpromising entry types that cannot be produced yet; mitigate by registering only producible types.
+Blockers: None
+Next action: Land constructor+observe/disconnect/takeRecords behind event-loop delivery, then rerun the Wikipedia passive bundle expecting zero PerformanceObserver rejections.
+
+## Task JS-001
+
+Task ID: JS-001
+Title: Make Function.prototype.apply accept array-like host objects
+Area: FenJS intrinsics / host interop
+Owner Agent: JS Engine Agent
+Status: NOT_STARTED
+Priority: 2
+Risk Level: Medium
+Dependencies: Host property-resolution path for array-like reads is INTEGRATED
+Files likely involved: FenBrowser.Js/Interpreter/BytecodeInterpreter.Calls.cs (apply intrinsic), host object property read path, FenBrowser.Js.Tests / FenBrowser.Tests/Engine coverage
+Specs/references: ECMAScript 262 Function.prototype.apply (argArray Get("length") + indexed reads)
+Current behavior: .apply(thisArg, argArray) throws TypeError: Function.prototype.apply: second argument must be an object or null/undefined when rgArray is a host-object wrapper that exposes length/indexed properties (jQuery/Sizzle ind passes such results). Wikipedia after-bundle shows 4 timer-callback TypeErrors through ind [op=CallMethodN] (.../20260821T191613Z/exceptions.json).
+Expected behavior: Per spec, 
+ull/undefined short-circuit to zero args; any other value goes through ordinary Get for length and indices — array-like host wrappers therefore spread correctly instead of throwing. Plain non-objects that are not null/undefined still throw TypeError.
+Reproduction: Local reduction (function(){return arguments.length}).apply(null, document.querySelectorAll('body')) style host array-like; plus the Wikipedia bundle stacks above.
+Root cause hypothesis: The apply intrinsic switches on JsValue tag/kind and rejects HostObject values before attempting the generic length/indexed property reads.
+Implementation plan: Route argArray preparation through the same generic property-read helper used by spread of host collections; keep fast paths for native JS arrays; preserve TypeError for primitives.
+Tests required: Host-array-like spread (length + indexed via host getter), null/undefined argArray, primitive number/string argArray TypeError, length-out-of-range clamping, jQuery-shaped ind regression mirroring the site stack.
+Evidence required: Focused tests green + Wikipedia passive bundle showing zero pply TypeErrors from ind.
+Security impact: None (argument-count bounds already enforced elsewhere; keep existing max-args guard).
+Performance impact: Keep the existing fast path first; host fallback only on non-fast tags.
+Compatibility impact: Unblocks jQuery DOM-traversal paths across many sites.
+Known risks: Host getters with side effects during argument materialization; acceptable — identical to property-access semantics elsewhere.
+Blockers: None
+Next action: Write the local host-array-like reduction test, patch the intrinsic, then rerun the Wikipedia passive bundle.

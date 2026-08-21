@@ -1,13 +1,13 @@
 # FenBrowser Real-Site Tracker
 
-Snapshot date: 2026-07-16. Only evidence present in the current workspace is treated as current.
+Snapshot date: 2026-08-22. Only evidence present in the current workspace is treated as current.
 
 ## Minimal smoke matrix
 
 | ID | Category | Target | URL | Login | Current status | Acceptance focus |
 | --- | --- | --- | --- | --- | --- | --- |
 | SITE-SEARCH-001 | Search | Google | `https://www.google.com/` | no | TESTED | load, type, submit, result navigation |
-| SITE-WIKI-001 | Documentation/wiki | Wikipedia | `https://en.wikipedia.org/` | no | NOT_STARTED | article layout, links, scrolling |
+| SITE-WIKI-001 | Documentation/wiki | Wikipedia | `https://en.wikipedia.org/` | no | RESEARCHED | article layout, links, scrolling |
 | SITE-GITHUB-001 | GitHub-like app | GitHub | `https://github.com/` | no | RESEARCHED | fresh boot, nav/input, visual fidelity |
 | SITE-SOCIAL-001 | Social/media SPA | X | `https://x.com/` | no for landing | NOT_STARTED | bundle fetch, framework boot, scrolling |
 | SITE-VIDEO-001 | Video | YouTube | `https://www.youtube.com/` | no | NOT_STARTED | custom elements, shadow DOM, media shell |
@@ -67,3 +67,45 @@ Regression test: REGRESSION_PROTECTED. `FenJsDomCollectionIterationTests` protec
 Evidence: Google classified passive run: `logs/real-site/www.google.com/20260716T120932Z/`. Google interaction: `logs/real-site/www.google.com/20260715T103925Z/`. Local first-blocker/artifact control: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_stringifier_partial_interface.html/20260716T120850Z/`. Local operation-kind reduction: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_fenbrowser.tests_fixtures_diagnostics_missing_api_operation_kinds.html/20260716T114816Z/`.
 
 Status: REGRESSION_PROTECTED for load/render plus Google focus/type/submit/request/challenge navigation and terminal active-DOM/frame agreement. Normal result rendering remains externally blocked by Google's HTTP 429 challenge, not bypassed.
+
+## SITE-WIKI-001 triage
+
+Site: Wikipedia
+
+URL: `https://en.wikipedia.org/` (final: `/wiki/Main_Page` after redirect)
+
+Current visible result: Full boot. 4021 DOM nodes, 2350 styled nodes, 887 layout boxes, screenshot captured, navigation lifecycle Complete, DOMContentLoaded and load both fired, 72/72 network requests succeeded, scripts executed with zero fetch or execution failures.
+
+Expected visible result: Same main UI plus zero fatal engine exceptions during boot and deferred callbacks.
+
+First fatal console error: (fixed this cycle) JsEngineFatalException: Stale heap handle — FenJS major GC swept event facades, timer closures, and MutationObserver record arrays that host code held across the large-stack worker marshal; 14 occurrences killed DCL/load listeners and the document readyState probe. Root-caused and fixed by generation-tagged pin scopes in FenJsBrowserScriptEngine (Volume III 2.116).
+
+First fatal network error: None.
+
+First missing API: PerformanceObserver is not defined from MediaWiki experiment bootstrapping (suggestionMode.js) — 4 promise rejections, non-fatal; tracked as BIND-002.
+
+First layout blocker: None captured. 21 zero-area boxes; main UI visible.
+
+Script loading status: Completed. 5 discovered, 4 eligible, 10 executions, 0 failures.
+
+DOMContentLoaded fired: Yes.
+
+Load fired: Yes.
+
+Main framework detected: MediaWiki ResourceLoader + jQuery (jquery, oojs, mediawiki.base modules).
+
+Likely failure bucket: Resolved G (event loop / GC rooting). Remaining candidates: F/E for PerformanceObserver; D/E for Function.prototype.apply rejecting array-like host objects inside jQuery ind (4 timer-callback TypeErrors).
+
+Confirmed failure bucket: Stale heap handle class confirmed fixed by before/after bundles below; irst_blocker.json now reports Result=none.
+
+Minimal reproduction: `dotnet run --project FenBrowser.Tooling -c Release -- debug-site https://en.wikipedia.org/ 20000`
+
+Engine subsystem owner: FenJS heap/root-source integration (FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs).
+
+Fix task: Pin-scope rooting landed this cycle. Follow-ups: BIND-002 (PerformanceObserver), JS-001 (apply array-like coercion).
+
+Regression test: Pending — deterministic GC-stress regressions are blocked on the in-flight stress-mode viability work (interpreter construction pinning + SetStressModeForDiagnostics hook); real-site A/B bundles serve as interim evidence.
+
+Evidence: Before bundle logs/real-site/en.wikipedia.org/20260821T184115Z/ (22 callback failures, 14 stale-handle fatals, first_blocker insufficient-evidence). After bundle logs/real-site/en.wikipedia.org/20260821T191613Z/ (8 callback failures, 0 stale-handle fatals, first_blocker none).
+
+Status: RESEARCHED for boot-level acceptance (document loads, scripts execute, lifecycle events fire, layout/paint/screenshot captured, no renderer crash); interaction milestones not yet attempted.
