@@ -38,7 +38,12 @@ public sealed class RequiredBrowserIntegrationDiscoveryTests
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "CallerCancellation_SendsCancelForWireRequestId"),
         ("FenBrowser.Tests.ProcessIsolation.NetworkProcessCoordinatorTests", "RequestWithoutContent_ProducesEmptyBodyFrameSequence"),
         ("FenBrowser.Tests.Core.RendererIsolationPoliciesTests", "RendererTabIsolationRegistry_UnexpectedExit_SchedulesRestartWithReplay"),
-        ("FenBrowser.Tests.Architecture.RendererChildLoopIoTests", "ReadLineWithTimeoutAsync_ReusesPendingRead_AcrossTimeoutPolls")
+        ("FenBrowser.Tests.Architecture.RendererChildLoopIoTests", "ReadLineWithTimeoutAsync_ReusesPendingRead_AcrossTimeoutPolls"),
+        ("FenBrowser.Tests.Diagnostics.CookieDiagnosticsTests", "SetDocumentCookie_EmitsIngressEntryWithRedactedValue"),
+        ("FenBrowser.Tests.Diagnostics.CookieDiagnosticsTests", "StoreResponseCookies_EmitsIngressEntryPerCookie"),
+        ("FenBrowser.Tests.Diagnostics.CookieDiagnosticsTests", "GetRequestCookieHeader_EmitsEgressEntryWithCookieNames"),
+        ("FenBrowser.Tests.Diagnostics.CookieDiagnosticsTests", "Disabled_EmitsNothing"),
+        ("FenBrowser.Tests.Diagnostics.CookieDiagnosticsTests", "DocumentCookie_MalformedHeader_EmitsRejection")
     ];
 
     [Fact]
