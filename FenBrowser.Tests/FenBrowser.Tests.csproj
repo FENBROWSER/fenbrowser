@@ -103,6 +103,9 @@
     <Compile Include="Engine\CustomHtmlEngineFallbackPromotionTests.cs" />
     <Compile Include="Engine\CustomHtmlEngineNoJsNormalizationTests.cs" />
     <Compile Include="Engine\MediaWikiDeduplicatedInlineStyleTests.cs" />
+    <!-- PII-safe cookie diagnostics regression; NavigationGlobalsProbeTests stays
+         excluded because the production probe type was removed. -->
+    <Compile Include="Diagnostics\CookieDiagnosticsTests.cs" />
   </ItemGroup>
 
 </Project>
