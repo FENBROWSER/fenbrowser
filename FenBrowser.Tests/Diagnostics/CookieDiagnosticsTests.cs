@@ -5,6 +5,7 @@ using System.Net.Http;
 using FenBrowser.Core;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Storage;
+using FenBrowser.Tests.Logging;
 using Xunit;
 
 namespace FenBrowser.Tests.Diagnostics
@@ -22,7 +23,7 @@ namespace FenBrowser.Tests.Diagnostics
     ///   - Cookie VALUES never appear in any emitted log message or data field.
     ///   - Rejected cookies still produce a <c>set-cookie-rejected</c> entry.
     /// </summary>
-    [Collection("Engine Tests")]
+    [Collection(EngineLogTestCollection.Name)]
     public class CookieDiagnosticsTests : IDisposable
     {
         private readonly bool _originalLogCookies;
