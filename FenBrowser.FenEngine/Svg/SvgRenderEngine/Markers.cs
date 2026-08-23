@@ -1,0 +1,200 @@
+using System;
+using System.Collections.Generic;
+using SkiaSharp;
+
+namespace FenBrowser.FenEngine.Svg
+{
+    internal sealed partial class SvgRenderEngine
+    {
+        private const int MaxMarkersPerElement = 4096;
+        private HashSet<string> _activeMarkerIds;
+
+        private void DrawMarkers(
+            SvgElement element,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle style,
+            SKPath path)
+        {
+            string shorthand = element.GetPresentationProperty("marker");
+            string start = element.GetPresentationProperty("marker-start") ?? shorthand;
+            string middle = element.GetPresentationProperty("marker-mid") ?? shorthand;
+            string end = element.GetPresentationProperty("marker-end") ?? shorthand;
+            if (!HasEffectValue(start) && !HasEffectValue(middle) && !HasEffectValue(end)) return;
+
+            var vertices = ReadMarkerVertices(element, path);
+            if (vertices.Count < 2) return;
+
+            if (HasEffectValue(start))
+                DrawMarkerInstance(start, element, canvas, viewport, style, vertices[0].Point,
+                    Direction(vertices[0].Point, vertices[1].Point), isStart: true);
+
+            if (HasEffectValue(middle))
+            {
+                if (element.Name != "polyline" && element.Name != "polygon")
+                {
+                    _report.RequireFallback("marker-mid on non-polyline geometry requires compatibility fallback");
+                }
+                else
+                {
+                    int limit = Math.Min(vertices.Count - 1, MaxMarkersPerElement);
+                    for (int i = 1; i < limit; i++)
+                    {
+                        SKPoint incoming = Direction(vertices[i - 1].Point, vertices[i].Point);
+                        SKPoint outgoing = Direction(vertices[i].Point, vertices[i + 1].Point);
+                        var tangent = new SKPoint(incoming.X + outgoing.X, incoming.Y + outgoing.Y);
+                        if (tangent.X == 0f && tangent.Y == 0f) tangent = outgoing;
+                        DrawMarkerInstance(middle, element, canvas, viewport, style, vertices[i].Point, tangent, false);
+                    }
+                    if (vertices.Count > MaxMarkersPerElement)
+                        _report.RequireFallback("SVG marker instance budget exceeded");
+                }
+            }
+
+            if (HasEffectValue(end))
+            {
+                int last = vertices.Count - 1;
+                DrawMarkerInstance(end, element, canvas, viewport, style, vertices[last].Point,
+                    Direction(vertices[last - 1].Point, vertices[last].Point), isStart: false);
+            }
+        }
+
+        private void DrawMarkerInstance(
+            string raw,
+            SvgElement source,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle sourceStyle,
+            SKPoint point,
+            SKPoint tangent,
+            bool isStart)
+        {
+            if (!TryResolveLocalReference(raw, out string id) ||
+                !_doc.ElementsById.TryGetValue(id, out var marker) || marker.Name != "marker")
+            {
+                _report.RequireFallback("SVG marker reference is invalid or unresolved");
+                return;
+            }
+            _activeMarkerIds ??= new HashSet<string>(StringComparer.Ordinal);
+            if (_activeMarkerIds.Contains(id) || _activeMarkerIds.Count >= _maxReferenceDepth)
+            {
+                _report.RequireFallback("SVG marker cycle or reference-depth budget exceeded");
+                return;
+            }
+
+            float markerWidth = ResolveMarkerLength(marker.GetAttribute("markerWidth"), 3f);
+            float markerHeight = ResolveMarkerLength(marker.GetAttribute("markerHeight"), 3f);
+            if (markerWidth <= 0f || markerHeight <= 0f) return;
+            float refX = ResolveMarkerLength(marker.GetAttribute("refX"), 0f);
+            float refY = ResolveMarkerLength(marker.GetAttribute("refY"), 0f);
+            float unitScale = string.Equals(marker.GetAttribute("markerUnits"), "userSpaceOnUse", StringComparison.Ordinal)
+                ? 1f : Math.Max(0f, sourceStyle.StrokeWidth);
+            float angle = ResolveMarkerAngle(marker.GetAttribute("orient"), tangent, isStart);
+
+            _activeMarkerIds.Add(id);
+            try
+            {
+                using var state = new CanvasState(canvas);
+                canvas.Translate(point.X, point.Y);
+                canvas.RotateDegrees(angle);
+                canvas.Scale(unitScale, unitScale);
+
+                bool hasViewBox = TryParseViewBox(marker.GetAttribute("viewBox"),
+                    out float vbX, out float vbY, out float vbW, out float vbH);
+                var markerViewport = new ViewportContext(markerWidth, markerHeight);
+                SKPoint mappedRef = hasViewBox
+                    ? MapMarkerReference(refX, refY, markerViewport, vbX, vbY, vbW, vbH,
+                        marker.GetAttribute("preserveAspectRatio"))
+                    : new SKPoint(refX, refY);
+                canvas.Translate(-mappedRef.X, -mappedRef.Y);
+                canvas.ClipRect(new SKRect(0f, 0f, markerWidth, markerHeight));
+                if (hasViewBox)
+                    ApplyViewportTransform(canvas, markerViewport, true, vbX, vbY, vbW, vbH,
+                        marker.GetAttribute("preserveAspectRatio"));
+
+                var markerStyle = sourceStyle.ResolveOverrides(marker, _report);
+                DrawChildren(marker, canvas,
+                    hasViewBox ? new ViewportContext(vbW, vbH) : markerViewport,
+                    markerStyle);
+            }
+            finally
+            {
+                _activeMarkerIds.Remove(id);
+            }
+        }
+
+        private List<MarkerVertex> ReadMarkerVertices(SvgElement element, SKPath path)
+        {
+            var result = new List<MarkerVertex>();
+            if (element.Name == "polyline" || element.Name == "polygon")
+            {
+                var tokenizer = SvgValues.CreateTokenizer((element.GetAttribute("points") ?? string.Empty).AsSpan());
+                while (result.Count <= MaxMarkersPerElement && tokenizer.Next(out var tx) && tokenizer.Next(out var ty))
+                {
+                    if (!SvgValues.TryParseNumber(tx, out float x) || !SvgValues.TryParseNumber(ty, out float y)) break;
+                    result.Add(new MarkerVertex(new SKPoint(SvgValues.ClampCoord(x), SvgValues.ClampCoord(y))));
+                }
+                if (element.Name == "polygon" && result.Count > 1) result.Add(result[0]);
+                return result;
+            }
+
+            using var measure = new SKPathMeasure(path, false);
+            if (measure.Length <= 0f) return result;
+            if (measure.GetPositionAndTangent(0f, out var start, out _)) result.Add(new MarkerVertex(start));
+            float endDistance = MathF.Max(0f, measure.Length - .001f);
+            if (measure.GetPositionAndTangent(endDistance, out var end, out _)) result.Add(new MarkerVertex(end));
+            return result;
+        }
+
+        private static SKPoint Direction(SKPoint from, SKPoint to)
+        {
+            float x = to.X - from.X;
+            float y = to.Y - from.Y;
+            float length = MathF.Sqrt(x * x + y * y);
+            return length > 0f ? new SKPoint(x / length, y / length) : new SKPoint(1f, 0f);
+        }
+
+        private static float ResolveMarkerAngle(string raw, SKPoint tangent, bool isStart)
+        {
+            float auto = MathF.Atan2(tangent.Y, tangent.X) * 180f / MathF.PI;
+            if (string.IsNullOrWhiteSpace(raw) || raw.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase)) return auto;
+            if (raw.Trim().Equals("auto-start-reverse", StringComparison.OrdinalIgnoreCase)) return auto + (isStart ? 180f : 0f);
+            string value = raw.Trim();
+            if (value.EndsWith("deg", StringComparison.OrdinalIgnoreCase)) value = value[..^3].Trim();
+            return SvgValues.TryParseNumber(value.AsSpan(), out float angle) && float.IsFinite(angle) ? angle : auto;
+        }
+
+        private static SKPoint MapMarkerReference(
+            float x, float y, ViewportContext viewport,
+            float vbX, float vbY, float vbW, float vbH, string preserveAspectRatio)
+        {
+            ParsePreserveAspectRatio(preserveAspectRatio, out ParAlign align, out ParMeet meet);
+            if (align == ParAlign.None)
+            {
+                return new SKPoint(
+                    (x - vbX) * viewport.Width / vbW,
+                    (y - vbY) * viewport.Height / vbH);
+            }
+            float scale = meet == ParMeet.Slice
+                ? Math.Max(viewport.Width / vbW, viewport.Height / vbH)
+                : Math.Min(viewport.Width / vbW, viewport.Height / vbH);
+            float leftoverX = viewport.Width - vbW * scale;
+            float leftoverY = viewport.Height - vbH * scale;
+            float tx = (align & ParAlign.XMid) != 0 ? leftoverX / 2f :
+                (align & ParAlign.XMax) != 0 ? leftoverX : 0f;
+            float ty = (align & ParAlign.YMid) != 0 ? leftoverY / 2f :
+                (align & ParAlign.YMax) != 0 ? leftoverY : 0f;
+            return new SKPoint(tx + (x - vbX) * scale, ty + (y - vbY) * scale);
+        }
+
+        private static float ResolveMarkerLength(string raw, float fallback)
+        {
+            if (string.IsNullOrWhiteSpace(raw) ||
+                !SvgValues.TryParseLength(raw.AsSpan(), out float value, out var unit)) return fallback;
+            float resolved = SvgValues.ResolveUnits(value, unit, DefaultFontSize, 1f);
+            return float.IsFinite(resolved) ? SvgValues.ClampCoord(resolved) : fallback;
+        }
+
+        private readonly record struct MarkerVertex(SKPoint Point);
+    }
+}

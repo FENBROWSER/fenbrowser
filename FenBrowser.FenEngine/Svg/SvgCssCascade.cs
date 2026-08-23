@@ -24,13 +24,15 @@ namespace FenBrowser.FenEngine.Svg
             "stroke", "stroke-opacity", "stroke-width", "stroke-linecap",
             "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset",
             "opacity", "clip-path", "clip-rule",
+            "filter", "mask", "mask-type", "marker", "marker-start", "marker-mid", "marker-end",
+            "flood-color", "flood-opacity",
             "stop-color", "stop-opacity",
             "font-family", "font-size", "font-style", "font-weight", "letter-spacing", "text-anchor"
         };
 
         private static readonly HashSet<string> NoneIsNoEffect = new(StringComparer.OrdinalIgnoreCase)
         {
-            "filter", "mask", "marker", "marker-start", "marker-mid", "marker-end"
+            "vector-effect"
         };
 
         public static void Apply(

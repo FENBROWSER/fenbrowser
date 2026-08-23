@@ -28,31 +28,35 @@ namespace FenBrowser.FenEngine.Svg
 
             TryApplyFillRule(el, path);
 
-            bool layered = TryBeginGroupOpacity(el, canvas, out var layerPaint);
-            try
+            DrawWithEffects(el, canvas, viewport, () =>
             {
-                using var fillPaint = BuildFillPaint(el, style, path);
-                using var strokePaint = BuildStrokePaint(el, style);
+                bool layered = TryBeginGroupOpacity(el, canvas, out var layerPaint);
+                try
+                {
+                    using var fillPaint = BuildFillPaint(el, style, path);
+                    using var strokePaint = BuildStrokePaint(el, style);
 
-                // Spec paint order: fill first, then stroke.
-                if (fillPaint != null)
-                {
-                    canvas.DrawPath(path, fillPaint);
+                    // Spec paint order: fill first, then stroke.
+                    if (fillPaint != null)
+                    {
+                        canvas.DrawPath(path, fillPaint);
+                    }
+                    if (strokePaint != null)
+                    {
+                        canvas.DrawPath(path, strokePaint);
+                    }
+                    DrawMarkers(el, canvas, viewport, style, path);
                 }
-                if (strokePaint != null)
+                finally
                 {
-                    canvas.DrawPath(path, strokePaint);
+                    if (layered)
+                    {
+                        canvas.Restore();
+                        _activeLayers--;
+                        layerPaint.Dispose();
+                    }
                 }
-            }
-            finally
-            {
-                if (layered)
-                {
-                    canvas.Restore();
-                    _activeLayers--;
-                    layerPaint.Dispose();
-                }
-            }
+            });
         }
 
         private SKPath BuildGeometry(SvgElement el, ViewportContext viewport)

@@ -1,0 +1,94 @@
+using FenBrowser.FenEngine.Adapters;
+using Xunit;
+
+namespace FenBrowser.Tests.Svg
+{
+    public sealed class SvgMaskTests
+    {
+        [Fact]
+        public void ObjectBoundingBoxLuminanceMask_ClipsTargetByWhiteContent()
+        {
+            const string svg =
+                "<svg width='80' height='40'><defs><mask id='m' maskContentUnits='objectBoundingBox'>" +
+                "<rect x='0' y='0' width='.5' height='1' fill='white'/></mask></defs>" +
+                "<rect x='10' y='5' width='60' height='30' fill='red' mask='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.True(result.Bitmap.GetPixel(20, 20).Alpha > 0);
+            Assert.Equal(0, result.Bitmap.GetPixel(55, 20).Alpha);
+        }
+
+        [Fact]
+        public void AlphaMask_UsesAlphaInsteadOfBlackLuminance()
+        {
+            const string svg =
+                "<svg width='50' height='30'><defs><mask id='m' mask-type='alpha' " +
+                "maskContentUnits='objectBoundingBox'><rect width='1' height='1' fill='black' opacity='.5'/></mask></defs>" +
+                "<rect x='5' y='5' width='40' height='20' fill='blue' mask='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.InRange(result.Bitmap.GetPixel(20, 15).Alpha, 110, 140);
+        }
+
+        [Fact]
+        public void UserSpaceMaskRegion_IsBoundedAndApplied()
+        {
+            const string svg =
+                "<svg width='60' height='30'><defs><mask id='m' maskUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='30' height='30'><rect width='60' height='30' fill='white'/></mask></defs>" +
+                "<rect width='60' height='30' mask='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.Bitmap.GetPixel(10, 15).Alpha > 0);
+            Assert.Equal(0, result.Bitmap.GetPixel(45, 15).Alpha);
+        }
+
+        [Theory]
+        [InlineData("url(#missing)")]
+        [InlineData("url(https://example.test/mask.svg#m)")]
+        public void InvalidOrExternalMask_NeverSilentlyCountsAsSupported(string mask)
+        {
+            using var result = new FenSvgRenderer().Render(
+                $"<svg width='20' height='20'><rect width='20' height='20' mask='{mask}'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.RequiresFallback || result.HadResourceRejection);
+        }
+
+        [Fact]
+        public void MaskOnUnsupportedObjectBounds_RoutesToCompatibility()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='30'><defs><mask id='m'><rect width='1' height='1' fill='white'/></mask></defs>" +
+                "<g mask='url(#m)'><rect width='20' height='20'/></g></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning => warning.Contains("object bounds"));
+        }
+
+        [Fact]
+        public void MaskLayers_ObeyNativeLayerDepthBudget()
+        {
+            const string svg =
+                "<svg width='30' height='30'><defs><mask id='m' mask-type='alpha' " +
+                "maskContentUnits='objectBoundingBox'><rect width='1' height='1'/></mask></defs>" +
+                "<rect width='20' height='20' mask='url(#m)'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg,
+                new SvgRenderLimits { MaxActiveLayers = 1 });
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning => warning.Contains("layer budget"));
+        }
+    }
+}

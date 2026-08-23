@@ -10944,3 +10944,33 @@ Verification:
 - The deterministic first 100 local WPT SVG files produced 9 first-party, 75 compatibility-fallback, and
   16 resource-rejection classifications with zero renderer failures. The classification shift came from
   correctly recognizing a CDATA stylesheet containing an external image URL, not from hiding a text gap.
+
+## 2.131 Bounded SVG Filters, Masks, And Markers (2026-08-24)
+
+- The shared CSS cascade now carries `filter`, `mask`, `mask-type`, marker properties, and flood paint into
+  first-party rendering. Local fragment references are resolved only through the parsed document id index;
+  unresolved, external, cyclic, or over-depth references remain observable fallback/resource failures.
+- A bounded sequential filter pipeline supports Gaussian blur, offset, drop shadow, 4x5 color matrices,
+  luminance-to-alpha, and morphology. Filters are limited to 32 primitives, finite blur/morphology radii,
+  finite clamped offsets, the render deadline, and the existing native layer-depth ceiling. Named/branching
+  filter graphs and unsupported primitives route to compatibility without partial interpretation.
+- Shape masks support luminance and alpha modes, object-bounding-box or user-space regions, object-bounding-box
+  content coordinates, default region expansion, and target clipping. Two mask layers plus any filter layer
+  are admitted before allocation; insufficient layer budget routes to compatibility.
+- Lines, paths, polylines, and polygons support local start/end markers, while polylines/polygons also support
+  bounded mid markers. Marker units, dimensions, reference points, automatic/start-reverse/numeric orientation,
+  viewBox mapping, inherited source paint, cycles, reference depth, and a 4,096-instance ceiling are handled.
+  Curved-path mid vertices remain an explicit compatibility case.
+- Every native filter, color filter, paint, path measure, and layer is deterministically released per render;
+  active reference sets and caches remain engine-instance state, preserving concurrent-render isolation.
+
+Verification:
+
+- Complete focused Release SVG slice: 236 passed, 0 failed, 0 skipped.
+- Host and `scripts/BenchSvg` Release builds: zero warnings and zero errors.
+- Windows 10,000-render ownership stress, including filter/mask/marker cases: zero failures, 833 intended
+  fallbacks, 10,317,824 retained private
+  bytes against the 67,108,864-byte ceiling.
+- Deterministic first 100 local WPT SVG files: 10 first-party, 74 fallback, 16 resource rejection, zero renderer
+  failures, and 4/5 comparable pairs meeting legacy differential thresholds. The newly first-party document is
+  a referenced-only pattern/filter support file with no visible filter consumer, so no unsupported effect was hidden.

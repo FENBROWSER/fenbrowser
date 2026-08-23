@@ -18,7 +18,6 @@ namespace FenBrowser.FenEngine.Svg
 
         private static readonly HashSet<string> FallbackProperties = new(StringComparer.OrdinalIgnoreCase)
         {
-            "filter", "mask", "marker", "marker-start", "marker-mid", "marker-end",
             "paint-order", "vector-effect"
         };
 

@@ -4502,3 +4502,17 @@ Verification:
   and 16 resource rejection, with 4/5 comparable pairs meeting the current legacy differential thresholds.
   The additional rejection is an inline CDATA stylesheet that requests an external image; the gate records
   it as resource isolation rather than handing it to the legacy backend.
+
+## 6.197 SVG Effect And Marker Verification (2026-08-24)
+
+- `SvgFilterTests` verifies blur expansion, sequential primitive input, normalized color-matrix offsets, group
+  compositing, unsupported/unbounded primitive routing, and concurrent native-filter ownership.
+- `SvgMaskTests` verifies object-bounding-box luminance masking, alpha masks, user-space regions, invalid/external
+  references, unsupported group bounds, and fail-closed native-layer admission. `SvgMarkerTests` verifies endpoint
+  orientation, shorthand start/mid/end placement, stroke-width units, and curved-path mid fallback.
+- Complete focused SVG tests pass 236/236. Host and benchmark Release builds complete with zero warnings/errors;
+  the 10,000-render Windows ownership gate now includes filter, mask, and marker documents and reports zero
+  failures, 833 intended fallbacks, and 10,317,824 retained bytes, below the 64 MiB ceiling.
+- The deterministic 100-file local WPT characterization reports 10 first-party, 74 fallback, 16 resource rejection,
+  zero first-party/hybrid failures, and 4/5 legacy-comparable parity. The sample is still truncated characterization,
+  not the complete process-isolated default-switch gate.

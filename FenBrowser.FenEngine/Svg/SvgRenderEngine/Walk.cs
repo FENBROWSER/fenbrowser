@@ -66,25 +66,28 @@ namespace FenBrowser.FenEngine.Svg
                         ApplyTransform(el, canvas);
                         ApplyClipPath(el, canvas, viewport, inherited);
                         var next = inherited.ResolveOverrides(el, _report);
-                        if (TryBeginGroupOpacity(el, canvas, out var layerPaint))
+                        DrawWithEffects(el, canvas, viewport, () =>
                         {
-                            try
+                            if (TryBeginGroupOpacity(el, canvas, out var layerPaint))
+                            {
+                                try
+                                {
+                                    DrawChildren(el, canvas, viewport, next);
+                                }
+                                finally
+                                {
+                                    // Restore composites the layer using the paint,
+                                    // so the paint must outlive this call.
+                                    canvas.Restore();
+                                    _activeLayers--;
+                                    layerPaint.Dispose();
+                                }
+                            }
+                            else
                             {
                                 DrawChildren(el, canvas, viewport, next);
                             }
-                            finally
-                            {
-                                // Restore composites the layer using the paint,
-                                // so the paint must outlive this call.
-                                canvas.Restore();
-                                _activeLayers--;
-                                layerPaint.Dispose();
-                            }
-                        }
-                        else
-                        {
-                            DrawChildren(el, canvas, viewport, next);
-                        }
+                        });
                         return;
                     }
                 case "svg":
@@ -142,7 +145,8 @@ namespace FenBrowser.FenEngine.Svg
                         using var imgScope = new CanvasState(canvas);
                         ApplyTransform(el, canvas);
                         ApplyClipPath(el, canvas, viewport, inherited);
-                        DrawImageElement(el, canvas, viewport, inherited);
+                        DrawWithEffects(el, canvas, viewport,
+                            () => DrawImageElement(el, canvas, viewport, inherited));
                         return;
                     }
                 case "text":
@@ -151,7 +155,8 @@ namespace FenBrowser.FenEngine.Svg
                         using var textScope = new CanvasState(canvas);
                         ApplyTransform(el, canvas);
                         ApplyClipPath(el, canvas, viewport, inherited);
-                        DrawTextElement(el, canvas, viewport, inherited);
+                        DrawWithEffects(el, canvas, viewport,
+                            () => DrawTextElement(el, canvas, viewport, inherited));
                         return;
                     }
                 case "tspan":
@@ -192,24 +197,26 @@ namespace FenBrowser.FenEngine.Svg
 
             using var scope = new CanvasState(canvas);
             ApplyTransform(el, canvas);
-
-            if (TryBeginGroupOpacity(el, canvas, out var layerPaint))
+            DrawWithEffects(el, canvas, inner, () =>
             {
-                try
+                if (TryBeginGroupOpacity(el, canvas, out var layerPaint))
+                {
+                    try
+                    {
+                        DrawNestedSvgBody(el, canvas, inner, inherited, hasViewBox, vbX, vbY, vbW, vbH);
+                    }
+                    finally
+                    {
+                        canvas.Restore();
+                        _activeLayers--;
+                        layerPaint.Dispose();
+                    }
+                }
+                else
                 {
                     DrawNestedSvgBody(el, canvas, inner, inherited, hasViewBox, vbX, vbY, vbW, vbH);
                 }
-                finally
-                {
-                    canvas.Restore();
-                    _activeLayers--;
-                    layerPaint.Dispose();
-                }
-            }
-            else
-            {
-                DrawNestedSvgBody(el, canvas, inner, inherited, hasViewBox, vbX, vbY, vbW, vbH);
-            }
+            });
         }
 
         private void DrawNestedSvgBody(
