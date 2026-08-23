@@ -4415,3 +4415,29 @@ Addendum (same day, full-suite evidence):
 
 - The first full-suite run exposed a real isolation defect: the four event-emitting cookie tests passed focused but failed in-suite with empty captures because the process-global EngineLog pipeline had been reconfigured or disabled by tests outside any non-parallel collection. The fix follows the established `MissingApiTrackerTests` pattern: the fixture configures `EngineLog` explicitly (enabled, Trace minimum, ring buffer) in its constructor and disables it in `Dispose`, so its assertions depend only on the fixture's own state.
 - Full-suite Release runs at this tree: 292 failures before the fixture fix, then 108-112 after, with zero cookie-diagnostics failures. A clean-HEAD worktree baseline (no working-tree changes) produced 282 failures at the same commit, confirming the residual instability is pre-existing cross-collection global-state racing (EngineLog configuration, `BrowserSettings`, LogManager events), not a product regression. Recorded in `docs/KNOWN_GAPS.md`; per-fixture self-configuration is the required pattern for any new global-state-dependent test until collections are consolidated.
+
+## 6.193 SVG Corpus Characterization And Differential Gate (2026-08-23)
+
+- `scripts/BenchSvg --corpus <directory>` recursively selects local `.svg` files in ordinal path
+  order, skips reparse points, and caps file count and per-file bytes. It never downloads a corpus;
+  WPT input comes from the mandatory local checkout and captured-site input remains a separate gate.
+- Each selected document runs through first-party, hybrid, and legacy renderers with deterministic
+  disposal. Schema-v1 JSON and Markdown reports under `Results/svg/` record routing classification,
+  producing backend, bounded errors, elapsed time, fallback count, and pixel comparison only where
+  both first-party and legacy successfully produce equal-sized rasters.
+- Pixel comparison records alpha-mask intersection-over-union and foreground RGB mean difference.
+  `--gate` fails on an empty or truncated selection, read failures, hybrid failures, oversize skips, or any
+  comparable pair below the existing `0.80` alpha-IoU / `16` RGB-difference thresholds. Ordinary
+  characterization runs retain mismatches in the report without failing, allowing unsupported WPT content to remain evidence
+  instead of being mislabeled as a product regression.
+- The runner reports selection truncation explicitly. A capped sample is never described as the
+  complete corpus. Reports replace prior JSON/Markdown atomically, and WPT corpus results do not
+  close the real-site default-switch requirement.
+
+Verification:
+
+- Release build of `scripts/BenchSvg/BenchSvg.csproj`: pass, zero warnings and zero errors.
+- Deterministic first 100 files from local `C:\Users\udayk\Videos\wpt\svg`: 100 evaluated,
+  10 first-party, 90 compatibility fallbacks, zero first-party/hybrid routing failures, and 3/6
+  comparable pairs meeting the pixel thresholds. Strict `--gate` exits `1` on the three retained
+  differential mismatches, proving that the gate rejects rather than conceals current gaps.

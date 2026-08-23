@@ -10723,6 +10723,9 @@ entries quoting 101/117 were stale snapshots mid-flight; treat discovery as sour
 2. Transform + preserveAspectRatio regressions fixed and pinned (2.122).
 3. Foreground-focused differential corpus passes (21 cases).
 4. Representative real-site SVG corpus passes - NOT YET DONE (requires captured-site fixtures).
+   `scripts/BenchSvg --corpus` now provides deterministic first-party/hybrid/legacy routing and
+   pixel-differential reports for local corpora, but a WPT file sample is robustness evidence and
+   is not a substitute for captured real-site coverage.
 5. No security-limit regressions (Phase-5 adversarial suite green).
 6. No native-resource leaks found (ownership audit plus Windows/Linux 10,000-render
    post-warmup disposal stress completed in 2.127).

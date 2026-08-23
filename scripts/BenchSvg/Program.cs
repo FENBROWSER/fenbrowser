@@ -9,6 +9,7 @@ using SkiaSharp.HarfBuzz;
 //
 // Usage (from repo root):
 //   dotnet run --project scripts/BenchSvg/BenchSvg.csproj -c Release [-- --report]
+//   dotnet run --project scripts/BenchSvg/BenchSvg.csproj -c Release -- --corpus <directory> [--max-files N] [--gate]
 
 var root = Directory.GetCurrentDirectory();
 var resultsDir = Path.Combine(root, "Results", "svg");
@@ -34,6 +35,29 @@ Console.WriteLine(
 (ISvgRenderer Renderer, string Name) legacy = (new SvgSkiaRenderer(), "legacy");
 (ISvgRenderer Renderer, string Name) hybrid =
     (new HybridSvgRenderer(fen.Renderer, legacy.Renderer), "hybrid");
+
+int corpusArgument = Array.IndexOf(args, "--corpus");
+if (corpusArgument >= 0)
+{
+    if (corpusArgument + 1 >= args.Length)
+    {
+        Console.Error.WriteLine("--corpus requires a directory path");
+        Environment.ExitCode = 2;
+        return;
+    }
+    try
+    {
+        var options = SvgCorpusOptions.Parse(args, corpusArgument + 1, resultsDir);
+        Environment.ExitCode = SvgCorpusRunner.Run(
+            options, fen.Renderer, hybrid.Renderer, legacy.Renderer);
+    }
+    catch (ArgumentException ex)
+    {
+        Console.Error.WriteLine(ex.Message);
+        Environment.ExitCode = 2;
+    }
+    return;
+}
 
 string redPng = MakeRedPng(8, 8);
 
