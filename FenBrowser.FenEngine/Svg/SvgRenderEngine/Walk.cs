@@ -102,6 +102,12 @@ namespace FenBrowser.FenEngine.Svg
                 case "title":
                 case "desc":
                 case "metadata":
+                case "link":
+                case "meta":
+                case "h:link":
+                case "h:meta":
+                case "html:link":
+                case "html:meta":
                 case "symbol":
                 case "marker":
                 case "pattern":
@@ -185,8 +191,19 @@ namespace FenBrowser.FenEngine.Svg
             ViewportContext outer,
             InheritedStyle inherited)
         {
-            float w = ResolveViewportLength(el.GetAttribute("width"), outer.Width);
-            float h = ResolveViewportLength(el.GetAttribute("height"), outer.Height);
+            RequireFallbackForNestedSvgLayoutSizing(el, "width");
+            RequireFallbackForNestedSvgLayoutSizing(el, "height");
+            // Nested <svg> viewport dimensions are XML geometry attributes, not
+            // CSS presentation properties. CSS width/height declarations must
+            // not override them; omitted dimensions default to 100%.
+            string widthAttribute = el.GetAttribute("width");
+            string heightAttribute = el.GetAttribute("height");
+            float w = string.IsNullOrWhiteSpace(widthAttribute)
+                ? outer.Width
+                : ResolveViewportLength(widthAttribute, outer.Width);
+            float h = string.IsNullOrWhiteSpace(heightAttribute)
+                ? outer.Height
+                : ResolveViewportLength(heightAttribute, outer.Height);
             if (w <= 0f || h <= 0f)
             {
                 return;
@@ -221,6 +238,32 @@ namespace FenBrowser.FenEngine.Svg
                     DrawNestedSvgBody(el, canvas, inner, inherited, hasViewBox, vbX, vbY, vbW, vbH);
                 }
             });
+        }
+
+        private void RequireFallbackForNestedSvgLayoutSizing(SvgElement element, string property)
+        {
+            if (element.CascadedDeclarations == null ||
+                !element.CascadedDeclarations.TryGetValue(property, out string value) ||
+                string.IsNullOrWhiteSpace(value))
+                return;
+            string lower = value.Trim().ToLowerInvariant();
+            bool requiresCssLayout = lower.StartsWith("calc-size(", System.StringComparison.Ordinal) ||
+                                     lower is "fit-content" or "min-content" or "max-content" or "stretch" ||
+                                     HasNestedSvgViewportUnit(lower);
+            if (requiresCssLayout)
+                _report.RequireFallback(
+                    $"nested SVG CSS {property} sizing requires compatibility layout fallback");
+        }
+
+        private static bool HasNestedSvgViewportUnit(string value)
+        {
+            int end = value.Length;
+            while (end > 0 && char.IsWhiteSpace(value[end - 1])) end--;
+            int start = end;
+            while (start > 0 && char.IsLetter(value[start - 1])) start--;
+            string unit = value.Substring(start, end - start);
+            return unit is "vw" or "vh" or "vi" or "vb" or "vmin" or "vmax" or
+                   "cqw" or "cqh" or "cqi" or "cqb" or "cqmin" or "cqmax";
         }
 
         private void DrawNestedSvgBody(
@@ -799,10 +842,10 @@ namespace FenBrowser.FenEngine.Svg
                     return;
                 }
 
-                float x = ResolveCoord(element.GetAttribute("x"), viewport.Width);
-                float y = ResolveCoord(element.GetAttribute("y"), viewport.Height);
-                float width = ResolveCoord(element.GetAttribute("width"), viewport.Width);
-                float height = ResolveCoord(element.GetAttribute("height"), viewport.Height);
+                float x = ResolveCoord(element.GetPresentationProperty("x"), viewport.Width);
+                float y = ResolveCoord(element.GetPresentationProperty("y"), viewport.Height);
+                float width = ResolveCoord(element.GetPresentationProperty("width"), viewport.Width);
+                float height = ResolveCoord(element.GetPresentationProperty("height"), viewport.Height);
                 if (width <= 0f) width = sourceWidth;
                 if (height <= 0f) height = sourceHeight;
                 if (width <= 0f || height <= 0f || sourceWidth <= 0f || sourceHeight <= 0f) return;
@@ -930,10 +973,10 @@ namespace FenBrowser.FenEngine.Svg
             InheritedStyle inherited,
             SKBitmap bitmap)
         {
-            float x = ResolveCoord(el.GetAttribute("x"), viewport.Width);
-            float y = ResolveCoord(el.GetAttribute("y"), viewport.Height);
-            float w = ResolveCoord(el.GetAttribute("width"), viewport.Width);
-            float h = ResolveCoord(el.GetAttribute("height"), viewport.Height);
+            float x = ResolveCoord(el.GetPresentationProperty("x"), viewport.Width);
+            float y = ResolveCoord(el.GetPresentationProperty("y"), viewport.Height);
+            float w = ResolveCoord(el.GetPresentationProperty("width"), viewport.Width);
+            float h = ResolveCoord(el.GetPresentationProperty("height"), viewport.Height);
             if (w <= 0f) w = bitmap.Width;
             if (h <= 0f) h = bitmap.Height;
 

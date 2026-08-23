@@ -24,6 +24,7 @@ namespace FenBrowser.FenEngine.Svg
         public SvgElement Parent;
         public SvgElement PreviousElementSibling;
         public Dictionary<string, string> CascadedDeclarations;
+        public Dictionary<string, string> CustomProperties;
 
         private Dictionary<string, string> _lookup;
 
@@ -55,12 +56,124 @@ namespace FenBrowser.FenEngine.Svg
 
         public string GetPresentationProperty(string name)
         {
+            string value;
             if (CascadedDeclarations != null &&
-                CascadedDeclarations.TryGetValue(name, out var value))
+                CascadedDeclarations.TryGetValue(name, out value))
             {
-                return value;
+                return ResolveCssVariables(value, new HashSet<string>(System.StringComparer.Ordinal), 0);
             }
-            return GetAttribute(name);
+            value = GetAttribute(name);
+            return ResolveCssVariables(value, new HashSet<string>(System.StringComparer.Ordinal), 0);
+        }
+
+        public bool UsesCssPropertySyntax(string name)
+        {
+            if (CascadedDeclarations != null && CascadedDeclarations.ContainsKey(name)) return true;
+            string attribute = GetAttribute(name);
+            if (attribute == null) return false;
+            return attribute.IndexOf("var(", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   attribute.IndexOf("calc(", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   attribute.IndexOf("min(", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   attribute.IndexOf("max(", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   attribute.IndexOf("clamp(", System.StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private string ResolveCssVariables(string value, HashSet<string> active, int depth)
+        {
+            if (string.IsNullOrEmpty(value) ||
+                value.IndexOf("var(", System.StringComparison.OrdinalIgnoreCase) < 0)
+                return value;
+            if (depth >= 16) return null;
+
+            var output = new System.Text.StringBuilder(value.Length);
+            int position = 0;
+            int replacements = 0;
+            while (position < value.Length)
+            {
+                int start = value.IndexOf("var(", position, System.StringComparison.OrdinalIgnoreCase);
+                if (start < 0)
+                {
+                    output.Append(value, position, value.Length - position);
+                    break;
+                }
+                output.Append(value, position, start - position);
+                if (++replacements > 32) return null;
+                int contentStart = start + 4;
+                int close = FindFunctionClose(value, contentStart);
+                if (close < 0) return null;
+                int comma = FindTopLevelComma(value, contentStart, close);
+                string name = value.Substring(
+                    contentStart, (comma < 0 ? close : comma) - contentStart).Trim();
+                if (!name.StartsWith("--", System.StringComparison.Ordinal) || !active.Add(name))
+                    return null;
+
+                string replacement = FindCustomProperty(name);
+                if (replacement == null && comma >= 0)
+                    replacement = value.Substring(comma + 1, close - comma - 1).Trim();
+                replacement = ResolveCssVariables(replacement, active, depth + 1);
+                active.Remove(name);
+                if (replacement == null) return null;
+                output.Append(replacement);
+                if (output.Length > SvgMarkupParser.MaxAttributeValueChars) return null;
+                position = close + 1;
+            }
+            return output.ToString();
+        }
+
+        private string FindCustomProperty(string name)
+        {
+            for (SvgElement current = this; current != null; current = current.Parent)
+            {
+                if (current.CustomProperties != null &&
+                    current.CustomProperties.TryGetValue(name, out string value))
+                    return value;
+            }
+            return null;
+        }
+
+        private static int FindFunctionClose(string value, int start)
+        {
+            int nested = 0;
+            char quote = '\0';
+            bool escaped = false;
+            for (int i = start; i < value.Length; i++)
+            {
+                char c = value[i];
+                if (escaped) { escaped = false; continue; }
+                if (c == '\\') { escaped = true; continue; }
+                if (quote != '\0')
+                {
+                    if (c == quote) quote = '\0';
+                    continue;
+                }
+                if (c is '\'' or '"') { quote = c; continue; }
+                if (c == '(') nested++;
+                else if (c == ')' && nested-- == 0) return i;
+            }
+            return -1;
+        }
+
+        private static int FindTopLevelComma(string value, int start, int end)
+        {
+            int nested = 0;
+            char quote = '\0';
+            bool escaped = false;
+            for (int i = start; i < end; i++)
+            {
+                char c = value[i];
+                if (escaped) { escaped = false; continue; }
+                if (c == '\\') { escaped = true; continue; }
+                if (quote != '\0')
+                {
+                    if (c == quote) quote = '\0';
+                    continue;
+                }
+                if (c is '\'' or '"') { quote = c; continue; }
+                if (c == '(') nested++;
+                else if (c == ')') nested--;
+                else if (c == ',' && nested == 0) return i;
+            }
+            return -1;
         }
 
         private Dictionary<string, string> BuildLookup()

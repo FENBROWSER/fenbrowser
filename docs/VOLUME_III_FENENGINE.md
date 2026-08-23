@@ -11108,3 +11108,36 @@ Verification:
 - The 20-file local WPT `embedded` + `as-image` slice moved from 14 resource rejections to 5 after entity-correct nested
   rendering; first-party documents increased from 3 to 5, with remaining cases visibly classified as unsupported CSS,
   dynamic content, viewport styling, view references, or oversized inline data.
+
+## 2.138 Static SVG Geometry And CSS Math Conformance (2026-08-24)
+
+- SVG geometry properties now participate in the bounded SVG cascade for shape elements. Custom properties remain
+  case-sensitive, inherit through the SVG element tree, and resolve `var()` with depth, replacement-count, cycle, and
+  output-length limits. The resolver preserves CSS value provenance: a substituted nonzero unitless number is invalid
+  for a CSS length even though the same literal remains valid in XML user-unit syntax.
+- `SvgCssLengthEvaluator` is a stateless bounded evaluator for geometry `calc()`, `min()`, `max()`, `clamp()`, scalar
+  multiplication/division, length-percentage addition, absolute units, font-relative units, and percentages. It uses
+  explicit percentage/font inputs, CSS tokenization, typed arithmetic, 16-level nesting, and a 128-operation ceiling;
+  malformed dimensions, division by zero, excessive nesting, viewport units, and unsupported layout-dependent units
+  route to compatibility instead of silently producing zero geometry.
+- CSS `d: path(...)`, `d:none`, `path-length`, and SVG Paths bearing commands `B`/`b` are supported. Cardinal bearings
+  use exact coordinate transforms to avoid trigonometric edge drift. Elliptical arc commands use Skia's native SVG arc
+  primitive rather than cubic approximation, including absolute radii and degenerate-line behavior. A zero
+  `path-length` suppresses dash effects and therefore renders the required solid stroke.
+- Percentage geometry is normalized only when floating-point resolution is within `0.0001` of an integer, eliminating
+  artificial antialias seams without snapping genuine fractional geometry. Negative ellipse radii compute as invalid
+  `auto` values and inherit the valid companion radius. Nested `<svg>` uses its XML width/height attributes with 100%
+  defaults; layout-dependent intrinsic and viewport CSS sizing remains explicit compatibility routing.
+
+Verification:
+
+- Complete Release SVG tests: 278 passed, 0 failed, 0 skipped. The static 198-file local WPT selection has 64/64
+  comparable declared-reference passes, zero declared-reference failures, zero renderer/worker failures, and zero
+  timeouts.
+- The signed captured-site gate remains 151/151 first-party with zero fallback, rejection, failure, timeout, skip, or
+  truncation; 150 direct legacy differentials pass and one existing chromatic-gradient reference defect remains visible.
+- The 10,000-render native-ownership stress reports zero failures, 769 intended compatibility cases, and 13,504,512
+  retained private bytes against the fixed 67,108,864-byte ceiling.
+- The `linux-x64` framework-dependent benchmark publishes without warnings and executes the same 10,000-render gate
+  under Ubuntu 24.04 WSL with the explicit DejaVu Sans benchmark font: zero failures, 769 intended compatibility cases,
+  and 9,768,960 retained private bytes below the same ceiling.

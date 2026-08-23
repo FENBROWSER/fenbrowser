@@ -46,6 +46,8 @@ namespace FenBrowser.FenEngine.Svg
             public float DashOffset;
             public SKColor CurrentColor = SKColors.Black;
             public bool Visibility = true;
+            public float FontSize = DefaultFontSize;
+            public float RootFontSize = DefaultFontSize;
 
             public InheritedStyle Clone() => (InheritedStyle)MemberwiseClone();
 
@@ -83,12 +85,18 @@ namespace FenBrowser.FenEngine.Svg
                     MiterLimit = MiterLimit,
                     Dash = Dash,
                     DashOffset = DashOffset,
-                    Visibility = Visibility
+                    Visibility = Visibility,
+                    FontSize = ResolveFontSize(Attr("font-size"), FontSize),
+                    RootFontSize = RootFontSize
                 };
+
+                if (el.Parent == null) s.RootFontSize = s.FontSize;
 
                 bool changed = !s.CurrentColor.Equals(CurrentColor) ||
                                !s.Fill.Equals(Fill) ||
-                               !s.Stroke.Equals(Stroke);
+                               !s.Stroke.Equals(Stroke) ||
+                               s.FontSize != FontSize ||
+                               s.RootFontSize != RootFontSize;
 
                 var swRaw = Attr("stroke-width");
                 if (!string.IsNullOrWhiteSpace(swRaw) &&

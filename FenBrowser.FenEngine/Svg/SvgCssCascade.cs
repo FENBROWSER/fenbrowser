@@ -28,7 +28,8 @@ namespace FenBrowser.FenEngine.Svg
             "isolation", "mix-blend-mode",
             "flood-color", "flood-opacity",
             "stop-color", "stop-opacity",
-            "font-family", "font-size", "font-style", "font-weight", "letter-spacing", "text-anchor"
+            "font-family", "font-size", "font-style", "font-weight", "letter-spacing", "text-anchor",
+            "x", "y", "width", "height", "cx", "cy", "r", "rx", "ry", "d", "path-length"
         };
 
         private static readonly HashSet<string> NoneIsNoEffect = new(StringComparer.OrdinalIgnoreCase)
@@ -229,6 +230,7 @@ namespace FenBrowser.FenEngine.Svg
             Action checkDeadline)
         {
             Dictionary<string, Winner> winners = null;
+            Dictionary<string, Winner> customWinners = null;
             var candidates = ruleIndex.GetCandidates(element);
             int candidatePosition = 0;
             foreach (int i in candidates)
@@ -244,6 +246,7 @@ namespace FenBrowser.FenEngine.Svg
                     var declaration = declarations[d];
                     Consider(
                         ref winners,
+                        ref customWinners,
                         declaration,
                         new CascadeKey(
                             CssOrigin.Author,
@@ -275,6 +278,7 @@ namespace FenBrowser.FenEngine.Svg
                     var declaration = declarations[i];
                     Consider(
                         ref winners,
+                        ref customWinners,
                         declaration,
                         new CascadeKey(
                             CssOrigin.Author,
@@ -289,16 +293,25 @@ namespace FenBrowser.FenEngine.Svg
                 }
             }
 
-            if (winners == null) return;
-            element.CascadedDeclarations = new Dictionary<string, string>(winners.Count, StringComparer.OrdinalIgnoreCase);
-            foreach (var pair in winners)
+            if (winners != null)
             {
-                element.CascadedDeclarations[pair.Key] = pair.Value.Value;
+                element.CascadedDeclarations = new Dictionary<string, string>(
+                    winners.Count, StringComparer.OrdinalIgnoreCase);
+                foreach (var pair in winners)
+                    element.CascadedDeclarations[pair.Key] = pair.Value.Value;
+            }
+            if (customWinners != null)
+            {
+                element.CustomProperties = new Dictionary<string, string>(
+                    customWinners.Count, StringComparer.Ordinal);
+                foreach (var pair in customWinners)
+                    element.CustomProperties[pair.Key] = pair.Value.Value;
             }
         }
 
         private static void Consider(
             ref Dictionary<string, Winner> winners,
+            ref Dictionary<string, Winner> customWinners,
             CssDeclaration declaration,
             CascadeKey key,
             SvgParseReport report)
@@ -308,7 +321,8 @@ namespace FenBrowser.FenEngine.Svg
             string value = declaration.Value?.Trim();
             if (string.IsNullOrEmpty(value)) return;
 
-            if (!SupportedProperties.Contains(property))
+            bool isCustomProperty = property.StartsWith("--", StringComparison.Ordinal);
+            if (!isCustomProperty && !SupportedProperties.Contains(property))
             {
                 if (EmbeddingOnlyProperties.Contains(property)) return;
                 if (NoneIsNoEffect.Contains(property) &&
@@ -316,20 +330,21 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     return;
                 }
-                if (!property.StartsWith("--", StringComparison.Ordinal))
-                {
-                    report.RequireFallback($"SVG CSS property '{property}' requires compatibility fallback");
-                }
-                return;
-            }
-            if (value.Contains("var(", StringComparison.OrdinalIgnoreCase))
-            {
-                report.RequireFallback("SVG CSS custom-property resolution requires compatibility fallback");
+                report.RequireFallback($"SVG CSS property '{property}' requires compatibility fallback");
                 return;
             }
             if (SvgFeatureSupport.HasExternalUrlReference(value))
             {
                 report.RejectResource("SVG CSS external resource reference rejected");
+                return;
+            }
+
+            if (isCustomProperty)
+            {
+                customWinners ??= new Dictionary<string, Winner>(StringComparer.Ordinal);
+                if (!customWinners.TryGetValue(property, out var customCurrent) ||
+                    key.CompareTo(customCurrent.Key) >= 0)
+                    customWinners[property] = new Winner(value, key);
                 return;
             }
 

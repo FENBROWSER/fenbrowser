@@ -4620,3 +4620,7 @@ Verification:
 - The initial 27-file `path/distance` selection reported five declared-reference passes, two actual failures, and eight
   tests blocked by compatibility routing. These deliberately failing results verified that the new oracle distinguishes
   renderer defects from unsupported coverage before conformance fixes are credited.
+- After the static geometry/path fixes, the same schema-v3 oracle evaluated the 198-file `path`, `shapes`, `geometry`,
+  and `styling` selection. All 64 first-party-comparable declared-reference tests pass and zero fail; 29 remain blocked
+  by explicit compatibility/resource routing, and four non-SVG reference targets remain visible for a future
+  browser-level reftest runner.

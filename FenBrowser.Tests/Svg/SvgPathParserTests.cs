@@ -140,6 +140,36 @@ namespace FenBrowser.Tests.Svg
             }
         }
 
+        [Theory]
+        [InlineData("M 20 150 B -90 h 120 B 0 h 140 B 90 h 120 z")]
+        [InlineData("M 20 150 b -90 h 120 b 90 h 140 b 90 h 120 z")]
+        public void BearingCommands_RotateRelativePathCoordinates(string data)
+        {
+            Assert.True(SvgPathParser.TryBuildPath(
+                data.AsSpan(), out var path, new SvgParseReport()));
+            using (path)
+            {
+                Assert.Equal(20f, path.Bounds.Left, 3);
+                Assert.Equal(30f, path.Bounds.Top, 3);
+                Assert.Equal(160f, path.Bounds.Right, 3);
+                Assert.Equal(150f, path.Bounds.Bottom, 3);
+            }
+        }
+
+        [Fact]
+        public void Bearing_AppliesToRelativeCoordinatePairs()
+        {
+            Assert.True(SvgPathParser.TryBuildPath(
+                "M10 10 B90 l5 2".AsSpan(), out var path, new SvgParseReport()));
+            using (path)
+            {
+                Assert.Equal(8f, path.Bounds.Left, 3);
+                Assert.Equal(10f, path.Bounds.Top, 3);
+                Assert.Equal(10f, path.Bounds.Right, 3);
+                Assert.Equal(15f, path.Bounds.Bottom, 3);
+            }
+        }
+
         [Fact]
         public void ScientificNotation_AndSeparators_Parse()
         {

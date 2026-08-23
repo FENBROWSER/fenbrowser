@@ -63,7 +63,10 @@ namespace FenBrowser.FenEngine.Svg
             return paint;
         }
 
-        private SKPaint BuildStrokePaint(SvgElement el, InheritedStyle style)
+        private SKPaint BuildStrokePaint(
+            SvgElement el,
+            InheritedStyle style,
+            SKPath geometry = null)
         {
             var spec = style.Stroke;
             if (spec.Kind == SvgValues.PaintKind.None)
@@ -103,7 +106,24 @@ namespace FenBrowser.FenEngine.Svg
                 }
                 if (anyNonZero)
                 {
-                    paint.PathEffect = SKPathEffect.CreateDash(style.Dash, style.DashOffset);
+                    float calibration = ResolvePathLengthCalibration(el, geometry);
+                    if (float.IsPositiveInfinity(calibration))
+                    {
+                        // A zero pathLength maps every dash interval to infinity;
+                        // the observable result is one solid stroke.
+                    }
+                    else if (calibration != 1f)
+                    {
+                        var scaled = new float[style.Dash.Length];
+                        for (int i = 0; i < scaled.Length; i++)
+                            scaled[i] = style.Dash[i] * calibration;
+                        paint.PathEffect = SKPathEffect.CreateDash(
+                            scaled, style.DashOffset * calibration);
+                    }
+                    else
+                    {
+                        paint.PathEffect = SKPathEffect.CreateDash(style.Dash, style.DashOffset);
+                    }
                 }
             }
 
@@ -129,6 +149,26 @@ namespace FenBrowser.FenEngine.Svg
             paint.Shader = shader;
             paint.Color = SKColors.White.WithAlpha((byte)(255 * opacity));
             return paint;
+        }
+
+        private static float ResolvePathLengthCalibration(SvgElement element, SKPath geometry)
+        {
+            if (geometry == null) return 1f;
+            string raw = element.GetPresentationProperty("path-length") ??
+                         element.GetAttribute("pathLength");
+            if (string.IsNullOrWhiteSpace(raw) ||
+                !SvgValues.TryParseLength(raw.AsSpan(), out float declared, out var unit))
+                return 1f;
+            declared = SvgValues.ResolveUnits(declared, unit, DefaultFontSize, 1f);
+            if (declared == 0f) return float.PositiveInfinity;
+            if (!(declared > 0f) || !float.IsFinite(declared)) return 1f;
+
+            float actual = 0f;
+            using var measure = new SKPathMeasure(geometry, false);
+            do { actual += measure.Length; } while (measure.NextContour());
+            if (!(actual > 0f) || !float.IsFinite(actual)) return 1f;
+            float calibration = actual / declared;
+            return float.IsFinite(calibration) && calibration > 0f ? calibration : 1f;
         }
 
         private float ReadClampedOpacity(SvgElement el, string name, float defaultValue)

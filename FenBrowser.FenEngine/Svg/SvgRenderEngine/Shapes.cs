@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using SkiaSharp;
 using FenBrowser.FenEngine.Adapters;
+using FenBrowser.FenEngine.Rendering.Css;
 
 namespace FenBrowser.FenEngine.Svg
 {
@@ -20,7 +21,7 @@ namespace FenBrowser.FenEngine.Svg
                 return; // visibility:hidden suppresses this shape (children may override).
             }
 
-            using var path = BuildGeometry(el, viewport);
+            using var path = BuildGeometry(el, viewport, style.FontSize, style.RootFontSize);
             if (path == null || path.IsEmpty)
             {
                 return;
@@ -34,7 +35,7 @@ namespace FenBrowser.FenEngine.Svg
                 try
                 {
                     using var fillPaint = BuildFillPaint(el, style, path);
-                    using var strokePaint = BuildStrokePaint(el, style);
+                    using var strokePaint = BuildStrokePaint(el, style, path);
 
                     // Spec paint order: fill first, then stroke.
                     if (fillPaint != null)
@@ -59,11 +60,40 @@ namespace FenBrowser.FenEngine.Svg
             });
         }
 
-        private SKPath BuildGeometry(SvgElement el, ViewportContext viewport)
+        private SKPath BuildGeometry(SvgElement element, ViewportContext viewport)
+        {
+            ResolveGeometryFontContext(element, out float fontSize, out float rootFontSize);
+            return BuildGeometry(element, viewport, fontSize, rootFontSize);
+        }
+
+        private static void ResolveGeometryFontContext(
+            SvgElement element,
+            out float fontSize,
+            out float rootFontSize)
+        {
+            var ancestry = new List<SvgElement>();
+            for (SvgElement current = element; current != null; current = current.Parent)
+                ancestry.Add(current);
+            fontSize = DefaultFontSize;
+            rootFontSize = DefaultFontSize;
+            for (int i = ancestry.Count - 1; i >= 0; i--)
+            {
+                fontSize = ResolveFontSize(
+                    ancestry[i].GetPresentationProperty("font-size"),
+                    fontSize);
+                if (ancestry[i].Parent == null) rootFontSize = fontSize;
+            }
+        }
+
+        private SKPath BuildGeometry(
+            SvgElement el,
+            ViewportContext viewport,
+            float fontSize,
+            float rootFontSize)
         {
             if (el.Name == "path")
             {
-                string d = el.GetAttribute("d");
+                string d = ResolvePathData(el);
                 if (string.IsNullOrEmpty(d))
                 {
                     return null;
@@ -85,16 +115,16 @@ namespace FenBrowser.FenEngine.Svg
             switch (el.Name)
             {
                 case "rect":
-                    ok = AppendRect(el, builder, viewport);
+                    ok = AppendRect(el, builder, viewport, fontSize, rootFontSize);
                     break;
                 case "circle":
-                    ok = AppendCircle(el, builder, viewport);
+                    ok = AppendCircle(el, builder, viewport, fontSize, rootFontSize);
                     break;
                 case "ellipse":
-                    ok = AppendEllipse(el, builder, viewport);
+                    ok = AppendEllipse(el, builder, viewport, fontSize, rootFontSize);
                     break;
                 case "line":
-                    ok = AppendLine(el, builder, viewport);
+                    ok = AppendLine(el, builder, viewport, fontSize, rootFontSize);
                     break;
                 case "polyline":
                 case "polygon":
@@ -119,26 +149,136 @@ namespace FenBrowser.FenEngine.Svg
             return path;
         }
 
-        private float Attr(SvgElement el, string name, float percentReference) =>
-            ResolveCoord(el.GetAttribute(name), percentReference);
+        private float Attr(
+            SvgElement el,
+            string name,
+            float percentReference,
+            float fontSize,
+            float rootFontSize)
+        {
+            return TryResolveGeometryLength(
+                    el, name, percentReference, fontSize, rootFontSize, out float value)
+                ? value
+                : 0f;
+        }
+
+        private bool TryResolveGeometryLength(
+            SvgElement element,
+            string name,
+            float percentReference,
+            float fontSize,
+            float rootFontSize,
+            out float value)
+        {
+            value = 0f;
+            string raw = element.GetPresentationProperty(name);
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+            if (SvgValues.TryParseLength(raw.AsSpan(), out float parsed, out var unit))
+            {
+                if (element.UsesCssPropertySyntax(name) &&
+                    unit == SvgValues.SvgUnit.User && parsed != 0f)
+                    return false;
+                value = SvgValues.ResolveUnits(parsed, unit, fontSize, percentReference);
+            }
+            else if (!SvgCssLengthEvaluator.TryEvaluate(
+                         raw,
+                         percentReference,
+                         fontSize,
+                         rootFontSize,
+                         out value))
+            {
+                RequireFallbackForUnsupportedGeometryLength(element, name, raw);
+                return false;
+            }
+            value = NormalizeGeometryValue(SvgValues.ClampCoord(value));
+            return true;
+        }
+
+        private static float NormalizeGeometryValue(float value)
+        {
+            float nearestInteger = System.MathF.Round(value);
+            return System.MathF.Abs(value - nearestInteger) <= 0.0001f
+                ? nearestInteger
+                : value;
+        }
+
+        private void RequireFallbackForUnsupportedGeometryLength(
+            SvgElement element,
+            string name,
+            string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            string value = raw.Trim();
+            string lower = value.ToLowerInvariant();
+            bool supportedCssSyntaxNotImplemented =
+                lower.StartsWith("calc(", System.StringComparison.Ordinal) ||
+                lower.StartsWith("min(", System.StringComparison.Ordinal) ||
+                lower.StartsWith("max(", System.StringComparison.Ordinal) ||
+                lower.StartsWith("clamp(", System.StringComparison.Ordinal) ||
+                (name is "width" or "height" &&
+                 lower.Equals("auto", System.StringComparison.Ordinal)) ||
+                HasUnsupportedCssLengthUnit(lower);
+            if (supportedCssSyntaxNotImplemented)
+                _report.RequireFallback(
+                    $"SVG CSS geometry value '{name}: {value}' requires compatibility fallback");
+        }
+
+        private static bool HasUnsupportedCssLengthUnit(string value)
+        {
+            int end = value.Length;
+            while (end > 0 && char.IsWhiteSpace(value[end - 1])) end--;
+            int start = end;
+            while (start > 0 && char.IsLetter(value[start - 1])) start--;
+            if (start == end) return false;
+            string unit = value.Substring(start, end - start);
+            return unit is "q" or "rem" or "ch" or "ic" or "cap" or "lh" or "rlh" or
+                   "vw" or "vh" or "vi" or "vb" or "vmin" or "vmax" or
+                   "cqw" or "cqh" or "cqi" or "cqb" or "cqmin" or "cqmax";
+        }
+
+        private static string ResolvePathData(SvgElement element)
+        {
+            string raw = element.GetPresentationProperty("d");
+            if (string.IsNullOrWhiteSpace(raw) ||
+                raw.Trim().Equals("none", System.StringComparison.OrdinalIgnoreCase))
+                return null;
+            string value = raw.Trim();
+            if (!value.StartsWith("path(", System.StringComparison.OrdinalIgnoreCase)) return value;
+
+            var tokenizer = new CssTokenizer(value);
+            CssToken token;
+            do { token = tokenizer.Consume(); } while (token.Type == CssTokenType.Whitespace);
+            if (token.Type != CssTokenType.Function ||
+                !token.Value.Equals("path", System.StringComparison.OrdinalIgnoreCase)) return null;
+            do { token = tokenizer.Consume(); } while (token.Type == CssTokenType.Whitespace);
+            if (token.Type != CssTokenType.String) return null;
+            string data = token.Value;
+            do { token = tokenizer.Consume(); } while (token.Type == CssTokenType.Whitespace);
+            if (token.Type != CssTokenType.RightParen) return null;
+            do { token = tokenizer.Consume(); } while (token.Type == CssTokenType.Whitespace);
+            return token.Type == CssTokenType.EOF ? data : null;
+        }
 
         private float ResolveCoord(string raw, float percentReference = 0f)
         {
             if (string.IsNullOrWhiteSpace(raw) ||
                 !SvgValues.TryParseLength(raw.AsSpan(), out float value, out var unit))
-            {
                 return 0f;
-            }
             float resolved = SvgValues.ResolveUnits(value, unit, DefaultFontSize, percentReference);
             return SvgValues.ClampCoord(resolved);
         }
 
-        private bool AppendRect(SvgElement el, SKPathBuilder path, ViewportContext viewport)
+        private bool AppendRect(
+            SvgElement el,
+            SKPathBuilder path,
+            ViewportContext viewport,
+            float fontSize,
+            float rootFontSize)
         {
-            float x = Attr(el, "x", viewport.Width);
-            float y = Attr(el, "y", viewport.Height);
-            float w = Attr(el, "width", viewport.Width);
-            float h = Attr(el, "height", viewport.Height);
+            float x = Attr(el, "x", viewport.Width, fontSize, rootFontSize);
+            float y = Attr(el, "y", viewport.Height, fontSize, rootFontSize);
+            float w = Attr(el, "width", viewport.Width, fontSize, rootFontSize);
+            float h = Attr(el, "height", viewport.Height, fontSize, rootFontSize);
             if (w <= 0f || h <= 0f)
             {
                 return false; // Zero/negative extents disable rendering (spec).
@@ -146,8 +286,10 @@ namespace FenBrowser.FenEngine.Svg
 
             // P0.6: parse rx/ry once (previously Attr + HasPositiveAttr each
             // re-parsed the same attribute string).
-            bool hasRx = TryParsePositive(el, "rx", viewport.Width, out float rx);
-            bool hasRy = TryParsePositive(el, "ry", viewport.Height, out float ry);
+            bool hasRx = TryParsePositive(
+                el, "rx", viewport.Width, fontSize, rootFontSize, out float rx);
+            bool hasRy = TryParsePositive(
+                el, "ry", viewport.Height, fontSize, rootFontSize, out float ry);
             if (!hasRx) rx = 0f;
             if (!hasRy) ry = 0f;
 
@@ -171,47 +313,55 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         /// <summary>Parses once; true only for a specified positive value.</summary>
-        private static bool TryParsePositive(
+        private bool TryParsePositive(
             SvgElement el,
             string name,
             float percentReference,
+            float fontSize,
+            float rootFontSize,
             out float value)
         {
-            var raw = el.GetAttribute(name);
-            if (!string.IsNullOrWhiteSpace(raw) &&
-                SvgValues.TryParseLength(raw.AsSpan(), out float parsed, out var unit))
-            {
-                value = SvgValues.ClampCoord(
-                    SvgValues.ResolveUnits(parsed, unit, DefaultFontSize, percentReference));
-                return value > 0f;
-            }
-            value = 0f;
-            return false;
+            return TryResolveGeometryLength(
+                       el, name, percentReference, fontSize, rootFontSize, out value) && value > 0f;
         }
 
-        private bool AppendCircle(SvgElement el, SKPathBuilder path, ViewportContext viewport)
+        private bool AppendCircle(
+            SvgElement el,
+            SKPathBuilder path,
+            ViewportContext viewport,
+            float fontSize,
+            float rootFontSize)
         {
             float diagonal = MathF.Sqrt(
                 (viewport.Width * viewport.Width + viewport.Height * viewport.Height) / 2f);
-            float r = Attr(el, "r", diagonal);
+            float r = Attr(el, "r", diagonal, fontSize, rootFontSize);
             if (r <= 0f)
             {
                 return false;
             }
             path.AddCircle(
-                Attr(el, "cx", viewport.Width),
-                Attr(el, "cy", viewport.Height),
+                Attr(el, "cx", viewport.Width, fontSize, rootFontSize),
+                Attr(el, "cy", viewport.Height, fontSize, rootFontSize),
                 r);
             return true;
         }
 
-        private bool AppendEllipse(SvgElement el, SKPathBuilder path, ViewportContext viewport)
+        private bool AppendEllipse(
+            SvgElement el,
+            SKPathBuilder path,
+            ViewportContext viewport,
+            float fontSize,
+            float rootFontSize)
         {
-            // P0.6: parse each attribute exactly once.
-            float cx = Attr(el, "cx", viewport.Width);
-            float cy = Attr(el, "cy", viewport.Height);
-            float rx = Attr(el, "rx", viewport.Width);
-            float ry = Attr(el, "ry", viewport.Height);
+            float cx = Attr(el, "cx", viewport.Width, fontSize, rootFontSize);
+            float cy = Attr(el, "cy", viewport.Height, fontSize, rootFontSize);
+            float? rxValue = ResolveAutoRadius(
+                el, "rx", viewport.Width, fontSize, rootFontSize);
+            float? ryValue = ResolveAutoRadius(
+                el, "ry", viewport.Height, fontSize, rootFontSize);
+            if (!rxValue.HasValue && !ryValue.HasValue) return false;
+            float rx = rxValue ?? ryValue.Value;
+            float ry = ryValue ?? rxValue.Value;
             if (rx <= 0f || ry <= 0f)
             {
                 return false;
@@ -221,14 +371,35 @@ namespace FenBrowser.FenEngine.Svg
             return true;
         }
 
-        private bool AppendLine(SvgElement el, SKPathBuilder path, ViewportContext viewport)
+        private float? ResolveAutoRadius(
+            SvgElement element,
+            string name,
+            float percentReference,
+            float fontSize,
+            float rootFontSize)
+        {
+            string raw = element.GetPresentationProperty(name);
+            if (string.IsNullOrWhiteSpace(raw) ||
+                raw.Trim().Equals("auto", System.StringComparison.OrdinalIgnoreCase))
+                return null;
+            if (!TryResolveGeometryLength(
+                    element, name, percentReference, fontSize, rootFontSize, out float value)) return null;
+            return value < 0f ? null : value;
+        }
+
+        private bool AppendLine(
+            SvgElement el,
+            SKPathBuilder path,
+            ViewportContext viewport,
+            float fontSize,
+            float rootFontSize)
         {
             path.MoveTo(
-                Attr(el, "x1", viewport.Width),
-                Attr(el, "y1", viewport.Height));
+                Attr(el, "x1", viewport.Width, fontSize, rootFontSize),
+                Attr(el, "y1", viewport.Height, fontSize, rootFontSize));
             path.LineTo(
-                Attr(el, "x2", viewport.Width),
-                Attr(el, "y2", viewport.Height));
+                Attr(el, "x2", viewport.Width, fontSize, rootFontSize),
+                Attr(el, "y2", viewport.Height, fontSize, rootFontSize));
             return true;
         }
 
