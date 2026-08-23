@@ -94,6 +94,7 @@ namespace FenBrowser.FenEngine.Svg
                         return;
                     }
                 case "defs":
+                case "style":
                 case "symbol":
                 case "marker":
                 case "pattern":
@@ -388,7 +389,7 @@ namespace FenBrowser.FenEngine.Svg
 
         private static bool IsDisplayNone(SvgElement el)
         {
-            return string.Equals(el.GetAttribute("display"), "none", System.StringComparison.OrdinalIgnoreCase);
+            return string.Equals(el.GetPresentationProperty("display"), "none", System.StringComparison.OrdinalIgnoreCase);
         }
 
         private bool TryBeginGroupOpacity(SvgElement el, SKCanvas canvas, out SKPaint layerPaint)
@@ -446,7 +447,7 @@ namespace FenBrowser.FenEngine.Svg
             ViewportContext viewport,
             InheritedStyle inherited)
         {
-            var raw = el.GetAttribute("clip-path");
+            var raw = el.GetPresentationProperty("clip-path");
             if (string.IsNullOrWhiteSpace(raw))
             {
                 return;
@@ -617,7 +618,7 @@ namespace FenBrowser.FenEngine.Svg
                 hasGeometry = true;
 
                 if (string.Equals(
-                        shapeEl.GetAttribute("clip-rule") ?? shapeEl.GetAttribute("fill-rule"),
+                        shapeEl.GetPresentationProperty("clip-rule") ?? shapeEl.GetPresentationProperty("fill-rule"),
                         "evenodd",
                         System.StringComparison.OrdinalIgnoreCase))
                 {
@@ -670,7 +671,8 @@ namespace FenBrowser.FenEngine.Svg
             }
             if (!href.StartsWith("data:", System.StringComparison.OrdinalIgnoreCase))
             {
-                WarnUnsupportedOnce("image external reference");
+                _report.RequireFallback("image external reference requires compatibility support");
+                _report.RejectResource("image external reference rejected from legacy fallback");
                 return;
             }
             if (IsSvgDataUri(href))

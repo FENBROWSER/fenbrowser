@@ -12,7 +12,7 @@ namespace FenBrowser.FenEngine.Svg
 
         private bool TryApplyFillRule(SvgElement el, SKPath path)
         {
-            var rule = el.GetAttribute("fill-rule") ?? el.GetAttribute("clip-rule");
+            var rule = el.GetPresentationProperty("fill-rule") ?? el.GetPresentationProperty("clip-rule");
             if (string.Equals(rule, "evenodd", System.StringComparison.OrdinalIgnoreCase))
             {
                 path.FillType = SKPathFillType.EvenOdd;
@@ -133,7 +133,7 @@ namespace FenBrowser.FenEngine.Svg
 
         private float ReadClampedOpacity(SvgElement el, string name, float defaultValue)
         {
-            var raw = el.GetAttribute(name);
+            var raw = el.GetPresentationProperty(name);
             if (string.IsNullOrWhiteSpace(raw) || !SvgValues.TryParseNumber(raw.AsSpan(), out float v))
             {
                 return defaultValue;
@@ -458,7 +458,7 @@ namespace FenBrowser.FenEngine.Svg
                 }
                 offset = System.Math.Clamp(offset, 0f, 1f);
 
-                var colorRaw = stop.GetAttribute("stop-color") ?? "black";
+                var colorRaw = stop.GetPresentationProperty("stop-color") ?? "black";
                 var color = SKColors.Black;
                 if (colorRaw.Equals("currentColor", System.StringComparison.OrdinalIgnoreCase))
                 {
@@ -470,7 +470,7 @@ namespace FenBrowser.FenEngine.Svg
                 }
 
                 float stopOpacity = 1f;
-                var soRaw = stop.GetAttribute("stop-opacity");
+                var soRaw = stop.GetPresentationProperty("stop-opacity");
                 if (!string.IsNullOrWhiteSpace(soRaw) &&
                     SvgValues.TryParseNumber(soRaw.AsSpan(), out float sov) &&
                     SvgValues.IsFinite(sov))

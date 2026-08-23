@@ -20,6 +20,9 @@ namespace FenBrowser.FenEngine.Svg
         public string TextContent;
         public KeyValuePair<string, string>[] Attributes;
         public readonly List<SvgElement> Children = new List<SvgElement>();
+        public SvgElement Parent;
+        public SvgElement PreviousElementSibling;
+        public Dictionary<string, string> CascadedDeclarations;
 
         private Dictionary<string, string> _lookup;
 
@@ -47,6 +50,16 @@ namespace FenBrowser.FenEngine.Svg
         {
             var map = _lookup ??= BuildLookup();
             return map.TryGetValue(name, out var value) ? value : null;
+        }
+
+        public string GetPresentationProperty(string name)
+        {
+            if (CascadedDeclarations != null &&
+                CascadedDeclarations.TryGetValue(name, out var value))
+            {
+                return value;
+            }
+            return GetAttribute(name);
         }
 
         private Dictionary<string, string> BuildLookup()

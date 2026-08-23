@@ -114,26 +114,7 @@ namespace FenBrowser.FenEngine.Svg
 
         private static string TextProperty(SvgElement el, string name)
         {
-            string style = el.GetAttribute("style");
-            string matched = null;
-            if (!string.IsNullOrWhiteSpace(style))
-            {
-                var remaining = style.AsSpan();
-                int declarations = 0;
-                while (!remaining.IsEmpty && declarations++ < 64)
-                {
-                    int semi = remaining.IndexOf(';');
-                    var declaration = semi < 0 ? remaining : remaining.Slice(0, semi);
-                    remaining = semi < 0 ? default : remaining.Slice(semi + 1);
-                    int colon = declaration.IndexOf(':');
-                    if (colon > 0 && declaration.Slice(0, colon).Trim().Equals(
-                        name.AsSpan(), StringComparison.OrdinalIgnoreCase))
-                    {
-                        matched = declaration.Slice(colon + 1).Trim().ToString();
-                    }
-                }
-            }
-            return matched ?? el.GetAttribute(name);
+            return el.GetPresentationProperty(name);
         }
 
         private static int ParseFontWeight(string raw)

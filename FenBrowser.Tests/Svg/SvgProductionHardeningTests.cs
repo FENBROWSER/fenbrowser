@@ -246,7 +246,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void Hybrid_ExternalImageCompatibilityPathRemainsNetworkIsolated()
+        public void Hybrid_ExternalImageRejectionNeverEntersLegacyRenderer()
         {
             var renderer = new HybridSvgRenderer(new FenSvgRenderer(), new SvgSkiaRenderer());
             using var result = renderer.Render(
@@ -255,8 +255,9 @@ namespace FenBrowser.Tests.Svg
                 SvgRenderLimits.Strict);
 
             Assert.True(result.Success, result.ErrorMessage);
-            Assert.True(result.UsedLegacyFallback);
-            Assert.Equal(SvgRendererBackend.LegacySvgSkia, result.Backend);
+            Assert.True(result.HadResourceRejection);
+            Assert.False(result.UsedLegacyFallback);
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
             Assert.Equal(0, result.Bitmap.GetPixel(5, 5).Alpha);
         }
 

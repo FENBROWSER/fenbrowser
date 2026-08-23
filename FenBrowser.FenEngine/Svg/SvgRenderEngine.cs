@@ -123,6 +123,14 @@ namespace FenBrowser.FenEngine.Svg
             }
         }
 
+        private void CheckDeadline()
+        {
+            if (_clock.ElapsedMilliseconds > _deadlineMs)
+            {
+                throw new SvgTimeBudgetExceededException();
+            }
+        }
+
         // -------------------------------------------------------------- viewport
 
         private void RenderRoot(out SKPicture picture, out float width, out float height)
@@ -152,6 +160,10 @@ namespace FenBrowser.FenEngine.Svg
             // large can never pass raster admission below anyway.
             width = System.Math.Min(width, 32767f);
             height = System.Math.Min(height, 32767f);
+
+            // Apply author CSS after the intrinsic viewport is known so media
+            // queries and percentage-aware values see the replaced-element size.
+            SvgCssCascade.Apply(_doc, width, _report, CheckDeadline);
 
             using var recorder = new SKPictureRecorder();
             var canvas = recorder.BeginRecording(new SKRect(0f, 0f, width, height));

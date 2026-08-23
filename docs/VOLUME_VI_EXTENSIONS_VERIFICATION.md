@@ -4462,3 +4462,26 @@ Verification:
 - Strict mode exits `1` for this sample because selection is truncated and resource rejections remain, while
   pixel parity itself passes 4/4; each gate condition is therefore observable rather than collapsed into a
   single misleading compatibility count.
+
+## 6.195 SVG Shared-CSS Differential Evidence (2026-08-23)
+
+- The focused CSS/cascade slice verifies shared stylesheet and inline parsing, cascade importance and
+  specificity, source order, combinators, attributes, structural pseudos, local width media queries,
+  stylesheet `display:none`, concurrent renders, deadline enforcement, and external-resource isolation.
+- Re-running the same deterministic first 100 local WPT SVG files after shared CSS integration moved two
+  documents from compatibility fallback to first-party: 10 first-party, 75 fallback, 15 resource rejection,
+  and zero first-party/hybrid failures.
+- Five of six comparable pairs match Svg.Skia's alpha/RGB thresholds. The retained difference is
+  `geometry/reftests/percentage-ref.svg`: first-party applies the root stylesheet's `fill:none` and scaled
+  stroke while the legacy raster has 44,591 foreground pixels versus 15,101 first-party pixels. This is
+  retained as a differential for trusted-reference review; the migration gate does not alter correct
+  first-party output merely to match a legacy backend.
+- An attempted uncapped 1,197-file local WPT characterization was stopped after the legacy renderer stalled
+  inside one document with negligible CPU. The in-process corpus runner therefore remains unsuitable as the
+  complete switch gate until per-document process isolation and wall-clock termination are implemented.
+
+Verification:
+
+- `SvgCssCascadeTests`: 12 passed, 0 failed, 0 skipped.
+- Complete focused SVG slice: 206 passed, 0 failed, 0 skipped.
+- Deterministic 100-file report: first-party 10, fallback 75, resource rejection 15, parity 5/6.

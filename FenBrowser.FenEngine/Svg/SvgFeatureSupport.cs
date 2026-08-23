@@ -12,7 +12,7 @@ namespace FenBrowser.FenEngine.Svg
     {
         private static readonly HashSet<string> FallbackElements = new(StringComparer.Ordinal)
         {
-            "style", "tspan", "textPath",
+            "tspan", "textPath",
             "foreignObject", "animation", "animate", "animateTransform", "animateMotion", "set"
         };
 
@@ -46,6 +46,21 @@ namespace FenBrowser.FenEngine.Svg
 
             foreach (var attribute in attributes)
             {
+                if (HasExternalUrlReference(attribute.Value))
+                {
+                    report.RejectResource("SVG external resource reference rejected");
+                    continue;
+                }
+                if ((element.Name == "use" || element.Name == "image") &&
+                    (string.Equals(attribute.Key, "href", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(attribute.Key, "xlink:href", StringComparison.OrdinalIgnoreCase)) &&
+                    !string.IsNullOrWhiteSpace(attribute.Value) &&
+                    attribute.Value[0] != '#' &&
+                    !(element.Name == "image" && attribute.Value.StartsWith("data:", StringComparison.OrdinalIgnoreCase)))
+                {
+                    report.RejectResource($"SVG {element.Name} external reference rejected");
+                    continue;
+                }
                 if (element.Name == "text" && AdvancedTextAttributes.Contains(attribute.Key))
                 {
                     report.RequireFallback(
@@ -58,47 +73,24 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     report.RequireFallback($"SVG property '{attribute.Key}' requires compatibility fallback");
                 }
-                else if (string.Equals(attribute.Key, "style", StringComparison.OrdinalIgnoreCase))
-                {
-                    InspectInlineStyle(attribute.Value, report);
-                }
             }
         }
 
-        private static void InspectInlineStyle(string style, SvgParseReport report)
+        internal static bool HasExternalUrlReference(string value)
         {
-            var remaining = style.AsSpan();
-            while (!remaining.IsEmpty)
+            if (string.IsNullOrWhiteSpace(value)) return false;
+            int searchStart = 0;
+            while (searchStart < value.Length)
             {
-                int semicolon = remaining.IndexOf(';');
-                var declaration = semicolon < 0 ? remaining : remaining.Slice(0, semicolon);
-                remaining = semicolon < 0 ? default : remaining.Slice(semicolon + 1);
-                int colon = declaration.IndexOf(':');
-                if (colon <= 0)
-                {
-                    continue;
-                }
-
-                var property = declaration.Slice(0, colon).Trim();
-                var value = declaration.Slice(colon + 1).Trim();
-                foreach (string unsupported in FallbackProperties)
-                {
-                    if (property.Equals(unsupported.AsSpan(), StringComparison.OrdinalIgnoreCase) &&
-                        !value.Equals("none".AsSpan(), StringComparison.OrdinalIgnoreCase))
-                    {
-                        report.RequireFallback($"SVG property '{unsupported}' requires compatibility fallback");
-                        break;
-                    }
-                }
-                foreach (string unsupported in AdvancedTextAttributes)
-                {
-                    if (property.Equals(unsupported.AsSpan(), StringComparison.OrdinalIgnoreCase))
-                    {
-                        report.RequireFallback($"SVG text property '{unsupported}' requires compatibility fallback");
-                        break;
-                    }
-                }
+                int start = value.IndexOf("url(", searchStart, StringComparison.OrdinalIgnoreCase);
+                if (start < 0) return false;
+                int close = value.IndexOf(')', start + 4);
+                if (close < 0) return false;
+                string target = value.Substring(start + 4, close - start - 4).Trim().Trim('\'', '"');
+                if (target.Length > 0 && target[0] != '#') return true;
+                searchStart = close + 1;
             }
+            return false;
         }
     }
 }

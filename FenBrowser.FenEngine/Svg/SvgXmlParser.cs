@@ -30,8 +30,9 @@ namespace FenBrowser.FenEngine.Svg
         internal const int MaxTextContentChars = 256 * 1024;
         internal const int MaxIdChars = 512;
 
-        // Subtrees consumed raw and discarded: no rendering use in v1 and keeping
-        // their content out of the tree removes CSS/script parsing surface.
+        // Subtrees consumed raw rather than interpreted as SVG markup. Style text
+        // is retained under the same hard text cap for the shared CSS parser;
+        // script/title/desc/metadata content remains discarded.
         private static readonly HashSet<string> IgnoredSubtrees = new HashSet<string>
         {
             "style", "script", "title", "desc", "metadata"
@@ -184,14 +185,17 @@ namespace FenBrowser.FenEngine.Svg
 
                 if (IgnoredSubtrees.Contains(child.Name))
                 {
-                    SkipIgnoredSubtree(state, child.Name);
-                    openStack[openStack.Count - 1].Children.Add(child);
+                    if (!child.IsSelfClosing)
+                    {
+                        SkipIgnoredSubtree(state, child);
+                    }
+                    AddChild(openStack[openStack.Count - 1], child);
                     continue;
                 }
 
                 if (child.IsSelfClosing)
                 {
-                    openStack[openStack.Count - 1].Children.Add(child);
+                    AddChild(openStack[openStack.Count - 1], child);
                     continue;
                 }
 
@@ -203,7 +207,7 @@ namespace FenBrowser.FenEngine.Svg
                     return false;
                 }
 
-                openStack[openStack.Count - 1].Children.Add(child);
+                AddChild(openStack[openStack.Count - 1], child);
                 openStack.Add(child);
             }
 
@@ -558,8 +562,19 @@ namespace FenBrowser.FenEngine.Svg
 
         // -------------------------------------------------------- raw skipping
 
-        private static void SkipIgnoredSubtree(ParseState state, string name)
+        private static void AddChild(SvgElement parent, SvgElement child)
         {
+            child.Parent = parent;
+            child.PreviousElementSibling = parent.Children.Count == 0
+                ? null
+                : parent.Children[parent.Children.Count - 1];
+            parent.Children.Add(child);
+        }
+
+        private static void SkipIgnoredSubtree(ParseState state, SvgElement element)
+        {
+            string name = element.Name;
+            int contentStart = state.Pos;
             // Consume everything until the matching close tag of `name`,
             // honoring nested same-name opens. Content is never interpreted.
             int depth = 1;
@@ -573,6 +588,7 @@ namespace FenBrowser.FenEngine.Svg
                 }
 
                 // Close candidate: "</name".
+                int markupStart = state.Pos;
                 state.Pos++; // consume '<'
                 if (state.Peek() == '/')
                 {
@@ -590,6 +606,18 @@ namespace FenBrowser.FenEngine.Svg
                         depth--;
                         if (depth == 0)
                         {
+                            if (string.Equals(name, "style", System.StringComparison.Ordinal))
+                            {
+                                int length = markupStart - contentStart;
+                                if (length > MaxTextContentChars)
+                                {
+                                    throw new SvgSandboxViolationException(
+                                        $"SVG style text length ({length}) exceeds limit ({MaxTextContentChars})");
+                                }
+                                element.TextContent = length > 0
+                                    ? DecodeCharacterData(state, contentStart, markupStart, MaxTextContentChars, out _)
+                                    : string.Empty;
+                            }
                             return;
                         }
                     }
@@ -718,9 +746,34 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
 
-            var decoded = new System.Text.StringBuilder(System.Math.Min(end - start, remaining));
+            string segment = DecodeCharacterData(state, start, end, remaining, out bool truncated);
+            if (truncated)
+            {
+                state.Report.Warn("text content truncated over length budget");
+            }
+
+            current.TextContent = existing == 0 ? segment : current.TextContent + segment;
+            for (int i = 0; i < segment.Length; i++)
+            {
+                if (segment[i] > 0x7f)
+                {
+                    state.Report.RequireFallback(
+                        "non-ASCII SVG text requires compatibility shaping");
+                    break;
+                }
+            }
+        }
+
+        private static string DecodeCharacterData(
+            ParseState state,
+            int start,
+            int end,
+            int maximumChars,
+            out bool truncated)
+        {
+            var decoded = new System.Text.StringBuilder(System.Math.Min(end - start, maximumChars));
             var cursor = new ParseState(state.Source, state.Report) { Pos = start };
-            while (cursor.Pos < end && decoded.Length < remaining)
+            while (cursor.Pos < end && decoded.Length < maximumChars)
             {
                 if (cursor.Peek() == '&')
                 {
@@ -732,22 +785,8 @@ namespace FenBrowser.FenEngine.Svg
                     cursor.Pos++;
                 }
             }
-            if (cursor.Pos < end)
-            {
-                state.Report.Warn("text content truncated over length budget");
-            }
-
-            string segment = decoded.ToString();
-            current.TextContent = existing == 0 ? segment : current.TextContent + segment;
-            for (int i = 0; i < segment.Length; i++)
-            {
-                if (segment[i] > 0x7f)
-                {
-                    state.Report.RequireFallback(
-                        "non-ASCII SVG text requires compatibility shaping");
-                    break;
-                }
-            }
+            truncated = cursor.Pos < end;
+            return decoded.ToString();
         }
 
         private static void SkipBangOrPi(ParseState state)

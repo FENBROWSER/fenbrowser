@@ -10889,3 +10889,31 @@ Verification:
   oversized decoded-raster rejection, percentage rectangles, `viewBox` user space, and nested groups.
 - The deterministic first 100-file local WPT SVG sample has no comparable pixel mismatch after percentage
   geometry correction: 4/4 comparable pairs meet the alpha-IoU and RGB thresholds.
+
+## 2.129 Shared CSS Cascade For Sandboxed SVG (2026-08-23)
+
+- SVG `<style>` elements and `style` attributes now use FenEngine's canonical `CssTokenizer`,
+  `CssSyntaxParser`, selector model, specificity calculation, and `CascadeKey`. The previous SVG-only inline
+  declaration splitter was removed. An SVG tree adapter supplies bounded parent/sibling matching without
+  constructing a second DOM or mutating the process-global browser media environment.
+- The initial static selector surface covers type, id, class, attributes, descendant/child/sibling
+  combinators, root/empty/first/last/only structural pseudos, and `:is()`/`:where()`/`:not()`. Dynamic,
+  pseudo-element, scope, unsupported-media, custom-property, and unsupported visible-property cases remain
+  explicit compatibility routes rather than being partially applied.
+- Presentation attributes, author rules, inline declarations, `!important`, specificity, layers, rule order,
+  and declaration order share the normal cascade ranking. Paint, opacity, clipping, visibility, display,
+  gradient stops, and basic text properties consume the resulting declarations.
+- Style text is retained with entity decoding under a 256 KiB per-element ceiling. Stylesheets are bounded
+  to 256 style elements, 4,096 rules per element, 16,384 total rules, 256 declarations per block, and the
+  render deadline. Rules are indexed by the rightmost id/class/type selector before element matching, avoiding
+  an element-by-all-rules hot path. Self-closing style elements no longer consume following SVG markup.
+- External CSS URLs/imports and external image/use references are observable resource rejections. Hybrid
+  routing never hands those documents to Svg.Skia, closing the previous assumption that legacy fallback
+  would remain network-isolated by configuration.
+
+Verification:
+
+- Focused Release SVG suite: 206 passed, 0 failed, 0 skipped.
+- FenEngine, Host, and `scripts/BenchSvg` Release builds: zero warnings and zero errors.
+- 10,000-render ownership stress: zero failures, 2,222 intended compatibility fallbacks, and 13,422,592
+  retained private bytes against the 67,108,864-byte ceiling.

@@ -62,16 +62,7 @@ namespace FenBrowser.FenEngine.Svg
             /// </summary>
             public InheritedStyle ResolveOverrides(SvgElement el, SvgParseReport report)
             {
-                // Inline style declarations shadow presentation attributes.
-                Dictionary<string, string> styleMap = null;
-                var styleRaw = el.GetAttribute("style");
-                if (!string.IsNullOrWhiteSpace(styleRaw))
-                {
-                    styleMap = ParseInlineStyle(styleRaw);
-                }
-
-                string Attr(string name) =>
-                    styleMap != null && styleMap.TryGetValue(name, out var v) ? v : el.GetAttribute(name);
+                string Attr(string name) => el.GetPresentationProperty(name);
 
                 SKColor currentColor = CurrentColor;
                 var colorRaw = Attr("color");
@@ -170,41 +161,6 @@ namespace FenBrowser.FenEngine.Svg
 
                 static bool Eq(string raw, string canonical) =>
                     string.Equals(raw.Trim(), canonical, System.StringComparison.OrdinalIgnoreCase);
-            }
-
-            /// <summary>
-            /// Parses style="prop:value;prop2:value2". Malformed declarations are
-            /// skipped; later duplicates win (CSS cascade within one block).
-            /// Allocation happens only when an element actually carries a style
-            /// attribute, and the map is bounded by the declaration count cap.
-            /// </summary>
-            private const int MaxInlineDeclarations = 64;
-
-            private static Dictionary<string, string> ParseInlineStyle(string raw)
-            {
-                var map = new Dictionary<string, string>(8, System.StringComparer.OrdinalIgnoreCase);
-                var span = raw.AsSpan();
-                while (!span.IsEmpty)
-                {
-                    int semi = span.IndexOf(';');
-                    var decl = semi < 0 ? span : span.Slice(0, semi);
-                    span = semi < 0 ? default : span.Slice(semi + 1);
-
-                    decl = decl.Trim();
-                    if (decl.IsEmpty) continue;
-
-                    int colon = decl.IndexOf(':');
-                    if (colon <= 0) continue;
-
-                    var prop = decl.Slice(0, colon).Trim().ToString();
-                    var value = decl.Slice(colon + 1).Trim().ToString();
-                    if (prop.Length == 0 || value.Length == 0 || map.Count >= MaxInlineDeclarations)
-                    {
-                        continue;
-                    }
-                    map[prop] = value;
-                }
-                return map.Count > 0 ? map : null;
             }
 
             private static readonly float[] InvalidDash = System.Array.Empty<float>();
