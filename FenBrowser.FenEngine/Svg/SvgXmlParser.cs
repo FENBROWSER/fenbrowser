@@ -121,6 +121,7 @@ namespace FenBrowser.FenEngine.Svg
             var doc = new SvgParsedDocument(documentReport) { Root = root };
             doc.ElementsById = new Dictionary<string, SvgElement>(System.StringComparer.Ordinal);
             RegisterElement(doc, root);
+            SvgFeatureSupport.Inspect(root, state.Report);
 
             var openStack = new List<SvgElement> { root };
             state.Report.ElementCount = 1;
@@ -171,6 +172,7 @@ namespace FenBrowser.FenEngine.Svg
                 EnforceElementBudget(state, limits);
                 CountFilters(state, child, limits);
                 RegisterElement(doc, child);
+                SvgFeatureSupport.Inspect(child, state.Report);
 
                 if (IgnoredSubtrees.Contains(child.Name))
                 {
@@ -438,7 +440,13 @@ namespace FenBrowser.FenEngine.Svg
             if (i >= s.Length)
             {
                 state.Pos = i;
-                return s.Substring(start); // Unterminated quote: take rest.
+                int remaining = s.Length - start;
+                if (remaining > MaxAttributeValueChars)
+                {
+                    remaining = MaxAttributeValueChars;
+                    state.Report.Warn("attribute value truncated over length budget");
+                }
+                return s.Substring(start, remaining); // Unterminated quote: bounded prefix.
             }
 
             int segmentLength = i - start;
@@ -446,11 +454,17 @@ namespace FenBrowser.FenEngine.Svg
             if (!hasEntity)
             {
                 state.Pos = i + 1;
+                if (segmentLength > MaxAttributeValueChars)
+                {
+                    state.Report.Warn("attribute value truncated over length budget");
+                    segmentLength = MaxAttributeValueChars;
+                }
                 return s.Substring(start, segmentLength);
             }
 
             // Slow path: expand entities character by character.
-            var sb = new System.Text.StringBuilder(segmentLength);
+            var sb = new System.Text.StringBuilder(System.Math.Min(segmentLength, MaxAttributeValueChars));
+            bool truncated = false;
             state.Pos = start;
             while (!state.Eof && state.Peek() != quote)
             {
@@ -460,11 +474,27 @@ namespace FenBrowser.FenEngine.Svg
                 }
                 else
                 {
-                    sb.Append(state.Source[state.Pos]);
+                    if (sb.Length < MaxAttributeValueChars)
+                    {
+                        sb.Append(state.Source[state.Pos]);
+                    }
+                    else
+                    {
+                        truncated = true;
+                    }
                     state.Pos++;
+                }
+                if (sb.Length > MaxAttributeValueChars)
+                {
+                    sb.Length = MaxAttributeValueChars;
+                    truncated = true;
                 }
             }
             state.Pos++; // Closing quote (or EOF-safe increment past end).
+            if (truncated)
+            {
+                state.Report.Warn("attribute value truncated over length budget");
+            }
             return sb.ToString();
         }
 
@@ -480,7 +510,13 @@ namespace FenBrowser.FenEngine.Svg
                 }
                 state.Pos++;
             }
-            return state.Source.Substring(start, state.Pos - start);
+            int length = state.Pos - start;
+            if (length > MaxAttributeValueChars)
+            {
+                length = MaxAttributeValueChars;
+                state.Report.Warn("attribute value truncated over length budget");
+            }
+            return state.Source.Substring(start, length);
         }
 
         private static void ReadCloseTag(ParseState state, List<SvgElement> openStack)

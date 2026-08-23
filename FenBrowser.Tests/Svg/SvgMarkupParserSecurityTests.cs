@@ -193,5 +193,36 @@ namespace FenBrowser.Tests.Svg
             Assert.False(ok);
             Assert.Contains("root element", fatal);
         }
+
+        [Fact]
+        public void OversizedQuotedAttribute_IsBoundedDuringMaterialization()
+        {
+            string source = "<svg data-x='" +
+                            new string('a', SvgMarkupParser.MaxAttributeValueChars + 1024) +
+                            "'></svg>";
+
+            var doc = Parse(source, out var ok, out var fatal);
+
+            Assert.True(ok, fatal);
+            Assert.Equal(
+                SvgMarkupParser.MaxAttributeValueChars,
+                doc.Root.GetAttribute("data-x").Length);
+            Assert.Contains(
+                "attribute value truncated over length budget",
+                doc.Report.Warnings);
+        }
+
+        [Fact]
+        public void OversizedUnterminatedAttribute_IsBoundedDuringMaterialization()
+        {
+            string source = "<svg data-x='" +
+                            new string('b', SvgMarkupParser.MaxAttributeValueChars + 1024);
+
+            Parse(source, out var ok, out _);
+
+            // An incomplete root is rejected, but the scanner must reach that
+            // decision without allocating the full attacker-controlled suffix.
+            Assert.False(ok);
+        }
     }
 }

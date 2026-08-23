@@ -84,6 +84,42 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal((byte)255, rgba.Red);
         }
 
+        [Theory]
+        [InlineData("#ggg")]
+        [InlineData("#12x4")]
+        [InlineData("#abcdex")]
+        public void Colors_InvalidHexDigitsAreRejected(string value)
+        {
+            Assert.False(SvgValues.TryParseColor(value.AsSpan(), out _));
+        }
+
+        [Fact]
+        public void Colors_RgbaNumericAlphaUsesUnitInterval()
+        {
+            Assert.True(SvgValues.TryParseColor("rgba(255,0,0,0.5)".AsSpan(), out var color));
+            Assert.Equal((byte)255, color.Red);
+            Assert.InRange(color.Alpha, (byte)127, (byte)128);
+        }
+
+        [Theory]
+        [InlineData("hsl(0,100%,50%)", 255, 0, 0, 255)]
+        [InlineData("hsl(120,100%,50%)", 0, 255, 0, 255)]
+        [InlineData("hsl(-120,100%,50%)", 0, 0, 255, 255)]
+        [InlineData("hsla(240,100%,50%,0.5)", 0, 0, 255, 128)]
+        public void Colors_HslFunctionsResolve(
+            string value,
+            byte red,
+            byte green,
+            byte blue,
+            byte alpha)
+        {
+            Assert.True(SvgValues.TryParseColor(value.AsSpan(), out var color));
+            Assert.Equal(red, color.Red);
+            Assert.Equal(green, color.Green);
+            Assert.Equal(blue, color.Blue);
+            Assert.Equal(alpha, color.Alpha);
+        }
+
         [Fact]
         public void Paint_RemoteUrlRef_IsRejected_Structurally()
         {

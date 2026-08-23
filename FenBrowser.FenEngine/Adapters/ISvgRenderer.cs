@@ -5,7 +5,8 @@ using SkiaSharp;
 namespace FenBrowser.FenEngine.Adapters
 {
     /// <summary>
-    /// SVG rendering interface. Wraps Svg.Skia or any other SVG library.
+    /// SVG rendering interface implemented by first-party, compatibility, or
+    /// composite backends.
     /// 
     /// RULE 3: SVG must be sandboxed. This adapter enforces limits.
     /// RULE 5: If Svg.Skia disappears, we only replace this implementation.
@@ -13,11 +14,11 @@ namespace FenBrowser.FenEngine.Adapters
     public interface ISvgRenderer
     {
         /// <summary>
-        /// Render SVG to an SKPicture with safety limits.
+        /// Render SVG pixels with explicit safety limits.
         /// </summary>
         /// <param name="svgContent">SVG XML content</param>
         /// <param name="limits">Rendering limits for sandboxing</param>
-        /// <returns>Rendered picture, or null if failed</returns>
+        /// <returns>An owned, disposable result describing success or failure.</returns>
         SvgRenderResult Render(string svgContent, SvgRenderLimits limits);
         
         /// <summary>
@@ -68,6 +69,18 @@ namespace FenBrowser.FenEngine.Adapters
         /// include the source document and are safe to surface in debug telemetry.
         /// </summary>
         public IReadOnlyList<string> Warnings { get; set; } = Array.Empty<string>();
+
+        /// <summary>Backend that produced the returned pixels.</summary>
+        public SvgRendererBackend Backend { get; set; }
+
+        /// <summary>
+        /// True when the first-party renderer encountered a declared unsupported
+        /// feature whose omission can change visible output.
+        /// </summary>
+        public bool RequiresFallback { get; set; }
+
+        /// <summary>True when a composite renderer returned legacy-rendered pixels.</summary>
+        public bool UsedLegacyFallback { get; set; }
 
         /// <summary>
         /// Transfers bitmap ownership to the caller. The detached bitmap will not

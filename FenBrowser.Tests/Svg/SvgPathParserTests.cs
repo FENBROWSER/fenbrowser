@@ -32,6 +32,46 @@ namespace FenBrowser.Tests.Svg
             }
         }
 
+        [Fact]
+        public void RelativeHorizontalAndVerticalCommands_UseCurrentPoint()
+        {
+            Assert.True(SvgPathParser.TryBuildPath(
+                "M10 10 h5 v7".AsSpan(), out var path, new SvgParseReport()));
+            using (path)
+            {
+                Assert.Equal(10f, path.Bounds.Left);
+                Assert.Equal(15f, path.Bounds.Right);
+                Assert.Equal(10f, path.Bounds.Top);
+                Assert.Equal(17f, path.Bounds.Bottom);
+            }
+        }
+
+        [Fact]
+        public void NumbersAfterClosePath_StopWithoutBurningSegmentBudget()
+        {
+            var report = new SvgParseReport();
+            Assert.True(SvgPathParser.TryBuildPath(
+                "M0 0 L5 5 Z 1 1".AsSpan(), out var path, report));
+            path.Dispose();
+            Assert.False(report.TruncatedPathData);
+        }
+
+        [Fact]
+        public void LongPathInvokesCooperativeBudgetCheck()
+        {
+            var data = new System.Text.StringBuilder("M0 0");
+            for (int i = 0; i < 300; i++) data.Append(" l1 0");
+            int checks = 0;
+
+            Assert.True(SvgPathParser.TryBuildPath(
+                data.ToString().AsSpan(),
+                out var path,
+                new SvgParseReport(),
+                () => checks++));
+            path.Dispose();
+            Assert.True(checks >= 1);
+        }
+
         [Theory]
         [InlineData("M0 0 A10 10 0 0 1 20 0")]      // half circle sweep
         [InlineData("M0 0 A10 10 0 1 0 20 0")]      // large arc

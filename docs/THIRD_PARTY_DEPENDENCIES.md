@@ -43,13 +43,15 @@ This document provides an exhaustive analysis of every third-party library used 
 `Svg.Skia` is migration-targeted but REMAINS THE ACTIVE DEFAULT: a first-party
 sandboxed renderer (`FenBrowser.FenEngine.Adapters.FenSvgRenderer`, module
 `Svg/`) implements the same `ISvgRenderer` seam and is selectable through the
-FenEngine-owned `SvgRendererConfiguration` (`FEN_SVG_RENDERER=first-party`;
-default = legacy). The thread-safe factory is shared by in-process and Host
+FenEngine-owned `SvgRendererConfiguration` (`FEN_SVG_RENDERER=first-party`, or
+`hybrid`/`auto` for declared-subset first-party rendering with bounded legacy
+compatibility fallback; default = legacy). Security/admission failures never
+fallback. The thread-safe factory is shared by in-process and Host
 utility-process decoding and observes runtime configuration changes without a
 static-read-once cache.
 It has NOT replaced Svg.Skia: text, stylesheet CSS, masks/markers/patterns,
 and real-site parity remain open compatibility gates (see VOLUME_III
-2.121-2.123 for the matrix, gate checklist, benchmark
+2.121-2.124 for the matrix, gate checklist, benchmark
 evidence in Results/svg/, and the correctness fixes that preceded this note).
 Removal from this inventory happens only after the documented gate closes.
 

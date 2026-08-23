@@ -110,5 +110,11 @@ namespace FenBrowser.FenEngine.Svg
                 Warnings.Add(message);
             }
         }
+
+        public void RequireFallback(string reason)
+        {
+            UnsupportedFeatureIgnored = true;
+            Warn(reason);
+        }
     }
 }

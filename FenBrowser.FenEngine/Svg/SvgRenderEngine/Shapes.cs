@@ -59,7 +59,7 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     return null;
                 }
-                if (!SvgPathParser.TryBuildPath(d.AsSpan(), out var parsed, _report))
+                if (!SvgPathParser.TryBuildPath(d.AsSpan(), out var parsed, _report, CheckTime))
                 {
                     return null;
                 }

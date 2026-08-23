@@ -6,7 +6,8 @@ namespace FenBrowser.FenEngine.Adapters
     public enum SvgRendererBackend
     {
         LegacySvgSkia = 0,
-        FirstParty = 1
+        FirstParty = 1,
+        FirstPartyWithLegacyFallback = 2
     }
 
     /// <summary>
@@ -38,6 +39,12 @@ namespace FenBrowser.FenEngine.Adapters
                 string.Equals(value, "fen", StringComparison.OrdinalIgnoreCase))
             {
                 backend = SvgRendererBackend.FirstParty;
+                return true;
+            }
+            if (string.Equals(value, "hybrid", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                backend = SvgRendererBackend.FirstPartyWithLegacyFallback;
                 return true;
             }
             if (string.Equals(value, "legacy", StringComparison.OrdinalIgnoreCase) ||
@@ -73,6 +80,7 @@ namespace FenBrowser.FenEngine.Adapters
     {
         private static readonly ISvgRenderer Legacy = new SvgSkiaRenderer();
         private static readonly ISvgRenderer FirstParty = new FenSvgRenderer();
+        private static readonly ISvgRenderer Hybrid = new HybridSvgRenderer(FirstParty, Legacy);
 
         public static ISvgRenderer GetConfiguredRenderer() =>
             GetRenderer(SvgRendererConfiguration.Backend);
@@ -81,6 +89,7 @@ namespace FenBrowser.FenEngine.Adapters
         {
             SvgRendererBackend.LegacySvgSkia => Legacy,
             SvgRendererBackend.FirstParty => FirstParty,
+            SvgRendererBackend.FirstPartyWithLegacyFallback => Hybrid,
             _ => throw new ArgumentOutOfRangeException(nameof(backend), backend, "Unknown SVG renderer backend.")
         };
     }

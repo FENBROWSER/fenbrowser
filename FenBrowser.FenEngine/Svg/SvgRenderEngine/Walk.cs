@@ -390,7 +390,8 @@ namespace FenBrowser.FenEngine.Svg
                 // pathological nesting instead of a multi-GB allocation).
                 if (_activeLayers >= _maxActiveLayers && opacity < 1f)
                 {
-                    _report.Warn("layer budget exceeded; group composited without isolation");
+                    _report.RequireFallback(
+                        "layer budget exceeded; compatibility fallback required for isolated opacity");
                 }
                 layerPaint = null;
                 return false;
@@ -480,12 +481,12 @@ namespace FenBrowser.FenEngine.Svg
 
                 if (isObjectBoundingBox)
                 {
-                    var bbox = el.Name == "g" || el.Name == "a"
-                        ? new SKRect(0f, 0f, viewport.Width, viewport.Height)
-                        : SKRect.Create(1, 1); // shape case resolves below via geometry bounds fallback
-                    // For shapes we approximate oBB by the current viewport box
-                    // when no geometry exists yet; exact per-shape bbox mapping
-                    // happens through BuildClipGeometryForShape in DrawShape.
+                    if (!TryResolveObjectBounds(el, viewport, out var bbox))
+                    {
+                        _report.RequireFallback(
+                            $"objectBoundingBox clip on '{el.Name}' requires compatibility fallback");
+                        bbox = new SKRect(0f, 0f, viewport.Width, viewport.Height);
+                    }
                     using var mapped = new SKPath();
                     clipPath.Transform(SKMatrix.Concat(
                         SKMatrix.CreateTranslation(bbox.Left, bbox.Top),
@@ -501,6 +502,49 @@ namespace FenBrowser.FenEngine.Svg
             {
                 _activeClipIds.Remove(fragment);
             }
+        }
+
+        private bool TryResolveObjectBounds(
+            SvgElement element,
+            ViewportContext viewport,
+            out SKRect bounds)
+        {
+            switch (element.Name)
+            {
+                case "path":
+                case "rect":
+                case "circle":
+                case "ellipse":
+                case "line":
+                case "polyline":
+                case "polygon":
+                    using (var geometry = BuildGeometry(element))
+                    {
+                        if (geometry != null && !geometry.IsEmpty)
+                        {
+                            bounds = geometry.TightBounds;
+                            return bounds.Width > 0f && bounds.Height > 0f;
+                        }
+                    }
+                    break;
+                case "image":
+                    float x = ResolveCoord(element.GetAttribute("x"));
+                    float y = ResolveCoord(element.GetAttribute("y"));
+                    float width = ResolveCoord(element.GetAttribute("width"));
+                    float height = ResolveCoord(element.GetAttribute("height"));
+                    if (width > 0f && height > 0f)
+                    {
+                        bounds = new SKRect(x, y, x + width, y + height);
+                        return true;
+                    }
+                    break;
+                case "svg":
+                    bounds = new SKRect(0f, 0f, viewport.Width, viewport.Height);
+                    return true;
+            }
+
+            bounds = default;
+            return false;
         }
 
         /// <summary>Union of direct shape children (plus one-level use refs).</summary>
@@ -544,6 +588,17 @@ namespace FenBrowser.FenEngine.Svg
                     continue;
                 }
 
+                ApplyPathTransform(shapeEl, childPath);
+                if (child.Name == "use")
+                {
+                    float useX = ResolveCoord(child.GetAttribute("x"));
+                    float useY = ResolveCoord(child.GetAttribute("y"));
+                    if (useX != 0f || useY != 0f)
+                    {
+                        childPath.Transform(SKMatrix.CreateTranslation(useX, useY));
+                    }
+                    ApplyPathTransform(child, childPath);
+                }
                 combinedBuilder.AddPath(childPath, SKPathAddMode.Append);
                 hasGeometry = true;
 
@@ -562,11 +617,22 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             var combined = combinedBuilder.Detach();
+            ApplyPathTransform(clipEl, combined);
             if (evenOdd)
             {
                 combined.FillType = SKPathFillType.EvenOdd;
             }
             return combined;
+        }
+
+        private static void ApplyPathTransform(SvgElement element, SKPath path)
+        {
+            var transformText = element.GetAttribute("transform");
+            if (!string.IsNullOrWhiteSpace(transformText) &&
+                SvgValues.TryParseTransformList(transformText.AsSpan(), out var transform))
+            {
+                path.Transform(transform);
+            }
         }
 
         // --------------------------------------------------------------- images
@@ -623,8 +689,15 @@ namespace FenBrowser.FenEngine.Svg
                 paint.Color = style.Visibility
                     ? SKColors.Black
                     : SKColors.Transparent;
-                var dest = new SKRect(x, y, x + w, y + h);
-                canvas.DrawBitmap(bitmap, dest, SKSamplingOptions.Default, paint);
+                var imageViewport = new SKRect(x, y, x + w, y + h);
+                var source = new SKRect(0f, 0f, bitmap.Width, bitmap.Height);
+                var destination = ResolveImageDestination(
+                    imageViewport,
+                    bitmap.Width,
+                    bitmap.Height,
+                    el.GetAttribute("preserveAspectRatio"));
+                canvas.ClipRect(imageViewport);
+                canvas.DrawBitmap(bitmap, source, destination, SKSamplingOptions.Default, paint);
             }
             finally
             {
@@ -720,6 +793,36 @@ namespace FenBrowser.FenEngine.Svg
                 error = "image data URI failed to decode";
                 return false;
             }
+        }
+
+        private static SKRect ResolveImageDestination(
+            SKRect viewport,
+            float sourceWidth,
+            float sourceHeight,
+            string preserveAspectRatio)
+        {
+            ParsePreserveAspectRatio(preserveAspectRatio, out var align, out var meet);
+            if (align == ParAlign.None || sourceWidth <= 0f || sourceHeight <= 0f)
+            {
+                return viewport;
+            }
+
+            float scaleX = viewport.Width / sourceWidth;
+            float scaleY = viewport.Height / sourceHeight;
+            float scale = meet == ParMeet.Slice
+                ? System.Math.Max(scaleX, scaleY)
+                : System.Math.Min(scaleX, scaleY);
+            float width = sourceWidth * scale;
+            float height = sourceHeight * scale;
+            float x = viewport.Left;
+            float y = viewport.Top;
+
+            if ((align & ParAlign.XMid) != 0) x += (viewport.Width - width) / 2f;
+            else if ((align & ParAlign.XMax) != 0) x += viewport.Width - width;
+            if ((align & ParAlign.YMid) != 0) y += (viewport.Height - height) / 2f;
+            else if ((align & ParAlign.YMax) != 0) y += viewport.Height - height;
+
+            return new SKRect(x, y, x + width, y + height);
         }
 
         /// <summary>

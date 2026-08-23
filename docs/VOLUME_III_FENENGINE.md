@@ -10655,16 +10655,16 @@ Verification: 117 focused tests (`FenBrowser.Tests/Svg`): parser security suite 
 | linear/radial gradients (both units, stop href chains) | supported | per-render memoized |
 | group/element opacity, fill-/stroke-opacity | supported | SaveLayer cap = 8 |
 | inline style="" (shadowing presentation attrs) | supported | fixed declaration set |
-| clipPath + clip-path (userSpaceOnUse; shape children + 1-level use) | partial | objectBoundingBox units approximate for containers |
-| <image> data: URI rasters | supported | base64 only; decoded-pixel budget |
+| clipPath + clip-path (userSpaceOnUse; shape children + 1-level use) | partial | objectBoundingBox is exact for shapes/images; containers route to compatibility |
+| <image> data: URI rasters | supported | base64 only; encoded/decoded budgets; preserveAspectRatio meet/slice/none |
 | use/symbol (+ nested svg viewports) | supported | cycle guards |
 | currentColor inheritance | supported | |
 | switch | partial | first drawable child; requiredFeatures treated as pass |
-| text / tspan / textPath | deliberately unsupported, safely ignored | subtree dropped; logged once |
-| stylesheet CSS (<style>) | deliberately unsupported, safely ignored | raw-consumed; no second CSS engine; revisit via computed-style projection if real-site corpus demands |
-| patterns / masks / markers / filters | deliberately unsupported, safely ignored | attribute presence degrades gracefully (element renders unfiltered) |
-| animation (SMIL/animate*) | deliberately unsupported, safely ignored | static first frame only |
-| foreignObject | deliberately unsupported, safely ignored | never renders descendants |
+| text / tspan / textPath | compatibility-routed | first-party-only mode returns bounded degradation diagnostics |
+| stylesheet CSS (<style>) | compatibility-routed | no second CSS engine in the first-party subset |
+| patterns / masks / markers / filters | compatibility-routed when referenced | unused definitions do not force fallback |
+| animation (SMIL/animate*) | compatibility-routed | first-party-only mode remains static |
+| foreignObject | compatibility-routed | never interpreted by the first-party sandbox |
 
 Migration-blocking gaps before any default flip: stylesheet CSS, text, masks/markers/patterns parity on a real-site corpus.
 
@@ -10672,7 +10672,9 @@ Migration-blocking gaps before any default flip: stylesheet CSS, text, masks/mar
 
 `SvgRendererConfiguration` owns backend choice inside FenEngine. The
 cross-platform `FEN_SVG_RENDERER` environment variable accepts `first-party` /
-`fen` or `legacy` / `svg-skia`; invalid and absent values fail safe to legacy.
+`fen`, `hybrid` / `auto`, or `legacy` / `svg-skia`; invalid and absent values
+fail safe to legacy. Hybrid renders the declared static subset first-party and
+uses legacy pixels only when bounded capability detection reports visible loss.
 `SvgRendererFactory` reuses stateless thread-safe renderer instances, observes
 atomic runtime changes without a static-read-once cache, and is used by both
 `ImageLoader` and Host utility-process SVG/image decode paths. Rendering policy
@@ -10701,8 +10703,7 @@ gradients, currentColor, inline-style override, opacities, clipPath, use+symbol,
 malformed-recoverable, unsupported-text). Svg.Skia is reference ONLY on its conformant subset:
 text and malformed-markup cases carry explicit spec-derived expectations instead.
 
-Supported-subset matrix: see 2.121. Backend selection limitation (static read-once flag) is
-documented there; ImageLoader.CreateSvgRenderer is internal for focused selection tests.
+Supported-subset matrix and runtime backend selection are documented in 2.121.
 
 Bench tooling: scripts/BenchSvg (Release console) emits JSON lines per case/backend and writes
 Results/svg/perf-report.md with --report; comparison summary in Results/svg/comparison-report.md.
@@ -10758,3 +10759,41 @@ Verification:
 - `SvgProductionHardeningTests` covers pre-allocation compressed-image rejection, valid bounded
   decode, and bitmap ownership transfer. The full discovery-derived SVG count is recorded by the
   final branch gate rather than duplicated here.
+
+## 2.124 SVG Compatibility Routing and Declared-Subset Correctness (2026-08-23)
+
+- Added `HybridSvgRenderer`, selected with `FEN_SVG_RENDERER=hybrid` (alias `auto`). It attempts
+  the sandboxed first-party renderer first and falls back only for explicitly detected visible
+  compatibility gaps. Parse/admission/security failures never enter the legacy parser. Results
+  identify the pixel-producing backend, whether fallback was required/used, and carry deduplicated,
+  document-content-free diagnostics capped at 32 messages.
+- Capability detection covers text, stylesheet CSS, foreign content, animation, referenced paint
+  servers, filters, masks, markers, unsupported visible elements, container object-bounding-box
+  clips, and opacity isolation beyond the bounded layer budget. Unused definitions do not cause
+  fallback. Shared renderer instances are exercised concurrently with mixed first-party/legacy work.
+- Corrected relative `h`/`v`, implicit line pairs after `M`/`m`, and non-advancing numeric data after
+  `Z`. Long single paths now run the elapsed-time check every 256 admitted segments. The 65,536
+  segment hard cap remains independent.
+- Corrected invalid short-hex acceptance and numeric `rgba()` alpha semantics; added allocation-free
+  `hsl()` / `hsla()` parsing. Path-heavy and gradient-heavy benchmark checksums now match the legacy
+  reference while retaining substantially lower first-party managed allocations.
+- Applied clip-child, `use`, and clipPath transforms; objectBoundingBox clips map to exact shape/image
+  bounds; embedded images implement meet/slice/none viewport fitting and clipping.
+- Attribute values are length-bounded before substring or StringBuilder materialization, including
+  quoted, unquoted, entity-expanded, and unterminated values. Caller-provided limits are hard-clamped,
+  and render-result disposal is idempotent and ownership-tested.
+
+Production policy remains explicit: `first-party` is the maximum-isolation static subset, `hybrid`
+is the compatibility migration mode, and `legacy` remains the default until the captured real-site
+gate closes. This avoids presenting partial SVG support as full conformance while allowing supported
+content to leave the external renderer today.
+
+Verification:
+
+- Focused Release SVG suite: 179 passed, 0 failed, 0 skipped.
+- FenEngine and Host Release builds: 0 warnings, 0 errors.
+- Framework-dependent FenEngine publish succeeded for `linux-x64`, `linux-arm64`, `osx-x64`, and
+  `osx-arm64`; Windows native execution is covered by the focused suite.
+- Release benchmark: hybrid retains first-party allocations/checksums on supported cases and matches
+  legacy pixels for the deep-layer compatibility case. Tiny, medium, path-heavy, gradient-heavy, and
+  embedded-image checksums match across first-party and legacy backends.

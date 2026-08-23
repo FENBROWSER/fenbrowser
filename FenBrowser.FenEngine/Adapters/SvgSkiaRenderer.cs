@@ -148,7 +148,8 @@ namespace FenBrowser.FenEngine.Adapters
                     Bitmap = bitmap,
                     Width = cullRect.Width,
                     Height = cullRect.Height,
-                    Success = true
+                    Success = true,
+                    Backend = SvgRendererBackend.LegacySvgSkia
                 };
             }
             catch (Exception ex)

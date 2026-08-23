@@ -23,15 +23,23 @@ namespace FenBrowser.FenEngine.Svg
     {
         public const int MaxSegments = 65536;
 
-        public static bool TryBuildPath(ReadOnlySpan<char> d, out SKPath path, SvgParseReport report)
+        public static bool TryBuildPath(
+            ReadOnlySpan<char> d,
+            out SKPath path,
+            SvgParseReport report,
+            System.Action budgetCheck = null)
         {
             using var builder = new SKPathBuilder();
-            ParseInto(builder, d, report);
+            ParseInto(builder, d, report, budgetCheck);
             path = builder.Detach();
             return true;
         }
 
-        private static bool ParseInto(SKPathBuilder path, ReadOnlySpan<char> d, SvgParseReport report)
+        private static bool ParseInto(
+            SKPathBuilder path,
+            ReadOnlySpan<char> d,
+            SvgParseReport report,
+            System.Action budgetCheck)
         {
             var scan = new Scanner(d);
             float curX = 0f, curY = 0f;
@@ -44,6 +52,10 @@ namespace FenBrowser.FenEngine.Svg
             void AddSeg()
             {
                 segments++;
+                if ((segments & 0xFF) == 0)
+                {
+                    budgetCheck?.Invoke();
+                }
                 if (segments > MaxSegments)
                 {
                     Truncate(report);
@@ -65,6 +77,10 @@ namespace FenBrowser.FenEngine.Svg
                     if (prevCmd == '\0')
                     {
                         return false; // Path data must begin with a verb.
+                    }
+                    if (prevCmd is 'Z' or 'z')
+                    {
+                        return true; // Close-path cannot be repeated with numbers.
                     }
                     cmd = prevCmd;
                     // Implicit repeat after M is L per spec.
@@ -88,6 +104,7 @@ namespace FenBrowser.FenEngine.Svg
                     case 'L':
                         {
                             bool move = char.ToUpperInvariant(cmd) == 'M';
+                            bool firstPair = true;
                             do
                             {
                                 if (!scan.TryReadNumber(out float x) ||
@@ -97,7 +114,7 @@ namespace FenBrowser.FenEngine.Svg
                                 }
                                 x = Clamp(relative ? curX + x : x);
                                 y = Clamp(relative ? curY + y : y);
-                                if (move)
+                                if (move && firstPair)
                                 {
                                     path.MoveTo(x, y);
                                     subStartX = x;
@@ -110,17 +127,18 @@ namespace FenBrowser.FenEngine.Svg
                                 curX = x;
                                 curY = y;
                                 AddSeg();
+                                firstPair = false;
                             }
                             while (!report.TruncatedPathData && scan.MoreNumbersAhead());
 
-                            prevCmd = move ? (relative ? 'm' : 'M') : (relative ? 'l' : 'L');
+                            prevCmd = relative ? 'l' : 'L';
                             break;
                         }
                     case 'H':
                         {
                             while (!report.TruncatedPathData && scan.TryReadNumber(out float x))
                             {
-                                x = Clamp(x);
+                                x = Clamp(relative ? curX + x : x);
                                 path.LineTo(x, curY);
                                 curX = x;
                                 AddSeg();
@@ -132,7 +150,7 @@ namespace FenBrowser.FenEngine.Svg
                         {
                             while (!report.TruncatedPathData && scan.TryReadNumber(out float y))
                             {
-                                y = Clamp(y);
+                                y = Clamp(relative ? curY + y : y);
                                 path.LineTo(curX, y);
                                 curY = y;
                                 AddSeg();

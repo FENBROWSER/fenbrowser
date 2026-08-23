@@ -288,6 +288,11 @@ namespace FenBrowser.FenEngine.Svg
                 return TryParseRgbFunction(s, out color);
             }
 
+            if (StartsWithIgnoreCase(s, "hsl"))
+            {
+                return TryParseHslFunction(s, out color);
+            }
+
             return SvgNamedColors.TryGet(s.ToString(), out color);
         }
 
@@ -303,10 +308,18 @@ namespace FenBrowser.FenEngine.Svg
             byte r, g, b, a = 255;
             if (hex.Length <= 4)
             {
-                r = (byte)(HexValue(hex[0]) * 17);
-                g = (byte)(HexValue(hex[1]) * 17);
-                b = (byte)(HexValue(hex[2]) * 17);
-                if (hex.Length == 4) a = (byte)(HexValue(hex[3]) * 17);
+                int rn = HexValue(hex[0]);
+                int gn = HexValue(hex[1]);
+                int bn = HexValue(hex[2]);
+                int an = hex.Length == 4 ? HexValue(hex[3]) : 15;
+                if (rn < 0 || gn < 0 || bn < 0 || an < 0)
+                {
+                    return false;
+                }
+                r = (byte)(rn * 17);
+                g = (byte)(gn * 17);
+                b = (byte)(bn * 17);
+                a = (byte)(an * 17);
             }
             else
             {
@@ -355,7 +368,7 @@ namespace FenBrowser.FenEngine.Svg
 
             var body = s.Slice(open + 1, close - open - 1);
             var tok = new Tokenizer(body);
-            byte[] ch = new byte[4];
+            Span<byte> ch = stackalloc byte[4];
             int count = 0;
             while (tok.Next(out var arg))
             {
@@ -366,10 +379,19 @@ namespace FenBrowser.FenEngine.Svg
                 bool percent = arg.EndsWith("%".AsSpan());
                 if (percent) arg = arg.Slice(0, arg.Length - 1);
                 if (!TryParseNumber(arg, out float v)) return false;
-                if (v < 0) v = 0;
-                ch[count++] = percent
-                    ? PercentToByte(v)
-                    : (byte)(v > 255 ? 255 : System.Math.Round(v));
+                if (count == 3 && hasAlpha)
+                {
+                    ch[count++] = percent
+                        ? PercentToByte(v)
+                        : UnitIntervalToByte(v);
+                }
+                else
+                {
+                    if (v < 0) v = 0;
+                    ch[count++] = percent
+                        ? PercentToByte(v)
+                        : (byte)(v > 255 ? 255 : System.Math.Round(v));
+                }
             }
 
             if (count != (hasAlpha ? 4 : 3))
@@ -381,6 +403,58 @@ namespace FenBrowser.FenEngine.Svg
             return true;
         }
 
+        private static bool TryParseHslFunction(ReadOnlySpan<char> s, out SKColor color)
+        {
+            color = default;
+            int open = IndexOf(s, '(');
+            int close = LastIndexOf(s, ')');
+            if (open < 0 || close < open) return false;
+
+            var header = s.Slice(0, open).Trim();
+            bool hasAlpha;
+            if (EqIgnoreCase(header, "hsl")) hasAlpha = false;
+            else if (EqIgnoreCase(header, "hsla")) hasAlpha = true;
+            else return false;
+
+            var tok = new Tokenizer(s.Slice(open + 1, close - open - 1));
+            Span<float> values = stackalloc float[4];
+            int count = 0;
+            while (tok.Next(out var arg))
+            {
+                if (count >= (hasAlpha ? 4 : 3)) return false;
+                bool percent = arg.EndsWith("%".AsSpan());
+                if (percent) arg = arg.Slice(0, arg.Length - 1);
+                if (!TryParseNumber(arg, out float value)) return false;
+                if ((count == 1 || count == 2) && !percent) return false;
+                if (count == 3 && hasAlpha && percent) value /= 100f;
+                values[count++] = value;
+            }
+            if (count != (hasAlpha ? 4 : 3)) return false;
+
+            double hue = values[0] % 360d;
+            if (hue < 0d) hue += 360d;
+            double saturation = System.Math.Clamp(values[1] / 100d, 0d, 1d);
+            double lightness = System.Math.Clamp(values[2] / 100d, 0d, 1d);
+            double chroma = (1d - System.Math.Abs(2d * lightness - 1d)) * saturation;
+            double h = hue / 60d;
+            double x = chroma * (1d - System.Math.Abs(h % 2d - 1d));
+            double r1 = 0d, g1 = 0d, b1 = 0d;
+            if (h < 1d) { r1 = chroma; g1 = x; }
+            else if (h < 2d) { r1 = x; g1 = chroma; }
+            else if (h < 3d) { g1 = chroma; b1 = x; }
+            else if (h < 4d) { g1 = x; b1 = chroma; }
+            else if (h < 5d) { r1 = x; b1 = chroma; }
+            else { r1 = chroma; b1 = x; }
+            double m = lightness - chroma / 2d;
+
+            color = new SKColor(
+                UnitIntervalToByte((float)(r1 + m)),
+                UnitIntervalToByte((float)(g1 + m)),
+                UnitIntervalToByte((float)(b1 + m)),
+                hasAlpha ? UnitIntervalToByte(values[3]) : (byte)255);
+            return true;
+        }
+
         /// <summary>Deterministic percentage -> byte conversion in double space.</summary>
         private static byte PercentToByte(double percent)
         {
@@ -389,6 +463,12 @@ namespace FenBrowser.FenEngine.Svg
             return (byte)(scaled - System.Math.Floor(scaled) >= 0.5
                 ? System.Math.Ceiling(scaled)
                 : System.Math.Floor(scaled));
+        }
+
+        private static byte UnitIntervalToByte(float value)
+        {
+            value = System.Math.Clamp(value, 0f, 1f);
+            return (byte)System.Math.Round(value * 255f);
         }
 
         // ----------------------------------------------------------- transform

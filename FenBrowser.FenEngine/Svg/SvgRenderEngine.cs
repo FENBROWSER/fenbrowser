@@ -62,13 +62,15 @@ namespace FenBrowser.FenEngine.Svg
             out float width,
             out float height,
             out string error,
-            out IReadOnlyList<string> warnings)
+            out IReadOnlyList<string> warnings,
+            out bool requiresFallback)
         {
             picture = null;
             width = 0f;
             height = 0f;
             error = null;
             warnings = System.Array.Empty<string>();
+            requiresFallback = false;
 
             if (!SvgMarkupParser.TryParse(source, limits, out var doc, out var fatalReason))
             {
@@ -85,12 +87,14 @@ namespace FenBrowser.FenEngine.Svg
             {
                 engine.RenderRoot(out picture, out width, out height);
                 warnings = engine._report.Warnings.ToArray();
+                requiresFallback = engine._report.UnsupportedFeatureIgnored;
                 return true;
             }
             catch (SvgTimeBudgetExceededException)
             {
                 picture = null;
                 warnings = engine._report.Warnings.ToArray();
+                requiresFallback = engine._report.UnsupportedFeatureIgnored;
                 error = $"SVG render exceeded time limit ({limits.MaxRenderTimeMs}ms, size={source.Length / 1024}KB)";
                 return false;
             }
@@ -100,6 +104,7 @@ namespace FenBrowser.FenEngine.Svg
                 // the generic "SVG render error:" prefix (F10).
                 picture = null;
                 warnings = engine._report.Warnings.ToArray();
+                requiresFallback = engine._report.UnsupportedFeatureIgnored;
                 error = ex.Message;
                 return false;
             }

@@ -275,10 +275,17 @@ namespace FenBrowser.FenEngine.Svg
         private SKShader BuildServerShader(string fragment, SKPath path, string fallbackText, InheritedStyle style)
         {
             CachedGradient g = null;
-            if (fragment != null && _doc.ElementsById.TryGetValue(fragment, out var server) &&
-                (server.Name == "linearGradient" || server.Name == "radialGradient"))
+            if (fragment != null && _doc.ElementsById.TryGetValue(fragment, out var server))
             {
-                g = GetCachedGradient(server, style);
+                if (server.Name == "linearGradient" || server.Name == "radialGradient")
+                {
+                    g = GetCachedGradient(server, style);
+                }
+                else
+                {
+                    _report.RequireFallback(
+                        $"paint server '{server.Name}' requires compatibility fallback");
+                }
             }
 
             if (g == null || !g.IsValid)

@@ -16,6 +16,8 @@ var reportRows = new List<string>();
 
 (ISvgRenderer Renderer, string Name) fen = (new FenSvgRenderer(), "fen");
 (ISvgRenderer Renderer, string Name) legacy = (new SvgSkiaRenderer(), "legacy");
+(ISvgRenderer Renderer, string Name) hybrid =
+    (new HybridSvgRenderer(fen.Renderer, legacy.Renderer), "hybrid");
 
 string redPng = MakeRedPng(8, 8);
 
@@ -40,7 +42,7 @@ const int WarmRuns = 7;
 
 foreach (var (name, svg) in cases)
 {
-    foreach (var backend in new[] { fen, legacy })
+    foreach (var backend in new[] { fen, hybrid, legacy })
     {
         var cold = TimeOne(backend.Renderer, svg);
         Console.WriteLine($"{{\"case\":\"{name}\",\"backend\":\"{backend.Name}\",\"phase\":\"cold\"," +
