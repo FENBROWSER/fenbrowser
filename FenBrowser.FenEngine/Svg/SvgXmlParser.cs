@@ -965,10 +965,10 @@ namespace FenBrowser.FenEngine.Svg
                 case 3:
                     if (s[bodyStart] == 'a' && s[bodyStart + 1] == 'm' && s[bodyStart + 2] == 'p')
                     { sb.Append('&'); state.Pos = semi + 1; return; }
-                    if (s[bodyStart] == 'l' && s[bodyStart + 1] == 't' )
-                    { sb.Append('<'); state.Pos = semi + 1; return; }
                     break;
                 case 2:
+                    if (s[bodyStart] == 'l' && s[bodyStart + 1] == 't')
+                    { sb.Append('<'); state.Pos = semi + 1; return; }
                     if (s[bodyStart] == 'g' && s[bodyStart + 1] == 't')
                     { sb.Append('>'); state.Pos = semi + 1; return; }
                     break;

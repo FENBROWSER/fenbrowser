@@ -48,7 +48,11 @@ namespace FenBrowser.Tests.Svg
                          $"<image href='{uri}' x='2' width='2' height='2'/></svg>";
 
             using var result = new FenSvgRenderer().Render(svg,
-                new SvgRenderLimits { MaxDecodedImageBytes = 100 });
+                new SvgRenderLimits
+                {
+                    MaxDecodedImageBytes = 100,
+                    MaxCumulativeResourceBytes = 100
+                });
 
             Assert.True(result.Success, result.ErrorMessage);
             Assert.True(result.HadResourceRejection);
@@ -77,6 +81,21 @@ namespace FenBrowser.Tests.Svg
 
             using var result = new FenSvgRenderer().Render(
                 $"<svg width='4' height='4'><image href='{uri}' width='4' height='4'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.HadResourceRejection);
+            Assert.True(result.Bitmap.GetPixel(2, 2).Red > 200);
+        }
+
+        [Fact]
+        public void XmlEscapedSvgDataUri_RendersAfterAttributeEntityDecoding()
+        {
+            const string svg =
+                "<svg width='4' height='4'><image width='4' height='4' " +
+                "href=\"data:image/svg+xml,&lt;svg width='2' height='2'&gt;" +
+                "&lt;rect width='2' height='2' fill='red'/&gt;&lt;/svg&gt;\"/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
 
             Assert.True(result.Success, result.ErrorMessage);
             Assert.False(result.HadResourceRejection);

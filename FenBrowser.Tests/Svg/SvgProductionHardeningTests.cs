@@ -93,6 +93,8 @@ namespace FenBrowser.Tests.Svg
                 MaxRasterPixels = long.MaxValue,
                 MaxDecodedImagePixels = long.MaxValue,
                 MaxDecodedImageBytes = int.MaxValue,
+                MaxCumulativeResourceBytes = int.MaxValue,
+                MaxResourceCount = int.MaxValue,
                 MaxActiveLayers = int.MaxValue,
                 MaxReferenceDepth = int.MaxValue,
                 AllowExternalReferences = true
@@ -108,6 +110,8 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(64L * 1024 * 1024, limits.MaxRasterPixels);
             Assert.Equal(64L * 1024 * 1024, limits.MaxDecodedImagePixels);
             Assert.Equal(32 * 1024 * 1024, limits.MaxDecodedImageBytes);
+            Assert.Equal(64 * 1024 * 1024, limits.MaxCumulativeResourceBytes);
+            Assert.Equal(512, limits.MaxResourceCount);
             Assert.Equal(16, limits.MaxActiveLayers);
             Assert.Equal(64, limits.MaxReferenceDepth);
             Assert.True(limits.AllowExternalReferences);

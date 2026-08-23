@@ -11,9 +11,12 @@ using SkiaSharp.HarfBuzz;
 //   dotnet run --project scripts/BenchSvg/BenchSvg.csproj -c Release [-- --report]
 //   dotnet run --project scripts/BenchSvg/BenchSvg.csproj -c Release -- --corpus <directory> [--max-files N] [--gate]
 
-if (args.Length == 3 && args[0] == "--corpus-worker")
+if ((args.Length == 3 ||
+     (args.Length == 5 && args[3] == "--wpt-root")) &&
+    args[0] == "--corpus-worker")
 {
-    Environment.ExitCode = SvgCorpusRunner.RunWorker(args[1], args[2]);
+    Environment.ExitCode = SvgCorpusRunner.RunWorker(
+        args[1], args[2], args.Length == 5 ? args[4] : null);
     return;
 }
 if (args.Length == 4 && args[0] == "--capture-sites" && args[2] == "--capture-output")

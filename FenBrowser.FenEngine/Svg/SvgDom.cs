@@ -185,6 +185,11 @@ namespace FenBrowser.FenEngine.Svg
 
         public static string ClassifyResourceRejection(string reason)
         {
+            if (Has(reason, "no authorized resolver context")) return "resource-context-missing";
+            if (Has(reason, "cross-origin")) return "cross-origin-resource";
+            if (Has(reason, "mismatched URI")) return "resolver-uri-mismatch";
+            if (Has(reason, "resolver returned no resource") || Has(reason, "resource not found"))
+                return "resolver-miss";
             if (Has(reason, "external")) return "external-resource";
             if (Has(reason, "depth") || Has(reason, "recursive")) return "resource-depth";
             if (Has(reason, "budget") || Has(reason, "limit") || Has(reason, "too large")) return "resource-budget";

@@ -14,6 +14,13 @@ namespace FenBrowser.FenEngine.Adapters
     /// </summary>
     public class SvgSkiaRenderer : ISvgRenderer
     {
+        public SvgRenderResult Render(SvgRenderRequest request)
+        {
+            if (request == null)
+                return new SvgRenderResult { Success = false, ErrorMessage = "SVG render request is null", Backend = SvgRendererBackend.LegacySvgSkia };
+            return Render(request.Content, request.Limits);
+        }
+
         private static readonly Lazy<bool> SvgBackendInitialized =
             new(WarmUpSvgBackend, isThreadSafe: true);
         private static readonly TimeSpan SanitizerRegexTimeout = TimeSpan.FromMilliseconds(250);

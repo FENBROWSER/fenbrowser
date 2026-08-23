@@ -13,6 +13,9 @@ namespace FenBrowser.FenEngine.Adapters
     /// </summary>
     public interface ISvgRenderer
     {
+        /// <summary>Render a document with an optional trusted resource context.</summary>
+        SvgRenderResult Render(SvgRenderRequest request);
+
         /// <summary>
         /// Render SVG pixels with explicit safety limits.
         /// </summary>
@@ -182,6 +185,12 @@ namespace FenBrowser.FenEngine.Adapters
         /// <summary>Maximum decoded bytes admitted for one embedded data URI.</summary>
         public int MaxDecodedImageBytes { get; set; }
 
+        /// <summary>Maximum encoded bytes admitted across all nested resources.</summary>
+        public int MaxCumulativeResourceBytes { get; set; }
+
+        /// <summary>Maximum number of admitted embedded or resolved resources.</summary>
+        public int MaxResourceCount { get; set; }
+
         /// <summary>Maximum simultaneous full-surface opacity layers.</summary>
         public int MaxActiveLayers { get; set; }
 
@@ -209,6 +218,8 @@ namespace FenBrowser.FenEngine.Adapters
             MaxRasterPixels = 16L * 1024 * 1024,
             MaxDecodedImagePixels = 16L * 1024 * 1024,
             MaxDecodedImageBytes = 8 * 1024 * 1024,
+            MaxCumulativeResourceBytes = 32 * 1024 * 1024,
+            MaxResourceCount = 64,
             MaxActiveLayers = 8,
             MaxReferenceDepth = 32,
             AllowExternalReferences = false
@@ -229,6 +240,8 @@ namespace FenBrowser.FenEngine.Adapters
             MaxRasterPixels = 8L * 1024 * 1024,
             MaxDecodedImagePixels = 8L * 1024 * 1024,
             MaxDecodedImageBytes = 2 * 1024 * 1024,
+            MaxCumulativeResourceBytes = 8 * 1024 * 1024,
+            MaxResourceCount = 32,
             MaxActiveLayers = 4,
             MaxReferenceDepth = 16,
             AllowExternalReferences = false
@@ -252,6 +265,9 @@ namespace FenBrowser.FenEngine.Adapters
             if (limits.MaxRasterPixels <= 0) limits.MaxRasterPixels = defaults.MaxRasterPixels;
             if (limits.MaxDecodedImagePixels <= 0) limits.MaxDecodedImagePixels = defaults.MaxDecodedImagePixels;
             if (limits.MaxDecodedImageBytes <= 0) limits.MaxDecodedImageBytes = defaults.MaxDecodedImageBytes;
+            if (limits.MaxCumulativeResourceBytes <= 0)
+                limits.MaxCumulativeResourceBytes = defaults.MaxCumulativeResourceBytes;
+            if (limits.MaxResourceCount <= 0) limits.MaxResourceCount = defaults.MaxResourceCount;
             if (limits.MaxActiveLayers <= 0) limits.MaxActiveLayers = defaults.MaxActiveLayers;
             if (limits.MaxReferenceDepth <= 0) limits.MaxReferenceDepth = defaults.MaxReferenceDepth;
 
@@ -265,6 +281,9 @@ namespace FenBrowser.FenEngine.Adapters
             limits.MaxRasterPixels = Math.Min(limits.MaxRasterPixels, 64L * 1024 * 1024);
             limits.MaxDecodedImagePixels = Math.Min(limits.MaxDecodedImagePixels, 64L * 1024 * 1024);
             limits.MaxDecodedImageBytes = Math.Min(limits.MaxDecodedImageBytes, 32 * 1024 * 1024);
+            limits.MaxCumulativeResourceBytes = Math.Min(
+                limits.MaxCumulativeResourceBytes, 64 * 1024 * 1024);
+            limits.MaxResourceCount = Math.Min(limits.MaxResourceCount, 512);
             limits.MaxActiveLayers = Math.Min(limits.MaxActiveLayers, 16);
             limits.MaxReferenceDepth = Math.Min(limits.MaxReferenceDepth, 64);
             return limits;

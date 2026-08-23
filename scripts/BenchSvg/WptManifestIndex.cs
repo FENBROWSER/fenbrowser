@@ -55,6 +55,8 @@ internal sealed class WptManifestIndex
         return _typesByPath.TryGetValue(relative, out string? type) ? type : "unclassified";
     }
 
+    public string RootDirectory => _wptRoot;
+
     private static void Walk(
         JsonElement node,
         string prefix,

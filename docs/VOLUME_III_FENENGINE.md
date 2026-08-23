@@ -11075,3 +11075,36 @@ Verification:
 - FenEngine and `scripts/BenchSvg` Debug builds: zero warnings and zero errors.
 - Focused diagnostics, production-hardening, and nested-resource slice: 50 passed, 0 failed, 0 skipped; complete
   Release SVG slice: 250 passed, 0 failed, 0 skipped.
+
+## 2.137 Authorized SVG Resource Contexts (2026-08-24)
+
+- `SvgRenderRequest` carries the document base URI and a caller-owned `ISvgResourceResolver`. The renderer performs
+  no ambient file or network I/O: absent context, cross-origin references, resolver misses, URI substitution, and
+  over-budget content are fail-closed resource rejections with stable reason codes. Legacy fallback never receives a
+  first-party resource-policy rejection.
+- External raster and SVG `<image>` resources share a root render stopwatch plus explicit per-resource bytes,
+  cumulative bytes, resource count, decoded pixels, dimensions, and recursive-depth limits. Nested external SVGs use
+  their own resolved URI as the base for relative descendants. Native bitmaps, pictures, paints, and canvas state are
+  deterministically released; image clipping is scoped to the image rather than leaking into following siblings.
+- `ImageLoader` performs bounded asynchronous discovery and fetch through its existing document-scoped, policy-aware
+  fetch delegates. At most four resources fetch concurrently under a 5-second total preload wall budget; only HTTP(S),
+  same-origin final responses are admitted.
+  The resulting byte copies form an immutable snapshot consumed synchronously by the renderer, so paint/render threads
+  never block on network access and a tab cannot observe another tab's authorization context.
+- The corpus runner maps the local WPT checkout to a synthetic HTTPS origin. Root-relative WPT URLs therefore retain
+  browser semantics while the resolver performs zero network I/O, confines every decoded path beneath the checkout,
+  rejects reparse-point traversal, and enforces a separate 32 MiB hard file limit on Windows and Unix.
+- XML attribute entity decoding now handles `&lt;` in its correct two-character entity case. This fixes nested SVG data
+  URIs authored with XML-escaped markup; malformed, oversized, or invalid UTF-8 nested content remains rejected.
+
+Verification:
+
+- Complete focused Release SVG slice: 262 passed, 0 failed, 0 skipped. Host and `scripts/BenchSvg` Release builds
+  completed with zero warnings and zero errors.
+- The genuine captured-site gate remained 151/151 first-party with zero fallback, resource rejection, renderer/worker
+  failure, timeout, skip, or truncation; 150 direct parity passes plus one declared legacy reference defect.
+- The 10,000-render native-ownership stress completed with zero failures, 769 intentional compatibility fallbacks,
+  and 10,100,736 retained private bytes against the fixed 67,108,864-byte ceiling.
+- The 20-file local WPT `embedded` + `as-image` slice moved from 14 resource rejections to 5 after entity-correct nested
+  rendering; first-party documents increased from 3 to 5, with remaining cases visibly classified as unsupported CSS,
+  dynamic content, viewport styling, view references, or oversized inline data.

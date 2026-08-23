@@ -25,13 +25,20 @@ namespace FenBrowser.FenEngine.Adapters
 
         public SvgRenderResult Render(string svgContent, SvgRenderLimits limits)
         {
-            var primary = _firstParty.Render(svgContent, limits);
+            return Render(new SvgRenderRequest(svgContent, limits));
+        }
+
+        public SvgRenderResult Render(SvgRenderRequest request)
+        {
+            if (request == null)
+                return new SvgRenderResult { Success = false, ErrorMessage = "SVG render request is null", Backend = SvgRendererBackend.FirstPartyWithLegacyFallback };
+            var primary = _firstParty.Render(request);
             if (!primary.Success || !primary.RequiresFallback || primary.HadResourceRejection)
             {
                 return primary;
             }
 
-            var fallback = _legacy.Render(svgContent, limits);
+            var fallback = _legacy.Render(request);
             if (!fallback.Success)
             {
                 primary.Warnings = MergeWarnings(

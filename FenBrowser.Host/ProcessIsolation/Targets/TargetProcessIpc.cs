@@ -214,6 +214,8 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
         public long MaxRasterPixels { get; set; } = 16L * 1024 * 1024;
         public long MaxDecodedImagePixels { get; set; } = 16L * 1024 * 1024;
         public int MaxDecodedImageBytes { get; set; } = 8 * 1024 * 1024;
+        public int MaxCumulativeResourceBytes { get; set; } = 32 * 1024 * 1024;
+        public int MaxResourceCount { get; set; } = 64;
         public int MaxActiveLayers { get; set; } = 8;
         public int MaxReferenceDepth { get; set; } = 32;
         public bool AllowExternalReferences { get; set; } = false;

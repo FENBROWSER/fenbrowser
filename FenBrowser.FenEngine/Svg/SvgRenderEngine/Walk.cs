@@ -679,8 +679,7 @@ namespace FenBrowser.FenEngine.Svg
             }
             if (!href.StartsWith("data:", System.StringComparison.OrdinalIgnoreCase))
             {
-                _report.RequireFallback("image external reference requires compatibility support");
-                _report.RejectResource("image external reference rejected from legacy fallback");
+                DrawResolvedImage(el, canvas, viewport, inherited, href);
                 return;
             }
             if (IsSvgDataUri(href))
@@ -695,6 +694,11 @@ namespace FenBrowser.FenEngine.Svg
                 _report.RejectResource(decodeError);
                 return;
             }
+            if (!_resourceBudget.TryAdmit(bytes.Length))
+            {
+                _report.RejectResource("embedded raster image cumulative resource budget exceeded");
+                return;
+            }
 
             if (!TryDecodeEmbeddedBitmap(
                     bytes,
@@ -707,41 +711,7 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
 
-            float x = ResolveCoord(el.GetAttribute("x"), viewport.Width);
-            float y = ResolveCoord(el.GetAttribute("y"), viewport.Height);
-            float w = ResolveCoord(el.GetAttribute("width"), viewport.Width);
-            float h = ResolveCoord(el.GetAttribute("height"), viewport.Height);
-            if (w <= 0f) w = bitmap.Width;
-            if (h <= 0f) h = bitmap.Height;
-
-            var style = inherited.ResolveOverrides(el, _report);
-            bool layered = TryBeginGroupOpacity(el, canvas, out var layerPaint);
-            try
-            {
-                using var paint = new SKPaint { IsAntialias = true };
-                paint.Color = style.Visibility
-                    ? SKColors.Black
-                    : SKColors.Transparent;
-                var imageViewport = new SKRect(x, y, x + w, y + h);
-                var source = new SKRect(0f, 0f, bitmap.Width, bitmap.Height);
-                var destination = ResolveImageDestination(
-                    imageViewport,
-                    bitmap.Width,
-                    bitmap.Height,
-                    el.GetAttribute("preserveAspectRatio"));
-                canvas.ClipRect(imageViewport);
-                canvas.DrawBitmap(bitmap, source, destination, SKSamplingOptions.Default, paint);
-            }
-            finally
-            {
-                if (layered)
-                {
-                    canvas.Restore();
-                    _activeLayers--;
-                    layerPaint.Dispose();
-                }
-                bitmap.Dispose();
-            }
+            DrawOwnedBitmap(el, canvas, viewport, inherited, bitmap);
         }
 
         private long _maxRasterPixels = 16L * 1024 * 1024;
@@ -763,22 +733,34 @@ namespace FenBrowser.FenEngine.Svg
             InheritedStyle inherited,
             string href)
         {
-            int maxDepth = Math.Min(16, _limits.MaxReferenceDepth);
-            if (_resourceDepth >= maxDepth)
-            {
-                _report.RejectResource("embedded SVG resource depth budget exceeded");
-                return;
-            }
-
             byte[] bytes = DecodeSvgDataUriBytes(href, _maxDecodedImageBytes, out string decodeError);
             if (bytes == null)
             {
                 _report.RejectResource(decodeError);
                 return;
             }
+
             if (!_resourceBudget.TryAdmit(bytes.Length))
             {
                 _report.RejectResource("embedded SVG cumulative byte budget exceeded");
+                return;
+            }
+
+            DrawSvgImageBytes(element, canvas, viewport, inherited, bytes, _baseUri);
+        }
+
+        private void DrawSvgImageBytes(
+            SvgElement element,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle inherited,
+            byte[] bytes,
+            Uri resourceUri)
+        {
+            int maxDepth = Math.Min(16, _limits.MaxReferenceDepth);
+            if (_resourceDepth >= maxDepth)
+            {
+                _report.RejectResource("embedded SVG resource depth budget exceeded");
                 return;
             }
 
@@ -795,11 +777,14 @@ namespace FenBrowser.FenEngine.Svg
 
             if (!TryRenderInternal(
                     source, _limits, _resourceBudget, _resourceDepth + 1,
+                    resourceUri, _resourceResolver,
                     out var picture, out float sourceWidth, out float sourceHeight,
-                    out _, out _, out _, out _,
+                    out string nestedError, out _, out _, out _,
                     out bool requiresFallback, out bool resourceRejected))
             {
-                _report.RejectResource("embedded SVG failed bounded first-party rendering");
+                _report.RejectResource(
+                    "embedded SVG failed bounded first-party rendering: " +
+                    (string.IsNullOrWhiteSpace(nestedError) ? "unknown nested failure" : nestedError));
                 return;
             }
 
@@ -827,12 +812,12 @@ namespace FenBrowser.FenEngine.Svg
                 bool layered = TryBeginGroupOpacity(element, canvas, out var layerPaint);
                 try
                 {
+                    using var state = new CanvasState(canvas);
                     var imageViewport = new SKRect(x, y, x + width, y + height);
                     var destination = ResolveImageDestination(
                         imageViewport, sourceWidth, sourceHeight,
                         element.GetAttribute("preserveAspectRatio"));
                     canvas.ClipRect(imageViewport);
-                    using var state = new CanvasState(canvas);
                     canvas.Translate(destination.Left, destination.Top);
                     canvas.Scale(destination.Width / sourceWidth, destination.Height / sourceHeight);
                     canvas.DrawPicture(picture);
@@ -846,6 +831,136 @@ namespace FenBrowser.FenEngine.Svg
                         layerPaint.Dispose();
                     }
                 }
+            }
+        }
+
+        private void DrawResolvedImage(
+            SvgElement element,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle inherited,
+            string reference)
+        {
+            if (!TryResolveResource(reference, SvgResourceKind.Image, out var resource)) return;
+            byte[] bytes = resource.Content.ToArray();
+            if (!_resourceBudget.TryAdmit(bytes.Length))
+            {
+                _report.RejectResource("resolved image cumulative resource budget exceeded");
+                return;
+            }
+
+            bool isSvg = string.Equals(
+                             resource.ContentType, "image/svg+xml", StringComparison.OrdinalIgnoreCase) ||
+                         resource.Uri.AbsolutePath.EndsWith(".svg", StringComparison.OrdinalIgnoreCase) ||
+                         LooksLikeSvg(bytes);
+            if (isSvg)
+            {
+                DrawSvgImageBytes(element, canvas, viewport, inherited, bytes, resource.Uri);
+                return;
+            }
+
+            if (!TryDecodeEmbeddedBitmap(
+                    bytes, _maxRasterPixels, _maxRasterDim,
+                    out var bitmap, out var bitmapError))
+            {
+                _report.RejectResource(bitmapError);
+                return;
+            }
+            DrawOwnedBitmap(element, canvas, viewport, inherited, bitmap);
+        }
+
+        private bool TryResolveResource(
+            string reference,
+            SvgResourceKind kind,
+            out SvgResolvedResource resource)
+        {
+            resource = default;
+            if (_baseUri == null || _resourceResolver == null ||
+                !Uri.TryCreate(_baseUri, reference, out var absolute) || !absolute.IsAbsoluteUri)
+            {
+                _report.RejectResource("external SVG resource has no authorized resolver context");
+                return false;
+            }
+            var fetchUri = new UriBuilder(absolute) { Fragment = string.Empty }.Uri;
+            if (!IsSameOrigin(_baseUri, fetchUri))
+            {
+                _report.RejectResource("cross-origin SVG resource rejected by renderer policy");
+                return false;
+            }
+            if (!_resourceResolver.TryResolve(fetchUri, kind, out resource, out string error))
+            {
+                _report.RejectResource(string.IsNullOrWhiteSpace(error)
+                    ? "authorized SVG resource resolver returned no resource"
+                    : error);
+                return false;
+            }
+            if (resource.Uri == null || resource.Uri != fetchUri)
+            {
+                _report.RejectResource("SVG resource resolver returned mismatched URI");
+                resource = default;
+                return false;
+            }
+            if (resource.Content.Length <= 0 || resource.Content.Length > _maxDecodedImageBytes)
+            {
+                _report.RejectResource("resolved SVG resource exceeds byte budget");
+                resource = default;
+                return false;
+            }
+            return true;
+        }
+
+        private static bool IsSameOrigin(Uri first, Uri second) =>
+            first.Scheme.Equals(second.Scheme, StringComparison.OrdinalIgnoreCase) &&
+            first.Host.Equals(second.Host, StringComparison.OrdinalIgnoreCase) &&
+            first.Port == second.Port;
+
+        private static bool LooksLikeSvg(byte[] bytes)
+        {
+            int length = Math.Min(bytes.Length, 512);
+            string prefix;
+            try { prefix = Encoding.UTF8.GetString(bytes, 0, length); }
+            catch { return false; }
+            return prefix.IndexOf("<svg", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private void DrawOwnedBitmap(
+            SvgElement el,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle inherited,
+            SKBitmap bitmap)
+        {
+            float x = ResolveCoord(el.GetAttribute("x"), viewport.Width);
+            float y = ResolveCoord(el.GetAttribute("y"), viewport.Height);
+            float w = ResolveCoord(el.GetAttribute("width"), viewport.Width);
+            float h = ResolveCoord(el.GetAttribute("height"), viewport.Height);
+            if (w <= 0f) w = bitmap.Width;
+            if (h <= 0f) h = bitmap.Height;
+
+            var style = inherited.ResolveOverrides(el, _report);
+            bool layered = TryBeginGroupOpacity(el, canvas, out var layerPaint);
+            try
+            {
+                using var state = new CanvasState(canvas);
+                using var paint = new SKPaint { IsAntialias = true };
+                paint.Color = style.Visibility ? SKColors.Black : SKColors.Transparent;
+                var imageViewport = new SKRect(x, y, x + w, y + h);
+                var source = new SKRect(0f, 0f, bitmap.Width, bitmap.Height);
+                var destination = ResolveImageDestination(
+                    imageViewport, bitmap.Width, bitmap.Height,
+                    el.GetAttribute("preserveAspectRatio"));
+                canvas.ClipRect(imageViewport);
+                canvas.DrawBitmap(bitmap, source, destination, SKSamplingOptions.Default, paint);
+            }
+            finally
+            {
+                if (layered)
+                {
+                    canvas.Restore();
+                    _activeLayers--;
+                    layerPaint.Dispose();
+                }
+                bitmap.Dispose();
             }
         }
 

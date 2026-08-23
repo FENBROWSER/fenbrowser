@@ -4577,3 +4577,19 @@ Verification:
   `zero.svg` reftest retained its bounded worker timeout.
 - An immediate resume reused the 5 deterministic results in 5 ms of parent evaluation and reran the timeout under its
   full 5-second wall budget. The report recorded `execution/worker-timeout: 1` rather than hiding the rerun.
+
+## 6.202 SVG Resource-Context Verification (2026-08-24)
+
+- `SvgResourceContextTests` covers authorized same-origin raster loading, missing context, cross-origin rejection before
+  resolver invocation, resolver URI substitution, shared count and cumulative-byte limits, nested SVG relative-base
+  propagation, sibling clip isolation, and null-safe adapter request overloads. `SvgNestedResourceTests` additionally
+  locks XML-escaped data-SVG decoding and the independent per-resource/cumulative limits.
+- `ImageLoaderSvgResourceTests` proves the production asynchronous path fetches a nested same-origin image through the
+  active owner context, freezes it before rendering, and produces the expected first-party pixels without renderer-side
+  I/O. The focused resource/parser/integration slice passed 38/38; the complete SVG slice passed 262/262.
+- The local WPT resolver uses `https://wpt.local/` as an offline origin and maps URL paths into the discovered checkout.
+  A root-relative `/images/green-256x256.png` selection completed with zero resource rejection, demonstrating browser
+  URL-root semantics without granting filesystem-root access. The runner and Host Release builds were warning-free.
+- Re-running the signed 151-document captured-site inventory under the same renderer build passed its strict gate with
+  all documents first-party and all execution/security counters at zero. Generated diagnostics remain under
+  `Results/svg/`; no runtime artifacts are committed as documentation.

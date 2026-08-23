@@ -50,12 +50,11 @@ namespace FenBrowser.FenEngine.Svg
                     report.RejectResource("SVG external resource reference rejected");
                     continue;
                 }
-                if ((element.Name == "use" || element.Name == "image") &&
+                if (element.Name == "use" &&
                     (string.Equals(attribute.Key, "href", StringComparison.OrdinalIgnoreCase) ||
                      string.Equals(attribute.Key, "xlink:href", StringComparison.OrdinalIgnoreCase)) &&
                     !string.IsNullOrWhiteSpace(attribute.Value) &&
-                    attribute.Value[0] != '#' &&
-                    !(element.Name == "image" && attribute.Value.StartsWith("data:", StringComparison.OrdinalIgnoreCase)))
+                    attribute.Value[0] != '#')
                 {
                     report.RejectResource($"SVG {element.Name} external reference rejected");
                     continue;

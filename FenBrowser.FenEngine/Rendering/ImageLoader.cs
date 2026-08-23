@@ -12,6 +12,7 @@ using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core.Network;
 using FenBrowser.FenEngine.Adapters;
+using FenBrowser.FenEngine.Svg;
 
 namespace FenBrowser.FenEngine.Rendering
 {
@@ -95,6 +96,41 @@ namespace FenBrowser.FenEngine.Rendering
 
     public static class ImageLoader
     {
+        private const int MaxSvgResourcePreloadConcurrency = 4;
+        private const int MaxSvgResourcePreloadMilliseconds = 5_000;
+
+        private sealed class SvgResourceSnapshot : ISvgResourceResolver
+        {
+            private readonly Dictionary<Uri, SvgResolvedResource> _resources = new();
+
+            public int Count => _resources.Count;
+
+            public void Add(Uri requestedUri, string contentType, byte[] content)
+            {
+                _resources[requestedUri] = new SvgResolvedResource(
+                    requestedUri,
+                    contentType ?? string.Empty,
+                    content.ToArray());
+            }
+
+            public bool TryResolve(
+                Uri absoluteUri,
+                SvgResourceKind kind,
+                out SvgResolvedResource resource,
+                out string error)
+            {
+                if (kind is (SvgResourceKind.Image or SvgResourceKind.SvgDocument) &&
+                    _resources.TryGetValue(absoluteUri, out resource))
+                {
+                    error = string.Empty;
+                    return true;
+                }
+                resource = default;
+                error = "preloaded SVG resource snapshot has no authorized entry";
+                return false;
+            }
+        }
+
         public sealed class ImageLoaderRequestContext
         {
             public string OwnerId { get; set; }
@@ -798,7 +834,12 @@ namespace FenBrowser.FenEngine.Rendering
         /// <summary>
         /// RULE 3 & 5: Render SVG content to bitmap using adapter with safety limits
         /// </summary>
-        private static SKBitmap RenderSvgToBitmap(string svgContent, int? targetWidth, int? targetHeight)
+        private static SKBitmap RenderSvgToBitmap(
+            string svgContent,
+            int? targetWidth,
+            int? targetHeight,
+            Uri baseUri = null,
+            ISvgResourceResolver resourceResolver = null)
         {
             // Ensure SVG Namespace (required for SkiaSharp.Svg)
             if (!svgContent.Contains("xmlns=\"http://www.w3.org/2000/svg\"") && 
@@ -816,7 +857,12 @@ namespace FenBrowser.FenEngine.Rendering
                 svgContent = svgContent.Replace("viewbox=", "viewBox=");
             }
 
-            using var result = CreateSvgRenderer().Render(svgContent, SvgRenderLimits.Default);
+            using var result = CreateSvgRenderer().Render(new SvgRenderRequest(
+                svgContent, SvgRenderLimits.Default)
+            {
+                BaseUri = baseUri,
+                ResourceResolver = resourceResolver
+            });
             
             // CRITICAL FIX: Check for pre-rendered bitmap first (avoids SKSvg disposal issues)
             if (!result.Success)
@@ -1320,7 +1366,21 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            var bitmap = DecodeBitmapFromBytes(url, data, targetWidth, targetHeight, cacheKey);
+            SvgResourceSnapshot svgResources = null;
+            Uri svgBaseUri = Uri.TryCreate(url, UriKind.Absolute, out var prewarmUri)
+                ? prewarmUri
+                : null;
+            if (svgBaseUri != null && LooksLikeSvgResource(svgBaseUri, string.Empty, data))
+            {
+                svgResources = await BuildSvgResourceSnapshotAsync(
+                    System.Text.Encoding.UTF8.GetString(data),
+                    svgBaseUri,
+                    context?.FetchDetailedAsync ?? FetchDetailedAsync,
+                    context?.FetchBytesAsync ?? FetchBytesAsync,
+                    context).ConfigureAwait(false);
+            }
+            var bitmap = DecodeBitmapFromBytes(
+                url, data, targetWidth, targetHeight, cacheKey, svgBaseUri, svgResources);
             if (bitmap == null)
             {
                 return false;
@@ -1457,6 +1517,148 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        private readonly record struct PendingSvgResource(Uri Uri, int Depth);
+        private readonly record struct FetchedSvgResource(
+            PendingSvgResource Pending,
+            BinaryFetchResult Result);
+
+        private static async Task<SvgResourceSnapshot> BuildSvgResourceSnapshotAsync(
+            string source,
+            Uri documentUri,
+            Func<Uri, Task<BinaryFetchResult>> detailedFetcher,
+            Func<Uri, Task<byte[]>> byteFetcher,
+            ImageLoaderRequestContext context)
+        {
+            var snapshot = new SvgResourceSnapshot();
+            if (documentUri == null || !documentUri.IsAbsoluteUri)
+                return snapshot;
+
+            var limits = SvgRenderLimits.Normalize(SvgRenderLimits.Default);
+            int maxDepth = Math.Min(16, limits.MaxReferenceDepth);
+            int maxCount = limits.MaxResourceCount;
+            long remainingBytes = limits.MaxCumulativeResourceBytes;
+            var pending = new Queue<PendingSvgResource>();
+            var seen = new HashSet<Uri>();
+            var preloadClock = System.Diagnostics.Stopwatch.StartNew();
+            foreach (Uri uri in SvgResourceDiscovery.DiscoverImages(source, documentUri, limits))
+            {
+                if (seen.Add(uri)) pending.Enqueue(new PendingSvgResource(uri, 1));
+            }
+
+            while (pending.Count > 0 && snapshot.Count < maxCount &&
+                   context?.IsDisposed != true &&
+                   preloadClock.ElapsedMilliseconds < MaxSvgResourcePreloadMilliseconds)
+            {
+                var batch = new List<PendingSvgResource>(MaxSvgResourcePreloadConcurrency);
+                while (pending.Count > 0 && batch.Count < MaxSvgResourcePreloadConcurrency &&
+                       snapshot.Count + batch.Count < maxCount)
+                    batch.Add(pending.Dequeue());
+
+                Task<FetchedSvgResource[]> fetchBatch = Task.WhenAll(batch.Select(async item =>
+                {
+                    try
+                    {
+                        BinaryFetchResult result;
+                        if (detailedFetcher != null)
+                        {
+                            result = await detailedFetcher(item.Uri).ConfigureAwait(false);
+                        }
+                        else if (byteFetcher != null)
+                        {
+                            byte[] body = await byteFetcher(item.Uri).ConfigureAwait(false);
+                            result = new BinaryFetchResult
+                            {
+                                Body = body,
+                                FinalUri = item.Uri,
+                                FailureReason = body == null || body.Length == 0
+                                    ? BinaryFetchFailureReason.BodyReadFailed
+                                    : BinaryFetchFailureReason.None
+                            };
+                        }
+                        else
+                        {
+                            result = null;
+                        }
+                        return new FetchedSvgResource(item, result);
+                    }
+                    catch (Exception ex)
+                    {
+                        EngineLogCompat.Debug(
+                            $"[ImageLoader] Nested SVG resource fetch failed: {ex.GetType().Name}",
+                            LogCategory.Rendering);
+                        return new FetchedSvgResource(item, null);
+                    }
+                }));
+                FetchedSvgResource[] fetched;
+                int remainingMilliseconds = Math.Max(
+                    1, MaxSvgResourcePreloadMilliseconds - (int)preloadClock.ElapsedMilliseconds);
+                try
+                {
+                    fetched = await fetchBatch.WaitAsync(
+                        TimeSpan.FromMilliseconds(remainingMilliseconds)).ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    EngineLogCompat.Warn(
+                        $"[ImageLoader] SVG nested-resource preload timed out after " +
+                        $"{MaxSvgResourcePreloadMilliseconds}ms; admitted={snapshot.Count}",
+                        LogCategory.Rendering);
+                    break;
+                }
+
+                foreach (var item in fetched)
+                {
+                    BinaryFetchResult result = item.Result;
+                    byte[] body = result?.Body;
+                    Uri finalUri = result?.FinalUri ?? item.Pending.Uri;
+                    if (result?.Succeeded != true || body == null || body.Length == 0 ||
+                        body.Length > limits.MaxDecodedImageBytes || body.Length > remainingBytes ||
+                        !SvgResourceDiscovery.IsSameOrigin(documentUri, finalUri))
+                        continue;
+
+                    string contentType = result.ContentType ?? string.Empty;
+                    snapshot.Add(item.Pending.Uri, contentType, body);
+                    remainingBytes -= body.Length;
+
+                    if (item.Pending.Depth >= maxDepth ||
+                        !LooksLikeSvgResource(item.Pending.Uri, contentType, body))
+                        continue;
+                    try
+                    {
+                        string nestedSource = new System.Text.UTF8Encoding(false, true).GetString(body);
+                        foreach (Uri nestedUri in SvgResourceDiscovery.DiscoverImages(
+                                     nestedSource, item.Pending.Uri, limits))
+                        {
+                            if (seen.Count >= maxCount || !seen.Add(nestedUri)) continue;
+                            pending.Enqueue(new PendingSvgResource(
+                                nestedUri, item.Pending.Depth + 1));
+                        }
+                    }
+                    catch (System.Text.DecoderFallbackException)
+                    {
+                        // The renderer will reject the malformed SVG snapshot entry.
+                    }
+                }
+            }
+            return snapshot;
+        }
+
+        private static bool LooksLikeSvgResource(Uri uri, string contentType, byte[] body)
+        {
+            if (contentType?.StartsWith("image/svg+xml", StringComparison.OrdinalIgnoreCase) == true ||
+                uri.AbsolutePath.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+                return true;
+            try
+            {
+                string prefix = System.Text.Encoding.UTF8.GetString(body, 0, Math.Min(body.Length, 512));
+                return prefix.IndexOf("<svg", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public static object GetImageTuple(string url, bool isLazy = false, SKRect? elementBounds = null, int? targetWidth = null, int? targetHeight = null)
         {
             var bmp = GetImage(url, isLazy, elementBounds, targetWidth, targetHeight);
@@ -1546,7 +1748,20 @@ namespace FenBrowser.FenEngine.Rendering
                 SKBitmap bitmap;
                 try
                 {
-                    bitmap = DecodeBitmapFromBytes(url, data, targetWidth, targetHeight, cacheKey);
+                    Uri svgBaseUri = fetchResult.FinalUri ?? absoluteUri;
+                    SvgResourceSnapshot svgResources = null;
+                    if (LooksLikeSvgResource(svgBaseUri, fetchResult.ContentType, data))
+                    {
+                        svgResources = await BuildSvgResourceSnapshotAsync(
+                            System.Text.Encoding.UTF8.GetString(data),
+                            svgBaseUri,
+                            detailedFetcher,
+                            fetcher,
+                            effectiveContext).ConfigureAwait(false);
+                    }
+                    bitmap = DecodeBitmapFromBytes(
+                        url, data, targetWidth, targetHeight, cacheKey,
+                        svgBaseUri, svgResources);
                 }
                 catch (Exception ex)
                 {
@@ -1628,7 +1843,9 @@ namespace FenBrowser.FenEngine.Rendering
             byte[] data,
             int? targetWidth,
             int? targetHeight,
-            string cacheKey = null)
+            string cacheKey = null,
+            Uri svgBaseUri = null,
+            ISvgResourceResolver svgResourceResolver = null)
         {
             SKBitmap bitmap = null;
             cacheKey ??= url;
@@ -1658,7 +1875,9 @@ namespace FenBrowser.FenEngine.Rendering
             if (isSvg)
             {
                 string svgContent = System.Text.Encoding.UTF8.GetString(data);
-                bitmap = RenderSvgToBitmap(svgContent, targetWidth, targetHeight);
+                bitmap = RenderSvgToBitmap(
+                    svgContent, targetWidth, targetHeight,
+                    svgBaseUri, svgResourceResolver);
 
                 if (bitmap == null)
                 {

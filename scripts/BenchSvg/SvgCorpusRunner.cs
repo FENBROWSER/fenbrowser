@@ -216,7 +216,9 @@ internal static class SvgCorpusRunner
             }
             else
             {
-                entry = EvaluateIsolated(relative, info.Length, file, options.PerFileTimeoutMs);
+                entry = EvaluateIsolated(
+                    relative, info.Length, file, options.PerFileTimeoutMs,
+                    wptIndex?.RootDirectory);
                 entry.SourceSha256 = sourceSha256;
                 if (IsReusable(entry)) checkpointWriter.WriteLine(JsonSerializer.Serialize(new SvgCorpusCheckpoint
                 {
@@ -445,16 +447,26 @@ internal static class SvgCorpusRunner
         Uri.TryCreate(raw, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps &&
         string.IsNullOrEmpty(uri.UserInfo) && !string.IsNullOrWhiteSpace(uri.Host);
 
-    public static int RunWorker(string inputPath, string outputPath)
+    public static int RunWorker(string inputPath, string outputPath, string? wptRoot)
     {
         try
         {
             var info = new FileInfo(inputPath);
             string source = File.ReadAllText(inputPath);
+            LocalWptSvgResourceResolver? wptResolver = wptRoot == null
+                ? null
+                : new LocalWptSvgResourceResolver(wptRoot);
+            var request = new SvgRenderRequest(source, SvgRenderLimits.Default)
+            {
+                BaseUri = wptResolver?.CreateDocumentUri(inputPath) ??
+                          new Uri(Path.GetFullPath(inputPath)),
+                ResourceResolver = wptResolver
+            };
             ISvgRenderer firstParty = new FenSvgRenderer();
             ISvgRenderer legacy = new SvgSkiaRenderer();
             ISvgRenderer hybrid = new HybridSvgRenderer(firstParty, legacy);
-            var entry = Evaluate(Path.GetFileName(inputPath), info.Length, source, firstParty, hybrid, legacy);
+            var entry = Evaluate(
+                Path.GetFileName(inputPath), info.Length, request, firstParty, hybrid, legacy);
             File.WriteAllText(outputPath, JsonSerializer.Serialize(entry));
             return 0;
         }
@@ -478,12 +490,16 @@ internal static class SvgCorpusRunner
         string relativePath,
         long bytes,
         string inputPath,
-        int timeoutMs)
+        int timeoutMs,
+        string? wptRoot)
     {
         string outputPath = Path.Combine(Path.GetTempPath(), $"fen-svg-worker-{Guid.NewGuid():N}.json");
         try
         {
-            using var process = new Process { StartInfo = CreateWorkerStartInfo(inputPath, outputPath) };
+            using var process = new Process
+            {
+                StartInfo = CreateWorkerStartInfo(inputPath, outputPath, wptRoot)
+            };
             process.OutputDataReceived += (_, _) => { };
             process.ErrorDataReceived += (_, _) => { };
             process.Start();
@@ -533,7 +549,10 @@ internal static class SvgCorpusRunner
         }
     }
 
-    private static ProcessStartInfo CreateWorkerStartInfo(string inputPath, string outputPath)
+    private static ProcessStartInfo CreateWorkerStartInfo(
+        string inputPath,
+        string outputPath,
+        string? wptRoot)
     {
         string executable = Environment.ProcessPath ?? throw new InvalidOperationException("process path unavailable");
         var start = new ProcessStartInfo
@@ -550,20 +569,25 @@ internal static class SvgCorpusRunner
         start.ArgumentList.Add("--corpus-worker");
         start.ArgumentList.Add(inputPath);
         start.ArgumentList.Add(outputPath);
+        if (wptRoot != null)
+        {
+            start.ArgumentList.Add("--wpt-root");
+            start.ArgumentList.Add(wptRoot);
+        }
         return start;
     }
 
     private static SvgCorpusEntry Evaluate(
         string relativePath,
         long bytes,
-        string source,
+        SvgRenderRequest request,
         ISvgRenderer firstParty,
         ISvgRenderer hybrid,
         ISvgRenderer legacy)
     {
-        using var fen = TimedRender(firstParty, source);
-        using var routed = TimedRender(hybrid, source);
-        using var reference = TimedRender(legacy, source);
+        using var fen = TimedRender(firstParty, request);
+        using var routed = TimedRender(hybrid, request);
+        using var reference = TimedRender(legacy, request);
 
         string classification = !routed.Result.Success
             ? "hybrid-failure"
@@ -592,7 +616,8 @@ internal static class SvgCorpusRunner
                      meanRgbDifference <= MaximumMeanRgbDifference;
         }
         string? referenceDefect = comparable && !parity &&
-                                  IsLegacyChromaticGradientLoss(source, fen.Result.Bitmap!, reference.Result.Bitmap!)
+                                  IsLegacyChromaticGradientLoss(
+                                      request.Content, fen.Result.Bitmap!, reference.Result.Bitmap!)
             ? "legacy-chromatic-gradient-loss"
             : null;
 
@@ -669,10 +694,10 @@ internal static class SvgCorpusRunner
         return "render-failure";
     }
 
-    private static TimedSvgResult TimedRender(ISvgRenderer renderer, string source)
+    private static TimedSvgResult TimedRender(ISvgRenderer renderer, SvgRenderRequest request)
     {
         var stopwatch = Stopwatch.StartNew();
-        var result = renderer.Render(source);
+        var result = renderer.Render(request);
         stopwatch.Stop();
         return new TimedSvgResult(result, stopwatch.ElapsedMilliseconds);
     }

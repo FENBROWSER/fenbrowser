@@ -32,6 +32,15 @@ namespace FenBrowser.FenEngine.Adapters
 
         public SvgRenderResult Render(string svgContent, SvgRenderLimits limits)
         {
+            return Render(new SvgRenderRequest(svgContent, limits));
+        }
+
+        public SvgRenderResult Render(SvgRenderRequest request)
+        {
+            if (request == null)
+                return new SvgRenderResult { Success = false, ErrorMessage = "SVG render request is null", Backend = SvgRendererBackend.FirstParty };
+            string svgContent = request.Content;
+            SvgRenderLimits limits = request.Limits;
             if (string.IsNullOrWhiteSpace(svgContent))
             {
                 return new SvgRenderResult
@@ -62,6 +71,8 @@ namespace FenBrowser.FenEngine.Adapters
                 if (!SvgRenderEngine.TryRender(
                         svgContent,
                         limits,
+                        request.BaseUri,
+                        request.ResourceResolver,
                         out var picture,
                         out float naturalWidth,
                         out float naturalHeight,
