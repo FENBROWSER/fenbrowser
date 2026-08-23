@@ -55,6 +55,18 @@ var cases = new (string Name, string Svg)[]
     ("basic-text", "<svg width='160' height='40'><text x='4' y='28' font-size='24'>FenBrowser</text></svg>"),
 };
 
+if (args.Contains("--stress-only"))
+{
+    bool stressOk = RunStress(
+        hybrid.Renderer,
+        cases.Select(item => item.Svg).Append(
+            "<svg width='80' height='30'><text x='2' y='20'>A<tspan>B</tspan></text></svg>")
+            .ToArray(),
+        iterations: 10_000);
+    Environment.ExitCode = stressOk ? 0 : 1;
+    return;
+}
+
 const int WarmRuns = 7;
 
 foreach (var (name, svg) in cases)
@@ -116,6 +128,46 @@ if (writeReport)
 }
 
 static string Cold(bool b) => b ? "true" : "false";
+
+static bool RunStress(ISvgRenderer renderer, string[] documents, int iterations)
+{
+    const long maxRetainedGrowthBytes = 64L * 1024 * 1024;
+    int failures = 0;
+    int fallbacks = 0;
+
+    for (int i = 0; i < 256; i++)
+    {
+        using var warm = renderer.Render(documents[i % documents.Length]);
+        if (!warm.Success) failures++;
+    }
+    GC.Collect();
+    GC.WaitForPendingFinalizers();
+    GC.Collect();
+    using var process = Process.GetCurrentProcess();
+    process.Refresh();
+    long before = process.PrivateMemorySize64;
+
+    for (int i = 0; i < iterations; i++)
+    {
+        using var result = renderer.Render(documents[i % documents.Length]);
+        if (!result.Success || result.Bitmap == null) failures++;
+        if (result.UsedLegacyFallback) fallbacks++;
+    }
+
+    GC.Collect();
+    GC.WaitForPendingFinalizers();
+    GC.Collect();
+    process.Refresh();
+    long after = process.PrivateMemorySize64;
+    long retainedGrowth = Math.Max(0L, after - before);
+    bool ok = failures == 0 && retainedGrowth <= maxRetainedGrowthBytes;
+    Console.WriteLine(
+        $"{{\"probe\":\"dispose-stress\",\"ok\":{Cold(ok)}," +
+        $"\"iterations\":{iterations},\"failures\":{failures}," +
+        $"\"fallbacks\":{fallbacks},\"retainedPrivateBytes\":{retainedGrowth}," +
+        $"\"limitBytes\":{maxRetainedGrowthBytes}}}");
+    return ok;
+}
 
 static (int Glyphs, float Width) ProbeNativeTextStack()
 {

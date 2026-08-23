@@ -10724,7 +10724,8 @@ entries quoting 101/117 were stale snapshots mid-flight; treat discovery as sour
 3. Foreground-focused differential corpus passes (21 cases).
 4. Representative real-site SVG corpus passes - NOT YET DONE (requires captured-site fixtures).
 5. No security-limit regressions (Phase-5 adversarial suite green).
-6. No native-resource leaks found (disposal audited; leak-check under load still TODO).
+6. No native-resource leaks found (ownership audit plus Windows/Linux 10,000-render
+   post-warmup disposal stress completed in 2.127).
 7. Benchmark acceptable (see Results/svg/perf-report.md) - DONE, opt-in basis only.
 8. Unsupported-feature matrix reviewed (2.121) - stylesheet CSS/text remain migration-blocking.
 9. Utility/out-of-process decode paths use the shared backend factory and carry the complete
@@ -10847,3 +10848,18 @@ Verification:
 - Published `linux-x64` benchmark under Ubuntu 24.04 WSL renders basic text first-party with a configured
   DejaVu Sans fallback; hybrid remains first-party. The legacy backend remains transparent for that
   headless text case, demonstrating why first-party text and explicit font configuration are required.
+
+## 2.127 SVG Native-Ownership Stress Gate (2026-08-23)
+
+`scripts/BenchSvg --stress-only` now warms renderer/native caches, forces full GC/finalization,
+runs 10,000 mixed hybrid renders (including first-party and compatibility-fallback documents),
+disposes every result, then measures retained process-private growth. The command fails on any render
+failure, missing bitmap, or retained growth above the documented 64 MiB post-warmup ceiling. This is
+a repeatable regression gate rather than a one-off task-manager observation.
+
+Verification:
+
+- Windows x64: 10,000 renders, 0 failures, 2,222 fallbacks, 10,690,560 retained private bytes.
+- Ubuntu 24.04 WSL `linux-x64`: 10,000 renders, 0 failures, 2,222 fallbacks,
+  17,272,832 retained private bytes.
+- Both remain well below the 67,108,864-byte ceiling and exercise real native Skia/HarfBuzz loading.
