@@ -4516,3 +4516,14 @@ Verification:
 - The deterministic 100-file local WPT characterization reports 10 first-party, 74 fallback, 16 resource rejection,
   zero first-party/hybrid failures, and 4/5 legacy-comparable parity. The sample is still truncated characterization,
   not the complete process-isolated default-switch gate.
+
+## 6.198 SVG Nested-Resource Isolation Verification (2026-08-24)
+
+- `SvgNestedResourceTests` verifies nested unsupported-feature isolation from legacy fallback, shared recursive-depth
+  and sibling-byte budgets, strict UTF-8 rejection, and percent-encoded data SVG. The production-hardening hybrid test
+  verifies nested author styles do not inherit the parent stylesheet and that the producing backend stays first-party.
+- Complete focused SVG tests pass 241/241. The benchmark stress corpus includes a nested SVG case and completes
+  10,000 renders with zero failures, 769 intended fallbacks, and 9,224,192 retained private bytes.
+- The same deterministic 100-file WPT sample reports 11 first-party, 75 fallback, 14 resource rejection, zero renderer
+  failures, and 4/6 comparable parity. The new nested-data first-party case remains a visible pixel differential, so
+  this evidence expands coverage without closing the default-switch parity gate.

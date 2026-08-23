@@ -60,6 +60,9 @@ if (corpusArgument >= 0)
 }
 
 string redPng = MakeRedPng(8, 8);
+string nestedSvg = "data:image/svg+xml;base64," + Convert.ToBase64String(
+    System.Text.Encoding.UTF8.GetBytes(
+        "<svg width='8' height='8'><rect width='8' height='8' fill='#9b59b6'/></svg>"));
 
 var cases = new (string Name, string Svg)[]
 {
@@ -76,6 +79,7 @@ var cases = new (string Name, string Svg)[]
         "</nope><g transform='scale(1e9)'><circle cx='10' cy='10' r='5' fill='blue'/></g>" +
         "<path d='M0 0 L1e30 1e30' stroke='green' stroke-width='2'/></svg>"),
     ("embedded-image", $"<svg width='48' height='48'><image href='{redPng}' x='4' y='4' width='40' height='40'/></svg>"),
+    ("embedded-svg", $"<svg width='48' height='48'><image href='{nestedSvg}' x='4' y='4' width='40' height='40'/></svg>"),
     ("basic-text", "<svg width='160' height='40'><text x='4' y='28' font-size='24'>FenBrowser</text></svg>"),
 };
 

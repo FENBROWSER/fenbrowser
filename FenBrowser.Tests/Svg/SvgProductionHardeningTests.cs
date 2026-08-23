@@ -393,7 +393,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void EmbeddedSvgImage_IsReportedAsResourceRejectionWithoutLegacyFallback()
+        public void EmbeddedSvgImage_RendersFirstPartyWithIsolatedNestedStyles()
         {
             string nested = Convert.ToBase64String(
                 System.Text.Encoding.UTF8.GetBytes("<svg width='2' height='2'><rect width='2' height='2'/></svg>"));
@@ -405,12 +405,11 @@ namespace FenBrowser.Tests.Svg
             using var result = renderer.Render(svg);
 
             Assert.True(result.Success, result.ErrorMessage);
-            Assert.True(result.RequiresFallback);
-            Assert.True(result.HadResourceRejection);
+            Assert.False(result.RequiresFallback);
+            Assert.False(result.HadResourceRejection);
             Assert.False(result.UsedLegacyFallback);
             Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
-            Assert.Contains(result.Warnings, warning =>
-                warning.Contains("embedded SVG", StringComparison.OrdinalIgnoreCase));
+            Assert.Equal(SKColors.Black, result.Bitmap.GetPixel(5, 5));
         }
 
         [Fact]

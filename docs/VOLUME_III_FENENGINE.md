@@ -10974,3 +10974,28 @@ Verification:
 - Deterministic first 100 local WPT SVG files: 10 first-party, 74 fallback, 16 resource rejection, zero renderer
   failures, and 4/5 comparable pairs meeting legacy differential thresholds. The newly first-party document is
   a referenced-only pattern/filter support file with no visible filter consumer, so no unsupported effect was hidden.
+
+## 2.132 Bounded Recursive SVG Image Resources (2026-08-24)
+
+- Embedded `data:image/svg+xml` images now parse and render recursively through the first-party pipeline and are
+  drawn as nested pictures with normal image viewport/preserve-aspect-ratio behavior. Base64 and bounded percent-
+  encoded payloads are accepted; malformed percent encoding, raw non-ASCII bytes, and invalid UTF-8 are rejected.
+- All nested documents share the root render stopwatch, cumulative decoded-byte budget, and a hard resource depth
+  of `min(MaxReferenceDepth, 16)`. Each document still receives the normalized parser element/depth/filter limits;
+  cumulative admitted source bytes prevent sibling or recursive documents from multiplying those limits without bound.
+- Nested fallback is fail-closed: an unsupported feature, parse/render failure, or further resource rejection marks
+  the parent image as a resource rejection. Hybrid routing cannot pass that nested document to Svg.Skia. Nested CSS,
+  ids, reference stacks, and renderer caches are document-local, preventing parent/child style or id leakage.
+- Nested pictures and canvas state are deterministically disposed. Rendering does not allocate an intermediate nested
+  raster, and the final image still clips and scales under the already admitted root raster dimensions.
+
+Verification:
+
+- Complete focused Release SVG slice: 241 passed, 0 failed, 0 skipped, including style isolation, unsupported-feature
+  isolation, shared depth and cumulative-byte limits, invalid UTF-8, and percent-encoded data SVG.
+- The 10,000-render ownership stress now includes a nested SVG image: zero failures, 769 intended fallbacks, and
+  9,224,192 retained private bytes against the 67,108,864-byte ceiling.
+- Deterministic first 100 local WPT SVG files: 11 first-party, 75 fallback, 14 resource rejection, zero renderer
+  failures, and 4/6 legacy-comparable parity. One deeply nested data-image support document is now first-party but
+  remains a retained pixel differential; an XHTML-link test now reaches ordinary compatibility fallback after its
+  embedded SVG is accepted. Neither transition is presented as complete parity.

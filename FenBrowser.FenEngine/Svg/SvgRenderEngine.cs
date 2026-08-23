@@ -21,8 +21,11 @@ namespace FenBrowser.FenEngine.Svg
     {
         private readonly SvgParsedDocument _doc;
         private readonly SvgParseReport _report;
-        private readonly Stopwatch _clock = Stopwatch.StartNew();
+        private readonly Stopwatch _clock;
         private readonly long _deadlineMs;
+        private readonly SvgRenderLimits _limits;
+        private readonly NestedResourceBudget _resourceBudget;
+        private readonly int _resourceDepth;
         private readonly int _maxActiveLayers;
         private readonly int _maxReferenceDepth;
         private int _elementsVisited;
@@ -46,10 +49,18 @@ namespace FenBrowser.FenEngine.Svg
         private const float DefaultFontSize = 16f;
         private const int MaxRenderDepth = 256;   // independent of parser budget
 
-        private SvgRenderEngine(SvgParsedDocument doc, SvgRenderLimits limits)
+        private SvgRenderEngine(
+            SvgParsedDocument doc,
+            SvgRenderLimits limits,
+            NestedResourceBudget resourceBudget,
+            int resourceDepth)
         {
             _doc = doc;
             _report = doc.Report;
+            _limits = limits;
+            _resourceBudget = resourceBudget;
+            _resourceDepth = resourceDepth;
+            _clock = resourceBudget.Clock;
             _deadlineMs = limits.MaxRenderTimeMs > 0 ? limits.MaxRenderTimeMs : long.MaxValue;
             _maxActiveLayers = limits.MaxActiveLayers;
             _maxReferenceDepth = limits.MaxReferenceDepth;
@@ -74,13 +85,40 @@ namespace FenBrowser.FenEngine.Svg
             requiresFallback = false;
             resourceRejected = false;
 
+            return TryRenderInternal(
+                source, limits, new NestedResourceBudget(limits), 0,
+                out picture, out width, out height, out error, out warnings,
+                out requiresFallback, out resourceRejected);
+        }
+
+        private static bool TryRenderInternal(
+            string source,
+            SvgRenderLimits limits,
+            NestedResourceBudget resourceBudget,
+            int resourceDepth,
+            out SKPicture picture,
+            out float width,
+            out float height,
+            out string error,
+            out IReadOnlyList<string> warnings,
+            out bool requiresFallback,
+            out bool resourceRejected)
+        {
+            picture = null;
+            width = 0f;
+            height = 0f;
+            error = null;
+            warnings = System.Array.Empty<string>();
+            requiresFallback = false;
+            resourceRejected = false;
+
             if (!SvgMarkupParser.TryParse(source, limits, out var doc, out var fatalReason))
             {
                 error = fatalReason;
                 return false;
             }
 
-            var engine = new SvgRenderEngine(doc, limits);
+            var engine = new SvgRenderEngine(doc, limits, resourceBudget, resourceDepth);
             engine.ConfigureImageBudgets(
                 limits.MaxDecodedImagePixels,
                 limits.MaxDecodedImageBytes,
@@ -112,6 +150,26 @@ namespace FenBrowser.FenEngine.Svg
                 resourceRejected = engine._report.ResourceRejected;
                 error = ex.Message;
                 return false;
+            }
+        }
+
+        private sealed class NestedResourceBudget
+        {
+            private readonly long _maxDecodedBytes;
+            private long _decodedBytes;
+
+            public NestedResourceBudget(SvgRenderLimits limits)
+            {
+                _maxDecodedBytes = Math.Max(1, limits.MaxDecodedImageBytes);
+            }
+
+            public Stopwatch Clock { get; } = Stopwatch.StartNew();
+
+            public bool TryAdmit(int bytes)
+            {
+                if (bytes < 0 || _decodedBytes + bytes > _maxDecodedBytes) return false;
+                _decodedBytes += bytes;
+                return true;
             }
         }
 

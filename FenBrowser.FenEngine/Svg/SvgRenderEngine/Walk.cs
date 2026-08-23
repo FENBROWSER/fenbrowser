@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text;
 using SkiaSharp;
 using FenBrowser.FenEngine.Adapters;
 
@@ -684,8 +685,7 @@ namespace FenBrowser.FenEngine.Svg
             }
             if (IsSvgDataUri(href))
             {
-                _report.RequireFallback("embedded SVG image requires compatibility support");
-                _report.RejectResource("embedded SVG image rejected from legacy fallback for sandbox isolation");
+                DrawEmbeddedSvgImage(el, canvas, viewport, inherited, href);
                 return;
             }
 
@@ -754,6 +754,166 @@ namespace FenBrowser.FenEngine.Svg
             _maxRasterPixels = maxRasterPixels;
             _maxDecodedImageBytes = maxDecodedImageBytes;
             _maxRasterDim = maxRasterDim;
+        }
+
+        private void DrawEmbeddedSvgImage(
+            SvgElement element,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle inherited,
+            string href)
+        {
+            int maxDepth = Math.Min(16, _limits.MaxReferenceDepth);
+            if (_resourceDepth >= maxDepth)
+            {
+                _report.RejectResource("embedded SVG resource depth budget exceeded");
+                return;
+            }
+
+            byte[] bytes = DecodeSvgDataUriBytes(href, _maxDecodedImageBytes, out string decodeError);
+            if (bytes == null)
+            {
+                _report.RejectResource(decodeError);
+                return;
+            }
+            if (!_resourceBudget.TryAdmit(bytes.Length))
+            {
+                _report.RejectResource("embedded SVG cumulative byte budget exceeded");
+                return;
+            }
+
+            string source;
+            try
+            {
+                source = new UTF8Encoding(false, true).GetString(bytes);
+            }
+            catch (DecoderFallbackException)
+            {
+                _report.RejectResource("embedded SVG is not valid UTF-8");
+                return;
+            }
+
+            if (!TryRenderInternal(
+                    source, _limits, _resourceBudget, _resourceDepth + 1,
+                    out var picture, out float sourceWidth, out float sourceHeight,
+                    out _, out _, out bool requiresFallback, out bool resourceRejected))
+            {
+                _report.RejectResource("embedded SVG failed bounded first-party rendering");
+                return;
+            }
+
+            using (picture)
+            {
+                if (requiresFallback || resourceRejected)
+                {
+                    _report.RejectResource(
+                        requiresFallback
+                            ? "embedded SVG requires unsupported compatibility rendering"
+                            : "embedded SVG contained a rejected nested resource");
+                    return;
+                }
+
+                float x = ResolveCoord(element.GetAttribute("x"), viewport.Width);
+                float y = ResolveCoord(element.GetAttribute("y"), viewport.Height);
+                float width = ResolveCoord(element.GetAttribute("width"), viewport.Width);
+                float height = ResolveCoord(element.GetAttribute("height"), viewport.Height);
+                if (width <= 0f) width = sourceWidth;
+                if (height <= 0f) height = sourceHeight;
+                if (width <= 0f || height <= 0f || sourceWidth <= 0f || sourceHeight <= 0f) return;
+
+                var style = inherited.ResolveOverrides(element, _report);
+                if (!style.Visibility) return;
+                bool layered = TryBeginGroupOpacity(element, canvas, out var layerPaint);
+                try
+                {
+                    var imageViewport = new SKRect(x, y, x + width, y + height);
+                    var destination = ResolveImageDestination(
+                        imageViewport, sourceWidth, sourceHeight,
+                        element.GetAttribute("preserveAspectRatio"));
+                    canvas.ClipRect(imageViewport);
+                    using var state = new CanvasState(canvas);
+                    canvas.Translate(destination.Left, destination.Top);
+                    canvas.Scale(destination.Width / sourceWidth, destination.Height / sourceHeight);
+                    canvas.DrawPicture(picture);
+                }
+                finally
+                {
+                    if (layered)
+                    {
+                        canvas.Restore();
+                        _activeLayers--;
+                        layerPaint.Dispose();
+                    }
+                }
+            }
+        }
+
+        private static byte[] DecodeSvgDataUriBytes(string href, int maxBytes, out string error)
+        {
+            int comma = href.IndexOf(',');
+            if (comma < 0)
+            {
+                error = "embedded SVG data URI has no payload separator";
+                return null;
+            }
+            string header = href.Substring(5, comma - 5);
+            if (header.IndexOf(";base64", StringComparison.OrdinalIgnoreCase) >= 0)
+                return DecodeDataUriBytes(href, maxBytes, out error);
+
+            string payload = href.Substring(comma + 1);
+            if ((long)payload.Length > (long)maxBytes * 3L)
+            {
+                error = "embedded SVG payload exceeds admission budget";
+                return null;
+            }
+            var bytes = new byte[Math.Min(payload.Length, maxBytes)];
+            int count = 0;
+            for (int i = 0; i < payload.Length; i++)
+            {
+                if (count >= maxBytes)
+                {
+                    error = "embedded SVG payload exceeds admission budget";
+                    return null;
+                }
+                char c = payload[i];
+                if (c == '%')
+                {
+                    if (i + 2 >= payload.Length ||
+                        !TryHex(payload[i + 1], out int high) || !TryHex(payload[i + 2], out int low))
+                    {
+                        error = "embedded SVG data URI has invalid percent encoding";
+                        return null;
+                    }
+                    bytes[count++] = (byte)((high << 4) | low);
+                    i += 2;
+                }
+                else if (c <= 0x7f)
+                {
+                    bytes[count++] = (byte)c;
+                }
+                else
+                {
+                    error = "embedded SVG data URI must percent-encode non-ASCII bytes";
+                    return null;
+                }
+            }
+            if (count == bytes.Length)
+            {
+                error = null;
+                return bytes;
+            }
+            Array.Resize(ref bytes, count);
+            error = null;
+            return bytes;
+
+            static bool TryHex(char c, out int value)
+            {
+                if (c is >= '0' and <= '9') { value = c - '0'; return true; }
+                if (c is >= 'a' and <= 'f') { value = c - 'a' + 10; return true; }
+                if (c is >= 'A' and <= 'F') { value = c - 'A' + 10; return true; }
+                value = 0;
+                return false;
+            }
         }
 
         /// <summary>

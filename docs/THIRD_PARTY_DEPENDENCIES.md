@@ -60,7 +60,7 @@ static-read-once cache.
 It has NOT replaced Svg.Skia. Shared CSS cascade integration, bounded horizontal
 HarfBuzz text/tspan shaping, and bounded common filter/mask/marker subsets are
 implemented, but vertical and per-glyph text, text paths, filter DAG primitives,
-curved-path mid markers, patterns, nested SVG resources, and complete captured-site parity remain open compatibility gates
+curved-path mid markers, patterns, advanced nested-resource parity, and complete captured-site parity remain open compatibility gates
 (see VOLUME_III 2.121-2.130 for the matrix, gate checklist, benchmark evidence
 in Results/svg/, and the correctness fixes that preceded this note).
 Removal from this inventory happens only after the documented gate closes.
