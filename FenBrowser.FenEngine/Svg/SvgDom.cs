@@ -102,6 +102,7 @@ namespace FenBrowser.FenEngine.Svg
         public bool SawClampedValue;
         public bool TruncatedPathData;
         public bool UnsupportedFeatureIgnored;
+        public bool ResourceRejected;
         public int ElementCount;
 
         public void Warn(string message)
@@ -115,6 +116,12 @@ namespace FenBrowser.FenEngine.Svg
         public void RequireFallback(string reason)
         {
             UnsupportedFeatureIgnored = true;
+            Warn(reason);
+        }
+
+        public void RejectResource(string reason)
+        {
+            ResourceRejected = true;
             Warn(reason);
         }
     }

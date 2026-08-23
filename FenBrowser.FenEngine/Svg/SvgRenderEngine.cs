@@ -63,7 +63,8 @@ namespace FenBrowser.FenEngine.Svg
             out float height,
             out string error,
             out IReadOnlyList<string> warnings,
-            out bool requiresFallback)
+            out bool requiresFallback,
+            out bool resourceRejected)
         {
             picture = null;
             width = 0f;
@@ -71,6 +72,7 @@ namespace FenBrowser.FenEngine.Svg
             error = null;
             warnings = System.Array.Empty<string>();
             requiresFallback = false;
+            resourceRejected = false;
 
             if (!SvgMarkupParser.TryParse(source, limits, out var doc, out var fatalReason))
             {
@@ -88,6 +90,7 @@ namespace FenBrowser.FenEngine.Svg
                 engine.RenderRoot(out picture, out width, out height);
                 warnings = engine._report.Warnings.ToArray();
                 requiresFallback = engine._report.UnsupportedFeatureIgnored;
+                resourceRejected = engine._report.ResourceRejected;
                 return true;
             }
             catch (SvgTimeBudgetExceededException)
@@ -95,6 +98,7 @@ namespace FenBrowser.FenEngine.Svg
                 picture = null;
                 warnings = engine._report.Warnings.ToArray();
                 requiresFallback = engine._report.UnsupportedFeatureIgnored;
+                resourceRejected = engine._report.ResourceRejected;
                 error = $"SVG render exceeded time limit ({limits.MaxRenderTimeMs}ms, size={source.Length / 1024}KB)";
                 return false;
             }
@@ -105,6 +109,7 @@ namespace FenBrowser.FenEngine.Svg
                 picture = null;
                 warnings = engine._report.Warnings.ToArray();
                 requiresFallback = engine._report.UnsupportedFeatureIgnored;
+                resourceRejected = engine._report.ResourceRejected;
                 error = ex.Message;
                 return false;
             }
@@ -171,7 +176,10 @@ namespace FenBrowser.FenEngine.Svg
                     picture = recorder.EndRecording();
                     return;
                 }
-                DrawChildren(root, canvas, viewport, rootStyle);
+                var userViewport = hasViewBox
+                    ? new ViewportContext(vbW, vbH)
+                    : viewport;
+                DrawChildren(root, canvas, userViewport, rootStyle);
             }
 
             picture = recorder.EndRecording();

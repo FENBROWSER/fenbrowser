@@ -130,7 +130,7 @@ namespace FenBrowser.FenEngine.Svg
                         // -> restore (unwinds via CanvasState on any exit).
                         ApplyTransform(el, canvas);
                         ApplyClipPath(el, canvas, viewport, inherited);
-                        DrawShape(el, canvas, inherited);
+                        DrawShape(el, canvas, viewport, inherited);
                         return;
                     }
                 case "image":
@@ -141,7 +141,7 @@ namespace FenBrowser.FenEngine.Svg
                         using var imgScope = new CanvasState(canvas);
                         ApplyTransform(el, canvas);
                         ApplyClipPath(el, canvas, viewport, inherited);
-                        DrawImageElement(el, canvas, inherited);
+                        DrawImageElement(el, canvas, viewport, inherited);
                         return;
                     }
                 case "text":
@@ -225,7 +225,10 @@ namespace FenBrowser.FenEngine.Svg
                 ApplyViewportTransform(canvas, inner, hasViewBox, vbX, vbY, vbW, vbH, el.GetAttribute("preserveAspectRatio"));
             }
             var next = inherited.ResolveOverrides(el, _report);
-            DrawChildren(el, canvas, inner, next);
+            var userViewport = hasViewBox
+                ? new ViewportContext(vbW, vbH)
+                : inner;
+            DrawChildren(el, canvas, userViewport, next);
         }
 
         private void DrawSwitch(SvgElement el, SKCanvas canvas, ViewportContext viewport, InheritedStyle inherited)
@@ -297,8 +300,8 @@ namespace FenBrowser.FenEngine.Svg
             using var scope = new CanvasState(canvas);
             ApplyTransform(el, canvas);
             ApplyClipPath(el, canvas, viewport, inherited);
-            float ux = ResolveCoord(el.GetAttribute("x"));
-            float uy = ResolveCoord(el.GetAttribute("y"));
+            float ux = ResolveCoord(el.GetAttribute("x"), viewport.Width);
+            float uy = ResolveCoord(el.GetAttribute("y"), viewport.Height);
             if (ux != 0f || uy != 0f)
             {
                 canvas.Translate(ux, uy);
@@ -479,7 +482,10 @@ namespace FenBrowser.FenEngine.Svg
                     "objectBoundingBox",
                     System.StringComparison.Ordinal);
 
-                using var clipPath = BuildClipGeometry(clipEl);
+                var clipViewport = isObjectBoundingBox
+                    ? new ViewportContext(1f, 1f)
+                    : viewport;
+                using var clipPath = BuildClipGeometry(clipEl, clipViewport);
                 if (clipPath == null || clipPath.IsEmpty)
                 {
                     // Empty clip path hides the element entirely (spec).
@@ -526,7 +532,7 @@ namespace FenBrowser.FenEngine.Svg
                 case "line":
                 case "polyline":
                 case "polygon":
-                    using (var geometry = BuildGeometry(element))
+                    using (var geometry = BuildGeometry(element, viewport))
                     {
                         if (geometry != null && !geometry.IsEmpty)
                         {
@@ -536,10 +542,10 @@ namespace FenBrowser.FenEngine.Svg
                     }
                     break;
                 case "image":
-                    float x = ResolveCoord(element.GetAttribute("x"));
-                    float y = ResolveCoord(element.GetAttribute("y"));
-                    float width = ResolveCoord(element.GetAttribute("width"));
-                    float height = ResolveCoord(element.GetAttribute("height"));
+                    float x = ResolveCoord(element.GetAttribute("x"), viewport.Width);
+                    float y = ResolveCoord(element.GetAttribute("y"), viewport.Height);
+                    float width = ResolveCoord(element.GetAttribute("width"), viewport.Width);
+                    float height = ResolveCoord(element.GetAttribute("height"), viewport.Height);
                     if (width > 0f && height > 0f)
                     {
                         bounds = new SKRect(x, y, x + width, y + height);
@@ -556,7 +562,7 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         /// <summary>Union of direct shape children (plus one-level use refs).</summary>
-        private SKPath BuildClipGeometry(SvgElement clipEl)
+        private SKPath BuildClipGeometry(SvgElement clipEl, ViewportContext viewport)
         {
             using var combinedBuilder = new SKPathBuilder();
             bool hasGeometry = false;
@@ -590,7 +596,7 @@ namespace FenBrowser.FenEngine.Svg
                         continue;
                 }
 
-                using var childPath = BuildGeometry(shapeEl);
+                using var childPath = BuildGeometry(shapeEl, viewport);
                 if (childPath == null)
                 {
                     continue;
@@ -599,8 +605,8 @@ namespace FenBrowser.FenEngine.Svg
                 ApplyPathTransform(shapeEl, childPath);
                 if (child.Name == "use")
                 {
-                    float useX = ResolveCoord(child.GetAttribute("x"));
-                    float useY = ResolveCoord(child.GetAttribute("y"));
+                    float useX = ResolveCoord(child.GetAttribute("x"), viewport.Width);
+                    float useY = ResolveCoord(child.GetAttribute("y"), viewport.Height);
                     if (useX != 0f || useY != 0f)
                     {
                         childPath.Transform(SKMatrix.CreateTranslation(useX, useY));
@@ -651,7 +657,11 @@ namespace FenBrowser.FenEngine.Svg
         /// hrefs are logged and ignored (fail closed). Decoded pixel counts are
         /// bounded by MaxRasterPixels before drawing.
         /// </summary>
-        private void DrawImageElement(SvgElement el, SKCanvas canvas, InheritedStyle inherited)
+        private void DrawImageElement(
+            SvgElement el,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle inherited)
         {
             var href = el.GetAttribute("href") ?? el.GetLookup("xlink:href");
             if (string.IsNullOrEmpty(href))
@@ -663,11 +673,17 @@ namespace FenBrowser.FenEngine.Svg
                 WarnUnsupportedOnce("image external reference");
                 return;
             }
+            if (IsSvgDataUri(href))
+            {
+                _report.RequireFallback("embedded SVG image requires compatibility support");
+                _report.RejectResource("embedded SVG image rejected from legacy fallback for sandbox isolation");
+                return;
+            }
 
             var bytes = DecodeDataUriBytes(href, _maxDecodedImageBytes, out var decodeError);
             if (bytes == null)
             {
-                _report.Warn(decodeError);
+                _report.RejectResource(decodeError);
                 return;
             }
 
@@ -678,14 +694,14 @@ namespace FenBrowser.FenEngine.Svg
                     out var bitmap,
                     out var bitmapError))
             {
-                _report.Warn(bitmapError);
+                _report.RejectResource(bitmapError);
                 return;
             }
 
-            float x = ResolveCoord(el.GetAttribute("x"));
-            float y = ResolveCoord(el.GetAttribute("y"));
-            float w = ResolveCoord(el.GetAttribute("width"));
-            float h = ResolveCoord(el.GetAttribute("height"));
+            float x = ResolveCoord(el.GetAttribute("x"), viewport.Width);
+            float y = ResolveCoord(el.GetAttribute("y"), viewport.Height);
+            float w = ResolveCoord(el.GetAttribute("width"), viewport.Width);
+            float h = ResolveCoord(el.GetAttribute("height"), viewport.Height);
             if (w <= 0f) w = bitmap.Width;
             if (h <= 0f) h = bitmap.Height;
 
@@ -876,6 +892,16 @@ namespace FenBrowser.FenEngine.Svg
                 error = "image payload is not valid base64";
                 return null;
             }
+        }
+
+        private static bool IsSvgDataUri(string href)
+        {
+            int comma = href.IndexOf(',');
+            if (comma < 5) return false;
+            var header = href.AsSpan(5, comma - 5);
+            int semicolon = header.IndexOf(';');
+            var mediaType = (semicolon < 0 ? header : header.Slice(0, semicolon)).Trim();
+            return mediaType.Equals("image/svg+xml".AsSpan(), System.StringComparison.OrdinalIgnoreCase);
         }
 
     }

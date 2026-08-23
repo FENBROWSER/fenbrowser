@@ -26,7 +26,7 @@ namespace FenBrowser.FenEngine.Adapters
         public SvgRenderResult Render(string svgContent, SvgRenderLimits limits)
         {
             var primary = _firstParty.Render(svgContent, limits);
-            if (!primary.Success || !primary.RequiresFallback)
+            if (!primary.Success || !primary.RequiresFallback || primary.HadResourceRejection)
             {
                 return primary;
             }

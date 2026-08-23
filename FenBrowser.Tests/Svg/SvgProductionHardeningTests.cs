@@ -367,6 +367,78 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void EmbeddedSvgImage_IsReportedAsResourceRejectionWithoutLegacyFallback()
+        {
+            string nested = Convert.ToBase64String(
+                System.Text.Encoding.UTF8.GetBytes("<svg width='2' height='2'><rect width='2' height='2'/></svg>"));
+            string svg =
+                $"<svg width='10' height='10'><style>rect{{fill:red}}</style>" +
+                $"<image href='data:image/svg+xml;base64,{nested}' width='10' height='10'/></svg>";
+            var renderer = new HybridSvgRenderer(new FenSvgRenderer(), new SvgSkiaRenderer());
+
+            using var result = renderer.Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.RequiresFallback);
+            Assert.True(result.HadResourceRejection);
+            Assert.False(result.UsedLegacyFallback);
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.Contains(result.Warnings, warning =>
+                warning.Contains("embedded SVG", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Fact]
+        public void EmbeddedRasterBudgetRejection_IsObservableOnSuccessfulDocument()
+        {
+            string payload = Convert.ToBase64String(BuildPngHeader(width: 50_000, height: 50_000));
+            using var result = new FenSvgRenderer().Render(
+                $"<svg width='10' height='10'><image href='data:image/png;base64,{payload}' width='10' height='10'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.HadResourceRejection);
+            Assert.False(result.RequiresFallback);
+        }
+
+        [Fact]
+        public void PercentageRect_ResolvesAgainstCurrentViewport()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='40' height='20'><rect x='25%' y='25%' width='50%' height='50%' fill='red'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.Equal(0, result.Bitmap.GetPixel(5, 10).Alpha);
+            Assert.Equal(SKColors.Red, result.Bitmap.GetPixel(20, 10));
+            Assert.Equal(0, result.Bitmap.GetPixel(35, 10).Alpha);
+        }
+
+        [Fact]
+        public void PercentageRect_WithViewBoxUsesUserSpaceViewport()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='200' height='100' viewBox='0 0 100 50'>" +
+                "<rect x='25%' y='20%' width='50%' height='60%' fill='lime'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.Equal(0, result.Bitmap.GetPixel(25, 50).Alpha);
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(100, 50));
+            Assert.Equal(0, result.Bitmap.GetPixel(175, 50).Alpha);
+        }
+
+        [Fact]
+        public void NestedGroups_PercentageRectsRemainVisible()
+        {
+            const string svg =
+                "<svg width='200' height='200'><rect width='100%' height='100%' fill='DarkGreen'/>" +
+                "<g transform='translate(20,20)'><rect width='100%' height='100%' fill='LightSeaGreen'/></g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.Bitmap.GetPixel(10, 10).Alpha > 0);
+            Assert.True(result.Bitmap.GetPixel(100, 100).Alpha > 0);
+        }
+
+        [Fact]
         public void MoveCommand_AdditionalPairsRenderAsLineSegments()
         {
             const string svg =

@@ -8,7 +8,11 @@ namespace FenBrowser.FenEngine.Svg
     internal sealed partial class SvgRenderEngine
     {
 
-        private void DrawShape(SvgElement el, SKCanvas canvas, InheritedStyle inherited)
+        private void DrawShape(
+            SvgElement el,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle inherited)
         {
             var style = inherited.ResolveOverrides(el, _report);
             if (!style.Visibility)
@@ -16,7 +20,7 @@ namespace FenBrowser.FenEngine.Svg
                 return; // visibility:hidden suppresses this shape (children may override).
             }
 
-            using var path = BuildGeometry(el);
+            using var path = BuildGeometry(el, viewport);
             if (path == null || path.IsEmpty)
             {
                 return;
@@ -51,7 +55,7 @@ namespace FenBrowser.FenEngine.Svg
             }
         }
 
-        private SKPath BuildGeometry(SvgElement el)
+        private SKPath BuildGeometry(SvgElement el, ViewportContext viewport)
         {
             if (el.Name == "path")
             {
@@ -77,16 +81,16 @@ namespace FenBrowser.FenEngine.Svg
             switch (el.Name)
             {
                 case "rect":
-                    ok = AppendRect(el, builder);
+                    ok = AppendRect(el, builder, viewport);
                     break;
                 case "circle":
-                    ok = AppendCircle(el, builder);
+                    ok = AppendCircle(el, builder, viewport);
                     break;
                 case "ellipse":
-                    ok = AppendEllipse(el, builder);
+                    ok = AppendEllipse(el, builder, viewport);
                     break;
                 case "line":
-                    ok = AppendLine(el, builder);
+                    ok = AppendLine(el, builder, viewport);
                     break;
                 case "polyline":
                 case "polygon":
@@ -111,25 +115,26 @@ namespace FenBrowser.FenEngine.Svg
             return path;
         }
 
-        private float Attr(SvgElement el, string name) => ResolveCoord(el.GetAttribute(name));
+        private float Attr(SvgElement el, string name, float percentReference) =>
+            ResolveCoord(el.GetAttribute(name), percentReference);
 
-        private float ResolveCoord(string raw)
+        private float ResolveCoord(string raw, float percentReference = 0f)
         {
             if (string.IsNullOrWhiteSpace(raw) ||
                 !SvgValues.TryParseLength(raw.AsSpan(), out float value, out var unit))
             {
                 return 0f;
             }
-            float resolved = SvgValues.ResolveUnits(value, unit, DefaultFontSize, 0f);
+            float resolved = SvgValues.ResolveUnits(value, unit, DefaultFontSize, percentReference);
             return SvgValues.ClampCoord(resolved);
         }
 
-        private bool AppendRect(SvgElement el, SKPathBuilder path)
+        private bool AppendRect(SvgElement el, SKPathBuilder path, ViewportContext viewport)
         {
-            float x = Attr(el, "x");
-            float y = Attr(el, "y");
-            float w = Attr(el, "width");
-            float h = Attr(el, "height");
+            float x = Attr(el, "x", viewport.Width);
+            float y = Attr(el, "y", viewport.Height);
+            float w = Attr(el, "width", viewport.Width);
+            float h = Attr(el, "height", viewport.Height);
             if (w <= 0f || h <= 0f)
             {
                 return false; // Zero/negative extents disable rendering (spec).
@@ -137,8 +142,8 @@ namespace FenBrowser.FenEngine.Svg
 
             // P0.6: parse rx/ry once (previously Attr + HasPositiveAttr each
             // re-parsed the same attribute string).
-            bool hasRx = TryParsePositive(el, "rx", out float rx);
-            bool hasRy = TryParsePositive(el, "ry", out float ry);
+            bool hasRx = TryParsePositive(el, "rx", viewport.Width, out float rx);
+            bool hasRy = TryParsePositive(el, "ry", viewport.Height, out float ry);
             if (!hasRx) rx = 0f;
             if (!hasRy) ry = 0f;
 
@@ -162,37 +167,47 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         /// <summary>Parses once; true only for a specified positive value.</summary>
-        private static bool TryParsePositive(SvgElement el, string name, out float value)
+        private static bool TryParsePositive(
+            SvgElement el,
+            string name,
+            float percentReference,
+            out float value)
         {
             var raw = el.GetAttribute(name);
             if (!string.IsNullOrWhiteSpace(raw) &&
-                SvgValues.TryParseLength(raw.AsSpan(), out value, out _) &&
-                value > 0f)
+                SvgValues.TryParseLength(raw.AsSpan(), out float parsed, out var unit))
             {
-                return true;
+                value = SvgValues.ClampCoord(
+                    SvgValues.ResolveUnits(parsed, unit, DefaultFontSize, percentReference));
+                return value > 0f;
             }
             value = 0f;
             return false;
         }
 
-        private bool AppendCircle(SvgElement el, SKPathBuilder path)
+        private bool AppendCircle(SvgElement el, SKPathBuilder path, ViewportContext viewport)
         {
-            float r = Attr(el, "r");
+            float diagonal = MathF.Sqrt(
+                (viewport.Width * viewport.Width + viewport.Height * viewport.Height) / 2f);
+            float r = Attr(el, "r", diagonal);
             if (r <= 0f)
             {
                 return false;
             }
-            path.AddCircle(Attr(el, "cx"), Attr(el, "cy"), r);
+            path.AddCircle(
+                Attr(el, "cx", viewport.Width),
+                Attr(el, "cy", viewport.Height),
+                r);
             return true;
         }
 
-        private bool AppendEllipse(SvgElement el, SKPathBuilder path)
+        private bool AppendEllipse(SvgElement el, SKPathBuilder path, ViewportContext viewport)
         {
             // P0.6: parse each attribute exactly once.
-            float cx = Attr(el, "cx");
-            float cy = Attr(el, "cy");
-            float rx = Attr(el, "rx");
-            float ry = Attr(el, "ry");
+            float cx = Attr(el, "cx", viewport.Width);
+            float cy = Attr(el, "cy", viewport.Height);
+            float rx = Attr(el, "rx", viewport.Width);
+            float ry = Attr(el, "ry", viewport.Height);
             if (rx <= 0f || ry <= 0f)
             {
                 return false;
@@ -202,10 +217,14 @@ namespace FenBrowser.FenEngine.Svg
             return true;
         }
 
-        private bool AppendLine(SvgElement el, SKPathBuilder path)
+        private bool AppendLine(SvgElement el, SKPathBuilder path, ViewportContext viewport)
         {
-            path.MoveTo(Attr(el, "x1"), Attr(el, "y1"));
-            path.LineTo(Attr(el, "x2"), Attr(el, "y2"));
+            path.MoveTo(
+                Attr(el, "x1", viewport.Width),
+                Attr(el, "y1", viewport.Height));
+            path.LineTo(
+                Attr(el, "x2", viewport.Width),
+                Attr(el, "y2", viewport.Height));
             return true;
         }
 

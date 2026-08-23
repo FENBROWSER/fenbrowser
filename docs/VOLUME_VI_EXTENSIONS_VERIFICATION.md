@@ -4441,3 +4441,24 @@ Verification:
   10 first-party, 90 compatibility fallbacks, zero first-party/hybrid routing failures, and 3/6
   comparable pairs meeting the pixel thresholds. Strict `--gate` exits `1` on the three retained
   differential mismatches, proving that the gate rejects rather than conceals current gaps.
+
+## 6.194 SVG Corpus Resource-Rejection Classification (2026-08-23)
+
+- Corpus reports now classify successful partial renders with rejected embedded resources separately from
+  normal first-party support and compatibility fallback. Strict `--gate` treats every resource rejection as
+  a failure, so an intentionally omitted image cannot be mistaken for complete rendering success.
+- Comparable entries record first-party and legacy foreground-pixel counts alongside alpha IoU and RGB mean
+  difference. This makes blank-output and large-coverage disagreements directly visible without retaining
+  raster images or source content in the report.
+- A follow-up deterministic run over the same first 100 ordinal files from the local WPT SVG checkout reports
+  8 first-party documents, 77 compatibility fallbacks, 15 resource rejections, zero first-party/hybrid routing
+  failures, and 4/4 comparable pairs meeting pixel thresholds. The capped selection remains characterization
+  evidence only; it does not satisfy the complete-corpus or captured real-site default-switch gates.
+
+Verification:
+
+- Release build of `scripts/BenchSvg/BenchSvg.csproj`: pass, zero warnings and zero errors.
+- Focused Release SVG suite: 194 passed, 0 failed, 0 skipped.
+- Strict mode exits `1` for this sample because selection is truncated and resource rejections remain, while
+  pixel parity itself passes 4/4; each gate condition is therefore observable rather than collapsed into a
+  single misleading compatibility count.

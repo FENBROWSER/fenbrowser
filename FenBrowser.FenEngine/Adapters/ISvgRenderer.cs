@@ -79,6 +79,13 @@ namespace FenBrowser.FenEngine.Adapters
         /// </summary>
         public bool RequiresFallback { get; set; }
 
+        /// <summary>
+        /// True when an embedded resource was omitted because it was unsupported,
+        /// malformed, or exceeded an admission limit. Hybrid routing must not
+        /// bypass that decision through the less observable legacy parser.
+        /// </summary>
+        public bool HadResourceRejection { get; set; }
+
         /// <summary>True when a composite renderer returned legacy-rendered pixels.</summary>
         public bool UsedLegacyFallback { get; set; }
 

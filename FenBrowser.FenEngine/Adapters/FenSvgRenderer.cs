@@ -65,7 +65,8 @@ namespace FenBrowser.FenEngine.Adapters
                         out var picture,
                         out float naturalWidth,
                         out float naturalHeight,
-                        out string error, out var warnings, out bool requiresFallback))
+                        out string error, out var warnings, out bool requiresFallback,
+                        out bool resourceRejected))
                 {
                     return new SvgRenderResult
                     {
@@ -73,7 +74,8 @@ namespace FenBrowser.FenEngine.Adapters
                         ErrorMessage = error ?? "Failed to parse SVG",
                         Warnings = warnings,
                         Backend = SvgRendererBackend.FirstParty,
-                        RequiresFallback = requiresFallback
+                        RequiresFallback = requiresFallback,
+                        HadResourceRejection = resourceRejected
                     };
                 }
 
@@ -92,7 +94,8 @@ namespace FenBrowser.FenEngine.Adapters
                             ErrorMessage = "SVG produced non-finite raster bounds",
                             Warnings = warnings,
                             Backend = SvgRendererBackend.FirstParty,
-                            RequiresFallback = requiresFallback
+                            RequiresFallback = requiresFallback,
+                            HadResourceRejection = resourceRejected
                         };
                     }
 
@@ -109,7 +112,8 @@ namespace FenBrowser.FenEngine.Adapters
                                 $"({limits.MaxRasterWidth}x{limits.MaxRasterHeight}, {limits.MaxRasterPixels} pixels)",
                             Warnings = warnings,
                             Backend = SvgRendererBackend.FirstParty,
-                            RequiresFallback = requiresFallback
+                            RequiresFallback = requiresFallback,
+                            HadResourceRejection = resourceRejected
                         };
                     }
 
@@ -131,7 +135,8 @@ namespace FenBrowser.FenEngine.Adapters
                             ErrorMessage = "SVG raster allocation refused",
                             Warnings = warnings,
                             Backend = SvgRendererBackend.FirstParty,
-                            RequiresFallback = requiresFallback
+                            RequiresFallback = requiresFallback,
+                            HadResourceRejection = resourceRejected
                         };
                     }
 
@@ -155,7 +160,8 @@ namespace FenBrowser.FenEngine.Adapters
                             ErrorMessage = $"SVG rasterization failed: {drawEx.Message}",
                             Warnings = warnings,
                             Backend = SvgRendererBackend.FirstParty,
-                            RequiresFallback = requiresFallback
+                            RequiresFallback = requiresFallback,
+                            HadResourceRejection = resourceRejected
                         };
                     }
 
@@ -173,7 +179,8 @@ namespace FenBrowser.FenEngine.Adapters
                         Success = true,
                         Warnings = warnings,
                         Backend = SvgRendererBackend.FirstParty,
-                        RequiresFallback = requiresFallback
+                        RequiresFallback = requiresFallback,
+                        HadResourceRejection = resourceRejected
                     };
                 }
             }

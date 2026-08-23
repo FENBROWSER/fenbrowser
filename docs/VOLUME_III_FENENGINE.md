@@ -10866,3 +10866,26 @@ Verification:
 - Ubuntu 24.04 WSL `linux-x64`: 10,000 renders, 0 failures, 2,222 fallbacks,
   17,272,832 retained private bytes.
 - Both remain well below the 67,108,864-byte ceiling and exercise real native Skia/HarfBuzz loading.
+
+## 2.128 SVG Resource-Isolation Routing And Percentage Geometry (2026-08-23)
+
+- First-party results now distinguish embedded-resource rejection from ordinary compatibility fallback.
+  A hybrid render never sends a document to the legacy parser after any embedded resource is malformed,
+  unsupported, or rejected by byte/pixel admission limits. This preserves the first-party sandbox decision
+  even when an unrelated visible feature also requires compatibility fallback.
+- Embedded `data:image/svg+xml` images are currently omitted with an observable resource-rejection warning.
+  They cannot enter legacy fallback until recursive SVG image rendering has equivalent parsing, resource,
+  recursion-depth, time, and raster-allocation limits.
+- Shape, image, `use`, and clip-path percentage lengths resolve against the current SVG viewport. When a
+  `viewBox` is active, descendants use its user-space width and height rather than the physical raster size;
+  circle radii use the SVG normalized diagonal reference. Object-bounding-box clip geometry resolves in a
+  normalized `1 x 1` viewport before the existing bounds transform is applied.
+- Resource diagnostics remain bounded and document-content-free. A resource omission may still produce a
+  successful partial bitmap, but callers and corpus tooling can observe it through `HadResourceRejection`.
+
+Verification:
+
+- Focused Release SVG suite: 194 passed, 0 failed, 0 skipped, including embedded-SVG isolation,
+  oversized decoded-raster rejection, percentage rectangles, `viewBox` user space, and nested groups.
+- The deterministic first 100-file local WPT SVG sample has no comparable pixel mismatch after percentage
+  geometry correction: 4/4 comparable pairs meet the alpha-IoU and RGB thresholds.

@@ -128,6 +128,7 @@ internal static class SvgCorpusRunner
             EvaluatedFiles = entries.Count(entry => entry.Classification != "skipped-oversize" && entry.Classification != "read-failure"),
             FirstPartySupported = entries.Count(entry => entry.Classification == "first-party"),
             CompatibilityFallbacks = entries.Count(entry => entry.Classification == "legacy-fallback"),
+            ResourceRejections = entries.Count(entry => entry.Classification == "resource-rejection"),
             FirstPartyFailures = entries.Count(entry => entry.Classification == "first-party-failure"),
             HybridFailures = entries.Count(entry => entry.Classification == "hybrid-failure"),
             ReadFailures = entries.Count(entry => entry.Classification == "read-failure"),
@@ -146,7 +147,8 @@ internal static class SvgCorpusRunner
 
         bool routingOk = summary.SelectedFiles > 0 && summary.HybridFailures == 0 && summary.ReadFailures == 0;
         bool parityOk = summary.ComparableParityPasses == summary.ComparablePairs;
-        bool gateOk = routingOk && parityOk && summary.SkippedOversize == 0 && !summary.SelectionTruncated;
+        bool gateOk = routingOk && parityOk && summary.ResourceRejections == 0 &&
+                      summary.SkippedOversize == 0 && !summary.SelectionTruncated;
         Console.WriteLine(JsonSerializer.Serialize(new
         {
             probe = "svg-corpus",
@@ -156,6 +158,7 @@ internal static class SvgCorpusRunner
             evaluated = summary.EvaluatedFiles,
             firstParty = summary.FirstPartySupported,
             fallback = summary.CompatibilityFallbacks,
+            resourceRejections = summary.ResourceRejections,
             firstPartyFailures = summary.FirstPartyFailures,
             hybridFailures = summary.HybridFailures,
             parity = $"{summary.ComparableParityPasses}/{summary.ComparablePairs}",
@@ -179,6 +182,8 @@ internal static class SvgCorpusRunner
 
         string classification = !routed.Result.Success
             ? "hybrid-failure"
+            : fen.Result.HadResourceRejection
+                ? "resource-rejection"
             : fen.Result.Success && !fen.Result.RequiresFallback
                 ? "first-party"
                 : routed.Result.UsedLegacyFallback
@@ -191,10 +196,15 @@ internal static class SvgCorpusRunner
                           fen.Result.Bitmap.Height == reference.Result.Bitmap.Height;
         double alphaIou = 0;
         double meanRgbDifference = 0;
+        long firstPartyForegroundPixels = 0;
+        long legacyForegroundPixels = 0;
         bool parity = false;
         if (comparable)
         {
-            ComparePixels(fen.Result.Bitmap!, reference.Result.Bitmap!, out alphaIou, out meanRgbDifference);
+            ComparePixels(
+                fen.Result.Bitmap!, reference.Result.Bitmap!,
+                out alphaIou, out meanRgbDifference,
+                out firstPartyForegroundPixels, out legacyForegroundPixels);
             parity = alphaIou >= MinimumAlphaIntersectionOverUnion &&
                      meanRgbDifference <= MaximumMeanRgbDifference;
         }
@@ -213,7 +223,9 @@ internal static class SvgCorpusRunner
             PixelComparable = comparable,
             PixelParity = parity,
             AlphaIntersectionOverUnion = Math.Round(alphaIou, 4),
-            MeanRgbDifference = Math.Round(meanRgbDifference, 4)
+            MeanRgbDifference = Math.Round(meanRgbDifference, 4),
+            FirstPartyForegroundPixels = firstPartyForegroundPixels,
+            LegacyForegroundPixels = legacyForegroundPixels
         };
     }
 
@@ -225,12 +237,20 @@ internal static class SvgCorpusRunner
         return new TimedSvgResult(result, stopwatch.ElapsedMilliseconds);
     }
 
-    private static void ComparePixels(SKBitmap first, SKBitmap second, out double alphaIou, out double meanRgbDifference)
+    private static void ComparePixels(
+        SKBitmap first,
+        SKBitmap second,
+        out double alphaIou,
+        out double meanRgbDifference,
+        out long firstForegroundPixels,
+        out long secondForegroundPixels)
     {
         long intersection = 0;
         long union = 0;
         long rgbDifference = 0;
         long foregroundChannels = 0;
+        firstForegroundPixels = 0;
+        secondForegroundPixels = 0;
         for (int y = 0; y < first.Height; y++)
         for (int x = 0; x < first.Width; x++)
         {
@@ -238,6 +258,8 @@ internal static class SvgCorpusRunner
             SKColor b = second.GetPixel(x, y);
             bool aVisible = a.Alpha > 0;
             bool bVisible = b.Alpha > 0;
+            if (aVisible) firstForegroundPixels++;
+            if (bVisible) secondForegroundPixels++;
             if (aVisible && bVisible) intersection++;
             if (aVisible || bVisible)
             {
@@ -263,20 +285,22 @@ internal static class SvgCorpusRunner
             $"- Evaluated: {summary.EvaluatedFiles}",
             $"- First-party supported: {summary.FirstPartySupported}",
             $"- Compatibility fallbacks: {summary.CompatibilityFallbacks}",
+            $"- Embedded resource rejections: {summary.ResourceRejections}",
             $"- First-party failures: {summary.FirstPartyFailures}",
             $"- Hybrid failures: {summary.HybridFailures}",
             $"- Comparable pixel parity: {summary.ComparableParityPasses}/{summary.ComparablePairs}",
             $"- Read failures / oversize skips: {summary.ReadFailures} / {summary.SkippedOversize}",
             "",
-            "| file | classification | producer | fen ms | hybrid ms | legacy ms | parity | alpha IoU | RGB mean diff |",
-            "|---|---|---|---:|---:|---:|---|---:|---:|"
+            "| file | classification | producer | fen ms | hybrid ms | legacy ms | parity | alpha IoU | RGB mean diff | fen fg | legacy fg |",
+            "|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|"
         };
         foreach (var entry in summary.Entries)
         {
             lines.Add($"| {Escape(entry.Path)} | {entry.Classification} | {entry.ProducingBackend ?? "-"} | " +
                       $"{entry.FirstPartyMilliseconds} | {entry.HybridMilliseconds} | {entry.LegacyMilliseconds} | " +
                       $"{(entry.PixelComparable ? (entry.PixelParity ? "pass" : "FAIL") : "-")} | " +
-                      $"{entry.AlphaIntersectionOverUnion:0.####} | {entry.MeanRgbDifference:0.####} |");
+                      $"{entry.AlphaIntersectionOverUnion:0.####} | {entry.MeanRgbDifference:0.####} | " +
+                      $"{entry.FirstPartyForegroundPixels} | {entry.LegacyForegroundPixels} |");
         }
         WriteAllTextAtomic(
             Path.Combine(outputDirectory, "corpus-report.md"),
@@ -322,6 +346,7 @@ internal sealed class SvgCorpusSummary
     public int EvaluatedFiles { get; set; }
     public int FirstPartySupported { get; set; }
     public int CompatibilityFallbacks { get; set; }
+    public int ResourceRejections { get; set; }
     public int FirstPartyFailures { get; set; }
     public int HybridFailures { get; set; }
     public int ReadFailures { get; set; }
@@ -346,4 +371,6 @@ internal sealed class SvgCorpusEntry
     public bool PixelParity { get; set; }
     public double AlphaIntersectionOverUnion { get; set; }
     public double MeanRgbDifference { get; set; }
+    public long FirstPartyForegroundPixels { get; set; }
+    public long LegacyForegroundPixels { get; set; }
 }
