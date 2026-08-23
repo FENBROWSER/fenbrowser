@@ -10714,23 +10714,25 @@ seven-case corpus (5x-22x less); warm latency 0ms vs 0-2ms; identical sampled-RG
 tiny-icon / medium-logo / embedded-image; fen succeeds on malformed input where legacy fails.
 hsl()-based bench fills diverge by design (legacy color resolution); not part of any gate.
 
-Focused SVG test count (derived from dotnet test --list-tests with filter
-FullyQualifiedName~FenBrowser.Tests.Svg): 139 tests, all passing at time of writing. Earlier doc
-entries quoting 101/117 were stale snapshots mid-flight; treat discovery as source of truth.
+Focused SVG test count (derived from the Release filter
+`FullyQualifiedName~FenBrowser.Tests.Svg`): 241 tests, all passing at the 2.132 checkpoint. Treat
+current test discovery as source of truth rather than older counts retained in historical entries.
 
 ### Default-switch gate (updated)
 1. All focused SVG tests pass (discovery-derived count reported each run).
 2. Transform + preserveAspectRatio regressions fixed and pinned (2.122).
-3. Foreground-focused differential corpus passes (21 cases).
+3. Complete local WPT differential corpus passes - NOT YET DONE. The isolated 1,197-file baseline
+   is 49/58 for comparable first-party/legacy pairs and retains nine visible differentials.
 4. Representative real-site SVG corpus passes - NOT YET DONE (requires captured-site fixtures).
-   `scripts/BenchSvg --corpus` now provides deterministic first-party/hybrid/legacy routing and
-   pixel-differential reports for local corpora, but a WPT file sample is robustness evidence and
-   is not a substitute for captured real-site coverage.
+   Captured-site mode now requires an exact SHA-256 inventory and zero fallback/failure/differential,
+   but a genuine captured fixture set is not present. WPT is not a substitute for that evidence.
 5. No security-limit regressions (Phase-5 adversarial suite green).
 6. No native-resource leaks found (ownership audit plus Windows/Linux 10,000-render
    post-warmup disposal stress completed in 2.127).
 7. Benchmark acceptable (see Results/svg/perf-report.md) - DONE, opt-in basis only.
-8. Unsupported-feature matrix reviewed (2.121) - stylesheet CSS/text remain migration-blocking.
+8. Unsupported-feature matrix reviewed (2.121-2.132). Shared CSS, shaped horizontal text,
+   common effects/markers, and bounded nested SVG images are implemented; advanced text,
+   branching filters, patterns, and the full fallback/failure inventory remain migration-blocking.
 9. Utility/out-of-process decode paths use the shared backend factory and carry the complete
    serialized safety-limit contract - DONE in 2.123.
 10. Rollback available (flag flips back; package retained).
