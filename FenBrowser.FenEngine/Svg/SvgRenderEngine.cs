@@ -23,6 +23,8 @@ namespace FenBrowser.FenEngine.Svg
         private readonly SvgParseReport _report;
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private readonly long _deadlineMs;
+        private readonly int _maxActiveLayers;
+        private readonly int _maxReferenceDepth;
         private int _elementsVisited;
 
         /// <summary>Independent render-side recursion guard (S2/F2): spans the
@@ -43,13 +45,14 @@ namespace FenBrowser.FenEngine.Svg
         private const int TimeCheckMask = 0x3F; // check every 64 elements
         private const float DefaultFontSize = 16f;
         private const int MaxRenderDepth = 256;   // independent of parser budget
-        private const int MaxActiveLayers = 8;    // full-viewport surface cap
 
         private SvgRenderEngine(SvgParsedDocument doc, SvgRenderLimits limits)
         {
             _doc = doc;
             _report = doc.Report;
             _deadlineMs = limits.MaxRenderTimeMs > 0 ? limits.MaxRenderTimeMs : long.MaxValue;
+            _maxActiveLayers = limits.MaxActiveLayers;
+            _maxReferenceDepth = limits.MaxReferenceDepth;
         }
 
         public static bool TryRender(
@@ -58,13 +61,14 @@ namespace FenBrowser.FenEngine.Svg
             out SKPicture picture,
             out float width,
             out float height,
-            out string error, out int warningCount)
+            out string error,
+            out IReadOnlyList<string> warnings)
         {
             picture = null;
             width = 0f;
             height = 0f;
             error = null;
-            warningCount = 0;
+            warnings = System.Array.Empty<string>();
 
             if (!SvgMarkupParser.TryParse(source, limits, out var doc, out var fatalReason))
             {
@@ -73,16 +77,20 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             var engine = new SvgRenderEngine(doc, limits);
-            engine.ConfigureImageBudgets(limits.MaxDecodedImagePixels, limits.MaxRasterWidth);
+            engine.ConfigureImageBudgets(
+                limits.MaxDecodedImagePixels,
+                limits.MaxDecodedImageBytes,
+                limits.MaxRasterWidth);
             try
             {
                 engine.RenderRoot(out picture, out width, out height);
-                warningCount = engine._report.Warnings.Count;
+                warnings = engine._report.Warnings.ToArray();
                 return true;
             }
             catch (SvgTimeBudgetExceededException)
             {
                 picture = null;
+                warnings = engine._report.Warnings.ToArray();
                 error = $"SVG render exceeded time limit ({limits.MaxRenderTimeMs}ms, size={source.Length / 1024}KB)";
                 return false;
             }
@@ -91,6 +99,7 @@ namespace FenBrowser.FenEngine.Svg
                 // Budget violations surface with their bare parity message, not
                 // the generic "SVG render error:" prefix (F10).
                 picture = null;
+                warnings = engine._report.Warnings.ToArray();
                 error = ex.Message;
                 return false;
             }

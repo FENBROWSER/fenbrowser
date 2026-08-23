@@ -163,9 +163,9 @@ namespace FenBrowser.Tests.Svg
         // --------------------------------------------------- C: preserveAspectRatio
 
         [Theory]
-        [InlineData("xMinYMin", 5, 5, 35, 5)]
-        [InlineData("xMaxYMin", 5, 5, 35, 5)]
-        public void Par_WideViewBox_YPlacement(string par, int xProbe, int yTop, int _, int __)
+        [InlineData("xMinYMin", 5, 5)]
+        [InlineData("xMaxYMin", 5, 5)]
+        public void Par_WideViewBox_YPlacement(string par, int xProbe, int yTop)
         {
             // vb 80x20 into 40x40: scale .5 -> content 40x10; leftoverY=30.
             bool top = par.EndsWith("YMin", StringComparison.Ordinal);

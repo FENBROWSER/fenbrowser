@@ -82,7 +82,7 @@ if (writeReport)
         "|---|---|---|---|---|---|---|---|"
     };
     lines.AddRange(reportRows);
-    File.WriteAllLinesAsync(Path.Combine(resultsDir, "perf-report.md"), lines.ToArray()).Wait();
+    File.WriteAllLines(Path.Combine(resultsDir, "perf-report.md"), lines);
     Console.WriteLine("report written: Results/svg/perf-report.md");
 }
 
@@ -96,7 +96,7 @@ static (long ElapsedMs, long AllocatedBytes, bool Success, int Width, int Height
     GC.Collect();
     long before = GC.GetAllocatedBytesForCurrentThread();
     var sw = Stopwatch.StartNew();
-    var result = renderer.Render(svg);
+    using var result = renderer.Render(svg);
     sw.Stop();
     long after = GC.GetAllocatedBytesForCurrentThread();
 

@@ -41,7 +41,7 @@ namespace FenBrowser.FenEngine.Adapters
                 };
             }
 
-            limits = NormalizeLimits(limits);
+            limits = SvgRenderLimits.Normalize(limits);
 
             // Source admission control (parity message).
             if (svgContent.Length > limits.MaxSourceChars)
@@ -63,29 +63,30 @@ namespace FenBrowser.FenEngine.Adapters
                         out var picture,
                         out float naturalWidth,
                         out float naturalHeight,
-                        out string error, out int warningCount))
+                        out string error, out var warnings))
                 {
                     return new SvgRenderResult
                     {
                         Success = false,
-                        ErrorMessage = error ?? "Failed to parse SVG"
+                        ErrorMessage = error ?? "Failed to parse SVG",
+                        Warnings = warnings
                     };
                 }
 
-                // S3/F3: the picture is an intermediate here. ImageLoader only
-                // consumes Bitmap (and never disposes Picture), so returning it
-                // would pin native memory until finalization. It is disposed at
-                // every exit below; SvgRenderResult.Picture stays null by design.
+                // The picture is strictly an intermediate. A using boundary makes
+                // every failure path deterministic, including unexpected native
+                // allocation and logging failures.
+                using (picture)
                 {
                     var cullRect = picture.CullRect;
                     if (!float.IsFinite(cullRect.Width) || !float.IsFinite(cullRect.Height) ||
                         !float.IsFinite(cullRect.Left) || !float.IsFinite(cullRect.Top))
                     {
-                        picture.Dispose();
                         return new SvgRenderResult
                         {
                             Success = false,
-                            ErrorMessage = "SVG produced non-finite raster bounds"
+                            ErrorMessage = "SVG produced non-finite raster bounds",
+                            Warnings = warnings
                         };
                     }
 
@@ -94,31 +95,33 @@ namespace FenBrowser.FenEngine.Adapters
                     if (rasterWidth > limits.MaxRasterWidth || rasterHeight > limits.MaxRasterHeight ||
                         rasterWidth * rasterHeight > limits.MaxRasterPixels)
                     {
-                        picture.Dispose();
                         return new SvgRenderResult
                         {
                             Success = false,
                             ErrorMessage =
                                 $"SVG raster bounds {rasterWidth:0}x{rasterHeight:0} exceed browser limits " +
-                                $"({limits.MaxRasterWidth}x{limits.MaxRasterHeight}, {limits.MaxRasterPixels} pixels)"
+                                $"({limits.MaxRasterWidth}x{limits.MaxRasterHeight}, {limits.MaxRasterPixels} pixels)",
+                            Warnings = warnings
                         };
                     }
 
                     int bitmapWidth = checked((int)rasterWidth);
                     int bitmapHeight = checked((int)rasterHeight);
 
-                    SKBitmap bitmap;
-                    try
+                    var bitmap = new SKBitmap();
+                    var bitmapInfo = new SKImageInfo(
+                        bitmapWidth,
+                        bitmapHeight,
+                        SKColorType.Bgra8888,
+                        SKAlphaType.Premul);
+                    if (!bitmap.TryAllocPixels(bitmapInfo))
                     {
-                        bitmap = new SKBitmap(bitmapWidth, bitmapHeight);
-                    }
-                    catch (System.OutOfMemoryException)
-                    {
-                        picture.Dispose();
+                        bitmap.Dispose();
                         return new SvgRenderResult
                         {
                             Success = false,
-                            ErrorMessage = "SVG raster allocation refused (out of memory)"
+                            ErrorMessage = "SVG raster allocation refused",
+                            Warnings = warnings
                         };
                     }
 
@@ -136,19 +139,17 @@ namespace FenBrowser.FenEngine.Adapters
                     catch (System.Exception drawEx)
                     {
                         bitmap.Dispose();
-                        picture.Dispose();
                         return new SvgRenderResult
                         {
                             Success = false,
-                            ErrorMessage = $"SVG rasterization failed: {drawEx.Message}"
+                            ErrorMessage = $"SVG rasterization failed: {drawEx.Message}",
+                            Warnings = warnings
                         };
                     }
 
-                    picture.Dispose();
-
                     FenBrowser.Core.EngineLogCompat.Debug(
                         $"[FenSvgRenderer] ok {bitmapWidth}x{bitmapHeight} " +
-                        $"{stopwatch.ElapsedMilliseconds}ms warnings={warningCount}",
+                        $"{stopwatch.ElapsedMilliseconds}ms warnings={warnings.Count}",
                         FenBrowser.Core.Logging.LogCategory.Rendering);
 
                     return new SvgRenderResult
@@ -157,7 +158,8 @@ namespace FenBrowser.FenEngine.Adapters
                         Bitmap = bitmap,
                         Width = cullRect.Width,
                         Height = cullRect.Height,
-                        Success = true
+                        Success = true,
+                        Warnings = warnings
                     };
                 }
             }
@@ -171,19 +173,5 @@ namespace FenBrowser.FenEngine.Adapters
             }
         }
 
-        private static SvgRenderLimits NormalizeLimits(SvgRenderLimits limits)
-        {
-            var defaults = SvgRenderLimits.Default;
-            if (limits.MaxRecursionDepth <= 0) limits.MaxRecursionDepth = defaults.MaxRecursionDepth;
-            if (limits.MaxFilterCount <= 0) limits.MaxFilterCount = defaults.MaxFilterCount;
-            if (limits.MaxRenderTimeMs <= 0) limits.MaxRenderTimeMs = defaults.MaxRenderTimeMs;
-            if (limits.MaxElementCount <= 0) limits.MaxElementCount = defaults.MaxElementCount;
-            if (limits.MaxSourceChars <= 0) limits.MaxSourceChars = defaults.MaxSourceChars;
-            if (limits.MaxRasterWidth <= 0) limits.MaxRasterWidth = defaults.MaxRasterWidth;
-            if (limits.MaxRasterHeight <= 0) limits.MaxRasterHeight = defaults.MaxRasterHeight;
-            if (limits.MaxRasterPixels <= 0) limits.MaxRasterPixels = defaults.MaxRasterPixels;
-            if (limits.MaxDecodedImagePixels <= 0) limits.MaxDecodedImagePixels = defaults.MaxDecodedImagePixels;
-            return limits;
-        }
     }
 }

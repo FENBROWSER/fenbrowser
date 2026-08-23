@@ -10670,13 +10670,13 @@ Migration-blocking gaps before any default flip: stylesheet CSS, text, masks/mar
 
 ### Backend selection (PHASE 4 note)
 
-`NetworkConfiguration.UseFirstPartySvgRenderer` remains the opt-in switch.
-Known limitation: it is read once during `ImageLoader` type initialization
-(static readonly), so runtime flips after first image decode have no effect;
-tests toggle the flag before touching ImageLoader and restore it. The setting
-is a rendering concern stranded in a network config class; relocation to a
-dedicated renderer options surface is deferred to avoid cross-cutting churn.
-`ImageLoader.CreateSvgRenderer` is internal for focused selection tests.
+`SvgRendererConfiguration` owns backend choice inside FenEngine. The
+cross-platform `FEN_SVG_RENDERER` environment variable accepts `first-party` /
+`fen` or `legacy` / `svg-skia`; invalid and absent values fail safe to legacy.
+`SvgRendererFactory` reuses stateless thread-safe renderer instances, observes
+atomic runtime changes without a static-read-once cache, and is used by both
+`ImageLoader` and Host utility-process SVG/image decode paths. Rendering policy
+no longer leaks into `NetworkConfiguration`.
 
 
 ## 2.122 SVG Renderer Correctness Fixes, Differential Gate v2, Bench Tooling (2026-08-23)
@@ -10724,9 +10724,37 @@ entries quoting 101/117 were stale snapshots mid-flight; treat discovery as sour
 6. No native-resource leaks found (disposal audited; leak-check under load still TODO).
 7. Benchmark acceptable (see Results/svg/perf-report.md) - DONE, opt-in basis only.
 8. Unsupported-feature matrix reviewed (2.121) - stylesheet CSS/text remain migration-blocking.
-9. Utility/out-of-process decode paths verified - NOT YET DONE (Host utility process still pins
-   SvgSkiaRenderer directly).
+9. Utility/out-of-process decode paths use the shared backend factory and carry the complete
+   serialized safety-limit contract - DONE in 2.123.
 10. Rollback available (flag flips back; package retained).
 
-STATUS: remains OPT-IN. Do not flip NetworkConfiguration.UseFirstPartySvgRenderer default until
-items 4 and 9 close and text/CSS support lands or is scoped out with evidence.
+STATUS: remains OPT-IN. Do not change the default until item 4 closes and text/CSS support lands
+or is scoped out with evidence.
+
+## 2.123 SVG Production Hardening: Ownership, Admission, Configuration, Utility Parity (2026-08-23)
+
+- `SvgRenderResult` now owns native outputs explicitly, supports idempotent disposal, and exposes
+  detach operations for cache/IPC ownership transfer. `ImageLoader` disposes source rasters after
+  scaling instead of leaking them, legacy invalid-picture fallback is no longer exported, Host
+  utility encoding disposes results, and the benchmark disposes every measured result.
+- Embedded data-URI images use `SKCodec` header inspection before pixel allocation. Encoded-byte,
+  decoded-dimension, and decoded-pixel budgets are enforced before `TryAllocPixels`; malformed,
+  incomplete, and failed native decodes fail closed with bounded diagnostics.
+- `SvgRenderLimits.Normalize` is the single defaulting boundary for both backends and applies hard
+  process caps even when a caller supplies permissive values. Embedded bytes/pixels, active layers,
+  and reference-chain depth are now explicit limits. Host IPC carries the complete limit set.
+- Backend choice moved from network configuration to the thread-safe FenEngine
+  `SvgRendererConfiguration` / `SvgRendererFactory` seam. `FEN_SVG_RENDERER` works identically on
+  Windows, Linux, and macOS, and utility processes inherit the same selection.
+- Obsolete Skia calls were replaced by `SKPathBuilder` and sampling-aware bitmap drawing; focused
+  FenEngine and Host builds complete with zero warnings.
+
+Verification:
+
+- `dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj --no-restore --verbosity minimal`:
+  pass, 0 warnings / 0 errors.
+- `dotnet build FenBrowser.Host/FenBrowser.Host.csproj --no-restore --verbosity minimal`: pass,
+  0 warnings / 0 errors.
+- `SvgProductionHardeningTests` covers pre-allocation compressed-image rejection, valid bounded
+  decode, and bitmap ownership transfer. The full discovery-derived SVG count is recorded by the
+  final branch gate rather than duplicated here.

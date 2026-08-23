@@ -34,7 +34,7 @@ namespace FenBrowser.FenEngine.Adapters
                 };
             }
 
-            limits = NormalizeLimits(limits);
+            limits = SvgRenderLimits.Normalize(limits);
             
             // Pre-validation: Check for complexity bombs before sending untrusted text
             // into the SVG parser/native renderer.
@@ -142,7 +142,9 @@ namespace FenBrowser.FenEngine.Adapters
                 
                 return new SvgRenderResult
                 {
-                    Picture = picture, // Kept for backward compatibility; Bitmap is the safe post-SKSvg result.
+                    // SKSvg owns the picture lifetime. Returning it after the
+                    // using scope would expose an invalid native handle.
+                    Picture = null,
                     Bitmap = bitmap,
                     Width = cullRect.Width,
                     Height = cullRect.Height,
@@ -157,20 +159,6 @@ namespace FenBrowser.FenEngine.Adapters
                     ErrorMessage = $"SVG render error: {ex.Message}"
                 };
             }
-        }
-
-        private static SvgRenderLimits NormalizeLimits(SvgRenderLimits limits)
-        {
-            var defaults = SvgRenderLimits.Default;
-            if (limits.MaxRecursionDepth <= 0) limits.MaxRecursionDepth = defaults.MaxRecursionDepth;
-            if (limits.MaxFilterCount <= 0) limits.MaxFilterCount = defaults.MaxFilterCount;
-            if (limits.MaxRenderTimeMs <= 0) limits.MaxRenderTimeMs = defaults.MaxRenderTimeMs;
-            if (limits.MaxElementCount <= 0) limits.MaxElementCount = defaults.MaxElementCount;
-            if (limits.MaxSourceChars <= 0) limits.MaxSourceChars = defaults.MaxSourceChars;
-            if (limits.MaxRasterWidth <= 0) limits.MaxRasterWidth = defaults.MaxRasterWidth;
-            if (limits.MaxRasterHeight <= 0) limits.MaxRasterHeight = defaults.MaxRasterHeight;
-            if (limits.MaxRasterPixels <= 0) limits.MaxRasterPixels = defaults.MaxRasterPixels;
-            return limits;
         }
 
         private static bool WarmUpSvgBackend()

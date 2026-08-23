@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using SkiaSharp;
 
 namespace FenBrowser.FenEngine.Adapters
@@ -27,7 +29,7 @@ namespace FenBrowser.FenEngine.Adapters
     /// <summary>
     /// Result of SVG rendering.
     /// </summary>
-    public class SvgRenderResult
+    public sealed class SvgRenderResult : IDisposable
     {
         /// <summary>
         /// The rendered picture (null if failed).
@@ -60,6 +62,42 @@ namespace FenBrowser.FenEngine.Adapters
         /// Error message if failed.
         /// </summary>
         public string ErrorMessage { get; set; }
+
+        /// <summary>
+        /// Bounded diagnostics produced while parsing or rendering. Messages never
+        /// include the source document and are safe to surface in debug telemetry.
+        /// </summary>
+        public IReadOnlyList<string> Warnings { get; set; } = Array.Empty<string>();
+
+        /// <summary>
+        /// Transfers bitmap ownership to the caller. The detached bitmap will not
+        /// be disposed when this result is disposed.
+        /// </summary>
+        public SKBitmap DetachBitmap()
+        {
+            var bitmap = Bitmap;
+            Bitmap = null;
+            return bitmap;
+        }
+
+        /// <summary>
+        /// Transfers picture ownership to the caller. New renderers should prefer
+        /// returning a bitmap because pictures may be tied to parser-owned state.
+        /// </summary>
+        public SKPicture DetachPicture()
+        {
+            var picture = Picture;
+            Picture = null;
+            return picture;
+        }
+
+        public void Dispose()
+        {
+            Bitmap?.Dispose();
+            Bitmap = null;
+            Picture?.Dispose();
+            Picture = null;
+        }
     }
     
     /// <summary>
@@ -115,6 +153,15 @@ namespace FenBrowser.FenEngine.Adapters
         /// </summary>
         public long MaxDecodedImagePixels { get; set; }
 
+        /// <summary>Maximum decoded bytes admitted for one embedded data URI.</summary>
+        public int MaxDecodedImageBytes { get; set; }
+
+        /// <summary>Maximum simultaneous full-surface opacity layers.</summary>
+        public int MaxActiveLayers { get; set; }
+
+        /// <summary>Maximum use, gradient, and clip reference-chain depth.</summary>
+        public int MaxReferenceDepth { get; set; }
+
         /// <summary>
         /// Whether to allow external references (xlink:href to external URLs).
         /// Default: false (DISABLED for security)
@@ -134,7 +181,10 @@ namespace FenBrowser.FenEngine.Adapters
             MaxRasterWidth = 8192,
             MaxRasterHeight = 8192,
             MaxRasterPixels = 16L * 1024 * 1024,
-            MaxDecodedImagePixels = 64L * 1024 * 1024,
+            MaxDecodedImagePixels = 16L * 1024 * 1024,
+            MaxDecodedImageBytes = 8 * 1024 * 1024,
+            MaxActiveLayers = 8,
+            MaxReferenceDepth = 32,
             AllowExternalReferences = false
         };
         
@@ -151,8 +201,47 @@ namespace FenBrowser.FenEngine.Adapters
             MaxRasterWidth = 4096,
             MaxRasterHeight = 4096,
             MaxRasterPixels = 8L * 1024 * 1024,
-            MaxDecodedImagePixels = 32L * 1024 * 1024,
+            MaxDecodedImagePixels = 8L * 1024 * 1024,
+            MaxDecodedImageBytes = 2 * 1024 * 1024,
+            MaxActiveLayers = 4,
+            MaxReferenceDepth = 16,
             AllowExternalReferences = false
         };
+
+        /// <summary>
+        /// Fills omitted values and applies non-bypassable process-safety caps.
+        /// Callers may tighten limits but cannot request unbounded native memory,
+        /// recursion, or reference expansion.
+        /// </summary>
+        public static SvgRenderLimits Normalize(SvgRenderLimits limits)
+        {
+            var defaults = Default;
+            if (limits.MaxRecursionDepth <= 0) limits.MaxRecursionDepth = defaults.MaxRecursionDepth;
+            if (limits.MaxFilterCount <= 0) limits.MaxFilterCount = defaults.MaxFilterCount;
+            if (limits.MaxRenderTimeMs <= 0) limits.MaxRenderTimeMs = defaults.MaxRenderTimeMs;
+            if (limits.MaxElementCount <= 0) limits.MaxElementCount = defaults.MaxElementCount;
+            if (limits.MaxSourceChars <= 0) limits.MaxSourceChars = defaults.MaxSourceChars;
+            if (limits.MaxRasterWidth <= 0) limits.MaxRasterWidth = defaults.MaxRasterWidth;
+            if (limits.MaxRasterHeight <= 0) limits.MaxRasterHeight = defaults.MaxRasterHeight;
+            if (limits.MaxRasterPixels <= 0) limits.MaxRasterPixels = defaults.MaxRasterPixels;
+            if (limits.MaxDecodedImagePixels <= 0) limits.MaxDecodedImagePixels = defaults.MaxDecodedImagePixels;
+            if (limits.MaxDecodedImageBytes <= 0) limits.MaxDecodedImageBytes = defaults.MaxDecodedImageBytes;
+            if (limits.MaxActiveLayers <= 0) limits.MaxActiveLayers = defaults.MaxActiveLayers;
+            if (limits.MaxReferenceDepth <= 0) limits.MaxReferenceDepth = defaults.MaxReferenceDepth;
+
+            limits.MaxRecursionDepth = Math.Min(limits.MaxRecursionDepth, 512);
+            limits.MaxFilterCount = Math.Min(limits.MaxFilterCount, 1_000);
+            limits.MaxRenderTimeMs = Math.Min(limits.MaxRenderTimeMs, 30_000);
+            limits.MaxElementCount = Math.Min(limits.MaxElementCount, 250_000);
+            limits.MaxSourceChars = Math.Min(limits.MaxSourceChars, 32 * 1024 * 1024);
+            limits.MaxRasterWidth = Math.Min(limits.MaxRasterWidth, 32_768);
+            limits.MaxRasterHeight = Math.Min(limits.MaxRasterHeight, 32_768);
+            limits.MaxRasterPixels = Math.Min(limits.MaxRasterPixels, 64L * 1024 * 1024);
+            limits.MaxDecodedImagePixels = Math.Min(limits.MaxDecodedImagePixels, 64L * 1024 * 1024);
+            limits.MaxDecodedImageBytes = Math.Min(limits.MaxDecodedImageBytes, 32 * 1024 * 1024);
+            limits.MaxActiveLayers = Math.Min(limits.MaxActiveLayers, 16);
+            limits.MaxReferenceDepth = Math.Min(limits.MaxReferenceDepth, 64);
+            return limits;
+        }
     }
 }

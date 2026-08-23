@@ -417,7 +417,7 @@ namespace FenBrowser.FenEngine.Svg
         private (float offset, SKColor color)[] CollectStops(SvgElement server, InheritedStyle style, HashSet<SvgElement> visited)
         {
             visited ??= new HashSet<SvgElement>();
-            if (visited.Contains(server) || visited.Count >= 8)
+            if (visited.Contains(server) || visited.Count >= _maxReferenceDepth)
             {
                 _report.Warn("gradient reference chain cyclic or too deep");
                 return System.Array.Empty<(float, SKColor)>();

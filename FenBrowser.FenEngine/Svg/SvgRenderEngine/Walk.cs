@@ -280,7 +280,7 @@ namespace FenBrowser.FenEngine.Svg
 
             // Cycle defense: an id may not instantiate itself transitively.
             _activeUseIds ??= new HashSet<string>(System.StringComparer.Ordinal);
-            if (_activeUseIds.Contains(id) || _activeUseIds.Count >= 32)
+            if (_activeUseIds.Contains(id) || _activeUseIds.Count >= _maxReferenceDepth)
             {
                 _report.Warn("use reference cycle detected; instance skipped");
                 return;
@@ -383,12 +383,12 @@ namespace FenBrowser.FenEngine.Svg
         private bool TryBeginGroupOpacity(SvgElement el, SKCanvas canvas, out SKPaint layerPaint)
         {
             float opacity = ReadClampedOpacity(el, "opacity", 1f);
-            if (opacity >= 1f || _activeLayers >= MaxActiveLayers)
+            if (opacity >= 1f || _activeLayers >= _maxActiveLayers)
             {
                 // S1/F1: every layer allocates a full-viewport surface; beyond
                 // the cap we composite directly (slight fidelity loss for
                 // pathological nesting instead of a multi-GB allocation).
-                if (_activeLayers >= MaxActiveLayers && opacity < 1f)
+                if (_activeLayers >= _maxActiveLayers && opacity < 1f)
                 {
                     _report.Warn("layer budget exceeded; group composited without isolation");
                 }
@@ -420,8 +420,6 @@ namespace FenBrowser.FenEngine.Svg
 
         /// <summary>Ids currently being resolved as clip paths (cycle guard).</summary>
         private HashSet<string> _activeClipIds;
-
-        private const int MaxClipDepth = 8;
 
         /// <summary>
         /// Applies the element's clip-path attribute, if any. Must be called
@@ -459,7 +457,7 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             _activeClipIds ??= new HashSet<string>(System.StringComparer.Ordinal);
-            if (_activeClipIds.Contains(fragment) || _activeClipIds.Count >= MaxClipDepth)
+            if (_activeClipIds.Contains(fragment) || _activeClipIds.Count >= _maxReferenceDepth)
             {
                 _report.Warn("clip-path cycle or depth exceeded; clip ignored");
                 return;
@@ -508,7 +506,8 @@ namespace FenBrowser.FenEngine.Svg
         /// <summary>Union of direct shape children (plus one-level use refs).</summary>
         private SKPath BuildClipGeometry(SvgElement clipEl)
         {
-            SKPath combined = null;
+            using var combinedBuilder = new SKPathBuilder();
+            bool hasGeometry = false;
             bool evenOdd = false;
 
             foreach (var child in clipEl.Children)
@@ -539,15 +538,14 @@ namespace FenBrowser.FenEngine.Svg
                         continue;
                 }
 
-                var childPath = BuildGeometry(shapeEl);
+                using var childPath = BuildGeometry(shapeEl);
                 if (childPath == null)
                 {
                     continue;
                 }
 
-                combined ??= new SKPath();
-                combined.AddPath(childPath);
-                childPath.Dispose();
+                combinedBuilder.AddPath(childPath, SKPathAddMode.Append);
+                hasGeometry = true;
 
                 if (string.Equals(
                         shapeEl.GetAttribute("clip-rule") ?? shapeEl.GetAttribute("fill-rule"),
@@ -558,7 +556,13 @@ namespace FenBrowser.FenEngine.Svg
                 }
             }
 
-            if (combined != null && evenOdd)
+            if (!hasGeometry)
+            {
+                return null;
+            }
+
+            var combined = combinedBuilder.Detach();
+            if (evenOdd)
             {
                 combined.FillType = SKPathFillType.EvenOdd;
             }
@@ -586,34 +590,21 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
 
-            var bytes = DecodeDataUriBytes(href, out var decodeError);
+            var bytes = DecodeDataUriBytes(href, _maxDecodedImageBytes, out var decodeError);
             if (bytes == null)
             {
                 _report.Warn(decodeError);
                 return;
             }
 
-            SKBitmap bitmap;
-            try
+            if (!TryDecodeEmbeddedBitmap(
+                    bytes,
+                    _maxRasterPixels,
+                    _maxRasterDim,
+                    out var bitmap,
+                    out var bitmapError))
             {
-                bitmap = SKBitmap.Decode(bytes);
-            }
-            catch (Exception)
-            {
-                bitmap = null; // Codec failure: treat as undecodable.
-            }
-
-            if (bitmap == null)
-            {
-                _report.Warn("image data URI failed to decode");
-                return;
-            }
-
-            long pixels = (long)bitmap.Width * bitmap.Height;
-            if (bitmap.Width > _maxRasterDim || bitmap.Height > _maxRasterDim || pixels > _maxRasterPixels)
-            {
-                bitmap.Dispose();
-                _report.Warn("image decoded size exceeds raster budget; rejected");
+                _report.Warn(bitmapError);
                 return;
             }
 
@@ -633,7 +624,7 @@ namespace FenBrowser.FenEngine.Svg
                     ? SKColors.Black
                     : SKColors.Transparent;
                 var dest = new SKRect(x, y, x + w, y + h);
-                canvas.DrawBitmap(bitmap, dest, paint);
+                canvas.DrawBitmap(bitmap, dest, SKSamplingOptions.Default, paint);
             }
             finally
             {
@@ -648,20 +639,94 @@ namespace FenBrowser.FenEngine.Svg
         }
 
         private long _maxRasterPixels = 16L * 1024 * 1024;
+        private int _maxDecodedImageBytes = 8 * 1024 * 1024;
         private int _maxRasterDim = 8192;
 
         /// <summary>Called from TryRender with caller limits (keeps caps in sync).</summary>
-        internal void ConfigureImageBudgets(long maxRasterPixels, int maxRasterDim)
+        internal void ConfigureImageBudgets(long maxRasterPixels, int maxDecodedImageBytes, int maxRasterDim)
         {
             _maxRasterPixels = maxRasterPixels;
+            _maxDecodedImageBytes = maxDecodedImageBytes;
             _maxRasterDim = maxRasterDim;
+        }
+
+        /// <summary>
+        /// Decodes an embedded raster only after the codec header has passed the
+        /// dimension and pixel budgets. This prevents compressed image bombs from
+        /// allocating their advertised surface before admission control runs.
+        /// </summary>
+        internal static bool TryDecodeEmbeddedBitmap(
+            byte[] bytes,
+            long maxPixels,
+            int maxDimension,
+            out SKBitmap bitmap,
+            out string error)
+        {
+            bitmap = null;
+            error = null;
+
+            if (bytes == null || bytes.Length == 0)
+            {
+                error = "image data URI has an empty payload";
+                return false;
+            }
+
+            try
+            {
+                using var data = SKData.CreateCopy(bytes);
+                using var codec = SKCodec.Create(data);
+                if (codec == null)
+                {
+                    error = "image data URI failed to decode";
+                    return false;
+                }
+
+                var sourceInfo = codec.Info;
+                long pixels = (long)sourceInfo.Width * sourceInfo.Height;
+                if (sourceInfo.Width <= 0 || sourceInfo.Height <= 0 ||
+                    sourceInfo.Width > maxDimension || sourceInfo.Height > maxDimension ||
+                    pixels <= 0 || pixels > maxPixels)
+                {
+                    error = "image decoded size exceeds raster budget; rejected";
+                    return false;
+                }
+
+                var decodeInfo = new SKImageInfo(
+                    sourceInfo.Width,
+                    sourceInfo.Height,
+                    SKColorType.Bgra8888,
+                    SKAlphaType.Premul);
+                var candidate = new SKBitmap();
+                if (!candidate.TryAllocPixels(decodeInfo))
+                {
+                    candidate.Dispose();
+                    error = "image raster allocation refused";
+                    return false;
+                }
+
+                var decodeResult = codec.GetPixels(decodeInfo, candidate.GetPixels());
+                if (decodeResult != SKCodecResult.Success)
+                {
+                    candidate.Dispose();
+                    error = $"image data URI decode failed ({decodeResult})";
+                    return false;
+                }
+
+                bitmap = candidate;
+                return true;
+            }
+            catch (Exception)
+            {
+                error = "image data URI failed to decode";
+                return false;
+            }
         }
 
         /// <summary>
         /// Strict data-URI byte extraction: requires an explicit base64 flag,
         /// bounds the payload length, and never throws on malformed input.
         /// </summary>
-        internal static byte[] DecodeDataUriBytes(string href, out string error)
+        internal static byte[] DecodeDataUriBytes(string href, int maxDecodedBytes, out string error)
         {
             error = null;
             // data:[<mime>][;base64],<payload>
@@ -682,7 +747,10 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             string payload = href.Substring(comma + 1);
-            if (payload.Length > 12 * 1024 * 1024)
+            // Base64 expands decoded data by 4/3. Reject from encoded length
+            // before allocating the decoded byte array.
+            long maxEncodedChars = ((long)maxDecodedBytes + 2L) / 3L * 4L;
+            if (payload.Length > maxEncodedChars)
             {
                 error = "image payload exceeds admission budget";
                 return null;

@@ -1739,17 +1739,27 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                     return Task.CompletedTask;
                 }
 
-                var svgRenderer = new SvgSkiaRenderer();
-                var limits = new SvgRenderLimits
+                var svgRenderer = SvgRendererFactory.GetConfiguredRenderer();
+                var limits = payload.Limits == null
+                    ? SvgRenderLimits.Default
+                    : new SvgRenderLimits
                 {
-                    MaxElementCount = payload.Limits?.MaxElementCount ?? 10000,
-                    MaxFilterCount = payload.Limits?.MaxFilterCount ?? 100,
-                    MaxRecursionDepth = payload.Limits?.MaxRecursionDepth ?? 100,
-                    MaxRenderTimeMs = payload.Limits?.MaxRenderTimeMs ?? 5000,
-                    AllowExternalReferences = payload.Limits?.AllowExternalReferences ?? false
+                    MaxElementCount = payload.Limits.MaxElementCount,
+                    MaxFilterCount = payload.Limits.MaxFilterCount,
+                    MaxRecursionDepth = payload.Limits.MaxRecursionDepth,
+                    MaxRenderTimeMs = payload.Limits.MaxRenderTimeMs,
+                    MaxSourceChars = payload.Limits.MaxSourceChars,
+                    MaxRasterWidth = payload.Limits.MaxRasterWidth,
+                    MaxRasterHeight = payload.Limits.MaxRasterHeight,
+                    MaxRasterPixels = payload.Limits.MaxRasterPixels,
+                    MaxDecodedImagePixels = payload.Limits.MaxDecodedImagePixels,
+                    MaxDecodedImageBytes = payload.Limits.MaxDecodedImageBytes,
+                    MaxActiveLayers = payload.Limits.MaxActiveLayers,
+                    MaxReferenceDepth = payload.Limits.MaxReferenceDepth,
+                    AllowExternalReferences = payload.Limits.AllowExternalReferences
                 };
 
-                var result = svgRenderer.Render(payload.SvgContent, limits);
+                using var result = svgRenderer.Render(payload.SvgContent, limits);
 
                 byte[] bitmapBytes = null;
                 int width = 0, height = 0;
@@ -1760,7 +1770,6 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                     using var image = SKImage.FromBitmap(result.Bitmap);
                     using var data = image.Encode(SKEncodedImageFormat.Png, 100);
                     bitmapBytes = data?.ToArray() ?? Array.Empty<byte>();
-                    result.Bitmap.Dispose();
                 }
 
                 var response = new SvgDecodeResponsePayload
@@ -1818,9 +1827,9 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
                      url.StartsWith("data:image/svg+xml", StringComparison.OrdinalIgnoreCase)))
                 {
                     string svgContent = System.Text.Encoding.UTF8.GetString(data);
-                    var svgRenderer = new SvgSkiaRenderer();
-                    var result = svgRenderer.Render(svgContent);
-                    return result.Bitmap;
+                    var svgRenderer = SvgRendererFactory.GetConfiguredRenderer();
+                    using var result = svgRenderer.Render(svgContent);
+                    return result.DetachBitmap();
                 }
 
                 // Decode raster image

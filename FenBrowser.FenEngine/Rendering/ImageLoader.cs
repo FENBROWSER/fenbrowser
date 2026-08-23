@@ -300,17 +300,9 @@ namespace FenBrowser.FenEngine.Rendering
             _animatedGifOwners[ownerId] = context;
         }
         
-        // RULE 3 & 5: SVG rendering through adapter with safety limits.
-        // Backend selection is static-read-once: flip NetworkConfiguration
-        // .UseFirstPartySvgRenderer before first image decode to switch to the
-        // first-party sandboxed renderer (FenSvgRenderer).
-        private static readonly ISvgRenderer _svgRenderer = CreateSvgRenderer();
-
         internal static ISvgRenderer CreateSvgRenderer()
         {
-            return NetworkConfiguration.Instance.UseFirstPartySvgRenderer
-                ? new FenSvgRenderer()
-                : new SvgSkiaRenderer();
+            return SvgRendererFactory.GetConfiguredRenderer();
         }
         
         /// <summary>
@@ -824,7 +816,7 @@ namespace FenBrowser.FenEngine.Rendering
                 svgContent = svgContent.Replace("viewbox=", "viewBox=");
             }
 
-            var result = _svgRenderer.Render(svgContent, SvgRenderLimits.Default);
+            using var result = CreateSvgRenderer().Render(svgContent, SvgRenderLimits.Default);
             
             // CRITICAL FIX: Check for pre-rendered bitmap first (avoids SKSvg disposal issues)
             if (!result.Success)
@@ -863,7 +855,7 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                     }
 #endif
-                    return result.Bitmap;
+                    return result.DetachBitmap();
                 }
                 
                 // Scale the pre-rendered bitmap to target size while preserving aspect ratio

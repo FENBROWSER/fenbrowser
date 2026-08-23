@@ -1,5 +1,4 @@
 using System;
-using FenBrowser.Core;
 using FenBrowser.FenEngine.Adapters;
 using FenBrowser.FenEngine.Rendering;
 using Xunit;
@@ -17,33 +16,33 @@ namespace FenBrowser.Tests.Svg
         [Fact]
         public void BackendSelection_HonorsConfigurationFlag()
         {
-            var original = NetworkConfiguration.Instance.UseFirstPartySvgRenderer;
+            var original = SvgRendererConfiguration.Backend;
             try
             {
-                NetworkConfiguration.Instance.UseFirstPartySvgRenderer = true;
+                SvgRendererConfiguration.Backend = SvgRendererBackend.FirstParty;
                 Assert.IsType<FenSvgRenderer>(ImageLoader.CreateSvgRenderer());
 
-                NetworkConfiguration.Instance.UseFirstPartySvgRenderer = false;
+                SvgRendererConfiguration.Backend = SvgRendererBackend.LegacySvgSkia;
                 Assert.IsType<SvgSkiaRenderer>(ImageLoader.CreateSvgRenderer());
             }
             finally
             {
-                NetworkConfiguration.Instance.UseFirstPartySvgRenderer = original;
+                SvgRendererConfiguration.Backend = original;
             }
         }
 
         [Fact]
         public void DefaultBackend_IsLegacy_OptInOnly()
         {
-            var original = NetworkConfiguration.Instance.UseFirstPartySvgRenderer;
+            var original = SvgRendererConfiguration.Backend;
             try
             {
-                NetworkConfiguration.Instance.UseFirstPartySvgRenderer = false;
+                SvgRendererConfiguration.Backend = SvgRendererBackend.LegacySvgSkia;
                 Assert.IsType<SvgSkiaRenderer>(ImageLoader.CreateSvgRenderer());
             }
             finally
             {
-                NetworkConfiguration.Instance.UseFirstPartySvgRenderer = original;
+                SvgRendererConfiguration.Backend = original;
             }
         }
 

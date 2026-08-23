@@ -177,15 +177,6 @@ namespace FenBrowser.Core
         /// </summary>
         public long AggressiveSuspensionThreshold { get; set; } = 500 * 1024 * 1024; // 500MB
 
-        // ========== Rendering Settings ==========
-
-        /// <summary>
-        /// Use the first-party sandboxed SVG renderer (FenSvgRenderer) instead of
-        /// the Svg.Skia-based adapter for image decoding. Opt-in while the
-        /// migration is verified; both implementations honor SvgRenderLimits.
-        /// </summary>
-        public bool UseFirstPartySvgRenderer { get; set; } = false;
-
         // ========== Statistics ==========
 
         /// <summary>
@@ -304,7 +295,6 @@ namespace FenBrowser.Core
             TabSuspensionMinutes = 10;
             MinActiveTabs = 1;
             AggressiveSuspensionThreshold = 500 * 1024 * 1024;
-            UseFirstPartySvgRenderer = false;
             EnableNetworkStats = true;
             LogHttp2Details = false;
             LogCompressionStats = false;

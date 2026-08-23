@@ -204,10 +204,18 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
 
     public sealed class SvgRenderLimitsData
     {
-        public int MaxElementCount { get; set; } = 10000;
-        public int MaxFilterCount { get; set; } = 100;
-        public int MaxRecursionDepth { get; set; } = 100;
-        public int MaxRenderTimeMs { get; set; } = 5000;
+        public int MaxElementCount { get; set; } = 50_000;
+        public int MaxFilterCount { get; set; } = 10;
+        public int MaxRecursionDepth { get; set; } = 32;
+        public int MaxRenderTimeMs { get; set; } = 250;
+        public int MaxSourceChars { get; set; } = 8 * 1024 * 1024;
+        public int MaxRasterWidth { get; set; } = 8192;
+        public int MaxRasterHeight { get; set; } = 8192;
+        public long MaxRasterPixels { get; set; } = 16L * 1024 * 1024;
+        public long MaxDecodedImagePixels { get; set; } = 16L * 1024 * 1024;
+        public int MaxDecodedImageBytes { get; set; } = 8 * 1024 * 1024;
+        public int MaxActiveLayers { get; set; } = 8;
+        public int MaxReferenceDepth { get; set; } = 32;
         public bool AllowExternalReferences { get; set; } = false;
     }
 
