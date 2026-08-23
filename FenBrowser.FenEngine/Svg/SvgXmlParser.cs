@@ -569,6 +569,10 @@ namespace FenBrowser.FenEngine.Svg
                 ? null
                 : parent.Children[parent.Children.Count - 1];
             parent.Children.Add(child);
+            if (parent.Name == "text" || parent.Name == "tspan")
+            {
+                parent.Content.Add(new SvgContentPart(child));
+            }
         }
 
         private static void SkipIgnoredSubtree(ParseState state, SvgElement element)
@@ -615,7 +619,7 @@ namespace FenBrowser.FenEngine.Svg
                                         $"SVG style text length ({length}) exceeds limit ({MaxTextContentChars})");
                                 }
                                 element.TextContent = length > 0
-                                    ? DecodeCharacterData(state, contentStart, markupStart, MaxTextContentChars, out _)
+                                    ? ExtractStyleText(state, contentStart, markupStart)
                                     : string.Empty;
                             }
                             return;
@@ -753,14 +757,9 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             current.TextContent = existing == 0 ? segment : current.TextContent + segment;
-            for (int i = 0; i < segment.Length; i++)
+            if (segment.Length > 0)
             {
-                if (segment[i] > 0x7f)
-                {
-                    state.Report.RequireFallback(
-                        "non-ASCII SVG text requires compatibility shaping");
-                    break;
-                }
+                current.Content.Add(new SvgContentPart(segment));
             }
         }
 
@@ -787,6 +786,32 @@ namespace FenBrowser.FenEngine.Svg
             }
             truncated = cursor.Pos < end;
             return decoded.ToString();
+        }
+
+        private static string ExtractStyleText(ParseState state, int start, int end)
+        {
+            int trimmedStart = start;
+            int trimmedEnd = end;
+            while (trimmedStart < trimmedEnd && char.IsWhiteSpace(state.Source[trimmedStart])) trimmedStart++;
+            while (trimmedEnd > trimmedStart && char.IsWhiteSpace(state.Source[trimmedEnd - 1])) trimmedEnd--;
+
+            const string cdataOpen = "<![CDATA[";
+            const string cdataClose = "]]>";
+            if (trimmedEnd - trimmedStart >= cdataOpen.Length + cdataClose.Length &&
+                string.CompareOrdinal(state.Source, trimmedStart, cdataOpen, 0, cdataOpen.Length) == 0 &&
+                string.CompareOrdinal(
+                    state.Source,
+                    trimmedEnd - cdataClose.Length,
+                    cdataClose,
+                    0,
+                    cdataClose.Length) == 0)
+            {
+                int contentStart = trimmedStart + cdataOpen.Length;
+                int contentLength = trimmedEnd - cdataClose.Length - contentStart;
+                return state.Source.Substring(contentStart, contentLength);
+            }
+
+            return DecodeCharacterData(state, start, end, MaxTextContentChars, out _);
         }
 
         private static void SkipBangOrPi(ParseState state)

@@ -178,19 +178,44 @@ namespace FenBrowser.Tests.Svg
             Assert.True(HasForegroundIn(result.Bitmap, 25, 8, 75, 36));
         }
 
-        [Theory]
-        [InlineData("<text x='2' y='15'>A<tspan>B</tspan></text>")]
-        [InlineData("<text x='2' y='15'>Καλημέρα</text>")]
-        [InlineData("<text x='2' y='15' writing-mode='vertical-rl'>Fen</text>")]
-        [InlineData("<text x='2' y='15' style='letter-spacing:2px'>Fen</text>")]
-        public void FirstParty_ComplexTextRequiresCompatibilityFallback(string content)
+        [Fact]
+        public void FirstParty_VerticalTextRequiresCompatibilityFallback()
         {
             using var result = new FenSvgRenderer().Render(
-                $"<svg width='80' height='30'>{content}</svg>");
+                "<svg width='80' height='30'><text x='2' y='15' writing-mode='vertical-rl'>Fen</text></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
             Assert.True(result.RequiresFallback);
             Assert.NotEmpty(result.Warnings);
+        }
+
+        [Theory]
+        [InlineData("Καλημέρα")]
+        [InlineData("مرحبا")]
+        [InlineData("שלום")]
+        public void FirstParty_ComplexScriptTextUsesShapedGlyphRuns(string text)
+        {
+            using var result = new FenSvgRenderer().Render(
+                $"<svg width='160' height='40'><text x='4' y='30' font-size='24'>{text}</text></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.True(HasForeground(result.Bitmap));
+        }
+
+        [Fact]
+        public void FirstParty_TspanOrderStylesAndLetterSpacingAreRendered()
+        {
+            const string svg =
+                "<svg width='160' height='40'><text x='4' y='30' font-size='24' letter-spacing='1'>" +
+                "A<tspan fill='red' dx='2'>B</tspan>C</text></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.True(HasForeground(result.Bitmap));
+            Assert.True(HasColorIn(result.Bitmap, SKColors.Red, 0, 0, 160, 40));
         }
 
         [Fact]
@@ -472,6 +497,23 @@ namespace FenBrowser.Tests.Svg
             for (int y = top; y < bottom; y++)
             for (int x = left; x < right; x++)
                 if (bitmap.GetPixel(x, y).Alpha > 0) return true;
+            return false;
+        }
+
+        private static bool HasColorIn(SKBitmap bitmap, SKColor expected, int left, int top, int right, int bottom)
+        {
+            for (int y = top; y < bottom; y++)
+            for (int x = left; x < right; x++)
+            {
+                var actual = bitmap.GetPixel(x, y);
+                if (actual.Alpha > 0 &&
+                    Math.Abs(actual.Red - expected.Red) <= 8 &&
+                    Math.Abs(actual.Green - expected.Green) <= 8 &&
+                    Math.Abs(actual.Blue - expected.Blue) <= 8)
+                {
+                    return true;
+                }
+            }
             return false;
         }
 

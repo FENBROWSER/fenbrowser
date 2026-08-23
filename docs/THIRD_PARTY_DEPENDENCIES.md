@@ -57,10 +57,12 @@ compatibility fallback; default = legacy). Security/admission failures never
 fallback. The thread-safe factory is shared by in-process and Host
 utility-process decoding and observes runtime configuration changes without a
 static-read-once cache.
-It has NOT replaced Svg.Skia: text, stylesheet CSS, masks/markers/patterns,
-and real-site parity remain open compatibility gates (see VOLUME_III
-2.121-2.124 for the matrix, gate checklist, benchmark
-evidence in Results/svg/, and the correctness fixes that preceded this note).
+It has NOT replaced Svg.Skia. Shared CSS cascade integration and bounded
+horizontal HarfBuzz text/tspan shaping are implemented, but vertical and
+per-glyph text, text paths, masks, filters, markers, patterns, nested SVG
+resources, and complete captured-site parity remain open compatibility gates
+(see VOLUME_III 2.121-2.130 for the matrix, gate checklist, benchmark evidence
+in Results/svg/, and the correctness fixes that preceded this note).
 Removal from this inventory happens only after the documented gate closes.
 
 ### Dependency Philosophy

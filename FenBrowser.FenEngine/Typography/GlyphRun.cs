@@ -66,6 +66,9 @@ namespace FenBrowser.FenEngine.Typography
         /// The original text (for debugging/accessibility).
         /// </summary>
         public string SourceText { get; set; }
+
+        /// <summary>True when HarfBuzz produced the positioned glyph sequence.</summary>
+        public bool WasShaped { get; set; }
         
         /// <summary>
         /// Number of glyphs in this run.

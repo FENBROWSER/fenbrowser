@@ -10917,3 +10917,30 @@ Verification:
 - FenEngine, Host, and `scripts/BenchSvg` Release builds: zero warnings and zero errors.
 - 10,000-render ownership stress: zero failures, 2,222 intended compatibility fallbacks, and 13,422,592
   retained private bytes against the 67,108,864-byte ceiling.
+
+## 2.130 Shared Text Shaping For Sandboxed SVG (2026-08-24)
+
+- First-party SVG text now uses FenEngine's canonical `SkiaFontService` HarfBuzz path with an explicitly
+  resolved typeface. Positioned glyph blobs replace string drawing, so Arabic, Hebrew, Indic, Greek, and
+  other Unicode input use the same shaping machinery as browser text. If HarfBuzz is unavailable, complex
+  text routes to compatibility instead of silently accepting naive per-code-unit positioning.
+- The bounded text model preserves mixed text/tspan source order and recursively applies inherited font,
+  paint, visibility, whitespace, letter-spacing, x/y/dx/dy, and text-anchor state. Absolute tspan positions
+  start independent anchored chunks. CDATA-wrapped stylesheet text is extracted without enabling general
+  XML entity expansion.
+- Typeface coverage checks use Skia's Unicode-aware glyph containment API, avoiding UTF-16 surrogate
+  splitting and per-glyph outline allocation. Native fonts, text blobs, paths, paints, and opacity layers
+  remain deterministically owned; the process-level configured fallback typeface is intentionally cached.
+- Per-element text painting is capped at 4,096 characters and each document at 16,384 shaped glyphs, with
+  deadline checks between layout and paint runs. Vertical writing, text paths, per-glyph position lists,
+  rotation, baseline adjustment, transformed/clipped tspans, and isolated partial-opacity tspans remain
+  observable compatibility routes.
+
+Verification:
+
+- Complete focused Release SVG slice: 216 passed, 0 failed, 0 skipped.
+- Windows x64 and Ubuntu 24.04 WSL `linux-x64` each completed the 10,000-render ownership stress gate with
+  zero failures and 1,111 intended fallbacks; retained private growth stayed below the 64 MiB ceiling.
+- The deterministic first 100 local WPT SVG files produced 9 first-party, 75 compatibility-fallback, and
+  16 resource-rejection classifications with zero renderer failures. The classification shift came from
+  correctly recognizing a CDATA stylesheet containing an external image URL, not from hiding a text gap.

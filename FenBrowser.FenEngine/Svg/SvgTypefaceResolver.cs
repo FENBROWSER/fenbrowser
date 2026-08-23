@@ -52,15 +52,7 @@ namespace FenBrowser.FenEngine.Svg
         {
             if (typeface == null) return false;
             using var font = new SKFont(typeface);
-            for (int i = 0; i < text.Length; i++)
-            {
-                if (char.IsWhiteSpace(text[i])) continue;
-                ushort glyph = font.GetGlyph(text[i]);
-                if (glyph == 0) return false;
-                using var outline = font.GetGlyphPath(glyph);
-                if (outline == null || outline.IsEmpty) return false;
-            }
-            return true;
+            return font.ContainsGlyphs(text);
         }
     }
 }

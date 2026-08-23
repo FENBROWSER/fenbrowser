@@ -20,6 +20,7 @@ namespace FenBrowser.FenEngine.Svg
         public string TextContent;
         public KeyValuePair<string, string>[] Attributes;
         public readonly List<SvgElement> Children = new List<SvgElement>();
+        public readonly List<SvgContentPart> Content = new List<SvgContentPart>();
         public SvgElement Parent;
         public SvgElement PreviousElementSibling;
         public Dictionary<string, string> CascadedDeclarations;
@@ -137,5 +138,24 @@ namespace FenBrowser.FenEngine.Svg
             ResourceRejected = true;
             Warn(reason);
         }
+    }
+
+    internal readonly struct SvgContentPart
+    {
+        public SvgContentPart(string text)
+        {
+            Text = text;
+            Element = null;
+        }
+
+        public SvgContentPart(SvgElement element)
+        {
+            Text = null;
+            Element = element;
+        }
+
+        public string Text { get; }
+        public SvgElement Element { get; }
+        public bool IsText => Text != null;
     }
 }

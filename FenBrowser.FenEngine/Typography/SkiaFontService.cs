@@ -138,7 +138,8 @@ namespace FenBrowser.FenEngine.Typography
                 Subpixel = true
             };
 
-            if (!TryShapeWithHarfBuzz(text, font, out var glyphs, out var width))
+            bool wasShaped = TryShapeWithHarfBuzz(text, font, out var glyphs, out var width);
+            if (!wasShaped)
             {
                 var glyphIds = font.GetGlyphs(text);
                 var widths = font.GetGlyphWidths(text);
@@ -165,7 +166,8 @@ namespace FenBrowser.FenEngine.Typography
                 FontSize = fontSize,
                 Width = width,
                 Metrics = metrics,
-                SourceText = text
+                SourceText = text,
+                WasShaped = wasShaped
             };
 
             if (text.Length <= 256)
@@ -174,6 +176,58 @@ namespace FenBrowser.FenEngine.Typography
             }
 
             return glyphRun;
+        }
+
+        /// <summary>
+        /// Shapes with an already resolved typeface while retaining the canonical
+        /// HarfBuzz/fallback positioning path. Used by isolated renderers whose
+        /// trusted font resolution policy differs from document CSS font loading.
+        /// </summary>
+        internal static GlyphRun ShapeWithTypeface(string text, SKTypeface typeface, float fontSize)
+        {
+            if (string.IsNullOrEmpty(text) || typeface == null)
+            {
+                return new GlyphRun
+                {
+                    Glyphs = Array.Empty<PositionedGlyph>(),
+                    Typeface = typeface,
+                    FontSize = fontSize,
+                    Width = 0,
+                    SourceText = text
+                };
+            }
+
+            using var font = new SKFont(typeface, fontSize) { Subpixel = true };
+            bool wasShaped = TryShapeWithHarfBuzz(text, font, out var glyphs, out var width);
+            if (!wasShaped)
+            {
+                var glyphIds = font.GetGlyphs(text);
+                var widths = font.GetGlyphWidths(text);
+                glyphs = new PositionedGlyph[glyphIds.Length];
+                width = 0;
+                for (int i = 0; i < glyphIds.Length; i++)
+                {
+                    glyphs[i] = new PositionedGlyph
+                    {
+                        GlyphId = glyphIds[i],
+                        X = width,
+                        Y = 0,
+                        AdvanceX = widths[i]
+                    };
+                    width += widths[i];
+                }
+            }
+
+            return new GlyphRun
+            {
+                Glyphs = glyphs,
+                Typeface = typeface,
+                FontSize = fontSize,
+                Width = width,
+                Metrics = NormalizedFontMetrics.FromSkia(font.Metrics, fontSize, null),
+                SourceText = text,
+                WasShaped = wasShaped
+            };
         }
 
         public SKTypeface ResolveTypeface(string fontFamily, int fontWeight = 400, SKFontStyleSlant fontStyle = SKFontStyleSlant.Upright)

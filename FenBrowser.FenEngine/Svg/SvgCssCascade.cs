@@ -25,7 +25,7 @@ namespace FenBrowser.FenEngine.Svg
             "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset",
             "opacity", "clip-path", "clip-rule",
             "stop-color", "stop-opacity",
-            "font-family", "font-size", "font-style", "font-weight", "text-anchor"
+            "font-family", "font-size", "font-style", "font-weight", "letter-spacing", "text-anchor"
         };
 
         private static readonly HashSet<string> NoneIsNoEffect = new(StringComparer.OrdinalIgnoreCase)

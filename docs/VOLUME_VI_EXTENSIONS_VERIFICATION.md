@@ -4485,3 +4485,20 @@ Verification:
 - `SvgCssCascadeTests`: 12 passed, 0 failed, 0 skipped.
 - Complete focused SVG slice: 206 passed, 0 failed, 0 skipped.
 - Deterministic 100-file report: first-party 10, fallback 75, resource rejection 15, parity 5/6.
+
+## 6.196 SVG Text-Shaping And Cross-Platform Stress Gate (2026-08-24)
+
+- `SvgTextShapingTests` covers mixed text/tspan ordering and paint, anchored absolute tspan chunks,
+  hidden spans, ancestor font inheritance, `xml:space`, explicit per-glyph fallback, the document glyph
+  budget, and concurrent Arabic/Greek/Hebrew/Indic shaping. Production-hardening tests separately retain
+  vertical text as a compatibility case and require non-empty shaped complex-script output.
+- The complete focused SVG test slice contains 216 passing tests. Host and benchmark Release builds complete
+  with zero warnings and zero errors after locked Host/DevTools restore resolves the Linux HarfBuzz native
+  asset at the managed 14.2.0 version.
+- `scripts/BenchSvg --stress-only` completes 10,000 hybrid renders with zero failures and 1,111 intended
+  fallbacks on Windows x64 and on the published `linux-x64` binary executed under Ubuntu 24.04 WSL. Both
+  retained-memory measurements remain below the fixed 64 MiB ceiling.
+- The same deterministic first 100 local WPT files classify as 9 first-party, 75 compatibility fallback,
+  and 16 resource rejection, with 4/5 comparable pairs meeting the current legacy differential thresholds.
+  The additional rejection is an inline CDATA stylesheet that requests an external image; the gate records
+  it as resource isolation rather than handing it to the legacy backend.

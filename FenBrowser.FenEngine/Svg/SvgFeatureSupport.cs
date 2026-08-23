@@ -12,7 +12,7 @@ namespace FenBrowser.FenEngine.Svg
     {
         private static readonly HashSet<string> FallbackElements = new(StringComparer.Ordinal)
         {
-            "tspan", "textPath",
+            "textPath",
             "foreignObject", "animation", "animate", "animateTransform", "animateMotion", "set"
         };
 
@@ -26,9 +26,9 @@ namespace FenBrowser.FenEngine.Svg
         {
             "textLength", "lengthAdjust", "rotate", "writing-mode", "direction",
             "unicode-bidi", "glyph-orientation-horizontal", "glyph-orientation-vertical",
-            "dominant-baseline", "alignment-baseline", "baseline-shift", "letter-spacing",
+            "dominant-baseline", "alignment-baseline", "baseline-shift",
             "word-spacing", "text-decoration", "text-rendering", "font", "font-stretch",
-            "font-variant", "xml:space"
+            "font-variant"
         };
 
         public static void Inspect(SvgElement element, SvgParseReport report)
@@ -61,7 +61,8 @@ namespace FenBrowser.FenEngine.Svg
                     report.RejectResource($"SVG {element.Name} external reference rejected");
                     continue;
                 }
-                if (element.Name == "text" && AdvancedTextAttributes.Contains(attribute.Key))
+                if ((element.Name == "text" || element.Name == "tspan") &&
+                    AdvancedTextAttributes.Contains(attribute.Key))
                 {
                     report.RequireFallback(
                         $"SVG text attribute '{attribute.Key}' requires compatibility fallback");

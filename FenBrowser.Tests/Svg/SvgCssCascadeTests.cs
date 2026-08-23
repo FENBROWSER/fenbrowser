@@ -25,6 +25,20 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void CdataStylesheet_IsParsedWithoutEntityExpansion()
+        {
+            const string svg =
+                "<svg width='20' height='20'><style><![CDATA[rect { fill: #00ff00 }]]></style>" +
+                "<rect width='20' height='20'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.Equal(SKColors.Lime, result.Bitmap.GetPixel(10, 10));
+        }
+
+        [Fact]
         public void Cascade_RespectsImportantSpecificityInlineAndSourceOrder()
         {
             const string svg =
