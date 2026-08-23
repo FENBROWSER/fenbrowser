@@ -65,14 +65,17 @@ namespace FenBrowser.FenEngine.Adapters
                         out var picture,
                         out float naturalWidth,
                         out float naturalHeight,
-                        out string error, out var warnings, out bool requiresFallback,
-                        out bool resourceRejected))
+                        out string error, out var warnings,
+                        out var fallbackReasonCodes, out var resourceRejectionReasonCodes,
+                        out bool requiresFallback, out bool resourceRejected))
                 {
                     return new SvgRenderResult
                     {
                         Success = false,
                         ErrorMessage = error ?? "Failed to parse SVG",
                         Warnings = warnings,
+                        FallbackReasonCodes = fallbackReasonCodes,
+                        ResourceRejectionReasonCodes = resourceRejectionReasonCodes,
                         Backend = SvgRendererBackend.FirstParty,
                         RequiresFallback = requiresFallback,
                         HadResourceRejection = resourceRejected
@@ -93,6 +96,8 @@ namespace FenBrowser.FenEngine.Adapters
                             Success = false,
                             ErrorMessage = "SVG produced non-finite raster bounds",
                             Warnings = warnings,
+                            FallbackReasonCodes = fallbackReasonCodes,
+                            ResourceRejectionReasonCodes = resourceRejectionReasonCodes,
                             Backend = SvgRendererBackend.FirstParty,
                             RequiresFallback = requiresFallback,
                             HadResourceRejection = resourceRejected
@@ -111,6 +116,8 @@ namespace FenBrowser.FenEngine.Adapters
                                 $"SVG raster bounds {rasterWidth:0}x{rasterHeight:0} exceed browser limits " +
                                 $"({limits.MaxRasterWidth}x{limits.MaxRasterHeight}, {limits.MaxRasterPixels} pixels)",
                             Warnings = warnings,
+                            FallbackReasonCodes = fallbackReasonCodes,
+                            ResourceRejectionReasonCodes = resourceRejectionReasonCodes,
                             Backend = SvgRendererBackend.FirstParty,
                             RequiresFallback = requiresFallback,
                             HadResourceRejection = resourceRejected
@@ -134,6 +141,8 @@ namespace FenBrowser.FenEngine.Adapters
                             Success = false,
                             ErrorMessage = "SVG raster allocation refused",
                             Warnings = warnings,
+                            FallbackReasonCodes = fallbackReasonCodes,
+                            ResourceRejectionReasonCodes = resourceRejectionReasonCodes,
                             Backend = SvgRendererBackend.FirstParty,
                             RequiresFallback = requiresFallback,
                             HadResourceRejection = resourceRejected
@@ -159,6 +168,8 @@ namespace FenBrowser.FenEngine.Adapters
                             Success = false,
                             ErrorMessage = $"SVG rasterization failed: {drawEx.Message}",
                             Warnings = warnings,
+                            FallbackReasonCodes = fallbackReasonCodes,
+                            ResourceRejectionReasonCodes = resourceRejectionReasonCodes,
                             Backend = SvgRendererBackend.FirstParty,
                             RequiresFallback = requiresFallback,
                             HadResourceRejection = resourceRejected
@@ -178,6 +189,8 @@ namespace FenBrowser.FenEngine.Adapters
                         Height = cullRect.Height,
                         Success = true,
                         Warnings = warnings,
+                        FallbackReasonCodes = fallbackReasonCodes,
+                        ResourceRejectionReasonCodes = resourceRejectionReasonCodes,
                         Backend = SvgRendererBackend.FirstParty,
                         RequiresFallback = requiresFallback,
                         HadResourceRejection = resourceRejected

@@ -4557,3 +4557,23 @@ Verification:
 - Complete focused SVG tests pass 246/246. The same Release binary passes the 10,000-render ownership gate on Windows
   and as a published `linux-x64` application under Ubuntu 24.04 WSL, both with zero failures and retained memory below
   64 MiB. This closes the captured-site acceptance gate but does not override the still-open complete-WPT gate.
+
+## 6.201 Reason-Coded, Stratified, Resumable SVG Corpus Runs (2026-08-24)
+
+- Corpus schema v2 records bounded warning messages, stable fallback/resource/failure codes, source SHA-256, and
+  aggregated reason counts. WPT runs locate the mandatory local `MANIFEST.json` and classify selected SVG files as
+  reftest, support, manual, testharness, crashtest, visual, or unclassified instead of treating every `.svg` as an
+  equivalent conformance test.
+- Repeated `--include-prefix <relative-path>` arguments select exact path segments before `--max-files`; traversal,
+  rooted, empty, and captured-site-filter attempts are rejected. This supports small category/root-cause reruns while
+  preserving paths relative to the full local WPT SVG root.
+- `--resume` appends JSONL checkpoints under the selected `Results/svg/` output. Reuse requires the exact benchmark
+  module build id and exact source SHA-256. Worker timeouts/failures and read failures are always rerun, preventing a
+  transient execution problem from becoming a cached pass/fail result. The final JSON/Markdown reports remain atomic.
+
+Verification:
+
+- A current `path/bearing` selection classified 3 reftests and 3 support files; 5 rendered first-party and the
+  `zero.svg` reftest retained its bounded worker timeout.
+- An immediate resume reused the 5 deterministic results in 5 ms of parent evaluation and reran the timeout under its
+  full 5-second wall budget. The report recorded `execution/worker-timeout: 1` rather than hiding the rerun.

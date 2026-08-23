@@ -13,6 +13,8 @@ internal sealed record SvgCorpusOptions(
     int PerFileTimeoutMs,
     string CorpusKind,
     string? ManifestPath,
+    IReadOnlyList<string> IncludePrefixes,
+    bool Resume,
     bool Gate)
 {
     private const int DefaultMaxFiles = 500;
@@ -37,8 +39,11 @@ internal sealed record SvgCorpusOptions(
         if (corpusKind is not ("generic" or "wpt" or "captured-site"))
             throw new ArgumentException("--corpus-kind must be generic, wpt, or captured-site");
         string? manifest = ReadString(args, "--manifest");
+        var includePrefixes = ReadPrefixes(args, "--include-prefix");
         if (corpusKind == "captured-site" && string.IsNullOrWhiteSpace(manifest))
             throw new ArgumentException("captured-site corpus requires --manifest");
+        if (corpusKind == "captured-site" && includePrefixes.Count != 0)
+            throw new ArgumentException("captured-site corpus cannot be filtered by --include-prefix");
         return new SvgCorpusOptions(
             corpus,
             Path.GetFullPath(output),
@@ -47,6 +52,8 @@ internal sealed record SvgCorpusOptions(
             timeoutMs,
             corpusKind,
             manifest == null ? null : Path.GetFullPath(manifest),
+            includePrefixes,
+            args.Contains("--resume", StringComparer.Ordinal),
             args.Contains("--gate", StringComparer.Ordinal));
     }
 
@@ -75,6 +82,32 @@ internal sealed record SvgCorpusOptions(
             throw new ArgumentException($"{name} must be between {min} and {max}");
         return value;
     }
+
+    private static IReadOnlyList<string> ReadPrefixes(string[] args, string name)
+    {
+        var prefixes = new List<string>();
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (!args[i].Equals(name, StringComparison.Ordinal)) continue;
+            if (++i >= args.Length) throw new ArgumentException($"{name} requires a value");
+            string prefix = args[i].Replace('\\', '/').Trim('/');
+            if (prefix.Length == 0 || Path.IsPathRooted(prefix) ||
+                prefix.Split('/').Any(part => part is "" or "." or ".."))
+                throw new ArgumentException($"{name} contains an invalid relative path prefix");
+            if (!prefixes.Contains(prefix, StringComparer.Ordinal)) prefixes.Add(prefix);
+        }
+        return prefixes;
+    }
+
+    public bool Includes(string fullPath)
+    {
+        if (IncludePrefixes.Count == 0) return true;
+        string relative = Path.GetRelativePath(CorpusDirectory, fullPath)
+            .Replace(Path.DirectorySeparatorChar, '/');
+        return IncludePrefixes.Any(prefix =>
+            relative.Equals(prefix, StringComparison.Ordinal) ||
+            relative.StartsWith(prefix + "/", StringComparison.Ordinal));
+    }
 }
 
 internal static class SvgCorpusRunner
@@ -93,6 +126,17 @@ internal static class SvgCorpusRunner
         ISvgRenderer legacy)
     {
         bool manifestValidated = false;
+        Directory.CreateDirectory(options.OutputDirectory);
+        string checkpointPath = Path.Combine(options.OutputDirectory, "corpus-checkpoint.jsonl");
+        string rendererBuildId = typeof(SvgCorpusRunner).Assembly.ManifestModule.ModuleVersionId.ToString("D");
+        var checkpoint = options.Resume
+            ? LoadCheckpoint(checkpointPath, rendererBuildId)
+            : new Dictionary<string, SvgCorpusCheckpoint>(StringComparer.Ordinal);
+        RewriteCheckpoint(checkpointPath, checkpoint.Values);
+        int reusedEntries = 0;
+        WptManifestIndex? wptIndex = options.CorpusKind == "wpt"
+            ? WptManifestIndex.LoadRequired(options.CorpusDirectory)
+            : null;
         string[] allFiles;
         if (options.ManifestPath != null)
         {
@@ -114,12 +158,17 @@ internal static class SvgCorpusRunner
             .OrderBy(path => path, StringComparer.Ordinal)
             .ToArray();
         }
+        allFiles = allFiles.Where(options.Includes).ToArray();
         var selected = allFiles.Take(options.MaxFiles + 1).ToArray();
         bool selectionTruncated = selected.Length > options.MaxFiles;
         var files = selected.Take(options.MaxFiles).ToArray();
 
         var entries = new List<SvgCorpusEntry>(files.Length);
         var runClock = Stopwatch.StartNew();
+        using var checkpointWriter = new StreamWriter(
+            new FileStream(checkpointPath, FileMode.Append, FileAccess.Write, FileShare.Read,
+                16 * 1024, FileOptions.WriteThrough))
+        { AutoFlush = true };
         for (int fileIndex = 0; fileIndex < files.Length; fileIndex++)
         {
             string file = files[fileIndex];
@@ -128,11 +177,55 @@ internal static class SvgCorpusRunner
             var info = new FileInfo(file);
             if (info.Length > options.MaxFileBytes)
             {
-                entries.Add(new SvgCorpusEntry { Path = relative, Bytes = info.Length, Classification = "skipped-oversize" });
+                entries.Add(new SvgCorpusEntry
+                {
+                    Path = relative,
+                    Bytes = info.Length,
+                    Classification = "skipped-oversize",
+                    WptType = wptIndex?.Classify(file)
+                });
                 continue;
             }
 
-            var entry = EvaluateIsolated(relative, info.Length, file, options.PerFileTimeoutMs);
+            string sourceSha256;
+            try
+            {
+                using var sourceStream = File.OpenRead(file);
+                sourceSha256 = Convert.ToHexString(SHA256.HashData(sourceStream)).ToLowerInvariant();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                entries.Add(new SvgCorpusEntry
+                {
+                    Path = relative,
+                    Bytes = info.Length,
+                    Classification = "read-failure",
+                    FailureReasonCode = "source-read-failure",
+                    Error = Bound(ex.Message),
+                    WptType = wptIndex?.Classify(file)
+                });
+                continue;
+            }
+
+            SvgCorpusEntry entry;
+            if (checkpoint.TryGetValue(relative, out var saved) && IsReusable(saved.Entry) &&
+                saved.SourceSha256.Equals(sourceSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                entry = saved.Entry;
+                reusedEntries++;
+            }
+            else
+            {
+                entry = EvaluateIsolated(relative, info.Length, file, options.PerFileTimeoutMs);
+                entry.SourceSha256 = sourceSha256;
+                if (IsReusable(entry)) checkpointWriter.WriteLine(JsonSerializer.Serialize(new SvgCorpusCheckpoint
+                {
+                    RendererBuildId = rendererBuildId,
+                    SourceSha256 = sourceSha256,
+                    Entry = entry
+                }));
+            }
+            entry.WptType = wptIndex?.Classify(file);
             entries.Add(entry);
             int completed = fileIndex + 1;
             if (completed == files.Length || completed % 25 == 0)
@@ -150,9 +243,13 @@ internal static class SvgCorpusRunner
 
         var summary = new SvgCorpusSummary
         {
-            SchemaVersion = 1,
+            SchemaVersion = 2,
             CorpusRoot = options.CorpusDirectory,
             CorpusKind = options.CorpusKind,
+            SelectionPrefixes = options.IncludePrefixes.ToList(),
+            Resumed = options.Resume,
+            ReusedEntries = reusedEntries,
+            RendererBuildId = rendererBuildId,
             ManifestValidated = manifestValidated,
             SelectedFiles = files.Length,
             SelectionTruncated = selectionTruncated,
@@ -169,7 +266,15 @@ internal static class SvgCorpusRunner
             ComparablePairs = entries.Count(entry => entry.PixelComparable),
             ComparableParityPasses = entries.Count(entry => entry.PixelParity),
             AcceptedReferenceDefects = entries.Count(entry => entry.ReferenceDefect != null),
-            Entries = entries
+            Entries = entries,
+            ReasonCounts = BuildReasonCounts(entries),
+            WptTypeCounts = entries
+                .Where(entry => entry.WptType != null)
+                .GroupBy(entry => entry.WptType!, StringComparer.Ordinal)
+                .Select(group => new SvgTypeCount { Type = group.Key, Count = group.Count() })
+                .OrderByDescending(item => item.Count)
+                .ThenBy(item => item.Type, StringComparer.Ordinal)
+                .ToList()
         };
 
         Directory.CreateDirectory(options.OutputDirectory);
@@ -195,6 +300,9 @@ internal static class SvgCorpusRunner
             corpusKind = summary.CorpusKind,
             manifestValidated = summary.ManifestValidated,
             truncated = summary.SelectionTruncated,
+            prefixes = summary.SelectionPrefixes,
+            resumed = summary.Resumed,
+            reused = summary.ReusedEntries,
             evaluated = summary.EvaluatedFiles,
             firstParty = summary.FirstPartySupported,
             fallback = summary.CompatibilityFallbacks,
@@ -205,10 +313,59 @@ internal static class SvgCorpusRunner
             workerFailures = summary.WorkerFailures,
             parity = $"{summary.ComparableParityPasses}/{summary.ComparablePairs}",
             acceptedReferenceDefects = summary.AcceptedReferenceDefects,
+            reasons = summary.ReasonCounts.Count,
             report = Path.Combine(options.OutputDirectory, "corpus-report.json")
         }));
 
         return options.Gate && !gateOk ? 1 : 0;
+    }
+
+    private static bool IsReusable(SvgCorpusEntry entry) =>
+        entry.Classification is not ("worker-timeout" or "worker-failure" or "read-failure");
+
+    private static Dictionary<string, SvgCorpusCheckpoint> LoadCheckpoint(
+        string path,
+        string rendererBuildId)
+    {
+        var entries = new Dictionary<string, SvgCorpusCheckpoint>(StringComparer.Ordinal);
+        if (!File.Exists(path)) return entries;
+        foreach (string line in File.ReadLines(path))
+        {
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            try
+            {
+                var item = JsonSerializer.Deserialize<SvgCorpusCheckpoint>(line);
+                if (item?.Entry == null || item.RendererBuildId != rendererBuildId ||
+                    string.IsNullOrWhiteSpace(item.Entry.Path) || string.IsNullOrWhiteSpace(item.SourceSha256))
+                    continue;
+                entries[item.Entry.Path] = item;
+            }
+            catch (JsonException)
+            {
+                // A process interruption may leave one partial trailing record.
+            }
+        }
+        return entries;
+    }
+
+    private static void RewriteCheckpoint(
+        string path,
+        IEnumerable<SvgCorpusCheckpoint> entries)
+    {
+        string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using (var writer = new StreamWriter(temporary, append: false))
+            {
+                foreach (var entry in entries.OrderBy(item => item.Entry.Path, StringComparer.Ordinal))
+                    writer.WriteLine(JsonSerializer.Serialize(entry));
+            }
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
     }
 
     private static string[] LoadValidatedManifest(
@@ -449,6 +606,12 @@ internal static class SvgCorpusRunner
             HybridMilliseconds = routed.ElapsedMilliseconds,
             LegacyMilliseconds = reference.ElapsedMilliseconds,
             WarningCount = fen.Result.Warnings.Count,
+            WarningMessages = fen.Result.Warnings.Take(8).Select(message => Bound(message) ?? string.Empty).ToList(),
+            FallbackReasonCodes = fen.Result.FallbackReasonCodes.Distinct(StringComparer.Ordinal).ToList(),
+            ResourceRejectionReasonCodes = fen.Result.ResourceRejectionReasonCodes.Distinct(StringComparer.Ordinal).ToList(),
+            FailureReasonCode = classification is "first-party-failure" or "hybrid-failure"
+                ? ClassifyFailure(routed.Result.ErrorMessage ?? fen.Result.ErrorMessage)
+                : null,
             Error = Bound(routed.Result.ErrorMessage ?? fen.Result.ErrorMessage),
             PixelComparable = comparable,
             PixelParity = parity,
@@ -458,6 +621,52 @@ internal static class SvgCorpusRunner
             FirstPartyForegroundPixels = firstPartyForegroundPixels,
             LegacyForegroundPixels = legacyForegroundPixels
         };
+    }
+
+    private static List<SvgReasonCount> BuildReasonCounts(IEnumerable<SvgCorpusEntry> entries)
+    {
+        var reasons = new Dictionary<(string Kind, string Code), int>();
+        static void Add(Dictionary<(string Kind, string Code), int> target, string kind, string? code)
+        {
+            if (string.IsNullOrWhiteSpace(code)) return;
+            var key = (kind, code);
+            target[key] = target.TryGetValue(key, out int count) ? count + 1 : 1;
+        }
+
+        foreach (var entry in entries)
+        {
+            foreach (string code in entry.FallbackReasonCodes) Add(reasons, "fallback", code);
+            foreach (string code in entry.ResourceRejectionReasonCodes) Add(reasons, "resource-rejection", code);
+            Add(reasons, "failure", entry.FailureReasonCode);
+            Add(reasons, "reference-defect", entry.ReferenceDefect);
+            if (entry.Classification is "worker-timeout" or "worker-failure" or "read-failure" or "skipped-oversize")
+                Add(reasons, "execution", entry.Classification);
+        }
+        return reasons
+            .Select(pair => new SvgReasonCount
+            {
+                Kind = pair.Key.Kind,
+                Code = pair.Key.Code,
+                Count = pair.Value
+            })
+            .OrderByDescending(item => item.Count)
+            .ThenBy(item => item.Kind, StringComparer.Ordinal)
+            .ThenBy(item => item.Code, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static string ClassifyFailure(string? error)
+    {
+        if (string.IsNullOrWhiteSpace(error)) return "render-failure";
+        if (error.Contains("time", StringComparison.OrdinalIgnoreCase)) return "render-timeout";
+        if (error.Contains("DOCTYPE", StringComparison.OrdinalIgnoreCase)) return "doctype-rejected";
+        if (error.Contains("parse", StringComparison.OrdinalIgnoreCase) ||
+            error.Contains("markup", StringComparison.OrdinalIgnoreCase)) return "parse-failure";
+        if (error.Contains("raster", StringComparison.OrdinalIgnoreCase) ||
+            error.Contains("pixel", StringComparison.OrdinalIgnoreCase)) return "raster-failure";
+        if (error.Contains("limit", StringComparison.OrdinalIgnoreCase) ||
+            error.Contains("budget", StringComparison.OrdinalIgnoreCase)) return "admission-failure";
+        return "render-failure";
     }
 
     private static TimedSvgResult TimedRender(ISvgRenderer renderer, string source)
@@ -559,6 +768,9 @@ internal static class SvgCorpusRunner
             $"- Manifest validated: {(summary.ManifestValidated ? "yes" : "no")}",
             $"- Selected: {summary.SelectedFiles}",
             $"- Selection truncated by --max-files: {(summary.SelectionTruncated ? "yes" : "no")}",
+            $"- Selection prefixes: {(summary.SelectionPrefixes.Count == 0 ? "all" : string.Join(", ", summary.SelectionPrefixes))}",
+            $"- Resume enabled / entries reused: {(summary.Resumed ? "yes" : "no")} / {summary.ReusedEntries}",
+            $"- Renderer build id: {summary.RendererBuildId}",
             $"- Evaluated: {summary.EvaluatedFiles}",
             $"- First-party supported: {summary.FirstPartySupported}",
             $"- Compatibility fallbacks: {summary.CompatibilityFallbacks}",
@@ -570,12 +782,33 @@ internal static class SvgCorpusRunner
             $"- Accepted, detected legacy reference defects: {summary.AcceptedReferenceDefects}",
             $"- Read failures / oversize skips: {summary.ReadFailures} / {summary.SkippedOversize}",
             "",
-            "| file | classification | producer | fen ms | hybrid ms | legacy ms | parity | reference defect | alpha IoU | RGB mean diff | fen fg | legacy fg |",
-            "|---|---|---|---:|---:|---:|---|---|---:|---:|---:|---:|"
+            "## Reason counts",
+            "",
+            "| kind | code | count |",
+            "|---|---|---:|"
         };
+        foreach (var reason in summary.ReasonCounts)
+            lines.Add($"| {Escape(reason.Kind)} | {Escape(reason.Code)} | {reason.Count} |");
+        if (summary.WptTypeCounts.Count != 0)
+        {
+            lines.AddRange(new[] { "", "## WPT item types", "", "| type | count |", "|---|---:|" });
+            foreach (var type in summary.WptTypeCounts)
+                lines.Add($"| {Escape(type.Type)} | {type.Count} |");
+        }
+        lines.AddRange(new[]
+        {
+            "",
+            "## Files",
+            "",
+            "| file | classification | reasons | producer | fen ms | hybrid ms | legacy ms | parity | reference defect | alpha IoU | RGB mean diff | fen fg | legacy fg |",
+            "|---|---|---|---|---:|---:|---:|---|---|---:|---:|---:|---:|"
+        });
         foreach (var entry in summary.Entries)
         {
-            lines.Add($"| {Escape(entry.Path)} | {entry.Classification} | {entry.ProducingBackend ?? "-"} | " +
+            string reasons = string.Join(",", entry.FallbackReasonCodes
+                .Concat(entry.ResourceRejectionReasonCodes)
+                .Concat(entry.FailureReasonCode == null ? Array.Empty<string>() : new[] { entry.FailureReasonCode }));
+            lines.Add($"| {Escape(entry.Path)} | {entry.Classification} | {Escape(reasons.Length == 0 ? "-" : reasons)} | {entry.ProducingBackend ?? "-"} | " +
                       $"{entry.FirstPartyMilliseconds} | {entry.HybridMilliseconds} | {entry.LegacyMilliseconds} | " +
                       $"{(entry.PixelComparable ? (entry.PixelParity ? "pass" : "FAIL") : "-")} | " +
                       $"{entry.ReferenceDefect ?? "-"} | " +
@@ -622,6 +855,10 @@ internal sealed class SvgCorpusSummary
     public int SchemaVersion { get; set; }
     public string CorpusRoot { get; set; } = string.Empty;
     public string CorpusKind { get; set; } = string.Empty;
+    public List<string> SelectionPrefixes { get; set; } = new();
+    public bool Resumed { get; set; }
+    public int ReusedEntries { get; set; }
+    public string RendererBuildId { get; set; } = string.Empty;
     public bool ManifestValidated { get; set; }
     public int SelectedFiles { get; set; }
     public bool SelectionTruncated { get; set; }
@@ -638,7 +875,29 @@ internal sealed class SvgCorpusSummary
     public int ComparablePairs { get; set; }
     public int ComparableParityPasses { get; set; }
     public int AcceptedReferenceDefects { get; set; }
+    public List<SvgReasonCount> ReasonCounts { get; set; } = new();
+    public List<SvgTypeCount> WptTypeCounts { get; set; } = new();
     public List<SvgCorpusEntry> Entries { get; set; } = new();
+}
+
+internal sealed class SvgReasonCount
+{
+    public string Kind { get; set; } = string.Empty;
+    public string Code { get; set; } = string.Empty;
+    public int Count { get; set; }
+}
+
+internal sealed class SvgCorpusCheckpoint
+{
+    public string RendererBuildId { get; set; } = string.Empty;
+    public string SourceSha256 { get; set; } = string.Empty;
+    public SvgCorpusEntry Entry { get; set; } = new();
+}
+
+internal sealed class SvgTypeCount
+{
+    public string Type { get; set; } = string.Empty;
+    public int Count { get; set; }
 }
 
 internal sealed class SvgCorpusManifest
@@ -673,12 +932,18 @@ internal sealed class SvgCorpusEntry
 {
     public string Path { get; set; } = string.Empty;
     public long Bytes { get; set; }
+    public string SourceSha256 { get; set; } = string.Empty;
     public string Classification { get; set; } = string.Empty;
+    public string? WptType { get; set; }
     public string? ProducingBackend { get; set; }
     public long FirstPartyMilliseconds { get; set; }
     public long HybridMilliseconds { get; set; }
     public long LegacyMilliseconds { get; set; }
     public int WarningCount { get; set; }
+    public List<string> WarningMessages { get; set; } = new();
+    public List<string> FallbackReasonCodes { get; set; } = new();
+    public List<string> ResourceRejectionReasonCodes { get; set; } = new();
+    public string? FailureReasonCode { get; set; }
     public string? Error { get; set; }
     public bool PixelComparable { get; set; }
     public bool PixelParity { get; set; }

@@ -11056,3 +11056,22 @@ Verification:
 - Genuine captured-site gate: 151/151 first-party, zero fallback/rejection/failure/timeout/skip/truncation; 150 direct
   Svg.Skia pixel-parity passes plus one reported `legacy-chromatic-gradient-loss` reference defect.
 - The captured-site gate is closed. The complete local WPT baseline above remains open, so legacy stays the default.
+
+## 2.136 Structured SVG Routing Diagnostics (2026-08-24)
+
+- First-party results now expose bounded stable reason-code sets separately for compatibility fallback and resource
+  rejection while preserving the existing bounded human-readable warnings. The hybrid adapter carries the first-party
+  codes onto legacy-produced results, so callers can measure why routing occurred without parsing log prose.
+- The parse/render report classifies animation, advanced text, effects, paint servers, CSS, dynamic content,
+  references, admission limits, and external/invalid/oversized resources. Warning messages are capped at 256
+  characters before crossing the adapter boundary, preventing attacker-controlled property values from expanding
+  diagnostics or telemetry.
+- External `use` references are now resource rejections rather than compatibility fallbacks; hybrid mode cannot hand
+  a resource-policy decision to the legacy backend. Unsupported and unknown visible elements consistently use the
+  reason-coded fallback path instead of mutating the fallback flag directly.
+
+Verification:
+
+- FenEngine and `scripts/BenchSvg` Debug builds: zero warnings and zero errors.
+- Focused diagnostics, production-hardening, and nested-resource slice: 50 passed, 0 failed, 0 skipped; complete
+  Release SVG slice: 250 passed, 0 failed, 0 skipped.

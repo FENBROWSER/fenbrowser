@@ -70,6 +70,12 @@ namespace FenBrowser.FenEngine.Adapters
         /// </summary>
         public IReadOnlyList<string> Warnings { get; set; } = Array.Empty<string>();
 
+        /// <summary>Stable, bounded categories explaining compatibility routing.</summary>
+        public IReadOnlyList<string> FallbackReasonCodes { get; set; } = Array.Empty<string>();
+
+        /// <summary>Stable, bounded categories explaining rejected embedded resources.</summary>
+        public IReadOnlyList<string> ResourceRejectionReasonCodes { get; set; } = Array.Empty<string>();
+
         /// <summary>Backend that produced the returned pixels.</summary>
         public SvgRendererBackend Backend { get; set; }
 

@@ -74,6 +74,8 @@ namespace FenBrowser.FenEngine.Svg
             out float height,
             out string error,
             out IReadOnlyList<string> warnings,
+            out IReadOnlyList<string> fallbackReasonCodes,
+            out IReadOnlyList<string> resourceRejectionReasonCodes,
             out bool requiresFallback,
             out bool resourceRejected)
         {
@@ -82,12 +84,15 @@ namespace FenBrowser.FenEngine.Svg
             height = 0f;
             error = null;
             warnings = System.Array.Empty<string>();
+            fallbackReasonCodes = System.Array.Empty<string>();
+            resourceRejectionReasonCodes = System.Array.Empty<string>();
             requiresFallback = false;
             resourceRejected = false;
 
             return TryRenderInternal(
                 source, limits, new NestedResourceBudget(limits), 0,
                 out picture, out width, out height, out error, out warnings,
+                out fallbackReasonCodes, out resourceRejectionReasonCodes,
                 out requiresFallback, out resourceRejected);
         }
 
@@ -101,6 +106,8 @@ namespace FenBrowser.FenEngine.Svg
             out float height,
             out string error,
             out IReadOnlyList<string> warnings,
+            out IReadOnlyList<string> fallbackReasonCodes,
+            out IReadOnlyList<string> resourceRejectionReasonCodes,
             out bool requiresFallback,
             out bool resourceRejected)
         {
@@ -109,6 +116,8 @@ namespace FenBrowser.FenEngine.Svg
             height = 0f;
             error = null;
             warnings = System.Array.Empty<string>();
+            fallbackReasonCodes = System.Array.Empty<string>();
+            resourceRejectionReasonCodes = System.Array.Empty<string>();
             requiresFallback = false;
             resourceRejected = false;
 
@@ -127,6 +136,8 @@ namespace FenBrowser.FenEngine.Svg
             {
                 engine.RenderRoot(out picture, out width, out height);
                 warnings = engine._report.Warnings.ToArray();
+                fallbackReasonCodes = engine._report.FallbackReasonCodes.ToArray();
+                resourceRejectionReasonCodes = engine._report.ResourceRejectionReasonCodes.ToArray();
                 requiresFallback = engine._report.UnsupportedFeatureIgnored;
                 resourceRejected = engine._report.ResourceRejected;
                 return true;
@@ -135,6 +146,8 @@ namespace FenBrowser.FenEngine.Svg
             {
                 picture = null;
                 warnings = engine._report.Warnings.ToArray();
+                fallbackReasonCodes = engine._report.FallbackReasonCodes.ToArray();
+                resourceRejectionReasonCodes = engine._report.ResourceRejectionReasonCodes.ToArray();
                 requiresFallback = engine._report.UnsupportedFeatureIgnored;
                 resourceRejected = engine._report.ResourceRejected;
                 error = $"SVG render exceeded time limit ({limits.MaxRenderTimeMs}ms, size={source.Length / 1024}KB)";
@@ -146,6 +159,8 @@ namespace FenBrowser.FenEngine.Svg
                 // the generic "SVG render error:" prefix (F10).
                 picture = null;
                 warnings = engine._report.Warnings.ToArray();
+                fallbackReasonCodes = engine._report.FallbackReasonCodes.ToArray();
+                resourceRejectionReasonCodes = engine._report.ResourceRejectionReasonCodes.ToArray();
                 requiresFallback = engine._report.UnsupportedFeatureIgnored;
                 resourceRejected = engine._report.ResourceRejected;
                 error = ex.Message;

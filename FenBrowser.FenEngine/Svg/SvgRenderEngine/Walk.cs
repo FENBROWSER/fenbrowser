@@ -290,8 +290,7 @@ namespace FenBrowser.FenEngine.Svg
             {
                 // Remote references have no code path here by construction; log
                 // and ignore (fail closed).
-                _report.UnsupportedFeatureIgnored = true;
-                _report.Warn("use href ignored (external references are sandboxed off)");
+                _report.RejectResource("use external reference rejected by SVG resource policy");
                 return;
             }
 
@@ -430,14 +429,12 @@ namespace FenBrowser.FenEngine.Svg
 
         private void WarnUnsupportedOnce(string feature)
         {
-            _report.UnsupportedFeatureIgnored = true;
-            _report.Warn($"unsupported SVG feature '{feature}' ignored");
+            _report.RequireFallback($"unsupported SVG feature '{feature}' ignored");
         }
 
         private void WarnUnknownOnce(string name)
         {
-            _report.UnsupportedFeatureIgnored = true;
-            _report.Warn($"unknown element '{name}' skipped");
+            _report.RequireFallback($"unknown element '{name}' skipped");
         }
 
         // ------------------------------------------------------------ clipping
@@ -799,7 +796,8 @@ namespace FenBrowser.FenEngine.Svg
             if (!TryRenderInternal(
                     source, _limits, _resourceBudget, _resourceDepth + 1,
                     out var picture, out float sourceWidth, out float sourceHeight,
-                    out _, out _, out bool requiresFallback, out bool resourceRejected))
+                    out _, out _, out _, out _,
+                    out bool requiresFallback, out bool resourceRejected))
             {
                 _report.RejectResource("embedded SVG failed bounded first-party rendering");
                 return;

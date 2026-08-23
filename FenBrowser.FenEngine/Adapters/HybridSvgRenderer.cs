@@ -42,6 +42,8 @@ namespace FenBrowser.FenEngine.Adapters
             }
 
             fallback.Warnings = MergeWarnings(primary.Warnings, "legacy compatibility fallback used");
+            fallback.FallbackReasonCodes = primary.FallbackReasonCodes;
+            fallback.ResourceRejectionReasonCodes = primary.ResourceRejectionReasonCodes;
             fallback.UsedLegacyFallback = true;
             primary.Dispose();
 
