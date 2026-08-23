@@ -16,6 +16,66 @@ if (args.Length == 3 && args[0] == "--corpus-worker")
     Environment.ExitCode = SvgCorpusRunner.RunWorker(args[1], args[2]);
     return;
 }
+if (args.Length == 4 && args[0] == "--capture-sites" && args[2] == "--capture-output")
+{
+    try
+    {
+        Environment.ExitCode = await SvgSiteCorpusCapture.RunAsync(args[1], args[3]);
+    }
+    catch (Exception ex) when (ex is ArgumentException or IOException or
+                               System.Text.Json.JsonException or UnauthorizedAccessException)
+    {
+        Console.Error.WriteLine(ex.Message);
+        Environment.ExitCode = 2;
+    }
+    return;
+}
+if ((args.Length == 2 || args.Length == 4) && args[0] == "--inspect-svg")
+{
+    string inspectPath = Path.GetFullPath(args[1]);
+    var inspectInfo = new FileInfo(inspectPath);
+    if (!inspectInfo.Exists || inspectInfo.Length > SvgRenderLimits.Default.MaxSourceChars)
+    {
+        Console.Error.WriteLine("inspect SVG is missing or exceeds the source budget");
+        Environment.ExitCode = 2;
+        return;
+    }
+    using var inspectResult = new FenSvgRenderer().Render(await File.ReadAllTextAsync(inspectPath));
+    if (args.Length == 4)
+    {
+        if (args[2] != "--output-prefix")
+        {
+            Console.Error.WriteLine("--inspect-svg optional argument must be --output-prefix <path>");
+            Environment.ExitCode = 2;
+            return;
+        }
+        string prefix = Path.GetFullPath(args[3]);
+        Directory.CreateDirectory(Path.GetDirectoryName(prefix)!);
+        if (inspectResult.Success && inspectResult.Bitmap != null)
+            SaveBitmap(inspectResult.Bitmap, prefix + ".first-party.png");
+        using var legacyInspect = new SvgSkiaRenderer().Render(await File.ReadAllTextAsync(inspectPath));
+        if (legacyInspect.Success && legacyInspect.Bitmap != null)
+            SaveBitmap(legacyInspect.Bitmap, prefix + ".legacy.png");
+    }
+    Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(new
+    {
+        probe = "svg-inspect",
+        success = inspectResult.Success,
+        fallback = inspectResult.RequiresFallback,
+        resourceRejected = inspectResult.HadResourceRejection,
+        warnings = inspectResult.Warnings,
+        error = inspectResult.ErrorMessage
+    }));
+    Environment.ExitCode = inspectResult.Success ? 0 : 1;
+    return;
+}
+
+static void SaveBitmap(SKBitmap bitmap, string path)
+{
+    using var image = SKImage.FromBitmap(bitmap);
+    using var encoded = image.Encode(SKEncodedImageFormat.Png, 100);
+    File.WriteAllBytes(path, encoded.ToArray());
+}
 
 var root = Directory.GetCurrentDirectory();
 var resultsDir = Path.Combine(root, "Results", "svg");

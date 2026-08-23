@@ -4539,3 +4539,21 @@ Verification:
 - Captured-site mode requires an exact SHA-256 manifest and zero fallback/failure/differential. A signed synthetic
   smoke corpus passes 1/1. Workspace inspection found no genuine captured real-site SVG inventory, so production
   default-switch acceptance remains open rather than being inferred from WPT or fabricated samples.
+
+## 6.200 Genuine Captured-Site SVG Acceptance (2026-08-24)
+
+- `scripts/BenchSvg/captured-sites.json` declares the credential-free HTTPS capture set. The capture command applies
+  SSRF-resistant DNS/redirect validation plus public-address-pinned socket connection, no cookies, bounded responses,
+  512 SVG candidates per site, a 32 MiB total SVG ceiling, and emits only under `Results/svg/captured-site/`.
+- The capture manifest is an integrity and completeness contract: every site must finish with zero asset failures and
+  no truncation; site counts must equal the exact SVG inventory; every file carries HTTPS provenance and SHA-256.
+- The 2026-08-24 production capture completed 11/11 sites and 151 SVGs (426,519 bytes), with zero truncation and zero
+  asset failures. Amazon, Gmail, CSS Zen Garden, and React TodoMVC legitimately exposed no SVG in their fetched shell;
+  their successful zero counts remain recorded instead of being silently omitted.
+- The isolated strict run evaluated 151/151: all routed first-party, with zero fallback, rejection, render/worker
+  failure, timeout, read failure, or oversize skip. Pixel comparison evaluated every file: 150 direct passes and one
+  narrow, reported Svg.Skia chromatic-gradient-loss reference defect where the source declares blue/red/yellow stops,
+  first-party preserves them, and the legacy raster is black.
+- Complete focused SVG tests pass 246/246. The same Release binary passes the 10,000-render ownership gate on Windows
+  and as a published `linux-x64` application under Ubuntu 24.04 WSL, both with zero failures and retained memory below
+  64 MiB. This closes the captured-site acceptance gate but does not override the still-open complete-WPT gate.

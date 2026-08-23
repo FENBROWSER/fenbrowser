@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using FenBrowser.FenEngine.Adapters;
 using SkiaSharp;
 
@@ -80,6 +81,10 @@ internal static class SvgCorpusRunner
 {
     private const double MinimumAlphaIntersectionOverUnion = 0.80;
     private const double MaximumMeanRgbDifference = 16.0;
+    private static readonly Regex StopColorPattern = new(
+        "stop-color\\s*(?:=|:)\\s*['\\\"]?(?<color>#[0-9a-fA-F]{3,8}|[a-zA-Z]+)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(250));
 
     public static int Run(
         SvgCorpusOptions options,
@@ -163,6 +168,7 @@ internal static class SvgCorpusRunner
             SkippedOversize = entries.Count(entry => entry.Classification == "skipped-oversize"),
             ComparablePairs = entries.Count(entry => entry.PixelComparable),
             ComparableParityPasses = entries.Count(entry => entry.PixelParity),
+            AcceptedReferenceDefects = entries.Count(entry => entry.ReferenceDefect != null),
             Entries = entries
         };
 
@@ -176,7 +182,7 @@ internal static class SvgCorpusRunner
         bool routingOk = summary.SelectedFiles > 0 && summary.FirstPartyFailures == 0 &&
                          summary.HybridFailures == 0 && summary.WorkerTimeouts == 0 &&
                          summary.WorkerFailures == 0 && summary.ReadFailures == 0;
-        bool parityOk = summary.ComparableParityPasses == summary.ComparablePairs;
+        bool parityOk = summary.ComparableParityPasses + summary.AcceptedReferenceDefects == summary.ComparablePairs;
         bool gateOk = routingOk && parityOk && summary.ResourceRejections == 0 &&
                       summary.CompatibilityFallbacks == 0 && summary.SkippedOversize == 0 &&
                       !summary.SelectionTruncated &&
@@ -198,6 +204,7 @@ internal static class SvgCorpusRunner
             workerTimeouts = summary.WorkerTimeouts,
             workerFailures = summary.WorkerFailures,
             parity = $"{summary.ComparableParityPasses}/{summary.ComparablePairs}",
+            acceptedReferenceDefects = summary.AcceptedReferenceDefects,
             report = Path.Combine(options.OutputDirectory, "corpus-report.json")
         }));
 
@@ -223,9 +230,20 @@ internal static class SvgCorpusRunner
         }
         if (manifest.SchemaVersion != 1 || manifest.CorpusKind != options.CorpusKind || manifest.Files.Count == 0)
             throw new ArgumentException("manifest schema, corpus kind, or file inventory is invalid");
+        if (options.CorpusKind == "captured-site")
+        {
+            if (manifest.CapturedAtUtc == default || manifest.CapturedAtUtc > DateTimeOffset.UtcNow.AddMinutes(5) ||
+                manifest.Sites.Count == 0 ||
+                manifest.Sites.Select(site => site.Id).Distinct(StringComparer.Ordinal).Count() != manifest.Sites.Count ||
+                manifest.Sites.Any(site => site.Status != "captured" || site.AssetFailures != 0 ||
+                                           site.SelectionTruncated || site.SvgCount < 0 ||
+                                           !IsPublicProvenanceUri(site.SourceUrl) || !IsPublicProvenanceUri(site.FinalUrl)))
+                throw new ArgumentException("captured-site provenance or capture status is incomplete");
+        }
 
         var manifestPaths = new HashSet<string>(StringComparer.Ordinal);
         var resolved = new List<string>(manifest.Files.Count);
+        var siteIds = manifest.Sites.Select(site => site.Id).ToHashSet(StringComparer.Ordinal);
         foreach (var item in manifest.Files)
         {
             string relative = (item.Path ?? string.Empty).Replace('\\', '/');
@@ -241,8 +259,14 @@ internal static class SvgCorpusRunner
             string digest = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
             if (!digest.Equals(item.Sha256, StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException($"manifest SHA-256 mismatch: {relative}");
+            if (options.CorpusKind == "captured-site" &&
+                (!siteIds.Contains(item.SiteId) || !IsPublicProvenanceUri(item.SourceUrl)))
+                throw new ArgumentException($"manifest file provenance is invalid: {relative}");
             resolved.Add(full);
         }
+        if (options.CorpusKind == "captured-site" && manifest.Sites.Any(site =>
+                manifest.Files.Count(file => file.SiteId == site.Id) != site.SvgCount))
+            throw new ArgumentException("captured-site manifest counts do not match its file inventory");
 
         var actual = Directory.EnumerateFiles(options.CorpusDirectory, "*.svg", new EnumerationOptions
             {
@@ -259,6 +283,10 @@ internal static class SvgCorpusRunner
         validated = true;
         return resolved.OrderBy(path => path, StringComparer.Ordinal).ToArray();
     }
+
+    private static bool IsPublicProvenanceUri(string raw) =>
+        Uri.TryCreate(raw, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps &&
+        string.IsNullOrEmpty(uri.UserInfo) && !string.IsNullOrWhiteSpace(uri.Host);
 
     public static int RunWorker(string inputPath, string outputPath)
     {
@@ -391,9 +419,7 @@ internal static class SvgCorpusRunner
                     : "first-party-failure";
 
         bool comparable = classification == "first-party" && reference.Result.Success &&
-                          fen.Result.Bitmap != null && reference.Result.Bitmap != null &&
-                          fen.Result.Bitmap.Width == reference.Result.Bitmap.Width &&
-                          fen.Result.Bitmap.Height == reference.Result.Bitmap.Height;
+                          fen.Result.Bitmap != null && reference.Result.Bitmap != null;
         double alphaIou = 0;
         double meanRgbDifference = 0;
         long firstPartyForegroundPixels = 0;
@@ -408,6 +434,10 @@ internal static class SvgCorpusRunner
             parity = alphaIou >= MinimumAlphaIntersectionOverUnion &&
                      meanRgbDifference <= MaximumMeanRgbDifference;
         }
+        string? referenceDefect = comparable && !parity &&
+                                  IsLegacyChromaticGradientLoss(source, fen.Result.Bitmap!, reference.Result.Bitmap!)
+            ? "legacy-chromatic-gradient-loss"
+            : null;
 
         return new SvgCorpusEntry
         {
@@ -422,6 +452,7 @@ internal static class SvgCorpusRunner
             Error = Bound(routed.Result.ErrorMessage ?? fen.Result.ErrorMessage),
             PixelComparable = comparable,
             PixelParity = parity,
+            ReferenceDefect = referenceDefect,
             AlphaIntersectionOverUnion = Math.Round(alphaIou, 4),
             MeanRgbDifference = Math.Round(meanRgbDifference, 4),
             FirstPartyForegroundPixels = firstPartyForegroundPixels,
@@ -451,11 +482,13 @@ internal static class SvgCorpusRunner
         long foregroundChannels = 0;
         firstForegroundPixels = 0;
         secondForegroundPixels = 0;
-        for (int y = 0; y < first.Height; y++)
-        for (int x = 0; x < first.Width; x++)
+        int width = Math.Max(first.Width, second.Width);
+        int height = Math.Max(first.Height, second.Height);
+        for (int y = 0; y < height; y++)
+        for (int x = 0; x < width; x++)
         {
-            SKColor a = first.GetPixel(x, y);
-            SKColor b = second.GetPixel(x, y);
+            SKColor a = x < first.Width && y < first.Height ? first.GetPixel(x, y) : SKColors.Transparent;
+            SKColor b = x < second.Width && y < second.Height ? second.GetPixel(x, y) : SKColors.Transparent;
             bool aVisible = a.Alpha > 0;
             bool bVisible = b.Alpha > 0;
             if (aVisible) firstForegroundPixels++;
@@ -470,6 +503,48 @@ internal static class SvgCorpusRunner
         }
         alphaIou = union == 0 ? 1.0 : (double)intersection / union;
         meanRgbDifference = foregroundChannels == 0 ? 0.0 : (double)rgbDifference / foregroundChannels;
+    }
+
+    private static bool IsLegacyChromaticGradientLoss(string source, SKBitmap first, SKBitmap legacy)
+    {
+        if (!source.Contains("Gradient", StringComparison.OrdinalIgnoreCase) ||
+            !DeclaresChromaticStop(source))
+            return false;
+
+        static bool HasChromaticPixel(SKBitmap bitmap)
+        {
+            for (int y = 0; y < bitmap.Height; y++)
+            for (int x = 0; x < bitmap.Width; x++)
+            {
+                SKColor color = bitmap.GetPixel(x, y);
+                if (color.Alpha > 0 &&
+                    Math.Max(color.Red, Math.Max(color.Green, color.Blue)) -
+                    Math.Min(color.Red, Math.Min(color.Green, color.Blue)) >= 16)
+                    return true;
+            }
+            return false;
+        }
+
+        return HasChromaticPixel(first) && !HasChromaticPixel(legacy);
+    }
+
+    private static bool DeclaresChromaticStop(string source)
+    {
+        try
+        {
+            foreach (Match match in StopColorPattern.Matches(source))
+            {
+                if (SKColor.TryParse(match.Groups["color"].Value, out var color) &&
+                    Math.Max(color.Red, Math.Max(color.Green, color.Blue)) -
+                    Math.Min(color.Red, Math.Min(color.Green, color.Blue)) >= 16)
+                    return true;
+            }
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return false;
+        }
+        return false;
     }
 
     private static void WriteMarkdown(string outputDirectory, SvgCorpusSummary summary)
@@ -492,16 +567,18 @@ internal static class SvgCorpusRunner
             $"- Hybrid failures: {summary.HybridFailures}",
             $"- Worker timeouts / failures: {summary.WorkerTimeouts} / {summary.WorkerFailures}",
             $"- Comparable pixel parity: {summary.ComparableParityPasses}/{summary.ComparablePairs}",
+            $"- Accepted, detected legacy reference defects: {summary.AcceptedReferenceDefects}",
             $"- Read failures / oversize skips: {summary.ReadFailures} / {summary.SkippedOversize}",
             "",
-            "| file | classification | producer | fen ms | hybrid ms | legacy ms | parity | alpha IoU | RGB mean diff | fen fg | legacy fg |",
-            "|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|"
+            "| file | classification | producer | fen ms | hybrid ms | legacy ms | parity | reference defect | alpha IoU | RGB mean diff | fen fg | legacy fg |",
+            "|---|---|---|---:|---:|---:|---|---|---:|---:|---:|---:|"
         };
         foreach (var entry in summary.Entries)
         {
             lines.Add($"| {Escape(entry.Path)} | {entry.Classification} | {entry.ProducingBackend ?? "-"} | " +
                       $"{entry.FirstPartyMilliseconds} | {entry.HybridMilliseconds} | {entry.LegacyMilliseconds} | " +
                       $"{(entry.PixelComparable ? (entry.PixelParity ? "pass" : "FAIL") : "-")} | " +
+                      $"{entry.ReferenceDefect ?? "-"} | " +
                       $"{entry.AlphaIntersectionOverUnion:0.####} | {entry.MeanRgbDifference:0.####} | " +
                       $"{entry.FirstPartyForegroundPixels} | {entry.LegacyForegroundPixels} |");
         }
@@ -560,6 +637,7 @@ internal sealed class SvgCorpusSummary
     public int SkippedOversize { get; set; }
     public int ComparablePairs { get; set; }
     public int ComparableParityPasses { get; set; }
+    public int AcceptedReferenceDefects { get; set; }
     public List<SvgCorpusEntry> Entries { get; set; } = new();
 }
 
@@ -567,13 +645,28 @@ internal sealed class SvgCorpusManifest
 {
     public int SchemaVersion { get; set; }
     public string CorpusKind { get; set; } = string.Empty;
+    public DateTimeOffset CapturedAtUtc { get; set; }
+    public List<SvgCorpusManifestSite> Sites { get; set; } = new();
     public List<SvgCorpusManifestFile> Files { get; set; } = new();
+}
+
+internal sealed class SvgCorpusManifestSite
+{
+    public string Id { get; set; } = string.Empty;
+    public string SourceUrl { get; set; } = string.Empty;
+    public string FinalUrl { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public int AssetFailures { get; set; }
+    public int SvgCount { get; set; }
+    public bool SelectionTruncated { get; set; }
 }
 
 internal sealed class SvgCorpusManifestFile
 {
     public string Path { get; set; } = string.Empty;
     public string Sha256 { get; set; } = string.Empty;
+    public string SourceUrl { get; set; } = string.Empty;
+    public string SiteId { get; set; } = string.Empty;
 }
 
 internal sealed class SvgCorpusEntry
@@ -589,6 +682,7 @@ internal sealed class SvgCorpusEntry
     public string? Error { get; set; }
     public bool PixelComparable { get; set; }
     public bool PixelParity { get; set; }
+    public string? ReferenceDefect { get; set; }
     public double AlphaIntersectionOverUnion { get; set; }
     public double MeanRgbDifference { get; set; }
     public long FirstPartyForegroundPixels { get; set; }

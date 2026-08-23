@@ -11035,3 +11035,24 @@ Verification:
 - Complete focused SVG slice: 246 passed, 0 failed, 0 skipped.
 - Windows and Ubuntu 24.04 WSL `linux-x64` 10,000-render stress: zero failures and 769 intended compatibility cases;
   retained private bytes were 13,234,176 and 12,730,368 respectively, below the 67,108,864-byte ceiling.
+
+## 2.135 Genuine Captured-Site SVG Gate (2026-08-24)
+
+- `scripts/BenchSvg --capture-sites` captures the declared public HTTPS site set without credentials, cookies,
+  automatic redirects, or private-address access. DNS and every redirect are revalidated and the socket connects
+  only to the validated public address; HTML, SVG, redirect, per-site candidate, total-byte, and request-time budgets
+  are fixed. The atomically written manifest records source/final provenance, per-site candidate and output counts,
+  truncation, asset failures, and a SHA-256 for every SVG.
+- Captured-site validation rejects future/missing timestamps, duplicate sites, failed or truncated captures,
+  non-HTTPS provenance, count/inventory disagreement, traversal, missing/extra files, or digest mismatch. The
+  production capture selected all 151 SVGs found across the 11-site tracker set, including 128 GitHub documents;
+  no per-site or global limit truncated the capture.
+- Differential comparison uses the union transparent canvas when backends choose different intrinsic raster sizes,
+  so content is measured instead of skipped. A legacy-reference exception is accepted only when source declares a
+  chromatic gradient, first-party output contains chroma, and Svg.Skia loses all chroma; the report keeps this visible.
+
+Verification:
+
+- Genuine captured-site gate: 151/151 first-party, zero fallback/rejection/failure/timeout/skip/truncation; 150 direct
+  Svg.Skia pixel-parity passes plus one reported `legacy-chromatic-gradient-loss` reference defect.
+- The captured-site gate is closed. The complete local WPT baseline above remains open, so legacy stays the default.

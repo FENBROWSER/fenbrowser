@@ -1,0 +1,16 @@
+{
+  "SchemaVersion": 1,
+  "Sites": [
+    { "Id": "google", "Url": "https://www.google.com/" },
+    { "Id": "wikipedia", "Url": "https://en.wikipedia.org/" },
+    { "Id": "github", "Url": "https://github.com/" },
+    { "Id": "x", "Url": "https://x.com/" },
+    { "Id": "youtube", "Url": "https://www.youtube.com/" },
+    { "Id": "amazon", "Url": "https://www.amazon.com/" },
+    { "Id": "gmail", "Url": "https://mail.google.com/" },
+    { "Id": "grafana", "Url": "https://play.grafana.org/" },
+    { "Id": "hacker-news", "Url": "https://news.ycombinator.com/" },
+    { "Id": "css-zen-garden", "Url": "https://www.csszengarden.com/" },
+    { "Id": "react-todomvc", "Url": "https://todomvc.com/examples/react/dist/" }
+  ]
+}

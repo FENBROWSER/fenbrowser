@@ -58,11 +58,13 @@ fallback. The thread-safe factory is shared by in-process and Host
 utility-process decoding and observes runtime configuration changes without a
 static-read-once cache.
 It has NOT replaced Svg.Skia. Shared CSS cascade integration, bounded horizontal
-HarfBuzz text/tspan shaping, and bounded common filter/mask/marker subsets are
-implemented, but vertical and per-glyph text, text paths, filter DAG primitives,
-curved-path mid markers, patterns, advanced nested-resource parity, and complete captured-site parity remain open compatibility gates
-(see VOLUME_III 2.121-2.130 for the matrix, gate checklist, benchmark evidence
-in Results/svg/, and the correctness fixes that preceded this note).
+HarfBuzz text/tspan shaping, common filter/mask/marker subsets, bounded nested
+resources, blend modes, and the genuine captured-site gate are implemented. The
+11-site capture evaluated all 151 captured SVGs first-party with zero fallback,
+failure, timeout, rejection, or truncation. Vertical and per-glyph text, text
+paths, filter DAG primitives, curved-path mid markers, patterns, and the complete
+local WPT baseline remain open compatibility gates (see VOLUME_III 2.121-2.135
+and VOLUME_VI 6.193-6.200 for the matrix and current evidence).
 Removal from this inventory happens only after the documented gate closes.
 
 ### Dependency Philosophy
