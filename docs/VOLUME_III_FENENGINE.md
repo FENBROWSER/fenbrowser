@@ -10797,3 +10797,22 @@ Verification:
 - Release benchmark: hybrid retains first-party allocations/checksums on supported cases and matches
   legacy pixels for the deep-layer compatibility case. Tiny, medium, path-heavy, gradient-heavy, and
   embedded-image checksums match across first-party and legacy backends.
+
+## 2.125 SVG Linux Native-Dependency Alignment (2026-08-23)
+
+- `Svg.Skia` requested `HarfBuzzSharp.NativeAssets.Linux` 8.3.1.3 transitively while FenEngine and
+  `SkiaSharp.HarfBuzz` use managed HarfBuzzSharp 14.2.0. The Linux publish therefore carried an
+  avoidable managed/native ABI mismatch despite compiling successfully.
+- FenEngine now directly pins the Linux HarfBuzz native assets to 14.2.0. The committed lock file
+  records the direct pin and no longer resolves the older Linux native package.
+- `scripts/BenchSvg` performs an eager Skia/HarfBuzz shaping probe before benchmarking. Headless or
+  minimal Linux images can provide a deterministic font with `FEN_SVG_BENCH_FONT`; failure to load
+  the font, native library, or shaper aborts the run instead of producing misleading benchmark data.
+
+Verification:
+
+- Locked restore and FenEngine Release build pass with zero warnings/errors.
+- `linux-x64` publish metadata resolves `HarfBuzzSharp.NativeAssets.Linux/14.2.0` and packages its
+  corresponding `libHarfBuzzSharp.so`.
+- The published Linux benchmark executed under Ubuntu 24.04 WSL with DejaVu Sans and shaped ten
+  glyphs successfully, exercising the actual Linux Skia/HarfBuzz native stack.

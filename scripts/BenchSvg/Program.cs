@@ -1,8 +1,9 @@
 using System.Diagnostics;
 using FenBrowser.FenEngine.Adapters;
 using SkiaSharp;
+using SkiaSharp.HarfBuzz;
 
-// BenchSvg: comparative benchmark for the two ISvgRenderer backends.
+// BenchSvg: comparative benchmark for the three ISvgRenderer backends.
 // Emits machine-readable JSON lines on stdout; --report also writes a
 // markdown summary to Results/svg/perf-report.md. No CSV is generated.
 //
@@ -13,6 +14,11 @@ var root = Directory.GetCurrentDirectory();
 var resultsDir = Path.Combine(root, "Results", "svg");
 bool writeReport = args.Contains("--report");
 var reportRows = new List<string>();
+
+var nativeTextProbe = ProbeNativeTextStack();
+Console.WriteLine(
+    $"{{\"probe\":\"native-text-stack\",\"ok\":true," +
+    $"\"glyphs\":{nativeTextProbe.Glyphs},\"width\":{nativeTextProbe.Width:0.###}}}");
 
 (ISvgRenderer Renderer, string Name) fen = (new FenSvgRenderer(), "fen");
 (ISvgRenderer Renderer, string Name) legacy = (new SvgSkiaRenderer(), "legacy");
@@ -89,6 +95,27 @@ if (writeReport)
 }
 
 static string Cold(bool b) => b ? "true" : "false";
+
+static (int Glyphs, float Width) ProbeNativeTextStack()
+{
+    string? fontPath = Environment.GetEnvironmentVariable("FEN_SVG_BENCH_FONT");
+    using var typeface = string.IsNullOrWhiteSpace(fontPath)
+        ? SKTypeface.Default
+        : SKTypeface.FromFile(fontPath);
+    if (typeface == null)
+    {
+        throw new InvalidOperationException("SVG benchmark font could not be loaded");
+    }
+    using var font = new SKFont(typeface, 18f);
+    using var shaper = new SKShaper(typeface);
+    var result = shaper.Shape("FenBrowser", 0f, 0f, font);
+    if (result?.Codepoints == null || result.Codepoints.Length == 0 ||
+        !float.IsFinite(result.Width) || result.Width <= 0f)
+    {
+        throw new InvalidOperationException("Skia/HarfBuzz native text probe failed");
+    }
+    return (result.Codepoints.Length, result.Width);
+}
 
 static (long ElapsedMs, long AllocatedBytes, bool Success, int Width, int Height, ulong Checksum)
     TimeOne(ISvgRenderer renderer, string svg)

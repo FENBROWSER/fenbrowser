@@ -37,6 +37,9 @@ This document provides an exhaustive analysis of every third-party library used 
 > SkiaSharp 4.148.0 (+ HarfBuzzSharp 14.2.0, SkiaSharp.HarfBuzz 4.148.0) and
 > Svg.Skia 5.1.1 in FenBrowser.FenEngine. Trust the csproj / packages.lock.json
 > as source of truth for exact versions.
+> FenEngine directly pins `HarfBuzzSharp.NativeAssets.Linux` 14.2.0 so the
+> published Linux native ABI matches the managed HarfBuzzSharp 14.2.0 assembly;
+> Svg.Skia's older transitive Linux native request is not allowed to win.
 
 ### Svg.Skia migration status
 
