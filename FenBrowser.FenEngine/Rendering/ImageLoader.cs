@@ -306,7 +306,7 @@ namespace FenBrowser.FenEngine.Rendering
         // first-party sandboxed renderer (FenSvgRenderer).
         private static readonly ISvgRenderer _svgRenderer = CreateSvgRenderer();
 
-        private static ISvgRenderer CreateSvgRenderer()
+        internal static ISvgRenderer CreateSvgRenderer()
         {
             return NetworkConfiguration.Instance.UseFirstPartySvgRenderer
                 ? new FenSvgRenderer()

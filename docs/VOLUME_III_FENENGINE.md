@@ -10641,3 +10641,40 @@ Modularity & clarity:
 Logging: gated summary line `[FenSvgRenderer] ok WxH <ms> warnings=<n>` via LogCategory.Rendering; zero logging remains inside element loops (warnings are deduped, capped at 32 per document).
 
 Verification: 117 focused tests (`FenBrowser.Tests/Svg`): parser security suite (17), value/path grammars, pixel semantics incl. new features, sandbox parity/adversarial corpus, security regressions for every fix above, and a NEW migration gate - SvgBackendGoldenCompareTests asserts >=0.85 RGB similarity vs the legacy SvgSkiaRenderer across a geometric corpus (6/6). Full solution builds clean.
+
+## 2.121 SVG Renderer: Supported-Subset Matrix and Backend Selection Notes (2026-08-23)
+
+### Supported-subset matrix (FenSvgRenderer)
+
+| Feature | Status | Notes |
+|---|---|---|
+| shapes (rect/circle/ellipse/line/polyline/polygon/path incl. arcs) | supported | pixel-tested |
+| transform lists on shapes/groups/use/image | supported | spec order save->transform->clip->draw |
+| viewBox / preserveAspectRatio (all 9 alignments, meet/slice, root+nested) | supported | axis-aware grammar |
+| solid fills/strokes, dash arrays, caps/joins/miterlimit | supported | |
+| linear/radial gradients (both units, stop href chains) | supported | per-render memoized |
+| group/element opacity, fill-/stroke-opacity | supported | SaveLayer cap = 8 |
+| inline style="" (shadowing presentation attrs) | supported | fixed declaration set |
+| clipPath + clip-path (userSpaceOnUse; shape children + 1-level use) | partial | objectBoundingBox units approximate for containers |
+| <image> data: URI rasters | supported | base64 only; decoded-pixel budget |
+| use/symbol (+ nested svg viewports) | supported | cycle guards |
+| currentColor inheritance | supported | |
+| switch | partial | first drawable child; requiredFeatures treated as pass |
+| text / tspan / textPath | deliberately unsupported, safely ignored | subtree dropped; logged once |
+| stylesheet CSS (<style>) | deliberately unsupported, safely ignored | raw-consumed; no second CSS engine; revisit via computed-style projection if real-site corpus demands |
+| patterns / masks / markers / filters | deliberately unsupported, safely ignored | attribute presence degrades gracefully (element renders unfiltered) |
+| animation (SMIL/animate*) | deliberately unsupported, safely ignored | static first frame only |
+| foreignObject | deliberately unsupported, safely ignored | never renders descendants |
+
+Migration-blocking gaps before any default flip: stylesheet CSS, text, masks/markers/patterns parity on a real-site corpus.
+
+### Backend selection (PHASE 4 note)
+
+`NetworkConfiguration.UseFirstPartySvgRenderer` remains the opt-in switch.
+Known limitation: it is read once during `ImageLoader` type initialization
+(static readonly), so runtime flips after first image decode have no effect;
+tests toggle the flag before touching ImageLoader and restore it. The setting
+is a rendering concern stranded in a network config class; relocation to a
+dedicated renderer options surface is deferred to avoid cross-cutting churn.
+`ImageLoader.CreateSvgRenderer` is internal for focused selection tests.
+
