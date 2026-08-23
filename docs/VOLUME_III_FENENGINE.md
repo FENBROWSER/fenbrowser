@@ -10678,3 +10678,55 @@ is a rendering concern stranded in a network config class; relocation to a
 dedicated renderer options surface is deferred to avoid cross-cutting churn.
 `ImageLoader.CreateSvgRenderer` is internal for focused selection tests.
 
+
+## 2.122 SVG Renderer Correctness Fixes, Differential Gate v2, Bench Tooling (2026-08-23)
+
+Correctness (reproduced first via SvgTransformReproTests, 14 red -> green):
+- Graphical elements (path/rect/circle/ellipse/line/polyline/polygon) ignored their transform
+  attribute entirely; clip-path was therefore evaluated in the wrong space. Images bypassed both
+  transform and clip-path. Both now follow spec order: save -> element transform -> clip-path ->
+  draw -> restore, unwinding via CanvasState on every exit path.
+- preserveAspectRatio alignment tokens NEVER parsed: the tokenizer sliced 8-char tokens as two
+  3-char words ("xMi"/"dYM") that cannot equal min/mid/max, silently pinning every alignment to
+  xMidYMid. Grammar is now axis-aware ('x'+Min|Mid|Max+'y'+Min|Mid|Max at offsets 0/4),
+  case-insensitive; malformed/extra tokens keep deterministic defaults. All nine alignments are
+  pixel-tested on root and nested svg, with opposite-side emptiness probes.
+
+Differential verification v2 (SvgBackendGoldenCompareTests): the previous >=0.85 whole-image RGB
+score could pass with an ignored transform hidden by background. The gate now requires exact
+canvas dimensions, foreground pixel-count ratio >= 0.80, alpha-mask IoU >= 0.80 (structural
+omissions collapse this), foreground bbox agreement <= 2px per edge, and union-mask RGB mean diff
+<= 16/255. Corpus expanded to 21 cases (arcs/curves, transforms incl. nested, PAR alignments,
+gradients, currentColor, inline-style override, opacities, clipPath, use+symbol, data-URI image,
+malformed-recoverable, unsupported-text). Svg.Skia is reference ONLY on its conformant subset:
+text and malformed-markup cases carry explicit spec-derived expectations instead.
+
+Supported-subset matrix: see 2.121. Backend selection limitation (static read-once flag) is
+documented there; ImageLoader.CreateSvgRenderer is internal for focused selection tests.
+
+Bench tooling: scripts/BenchSvg (Release console) emits JSON lines per case/backend and writes
+Results/svg/perf-report.md with --report; comparison summary in Results/svg/comparison-report.md.
+Measured (Release, best-of-7 warm): fen allocations 7.7KB-114KB vs legacy 175KB-936KB across the
+seven-case corpus (5x-22x less); warm latency 0ms vs 0-2ms; identical sampled-RGB checksums on
+tiny-icon / medium-logo / embedded-image; fen succeeds on malformed input where legacy fails.
+hsl()-based bench fills diverge by design (legacy color resolution); not part of any gate.
+
+Focused SVG test count (derived from dotnet test --list-tests with filter
+FullyQualifiedName~FenBrowser.Tests.Svg): 139 tests, all passing at time of writing. Earlier doc
+entries quoting 101/117 were stale snapshots mid-flight; treat discovery as source of truth.
+
+### Default-switch gate (updated)
+1. All focused SVG tests pass (discovery-derived count reported each run).
+2. Transform + preserveAspectRatio regressions fixed and pinned (2.122).
+3. Foreground-focused differential corpus passes (21 cases).
+4. Representative real-site SVG corpus passes - NOT YET DONE (requires captured-site fixtures).
+5. No security-limit regressions (Phase-5 adversarial suite green).
+6. No native-resource leaks found (disposal audited; leak-check under load still TODO).
+7. Benchmark acceptable (see Results/svg/perf-report.md) - DONE, opt-in basis only.
+8. Unsupported-feature matrix reviewed (2.121) - stylesheet CSS/text remain migration-blocking.
+9. Utility/out-of-process decode paths verified - NOT YET DONE (Host utility process still pins
+   SvgSkiaRenderer directly).
+10. Rollback available (flag flips back; package retained).
+
+STATUS: remains OPT-IN. Do not flip NetworkConfiguration.UseFirstPartySvgRenderer default until
+items 4 and 9 close and text/CSS support lands or is scoped out with evidence.

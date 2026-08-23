@@ -40,13 +40,15 @@ This document provides an exhaustive analysis of every third-party library used 
 
 ### Svg.Skia migration status
 
-`Svg.Skia` is now migration-targeted: a first-party sandboxed renderer
-(`FenBrowser.FenEngine.Adapters.FenSvgRenderer`, module `Svg/`) implements the
-same `ISvgRenderer` seam with identical budget semantics and hardening that
-removes the package's attack surface (DOCTYPE/entity machinery does not exist,
-no regex passes, reference-cycle defenses, valid post-return SKPicture).
-Selection: `NetworkConfiguration.UseFirstPartySvgRenderer` (default false =
-legacy Svg.Skia adapter). Removal from this inventory lands with the flag flip.
+`Svg.Skia` is migration-targeted but REMAINS THE ACTIVE DEFAULT: a first-party
+sandboxed renderer (`FenBrowser.FenEngine.Adapters.FenSvgRenderer`, module
+`Svg/`) implements the same `ISvgRenderer` seam and is selectable via
+`NetworkConfiguration.UseFirstPartySvgRenderer` (default false = legacy).
+It has NOT replaced Svg.Skia: text, stylesheet CSS, masks/markers/patterns,
+real-site parity, and the Host utility-process decode path remain open gate
+items (see VOLUME_III 2.121/2.122 for the matrix, gate checklist, benchmark
+evidence in Results/svg/, and the correctness fixes that preceded this note).
+Removal from this inventory happens only after the documented gate closes.
 
 ### Dependency Philosophy
 
