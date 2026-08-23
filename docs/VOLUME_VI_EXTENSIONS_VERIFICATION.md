@@ -4527,3 +4527,15 @@ Verification:
 - The same deterministic 100-file WPT sample reports 11 first-party, 75 fallback, 14 resource rejection, zero renderer
   failures, and 4/6 comparable parity. The new nested-data first-party case remains a visible pixel differential, so
   this evidence expands coverage without closing the default-switch parity gate.
+
+## 6.199 Complete Process-Isolated SVG Corpus Evidence (2026-08-24)
+
+- `scripts/BenchSvg --corpus` launches each document in a new worker and enforces `--per-file-timeout-ms` by
+  terminating the entire worker tree. Normal, timeout, manifest, and progress smoke runs verify result transport,
+  bounded termination, integrity validation, classification, and live counters on Windows without shell commands.
+- The uncapped local WPT run selected and evaluated all 1,197 SVG files: 103 first-party, 899 fallback,
+  143 resource rejection, 31 first-party failure, 19 hybrid failure, 2 worker timeouts, 0 worker failures, and
+  49/58 comparable parity. Generated report: `Results/svg/wpt-complete-isolated/corpus-report.json`.
+- Captured-site mode requires an exact SHA-256 manifest and zero fallback/failure/differential. A signed synthetic
+  smoke corpus passes 1/1. Workspace inspection found no genuine captured real-site SVG inventory, so production
+  default-switch acceptance remains open rather than being inferred from WPT or fabricated samples.

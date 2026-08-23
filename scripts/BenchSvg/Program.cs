@@ -11,6 +11,12 @@ using SkiaSharp.HarfBuzz;
 //   dotnet run --project scripts/BenchSvg/BenchSvg.csproj -c Release [-- --report]
 //   dotnet run --project scripts/BenchSvg/BenchSvg.csproj -c Release -- --corpus <directory> [--max-files N] [--gate]
 
+if (args.Length == 3 && args[0] == "--corpus-worker")
+{
+    Environment.ExitCode = SvgCorpusRunner.RunWorker(args[1], args[2]);
+    return;
+}
+
 var root = Directory.GetCurrentDirectory();
 var resultsDir = Path.Combine(root, "Results", "svg");
 bool writeReport = args.Contains("--report");

@@ -10999,3 +10999,25 @@ Verification:
   failures, and 4/6 legacy-comparable parity. One deeply nested data-image support document is now first-party but
   remains a retained pixel differential; an XHTML-link test now reaches ordinary compatibility fallback after its
   embedded SVG is accepted. Neither transition is presented as complete parity.
+
+## 2.133 Process-Isolated SVG Default-Switch Gate (2026-08-24)
+
+- Corpus documents now execute in fresh cross-platform worker processes. The parent uses argument-list process
+  launching (no shell), a configurable 100-60,000 ms wall timeout, process-tree termination, bounded result files
+  under the OS temporary directory, and deterministic cleanup. A native hang or crash can no longer stop the sweep.
+- Progress JSON is emitted every 25 documents and at completion. Reports separately count worker timeout/failure,
+  first-party failure, hybrid failure, resource rejection, legacy fallback, and pixel differential classifications.
+- Strict `--gate` requires an untruncated non-empty selection with zero legacy fallback, resource rejection,
+  first-party/hybrid/worker failure, timeout, read/oversize skip, or comparable pixel mismatch. The previous false-
+  positive path that allowed a strict corpus to pass while routing documents to Svg.Skia is closed.
+- `--corpus-kind captured-site` additionally requires an exact JSON manifest. Relative paths are traversal-checked,
+  SHA-256 is verified, and duplicates/missing/extra SVGs fail validation. A synthetic signed smoke corpus proves the
+  mechanism; no genuine captured-site SVG inventory exists in workspace `logs/` or `Results/`, so that gate is not met.
+
+Complete local WPT evidence:
+
+- 1,197/1,197 local SVG files evaluated in about seven minutes with no selection truncation or parent stall.
+- 103 first-party, 899 legacy fallback, 143 resource rejection, 31 first-party failure, 19 hybrid failure,
+  2 per-file timeouts, 0 worker failures, and 49/58 comparable pixel passes.
+- The bounded timeouts are `import/paths-data-18-f-manual.svg` and `path/bearing/zero.svg`. This baseline proves
+  isolation works and also proves the first-party renderer is not ready to become default.
