@@ -218,7 +218,8 @@ internal static class SvgCorpusRunner
             {
                 entry = EvaluateIsolated(
                     relative, info.Length, file, options.PerFileTimeoutMs,
-                    wptIndex?.RootDirectory);
+                    wptIndex?.RootDirectory,
+                    wptIndex?.GetReferences(file) ?? Array.Empty<WptReference>());
                 entry.SourceSha256 = sourceSha256;
                 if (IsReusable(entry)) checkpointWriter.WriteLine(JsonSerializer.Serialize(new SvgCorpusCheckpoint
                 {
@@ -245,7 +246,7 @@ internal static class SvgCorpusRunner
 
         var summary = new SvgCorpusSummary
         {
-            SchemaVersion = 2,
+            SchemaVersion = 3,
             CorpusRoot = options.CorpusDirectory,
             CorpusKind = options.CorpusKind,
             SelectionPrefixes = options.IncludePrefixes.ToList(),
@@ -268,6 +269,14 @@ internal static class SvgCorpusRunner
             ComparablePairs = entries.Count(entry => entry.PixelComparable),
             ComparableParityPasses = entries.Count(entry => entry.PixelParity),
             AcceptedReferenceDefects = entries.Count(entry => entry.ReferenceDefect != null),
+            WptReferenceTests = entries.Count(entry => entry.WptReferenceApplicable),
+            WptReferenceComparable = entries.Count(entry => entry.WptReferenceComparable),
+            WptReferencePasses = entries.Count(entry => entry.WptReferenceApplicable && entry.WptReferencePass),
+            WptReferenceFailures = entries.Count(entry => entry.WptReferenceApplicable &&
+                                                        entry.WptReferenceComparable && !entry.WptReferencePass),
+            WptReferenceBlocked = entries.Count(entry => entry.WptReferenceApplicable &&
+                                                       !entry.WptReferenceComparable),
+            WptUnresolvedTargets = entries.Sum(entry => entry.WptUnresolvedReferenceCount),
             Entries = entries,
             ReasonCounts = BuildReasonCounts(entries),
             WptTypeCounts = entries
@@ -290,8 +299,14 @@ internal static class SvgCorpusRunner
                          summary.HybridFailures == 0 && summary.WorkerTimeouts == 0 &&
                          summary.WorkerFailures == 0 && summary.ReadFailures == 0;
         bool parityOk = summary.ComparableParityPasses + summary.AcceptedReferenceDefects == summary.ComparablePairs;
-        bool gateOk = routingOk && parityOk && summary.ResourceRejections == 0 &&
-                      summary.CompatibilityFallbacks == 0 && summary.SkippedOversize == 0 &&
+        bool referenceOk = options.CorpusKind == "wpt"
+            ? summary.WptReferenceTests > 0 &&
+              summary.WptReferencePasses == summary.WptReferenceTests &&
+              summary.WptReferenceComparable == summary.WptReferenceTests
+            : parityOk;
+        bool compatibilityOk = options.CorpusKind == "wpt" ||
+                               (summary.ResourceRejections == 0 && summary.CompatibilityFallbacks == 0);
+        bool gateOk = routingOk && referenceOk && compatibilityOk && summary.SkippedOversize == 0 &&
                       !summary.SelectionTruncated &&
                       (options.CorpusKind != "captured-site" || summary.ManifestValidated);
         Console.WriteLine(JsonSerializer.Serialize(new
@@ -314,6 +329,9 @@ internal static class SvgCorpusRunner
             workerTimeouts = summary.WorkerTimeouts,
             workerFailures = summary.WorkerFailures,
             parity = $"{summary.ComparableParityPasses}/{summary.ComparablePairs}",
+            wptReferences = $"{summary.WptReferencePasses}/{summary.WptReferenceTests}",
+            wptReferenceBlocked = summary.WptReferenceBlocked,
+            wptUnresolvedTargets = summary.WptUnresolvedTargets,
             acceptedReferenceDefects = summary.AcceptedReferenceDefects,
             reasons = summary.ReasonCounts.Count,
             report = Path.Combine(options.OutputDirectory, "corpus-report.json")
@@ -447,10 +465,11 @@ internal static class SvgCorpusRunner
         Uri.TryCreate(raw, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps &&
         string.IsNullOrEmpty(uri.UserInfo) && !string.IsNullOrWhiteSpace(uri.Host);
 
-    public static int RunWorker(string inputPath, string outputPath, string? wptRoot)
+    public static int RunWorker(string inputPath, string outputPath, string[] workerArgs)
     {
         try
         {
+            ParseWorkerArguments(workerArgs, out string? wptRoot, out var wptReferences);
             var info = new FileInfo(inputPath);
             string source = File.ReadAllText(inputPath);
             LocalWptSvgResourceResolver? wptResolver = wptRoot == null
@@ -466,7 +485,8 @@ internal static class SvgCorpusRunner
             ISvgRenderer legacy = new SvgSkiaRenderer();
             ISvgRenderer hybrid = new HybridSvgRenderer(firstParty, legacy);
             var entry = Evaluate(
-                Path.GetFileName(inputPath), info.Length, request, firstParty, hybrid, legacy);
+                Path.GetFileName(inputPath), info.Length, request, firstParty, hybrid, legacy,
+                wptReferences, wptResolver);
             File.WriteAllText(outputPath, JsonSerializer.Serialize(entry));
             return 0;
         }
@@ -486,19 +506,64 @@ internal static class SvgCorpusRunner
         }
     }
 
+    private static void ParseWorkerArguments(
+        string[] args,
+        out string? wptRoot,
+        out IReadOnlyList<WptReference> references)
+    {
+        wptRoot = null;
+        var parsed = new List<WptReference>();
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--wpt-root")
+            {
+                if (++i >= args.Length || wptRoot != null)
+                    throw new ArgumentException("invalid worker WPT root arguments");
+                wptRoot = Path.GetFullPath(args[i]);
+                continue;
+            }
+            if (args[i] != "--wpt-reference" || i + 6 >= args.Length)
+                throw new ArgumentException("invalid corpus worker arguments");
+
+            string relation = args[++i];
+            string kind = args[++i];
+            string manifestUrl = args[++i];
+            string value = args[++i];
+            if (!int.TryParse(args[++i], out int maximumChannelDifference) ||
+                !int.TryParse(args[++i], out int maximumDifferingPixels) ||
+                maximumChannelDifference < 0 || maximumChannelDifference > byte.MaxValue ||
+                maximumDifferingPixels < 0)
+                throw new ArgumentException("invalid worker WPT fuzzy thresholds");
+            if (relation is not ("match" or "mismatch") ||
+                kind is not ("blank" or "path" or "unresolved"))
+                throw new ArgumentException("invalid worker WPT reference arguments");
+            parsed.Add(new WptReference(
+                manifestUrl,
+                relation == "match",
+                kind == "path" ? Path.GetFullPath(value) : null,
+                kind == "blank",
+                maximumChannelDifference,
+                maximumDifferingPixels));
+        }
+        if (parsed.Any(reference => reference.FullPath != null) && wptRoot == null)
+            throw new ArgumentException("worker WPT file references require a WPT root");
+        references = parsed;
+    }
+
     private static SvgCorpusEntry EvaluateIsolated(
         string relativePath,
         long bytes,
         string inputPath,
         int timeoutMs,
-        string? wptRoot)
+        string? wptRoot,
+        IReadOnlyList<WptReference> wptReferences)
     {
         string outputPath = Path.Combine(Path.GetTempPath(), $"fen-svg-worker-{Guid.NewGuid():N}.json");
         try
         {
             using var process = new Process
             {
-                StartInfo = CreateWorkerStartInfo(inputPath, outputPath, wptRoot)
+                StartInfo = CreateWorkerStartInfo(inputPath, outputPath, wptRoot, wptReferences)
             };
             process.OutputDataReceived += (_, _) => { };
             process.ErrorDataReceived += (_, _) => { };
@@ -552,7 +617,8 @@ internal static class SvgCorpusRunner
     private static ProcessStartInfo CreateWorkerStartInfo(
         string inputPath,
         string outputPath,
-        string? wptRoot)
+        string? wptRoot,
+        IReadOnlyList<WptReference> wptReferences)
     {
         string executable = Environment.ProcessPath ?? throw new InvalidOperationException("process path unavailable");
         var start = new ProcessStartInfo
@@ -574,6 +640,16 @@ internal static class SvgCorpusRunner
             start.ArgumentList.Add("--wpt-root");
             start.ArgumentList.Add(wptRoot);
         }
+        foreach (var reference in wptReferences)
+        {
+            start.ArgumentList.Add("--wpt-reference");
+            start.ArgumentList.Add(reference.IsMatch ? "match" : "mismatch");
+            start.ArgumentList.Add(reference.IsBlank ? "blank" : reference.FullPath == null ? "unresolved" : "path");
+            start.ArgumentList.Add(reference.ManifestUrl);
+            start.ArgumentList.Add(reference.FullPath ?? "-");
+            start.ArgumentList.Add(reference.MaximumChannelDifference.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            start.ArgumentList.Add(reference.MaximumDifferingPixels.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
         return start;
     }
 
@@ -583,7 +659,9 @@ internal static class SvgCorpusRunner
         SvgRenderRequest request,
         ISvgRenderer firstParty,
         ISvgRenderer hybrid,
-        ISvgRenderer legacy)
+        ISvgRenderer legacy,
+        IReadOnlyList<WptReference> wptReferences,
+        LocalWptSvgResourceResolver? wptResolver)
     {
         using var fen = TimedRender(firstParty, request);
         using var routed = TimedRender(hybrid, request);
@@ -620,6 +698,13 @@ internal static class SvgCorpusRunner
                                       request.Content, fen.Result.Bitmap!, reference.Result.Bitmap!)
             ? "legacy-chromatic-gradient-loss"
             : null;
+        WptReferenceEvaluation wpt = EvaluateWptReferences(
+            classification,
+            fen.Result.Bitmap,
+            request.Limits,
+            firstParty,
+            wptReferences,
+            wptResolver);
 
         return new SvgCorpusEntry
         {
@@ -644,8 +729,162 @@ internal static class SvgCorpusRunner
             AlphaIntersectionOverUnion = Math.Round(alphaIou, 4),
             MeanRgbDifference = Math.Round(meanRgbDifference, 4),
             FirstPartyForegroundPixels = firstPartyForegroundPixels,
-            LegacyForegroundPixels = legacyForegroundPixels
+            LegacyForegroundPixels = legacyForegroundPixels,
+            WptReferenceApplicable = wpt.Applicable,
+            WptReferenceComparable = wpt.Comparable,
+            WptReferencePass = wpt.Pass,
+            WptMatchReferenceCount = wpt.MatchCount,
+            WptMismatchReferenceCount = wpt.MismatchCount,
+            WptUnresolvedReferenceCount = wpt.UnresolvedCount,
+            WptReferenceOutcomes = wpt.Outcomes
         };
+    }
+
+    private static WptReferenceEvaluation EvaluateWptReferences(
+        string classification,
+        SKBitmap? sourceBitmap,
+        SvgRenderLimits limits,
+        ISvgRenderer firstParty,
+        IReadOnlyList<WptReference> references,
+        LocalWptSvgResourceResolver? resolver)
+    {
+        if (references.Count == 0) return WptReferenceEvaluation.NotApplicable;
+
+        var outcomes = new List<WptReferenceOutcome>(references.Count);
+        int unresolved = 0;
+        foreach (var reference in references)
+        {
+            if (!reference.IsResolved || classification != "first-party" || sourceBitmap == null)
+            {
+                if (!reference.IsResolved) unresolved++;
+                outcomes.Add(new WptReferenceOutcome
+                {
+                    Relation = reference.IsMatch ? "==" : "!=",
+                    Reference = Bound(reference.ManifestUrl) ?? string.Empty,
+                    Error = !reference.IsResolved ? "unresolved-reference" : "source-not-first-party"
+                });
+                continue;
+            }
+
+            try
+            {
+                if (reference.IsBlank)
+                {
+                    using var blank = new SKBitmap(sourceBitmap.Width, sourceBitmap.Height, sourceBitmap.ColorType, sourceBitmap.AlphaType);
+                    blank.Erase(SKColors.Transparent);
+                    outcomes.Add(CompareWptReference(reference, sourceBitmap, blank));
+                    continue;
+                }
+
+                if (resolver == null || reference.FullPath == null)
+                    throw new InvalidDataException("resolved WPT reference has no authorized resolver");
+                var info = new FileInfo(reference.FullPath);
+                if (!info.Exists || info.Length > (long)limits.MaxSourceChars * 4L)
+                    throw new InvalidDataException("WPT reference is missing or exceeds the source budget");
+                string content = File.ReadAllText(reference.FullPath);
+                var referenceRequest = new SvgRenderRequest(content, limits)
+                {
+                    BaseUri = resolver.CreateDocumentUri(reference.FullPath),
+                    ResourceResolver = resolver
+                };
+                using var rendered = TimedRender(firstParty, referenceRequest);
+                if (!rendered.Result.Success || rendered.Result.RequiresFallback ||
+                    rendered.Result.HadResourceRejection || rendered.Result.Bitmap == null)
+                    throw new InvalidDataException("WPT reference did not render entirely with the first-party backend");
+                outcomes.Add(CompareWptReference(reference, sourceBitmap, rendered.Result.Bitmap));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or
+                                       InvalidDataException or ArgumentException)
+            {
+                unresolved++;
+                outcomes.Add(new WptReferenceOutcome
+                {
+                    Relation = reference.IsMatch ? "==" : "!=",
+                    Reference = Bound(reference.ManifestUrl) ?? string.Empty,
+                    Error = Bound(ex.Message)
+                });
+            }
+        }
+
+        bool comparable = unresolved == 0 && outcomes.Count == references.Count &&
+                          outcomes.All(outcome => outcome.Comparable);
+        bool hasMatch = references.Any(reference => reference.IsMatch);
+        bool pass = comparable &&
+                    (!hasMatch || outcomes.Any(outcome => outcome.Relation == "==" && outcome.Equal)) &&
+                    outcomes.Where(outcome => outcome.Relation == "!=").All(outcome => !outcome.Equal);
+        return new WptReferenceEvaluation(
+            Applicable: true,
+            Comparable: comparable,
+            Pass: pass,
+            MatchCount: references.Count(reference => reference.IsMatch),
+            MismatchCount: references.Count(reference => !reference.IsMatch),
+            UnresolvedCount: unresolved,
+            Outcomes: outcomes);
+    }
+
+    private static WptReferenceOutcome CompareWptReference(
+        WptReference reference,
+        SKBitmap source,
+        SKBitmap expected)
+    {
+        ComparePixels(
+            source,
+            expected,
+            out double alphaIou,
+            out double meanRgbDifference,
+            out long actualForegroundPixels,
+            out long expectedForegroundPixels);
+        CompareWptPixels(source, expected, out int maximumChannelDifference, out int differingPixels);
+        return new WptReferenceOutcome
+        {
+            Relation = reference.IsMatch ? "==" : "!=",
+            Reference = Bound(reference.ManifestUrl) ?? string.Empty,
+            Comparable = true,
+            Equal = maximumChannelDifference <= reference.MaximumChannelDifference &&
+                    differingPixels <= reference.MaximumDifferingPixels,
+            AlphaIntersectionOverUnion = Math.Round(alphaIou, 4),
+            MeanRgbDifference = Math.Round(meanRgbDifference, 4),
+            MaximumChannelDifference = maximumChannelDifference,
+            DifferingPixels = differingPixels,
+            AllowedMaximumChannelDifference = reference.MaximumChannelDifference,
+            AllowedDifferingPixels = reference.MaximumDifferingPixels,
+            ActualForegroundPixels = actualForegroundPixels,
+            ExpectedForegroundPixels = expectedForegroundPixels
+        };
+    }
+
+    private static void CompareWptPixels(
+        SKBitmap actual,
+        SKBitmap expected,
+        out int maximumChannelDifference,
+        out int differingPixels)
+    {
+        maximumChannelDifference = 0;
+        differingPixels = 0;
+        int width = Math.Max(actual.Width, expected.Width);
+        int height = Math.Max(actual.Height, expected.Height);
+        for (int y = 0; y < height; y++)
+        for (int x = 0; x < width; x++)
+        {
+            SKColor a = x < actual.Width && y < actual.Height
+                ? actual.GetPixel(x, y)
+                : SKColors.Transparent;
+            SKColor b = x < expected.Width && y < expected.Height
+                ? expected.GetPixel(x, y)
+                : SKColors.Transparent;
+            int aRed = (a.Red * a.Alpha + 127) / 255;
+            int aGreen = (a.Green * a.Alpha + 127) / 255;
+            int aBlue = (a.Blue * a.Alpha + 127) / 255;
+            int bRed = (b.Red * b.Alpha + 127) / 255;
+            int bGreen = (b.Green * b.Alpha + 127) / 255;
+            int bBlue = (b.Blue * b.Alpha + 127) / 255;
+            int difference = Math.Max(
+                Math.Max(Math.Abs(aRed - bRed), Math.Abs(aGreen - bGreen)),
+                Math.Max(Math.Abs(aBlue - bBlue), Math.Abs(a.Alpha - b.Alpha)));
+            if (difference == 0) continue;
+            differingPixels++;
+            maximumChannelDifference = Math.Max(maximumChannelDifference, difference);
+        }
     }
 
     private static List<SvgReasonCount> BuildReasonCounts(IEnumerable<SvgCorpusEntry> entries)
@@ -805,6 +1044,9 @@ internal static class SvgCorpusRunner
             $"- Worker timeouts / failures: {summary.WorkerTimeouts} / {summary.WorkerFailures}",
             $"- Comparable pixel parity: {summary.ComparableParityPasses}/{summary.ComparablePairs}",
             $"- Accepted, detected legacy reference defects: {summary.AcceptedReferenceDefects}",
+            $"- WPT declared-reference passes: {summary.WptReferencePasses}/{summary.WptReferenceTests}",
+            $"- WPT reference comparable / failed / blocked: {summary.WptReferenceComparable} / {summary.WptReferenceFailures} / {summary.WptReferenceBlocked}",
+            $"- WPT unresolved reference targets: {summary.WptUnresolvedTargets}",
             $"- Read failures / oversize skips: {summary.ReadFailures} / {summary.SkippedOversize}",
             "",
             "## Reason counts",
@@ -825,8 +1067,8 @@ internal static class SvgCorpusRunner
             "",
             "## Files",
             "",
-            "| file | classification | reasons | producer | fen ms | hybrid ms | legacy ms | parity | reference defect | alpha IoU | RGB mean diff | fen fg | legacy fg |",
-            "|---|---|---|---|---:|---:|---:|---|---|---:|---:|---:|---:|"
+            "| file | classification | reasons | producer | fen ms | hybrid ms | legacy ms | legacy parity | WPT refs | reference defect | alpha IoU | RGB mean diff | fen fg | legacy fg |",
+            "|---|---|---|---|---:|---:|---:|---|---|---|---:|---:|---:|---:|"
         });
         foreach (var entry in summary.Entries)
         {
@@ -836,6 +1078,7 @@ internal static class SvgCorpusRunner
             lines.Add($"| {Escape(entry.Path)} | {entry.Classification} | {Escape(reasons.Length == 0 ? "-" : reasons)} | {entry.ProducingBackend ?? "-"} | " +
                       $"{entry.FirstPartyMilliseconds} | {entry.HybridMilliseconds} | {entry.LegacyMilliseconds} | " +
                       $"{(entry.PixelComparable ? (entry.PixelParity ? "pass" : "FAIL") : "-")} | " +
+                      $"{(entry.WptReferenceApplicable ? (entry.WptReferenceComparable ? (entry.WptReferencePass ? "pass" : "FAIL") : "unresolved") : "-")} | " +
                       $"{entry.ReferenceDefect ?? "-"} | " +
                       $"{entry.AlphaIntersectionOverUnion:0.####} | {entry.MeanRgbDifference:0.####} | " +
                       $"{entry.FirstPartyForegroundPixels} | {entry.LegacyForegroundPixels} |");
@@ -861,6 +1104,19 @@ internal static class SvgCorpusRunner
 
     private static string Escape(string value) => value.Replace("|", "\\|");
     private static string? Bound(string? value) => value == null ? null : value[..Math.Min(256, value.Length)];
+
+    private sealed record WptReferenceEvaluation(
+        bool Applicable,
+        bool Comparable,
+        bool Pass,
+        int MatchCount,
+        int MismatchCount,
+        int UnresolvedCount,
+        List<WptReferenceOutcome> Outcomes)
+    {
+        public static WptReferenceEvaluation NotApplicable { get; } = new(
+            false, false, false, 0, 0, 0, new List<WptReferenceOutcome>());
+    }
 
     private sealed class TimedSvgResult : IDisposable
     {
@@ -900,6 +1156,12 @@ internal sealed class SvgCorpusSummary
     public int ComparablePairs { get; set; }
     public int ComparableParityPasses { get; set; }
     public int AcceptedReferenceDefects { get; set; }
+    public int WptReferenceTests { get; set; }
+    public int WptReferenceComparable { get; set; }
+    public int WptReferencePasses { get; set; }
+    public int WptReferenceFailures { get; set; }
+    public int WptReferenceBlocked { get; set; }
+    public int WptUnresolvedTargets { get; set; }
     public List<SvgReasonCount> ReasonCounts { get; set; } = new();
     public List<SvgTypeCount> WptTypeCounts { get; set; } = new();
     public List<SvgCorpusEntry> Entries { get; set; } = new();
@@ -977,4 +1239,28 @@ internal sealed class SvgCorpusEntry
     public double MeanRgbDifference { get; set; }
     public long FirstPartyForegroundPixels { get; set; }
     public long LegacyForegroundPixels { get; set; }
+    public bool WptReferenceApplicable { get; set; }
+    public bool WptReferenceComparable { get; set; }
+    public bool WptReferencePass { get; set; }
+    public int WptMatchReferenceCount { get; set; }
+    public int WptMismatchReferenceCount { get; set; }
+    public int WptUnresolvedReferenceCount { get; set; }
+    public List<WptReferenceOutcome> WptReferenceOutcomes { get; set; } = new();
+}
+
+internal sealed class WptReferenceOutcome
+{
+    public string Relation { get; set; } = string.Empty;
+    public string Reference { get; set; } = string.Empty;
+    public bool Comparable { get; set; }
+    public bool Equal { get; set; }
+    public double AlphaIntersectionOverUnion { get; set; }
+    public double MeanRgbDifference { get; set; }
+    public int MaximumChannelDifference { get; set; }
+    public int DifferingPixels { get; set; }
+    public int AllowedMaximumChannelDifference { get; set; }
+    public int AllowedDifferingPixels { get; set; }
+    public long ActualForegroundPixels { get; set; }
+    public long ExpectedForegroundPixels { get; set; }
+    public string? Error { get; set; }
 }

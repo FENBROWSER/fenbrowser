@@ -4593,3 +4593,30 @@ Verification:
 - Re-running the signed 151-document captured-site inventory under the same renderer build passed its strict gate with
   all documents first-party and all execution/security counters at zero. Generated diagnostics remain under
   `Results/svg/`; no runtime artifacts are committed as documentation.
+
+## 6.203 Declared WPT SVG Reference Oracle (2026-08-24)
+
+- WPT corpus runs now read each selected test's declared `==` and `!=` references from the mandatory local
+  `MANIFEST.json`. Reference URLs resolve against the test URL under the existing confined `https://wpt.local/`
+  origin; traversal, query/fragment substitution, missing files, non-SVG targets, and paths outside the checkout remain
+  visible as unresolved instead of being treated as passes. `about:blank` is represented by an explicitly cleared
+  transparent canvas and never performs I/O.
+- Schema v3 separates declared-reference applicability, comparability, pass/fail, blocked tests, unresolved targets,
+  relation counts, and bounded per-reference outcomes. WPT fuzzy metadata supplies the allowed maximum premultiplied
+  channel difference and differing-pixel count; exact comparison remains the default. Fully transparent RGB bytes are
+  canonicalized through premultiplication, and different intrinsic bitmap extents compare on their transparent union
+  canvas, matching observable pixels rather than allocator contents.
+- WPT strict mode uses declared WPT references as its conformance oracle. First-party-versus-`Svg.Skia` alpha/RGB
+  comparison remains in the report as migration diagnostics but cannot make a conformant WPT reference fail or make an
+  incorrect render pass. Support/reference files may route independently without becoming tests; a WPT selection with
+  no declared-reference test cannot pass strict mode. Captured-site mode retains its independent legacy differential
+  gate because those documents do not declare WPT references.
+
+Verification:
+
+- A passing CSS-variable reftest exits strict mode with code 0; a known incorrect `about:blank` case exits 1. The initial
+  five-file CSS-variable selection reported three declared-reference passes and two actual failures instead of hiding
+  them behind legacy differential output.
+- The initial 27-file `path/distance` selection reported five declared-reference passes, two actual failures, and eight
+  tests blocked by compatibility routing. These deliberately failing results verified that the new oracle distinguishes
+  renderer defects from unsupported coverage before conformance fixes are credited.
