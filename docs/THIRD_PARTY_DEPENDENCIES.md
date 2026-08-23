@@ -40,6 +40,8 @@ This document provides an exhaustive analysis of every third-party library used 
 > FenEngine directly pins `HarfBuzzSharp.NativeAssets.Linux` 14.2.0 so the
 > published Linux native ABI matches the managed HarfBuzzSharp 14.2.0 assembly;
 > Svg.Skia's older transitive Linux native request is not allowed to win.
+> Host and DevTools lock files carry the same 14.2.0 transitive resolution, so
+> a clean locked restore cannot reintroduce the older 8.3.1.3 native package.
 > The Linux no-dependencies Skia package does not guarantee system-font
 > discovery in headless images. First-party SVG text accepts an operator-owned
 > fallback font through `FEN_SVG_FONT_PATH`; document content cannot set it.
