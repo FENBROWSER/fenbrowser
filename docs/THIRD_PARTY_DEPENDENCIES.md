@@ -31,7 +31,22 @@ This document provides an exhaustive analysis of every third-party library used 
 | **Unique Libraries**          | 8 distinct libraries              |
 | **Runtime Dependencies**      | 10 packages                       |
 | **Test-Only Dependencies**    | 4 packages                        |
-| **Target Framework**          | .NET 8.0 (host), .NET 9.0 (tests) |
+| **Target Framework**          | .NET 10.0 (engine), .NET 9.0 (tests) |
+
+> NOTE: Version pins below reflect the historical audit. Current csproj pins:
+> SkiaSharp 4.148.0 (+ HarfBuzzSharp 14.2.0, SkiaSharp.HarfBuzz 4.148.0) and
+> Svg.Skia 5.1.1 in FenBrowser.FenEngine. Trust the csproj / packages.lock.json
+> as source of truth for exact versions.
+
+### Svg.Skia migration status
+
+`Svg.Skia` is now migration-targeted: a first-party sandboxed renderer
+(`FenBrowser.FenEngine.Adapters.FenSvgRenderer`, module `Svg/`) implements the
+same `ISvgRenderer` seam with identical budget semantics and hardening that
+removes the package's attack surface (DOCTYPE/entity machinery does not exist,
+no regex passes, reference-cycle defenses, valid post-return SKPicture).
+Selection: `NetworkConfiguration.UseFirstPartySvgRenderer` (default false =
+legacy Svg.Skia adapter). Removal from this inventory lands with the flag flip.
 
 ### Dependency Philosophy
 

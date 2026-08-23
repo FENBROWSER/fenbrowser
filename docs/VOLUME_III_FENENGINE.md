@@ -10582,3 +10582,24 @@ Verification:
   non-cancelable `load` event.
 - Dispatch failures are logged without discarding the successfully attached child
   document, matching the existing frame-load error isolation boundary.
+
+## 2.406 First-Party SVG Renderer Behind `ISvgRenderer` (2026-08-23)
+
+- `Svg/` contains a sandboxed XML-subset parser, strict SVG value and path
+  parsers, and a Skia-backed render engine for viewport, paint, gradient,
+  transform, clipping, opacity, `use`, and `symbol` semantics.
+- The parser rejects DOCTYPE input, has no external-entity or remote-reference
+  fetch path, builds with an explicit stack, and enforces source, element,
+  nesting, attribute, path-segment, coordinate, elapsed-time, and raster budgets.
+- `Adapters/FenSvgRenderer.cs` implements the existing `ISvgRenderer` seam. It
+  preserves the legacy adapter's limit contract, never lets malformed content
+  escape as an exception, and returns an `SKPicture` whose native resources
+  remain valid after the renderer call returns.
+- `NetworkConfiguration.UseFirstPartySvgRenderer` selects the new backend for
+  `ImageLoader`; it remains opt-in while the legacy `Svg.Skia` adapter is the
+  default and utility-process decode paths await parity sign-off.
+
+Verification:
+
+- The focused SVG suite discovers 80 parser-security, value/path, pixel,
+  sandbox-parity, resource-limit, malformed-input, and cycle-termination tests.
