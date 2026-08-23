@@ -99,6 +99,9 @@ namespace FenBrowser.FenEngine.Svg
                     }
                 case "defs":
                 case "style":
+                case "title":
+                case "desc":
+                case "metadata":
                 case "symbol":
                 case "marker":
                 case "pattern":

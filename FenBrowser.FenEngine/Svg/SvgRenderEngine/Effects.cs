@@ -20,13 +20,15 @@ namespace FenBrowser.FenEngine.Svg
             string maskRaw = element.GetPresentationProperty("mask");
             bool wantsFilter = HasEffectValue(filterRaw);
             bool wantsMask = HasEffectValue(maskRaw);
-            if (!wantsFilter && !wantsMask) { drawSource(); return; }
+            bool blendLayer = TryResolveBlendLayer(element, out SKBlendMode blendMode);
+            if (!wantsFilter && !wantsMask && !blendLayer) { drawSource(); return; }
 
             string filterId = null;
             string maskId = null;
             var owned = new List<SKImageFilter>();
             SKImageFilter imageFilter = null;
             SvgElement maskElement = null;
+            SKPaint blendPaint = null;
             try
             {
                 if (wantsFilter &&
@@ -40,12 +42,18 @@ namespace FenBrowser.FenEngine.Svg
                 }
 
                 bool maskLayer = maskElement != null;
-                int requiredLayers = (maskLayer ? 2 : 0) + (imageFilter != null ? 1 : 0);
+                int requiredLayers = (maskLayer ? 2 : 0) + (imageFilter != null ? 1 : 0) + (blendLayer ? 1 : 0);
                 if (_activeLayers + requiredLayers > _maxActiveLayers)
                 {
-                    _report.RequireFallback("SVG filter/mask layer budget exceeded");
+                    _report.RequireFallback("SVG filter/mask/blend layer budget exceeded");
                     drawSource();
                     return;
+                }
+                if (blendLayer)
+                {
+                    blendPaint = new SKPaint { BlendMode = blendMode };
+                    canvas.SaveLayer(blendPaint);
+                    _activeLayers++;
                 }
                 if (maskLayer)
                 {
@@ -81,6 +89,11 @@ namespace FenBrowser.FenEngine.Svg
                         canvas.Restore();
                         _activeLayers--;
                     }
+                    if (blendLayer)
+                    {
+                        canvas.Restore();
+                        _activeLayers--;
+                    }
                 }
             }
             finally
@@ -88,7 +101,47 @@ namespace FenBrowser.FenEngine.Svg
                 for (int i = owned.Count - 1; i >= 0; i--) owned[i]?.Dispose();
                 if (filterId != null) _activeFilterIds.Remove(filterId);
                 if (maskId != null) _activeMaskIds.Remove(maskId);
+                blendPaint?.Dispose();
             }
+        }
+
+        private bool TryResolveBlendLayer(SvgElement element, out SKBlendMode mode)
+        {
+            mode = SKBlendMode.SrcOver;
+            string isolation = element.GetPresentationProperty("isolation");
+            bool isolated = string.Equals(isolation?.Trim(), "isolate", StringComparison.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(isolation) && !isolated &&
+                !isolation.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase))
+                _report.RequireFallback("unsupported SVG isolation value requires compatibility fallback");
+
+            string raw = element.GetPresentationProperty("mix-blend-mode");
+            if (string.IsNullOrWhiteSpace(raw) || raw.Trim().Equals("normal", StringComparison.OrdinalIgnoreCase))
+                return isolated;
+            mode = raw.Trim().ToLowerInvariant() switch
+            {
+                "multiply" => SKBlendMode.Multiply,
+                "screen" => SKBlendMode.Screen,
+                "overlay" => SKBlendMode.Overlay,
+                "darken" => SKBlendMode.Darken,
+                "lighten" => SKBlendMode.Lighten,
+                "color-dodge" => SKBlendMode.ColorDodge,
+                "color-burn" => SKBlendMode.ColorBurn,
+                "hard-light" => SKBlendMode.HardLight,
+                "soft-light" => SKBlendMode.SoftLight,
+                "difference" => SKBlendMode.Difference,
+                "exclusion" => SKBlendMode.Exclusion,
+                "hue" => SKBlendMode.Hue,
+                "saturation" => SKBlendMode.Saturation,
+                "color" => SKBlendMode.Color,
+                "luminosity" => SKBlendMode.Luminosity,
+                _ => SKBlendMode.SrcOver
+            };
+            if (mode == SKBlendMode.SrcOver)
+            {
+                _report.RequireFallback($"SVG mix-blend-mode '{raw.Trim()}' requires compatibility fallback");
+                return isolated;
+            }
+            return true;
         }
 
         private bool TryEnterReference(
@@ -131,7 +184,9 @@ namespace FenBrowser.FenEngine.Svg
             bool objectContent = string.Equals(
                 mask.GetAttribute("maskContentUnits"), "objectBoundingBox", StringComparison.Ordinal);
 
-            if (!TryResolveObjectBounds(target, viewport, out var bounds))
+            var bounds = new SKRect(0f, 0f, viewport.Width, viewport.Height);
+            if ((objectRegion || objectContent) &&
+                !TryResolveObjectBounds(target, viewport, out bounds))
             {
                 _report.RequireFallback($"SVG mask on '{target.Name}' requires resolvable object bounds");
                 return;

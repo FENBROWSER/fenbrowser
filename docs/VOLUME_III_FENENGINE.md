@@ -11023,3 +11023,15 @@ Complete local WPT evidence:
   2 per-file timeouts, 0 worker failures, and 49/58 comparable pixel passes.
 - The bounded timeouts are `import/paths-data-18-f-manual.svg` and `path/bearing/zero.svg`. This baseline proves
   isolation works and also proves the first-party renderer is not ready to become default.
+
+## 2.134 SVG Blend, Metadata, And User-Space Mask Completion (2026-08-24)
+
+- SVG metadata elements are nonvisual, embedding-only CSS properties no longer force internal-pixel fallback,
+  and bounded `isolation`/`mix-blend-mode` compositing uses admitted, deterministically disposed native layers.
+  User-space masks whose content also uses user space no longer require synthetic object bounds for group targets.
+
+Verification:
+
+- Complete focused SVG slice: 246 passed, 0 failed, 0 skipped.
+- Windows and Ubuntu 24.04 WSL `linux-x64` 10,000-render stress: zero failures and 769 intended compatibility cases;
+  retained private bytes were 13,234,176 and 12,730,368 respectively, below the 67,108,864-byte ceiling.

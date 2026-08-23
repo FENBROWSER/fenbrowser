@@ -25,6 +25,7 @@ namespace FenBrowser.FenEngine.Svg
             "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset",
             "opacity", "clip-path", "clip-rule",
             "filter", "mask", "mask-type", "marker", "marker-start", "marker-mid", "marker-end",
+            "isolation", "mix-blend-mode",
             "flood-color", "flood-opacity",
             "stop-color", "stop-opacity",
             "font-family", "font-size", "font-style", "font-weight", "letter-spacing", "text-anchor"
@@ -33,6 +34,16 @@ namespace FenBrowser.FenEngine.Svg
         private static readonly HashSet<string> NoneIsNoEffect = new(StringComparer.OrdinalIgnoreCase)
         {
             "vector-effect"
+        };
+
+        // CSS box/input properties captured on inline SVG markup but not consumed
+        // by the isolated SVG picture. They are applied by the embedding/layout
+        // layer and must not force a pixel-renderer fallback.
+        private static readonly HashSet<string> EmbeddingOnlyProperties = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "vertical-align", "border", "border-top", "border-right", "border-bottom", "border-left",
+            "border-color", "border-style", "border-width", "outline", "cursor", "pointer-events",
+            "user-select", "touch-action"
         };
 
         public static void Apply(
@@ -299,6 +310,7 @@ namespace FenBrowser.FenEngine.Svg
 
             if (!SupportedProperties.Contains(property))
             {
+                if (EmbeddingOnlyProperties.Contains(property)) return;
                 if (NoneIsNoEffect.Contains(property) &&
                     value.Equals("none", StringComparison.OrdinalIgnoreCase))
                 {

@@ -51,6 +51,21 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(0, result.Bitmap.GetPixel(45, 15).Alpha);
         }
 
+        [Fact]
+        public void UserSpaceMaskOnGroup_DoesNotRequireObjectBounds()
+        {
+            const string svg =
+                "<svg width='98' height='36'><defs><mask id='m' maskUnits='userSpaceOnUse' " +
+                "x='0' y='0' width='98' height='36'><rect width='98' height='36' fill='white'/></mask></defs>" +
+                "<g mask='url(#m)'><path d='M0 0h98v36H0z' fill='red'/></g></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback, string.Join("; ", result.Warnings));
+            Assert.True(result.Bitmap.GetPixel(50, 18).Alpha > 0);
+        }
+
         [Theory]
         [InlineData("url(#missing)")]
         [InlineData("url(https://example.test/mask.svg#m)")]
