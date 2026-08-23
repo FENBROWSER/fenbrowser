@@ -94,9 +94,9 @@ Load fired: Yes.
 
 Main framework detected: MediaWiki ResourceLoader + jQuery (jquery, oojs, mediawiki.base modules).
 
-Likely failure bucket: Resolved G (event loop / GC rooting). Remaining candidates: F/E for PerformanceObserver; D/E for Function.prototype.apply rejecting array-like host objects inside jQuery ind (4 timer-callback TypeErrors).
+Likely failure bucket: Resolved G (event loop / GC rooting). Remaining candidates: F/E for PerformanceObserver; D/E for Function.prototype.apply rejecting array-like host objects inside jQuery find (4 timer-callback TypeErrors).
 
-Confirmed failure bucket: Stale heap handle class confirmed fixed by before/after bundles below; irst_blocker.json now reports Result=none.
+Confirmed failure bucket: Stale heap handle class confirmed fixed by before/after bundles below; first_blocker.json now reports Result=none.
 
 Minimal reproduction: `dotnet run --project FenBrowser.Tooling -c Release -- debug-site https://en.wikipedia.org/ 20000`
 

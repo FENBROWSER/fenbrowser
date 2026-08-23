@@ -254,7 +254,7 @@ namespace FenBrowser.FenEngine.Rendering
                         }
 
                         Uri uri = null;
-                        
+
                         // Handle protocol-relative URLs manually to prevent Windows interpreting them as UNC file paths
                         if (sourceUrl.StartsWith("//") && descriptor.BaseUri != null)
                         {
