@@ -73,10 +73,9 @@ namespace FenBrowser.Tests.Svg
             yield return new object[] { "malformed-recoverable",
                 "<svg width='20' height='20'><rect width='14' height='20' fill='red'><unclosed></rect>" +
                 "</weird><circle cx='17' cy='10' r='3' fill='blue'/></svg>", false };
-            yield return new object[] { "unsupported-text-ignored",
-                // SPEC-DERIVED expectation for fen: text is unsupported and must
-                // render nothing; legacy draws glyphs. Foreground comparison is
-                // intentionally NOT applied here (see KnownDivergence test).
+            yield return new object[] { "basic-text",
+                // Font rasterization is platform-dependent, so this carries a
+                // semantic foreground expectation rather than pixel comparison.
                 "<svg width='40' height='20'><text x='2' y='14' font-size='12'>Hi</text></svg>", false };
         }
 
@@ -106,16 +105,9 @@ namespace FenBrowser.Tests.Svg
                     Assert.Equal((byte)255, fen.Bitmap.GetPixel(5, 5).Red);
                     Assert.Equal((byte)255, fen.Bitmap.GetPixel(17, 10).Blue);
                 }
-                else if (caseName == "unsupported-text-ignored")
+                else if (caseName == "basic-text")
                 {
-                    for (int y = 0; y < fen.Bitmap.Height; y += 2)
-                    {
-                        for (int x = 0; x < fen.Bitmap.Width; x += 2)
-                        {
-                            Assert.True(fen.Bitmap.GetPixel(x, y).Alpha == 0,
-                                "unsupported text must not partially render");
-                        }
-                    }
+                    Assert.True(HasForeground(fen.Bitmap), "basic text must render visible glyphs");
                 }
                 return;
             }
@@ -157,19 +149,20 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void KnownDivergence_Text_IsIgnoredByFen_SpecDerived()
+        public void BasicText_RendersVisiblePixels_SpecDerived()
         {
             const string svg = "<svg width='40' height='20'><text x='2' y='14' font-size='12'>Hi</text></svg>";
             var fen = new FenSvgRenderer().Render(svg);
             Assert.True(fen.Success, fen.ErrorMessage ?? "");
-            for (int y = 0; y < fen.Bitmap.Height; y += 2)
-            {
-                for (int x = 0; x < fen.Bitmap.Width; x += 2)
-                {
-                    Assert.True(fen.Bitmap.GetPixel(x, y).Alpha == 0,
-                        "unsupported text must not partially render in fen backend");
-                }
-            }
+            Assert.True(HasForeground(fen.Bitmap), "basic text must render visible glyphs");
+        }
+
+        private static bool HasForeground(SKBitmap bitmap)
+        {
+            for (int y = 0; y < bitmap.Height; y++)
+            for (int x = 0; x < bitmap.Width; x++)
+                if (bitmap.GetPixel(x, y).Alpha > 0) return true;
+            return false;
         }
 
         private static string FormatRect(SKRectI r) => $"({r.Left},{r.Top},{r.Right},{r.Bottom})";

@@ -76,6 +76,33 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void TextContent_IsCapturedAndEntitiesAreBoundedToItsMarkupSegment()
+        {
+            var doc = Parse(
+                "<svg><text>A&amp;B &unterminated</text><rect data-x=';'/></svg>",
+                out var ok,
+                out var fatal);
+
+            Assert.True(ok, fatal);
+            Assert.Equal("A&B &unterminated", doc.Root.Children[0].TextContent);
+            Assert.Equal(";", doc.Root.Children[1].GetAttribute("data-x"));
+        }
+
+        [Fact]
+        public void OversizedTextContent_IsBoundedDuringMaterialization()
+        {
+            string source = "<svg><text>" +
+                            new string('x', SvgMarkupParser.MaxTextContentChars + 1024) +
+                            "</text></svg>";
+
+            var doc = Parse(source, out var ok, out var fatal);
+
+            Assert.True(ok, fatal);
+            Assert.Equal(SvgMarkupParser.MaxTextContentChars, doc.Root.Children[0].TextContent.Length);
+            Assert.Contains("text content truncated over length budget", doc.Report.Warnings);
+        }
+
+        [Fact]
         public void UnknownEntity_DegradesToLiteral_NeverFatal()
         {
             var doc = Parse("<svg width=\"10\" height=\"10\"><circle r=\"&nope;\"/></svg>", out var ok, out _);

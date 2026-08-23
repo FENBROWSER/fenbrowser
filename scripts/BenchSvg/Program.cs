@@ -15,6 +15,16 @@ var resultsDir = Path.Combine(root, "Results", "svg");
 bool writeReport = args.Contains("--report");
 var reportRows = new List<string>();
 
+string? benchmarkFont = Environment.GetEnvironmentVariable("FEN_SVG_BENCH_FONT");
+if (!string.IsNullOrWhiteSpace(benchmarkFont) &&
+    string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(
+        SvgRendererConfiguration.FontFallbackPathEnvironmentVariable)))
+{
+    Environment.SetEnvironmentVariable(
+        SvgRendererConfiguration.FontFallbackPathEnvironmentVariable,
+        benchmarkFont);
+}
+
 var nativeTextProbe = ProbeNativeTextStack();
 Console.WriteLine(
     $"{{\"probe\":\"native-text-stack\",\"ok\":true," +
@@ -42,6 +52,7 @@ var cases = new (string Name, string Svg)[]
         "</nope><g transform='scale(1e9)'><circle cx='10' cy='10' r='5' fill='blue'/></g>" +
         "<path d='M0 0 L1e30 1e30' stroke='green' stroke-width='2'/></svg>"),
     ("embedded-image", $"<svg width='48' height='48'><image href='{redPng}' x='4' y='4' width='40' height='40'/></svg>"),
+    ("basic-text", "<svg width='160' height='40'><text x='4' y='28' font-size='24'>FenBrowser</text></svg>"),
 };
 
 const int WarmRuns = 7;
@@ -58,6 +69,8 @@ foreach (var (name, svg) in cases)
         long allocSum = 0;
         bool ok = true;
         string dims = "-";
+        string producer = "unknown";
+        bool usedFallback = false;
         ulong checksum = 0;
         for (int i = 0; i < WarmRuns; i++)
         {
@@ -65,13 +78,21 @@ foreach (var (name, svg) in cases)
             ok &= m.Success;
             best = Math.Min(best, m.ElapsedMs);
             allocSum += m.AllocatedBytes;
-            if (i == 0) { dims = $"{m.Width}x{m.Height}"; checksum = m.Checksum; }
+            if (i == 0)
+            {
+                dims = $"{m.Width}x{m.Height}";
+                checksum = m.Checksum;
+                producer = m.Backend.ToString();
+                usedFallback = m.UsedFallback;
+            }
         }
         long avgAlloc = allocSum / WarmRuns;
         Console.WriteLine($"{{\"case\":\"{name}\",\"backend\":\"{backend.Name}\",\"phase\":\"warm-best\"," +
                           $"\"ms\":{best},\"avgAllocBytes\":{avgAlloc},\"ok\":{Cold(ok)}," +
-                          $"\"dims\":\"{dims}\",\"checksum\":{checksum}}}");
-        reportRows.Add($"| {name} | {backend.Name} | {cold.ElapsedMs} | {best} | {avgAlloc} | {(ok ? "yes" : "NO")} | {dims} | {checksum} |");
+                          $"\"dims\":\"{dims}\",\"producer\":\"{producer}\"," +
+                          $"\"fallback\":{Cold(usedFallback)},\"checksum\":{checksum}}}");
+        reportRows.Add($"| {name} | {backend.Name} | {producer} | {(usedFallback ? "yes" : "no")} | " +
+                       $"{cold.ElapsedMs} | {best} | {avgAlloc} | {(ok ? "yes" : "NO")} | {dims} | {checksum} |");
     }
 }
 
@@ -84,10 +105,10 @@ if (writeReport)
         "",
         $"Generated: {DateTime.UtcNow:u}",
         $"Warm runs per case: {WarmRuns} (best-of reported); allocations averaged across warm runs.",
-        "Checksums compare sampled RGB of both backends; identical values indicate pixel parity.",
+        "Checksums compare sampled ARGB of both backends; identical values indicate pixel parity.",
         "",
-        "| case | backend | cold ms | warm best ms | avg alloc B | ok | dims | checksum |",
-        "|---|---|---|---|---|---|---|---|"
+        "| case | requested | producer | fallback | cold ms | warm best ms | avg alloc B | ok | dims | checksum |",
+        "|---|---|---|---|---|---|---|---|---|---|"
     };
     lines.AddRange(reportRows);
     File.WriteAllLines(Path.Combine(resultsDir, "perf-report.md"), lines);
@@ -117,7 +138,8 @@ static (int Glyphs, float Width) ProbeNativeTextStack()
     return (result.Codepoints.Length, result.Width);
 }
 
-static (long ElapsedMs, long AllocatedBytes, bool Success, int Width, int Height, ulong Checksum)
+static (long ElapsedMs, long AllocatedBytes, bool Success, int Width, int Height,
+    ulong Checksum, SvgRendererBackend Backend, bool UsedFallback)
     TimeOne(ISvgRenderer renderer, string svg)
 {
     GC.Collect();
@@ -139,11 +161,13 @@ static (long ElapsedMs, long AllocatedBytes, bool Success, int Width, int Height
             for (int x = 0; x < w; x += 3)
             {
                 var p = result.Bitmap.GetPixel(x, y);
-                checksum = checksum * 31u ^ (uint)(p.Red << 16 | p.Green << 8 | p.Blue);
+                checksum = checksum * 31u ^
+                    ((ulong)p.Alpha << 24 | (uint)p.Red << 16 | (uint)p.Green << 8 | p.Blue);
             }
         }
     }
-    return (sw.ElapsedMilliseconds, after - before, result.Success, w, h, checksum);
+    return (sw.ElapsedMilliseconds, after - before, result.Success, w, h, checksum,
+        result.Backend, result.UsedLegacyFallback);
 }
 
 static string MakeRedPng(int w, int h)

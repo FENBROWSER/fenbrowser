@@ -129,28 +129,94 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void FirstParty_UnsupportedTextSignalsFallbackRequirement()
+        public void FirstParty_BasicTextRendersWithoutFallback()
         {
             using var result = new FenSvgRenderer().Render(
                 "<svg width='40' height='20'><text x='2' y='15'>Fen</text></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
-            Assert.True(result.RequiresFallback);
+            Assert.False(result.RequiresFallback);
             Assert.False(result.UsedLegacyFallback);
             Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.True(HasForeground(result.Bitmap));
         }
 
         [Fact]
-        public void Hybrid_UnsupportedTextUsesLegacyCompatibilityRenderer()
+        public void Hybrid_BasicTextStaysOnFirstPartyRenderer()
         {
             var renderer = new HybridSvgRenderer(new FenSvgRenderer(), new SvgSkiaRenderer());
             using var result = renderer.Render(
                 "<svg width='80' height='30'><text x='2' y='22' font-size='20'>Fen</text></svg>");
 
             Assert.True(result.Success, result.ErrorMessage);
-            Assert.True(result.UsedLegacyFallback);
-            Assert.Equal(SvgRendererBackend.LegacySvgSkia, result.Backend);
-            Assert.Contains(result.Warnings, warning => warning.Contains("text", StringComparison.Ordinal));
+            Assert.False(result.UsedLegacyFallback);
+            Assert.Equal(SvgRendererBackend.FirstParty, result.Backend);
+            Assert.True(HasForeground(result.Bitmap));
+        }
+
+        [Fact]
+        public void FirstParty_TextEntitiesAndAnchorRenderWithinExpectedRegion()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='80' height='30'><text x='40' y='22' text-anchor='middle' " +
+                "font-size='18' fill='red'>A&amp;B</text></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.True(HasForegroundIn(result.Bitmap, 10, 4, 70, 28));
+        }
+
+        [Fact]
+        public void FirstParty_TextPercentPositionAndLastInlineDeclarationAreHonored()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='100' height='40'><text x='50%' y='75%' " +
+                "style='font-size:8px;font-size:20px' text-anchor='middle'>Fen</text></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
+            Assert.True(HasForegroundIn(result.Bitmap, 25, 8, 75, 36));
+        }
+
+        [Theory]
+        [InlineData("<text x='2' y='15'>A<tspan>B</tspan></text>")]
+        [InlineData("<text x='2' y='15'>Καλημέρα</text>")]
+        [InlineData("<text x='2' y='15' writing-mode='vertical-rl'>Fen</text>")]
+        [InlineData("<text x='2' y='15' style='letter-spacing:2px'>Fen</text>")]
+        public void FirstParty_ComplexTextRequiresCompatibilityFallback(string content)
+        {
+            using var result = new FenSvgRenderer().Render(
+                $"<svg width='80' height='30'>{content}</svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.RequiresFallback);
+            Assert.NotEmpty(result.Warnings);
+        }
+
+        [Fact]
+        public void FirstParty_OversizedBasicTextRequiresFallbackBeforeFontWork()
+        {
+            string content = new string('a', 4097);
+            using var result = new FenSvgRenderer().Render(
+                $"<svg width='80' height='30'><text x='2' y='15'>{content}</text></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains(result.Warnings, warning => warning.Contains("render length budget", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void SiblingShapeOpacity_ReleasesLayerBudgetAfterEachElement()
+        {
+            var svg = new System.Text.StringBuilder("<svg width='64' height='8'>");
+            for (int i = 0; i < 16; i++)
+                svg.Append($"<rect x='{i * 4}' width='4' height='8' opacity='.5'/>");
+            svg.Append("</svg>");
+
+            using var result = new FenSvgRenderer().Render(svg.ToString());
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.RequiresFallback);
         }
 
         [Fact]
@@ -318,6 +384,22 @@ namespace FenBrowser.Tests.Svg
             using var image = SKImage.FromBitmap(bitmap);
             using var data = image.Encode(SKEncodedImageFormat.Png, 100);
             return "data:image/png;base64," + Convert.ToBase64String(data.ToArray());
+        }
+
+        private static bool HasForeground(SKBitmap bitmap)
+        {
+            for (int y = 0; y < bitmap.Height; y++)
+            for (int x = 0; x < bitmap.Width; x++)
+                if (bitmap.GetPixel(x, y).Alpha > 0) return true;
+            return false;
+        }
+
+        private static bool HasForegroundIn(SKBitmap bitmap, int left, int top, int right, int bottom)
+        {
+            for (int y = top; y < bottom; y++)
+            for (int x = left; x < right; x++)
+                if (bitmap.GetPixel(x, y).Alpha > 0) return true;
+            return false;
         }
 
         private static byte[] BuildPngHeader(int width, int height)

@@ -145,6 +145,14 @@ namespace FenBrowser.FenEngine.Svg
                         return;
                     }
                 case "text":
+                    {
+                        if (IsDisplayNone(el)) return;
+                        using var textScope = new CanvasState(canvas);
+                        ApplyTransform(el, canvas);
+                        ApplyClipPath(el, canvas, viewport, inherited);
+                        DrawTextElement(el, canvas, viewport, inherited);
+                        return;
+                    }
                 case "tspan":
                 case "textPath":
                 case "foreignObject":

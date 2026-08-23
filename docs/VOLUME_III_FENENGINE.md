@@ -10660,13 +10660,15 @@ Verification: 117 focused tests (`FenBrowser.Tests/Svg`): parser security suite 
 | use/symbol (+ nested svg viewports) | supported | cycle guards |
 | currentColor inheritance | supported | |
 | switch | partial | first drawable child; requiredFeatures treated as pass |
-| text / tspan / textPath | compatibility-routed | first-party-only mode returns bounded degradation diagnostics |
+| direct basic text | supported | bounded ASCII character data, entities, x/y/dx/dy, anchors, font properties, fill/stroke/opacity |
+| tspan / textPath / complex text shaping | compatibility-routed | non-ASCII and advanced text attributes require compatibility shaping |
 | stylesheet CSS (<style>) | compatibility-routed | no second CSS engine in the first-party subset |
 | patterns / masks / markers / filters | compatibility-routed when referenced | unused definitions do not force fallback |
 | animation (SMIL/animate*) | compatibility-routed | first-party-only mode remains static |
 | foreignObject | compatibility-routed | never interpreted by the first-party sandbox |
 
-Migration-blocking gaps before any default flip: stylesheet CSS, text, masks/markers/patterns parity on a real-site corpus.
+Migration-blocking gaps before any default flip: stylesheet CSS, complex text shaping,
+masks/markers/patterns parity on a real-site corpus.
 
 ### Backend selection (PHASE 4 note)
 
@@ -10767,7 +10769,7 @@ Verification:
   compatibility gaps. Parse/admission/security failures never enter the legacy parser. Results
   identify the pixel-producing backend, whether fallback was required/used, and carry deduplicated,
   document-content-free diagnostics capped at 32 messages.
-- Capability detection covers text, stylesheet CSS, foreign content, animation, referenced paint
+- Capability detection covers complex text, stylesheet CSS, foreign content, animation, referenced paint
   servers, filters, masks, markers, unsupported visible elements, container object-bounding-box
   clips, and opacity isolation beyond the bounded layer budget. Unused definitions do not cause
   fallback. Shared renderer instances are exercised concurrently with mixed first-party/legacy work.
@@ -10790,7 +10792,7 @@ content to leave the external renderer today.
 
 Verification:
 
-- Focused Release SVG suite: 179 passed, 0 failed, 0 skipped.
+- Focused Release SVG suite after the 2.126 additions: 189 passed, 0 failed, 0 skipped.
 - FenEngine and Host Release builds: 0 warnings, 0 errors.
 - Framework-dependent FenEngine publish succeeded for `linux-x64`, `linux-arm64`, `osx-x64`, and
   `osx-arm64`; Windows native execution is covered by the focused suite.
@@ -10816,3 +10818,32 @@ Verification:
   corresponding `libHarfBuzzSharp.so`.
 - The published Linux benchmark executed under Ubuntu 24.04 WSL with DejaVu Sans and shaped ten
   glyphs successfully, exercising the actual Linux Skia/HarfBuzz native stack.
+
+## 2.126 SVG Basic Text and Headless Font Determinism (2026-08-23)
+
+- The sandboxed parser now retains direct `text`/`tspan` character data with the same fixed entity
+  whitelist used by attributes. Text is capped at 256 KiB per element before materialization;
+  unterminated entities cannot scan across the enclosing markup boundary.
+- The first-party renderer paints bounded basic ASCII `<text>` content with x/y/dx/dy positioning,
+  `text-anchor`, font size/family/weight/style, transforms, clips, fill/stroke, and opacity. `tspan`,
+  `textPath`, CDATA text, non-ASCII shaping, writing modes, text-length adjustment, and rotation remain
+  explicit compatibility cases rather than being partially interpreted.
+- Direct text is retained safely up to the parser's 256 KiB per-element ceiling, while first-party
+  painting is capped at 4,096 characters per element; larger runs route to compatibility before font
+  resolution or glyph-outline work.
+- Headless Linux cannot assume that Skia has a working system font manager. Operators can provide a
+  trusted process-level font file with `FEN_SVG_FONT_PATH`; SVG source never controls this path. The
+  configured typeface is process-cached, outline-validated, and reused safely across renderer calls.
+- Fixed layer accounting for sibling shapes with opacity: every successful SaveLayer now decrements
+  the active-layer counter after restore, preventing false fallback after many non-nested elements.
+- Benchmark checksums now include alpha (sampled ARGB), so black glyphs can no longer collide with a
+  transparent canvas. Output also records the actual producing backend and whether fallback occurred.
+
+Verification:
+
+- Focused parser/text/differential/production tests pass, including entity boundaries, oversized text,
+  visible text, complex-text routing, and sibling-layer accounting.
+- Windows benchmark renders basic text first-party without fallback.
+- Published `linux-x64` benchmark under Ubuntu 24.04 WSL renders basic text first-party with a configured
+  DejaVu Sans fallback; hybrid remains first-party. The legacy backend remains transparent for that
+  headless text case, demonstrating why first-party text and explicit font configuration are required.

@@ -27,6 +27,7 @@ namespace FenBrowser.FenEngine.Svg
         internal const int HardMaxDepth = 512;
         internal const int MaxAttributesPerElement = 256;
         internal const int MaxAttributeValueChars = 256 * 1024;
+        internal const int MaxTextContentChars = 256 * 1024;
         internal const int MaxIdChars = 512;
 
         // Subtrees consumed raw and discarded: no rendering use in v1 and keeping
@@ -130,7 +131,7 @@ namespace FenBrowser.FenEngine.Svg
             // --- Body: iterative descent. ---
             while (!state.Eof && openStack.Count > 0)
             {
-                SkipContentNoise(state);
+                SkipContentNoise(state, openStack[openStack.Count - 1]);
 
                 if (state.Eof)
                 {
@@ -151,6 +152,13 @@ namespace FenBrowser.FenEngine.Svg
                         state.Report.SawDoctype = true;
                         fatalReason = "DOCTYPE declarations are rejected by the SVG sandbox";
                         return false;
+                    }
+                    string containerName = openStack[openStack.Count - 1].Name;
+                    if ((containerName == "text" || containerName == "tspan") &&
+                        state.Source.AsSpan(state.Pos).StartsWith(
+                            "![CDATA[".AsSpan(), System.StringComparison.Ordinal))
+                    {
+                        state.Report.RequireFallback("CDATA text requires compatibility fallback");
                     }
                     SkipBangOrPi(state);
                     continue;
@@ -470,7 +478,7 @@ namespace FenBrowser.FenEngine.Svg
             {
                 if (state.Peek() == '&')
                 {
-                    ExpandEntity(state, sb);
+                    ExpandEntity(state, sb, i);
                 }
                 else
                 {
@@ -665,15 +673,17 @@ namespace FenBrowser.FenEngine.Svg
             return false;
         }
 
-        private static void SkipContentNoise(ParseState state)
+        private static void SkipContentNoise(ParseState state, SvgElement current)
         {
             // Advances past text content and the leading '<' of the next markup,
             // leaving the cursor on the character AFTER '<'.
+            int textStart = state.Pos;
             while (!state.Eof)
             {
                 char c = state.Peek();
                 if (c == '<')
                 {
+                    AppendTextContent(state, current, textStart, state.Pos);
                     state.Pos++;
                     if (!state.Eof && state.Peek() == '/')
                     {
@@ -684,7 +694,59 @@ namespace FenBrowser.FenEngine.Svg
                     }
                     return;
                 }
-                state.Pos++; // Text content: discarded (v1 renders no text).
+                state.Pos++;
+            }
+            AppendTextContent(state, current, textStart, state.Pos);
+        }
+
+        private static void AppendTextContent(
+            ParseState state,
+            SvgElement current,
+            int start,
+            int end)
+        {
+            if ((current.Name != "text" && current.Name != "tspan") || end <= start)
+            {
+                return;
+            }
+
+            int existing = current.TextContent?.Length ?? 0;
+            int remaining = MaxTextContentChars - existing;
+            if (remaining <= 0)
+            {
+                state.Report.Warn("text content truncated over length budget");
+                return;
+            }
+
+            var decoded = new System.Text.StringBuilder(System.Math.Min(end - start, remaining));
+            var cursor = new ParseState(state.Source, state.Report) { Pos = start };
+            while (cursor.Pos < end && decoded.Length < remaining)
+            {
+                if (cursor.Peek() == '&')
+                {
+                    ExpandEntity(cursor, decoded, end);
+                }
+                else
+                {
+                    decoded.Append(cursor.Peek());
+                    cursor.Pos++;
+                }
+            }
+            if (cursor.Pos < end)
+            {
+                state.Report.Warn("text content truncated over length budget");
+            }
+
+            string segment = decoded.ToString();
+            current.TextContent = existing == 0 ? segment : current.TextContent + segment;
+            for (int i = 0; i < segment.Length; i++)
+            {
+                if (segment[i] > 0x7f)
+                {
+                    state.Report.RequireFallback(
+                        "non-ASCII SVG text requires compatibility shaping");
+                    break;
+                }
             }
         }
 
@@ -804,14 +866,20 @@ namespace FenBrowser.FenEngine.Svg
 
         // -------------------------------------------------------------- entities
 
-        private static void ExpandEntity(ParseState state, System.Text.StringBuilder sb)
+        private static void ExpandEntity(
+            ParseState state,
+            System.Text.StringBuilder sb,
+            int endExclusive)
         {
             // Cursor at '&'.
             string s = state.Source;
             int ampPos = state.Pos;
 
             const int maxEntityName = 32;
-            int semi = s.IndexOf(';', ampPos, System.Math.Min(maxEntityName + 1, s.Length - ampPos));
+            int searchLength = System.Math.Min(
+                maxEntityName + 2, // '&' + bounded body + ';'
+                System.Math.Max(0, System.Math.Min(endExclusive, s.Length) - ampPos));
+            int semi = searchLength > 0 ? s.IndexOf(';', ampPos, searchLength) : -1;
             if (semi < 0)
             {
                 sb.Append('&');

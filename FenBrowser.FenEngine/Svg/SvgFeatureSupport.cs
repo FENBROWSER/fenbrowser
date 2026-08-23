@@ -12,7 +12,7 @@ namespace FenBrowser.FenEngine.Svg
     {
         private static readonly HashSet<string> FallbackElements = new(StringComparer.Ordinal)
         {
-            "style", "text", "tspan", "textPath",
+            "style", "tspan", "textPath",
             "foreignObject", "animation", "animate", "animateTransform", "animateMotion", "set"
         };
 
@@ -20,6 +20,15 @@ namespace FenBrowser.FenEngine.Svg
         {
             "filter", "mask", "marker", "marker-start", "marker-mid", "marker-end",
             "paint-order", "vector-effect"
+        };
+
+        private static readonly HashSet<string> AdvancedTextAttributes = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "textLength", "lengthAdjust", "rotate", "writing-mode", "direction",
+            "unicode-bidi", "glyph-orientation-horizontal", "glyph-orientation-vertical",
+            "dominant-baseline", "alignment-baseline", "baseline-shift", "letter-spacing",
+            "word-spacing", "text-decoration", "text-rendering", "font", "font-stretch",
+            "font-variant", "xml:space"
         };
 
         public static void Inspect(SvgElement element, SvgParseReport report)
@@ -37,6 +46,12 @@ namespace FenBrowser.FenEngine.Svg
 
             foreach (var attribute in attributes)
             {
+                if (element.Name == "text" && AdvancedTextAttributes.Contains(attribute.Key))
+                {
+                    report.RequireFallback(
+                        $"SVG text attribute '{attribute.Key}' requires compatibility fallback");
+                    continue;
+                }
                 if (FallbackProperties.Contains(attribute.Key) &&
                     !string.IsNullOrWhiteSpace(attribute.Value) &&
                     !string.Equals(attribute.Value.Trim(), "none", StringComparison.OrdinalIgnoreCase))
@@ -72,6 +87,14 @@ namespace FenBrowser.FenEngine.Svg
                         !value.Equals("none".AsSpan(), StringComparison.OrdinalIgnoreCase))
                     {
                         report.RequireFallback($"SVG property '{unsupported}' requires compatibility fallback");
+                        break;
+                    }
+                }
+                foreach (string unsupported in AdvancedTextAttributes)
+                {
+                    if (property.Equals(unsupported.AsSpan(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        report.RequireFallback($"SVG text property '{unsupported}' requires compatibility fallback");
                         break;
                     }
                 }

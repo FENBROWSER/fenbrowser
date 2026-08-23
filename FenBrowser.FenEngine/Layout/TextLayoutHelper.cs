@@ -120,7 +120,7 @@ namespace FenBrowser.FenEngine.Layout
             using var font = new SKFont(tf);
             foreach (var c in text)
             {
-                if (c > 127 && font.GetGlyph(c) == 0) return false;
+                if (!char.IsWhiteSpace(c) && font.GetGlyph(c) == 0) return false;
             }
             return true;
         }

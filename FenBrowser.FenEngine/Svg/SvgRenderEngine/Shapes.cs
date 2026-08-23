@@ -45,6 +45,7 @@ namespace FenBrowser.FenEngine.Svg
                 if (layered)
                 {
                     canvas.Restore();
+                    _activeLayers--;
                     layerPaint.Dispose();
                 }
             }

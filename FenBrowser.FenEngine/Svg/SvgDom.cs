@@ -17,6 +17,7 @@ namespace FenBrowser.FenEngine.Svg
         public string Name;
         public string IdAttribute;
         public bool IsSelfClosing;
+        public string TextContent;
         public KeyValuePair<string, string>[] Attributes;
         public readonly List<SvgElement> Children = new List<SvgElement>();
 

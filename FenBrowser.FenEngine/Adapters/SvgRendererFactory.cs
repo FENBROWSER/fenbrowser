@@ -18,6 +18,7 @@ namespace FenBrowser.FenEngine.Adapters
     public static class SvgRendererConfiguration
     {
         public const string EnvironmentVariable = "FEN_SVG_RENDERER";
+        public const string FontFallbackPathEnvironmentVariable = "FEN_SVG_FONT_PATH";
         private static int _backend = (int)ReadEnvironmentOrDefault();
 
         public static SvgRendererBackend Backend
