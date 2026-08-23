@@ -10603,3 +10603,41 @@ Verification:
 
 - The focused SVG suite discovers 80 parser-security, value/path, pixel,
   sandbox-parity, resource-limit, malformed-input, and cycle-termination tests.
+
+## 2.120 SVG Renderer Hardening Pass: Audit Fixes, Features, Perf, Modularity (2026-08-23)
+
+Second pass over the first-party SVG renderer (2.119), driven by two independent audits (security; quality/performance).
+
+Security fixes (audit IDs F1-F12):
+- F1 SaveLayer amplification: engine `_activeLayers` counter caps concurrent full-viewport layers at 8; beyond that groups composite without isolation (bounded memory instead of multi-GB transient).
+- F2 render-side depth guard: independent `_depth` counter (cap 256) spans element tree AND use/symbol expansion - the parser cap alone cannot bound use-chain multiplication. StackOverflow-proof by construction.
+- F3 native lifetime: SKPicture is now an internal intermediate, disposed at every adapter exit; SvgRenderResult.Picture stays null (ImageLoader never consumed it - returning it pinned native memory until finalization).
+- F4 rasterization failure no longer leaks the allocated SKBitmap (scoped try/catch with disposal).
+- F5 SkipIgnoredSubtree double-advance bug fixed (nested same-name opens inside style/script were undercounted).
+- F6 lowercase `<!doctype>` now rejected case-insensitively.
+- F7 id VALUE length budget enforced (was gating the attribute NAME); oversized ids ignored with bounded warnings.
+- F8 opacity on `<use>` composites correctly.
+- F10 SvgSandboxViolationException surfaces bare parity message via typed catch.
+- F12 GetLookup first-wins matches GetAttribute (xlink:href duplicate resolution consistent).
+
+Features:
+- inline `style=""` attribute: declaration parsing, shadows presentation attributes per CSS cascade; malformed declarations skipped.
+- clipPath + clip-path attribute: userSpaceOnUse units, shape children plus one-level use refs, cycle guard (depth 8), empty clip hides element per spec; applied to shapes/groups/links/use.
+- <image> with data: URI rasters: base64-only admission, decode via Skia codecs, decoded-size budget MaxDecodedImagePixels (new SvgRenderLimits field, default 64MP) independent of the document raster budget, external hrefs fail closed.
+
+Performance (audit P0):
+- transform dispatch is span-based (was ToString+ToLowerInvariant per function).
+- InheritedStyle.ResolveOverrides builds ONE clone per element when changed (was up to nine); inline-style map allocated only when present.
+- paint-server memoization: stops arrays and userSpaceOnUse shaders built once per (server) per render instead of once per referencing shape (CachedGradient in Paint.cs).
+- preserveAspectRatio tokenizer reuses the zero-alloc span tokenizer.
+- rect/ellipse attribute single-parse; arc emitter closure removed.
+
+Modularity & clarity:
+- SvgRenderEngine split into partials: core (pipeline), Viewport.cs, Walk.cs, Shapes.cs, Paint.cs, Style.cs - mechanical moves, zero behavior change (full suite green before/after).
+- Engine-local PaintKind enum removed in favor of SvgValues.PaintKind (one vocabulary).
+- url(#missing) fallback color implemented per spec (was silently painting nothing despite parsed fallback).
+- dead code removed (_limits field, GradientCoord horizontal param, HasPositiveAttr double-parse).
+
+Logging: gated summary line `[FenSvgRenderer] ok WxH <ms> warnings=<n>` via LogCategory.Rendering; zero logging remains inside element loops (warnings are deduped, capped at 32 per document).
+
+Verification: 117 focused tests (`FenBrowser.Tests/Svg`): parser security suite (17), value/path grammars, pixel semantics incl. new features, sandbox parity/adversarial corpus, security regressions for every fix above, and a NEW migration gate - SvgBackendGoldenCompareTests asserts >=0.85 RGB similarity vs the legacy SvgSkiaRenderer across a geometric corpus (6/6). Full solution builds clean.
