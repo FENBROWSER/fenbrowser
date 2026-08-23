@@ -300,8 +300,18 @@ namespace FenBrowser.FenEngine.Rendering
             _animatedGifOwners[ownerId] = context;
         }
         
-        // RULE 3 & 5: SVG rendering through adapter with safety limits
-        private static readonly ISvgRenderer _svgRenderer = new SvgSkiaRenderer();
+        // RULE 3 & 5: SVG rendering through adapter with safety limits.
+        // Backend selection is static-read-once: flip NetworkConfiguration
+        // .UseFirstPartySvgRenderer before first image decode to switch to the
+        // first-party sandboxed renderer (FenSvgRenderer).
+        private static readonly ISvgRenderer _svgRenderer = CreateSvgRenderer();
+
+        private static ISvgRenderer CreateSvgRenderer()
+        {
+            return NetworkConfiguration.Instance.UseFirstPartySvgRenderer
+                ? new FenSvgRenderer()
+                : new SvgSkiaRenderer();
+        }
         
         /// <summary>
         /// Centralized image byte fetch delegate (wired by BrowserHost).
