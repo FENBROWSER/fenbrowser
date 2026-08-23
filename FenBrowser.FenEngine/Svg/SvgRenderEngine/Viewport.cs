@@ -79,8 +79,10 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
 
-            // P0.5: allocation-free tokenization (no Split/string garbage per
-            // <svg> element) and case-insensitive keyword matching.
+            // P0.5: allocation-free tokenization; case-insensitive keywords.
+            // Alignment grammar is exactly 8 chars: 'x' + Min|Mid|Max + 'y' +
+            // Min|Mid|Max. The previous 3+3 slice could never match and
+            // silently pinned every alignment to the default.
             var tok = SvgValues.CreateTokenizer(text.AsSpan());
             while (tok.Next(out var raw))
             {
@@ -99,19 +101,27 @@ namespace FenBrowser.FenEngine.Svg
                     meet = ParMeet.Slice;
                     continue;
                 }
-                if (raw.Length < 6)
+                if (raw.Length != 8)
+                {
+                    continue; // Malformed token: keep current state.
+                }
+
+                char hAxis = LowerAscii(raw[0]);
+                char vAxis = LowerAscii(raw[4]); // "xMin|yMin": y prefix at idx 4
+                if (hAxis != 'x' || vAxis != 'y')
                 {
                     continue;
                 }
 
-                // Alignment tokens are two 3-char words, e.g. "xMidYMid".
-                if (TryMapParComponent(raw.Slice(0, 3), isHorizontal: true, out var horizontal) &&
-                    TryMapParComponent(raw.Slice(3, 3), isHorizontal: false, out var vertical))
+                if (TryMapParComponent(raw.Slice(1, 3), isHorizontal: true, out var horizontal) &&
+                    TryMapParComponent(raw.Slice(5, 3), isHorizontal: false, out var vertical))
                 {
                     align = horizontal | vertical;
                 }
             }
         }
+
+        private static char LowerAscii(char c) => (char)(c | 0x20);
 
         private static bool TryMapParComponent(ReadOnlySpan<char> word, bool isHorizontal, out ParAlign value)
         {

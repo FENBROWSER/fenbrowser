@@ -126,6 +126,9 @@ namespace FenBrowser.FenEngine.Svg
                     {
                         if (IsDisplayNone(el)) return;
                         using var shapeScope = new CanvasState(canvas);
+                        // Spec order: save -> element transform -> clip -> draw
+                        // -> restore (unwinds via CanvasState on any exit).
+                        ApplyTransform(el, canvas);
                         ApplyClipPath(el, canvas, viewport, inherited);
                         DrawShape(el, canvas, inherited);
                         return;
@@ -133,6 +136,11 @@ namespace FenBrowser.FenEngine.Svg
                 case "image":
                     {
                         if (IsDisplayNone(el)) return;
+                        // Same spec order as shapes: save -> transform -> clip
+                        // -> draw (DrawImageElement adds its own opacity layer).
+                        using var imgScope = new CanvasState(canvas);
+                        ApplyTransform(el, canvas);
+                        ApplyClipPath(el, canvas, viewport, inherited);
                         DrawImageElement(el, canvas, inherited);
                         return;
                     }
