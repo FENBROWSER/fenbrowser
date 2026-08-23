@@ -109,6 +109,13 @@ namespace FenBrowser.FenEngine.Adapters
         public long MaxRasterPixels { get; set; }
         
         /// <summary>
+        /// Maximum decoded pixel count per embedded raster image (data URI).
+        /// Independent of the document raster budget so one oversized bitmap
+        /// cannot consume the whole page allocation.
+        /// </summary>
+        public long MaxDecodedImagePixels { get; set; }
+
+        /// <summary>
         /// Whether to allow external references (xlink:href to external URLs).
         /// Default: false (DISABLED for security)
         /// </summary>
@@ -127,6 +134,7 @@ namespace FenBrowser.FenEngine.Adapters
             MaxRasterWidth = 8192,
             MaxRasterHeight = 8192,
             MaxRasterPixels = 16L * 1024 * 1024,
+            MaxDecodedImagePixels = 64L * 1024 * 1024,
             AllowExternalReferences = false
         };
         
@@ -143,6 +151,7 @@ namespace FenBrowser.FenEngine.Adapters
             MaxRasterWidth = 4096,
             MaxRasterHeight = 4096,
             MaxRasterPixels = 8L * 1024 * 1024,
+            MaxDecodedImagePixels = 32L * 1024 * 1024,
             AllowExternalReferences = false
         };
     }

@@ -403,10 +403,18 @@ namespace FenBrowser.FenEngine.Svg
             if (seenNames.Add(attrName))
             {
                 attributes.Add(new KeyValuePair<string, string>(attrName, value));
-                if (attrName.Length <= MaxIdChars &&
-                    string.Equals(attrName, "id", System.StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(attrName, "id", System.StringComparison.OrdinalIgnoreCase))
                 {
-                    element.IdAttribute = value;
+                    // Gate the id VALUE length (F7): oversized ids are ignored as
+                    // keys and never echoed into warnings beyond a short prefix.
+                    if (value.Length <= MaxIdChars)
+                    {
+                        element.IdAttribute = value;
+                    }
+                    else
+                    {
+                        state.Report.Warn("oversized id value ignored (length budget)");
+                    }
                 }
             }
             else
@@ -544,8 +552,7 @@ namespace FenBrowser.FenEngine.Svg
                     continue;
                 }
 
-                // Open candidate.
-                state.Pos++; // '<'
+                // Open candidate: cursor already sits after '<' (consumed above).
                 if (IsNameStartChar(state.Peek()))
                 {
                     int nameStart = state.Pos;
@@ -732,7 +739,8 @@ namespace FenBrowser.FenEngine.Svg
 
         private static bool PeekWordAfterLtBang(ParseState state, string word)
         {
-            // Cursor is after '<'; verify "!WORD".
+            // Cursor is after '<'; verify "!WORD". Case-insensitive so lowercase
+            // <!doctype> cannot bypass the DOCTYPE policy (F6).
             if (state.Pos + 1 + word.Length > state.Source.Length)
             {
                 return false;
@@ -741,7 +749,13 @@ namespace FenBrowser.FenEngine.Svg
             {
                 return false;
             }
-            return string.CompareOrdinal(state.Source, state.Pos + 1, word, 0, word.Length) == 0;
+            return string.Compare(
+                state.Source,
+                state.Pos + 1,
+                word,
+                0,
+                word.Length,
+                System.StringComparison.OrdinalIgnoreCase) == 0;
         }
 
         private static void SkipWhitespace(ParseState state)

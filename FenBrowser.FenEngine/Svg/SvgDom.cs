@@ -50,13 +50,18 @@ namespace FenBrowser.FenEngine.Svg
 
         private Dictionary<string, string> BuildLookup()
         {
+            // First occurrence wins, matching GetAttribute semantics exactly
+            // (F12): dictionary indexer would silently keep the LAST duplicate.
             var map = new Dictionary<string, string>(System.StringComparer.Ordinal);
             var attrs = Attributes;
             if (attrs != null)
             {
                 foreach (var kv in attrs)
                 {
-                    map[kv.Key] = kv.Value;
+                    if (!map.ContainsKey(kv.Key))
+                    {
+                        map[kv.Key] = kv.Value;
+                    }
                 }
             }
             return map;

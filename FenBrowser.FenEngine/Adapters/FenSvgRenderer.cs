@@ -63,7 +63,7 @@ namespace FenBrowser.FenEngine.Adapters
                         out var picture,
                         out float naturalWidth,
                         out float naturalHeight,
-                        out string error))
+                        out string error, out int warningCount))
                 {
                     return new SvgRenderResult
                     {
@@ -72,11 +72,16 @@ namespace FenBrowser.FenEngine.Adapters
                     };
                 }
 
+                // S3/F3: the picture is an intermediate here. ImageLoader only
+                // consumes Bitmap (and never disposes Picture), so returning it
+                // would pin native memory until finalization. It is disposed at
+                // every exit below; SvgRenderResult.Picture stays null by design.
                 {
                     var cullRect = picture.CullRect;
                     if (!float.IsFinite(cullRect.Width) || !float.IsFinite(cullRect.Height) ||
                         !float.IsFinite(cullRect.Left) || !float.IsFinite(cullRect.Top))
                     {
+                        picture.Dispose();
                         return new SvgRenderResult
                         {
                             Success = false,
@@ -89,6 +94,7 @@ namespace FenBrowser.FenEngine.Adapters
                     if (rasterWidth > limits.MaxRasterWidth || rasterHeight > limits.MaxRasterHeight ||
                         rasterWidth * rasterHeight > limits.MaxRasterPixels)
                     {
+                        picture.Dispose();
                         return new SvgRenderResult
                         {
                             Success = false,
@@ -108,6 +114,7 @@ namespace FenBrowser.FenEngine.Adapters
                     }
                     catch (System.OutOfMemoryException)
                     {
+                        picture.Dispose();
                         return new SvgRenderResult
                         {
                             Success = false,
@@ -115,26 +122,38 @@ namespace FenBrowser.FenEngine.Adapters
                         };
                     }
 
-                    using (var canvas = new SKCanvas(bitmap))
+                    // S4/F4: if rasterization throws, the bitmap must not leak.
+                    try
                     {
-                        canvas.Clear(SKColors.Transparent);
-                        // The picture is recorded with its viewport origin at (0,0),
-                        // so no cull-rect translation is required here.
-                        canvas.DrawPicture(picture);
+                        using (var canvas = new SKCanvas(bitmap))
+                        {
+                            canvas.Clear(SKColors.Transparent);
+                            // The picture is recorded with its viewport origin at
+                            // (0,0), so no cull-rect translation is required.
+                            canvas.DrawPicture(picture);
+                        }
+                    }
+                    catch (System.Exception drawEx)
+                    {
+                        bitmap.Dispose();
+                        picture.Dispose();
+                        return new SvgRenderResult
+                        {
+                            Success = false,
+                            ErrorMessage = $"SVG rasterization failed: {drawEx.Message}"
+                        };
                     }
 
+                    picture.Dispose();
+
                     FenBrowser.Core.EngineLogCompat.Debug(
-                        $"[FenSvgRenderer] rendered {bitmapWidth}x{bitmapHeight} " +
-                        $"in {stopwatch.ElapsedMilliseconds}ms",
+                        $"[FenSvgRenderer] ok {bitmapWidth}x{bitmapHeight} " +
+                        $"{stopwatch.ElapsedMilliseconds}ms warnings={warningCount}",
                         FenBrowser.Core.Logging.LogCategory.Rendering);
 
                     return new SvgRenderResult
                     {
-                        // Both remain valid after return. The picture is not
-                        // wrapped by any disposing scope, eliminating the
-                        // SKSvg-disposal hazard that forced the legacy bitmap
-                        // workaround in ImageLoader.
-                        Picture = picture,
+                        Picture = null,
                         Bitmap = bitmap,
                         Width = cullRect.Width,
                         Height = cullRect.Height,
@@ -163,6 +182,7 @@ namespace FenBrowser.FenEngine.Adapters
             if (limits.MaxRasterWidth <= 0) limits.MaxRasterWidth = defaults.MaxRasterWidth;
             if (limits.MaxRasterHeight <= 0) limits.MaxRasterHeight = defaults.MaxRasterHeight;
             if (limits.MaxRasterPixels <= 0) limits.MaxRasterPixels = defaults.MaxRasterPixels;
+            if (limits.MaxDecodedImagePixels <= 0) limits.MaxDecodedImagePixels = defaults.MaxDecodedImagePixels;
             return limits;
         }
     }

@@ -454,51 +454,58 @@ namespace FenBrowser.FenEngine.Svg
 
             int n = count;
 
+            // Zero-allocation dispatch: span compares instead of
+            // ToString()+ToLowerInvariant() (two heap strings per function).
             SKMatrix t;
-            switch (fn.ToString().ToLowerInvariant())
+            if (EqIgnoreCase(fn, "matrix"))
             {
-                case "matrix":
-                    if (n != 6) return false;
-                    t = new SKMatrix(
-                        nums[0], nums[2], ClampCoord(nums[4]),
-                        nums[1], nums[3], ClampCoord(nums[5]),
-                        0f, 0f, 1f);
-                    break;
-                case "translate":
-                    if (n != 1 && n != 2) return false;
-                    t = SKMatrix.CreateTranslation(
-                        ClampCoord(nums[0]),
-                        n == 2 ? ClampCoord(nums[1]) : 0f);
-                    break;
-                case "scale":
-                    if (n != 1 && n != 2) return false;
-                    if (!IsFinite(nums[0]) || (n == 2 && !IsFinite(nums[1]))) return false;
-                    t = SKMatrix.CreateScale(nums[0], n == 2 ? nums[1] : nums[0]);
-                    break;
-                case "rotate":
-                    if (n != 1 && n != 3) return false;
-                    if (n == 3)
-                    {
-                        t = SKMatrix.CreateRotation(
-                            DegreesToRadians(nums[0]),
-                            ClampCoord(nums[1]),
-                            ClampCoord(nums[2]));
-                    }
-                    else
-                    {
-                        t = SKMatrix.CreateRotation(DegreesToRadians(nums[0]));
-                    }
-                    break;
-                case "skewx":
-                    if (n != 1) return false;
-                    t = CreateSkew(DegreesToRadians(nums[0]), 0f);
-                    break;
-                case "skewy":
-                    if (n != 1) return false;
-                    t = CreateSkew(0f, DegreesToRadians(nums[0]));
-                    break;
-                default:
-                    return false;
+                if (n != 6) return false;
+                t = new SKMatrix(
+                    nums[0], nums[2], ClampCoord(nums[4]),
+                    nums[1], nums[3], ClampCoord(nums[5]),
+                    0f, 0f, 1f);
+            }
+            else if (EqIgnoreCase(fn, "translate"))
+            {
+                if (n != 1 && n != 2) return false;
+                t = SKMatrix.CreateTranslation(
+                    ClampCoord(nums[0]),
+                    n == 2 ? ClampCoord(nums[1]) : 0f);
+            }
+            else if (EqIgnoreCase(fn, "scale"))
+            {
+                if (n != 1 && n != 2) return false;
+                if (!IsFinite(nums[0]) || (n == 2 && !IsFinite(nums[1]))) return false;
+                t = SKMatrix.CreateScale(nums[0], n == 2 ? nums[1] : nums[0]);
+            }
+            else if (EqIgnoreCase(fn, "rotate"))
+            {
+                if (n != 1 && n != 3) return false;
+                if (n == 3)
+                {
+                    t = SKMatrix.CreateRotation(
+                        DegreesToRadians(nums[0]),
+                        ClampCoord(nums[1]),
+                        ClampCoord(nums[2]));
+                }
+                else
+                {
+                    t = SKMatrix.CreateRotation(DegreesToRadians(nums[0]));
+                }
+            }
+            else if (EqIgnoreCase(fn, "skewx"))
+            {
+                if (n != 1) return false;
+                t = CreateSkew(DegreesToRadians(nums[0]), 0f);
+            }
+            else if (EqIgnoreCase(fn, "skewy"))
+            {
+                if (n != 1) return false;
+                t = CreateSkew(0f, DegreesToRadians(nums[0]));
+            }
+            else
+            {
+                return false; // Unknown function invalidates the list (spec).
             }
 
             m = SKMatrix.Concat(m, t);
