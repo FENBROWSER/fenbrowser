@@ -1449,6 +1449,7 @@ namespace FenBrowser.WebDriver.Commands
     public interface IBrowserDriver
     {
         Task NavigateAsync(string url);
+        Task WaitForNavigationReadyAsync(string url, string pageLoadStrategy, int timeoutMs) => Task.CompletedTask;
         Task<string> GetCurrentUrlAsync();
         Task<string> GetTitleAsync();
         Task<string> GetWindowHandleAsync();

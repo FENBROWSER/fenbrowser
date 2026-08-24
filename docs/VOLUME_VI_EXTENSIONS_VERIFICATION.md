@@ -4816,3 +4816,8 @@ Verification:
 - General timeline advancement, event timing, animation composition, and
   non-geometry motion targets remain explicit browser/runtime work; first-party
   remains non-default.
+## 6.153 SVG XML Navigation and WPT Routing (2026-08-24)
+
+- Focused XML, navigation, and engine tests cover namespace-qualified SVG/XHTML elements, parameterized XML MIME types, HTTP and data SVG document routing, and bounded SVG script discovery/execution.
+- The exact local WPT `svg/geometry/parsing/cx-valid.svg` now passes the former passive-image-wrapper boundary and enters XML document rendering. The current live run remains red: the in-process WPT browser becomes unresponsive during the prior-runner-to-SVG runtime transition before the target script snapshot begins. This is retained as an explicit unresolved acceptance failure, not counted as SVG conformance success.
+- WPT defaults its child browser/WebDriver process to `FEN_PROCESS_ISOLATION=in-process` when the caller did not choose a mode, because classic automation commands currently target the host engine. Explicit process-isolation validation can still opt into brokered mode, and summaries record the effective WPT default truthfully.

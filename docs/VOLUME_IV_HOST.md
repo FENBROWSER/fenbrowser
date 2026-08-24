@@ -1607,3 +1607,7 @@ Verification:
 Verification:
 
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj --nologo --verbosity minimal --no-restore`: passed with zero errors; three pre-existing Skia deprecation warnings remain.
+### 6.74 WebDriver Document-Readiness Bridge (2026-08-24)
+
+- In-process Host WebDriver adapters expose a bounded readiness wait tied to the committed URL and the matching script-loading snapshot. Brokered mode remains commit-based until renderer-command IPC exposes child script snapshots; it never polls the host's intentionally stale local document.
+- This keeps parser-blocking SVG/HTML scripts out of the ordinary interactive navigation critical path while allowing automation `normal`/`eager` navigation to observe the matching document rather than a prior `about:blank` runtime.

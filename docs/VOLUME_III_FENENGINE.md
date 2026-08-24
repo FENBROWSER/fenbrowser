@@ -11334,3 +11334,8 @@ Verification:
   first-party documents, 52 compatibility fallbacks, one resource rejection,
   and 82/93 declared-reference passes with no comparable reference failures or
   renderer/worker failures.
+## 3.83 Top-Level SVG XML Documents (2026-08-24)
+
+- Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.
+- `data:image/svg+xml` follows the same XML-document path. The engine preserves the response content type and executes SVG/XHTML script elements through the normal bounded script pipeline.
+- Script failure messages now carry bounded source and error summaries so process-forwarded diagnostics remain actionable without emitting unbounded source text.

@@ -702,6 +702,48 @@ namespace FenBrowser.FenEngine.Rendering
             FenBrowser.Core.Security.PermissionsPolicy.None;
         public Dictionary<Node, CssComputed> ComputedStyles => _engine.LastComputedStyles;
         public CustomHtmlEngine Engine => _engine;
+
+        public bool IsDocumentReadyForAutomation(string expectedUrl, string pageLoadStrategy)
+        {
+            var activeDom = _engine?.GetActiveDom();
+            if (activeDom == null || !UrlsEquivalentForAutomation(_current?.AbsoluteUri, expectedUrl))
+            {
+                return false;
+            }
+
+            var snapshot = _engine?.ScriptEngine?.GetScriptLoadingSnapshot();
+            if (snapshot == null || !UrlsEquivalentForAutomation(snapshot.BaseUrl, expectedUrl))
+            {
+                return false;
+            }
+
+            if (string.Equals(pageLoadStrategy, "eager", StringComparison.OrdinalIgnoreCase))
+            {
+                var lifecycle = _engine.ScriptEngine.GetEventLoopSnapshot();
+                return lifecycle?.DomContentLoadedFired == true ||
+                       string.Equals(lifecycle?.DocumentReadyState, "interactive", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(lifecycle?.DocumentReadyState, "complete", StringComparison.OrdinalIgnoreCase);
+            }
+
+            return string.Equals(snapshot.Status, "completed", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(snapshot.Status, "infrastructure-error", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool UrlsEquivalentForAutomation(string left, string right)
+        {
+            if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            {
+                return false;
+            }
+
+            if (Uri.TryCreate(left, UriKind.Absolute, out var leftUri) &&
+                Uri.TryCreate(right, UriKind.Absolute, out var rightUri))
+            {
+                return string.Equals(leftUri.AbsoluteUri, rightUri.AbsoluteUri, StringComparison.Ordinal);
+            }
+
+            return string.Equals(left.Trim(), right.Trim(), StringComparison.Ordinal);
+        }
         public NavigationLifecycleSnapshot NavigationLifecycleState => _navigationLifecycle.GetSnapshot();
 
         public SKBitmap Favicon { get; private set; }
@@ -1637,7 +1679,15 @@ pre {{
                         ["url"] = uri.AbsoluteUri
                     }))
                     {
-                        elem = await _engine.RenderAsync(htmlToRender, uri, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); }, viewportHint.Width, viewportHint.Height);
+                        elem = await _engine.RenderAsync(
+                            htmlToRender,
+                            uri,
+                            trackedCssFetcher,
+                            trackedImageFetcher,
+                            u => { _ = NavigateAsync(u.AbsoluteUri); },
+                            viewportHint.Width,
+                            viewportHint.Height,
+                            documentContentType: result.ContentType);
                     }
                 }
                 finally

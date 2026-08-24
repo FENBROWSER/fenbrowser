@@ -1939,3 +1939,7 @@ Verification:
 - Core and the repository test assembly build in Release with zero warnings and
   errors. Canonical parser and interleaved-state tests pass (`13/13`), including
   RCDATA fragment behavior and bounded stream parsing.
+## 1.76 Namespace-Preserving XML DOM Construction (2026-08-24)
+
+- `XmlDomParser` preserves qualified element and attribute names, including XHTML prefixes in SVG documents and `xlink`/`xmlns` attributes, instead of exposing LINQ-to-XML expanded-name syntax as DOM qualified names.
+- XML MIME detection uses the MIME essence, accepts parameters such as `charset`, and preserves the successful document content type. DTD processing remains prohibited and the XML resolver remains disabled.

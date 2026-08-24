@@ -319,6 +319,13 @@ namespace FenBrowser.Tooling
             {
                 psi.Environment["FEN_WPT_TOOLING_EXE"] = currentToolingExe;
             }
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION")))
+            {
+                // Classic WebDriver commands currently execute against the host
+                // engine. Keep WPT on that engine unless a caller explicitly opts
+                // into brokered-mode process/IPC validation.
+                psi.Environment["FEN_PROCESS_ISOLATION"] = "in-process";
+            }
             var artifactDirectory = Path.GetDirectoryName(rawLogPath);
             if (!string.IsNullOrWhiteSpace(artifactDirectory))
             {
@@ -955,9 +962,7 @@ namespace FenBrowser.Tooling
         private static string ResolveProcessMode()
         {
             var configured = Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION");
-            // The isolation factory defaults to brokered when unset; keep the
-            // recorded label truthful about which mode the browser will use.
-            return string.IsNullOrWhiteSpace(configured) ? "brokered (default)" : configured.Trim();
+            return string.IsNullOrWhiteSpace(configured) ? "in-process (WPT default)" : configured.Trim();
         }
 
         private static WptOptions ParseOptions(string[] args)

@@ -33,15 +33,18 @@ public static class XmlDomParser
     /// </summary>
     public static bool IsXmlMimeType(string mimeType)
     {
-        if (string.IsNullOrEmpty(mimeType))
+        if (string.IsNullOrWhiteSpace(mimeType))
         {
             return false;
         }
 
-        return string.Equals(mimeType, "text/xml", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(mimeType, "application/xml", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(mimeType, "application/xhtml+xml", StringComparison.OrdinalIgnoreCase)
-            || (mimeType.Length > 4 && mimeType.EndsWith("+xml", StringComparison.OrdinalIgnoreCase));
+        var parameterIndex = mimeType.IndexOf(';');
+        var essence = (parameterIndex >= 0 ? mimeType[..parameterIndex] : mimeType).Trim();
+
+        return string.Equals(essence, "text/xml", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(essence, "application/xml", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(essence, "application/xhtml+xml", StringComparison.OrdinalIgnoreCase)
+            || (essence.Length > 4 && essence.EndsWith("+xml", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -113,11 +116,11 @@ public static class XmlDomParser
     /// well-formed. This mirrors the browser-observable DOMParser behavior of
     /// returning an error document instead of throwing.
     /// </summary>
-    public static Document ParseWithErrorDocument(string xml)
+    public static Document ParseWithErrorDocument(string xml, string contentType = XmlContentType)
     {
         try
         {
-            return Parse(xml);
+            return Parse(xml, contentType);
         }
         catch (XmlDomParseException ex)
         {
@@ -146,7 +149,7 @@ public static class XmlDomParser
         {
             created = doc.CreateElementNS(
                 elementName.NamespaceName,
-                elementName.ToString());
+                GetQualifiedName(element, elementName));
         }
         else
         {
@@ -155,7 +158,17 @@ public static class XmlDomParser
 
         foreach (var attribute in element.Attributes())
         {
-            created.SetAttribute(attribute.Name.LocalName, attribute.Value);
+            if (!string.IsNullOrEmpty(attribute.Name.NamespaceName))
+            {
+                created.SetAttributeNS(
+                    attribute.Name.NamespaceName,
+                    GetQualifiedName(element, attribute.Name),
+                    attribute.Value);
+            }
+            else
+            {
+                created.SetAttribute(attribute.Name.LocalName, attribute.Value);
+            }
         }
 
         foreach (var node in element.Nodes())
@@ -178,6 +191,22 @@ public static class XmlDomParser
         }
 
         return created;
+    }
+
+    private static string GetQualifiedName(XElement context, XName name)
+    {
+        string prefix = context.GetPrefixOfNamespace(name.Namespace);
+        if (string.IsNullOrEmpty(prefix))
+        {
+            // The XMLNS namespace uses the qualified name "xmlns" for the
+            // default declaration even though LINQ exposes an empty prefix.
+            if (name.Namespace == XNamespace.Xmlns && name.LocalName == "xmlns")
+            {
+                return "xmlns";
+            }
+            return name.LocalName;
+        }
+        return prefix + ":" + name.LocalName;
     }
 
     private static void AppendText(Document doc, ContainerNode parent, string data)

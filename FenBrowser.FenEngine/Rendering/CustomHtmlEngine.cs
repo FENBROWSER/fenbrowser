@@ -1553,9 +1553,31 @@ public void Dispose()
             _eventLoopCoordinator.NotifyLayoutDirty();
         }
 
-        private async Task<DomParseResult> RunDomParseAsync(string html, Uri baseUri, long renderGeneration)
+        private async Task<DomParseResult> RunDomParseAsync(
+            string html,
+            Uri baseUri,
+            long renderGeneration,
+            string documentContentType)
         {
             var parseInput = html ?? string.Empty;
+            if (XmlDomParser.IsXmlMimeType(documentContentType))
+            {
+                var xmlDocument = await Task.Run(() =>
+                    XmlDomParser.ParseWithErrorDocument(parseInput, documentContentType)).ConfigureAwait(false);
+                if (baseUri != null)
+                {
+                    xmlDocument.URL = baseUri.AbsoluteUri;
+                    xmlDocument.BaseURI = baseUri.AbsoluteUri;
+                }
+                if (IsCurrentRenderGeneration(renderGeneration))
+                {
+                    EmitDocumentCreatedTrace(xmlDocument, baseUri, null, null);
+                }
+                return new DomParseResult
+                {
+                    Dom = (Node)xmlDocument.DocumentElement ?? xmlDocument
+                };
+            }
             var interleavedBatchSize = ResolveInterleavedTokenBatchSize(EnableInterleavedPrimaryParse, parseInput.Length);
             var parseCheckpointState = new ParseCheckpointState
             {
@@ -2604,7 +2626,8 @@ public void Dispose()
             double? viewportHeight = null,
             Action<object>? onFixedBackground = null,
             bool? forceJavascript = null,
-            bool disableAutoFallback = false)
+            bool disableAutoFallback = false,
+            string documentContentType = null)
         {
             // Ensure we are on the UI thread. If not, marshal the call.
             var uiDisp = _uiDispatcher ?? UiThreadHelper.TryGetDispatcher();
@@ -2615,7 +2638,7 @@ public void Dispose()
                 {
                     try
                     {
-                        var result = await RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, viewportHeight, onFixedBackground, forceJavascript, disableAutoFallback);
+                        var result = await RenderAsync(html, baseUri, fetchExternalCssAsync, imageLoader, onNavigate, viewportWidth, viewportHeight, onFixedBackground, forceJavascript, disableAutoFallback, documentContentType);
                         tcs.SetResult(result);
                     }
                     catch (Exception ex)
@@ -2699,7 +2722,7 @@ public void Dispose()
                 }
 
                 // 1. Helper: Parse DOM
-                var parseResult = await RunDomParseAsync(html, baseUri, renderGeneration);
+                var parseResult = await RunDomParseAsync(html, baseUri, renderGeneration, documentContentType);
                 cancellationToken.ThrowIfCancellationRequested();
                 var dom = parseResult?.Dom;
                 if (dom == null) return null;

@@ -2369,7 +2369,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             LogScriptLoading(
                 "ScriptDiscovered",
                 LogSeverity.Info,
-                "[FenJsBridge] Script elements discovered",
+                $"[FenJsBridge] Script elements discovered count={allScripts.Count}",
                 new Dictionary<string, object>
                 {
                     ["scriptElements"] = allScripts.Count
@@ -2679,7 +2679,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             LogScriptLoading(
                 "ScriptLoadingCompleted",
                 LogSeverity.Info,
-                "[FenJsBridge] ExecutePageScriptsWithFenJsAsync DONE",
+                $"[FenJsBridge] ExecutePageScriptsWithFenJsAsync DONE discovered={allScripts.Count} eligible={items.Count} " +
+                $"blocking={blockingItems.Count} defer={deferItems.Count} async={asyncItems.Count}",
                 new Dictionary<string, object>
                 {
                     ["processedSync"] = blockingItems.Count + deferItems.Count,
@@ -2963,7 +2964,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     LogScriptLoading(
                         "ScriptExecutionFailed",
                         LogSeverity.Error,
-                        "[FenJsBridge] Script error",
+                        $"[FenJsBridge] Script error source={BoundScriptDiagnostic(origin)} error={BoundScriptDiagnostic(desc ?? jte.Message)}",
                         scriptFailedFields,
                         LogMarker.EngineBug);
                 }
@@ -2988,7 +2989,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     LogScriptLoading(
                         "ScriptExecutionFailed",
                         LogSeverity.Error,
-                        "[FenJsBridge] Non-JS script error",
+                        $"[FenJsBridge] Non-JS script error source={BoundScriptDiagnostic(origin)} error={BoundScriptDiagnostic(ex.Message)}",
                         scriptFailedFields,
                         LogMarker.EngineBug);
                 }
@@ -3021,6 +3022,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 // Repaint requests are best-effort; script execution already completed.
             }
         }
+    }
+
+    private static string BoundScriptDiagnostic(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "<none>";
+        }
+
+        const int maxLength = 512;
+        var normalized = value.Replace('\r', ' ').Replace('\n', ' ');
+        return normalized.Length <= maxLength ? normalized : normalized[..maxLength] + "...";
     }
 
     private void RecordMissingGlobalReference(

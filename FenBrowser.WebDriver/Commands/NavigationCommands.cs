@@ -81,6 +81,8 @@ namespace FenBrowser.WebDriver.Commands
                     $"Navigation did not commit a non-blank URL within {timeoutMs}ms: {absoluteUri.AbsoluteUri}");
             }
 
+            await _handler.Browser.WaitForNavigationReadyAsync(settledUrl, strategy, timeoutMs);
+
             return WebDriverResponse.Success(null);
         }
         

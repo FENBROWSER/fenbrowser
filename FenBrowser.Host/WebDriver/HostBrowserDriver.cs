@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.Host.ProcessIsolation;
 using FenBrowser.Host.Tabs;
+using FenBrowser.WebDriver;
 using FenBrowser.WebDriver.Commands;
 using FenBrowser.WebDriver.Protocol;
 
@@ -33,6 +34,34 @@ namespace FenBrowser.Host.WebDriver
                 var activeTab = _tabs.ActiveTab ?? throw new InvalidOperationException("Current browsing context is no longer open");
                 await activeTab.NavigateProgrammaticAsync(url);
             });
+        }
+
+        public async Task WaitForNavigationReadyAsync(string url, string pageLoadStrategy, int timeoutMs)
+        {
+            // Renderer-command IPC does not yet expose child script snapshots.
+            // Brokered navigation readiness remains commit-based rather than
+            // polling the host's intentionally stale local document.
+            if (ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+            {
+                return;
+            }
+
+            var deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(0, timeoutMs));
+            while (DateTime.UtcNow <= deadline)
+            {
+                var ready = await RunOnMainThread(() =>
+                    GetActiveHostOrThrow().IsDocumentReadyForAutomation(url, pageLoadStrategy));
+                if (ready)
+                {
+                    return;
+                }
+
+                await Task.Delay(25).ConfigureAwait(false);
+            }
+
+            throw new WebDriverException(
+                ErrorCodes.Timeout,
+                $"Timed out after {timeoutMs}ms waiting for document readiness at {url}");
         }
 
         private BrowserTab GetActiveTabOrThrow()

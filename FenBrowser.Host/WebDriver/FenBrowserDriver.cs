@@ -9,6 +9,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.Host.Tabs;
+using FenBrowser.WebDriver;
 using FenBrowser.WebDriver.Commands;
 using FenBrowser.WebDriver.Protocol;
 
@@ -32,6 +33,24 @@ namespace FenBrowser.Host.WebDriver
         public async Task NavigateAsync(string url)
         {
             await _integration.NavigateProgrammaticAsync(url);
+        }
+
+        public async Task WaitForNavigationReadyAsync(string url, string pageLoadStrategy, int timeoutMs)
+        {
+            var deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(0, timeoutMs));
+            while (DateTime.UtcNow <= deadline)
+            {
+                if (Host?.IsDocumentReadyForAutomation(url, pageLoadStrategy) == true)
+                {
+                    return;
+                }
+
+                await Task.Delay(25).ConfigureAwait(false);
+            }
+
+            throw new WebDriverException(
+                ErrorCodes.Timeout,
+                $"Timed out after {timeoutMs}ms waiting for document readiness at {url}");
         }
 
         public async Task<string> GetCurrentUrlAsync()
