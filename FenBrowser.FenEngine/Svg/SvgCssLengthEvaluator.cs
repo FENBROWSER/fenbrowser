@@ -391,7 +391,7 @@ namespace FenBrowser.FenEngine.Svg
                             : MathF.Max(_viewportWidth, _viewportHeight);
                         break;
                     case 5:
-                        scalar = Lower(unit[3]) == 'n'
+                        scalar = Lower(unit[4]) == 'n'
                             ? MathF.Min(_viewportWidth, _viewportHeight)
                             : MathF.Max(_viewportWidth, _viewportHeight);
                         break;

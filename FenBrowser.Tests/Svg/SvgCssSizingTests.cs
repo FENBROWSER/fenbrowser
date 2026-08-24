@@ -63,6 +63,19 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void ContainerExtremeUnits_ResolveAgainstNearestViewportExtremes()
+        {
+            // cqmin tracks min(width,height) and cqmax max(width,height); the
+            // non-square viewport makes a swapped classification visible since
+            // 10cqmin resolves to 15 while 10cqmax resolves to 30.
+            AssertIdenticalRender(
+                "<svg width='300' height='150'><rect style='width:10cqmin;height:10px' fill='red'/>" +
+                "<rect x='40' style='width:10cqmax;height:10px' fill='green'/></svg>",
+                "<svg width='300' height='150'><rect width='15' height='10' fill='red'/>" +
+                "<rect x='40' width='30' height='10' fill='green'/></svg>");
+        }
+
+        [Fact]
         public void ViewportExtremeUnits_ResolveAgainstNearestViewportExtremes()
         {
             AssertIdenticalRender(
