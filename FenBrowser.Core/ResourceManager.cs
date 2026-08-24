@@ -41,6 +41,7 @@ namespace FenBrowser.Core
         HttpError,
         CorbBlocked,
         CspBlocked,
+        MixedContentBlocked,
         XFrameBlocked,
         BodyReadFailed,
         Unknown
@@ -545,6 +546,19 @@ public Uri LastTextResponseUri { get; private set; }
                    string.Equals(request.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase);
         }
 
+        private static MixedContentDecision EvaluateMixedContent(FetchContext context, Uri requestUri)
+        {
+            var pageUri = context?.TopLevelDocumentUri ?? context?.FrameDocumentUri ?? context?.InitiatorUri;
+            var requestType = string.IsNullOrWhiteSpace(context?.Destination)
+                ? "fetch"
+                : context.Destination;
+            return MixedContentChecker.CheckMixedContent(
+                requestUri,
+                pageUri,
+                requestType,
+                context?.ContentSecurityPolicy?.HasUpgradeInsecureRequests() ?? false);
+        }
+
         private static bool IsAutomationContext()
         {
             var webdriverEnabled = string.Equals(
@@ -1045,6 +1059,23 @@ public Uri LastTextResponseUri { get; private set; }
                 ? DetermineFetchMode(secFetchDest)
                 : context.Mode;
             if (url == null) return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "URL is null" };
+            var initialMixedContentDecision = EvaluateMixedContent(context, url);
+            if (initialMixedContentDecision.IsBlocked)
+            {
+                IncrementBlockedRequestCount();
+                return new FetchResult
+                {
+                    Status = FetchStatus.UnknownError,
+                    ErrorDetail = initialMixedContentDecision.Reason,
+                    FinalUri = url,
+                    FailureReason = FetchFailureReasonCode.MixedContentBlocked,
+                    IsRetryable = false
+                };
+            }
+            if (initialMixedContentDecision.IsUpgraded)
+            {
+                url = initialMixedContentDecision.UpgradedUrl;
+            }
             if (context.ContentSecurityPolicy != null)
             {
                 var directive = ResolveCspFetchDirective(secFetchDest);
@@ -1205,6 +1236,24 @@ public Uri LastTextResponseUri { get; private set; }
                 var maxRedirectHops = Math.Max(1, GetResilienceSettings().MaxRedirectHops);
                 while (hops < maxRedirectHops)
                 {
+                    var redirectMixedContentDecision = EvaluateMixedContent(context, current);
+                    if (redirectMixedContentDecision.IsBlocked)
+                    {
+                        resp?.Dispose();
+                        IncrementBlockedRequestCount();
+                        return new FetchResult
+                        {
+                            Status = FetchStatus.UnknownError,
+                            ErrorDetail = redirectMixedContentDecision.Reason,
+                            FinalUri = current,
+                            FailureReason = FetchFailureReasonCode.MixedContentBlocked,
+                            IsRetryable = false
+                        };
+                    }
+                    if (redirectMixedContentDecision.IsUpgraded)
+                    {
+                        current = redirectMixedContentDecision.UpgradedUrl;
+                    }
                     if (context.ContentSecurityPolicy != null &&
                         !context.ContentSecurityPolicy.IsAllowed(ResolveCspFetchDirective(secFetchDest), current, ExtractOrigin(referer)))
                     {
@@ -1742,15 +1791,16 @@ public Uri LastTextResponseUri { get; private set; }
                 EngineLogCompat.Warn($"[FetchImage] Blocked unsupported scheme '{url.Scheme}' for {url}", LogCategory.Security);
                 return null;
             }
-            if (referer != null &&
-                referer.IsAbsoluteUri &&
-                url.IsAbsoluteUri &&
-                string.Equals(referer.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(url.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+            var initialMixedContentDecision = EvaluateMixedContent(context, url);
+            if (initialMixedContentDecision.IsBlocked)
             {
                 IncrementBlockedRequestCount();
                 EngineLogCompat.Warn($"[MixedContent] Blocked insecure image '{url}' from secure document '{referer}'", LogCategory.Network);
                 return null;
+            }
+            if (initialMixedContentDecision.IsUpgraded)
+            {
+                url = initialMixedContentDecision.UpgradedUrl;
             }
 
             // CSP Check
@@ -1823,6 +1873,17 @@ public Uri LastTextResponseUri { get; private set; }
                 var maxRedirectHops = Math.Max(1, GetResilienceSettings().MaxRedirectHops);
                 while (hops < maxRedirectHops)
                 {
+                    var redirectMixedContentDecision = EvaluateMixedContent(context, current);
+                    if (redirectMixedContentDecision.IsBlocked)
+                    {
+                        resp?.Dispose();
+                        IncrementBlockedRequestCount();
+                        return null;
+                    }
+                    if (redirectMixedContentDecision.IsUpgraded)
+                    {
+                        current = redirectMixedContentDecision.UpgradedUrl;
+                    }
                     if (context.ContentSecurityPolicy != null &&
                         !context.ContentSecurityPolicy.IsAllowed("img-src", current, ExtractOrigin(referer)))
                     {
@@ -1984,16 +2045,16 @@ public Uri LastTextResponseUri { get; private set; }
                     ContentType = dataUrl.ContentType
                 };
             }
-            if (string.Equals(secFetchDest, "image", StringComparison.OrdinalIgnoreCase) &&
-                referer != null &&
-                referer.IsAbsoluteUri &&
-                url.IsAbsoluteUri &&
-                string.Equals(referer.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(url.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+            var initialMixedContentDecision = EvaluateMixedContent(context, url);
+            if (initialMixedContentDecision.IsBlocked)
             {
                 IncrementBlockedRequestCount();
-                EngineLogCompat.Warn($"[MixedContent] Blocked insecure image bytes fetch '{url}' from secure document '{referer}'", LogCategory.Network);
-                return BinaryFailure(BinaryFetchFailureReason.MixedContentBlocked, url, "Blocked mixed-content image request");
+                EngineLogCompat.Warn($"[MixedContent] Blocked insecure binary fetch '{url}' from secure document '{referer}'", LogCategory.Network);
+                return BinaryFailure(BinaryFetchFailureReason.MixedContentBlocked, url, initialMixedContentDecision.Reason);
+            }
+            if (initialMixedContentDecision.IsUpgraded)
+            {
+                url = initialMixedContentDecision.UpgradedUrl;
             }
             
             // CSP Check (fonts, media, etc)
@@ -2018,6 +2079,17 @@ public Uri LastTextResponseUri { get; private set; }
                 var maxRedirectHops = Math.Max(1, GetResilienceSettings().MaxRedirectHops);
                 while (hops < maxRedirectHops)
                 {
+                    var redirectMixedContentDecision = EvaluateMixedContent(context, current);
+                    if (redirectMixedContentDecision.IsBlocked)
+                    {
+                        resp?.Dispose();
+                        IncrementBlockedRequestCount();
+                        return BinaryFailure(BinaryFetchFailureReason.MixedContentBlocked, current, redirectMixedContentDecision.Reason, redirectChain);
+                    }
+                    if (redirectMixedContentDecision.IsUpgraded)
+                    {
+                        current = redirectMixedContentDecision.UpgradedUrl;
+                    }
                     var redirectDirective = ResolveCspFetchDirective(secFetchDest);
                     if (context.ContentSecurityPolicy != null &&
                         !context.ContentSecurityPolicy.IsAllowed(redirectDirective, current, ExtractOrigin(referer)))
@@ -2273,7 +2345,6 @@ throw new HttpRequestException($"Blocked by Content Security Policy (connect-src
             }
 
             // Mixed Content Check
-            if (policy != null)
             {
                 var topLevelUri = context.TopLevelDocumentUri ?? context.FrameDocumentUri ?? context.InitiatorUri;
                 if (topLevelUri != null)

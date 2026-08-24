@@ -362,6 +362,97 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public async Task ScriptMixedContent_WithoutCsp_IsBlockedBeforeNetworkDispatch()
+        {
+            var dispatchCount = 0;
+            using var client = new HttpClient(new StubHandler(_ =>
+            {
+                dispatchCount++;
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("window.compromised = true;")
+                };
+            }));
+            var manager = new ResourceManager(client, isPrivate: true);
+
+            var result = await manager.FetchTextDetailedAsync(new FetchContext
+            {
+                RequestUri = new Uri("http://cdn.attacker.test/app.js"),
+                InitiatorUri = new Uri("https://secure.example.test/page"),
+                FrameDocumentUri = new Uri("https://secure.example.test/page"),
+                TopLevelDocumentUri = new Uri("https://secure.example.test/page"),
+                Destination = "script",
+                Mode = "no-cors",
+                CredentialsMode = "include"
+            });
+
+            Assert.Equal(FetchStatus.UnknownError, result.Status);
+            Assert.Equal(FetchFailureReasonCode.MixedContentBlocked, result.FailureReason);
+            Assert.Equal(0, dispatchCount);
+        }
+
+        [Fact]
+        public async Task ScriptRedirect_HttpsToHttp_IsRecheckedAndBlocked()
+        {
+            var dispatchCount = 0;
+            using var client = new HttpClient(new StubHandler(request =>
+            {
+                dispatchCount++;
+                Assert.Equal("https", request.RequestUri.Scheme);
+                var response = new HttpResponseMessage(HttpStatusCode.Found);
+                response.Headers.Location = new Uri("http://cdn.attacker.test/downgraded.js");
+                return response;
+            }));
+            var manager = new ResourceManager(client, isPrivate: true);
+
+            var result = await manager.FetchTextDetailedAsync(new FetchContext
+            {
+                RequestUri = new Uri("https://cdn.example.test/app.js"),
+                InitiatorUri = new Uri("https://secure.example.test/page"),
+                FrameDocumentUri = new Uri("https://secure.example.test/page"),
+                TopLevelDocumentUri = new Uri("https://secure.example.test/page"),
+                Destination = "script",
+                Mode = "no-cors",
+                CredentialsMode = "include"
+            });
+
+            Assert.Equal(FetchStatus.UnknownError, result.Status);
+            Assert.Equal(FetchFailureReasonCode.MixedContentBlocked, result.FailureReason);
+            Assert.Equal(1, dispatchCount);
+        }
+
+        [Fact]
+        public async Task GenericFetchMixedContent_WithoutCsp_IsBlockedBeforeNetworkDispatch()
+        {
+            var dispatchCount = 0;
+            using var client = new HttpClient(new StubHandler(_ =>
+            {
+                dispatchCount++;
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }));
+            var manager = new ResourceManager(client, isPrivate: true);
+            using var request = new HttpRequestMessage(HttpMethod.Get, "http://api.attacker.test/data");
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "fetch");
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "no-cors");
+            var securePage = new Uri("https://secure.example.test/page");
+
+            var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+                manager.SendAsync(request, policy: null, context: new FetchContext
+                {
+                    RequestUri = request.RequestUri,
+                    InitiatorUri = securePage,
+                    FrameDocumentUri = securePage,
+                    TopLevelDocumentUri = securePage,
+                    Destination = "fetch",
+                    Mode = "no-cors",
+                    CredentialsMode = "omit"
+                }));
+
+            Assert.Contains("Blocked by Mixed Content Policy", exception.Message);
+            Assert.Equal(0, dispatchCount);
+        }
+
+        [Fact]
         public async Task FetchTextDetailedAsync_UnsupportedScheme_IsRejected()
         {
             using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)));
