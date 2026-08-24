@@ -1608,3 +1608,7 @@ Verification:
 Verification:
 
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj --nologo --verbosity minimal --no-restore`: passed with zero errors; three pre-existing Skia deprecation warnings remain.
+
+### Text Caret Compositing (2026-08-24)
+
+- `SkiaDomRenderer` composites the focused editable's text caret after the cached page frame. `BrowserIntegration` and the renderer-child loop request only blink-phase frames for a caret owned by that renderer; cancellation follows the integration lifetime. Caret state is captured atomically, password width uses the painted bullet string, and visibility uses a 1060 ms cycle anchored to the last caret change.

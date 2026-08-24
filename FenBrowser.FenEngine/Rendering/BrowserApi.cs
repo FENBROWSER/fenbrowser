@@ -8642,6 +8642,22 @@ pre {{
             }
 
             ElementStateManager.Instance.SetFocusedElement(element, fromKeyboard);
+            PublishTextCaretState();
+        }
+
+        private void PublishTextCaretState()
+        {
+            if (_focusedElement != null && IsTextEntryElement(_focusedElement))
+            {
+                var value = GetTextEntryValue(_focusedElement) ?? string.Empty;
+                ElementStateManager.Instance.UpdateTextCaret(
+                    _focusedElement,
+                    Math.Clamp(_cursorIndex, 0, value.Length));
+            }
+            else
+            {
+                ElementStateManager.Instance.UpdateTextCaret(null, 0);
+            }
         }
 
         private static void PromoteContainingFrameFocus(Document document)
@@ -9420,6 +9436,7 @@ pre {{
                 var val = GetTextEntryValue(element);
                 _cursorIndex = val.Length;
                 _selectionAnchor = -1;
+                PublishTextCaretState();
                 
                 // Trigger a repaint to show caret (if we had one)
                 TryInvokeRepaintReady(_engine.GetActiveDom());
@@ -11007,6 +11024,7 @@ pre {{
                     if (!submitted)
                     {
                         SetTextEntryValue(_focusedElement, val);
+                        PublishTextCaretState();
                         
                         // Trigger Repaint
                         TryInvokeRepaintReady(_engine.GetActiveDom());
@@ -11094,6 +11112,7 @@ pre {{
                     }
 
                     _focusedElement.TextContent = val;
+                    PublishTextCaretState();
                     TryInvokeRepaintReady(_engine.GetActiveDom());
                 }
             }

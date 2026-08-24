@@ -391,6 +391,9 @@ namespace FenBrowser.Host
             float lastFrameViewportHeight = 720f;
             float lastFrameScrollY = 0f;
             int pendingRendererRepaintFrame = 0;
+            FenBrowser.Core.Dom.V2.Element lastBlinkCaretElement = null;
+            int lastBlinkCaretOffset = -1;
+            int lastBlinkCaretPhase = -1;
 
             void SendFrameReady(float viewportWidth, float viewportHeight, float scrollY, string requestedBy, string correlationId)
             {
@@ -538,6 +541,47 @@ namespace FenBrowser.Host
                     Guid.NewGuid().ToString("N"));
             }
 
+            void CheckTextCaretBlink()
+            {
+                if (!handshakeComplete || !hasFrameViewport)
+                {
+                    return;
+                }
+
+                var state = FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.GetTextCaretState();
+                var caretElement = state.Element;
+                if (caretElement == null)
+                {
+                    lastBlinkCaretElement = null;
+                    lastBlinkCaretOffset = -1;
+                    lastBlinkCaretPhase = -1;
+                    return;
+                }
+
+                var caretOffset = state.Offset;
+                var elapsed = Math.Max(0, (DateTime.UtcNow - state.LastChangeUtc).TotalMilliseconds);
+                var phase = (int)((long)elapsed % FenBrowser.FenEngine.Rendering.SkiaDomRenderer.TextCaretBlinkPeriodMs
+                                  / FenBrowser.FenEngine.Rendering.SkiaDomRenderer.TextCaretVisibleMs);
+
+                if (ReferenceEquals(caretElement, lastBlinkCaretElement) &&
+                    caretOffset == lastBlinkCaretOffset &&
+                    phase == lastBlinkCaretPhase)
+                {
+                    return;
+                }
+
+                lastBlinkCaretElement = caretElement;
+                lastBlinkCaretOffset = caretOffset;
+                lastBlinkCaretPhase = phase;
+
+                SendFrameReady(
+                    lastFrameViewportWidth,
+                    lastFrameViewportHeight,
+                    lastFrameScrollY,
+                    "RendererChild.TextCaretBlink",
+                    Guid.NewGuid().ToString("N"));
+            }
+
             void SendMetadata(
                 string title = null,
                 SkiaSharp.SKBitmap favicon = null,
@@ -603,6 +647,7 @@ namespace FenBrowser.Host
                 {
                     logForwarder.FlushRenderer(writer, tabId);
                     DrainPendingRendererRepaintFrame();
+                    CheckTextCaretBlink();
                 }
 
                 if (!IsParentAlive(parentPid))
@@ -618,6 +663,7 @@ namespace FenBrowser.Host
                     if (handshakeComplete)
                     {
                         DrainPendingRendererRepaintFrame();
+                        CheckTextCaretBlink();
                     }
 
                     continue;

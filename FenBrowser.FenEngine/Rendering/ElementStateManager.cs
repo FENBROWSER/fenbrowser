@@ -95,6 +95,44 @@ namespace FenBrowser.FenEngine.Rendering
         // Damage-raster reuse is unsafe for that class of update, so request one conservative
         // full repaint the next time the renderer consumes interaction-state changes.
         private int _fullRepaintRequested;
+
+        // Text caret state for the focused editable (input/textarea).
+        // The compositor reads this every presented frame to draw the blinking caret,
+        // so no engine invalidation is required for blink toggles.
+        private Element _caretElement;
+        private int _caretOffset;
+        private DateTime _caretLastChangeUtc = DateTime.UtcNow;
+        #endregion
+
+        #region Text Caret State
+        public void UpdateTextCaret(Element element, int offset)
+        {
+            lock (_caretLock)
+            {
+                if (_caretElement == element && _caretOffset == offset && element != null)
+                    return;
+
+                _caretElement = element;
+                _caretOffset = offset < 0 ? 0 : offset;
+                _caretLastChangeUtc = DateTime.UtcNow;
+            }
+        }
+
+        public Element CaretElement { get { lock (_caretLock) return _caretElement; } }
+
+        public int CaretOffset { get { lock (_caretLock) return _caretOffset; } }
+
+        public DateTime CaretLastChangeUtc { get { lock (_caretLock) return _caretLastChangeUtc; } }
+
+        public (Element Element, int Offset, DateTime LastChangeUtc) GetTextCaretState()
+        {
+            lock (_caretLock)
+            {
+                return (_caretElement, _caretOffset, _caretLastChangeUtc);
+            }
+        }
+
+        private readonly object _caretLock = new object();
         #endregion
         
         #region Hover State

@@ -1069,6 +1069,15 @@ namespace FenBrowser.FenEngine.Rendering
                 // PHASE 3: Render
                 var bgColor = ResolveCanvasBackgroundColor(root, styles);
 
+                var caretStateNow = ElementStateManager.Instance.GetTextCaretState();
+                var caretElementNow = caretStateNow.Element;
+                var caretOffsetNow = caretStateNow.Offset;
+                bool caretVisibleNow = TextCaretPhaseVisible(caretStateNow);
+                bool caretVisualChanged =
+                    !ReferenceEquals(_lastCommittedCaret.Element, caretElementNow) ||
+                    _lastCommittedCaret.Offset != caretOffsetNow ||
+                    _lastCommittedCaret.Visible != (caretElementNow != null && caretVisibleNow);
+
                 long rasterAllocatedBefore = collectAllocationTelemetry
                     ? GC.GetAllocatedBytesForCurrentThread()
                     : 0;
@@ -1145,7 +1154,7 @@ namespace FenBrowser.FenEngine.Rendering
                                 captureDebugScreenshot: false);
                         }
                     }
-                    else if (hasBaseFrame && (_lastDamageRegions == null || _lastDamageRegions.Count == 0))
+                    else if (!caretVisualChanged && hasBaseFrame && (_lastDamageRegions == null || _lastDamageRegions.Count == 0))
                     {
                         // Phase 4 compositor-only: composite cached layer surfaces
                         // with updated transforms/opacity onto the base frame instead
@@ -1209,6 +1218,19 @@ namespace FenBrowser.FenEngine.Rendering
                                 captureDebugScreenshot: false);
                         }
                     }
+                    if (caretElementNow != null && caretVisibleNow)
+                    {
+                        if (TryGetTextCaretRect(
+                                caretElementNow,
+                                caretOffsetNow,
+                                out var caretRect,
+                                out var caretColor))
+                        {
+                            using var caretPaint = new SKPaint { Color = caretColor, IsAntialias = false };
+                            canvas.DrawRect(caretRect, caretPaint);
+                        }
+                    }
+                    _lastCommittedCaret = (caretElementNow, caretOffsetNow, caretElementNow != null && caretVisibleNow);
                     RenderPipeline.EndPaint(); // State -> Composite
                     rasterStageWatchdog.Stop();
 
@@ -2536,6 +2558,100 @@ namespace FenBrowser.FenEngine.Rendering
         private static bool IsCurrentColorSentinel(SKColor color)
         {
             return CssParser.IsCurrentColorSentinel(color);
+        }
+
+        public const int TextCaretBlinkPeriodMs = 1060;
+        public const int TextCaretVisibleMs = 530;
+
+        private (Element Element, int Offset, bool Visible) _lastCommittedCaret;
+
+        internal static bool TextCaretPhaseVisible()
+        {
+            return TextCaretPhaseVisible(ElementStateManager.Instance.GetTextCaretState());
+        }
+
+        private static bool TextCaretPhaseVisible((Element Element, int Offset, DateTime LastChangeUtc) state)
+        {
+            if (state.Element == null) return false;
+            var elapsed = Math.Max(0, (DateTime.UtcNow - state.LastChangeUtc).TotalMilliseconds);
+            return (long)elapsed % TextCaretBlinkPeriodMs < TextCaretVisibleMs;
+        }
+
+        public bool TryGetTextCaretRect(Element element, int caretOffset, out SKRect caretRect, out SKColor caretColor)
+        {
+            caretRect = SKRect.Empty;
+            caretColor = SKColors.Black;
+            if (element == null) return false;
+
+            var tag = element.TagName?.ToLowerInvariant();
+            if (tag != "input" && tag != "textarea") return false;
+            if (tag == "input")
+            {
+                var type = (element.GetAttribute("type") ?? "text").ToLowerInvariant();
+                if (type != "text" && type != "search" && type != "password" && type != "email" &&
+                    type != "url" && type != "tel" && type != "number")
+                {
+                    return false;
+                }
+            }
+
+            BoxModel box;
+            CssComputed style;
+            lock (_stateLock)
+            {
+                if (!_boxes.TryGetValue(element, out box) || box == null) return false;
+                style = null;
+                if (_lastStyles != null && _lastStyles.TryGetValue(element, out var s)) style = s;
+            }
+
+            if (style != null && string.Equals(style.Visibility, "hidden", StringComparison.OrdinalIgnoreCase)) return false;
+            var contentBox = box.ContentBox;
+            if (contentBox.Width <= 0 || contentBox.Height <= 0) return false;
+
+            var rawValue = element.GetAttribute("value");
+            if (tag == "textarea" && string.IsNullOrEmpty(rawValue))
+            {
+                rawValue = element.TextContent ?? "";
+            }
+            if (rawValue == null) rawValue = "";
+            var value = System.Text.RegularExpressions.Regex.Replace(rawValue, @"\s+", " ");
+            if (tag == "input" && string.Equals(element.GetAttribute("type"), "password", StringComparison.OrdinalIgnoreCase))
+            {
+                value = new string('●', value.Length);
+            }
+
+            int offset = Math.Clamp(caretOffset, 0, value.Length);
+
+            string fontFamily = style?.FontFamilyName;
+            int weight = style?.FontWeight ?? 400;
+            var slant = (style?.FontStyle == SKFontStyleSlant.Italic) ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright;
+            var typeface = TextLayoutHelper.ResolveTypeface(fontFamily, value, weight, slant);
+            float fontSize = (float)(style?.FontSize ?? 13.3333f);
+
+            using var font = new SKFont(typeface, fontSize);
+            var metrics = font.Metrics;
+            float textHeight = metrics.Descent - metrics.Ascent;
+
+            string prefix = offset > 0 ? value.Substring(0, offset) : string.Empty;
+            float prefixWidth = prefix.Length > 0 ? font.MeasureText(prefix) : 0f;
+
+            float x = contentBox.Left + prefixWidth;
+            var align = style?.TextAlign ?? SKTextAlign.Left;
+            float totalWidth = font.MeasureText(value);
+            if (align == SKTextAlign.Center)
+            {
+                x = contentBox.Left + (contentBox.Width - totalWidth) / 2f + prefixWidth;
+            }
+            else if (align == SKTextAlign.Right)
+            {
+                x = contentBox.Right - totalWidth + prefixWidth;
+            }
+            x = Math.Clamp(x, contentBox.Left, Math.Max(contentBox.Left, contentBox.Right - 2f));
+
+            float baselineY = contentBox.Top + (contentBox.Height - textHeight) / 2f - metrics.Ascent;
+            caretRect = new SKRect(x, baselineY + metrics.Ascent, x + 2f, baselineY + metrics.Descent);
+            caretColor = ResolveOverlayTextColor(element, style);
+            return true;
         }
 
         /// <summary>

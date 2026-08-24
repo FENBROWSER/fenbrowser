@@ -586,6 +586,46 @@ public class BrowserIntegration : IDisposable
         // animation in one tab from waking unrelated tabs.
         _animationFrameHandler = OnAnimationFrame;
         _renderer.AnimationEngine.OnAnimationFrame += _animationFrameHandler;
+
+        StartTextCaretBlinkPulse();
+    }
+
+    private void StartTextCaretBlinkPulse()
+    {
+        _textCaretBlinkTask = Task.Run(() => RunTextCaretBlinkPulseAsync(_lifetimeCts.Token));
+    }
+
+    private async Task RunTextCaretBlinkPulseAsync(CancellationToken cancellationToken)
+    {
+        var lastPhase = -1;
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(120, cancellationToken).ConfigureAwait(false);
+
+                var state = FenBrowser.FenEngine.Rendering.ElementStateManager.Instance;
+                var caret = state.GetTextCaretState();
+                if (caret.Element == null ||
+                    !_renderer.TryGetTextCaretRect(caret.Element, caret.Offset, out _, out _))
+                {
+                    lastPhase = -1;
+                    continue;
+                }
+
+                var elapsed = Math.Max(0, (DateTime.UtcNow - caret.LastChangeUtc).TotalMilliseconds);
+                var phase = (int)((long)elapsed % SkiaDomRenderer.TextCaretBlinkPeriodMs / SkiaDomRenderer.TextCaretVisibleMs);
+                if (phase == lastPhase) continue;
+                lastPhase = phase;
+
+                RequestFrame(
+                    RenderFrameInvalidationReason.Timer | RenderFrameInvalidationReason.Paint,
+                    "BrowserIntegration.TextCaretBlink");
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
     }
 
     private void OnAnimationFrame(AnimationFrameEvent animation)
@@ -908,6 +948,7 @@ public class BrowserIntegration : IDisposable
     // Phase 5: idempotent disposal guard.
     private int _disposeState;
     private readonly CancellationTokenSource _lifetimeCts = new();
+    private Task _textCaretBlinkTask;
 
     private (int Left, int Top, int Right, int Bottom) GetViewportInsets()
     {
@@ -1998,7 +2039,8 @@ public class BrowserIntegration : IDisposable
             return;
         }
 
-        if ((overlays == null || overlays.Count == 0) && highlight == null)
+        var caretElement = FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.GetTextCaretState().Element;
+        if ((overlays == null || overlays.Count == 0) && highlight == null && caretElement == null)
         {
             return;
         }
