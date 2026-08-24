@@ -12,7 +12,6 @@ namespace FenBrowser.FenEngine.Svg
     {
         private static readonly HashSet<string> FallbackElements = new(StringComparer.Ordinal)
         {
-            "textPath",
             "foreignObject", "animation", "animate", "animateTransform", "animateMotion", "set"
         };
 

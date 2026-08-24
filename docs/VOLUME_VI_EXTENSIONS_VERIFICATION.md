@@ -4758,3 +4758,25 @@ Verification:
 - Margin and padding no longer constitute a static pixel-renderer blocker. CSSOM
   interface behavior and external `@import` remain browser-level dynamic/resource
   work; first-party remains non-default.
+
+## 6.209 Text-Path And Path-Length Reference Completion (2026-08-24)
+
+- Seven `path/distance/pathLength-*` documents previously shared the
+  `advanced-text-layout` fallback. The targeted corpus is now 7/7 first-party
+  and all 4/4 declared references pass with zero fallback, rejection, renderer
+  failure, worker failure, or timeout.
+- Focused text-path tests pass 4/4, including positive/percentage calibration,
+  zero-length behavior, external-reference rejection, and concurrent deterministic
+  rendering. The complete Release SVG namespace passes 347/347.
+- The 198-file static selection before -> after is first-party 135 -> 142,
+  compatibility fallback 60 -> 53, and declared-reference passes 76 -> 80 of 93;
+  blocked references drop 17 -> 13. Resource rejections remain 3 because the two
+  circular text-path reftests still contain an external font resource, and four
+  non-SVG reference targets remain unresolved.
+- The signed captured-site gate remains 151/151 first-party. Windows native
+  ownership stress now includes text-path rendering and completes 10,000 renders
+  with zero failures, 714 intentional compatibility cases, and 10,391,552 retained
+  private bytes under the fixed 67,108,864-byte ceiling.
+- Basic same-document text-path is no longer a blocker. External font loading,
+  transformed targets, nested content, and advanced text-path modes remain
+  explicit work; first-party remains non-default.

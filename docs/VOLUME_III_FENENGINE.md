@@ -11281,3 +11281,23 @@ Verification:
 - Release SVG tests pass 343/343. The 198-file static selection is now 135
   first-party, 60 compatibility fallbacks, and 91/135 direct legacy parity, with
   all renderer and worker failure counters at zero.
+
+## 2.144 Bounded First-Party Text-Path Layout (2026-08-24)
+
+- `textPath` now resolves same-document path and basic-shape references, shapes
+  text through the existing HarfBuzz-backed stack, and positions glyphs with
+  per-glyph rotation/translation matrices derived from bounded `SKPathMeasure`
+  position and tangent queries.
+- Numeric and percentage `startOffset` values honor referenced `pathLength`
+  calibration. A declared zero length keeps a zero offset at the path origin and
+  maps non-zero offsets out of range; negative/off-path glyph centers are omitted.
+- Text-anchor shifts apply along the measured path. Unsupported transformed
+  targets, nested text-path content, and advanced method/spacing/side modes remain
+  explicit compatibility cases. Non-fragment references are resource-rejected
+  and cannot enter the legacy renderer.
+- The implementation reuses the document glyph/depth/time budgets, introduces no
+  shared mutable state, and deterministically disposes path measures, paths,
+  fonts, text blobs, paints, and builders.
+- Release SVG tests pass 347/347. The 198-file static selection improves from 135
+  to 142 first-party documents and from 76 to 80 declared-reference passes, with
+  53 compatibility fallbacks and no renderer or worker failures.

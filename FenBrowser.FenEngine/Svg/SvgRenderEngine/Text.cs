@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using FenBrowser.FenEngine.Typography;
 using SkiaSharp;
@@ -106,10 +107,148 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     LayoutTextElement(part.Element, viewport, paintStyle, textStyle, state, runs, chunks, false);
                 }
+                else if (part.Element?.Name == "textPath")
+                {
+                    LayoutTextPathElement(part.Element, viewport, paintStyle, textStyle, state, runs);
+                }
             }
         }
 
-        private void ShapeTextPart(
+        private void LayoutTextPathElement(
+            SvgElement element,
+            ViewportContext viewport,
+            InheritedStyle inheritedPaint,
+            TextStyle inheritedText,
+            TextLayoutState state,
+            List<TextPaintRun> runs)
+        {
+            string href = element.GetAttribute("href") ?? element.GetLookup("xlink:href");
+            if (string.IsNullOrWhiteSpace(href)) return;
+            if (href[0] != '#')
+            {
+                _report.RejectResource("textPath external reference rejected by SVG resource policy");
+                return;
+            }
+            if (!_doc.ElementsById.TryGetValue(href.Substring(1), out SvgElement target))
+                return;
+            if (target.Name is not ("path" or "rect" or "circle" or "ellipse" or "line" or "polyline" or "polygon"))
+            {
+                _report.RequireFallback("SVG textPath target geometry requires compatibility fallback");
+                return;
+            }
+            if (!string.IsNullOrWhiteSpace(target.GetAttribute("transform")) ||
+                target.CascadedDeclarations?.ContainsKey("transform") == true)
+            {
+                _report.RequireFallback("transformed SVG textPath target requires compatibility fallback");
+                return;
+            }
+            if (!string.IsNullOrWhiteSpace(element.GetAttribute("method")) ||
+                !string.IsNullOrWhiteSpace(element.GetAttribute("spacing")) ||
+                !string.IsNullOrWhiteSpace(element.GetAttribute("side")))
+            {
+                _report.RequireFallback("advanced SVG textPath layout requires compatibility fallback");
+                return;
+            }
+            if (element.Content.Any(part => !part.IsText))
+            {
+                _report.RequireFallback("nested SVG textPath content requires compatibility fallback");
+                return;
+            }
+
+            using var geometry = BuildGeometry(target, viewport);
+            if (geometry == null) return;
+            using var measure = new SKPathMeasure(geometry, false);
+            float pathLength = measure.Length;
+            if (!(pathLength > 0f) || !float.IsFinite(pathLength)) return;
+
+            var paintStyle = inheritedPaint.ResolveOverrides(element, _report);
+            if (!paintStyle.Visibility) return;
+            var textStyle = ResolveTextStyle(element, inheritedText);
+            string rawText = element.Content.Count == 0
+                ? element.TextContent
+                : string.Concat(element.Content.Where(part => part.IsText).Select(part => part.Text));
+            int runIndex = runs.Count;
+            TextPaintRun run = ShapeTextPart(
+                rawText, element, paintStyle, textStyle, state, runs, applyOwnOpacity: true);
+            if (run == null) return;
+
+            float offset = ResolveTextPathOffset(element, target, pathLength, textStyle.FontSize);
+            if (!float.IsFinite(offset))
+            {
+                runs.RemoveAt(runIndex);
+                return;
+            }
+            offset += textStyle.Anchor == TextAnchor.Middle
+                ? -run.GlyphRun.Width / 2f
+                : textStyle.Anchor == TextAnchor.End ? -run.GlyphRun.Width : 0f;
+
+            var glyphIds = new List<ushort>(run.GlyphRun.Count);
+            var transforms = new List<SKRotationScaleMatrix>(run.GlyphRun.Count);
+            for (int i = 0; i < run.GlyphRun.Count; i++)
+            {
+                if ((i & 255) == 0) CheckDeadline();
+                PositionedGlyph glyph = run.GlyphRun.Glyphs[i];
+                float advance = Math.Max(0f, glyph.AdvanceX);
+                float centerDistance = offset + glyph.X + advance / 2f;
+                if (centerDistance < 0f || centerDistance > pathLength) continue;
+                if (!measure.GetPositionAndTangent(centerDistance, out SKPoint position, out SKPoint tangent))
+                    continue;
+                float degrees = MathF.Atan2(tangent.Y, tangent.X) * (180f / MathF.PI);
+                glyphIds.Add(glyph.GlyphId);
+                transforms.Add(SKRotationScaleMatrix.CreateDegrees(
+                    1f, degrees, position.X, position.Y, advance / 2f, -glyph.Y));
+            }
+            if (glyphIds.Count == 0)
+            {
+                runs.RemoveAt(runIndex);
+                return;
+            }
+            run.PathGlyphIds = glyphIds.ToArray();
+            run.PathTransforms = transforms.ToArray();
+            run.PathBounds = geometry.Bounds;
+            run.Chunk = -1;
+        }
+
+        private static float ResolveTextPathOffset(
+            SvgElement textPath,
+            SvgElement target,
+            float actualLength,
+            float fontSize)
+        {
+            string raw = textPath.GetAttribute("startOffset");
+            if (string.IsNullOrWhiteSpace(raw)) return 0f;
+            raw = raw.Trim();
+
+            bool percentage = raw.EndsWith("%", StringComparison.Ordinal);
+            ReadOnlySpan<char> number = percentage ? raw.AsSpan(0, raw.Length - 1) : raw.AsSpan();
+            if (!SvgValues.TryParseLength(number, out float declaredOffset, out var offsetUnit)) return 0f;
+
+            string declaredPathLengthRaw = target.GetPresentationProperty("path-length") ??
+                                           target.GetAttribute("pathLength");
+            bool hasDeclaredPathLength = SvgValues.TryParseLength(
+                declaredPathLengthRaw.AsSpan(), out float declaredPathLength, out var pathUnit);
+            if (hasDeclaredPathLength)
+                declaredPathLength = SvgValues.ResolveUnits(declaredPathLength, pathUnit, fontSize, actualLength);
+
+            if (percentage)
+            {
+                float basis = hasDeclaredPathLength ? declaredPathLength : actualLength;
+                declaredOffset = declaredOffset * 0.01f * basis;
+                offsetUnit = SvgValues.SvgUnit.User;
+            }
+            else
+            {
+                declaredOffset = SvgValues.ResolveUnits(declaredOffset, offsetUnit, fontSize, actualLength);
+            }
+
+            if (!hasDeclaredPathLength) return declaredOffset;
+            if (declaredPathLength == 0f)
+                return declaredOffset == 0f ? 0f : MathF.CopySign(float.PositiveInfinity, declaredOffset);
+            if (!(declaredPathLength > 0f) || !float.IsFinite(declaredPathLength)) return declaredOffset;
+            return declaredOffset * (actualLength / declaredPathLength);
+        }
+
+        private TextPaintRun ShapeTextPart(
             string rawText,
             SvgElement element,
             InheritedStyle paintStyle,
@@ -119,30 +258,30 @@ namespace FenBrowser.FenEngine.Svg
             bool applyOwnOpacity)
         {
             string text = NormalizeText(rawText, textStyle.PreserveWhitespace, state);
-            if (text.Length == 0) return;
+            if (text.Length == 0) return null;
 
             var typeface = SvgTypefaceResolver.Resolve(textStyle.Family, text, textStyle.Weight, textStyle.Slant);
             if (typeface == null)
             {
                 _report.RequireFallback("SVG text has no available typeface");
-                return;
+                return null;
             }
 
             var glyphRun = SkiaFontService.ShapeWithTypeface(text, typeface, textStyle.FontSize);
             if (glyphRun.Count == 0)
             {
                 _report.RequireFallback("SVG text shaping produced no glyphs");
-                return;
+                return null;
             }
             if (!glyphRun.WasShaped && ContainsComplexText(text))
             {
                 _report.RequireFallback("complex SVG text requires an available HarfBuzz shaper");
-                return;
+                return null;
             }
             if (state.GlyphCount + glyphRun.Count > MaxTextGlyphsPerDocument)
             {
                 _report.RequireFallback("SVG text exceeds first-party glyph budget");
-                return;
+                return null;
             }
 
             if (textStyle.LetterSpacing != 0f && glyphRun.Count > 1)
@@ -151,10 +290,12 @@ namespace FenBrowser.FenEngine.Svg
                 glyphRun.Width += textStyle.LetterSpacing * (glyphRun.Count - 1);
             }
 
-            runs.Add(new TextPaintRun(element, paintStyle, glyphRun, state.X, state.Y, state.CurrentChunk, applyOwnOpacity));
+            var run = new TextPaintRun(element, paintStyle, glyphRun, state.X, state.Y, state.CurrentChunk, applyOwnOpacity);
+            runs.Add(run);
             state.X += glyphRun.Width;
             state.GlyphCount += glyphRun.Count;
             state.HasRenderedText = true;
+            return run;
         }
 
         private void PaintGlyphRun(SKCanvas canvas, TextPaintRun run)
@@ -170,16 +311,30 @@ namespace FenBrowser.FenEngine.Svg
                 };
                 var metrics = font.Metrics;
                 using var boundsBuilder = new SKPathBuilder();
-                boundsBuilder.AddRect(new SKRect(run.X, run.Y + metrics.Ascent, run.X + Math.Max(1f, run.GlyphRun.Width), run.Y + metrics.Descent));
+                boundsBuilder.AddRect(run.PathTransforms == null
+                    ? new SKRect(run.X, run.Y + metrics.Ascent, run.X + Math.Max(1f, run.GlyphRun.Width), run.Y + metrics.Descent)
+                    : run.PathBounds);
                 using var boundsPath = boundsBuilder.Detach();
                 using var fillPaint = BuildFillPaint(run.Element, run.PaintStyle, boundsPath);
                 using var strokePaint = BuildStrokePaint(run.Element, run.PaintStyle);
                 using var blobBuilder = new SKTextBlobBuilder();
-                var positioned = blobBuilder.AllocatePositionedRun(font, run.GlyphRun.Count);
-                for (int i = 0; i < run.GlyphRun.Count; i++)
+                if (run.PathTransforms != null)
                 {
-                    positioned.Glyphs[i] = run.GlyphRun.Glyphs[i].GlyphId;
-                    positioned.Positions[i] = new SKPoint(run.X + run.GlyphRun.Glyphs[i].X, run.Y + run.GlyphRun.Glyphs[i].Y);
+                    var pathRun = blobBuilder.AllocateRotationScaleRun(font, run.PathGlyphIds.Length);
+                    for (int i = 0; i < run.PathGlyphIds.Length; i++)
+                    {
+                        pathRun.Glyphs[i] = run.PathGlyphIds[i];
+                        pathRun.Positions[i] = run.PathTransforms[i];
+                    }
+                }
+                else
+                {
+                    var positioned = blobBuilder.AllocatePositionedRun(font, run.GlyphRun.Count);
+                    for (int i = 0; i < run.GlyphRun.Count; i++)
+                    {
+                        positioned.Glyphs[i] = run.GlyphRun.Glyphs[i].GlyphId;
+                        positioned.Positions[i] = new SKPoint(run.X + run.GlyphRun.Glyphs[i].X, run.Y + run.GlyphRun.Glyphs[i].Y);
+                    }
                 }
                 using var blob = blobBuilder.Build();
                 if (fillPaint != null) canvas.DrawText(blob, 0f, 0f, fillPaint);
@@ -374,8 +529,11 @@ namespace FenBrowser.FenEngine.Svg
             public GlyphRun GlyphRun { get; }
             public float X { get; set; }
             public float Y { get; }
-            public int Chunk { get; }
+            public int Chunk { get; set; }
             public bool ApplyOwnOpacity { get; }
+            public ushort[] PathGlyphIds { get; set; }
+            public SKRotationScaleMatrix[] PathTransforms { get; set; }
+            public SKRect PathBounds { get; set; }
         }
 
         private readonly record struct TextChunk(float StartX, TextAnchor Anchor);
