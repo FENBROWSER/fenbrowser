@@ -1,5 +1,8 @@
+using System.Linq;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Rendering.Css;
 using Xunit;
 
 namespace FenBrowser.Tests.Rendering
@@ -60,6 +63,30 @@ namespace FenBrowser.Tests.Rendering
             manager.UpdateTextCaret(input, 1);
 
             Assert.True(manager.CaretLastChangeUtc >= first);
+        }
+
+        [Fact]
+        public void HoverDescendantWithNotClass_MatchesHoveredAncestorChain()
+        {
+            ElementStateManager.Reset();
+            var document = new HtmlParser(@"
+<!doctype html>
+<html><body>
+    <button id='ai' class='plR5qb'><span id='pill' class='bvUkz'></span></button>
+    <button id='ai2' class='plR5qb PHjFye'><span id='pill2' class='bvUkz'></span></button>
+</body></html>").Parse();
+            var elements = document.Descendants().OfType<Element>().ToArray();
+            var hovered = elements.Single(element => element.Id == "ai");
+            var matchingPill = elements.Single(element => element.Id == "pill");
+            var excludedPill = elements.Single(element => element.Id == "pill2");
+
+            ElementStateManager.Instance.SetHoveredElement(hovered);
+
+            Assert.True(SelectorMatcher.Matches(matchingPill, ".plR5qb:not(.PHjFye):hover .bvUkz"));
+            Assert.False(SelectorMatcher.Matches(excludedPill, ".plR5qb:not(.PHjFye):hover .bvUkz"));
+
+            ElementStateManager.Instance.SetHoveredElement(null);
+            Assert.False(SelectorMatcher.Matches(matchingPill, ".plR5qb:not(.PHjFye):hover .bvUkz"));
         }
 
     }
