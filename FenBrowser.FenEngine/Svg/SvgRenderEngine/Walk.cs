@@ -63,8 +63,8 @@ namespace FenBrowser.FenEngine.Svg
                 case "a":
                     {
                         if (IsDisplayNone(el)) return;
-                        using var scope = new CanvasState(canvas);
-                        ApplyTransform(el, canvas);
+            using var scope = new CanvasState(canvas);
+            ApplyElementTransform(el, canvas, viewport, inherited);
                         ApplyClipPath(el, canvas, viewport, inherited);
                         var next = inherited.ResolveOverrides(el, _report);
                         DrawWithEffects(el, canvas, viewport, () =>
@@ -142,7 +142,7 @@ namespace FenBrowser.FenEngine.Svg
                         using var shapeScope = new CanvasState(canvas);
                         // Spec order: save -> element transform -> clip -> draw
                         // -> restore (unwinds via CanvasState on any exit).
-                        ApplyTransform(el, canvas);
+                        ApplyElementTransform(el, canvas, viewport, inherited);
                         ApplyClipPath(el, canvas, viewport, inherited);
                         DrawShape(el, canvas, viewport, inherited);
                         return;
@@ -153,7 +153,7 @@ namespace FenBrowser.FenEngine.Svg
                         // Same spec order as shapes: save -> transform -> clip
                         // -> draw (DrawImageElement adds its own opacity layer).
                         using var imgScope = new CanvasState(canvas);
-                        ApplyTransform(el, canvas);
+                        ApplyElementTransform(el, canvas, viewport, inherited);
                         ApplyClipPath(el, canvas, viewport, inherited);
                         DrawWithEffects(el, canvas, viewport,
                             () => DrawImageElement(el, canvas, viewport, inherited));
@@ -163,7 +163,7 @@ namespace FenBrowser.FenEngine.Svg
                     {
                         if (IsDisplayNone(el)) return;
                         using var textScope = new CanvasState(canvas);
-                        ApplyTransform(el, canvas);
+                        ApplyElementTransform(el, canvas, viewport, inherited);
                         ApplyClipPath(el, canvas, viewport, inherited);
                         DrawWithEffects(el, canvas, viewport,
                             () => DrawTextElement(el, canvas, viewport, inherited));
@@ -217,7 +217,7 @@ namespace FenBrowser.FenEngine.Svg
                 out float vbX, out float vbY, out float vbW, out float vbH);
 
             using var scope = new CanvasState(canvas);
-            ApplyTransform(el, canvas);
+            ApplyElementTransform(el, canvas, outer, inherited);
             DrawWithEffects(el, canvas, inner, () =>
             {
                 if (TryBeginGroupOpacity(el, canvas, out var layerPaint))
@@ -352,7 +352,7 @@ namespace FenBrowser.FenEngine.Svg
             }
 
             using var scope = new CanvasState(canvas);
-            ApplyTransform(el, canvas);
+            ApplyElementTransform(el, canvas, viewport, inherited);
             ApplyClipPath(el, canvas, viewport, inherited);
             float ux = ResolveCoord(el.GetAttribute("x"), viewport.Width);
             float uy = ResolveCoord(el.GetAttribute("y"), viewport.Height);
@@ -427,14 +427,158 @@ namespace FenBrowser.FenEngine.Svg
 
         // ---------------------------------------------------------------- misc
 
-        private static void ApplyTransform(SvgElement el, SKCanvas canvas)
+        /// <summary>
+        /// Applies an element's transform. A cascaded CSS transform property
+        /// (rules or inline style) replaces the XML transform attribute per the
+        /// cascade and resolves through the bounded CSS path below; attribute
+        /// values keep the legacy SVG syntax parser.
+        /// </summary>
+        private void ApplyElementTransform(
+            SvgElement el,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle inherited)
+        {
+            if (el.CascadedDeclarations != null &&
+                el.CascadedDeclarations.TryGetValue("transform", out string css) &&
+                !string.IsNullOrWhiteSpace(css))
+            {
+                // GetPresentationProperty applies custom-property substitution.
+                ApplyCssTransform(el, el.GetPresentationProperty("transform"), canvas, viewport, inherited);
+                return;
+            }
+            ApplyAttributeTransform(el, canvas, viewport);
+        }
+
+        /// <summary>
+        /// Applies an XML <c>transform</c> attribute, honoring the SVG2
+        /// <c>transform-origin</c> presentation attribute (bare numbers are
+        /// user units) when present.
+        /// </summary>
+        private void ApplyAttributeTransform(
+            SvgElement el,
+            SKCanvas canvas,
+            ViewportContext viewport)
         {
             var t = el.GetAttribute("transform");
             if (string.IsNullOrWhiteSpace(t))
             {
                 return;
             }
-            if (SvgValues.TryParseTransformList(t.AsSpan(), out var matrix) && !matrix.IsIdentity)
+            if (!SvgValues.TryParseTransformList(t.AsSpan(), out var matrix))
+            {
+                return;
+            }
+
+            var originText = el.GetAttribute("transform-origin");
+            if (!string.IsNullOrWhiteSpace(originText))
+            {
+                if (!SvgCssTransform.TryResolveAttributeOrigin(
+                        originText, viewport.Width, viewport.Height, out var origin))
+                {
+                    _report.RequireFallback(
+                        $"SVG transform-origin '{originText.Trim()}' requires compatibility fallback");
+                    return;
+                }
+                if (origin.X != 0f || origin.Y != 0f)
+                {
+                    matrix = SKMatrix.Concat(
+                        SKMatrix.Concat(SKMatrix.CreateTranslation(origin.X, origin.Y), matrix),
+                        SKMatrix.CreateTranslation(-origin.X, -origin.Y));
+                }
+            }
+            if (!matrix.IsIdentity)
+            {
+                canvas.Concat(matrix);
+            }
+        }
+
+        /// <summary>
+        /// Applies the CSS transform property (which wins over the XML transform
+        /// attribute per the cascade) with bounded transform-origin/transform-box
+        /// resolution. Anything outside the supported 2-D subset requires
+        /// compatibility fallback instead of guessing pixels.
+        /// </summary>
+        private void ApplyCssTransform(
+            SvgElement el,
+            string value,
+            SKCanvas canvas,
+            ViewportContext viewport,
+            InheritedStyle inherited)
+        {
+            string boxRaw = el.GetPresentationProperty("transform-box");
+            SKRect? fillBox = null;
+            bool isFillBox = false;
+            if (!string.IsNullOrWhiteSpace(boxRaw))
+            {
+                string box = boxRaw.Trim();
+                if (box.Equals("fill-box", StringComparison.OrdinalIgnoreCase))
+                {
+                    isFillBox = true;
+                }
+                else if (!box.Equals("view-box", StringComparison.OrdinalIgnoreCase))
+                {
+                    // stroke-box needs stroke geometry; content-box/border-box
+                    // need a CSS layout box the isolated renderer does not model.
+                    _report.RequireFallback(
+                        $"SVG CSS transform-box '{box}' requires compatibility fallback");
+                    return;
+                }
+            }
+
+            string originRaw = el.GetPresentationProperty("transform-origin");
+            if (isFillBox)
+            {
+                switch (el.Name)
+                {
+                    case "path":
+                    case "rect":
+                    case "circle":
+                    case "ellipse":
+                    case "line":
+                    case "polyline":
+                    case "polygon":
+                        using (var geometry = BuildGeometry(el, viewport))
+                        {
+                            if (geometry == null)
+                            {
+                                return; // Invalid geometry: nothing would draw anyway.
+                            }
+                            fillBox = geometry.Bounds;
+                        }
+                        break;
+                    default:
+                        _report.RequireFallback(
+                            $"SVG CSS transform-box fill-box on '{el.Name}' requires compatibility fallback");
+                        return;
+                }
+            }
+
+            var status = SvgCssTransform.TryResolve(
+                value,
+                originRaw,
+                boxRaw,
+                viewport.Width,
+                viewport.Height,
+                inherited.FontSize,
+                inherited.RootFontSize,
+                fillBox,
+                out var matrix,
+                out var _);
+            switch (status)
+            {
+                case SvgCssTransformStatus.None:
+                case SvgCssTransformStatus.Identity:
+                    return;
+                case SvgCssTransformStatus.Unsupported:
+                    _report.RequireFallback(
+                        $"SVG CSS transform '{value.Trim()}' requires compatibility fallback");
+                    return;
+            }
+
+            // TryResolve already composed the transform-origin pivot into the
+            // matrix; apply it as resolved.
+            if (!matrix.IsIdentity)
             {
                 canvas.Concat(matrix);
             }
@@ -691,8 +835,18 @@ namespace FenBrowser.FenEngine.Svg
             return combined;
         }
 
-        private static void ApplyPathTransform(SvgElement element, SKPath path)
+        private void ApplyPathTransform(SvgElement element, SKPath path)
         {
+            if (element.CascadedDeclarations != null &&
+                element.CascadedDeclarations.TryGetValue("transform", out string css) &&
+                !string.IsNullOrWhiteSpace(css))
+            {
+                // CSS transforms do apply to clipPath children in browsers;
+                // ignoring them here would misclip silently.
+                _report.RequireFallback(
+                    "SVG CSS transform on clipPath content requires compatibility fallback");
+                return;
+            }
             var transformText = element.GetAttribute("transform");
             if (!string.IsNullOrWhiteSpace(transformText) &&
                 SvgValues.TryParseTransformList(transformText.AsSpan(), out var transform))

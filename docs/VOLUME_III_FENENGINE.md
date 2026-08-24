@@ -11141,3 +11141,41 @@ Verification:
 - The `linux-x64` framework-dependent benchmark publishes without warnings and executes the same 10,000-render gate
   under Ubuntu 24.04 WSL with the explicit DejaVu Sans benchmark font: zero failures, 769 intended compatibility cases,
   and 9,768,960 retained private bytes below the same ceiling.
+
+## 2.139 CSS Transform Properties In The SVG Cascade (2026-08-24)
+
+- The bounded SVG cascade now accepts `transform`, `transform-origin`, and
+  `transform-box`. A cascaded CSS `transform` (rule or inline style) replaces the
+  XML `transform` attribute per presentation-attribute cascade rules; without a
+  cascaded declaration, attribute syntax keeps the legacy transform-list parser.
+- `SvgCssTransform` is a pure, bounded resolver for the supported 2-D subset:
+  `matrix`, `translate`/`translateX`/`translateY`, `scale`/`scaleX`/`scaleY`,
+  `rotate`, and `skew`/`skewX`/`skewY`. Length-percentage components resolve
+  through `SvgCssLengthEvaluator`, so `calc()`/`min()`/`max()`/`clamp()`,
+  absolute units, percentages, and font-relative units inherit its nesting and
+  operation ceilings. Angles accept `deg`/`grad`/`rad`/`turn` plus unitless zero;
+  nonzero unitless angles are invalid.
+- `transform-origin` resolves keywords and length-percentages against the
+  reference box with css-transforms role assignment ("top left" normalizes to
+  "left top", missing components default to center). The initial used value for
+  SVG elements remains 0 0, so unpivoted transforms are pixel-identical to the
+  attribute behavior. A z component must be zero.
+- `transform-box: view-box` (default) resolves percentages against the nearest
+  SVG viewport; `fill-box` resolves against the shape's object bounding box and
+  offsets from its top-left. `stroke-box`, `content-box`, and `border-box`
+  require stroke geometry or CSS layout boxes the isolated renderer does not
+  model and route to compatibility fallback, as do 3-D functions
+  (`translate3d`, `rotate3d`, `matrix3d`, `scale3d`, `perspective`) and any
+  unknown function.
+- The SVG2 `transform-origin` presentation attribute is honored alongside the
+  XML `transform` attribute list; bare numbers there are user units per
+  attribute syntax, while percentages resolve against the viewport. A CSS
+  transform on clipPath content requires fallback rather than silently
+  misclipping, since browsers do apply it.
+
+Verification:
+
+- Complete Release SVG tests: 310 passed, 0 failed, 0 skipped, including new
+  resolver and pixel-probe coverage for translate/scale/rotate, origin pivots,
+  fill-box percentage origins, calc(), percentages, em units, attribute-mode
+  origins, and fallback routing for 3-D/unitless/stroke-box input.

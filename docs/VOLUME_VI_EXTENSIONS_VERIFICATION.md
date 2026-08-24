@@ -4624,3 +4624,24 @@ Verification:
   and `styling` selection. All 64 first-party-comparable declared-reference tests pass and zero fail; 29 remain blocked
   by explicit compatibility/resource routing, and four non-SVG reference targets remain visible for a future
   browser-level reftest runner.
+
+## 6.204 CSS Transform Conformance In The Static SVG Selection (2026-08-24)
+
+- After CSS `transform`/`transform-origin`/`transform-box` support, the same
+  198-file static selection reports 124 first-party documents (from 121), 71
+  compatibility fallbacks (from 74), and 67/93 comparable declared-reference
+  passes (from 64) with zero declared-reference failures, zero renderer or
+  worker failures, and zero timeouts; 26 tests remain blocked by explicit
+  routing and four non-SVG reference targets remain for a future browser-level
+  reftest runner.
+- The complete `styling` prefix runs 51 documents with 39 first-party; all eight
+  `styling/render` transform documents are now first-party, including the
+  `transform-origin` presentation-attribute visual test that passes at full
+  pixel identity.
+- The signed captured-site gate re-ran under the same renderer build: 151/151
+  first-party, zero fallback, rejection, failure, timeout, skip, or truncation;
+  150 direct legacy differentials pass with the one existing chromatic-gradient
+  legacy reference defect still visible.
+- The 10,000-render native-ownership stress reports zero failures, 769 intended
+  compatibility cases, and 10,063,872 retained private bytes against the fixed
+  67,108,864-byte ceiling.
