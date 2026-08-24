@@ -81,12 +81,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Only test classes that actually exist under FenBrowser.Tests/Engine/.
-        # If new pipeline test classes are added, append them here.
+        # Only test classes that are actually compiled into FenBrowser.Tests.
+        # The legacy Engine/Rendering trees are Compile Removed, so the old
+        # PipelineContextTests/PipelineExceptionBoundaryTests entries matched
+        # ZERO tests and gated nothing. Invoke-TestFilters fails the job if any
+        # replacement entry ever stops matching compiled tests.
         test_class:
-          - PipelineContextTests
-          - PipelineExceptionBoundaryTests
-          - PipelineInvariantGateTests
+          - Phase3AnimationClassificationTests
+          - Phase4CompositorOnlyPathTests
+          - Phase6ImageRepaintCoalescingTests
+          - Phase10WatchdogLateFramePolicyTests
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -106,12 +110,10 @@ jobs:
           PIPELINE_TELEMETRY_ENABLED: ${{ env.PIPELINE_TELEMETRY_ENABLED }}
           PIPELINE_STRICT_MODE: ${{ env.PIPELINE_STRICT_MODE }}
         run: >-
-          dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj
-          -c Release
-          --no-build
-          --filter "FullyQualifiedName~${{ matrix.test_class }}"
-          --logger "trx;LogFileName=${{ matrix.test_class }}.trx"
-          --results-directory TestResults
+          ./scripts/ci/Invoke-TestFilters.ps1
+          -Project "FenBrowser.Tests/FenBrowser.Tests.csproj"
+          -NoBuild
+          -Filters @("FullyQualifiedName~${{ matrix.test_class }}")
 
       - name: Upload test results
         if: always()

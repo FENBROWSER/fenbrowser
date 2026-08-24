@@ -307,15 +307,14 @@ Standard xUnit tests covering internal components:
       - Stage 3 CSS/JS focused tranche
   - P0 hardening CI gate (2026-04-21, retained in staged pipeline):
     - `quality-gate` includes a dedicated blocking "P0 Hardening Gates" step.
-    - The gate runs focused filters covering event loop ordering, paint/damage invariants, CSP/CORS enforcement, and IPC envelope validation:
-      - `EventLoopTests`
-      - `EventLoopPriorityTests`
-      - `RenderPipelineInvariantTests`
-      - `DamageRegionNormalizationPolicyTests`
+    - `scripts/ci/Invoke-TestFilters.ps1` writes one TRX per filter and fails when a filter matches zero compiled tests, preventing excluded or renamed test classes from producing vacuous green CI jobs.
+    - The executable-build gate runs compiled, green security filters covering CSP, CORS handling, cookie policy, document security context, and sandbox launch policy:
       - `CspPolicyTests`
-      - `SecurityChecksTests`
-      - `ResourceManagerCorsSendAsyncTests`
-      - `IpcEnvelopeValidationTests`
+      - `CorsHandlerTests`
+      - `BrowserCookieJarTests`
+      - `DocumentSecurityContextTests`
+      - `SandboxLaunchPolicyTests`
+    - The pipeline matrix uses the same zero-match guard for `Phase3AnimationClassificationTests`, `Phase4CompositorOnlyPathTests`, `Phase6ImageRepaintCoalescingTests`, and `Phase10WatchdogLateFramePolicyTests`.
 - Recent engine verification hardening now includes a shorthand-cascade regression for the internal new-tab search field: author `background:` shorthand must override lower-origin UA `background-color` longhands for form controls, guarding the exact precedence bug that caused the live `fen://newtab` input to repaint white (`FenBrowser.Tests/Engine/NewTabPageLayoutTests.cs`).
 - Acid2 intro-page hardening on `2026-04-11` added:
   - `FenBrowser.Tests/Engine/CascadeModernTests.cs`

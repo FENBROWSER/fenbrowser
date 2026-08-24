@@ -88,27 +88,16 @@ jobs:
         run: dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --nologo
 
       - name: Run P0 hardening gates
+        # Every filter is validated against compiled tests; a filter
+        # that matches zero tests fails this job instead of exiting green.
         shell: pwsh
-        run: |
-          $project = "FenBrowser.Tests/FenBrowser.Tests.csproj"
-          $config = "Release"
-          $filters = @(
-            "FullyQualifiedName~FenBrowser.Tests.Engine.EventLoopTests",
-            "FullyQualifiedName~FenBrowser.Tests.Engine.EventLoopPriorityTests",
-            "FullyQualifiedName~FenBrowser.Tests.Rendering.RenderPipelineInvariantTests",
-            "FullyQualifiedName~FenBrowser.Tests.Rendering.DamageRegionNormalizationPolicyTests",
+        run: ./scripts/ci/Invoke-TestFilters.ps1 -Project "FenBrowser.Tests/FenBrowser.Tests.csproj" -NoBuild -Filters @(
             "FullyQualifiedName~FenBrowser.Tests.Core.Network.CspPolicyTests",
-            "FullyQualifiedName~FenBrowser.Tests.Core.SecurityChecksTests",
-            "FullyQualifiedName~FenBrowser.Tests.Core.ResourceManagerCorsSendAsyncTests",
-            "FullyQualifiedName~FenBrowser.Tests.Architecture.IpcEnvelopeValidationTests"
+            "FullyQualifiedName~FenBrowser.Tests.Core.CorsHandlerTests",
+            "FullyQualifiedName~FenBrowser.Tests.Core.BrowserCookieJarTests",
+            "FullyQualifiedName~FenBrowser.Tests.Core.DocumentSecurityContextTests",
+            "FullyQualifiedName~FenBrowser.Tests.Core.SandboxLaunchPolicyTests"
           )
-
-          foreach ($filter in $filters) {
-            dotnet test $project -c $config --no-build --filter $filter --verbosity minimal
-            if ($LASTEXITCODE -ne 0) {
-              exit $LASTEXITCODE
-            }
-          }
 
   full-regression:
     name: Full Regression (nightly or manual)
