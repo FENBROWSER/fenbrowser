@@ -233,7 +233,7 @@ public static class HostDialogCoordinator
                 return;
             }
 
-            var tab = TabManager.Instance.CreateTab(state.NavigationUrl);
+            var tab = TabManager.Instance.CreateTab(state.NavigationUrl, isProgrammatic: true);
             state.Tab = tab;
 
             if (!string.Equals(state.NavigationUrl, "about:blank", StringComparison.OrdinalIgnoreCase))

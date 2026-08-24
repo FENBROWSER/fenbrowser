@@ -12,6 +12,7 @@ public class BrowserTab : IDisposable
     private static int _nextId = 1;
     private readonly object _initialNavigationLock = new();
     private string _pendingInitialNavigationUrl;
+    private bool _pendingInitialNavigationIsProgrammatic;
     private string _pendingNavigationDisplayUrl;
     private bool _initialNavigationDispatched;
     
@@ -199,6 +200,12 @@ public class BrowserTab : IDisposable
     }
 
     public void StartInitialNavigation(string url)
+        => StartInitialNavigation(url, isProgrammatic: false);
+
+    public void StartInitialProgrammaticNavigation(string url)
+        => StartInitialNavigation(url, isProgrammatic: true);
+
+    private void StartInitialNavigation(string url, bool isProgrammatic)
     {
         if (string.IsNullOrWhiteSpace(url))
         {
@@ -218,22 +225,25 @@ public class BrowserTab : IDisposable
             {
                 _initialNavigationDispatched = true;
                 _pendingInitialNavigationUrl = null;
+                _pendingInitialNavigationIsProgrammatic = false;
             }
             else
             {
                 _pendingInitialNavigationUrl = url;
+                _pendingInitialNavigationIsProgrammatic = isProgrammatic;
             }
         }
 
         if (navigateNow)
         {
-            _ = NavigateAsync(url);
+            _ = isProgrammatic ? NavigateProgrammaticAsync(url) : NavigateAsync(url);
         }
     }
 
     public void NotifyViewportReady()
     {
         string pendingUrl = null;
+        bool isProgrammatic = false;
 
         lock (_initialNavigationLock)
         {
@@ -243,11 +253,13 @@ public class BrowserTab : IDisposable
             }
 
             pendingUrl = _pendingInitialNavigationUrl;
+            isProgrammatic = _pendingInitialNavigationIsProgrammatic;
             _pendingInitialNavigationUrl = null;
+            _pendingInitialNavigationIsProgrammatic = false;
             _initialNavigationDispatched = true;
         }
 
-        _ = NavigateAsync(pendingUrl);
+        _ = isProgrammatic ? NavigateProgrammaticAsync(pendingUrl) : NavigateAsync(pendingUrl);
     }
     
     /// <summary>

@@ -142,12 +142,19 @@ public class TabManager
     /// <summary>
     /// Create a new tab and make it active.
     /// </summary>
-    public BrowserTab CreateTab(string url = null)
+    public BrowserTab CreateTab(string url = null, bool isProgrammatic = false)
     {
         var tab = new BrowserTab();
         if (!string.IsNullOrEmpty(url))
         {
-            tab.StartInitialNavigation(url);
+            if (isProgrammatic)
+            {
+                tab.StartInitialProgrammaticNavigation(url);
+            }
+            else
+            {
+                tab.StartInitialNavigation(url);
+            }
         }
 
         _tabs.Add(tab);

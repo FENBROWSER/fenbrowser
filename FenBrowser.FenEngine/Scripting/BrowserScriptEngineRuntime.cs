@@ -4621,6 +4621,21 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     var name = args.Count > 1 ? ToDialogString(args[1]) : "";
                     var features = args.Count > 2 ? ToDialogString(args[2]) : "";
 
+                    if (BrowserSettings.Instance.BlockPopups && _transientUserActivationDepth == 0)
+                    {
+                        FenLogger.Warn("[open] Popup blocked because no transient user activation is active.", LogCategory.Security);
+                        return JsValue.Null;
+                    }
+
+                    if (!TryNormalizePopupUrl(url, out var normalizedUrl))
+                    {
+                        FenLogger.Warn("[open] Popup blocked because its URL scheme is not allowed.", LogCategory.Security);
+                        return JsValue.Null;
+                    }
+
+                    var severOpener = PopupFeatureEnabled(features, "noopener") ||
+                        PopupFeatureEnabled(features, "noreferrer");
+
                     var bridge = JsDialogBridge.OpenWindow;
                     if (bridge == null)
                     {
@@ -4628,10 +4643,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         return JsValue.Null;
                     }
 
-                    var handle = bridge(url, name, features);
+                    var handle = bridge(normalizedUrl, name, features);
                     if (handle == null) return JsValue.Null;
 
-                    return CreatePopupWindowHostObject(handle, name, url);
+                    if (severOpener)
+                    {
+                        return JsValue.Null;
+                    }
+
+                    return CreatePopupWindowHostObject(handle, name, normalizedUrl);
                 },
                 length: 3));
 
@@ -14664,26 +14684,89 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         JsValue eventValue,
         BrowserDomEventDispatchState dispatchState)
     {
-        if (!string.Equals(type, "click", StringComparison.OrdinalIgnoreCase) ||
-            !IsCheckboxInputElement(element) ||
-            element.HasAttribute("disabled"))
+        var grantsTransientActivation = string.Equals(type, "click", StringComparison.OrdinalIgnoreCase) &&
+            ReadJsProperty(eventValue, "isTrusted") is { Tag: JsValueTag.Boolean } trusted &&
+            trusted.AsBoolean();
+        if (grantsTransientActivation)
         {
-            return DispatchEventFull(element, type, eventValue, dispatchState);
+            _transientUserActivationDepth++;
         }
 
-        var previousChecked = ElementStateManager.Instance.IsChecked(element);
-        ElementStateManager.Instance.SetChecked(element, !previousChecked);
-
-        var defaultAllowed = DispatchEventFull(element, type, eventValue, dispatchState);
-        if (!defaultAllowed)
+        try
         {
-            ElementStateManager.Instance.SetChecked(element, previousChecked);
+            if (!string.Equals(type, "click", StringComparison.OrdinalIgnoreCase) ||
+                !IsCheckboxInputElement(element) ||
+                element.HasAttribute("disabled"))
+            {
+                return DispatchEventFull(element, type, eventValue, dispatchState);
+            }
+
+            var previousChecked = ElementStateManager.Instance.IsChecked(element);
+            ElementStateManager.Instance.SetChecked(element, !previousChecked);
+
+            var defaultAllowed = DispatchEventFull(element, type, eventValue, dispatchState);
+            if (!defaultAllowed)
+            {
+                ElementStateManager.Instance.SetChecked(element, previousChecked);
+                return false;
+            }
+
+            DispatchCheckboxStateEvent(element, "input");
+            DispatchCheckboxStateEvent(element, "change");
+            return true;
+        }
+        finally
+        {
+            if (grantsTransientActivation)
+            {
+                _transientUserActivationDepth--;
+            }
+        }
+    }
+
+    private int _transientUserActivationDepth;
+
+    private bool TryNormalizePopupUrl(string rawUrl, out string normalizedUrl)
+    {
+        if (string.IsNullOrWhiteSpace(rawUrl) ||
+            string.Equals(rawUrl, "undefined", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(rawUrl, "null", StringComparison.OrdinalIgnoreCase))
+        {
+            normalizedUrl = "about:blank";
+            return true;
+        }
+
+        if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri) &&
+            (_currentBaseUri == null || !Uri.TryCreate(_currentBaseUri, rawUrl, out uri)))
+        {
+            normalizedUrl = null;
             return false;
         }
 
-        DispatchCheckboxStateEvent(element, "input");
-        DispatchCheckboxStateEvent(element, "change");
-        return true;
+        var allowed = string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(uri.AbsoluteUri, "about:blank", StringComparison.OrdinalIgnoreCase);
+        normalizedUrl = allowed ? uri.AbsoluteUri : null;
+        return allowed;
+    }
+
+    private static bool PopupFeatureEnabled(string features, string featureName)
+    {
+        foreach (var rawFeature in (features ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = rawFeature.Trim().Split('=', 2, StringSplitOptions.TrimEntries);
+            if (!string.Equals(pair[0], featureName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return pair.Length == 1 || string.IsNullOrEmpty(pair[1]) ||
+                string.Equals(pair[1], "yes", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(pair[1], "true", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(pair[1], "1", StringComparison.Ordinal);
+        }
+
+        return false;
     }
 
     private void DispatchCheckboxStateEvent(Element element, string type)

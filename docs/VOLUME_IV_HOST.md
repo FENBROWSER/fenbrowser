@@ -297,6 +297,7 @@ The Omnibox implementation.
 
 - `Tabs/BrowserTab.cs`
   - Added explicit programmatic navigation method for automation pathways.
+  - Initial popup tabs preserve programmatic navigation intent even while waiting for their first viewport, so script-created windows cannot be reclassified as trusted user-input navigation.
 
 - `WebDriver/FenBrowserDriver.cs`
 - `WebDriver/HostBrowserDriver.cs`

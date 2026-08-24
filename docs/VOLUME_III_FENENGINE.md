@@ -7539,6 +7539,7 @@ Verification snapshot (2026-03-06):
   - Channel `addEventListener`/`removeEventListener` now accepts both function callbacks and `{ handleEvent(...) }` listener objects for `message`/`messageerror`.
   - `requestIdleCallback(...)` now enforces callable-callback validation and positive-timeout parsing instead of silently accepting invalid callback values.
   - `window.open(...)` now blocks unsafe `javascript:`/`data:` URLs and honors `noopener`/`noreferrer` null-return semantics while keeping current same-window fallback navigation behavior.
+  - The shipped FenJS `window.open(...)` path now also enforces `BrowserSettings.BlockPopups`: only a synchronous trusted-click dispatch grants transient activation, unsupported schemes are rejected before the host bridge, and `noopener`/`noreferrer` opens without returning an opener handle.
 - `FenBrowser.FenEngine/Compatibility/HostApiSurfaceCatalog.cs`
   - Updated `window.open`, `window.requestIdleCallback`, `window.MessageChannel`, and `window.BroadcastChannel` summaries to reflect the hardened runtime behavior and remaining gaps.
 
