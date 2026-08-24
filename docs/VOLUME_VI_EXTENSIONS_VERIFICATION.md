@@ -4418,3 +4418,13 @@ Addendum (same day, full-suite evidence):
 
 - The first full-suite run exposed a real isolation defect: the four event-emitting cookie tests passed focused but failed in-suite with empty captures because the process-global EngineLog pipeline had been reconfigured or disabled by tests outside any non-parallel collection. The fix follows the established `MissingApiTrackerTests` pattern: the fixture configures `EngineLog` explicitly (enabled, Trace minimum, ring buffer) in its constructor and disables it in `Dispose`, so its assertions depend only on the fixture's own state.
 - Full-suite Release runs at this tree: 292 failures before the fixture fix, then 108-112 after, with zero cookie-diagnostics failures. A clean-HEAD worktree baseline (no working-tree changes) produced 282 failures at the same commit, confirming the residual instability is pre-existing cross-collection global-state racing (EngineLog configuration, `BrowserSettings`, LogManager events), not a product regression. Recorded in `docs/KNOWN_GAPS.md`; per-fixture self-configuration is the required pattern for any new global-state-dependent test until collections are consolidated.
+
+## 6.193 WebDriver Multi-Session Context Isolation (2026-08-24)
+
+- Window-state synchronization mirrors all browser handles only for a single active session. With multiple sessions, each session retains only its dedicated top-level contexts and cannot adopt or switch to another session's handle.
+- Uninitialized raw multi-session contexts fail closed with `no such window`; the one-time current-context bootstrap remains available only to single-session embeddings.
+- A requested `webSocketUrl: true` now fails with `invalid argument` because FenBrowser does not yet own a BiDi endpoint. This supersedes the provisional URL echo documented in section 6.184.
+
+Verification:
+
+- `WebDriverContractTests`: pass (`52/52`, zero failed/skipped), including foreign-handle rejection, cookie isolation, closed-window lifecycle, and fail-closed BiDi capability handling.

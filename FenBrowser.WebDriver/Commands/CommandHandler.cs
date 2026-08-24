@@ -163,6 +163,8 @@ namespace FenBrowser.WebDriver.Commands
         
         // Browser integration - set when browser is connected
         public IBrowserDriver Browser { get; set; }
+
+        internal int ActiveSessionCount => _sessionManager.ActiveSessionCount;
         
         public CommandHandler(SessionManager sessionManager)
         {
@@ -997,18 +999,46 @@ namespace FenBrowser.WebDriver.Commands
             }
 
             session.WindowHandles.RemoveAll(handle => !browserHandles.Contains(handle));
-            foreach (var handle in browserHandles)
+
+            // Mirror the same single-session rule as WindowCommands.SynchronizeWindowStateAsync:
+            // with multiple active sessions each one owns only its dedicated context, so
+            // merging foreign handles here would let SwitchToWindow accept them.
+            if (_sessionManager.ActiveSessionCount <= 1)
             {
-                if (!session.WindowHandles.Contains(handle))
+                foreach (var handle in browserHandles)
                 {
-                    session.WindowHandles.Add(handle);
+                    if (!session.WindowHandles.Contains(handle))
+                    {
+                        session.WindowHandles.Add(handle);
+                    }
                 }
             }
 
             if (!browserHandles.Contains(session.CurrentWindowHandle))
             {
-                // Keep session-selected handle untouched so command preconditions surface
-                // a deterministic `no such window` for closed/invalid contexts.
+                if (session.WindowStateInitialized || _sessionManager.ActiveSessionCount > 1)
+                {
+                    // Keep session-selected handle untouched so command preconditions surface
+                    // a deterministic `no such window` for closed/invalid contexts.
+                    return;
+                }
+
+                // A session that was never initialized against this browser still carries
+                // its placeholder handle from construction. Adopt the browser's current
+                // context once, mirroring the single-session bootstrap in
+                // SynchronizeWindowStateAsync, instead of failing every command.
+                var bootstrapHandle = await Browser.GetWindowHandleAsync().ConfigureAwait(false);
+                if (!string.IsNullOrWhiteSpace(bootstrapHandle) && browserHandles.Contains(bootstrapHandle))
+                {
+                    if (!session.WindowHandles.Contains(bootstrapHandle))
+                    {
+                        session.WindowHandles.Add(bootstrapHandle);
+                    }
+
+                    session.CurrentWindowHandle = bootstrapHandle;
+                    session.WindowStateInitialized = true;
+                }
+
                 return;
             }
 

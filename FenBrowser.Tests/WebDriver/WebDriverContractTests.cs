@@ -158,17 +158,19 @@ namespace FenBrowser.Tests.WebDriver
         }
 
         [Fact]
-        public void NewSession_EchoesWebSocketUrlWhenRequested()
+        public void NewSession_FailsClosedWhenWebSocketUrlRequested()
         {
             var manager = new SessionManager();
             var commands = new SessionCommands(manager);
             using var body = JsonDocument.Parse("""{"capabilities":{"alwaysMatch":{"webSocketUrl":true}}}""");
 
-            var response = commands.NewSession(body.RootElement.Clone());
-            var value = Assert.IsType<NewSessionResponse>(response.Value);
+            // The remote end must not echo a BiDi endpoint it cannot own.
+            var ex = Assert.Throws<WebDriverException>(() => commands.NewSession(body.RootElement.Clone()));
 
-            Assert.IsType<string>(value.Capabilities.WebSocketUrl);
-            Assert.Contains(value.SessionId, (string)value.Capabilities.WebSocketUrl);
+            Assert.Equal(ErrorCodes.InvalidArgument, ex.ErrorCode);
+            var errorData = Assert.IsType<SecurityFailureData>(ex.ErrorData);
+            Assert.Equal(SecurityBlockReasons.CapabilityPolicyViolation, errorData.Reason);
+            Assert.Equal(0, manager.ActiveSessionCount);
         }
 
         [Fact]
@@ -436,6 +438,11 @@ namespace FenBrowser.Tests.WebDriver
             var sessionA = manager.CreateSession(new Capabilities());
             var sessionB = manager.CreateSession(new Capabilities());
             var foreignElementId = sessionA.RegisterElement(new StubElement());
+            // Give the driving session an initialized context so the cross-session
+            // element-reference rejection is exercised, not masked by a placeholder
+            // window handle precondition.
+            sessionB.WindowHandles.Add("window-1");
+            sessionB.CurrentWindowHandle = "window-1";
             var handler = new CommandHandler(manager)
             {
                 Browser = new ScriptStubBrowserDriver()
@@ -567,10 +574,48 @@ namespace FenBrowser.Tests.WebDriver
         }
 
         [Fact]
+        public async Task ContextCommand_DoesNotAdoptForeignHandles_InMultiSessionMode()
+        {
+            // AlignBrowserToSessionWindowAsync runs before every top-level context
+            // command. In multi-session mode it must not mirror browser handles into
+            // the session, otherwise SwitchToWindow would accept another session's
+            // dedicated context as if it were owned by this session.
+            var manager = new SessionManager();
+            var browser = new IsolatedWindowBrowserDriver();
+            var handler = new CommandHandler(manager)
+            {
+                Browser = browser
+            };
+            var router = new CommandRouter();
+
+            var sessionAResponse = await handler.ExecuteAsync(router.Match("POST", "/session"), """{"capabilities":{"alwaysMatch":{}}}""");
+            var sessionBResponse = await handler.ExecuteAsync(router.Match("POST", "/session"), """{"capabilities":{"alwaysMatch":{}}}""");
+            var sessionAId = ((NewSessionResponse)sessionAResponse.Value).SessionId;
+            _ = ((NewSessionResponse)sessionBResponse.Value).SessionId;
+            var sessionA = manager.GetSession(sessionAId);
+
+            Assert.Equal(new[] { "window-1", "window-2" }, browser.SnapshotHandles);
+            Assert.Equal(new[] { "window-1" }, sessionA.WindowHandles.ToArray());
+
+            await handler.ExecuteAsync(router.Match("GET", $"/session/{sessionAId}/title"), null);
+
+            Assert.DoesNotContain("window-2", sessionA.WindowHandles);
+
+            var switchMatch = router.Match("POST", $"/session/{sessionAId}/window");
+            var switchBody = """{"handle":"window-2"}""";
+            var ex = await Assert.ThrowsAsync<WebDriverException>(() => handler.ExecuteAsync(switchMatch, switchBody));
+
+            Assert.Equal(ErrorCodes.NoSuchWindow, ex.ErrorCode);
+            var errorData = Assert.IsType<SecurityFailureData>(ex.ErrorData);
+            Assert.Equal(SecurityBlockReasons.SessionIsolationViolation, errorData.Reason);
+            Assert.Equal(sessionAId, errorData.SessionId);
+        }
+
+        [Fact]
         public async Task CookieCommands_BlockInMultiSessionModeWithoutIsolationSupport()
         {
             var manager = new SessionManager();
-            var browser = new ScriptStubBrowserDriver();
+            var browser = new IsolatedWindowBrowserDriver();
             var handler = new CommandHandler(manager)
             {
                 Browser = browser

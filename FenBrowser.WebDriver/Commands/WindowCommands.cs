@@ -48,16 +48,33 @@ namespace FenBrowser.WebDriver.Commands
 
             // Keep only handles owned by this session and still open in browser.
             session.WindowHandles.RemoveAll(handle => !browserHandles.Contains(handle));
-            foreach (var handle in browserHandles)
+
+            // Single-session workflows mirror host windows into the one session.
+            // Multi-session sessions must never observe or adopt another session's
+            // dedicated contexts; merging foreign handles here would let
+            // SwitchToWindow accept them as if they were owned by this session.
+            if (_handler.ActiveSessionCount <= 1)
             {
-                if (!session.WindowHandles.Contains(handle))
+                foreach (var handle in browserHandles)
                 {
-                    session.WindowHandles.Add(handle);
+                    if (!session.WindowHandles.Contains(handle))
+                    {
+                        session.WindowHandles.Add(handle);
+                    }
                 }
             }
 
             if (!session.WindowStateInitialized)
             {
+                if (_handler.ActiveSessionCount > 1)
+                {
+                    // Fail closed: a raw multi-session construction has no safe handle
+                    // to adopt, so context commands keep surfacing `no such window`
+                    // until the client explicitly selects an owned handle.
+                    session.WindowStateInitialized = true;
+                    return;
+                }
+
                 if (!string.IsNullOrWhiteSpace(previousCurrentHandle) && browserHandles.Contains(previousCurrentHandle))
                 {
                     if (!session.WindowHandles.Contains(previousCurrentHandle))
