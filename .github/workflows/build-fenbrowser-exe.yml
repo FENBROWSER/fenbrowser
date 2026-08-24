@@ -136,6 +136,58 @@ jobs:
           path: TestResults/
           if-no-files-found: ignore
 
+  js-conformance:
+    name: FenJS full suite (advisory)
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK from global.json
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
+
+      - name: Build FenBrowser.Js.Tests
+        run: dotnet build FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --nologo
+
+      - name: Run full FenBrowser.Js.Tests suite
+        # The published baseline currently has known failures, so surface the full
+        # result without blocking unrelated PRs. Promote this step to blocking only
+        # after the recorded failure set reaches zero.
+        continue-on-error: true
+        run: dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-build --logger "trx;LogFileName=js-tests.trx" --results-directory TestResults/js --verbosity minimal
+
+      - name: Validate js suite actually ran
+        shell: pwsh
+        run: |
+          $trx = Get-ChildItem TestResults/js -Filter '*.trx' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $trx) { Write-Error "No TRX produced by FenBrowser.Js.Tests run."; exit 1 }
+          [xml]$doc = Get-Content -LiteralPath $trx.FullName -Raw
+          $total = [int]$doc.TestRun.ResultSummary.Counters.total
+          $passed = [int]$doc.TestRun.ResultSummary.Counters.passed
+          $failed = [int]$doc.TestRun.ResultSummary.Counters.failed
+          if ($total -lt 2800) {
+            Write-Error ("FenBrowser.Js.Tests ran only {0} tests; expected at least 2,800." -f $total)
+            exit 1
+          }
+          Write-Host ("FenBrowser.Js.Tests executed {0}: passed={1}, failed={2}." -f $total, $passed, $failed)
+          if ($failed -gt 0) {
+            Write-Host ("::warning::FenBrowser.Js.Tests remains advisory with {0} known failures." -f $failed)
+          }
+
+      - name: Upload js test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: js-conformance-test-results
+          path: TestResults/js/
+          if-no-files-found: ignore
+
   fuzz-suite:
     name: Fuzz suite (blocking on PR)
     runs-on: windows-latest

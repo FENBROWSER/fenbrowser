@@ -286,6 +286,7 @@ Standard xUnit tests covering internal components:
     - `.github/workflows/build-fenbrowser-exe.yml` is now staged as a production pipeline:
       - `quality-gate` runs on PRs (targeting `main` / `rewrite-history`) and pushes to `main`.
       - `quality-gate` runs `scripts/validate_spec_headers.ps1`, checks for placeholder test assertions, runs `scripts/ci/run-code-cleanup-audit.ps1 -FailOnMedium`, builds `FenBrowser.WebIdlGen`, builds `FenBrowser.Tests`, and executes blocking P0 hardening test filters.
+      - `js-conformance` builds and runs the complete `FenBrowser.Js.Tests` assembly on every workflow invocation, validates that at least 2,800 tests executed from its TRX, and uploads the result. The test step is advisory while the clean `1d2fd337` baseline remains at `2,835/2,873` with 38 failures; it must become blocking when that failure set reaches zero.
       - `full-regression` (full `FenBrowser.Tests` suite) runs only on nightly schedule or explicit manual dispatch.
       - `full-regression` also runs `scripts/ci/verify-verification-guards.ps1` as advisory output (non-blocking) while legacy volume-reference debt is being paid down.
       - Windows EXE publish runs only for version tags (`refs/tags/v*`) or explicit manual dispatch input, not on every commit.
