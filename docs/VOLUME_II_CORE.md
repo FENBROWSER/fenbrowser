@@ -506,6 +506,11 @@ _End of Volume II_
 
 ### 6.10 Remaining Findings Tranche - CSP/Navigation Policy (2026-02-19)
 
+#### Nonce-authorized external scripts (2026-08-24)
+
+- `FetchContext` carries the authorizing element nonce into `ResourceManager` CSP checks.
+- Initial and redirected text/binary fetches retain that nonce, so `script-src 'strict-dynamic'` does not reject a script that the element nonce already authorized.
+
 - `Security/CspPolicy.cs`
   - Added origin-aware `IsAllowed(...)` overloads so `'self'` checks receive explicit origin context.
 

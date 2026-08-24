@@ -422,6 +422,52 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public async Task ScriptFetch_StrictDynamic_CarriesAuthorizingNonceToResourcePolicy()
+        {
+            var dispatchCount = 0;
+            using var client = new HttpClient(new StubHandler(_ =>
+            {
+                dispatchCount++;
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("window.authorized = true;")
+                };
+            }));
+            var manager = new ResourceManager(client, isPrivate: true);
+            var pageUri = new Uri("https://example.test/page");
+            var scriptUri = new Uri("https://cdn.example.test/app.js");
+            var policy = CspPolicy.Parse("script-src 'nonce-approved' 'strict-dynamic'");
+
+            var authorized = await manager.FetchTextDetailedAsync(new FetchContext
+            {
+                RequestUri = scriptUri,
+                InitiatorUri = pageUri,
+                FrameDocumentUri = pageUri,
+                TopLevelDocumentUri = pageUri,
+                Destination = "script",
+                Mode = "no-cors",
+                CredentialsMode = "include",
+                ContentSecurityPolicy = policy,
+                CspNonce = "approved"
+            });
+            var denied = await manager.FetchTextDetailedAsync(new FetchContext
+            {
+                RequestUri = scriptUri,
+                InitiatorUri = pageUri,
+                FrameDocumentUri = pageUri,
+                TopLevelDocumentUri = pageUri,
+                Destination = "script",
+                Mode = "no-cors",
+                CredentialsMode = "include",
+                ContentSecurityPolicy = policy
+            });
+
+            Assert.Equal(FetchStatus.Success, authorized.Status);
+            Assert.Equal(FetchFailureReasonCode.CspBlocked, denied.FailureReason);
+            Assert.Equal(1, dispatchCount);
+        }
+
+        [Fact]
         public async Task GenericFetchMixedContent_WithoutCsp_IsBlockedBeforeNetworkDispatch()
         {
             var dispatchCount = 0;

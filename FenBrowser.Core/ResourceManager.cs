@@ -1079,7 +1079,7 @@ public Uri LastTextResponseUri { get; private set; }
             if (context.ContentSecurityPolicy != null)
             {
                 var directive = ResolveCspFetchDirective(secFetchDest);
-                if (!context.ContentSecurityPolicy.IsAllowed(directive, url, ExtractOrigin(referer)))
+                if (!context.ContentSecurityPolicy.IsAllowed(directive, url, context.CspNonce, ExtractOrigin(referer)))
                 {
                     return new FetchResult
                     {
@@ -1255,7 +1255,7 @@ public Uri LastTextResponseUri { get; private set; }
                         current = redirectMixedContentDecision.UpgradedUrl;
                     }
                     if (context.ContentSecurityPolicy != null &&
-                        !context.ContentSecurityPolicy.IsAllowed(ResolveCspFetchDirective(secFetchDest), current, ExtractOrigin(referer)))
+                        !context.ContentSecurityPolicy.IsAllowed(ResolveCspFetchDirective(secFetchDest), current, context.CspNonce, ExtractOrigin(referer)))
                     {
                         resp?.Dispose();
                         return new FetchResult
@@ -2065,7 +2065,7 @@ public Uri LastTextResponseUri { get; private set; }
                 else if (secFetchDest == "audio" || secFetchDest == "video") directive = "media-src";
                 else if (secFetchDest == "object") directive = "object-src";
                 
-                if (!context.ContentSecurityPolicy.IsAllowed(directive, url, ExtractOrigin(referer)))
+                if (!context.ContentSecurityPolicy.IsAllowed(directive, url, context.CspNonce, ExtractOrigin(referer)))
                 {
                     return BinaryFailure(BinaryFetchFailureReason.CspBlocked, url, $"Blocked by {directive}", cspAllowed: false);
                 }
@@ -2092,7 +2092,7 @@ public Uri LastTextResponseUri { get; private set; }
                     }
                     var redirectDirective = ResolveCspFetchDirective(secFetchDest);
                     if (context.ContentSecurityPolicy != null &&
-                        !context.ContentSecurityPolicy.IsAllowed(redirectDirective, current, ExtractOrigin(referer)))
+                        !context.ContentSecurityPolicy.IsAllowed(redirectDirective, current, context.CspNonce, ExtractOrigin(referer)))
                     {
                         resp?.Dispose();
                         return BinaryFailure(BinaryFetchFailureReason.CspBlocked, current, $"Redirect blocked by {redirectDirective}", cspAllowed: false);

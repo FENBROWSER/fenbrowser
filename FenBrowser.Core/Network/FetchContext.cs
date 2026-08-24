@@ -20,6 +20,14 @@ public sealed record FetchContext
     public string CredentialsMode { get; init; } = "same-origin";
     public ReferrerPolicyDirective? ReferrerPolicy { get; init; }
     public CspPolicy ContentSecurityPolicy { get; init; }
+
+    /// <summary>
+    /// Nonce of the authorizing HTML element (e.g. &lt;script nonce&gt;) that triggered
+    /// this fetch. CSP Level 3 §6.2.2.9: under 'strict-dynamic' host-source fallbacks
+    /// are ignored, so a nonce-authorized element must carry its nonce into the
+    /// resource layer or a correctly allowed load gets rejected twice.
+    /// </summary>
+    public string CspNonce { get; init; }
     public bool IsTopLevelNavigation { get; init; }
     public bool IsUserInitiated { get; init; }
     public string Method { get; init; } = "GET";

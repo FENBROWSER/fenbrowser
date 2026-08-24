@@ -5503,6 +5503,28 @@ pre {{
                         }).ConfigureAwait(false);
                     return scriptResult?.Status == FetchStatus.Success ? scriptResult.Content : null;
                 },
+                ExternalScriptFetcherWithNonce = async (resourceUri, _, elementNonce) =>
+                {
+                    var mappedUri = MapRuntimeUri(resourceUri);
+                    var scriptResult = await _resources.FetchTextDetailedAsync(
+                        new FetchContext
+                        {
+                            RequestUri = mappedUri,
+                            InitiatorUri = frameUri,
+                            FrameDocumentUri = frameUri,
+                            TopLevelDocumentUri = topLevelUri,
+                            Destination = "script",
+                            Mode = "no-cors",
+                            CredentialsMode = "include",
+                            ReferrerPolicy = referrerPolicy,
+                            ContentSecurityPolicy = framePolicy,
+                            CspNonce = string.IsNullOrWhiteSpace(elementNonce) ? null : elementNonce,
+                            IsTopLevelNavigation = false,
+                            IsUserInitiated = false,
+                            Method = "GET"
+                        }).ConfigureAwait(false);
+                    return scriptResult?.Status == FetchStatus.Success ? scriptResult.Content : null;
+                },
                 FetchHandler = request =>
                 {
                     request.RequestUri = MapRuntimeUri(request.RequestUri);

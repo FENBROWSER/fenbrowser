@@ -42,6 +42,13 @@ public sealed record BrowserFrameExecutionOptions
     public Func<Uri, string, bool> SubresourceAllowed { get; init; }
     public Func<string, bool> NonceAllowed { get; init; }
     public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; init; }
+
+    /// <summary>
+    /// Nonce-aware external script fetcher. CSP 'strict-dynamic' policies reject
+    /// URL-only re-validation at the resource layer, so the authorizing element's
+    /// nonce must travel with the fetch (CSP3 §6.2.2.9).
+    /// </summary>
+    public Func<Uri, Uri, string, Task<string>> ExternalScriptFetcherWithNonce { get; init; }
     public Func<HttpRequestMessage, Task<HttpResponseMessage>> FetchHandler { get; init; }
 }
 
@@ -298,6 +305,12 @@ public interface IBrowserScriptEngine
     Action RequestRender { get; set; }
     Action FlushPendingLayout { get; set; }
     Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
+
+    /// <summary>
+    /// Optional nonce-aware variant preferred over <see cref="ExternalScriptFetcher"/>
+    /// when set; the third argument is the authorizing element's CSP nonce (or null).
+    /// </summary>
+    Func<Uri, Uri, string, Task<string>> ExternalScriptFetcherWithNonce { get; set; }
     Func<Element, Uri, Task> FrameElementLoader { get; set; }
     Func<Element, object> LayoutBoxResolver { get; set; }
     Func<Element, (double X, double Y)> FrameScrollReader { get; set; }
@@ -733,6 +746,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     public Action RequestRender { get; set; }
     public Action FlushPendingLayout { get; set; }
     public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
+    public Func<Uri, Uri, string, Task<string>> ExternalScriptFetcherWithNonce { get; set; }
     public Func<Element, Uri, Task> FrameElementLoader { get; set; }
     public Func<Element, object> LayoutBoxResolver { get; set; }
     public Func<Element, (double X, double Y)> FrameScrollReader { get; set; }
@@ -1345,6 +1359,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             frameRealm.SubresourceAllowed = options.SubresourceAllowed ?? frameRealm.SubresourceAllowed;
             frameRealm.NonceAllowed = options.NonceAllowed ?? frameRealm.NonceAllowed;
             frameRealm.ExternalScriptFetcher = options.ExternalScriptFetcher ?? frameRealm.ExternalScriptFetcher;
+            frameRealm.ExternalScriptFetcherWithNonce = options.ExternalScriptFetcherWithNonce ?? frameRealm.ExternalScriptFetcherWithNonce;
             frameRealm.FetchHandler = options.FetchHandler ?? frameRealm.FetchHandler;
         }
 
@@ -1385,6 +1400,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         };
         realm.FlushPendingLayout = FlushPendingLayout;
         realm.ExternalScriptFetcher = ExternalScriptFetcher;
+        realm.ExternalScriptFetcherWithNonce = ExternalScriptFetcherWithNonce;
         realm.FrameElementLoader = FrameElementLoader;
         realm.LayoutBoxResolver = LayoutBoxResolver;
         realm.FrameScrollReader = FrameScrollReader;
@@ -2507,11 +2523,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             FenBrowser.Core.Logging.LogCategory.JavaScript);
                     }
 
+                    // CSP Level 3 §6.2.2.9: under 'strict-dynamic' the resource layer's
+                    // URL-only re-validation cannot see this element, so carry the
+                    // authorizing nonce with the fetch context.
+                    var elementNonce = scriptElement.GetAttribute("nonce");
+
                     // Deduplicate: same URL → same fetch task
-                    var fetchKey = scriptUri.AbsoluteUri;
+                    var fetchKey = $"{scriptUri.AbsoluteUri}\n{elementNonce ?? string.Empty}";
                     if (!fetchTasks.TryGetValue(fetchKey, out var fetchTask))
                     {
-                        fetchTask = FetchExternalPageScriptAsync(scriptUri, baseUri);
+                        fetchTask = FetchExternalPageScriptAsync(scriptUri, baseUri, string.IsNullOrEmpty(elementNonce) ? null : elementNonce);
                         fetchTasks[fetchKey] = fetchTask;
                         UpdateScriptLoadingSnapshot(snapshot => snapshot.FetchStarted++);
                         UpdateScriptLoadingRecord(scriptRecord, record =>
@@ -3359,7 +3380,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         });
     }
 
-    private async Task<string> FetchExternalPageScriptAsync(Uri scriptUri, Uri referer)
+    private async Task<string> FetchExternalPageScriptAsync(Uri scriptUri, Uri referer, string cspNonce = null)
     {
         if (scriptUri == null)
         {
@@ -3367,6 +3388,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
 
         string code = null;
+
+        if (ExternalScriptFetcherWithNonce != null)
+        {
+            code = await ExternalScriptFetcherWithNonce(scriptUri, referer, cspNonce).ConfigureAwait(false);
+            FenBrowser.Core.EngineLogCompat.Info($"[FenJsBridge] ExternalScriptFetcherWithNonce result for '{scriptUri}': len={code?.Length ?? -1}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+            return code;
+        }
 
         if (ExternalScriptFetcher != null)
         {
