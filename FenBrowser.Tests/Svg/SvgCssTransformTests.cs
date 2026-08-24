@@ -179,6 +179,17 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void TransformNone_DoesNotResolveInertUnsupportedBox()
+        {
+            var bmp = RenderRaw(
+                "<svg width='40' height='20'><style>rect { fill:red; transform:none; transform-box:stroke-box; }</style>" +
+                "<rect width='10' height='10'/></svg>",
+                out bool fb, out _);
+            Assert.False(fb);
+            Assert.Equal(SKColors.Red, bmp.GetPixel(5, 5));
+        }
+
+        [Fact]
         public void EmLengthInTranslate_ResolvesAgainstInheritedFontSize()
         {
             // Default font size is 16px: 1em shifts the rect by 16.
@@ -189,6 +200,31 @@ namespace FenBrowser.Tests.Svg
             Assert.False(fb);
             Assert.Equal(SKColors.Red, bmp.GetPixel(20, 5));
             Assert.True(bmp.GetPixel(5, 5).Alpha == 0);
+        }
+
+        [Fact]
+        public void CssOriginAndFillBox_ApplyToAttributeTransform()
+        {
+            var bmp = RenderRaw(
+                "<svg width='100' height='40'><style>#r { fill:red; transform-box:fill-box;" +
+                "transform-origin:right center; }</style>" +
+                "<rect id='r' x='20' y='10' width='20' height='10' transform='scale(2)'/></svg>",
+                out bool fb, out _);
+            Assert.False(fb);
+            Assert.Equal(SKColors.Red, bmp.GetPixel(10, 10));
+            Assert.True(bmp.GetPixel(50, 15).Alpha == 0);
+        }
+
+        [Fact]
+        public void PresentationOriginUserUnits_ApplyToCssTransform()
+        {
+            var bmp = RenderRaw(
+                "<svg width='100' height='40'><style>#r { fill:red; transform:scale(2); }</style>" +
+                "<rect id='r' x='20' y='10' width='20' height='10' transform-origin='40 15'/></svg>",
+                out bool fb, out _);
+            Assert.False(fb);
+            Assert.Equal(SKColors.Red, bmp.GetPixel(10, 10));
+            Assert.True(bmp.GetPixel(50, 15).Alpha == 0);
         }
     }
 }
@@ -230,6 +266,60 @@ namespace FenBrowser.Tests.Svg
             Assert.Equal(-50f, m.TransX, 2f);
             Assert.Equal(-20f, m.TransY, 2f);
             Assert.Equal(2f, m.ScaleX);
+        }
+
+        [Fact]
+        public void MatrixLengthComponents_AreUnsupported()
+        {
+            var s = SvgCssTransform.TryResolve("matrix(1,0,0,1,50px,0)", null, null,
+                100, 50, 16, 16, null, out _, out _);
+            Assert.Equal(SvgCssTransformStatus.Unsupported, s);
+        }
+
+        [Fact]
+        public void HorizontalThenCenterOrigin_Parses()
+        {
+            var box = SKRect.Create(20, 10, 40, 20);
+            var s = SvgCssTransform.TryResolve("scale(2)", "left center", "fill-box",
+                100, 50, 16, 16, box, out _, out var origin);
+            Assert.Equal(SvgCssTransformStatus.Matrix, s);
+            Assert.Equal(new SKPoint(20, 20), origin);
+        }
+
+        [Fact]
+        public void CenterThenVerticalOrigin_Parses()
+        {
+            var box = SKRect.Create(20, 10, 40, 20);
+            var s = SvgCssTransform.TryResolve("scale(2)", "center top", "fill-box",
+                100, 50, 16, 16, box, out _, out var origin);
+            Assert.Equal(SvgCssTransformStatus.Matrix, s);
+            Assert.Equal(new SKPoint(40, 10), origin);
+        }
+
+        [Fact]
+        public void OverflowingAngle_IsUnsupportedBeforeNativeConcat()
+        {
+            var s = SvgCssTransform.TryResolve("rotate(1e308deg)", null, null,
+                100, 50, 16, 16, null, out var matrix, out _);
+            Assert.Equal(SvgCssTransformStatus.Unsupported, s);
+            Assert.True(matrix.IsIdentity);
+        }
+
+        [Fact]
+        public void OverflowingNumber_IsUnsupportedBeforeNativeConcat()
+        {
+            var s = SvgCssTransform.TryResolve("scale(1e308)", null, null,
+                100, 50, 16, 16, null, out var matrix, out _);
+            Assert.Equal(SvgCssTransformStatus.Unsupported, s);
+            Assert.True(matrix.IsIdentity);
+        }
+
+        [Fact]
+        public void PercentageTransformOriginDepth_IsUnsupported()
+        {
+            var s = SvgCssTransform.TryResolve("scale(2)", "left top 0%", null,
+                100, 50, 16, 16, null, out _, out _);
+            Assert.Equal(SvgCssTransformStatus.Unsupported, s);
         }
     }
 }

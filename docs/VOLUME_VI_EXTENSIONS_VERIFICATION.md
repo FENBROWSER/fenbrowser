@@ -4643,5 +4643,14 @@ Verification:
   150 direct legacy differentials pass with the one existing chromatic-gradient
   legacy reference defect still visible.
 - The 10,000-render native-ownership stress reports zero failures, 769 intended
-  compatibility cases, and 10,063,872 retained private bytes against the fixed
+  compatibility cases, and 10,039,296 retained private bytes against the fixed
   67,108,864-byte ceiling.
+- A framework-dependent portable Release publish executes the same gate under
+  Ubuntu 24.04 WSL with the explicit DejaVu Sans benchmark font: zero failures,
+  769 intended compatibility cases, and 15,237,120 retained private bytes below
+  the same ceiling.
+- Follow-up mixed-cascade and malformed-numeric coverage corrects independent
+  `transform`/`transform-origin`/`transform-box` provenance, valid keyword
+  ordering, CSS `matrix()` number grammar, and non-finite angle rejection. The
+  complete Release SVG slice passes 303/303; the static WPT and captured-site
+  results above remain unchanged after these corrections.

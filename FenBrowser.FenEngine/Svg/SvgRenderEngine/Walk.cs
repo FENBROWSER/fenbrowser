@@ -447,7 +447,7 @@ namespace FenBrowser.FenEngine.Svg
                 ApplyCssTransform(el, el.GetPresentationProperty("transform"), canvas, viewport, inherited);
                 return;
             }
-            ApplyAttributeTransform(el, canvas, viewport);
+            ApplyAttributeTransform(el, canvas, viewport, inherited);
         }
 
         /// <summary>
@@ -458,7 +458,8 @@ namespace FenBrowser.FenEngine.Svg
         private void ApplyAttributeTransform(
             SvgElement el,
             SKCanvas canvas,
-            ViewportContext viewport)
+            ViewportContext viewport,
+            InheritedStyle inherited)
         {
             var t = el.GetAttribute("transform");
             if (string.IsNullOrWhiteSpace(t))
@@ -470,14 +471,31 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
 
-            var originText = el.GetAttribute("transform-origin");
-            if (!string.IsNullOrWhiteSpace(originText))
+            string originText = el.GetPresentationProperty("transform-origin");
+            string boxText = el.GetPresentationProperty("transform-box");
+            if (!string.IsNullOrWhiteSpace(originText) || !string.IsNullOrWhiteSpace(boxText))
             {
-                if (!SvgCssTransform.TryResolveAttributeOrigin(
-                        originText, viewport.Width, viewport.Height, out var origin))
+                if (!TryBuildTransformFillBox(el, viewport, boxText, out SKRect? fillBox))
+                {
+                    return;
+                }
+                bool originUsesAttributeSyntax =
+                    el.CascadedDeclarations == null ||
+                    !el.CascadedDeclarations.ContainsKey("transform-origin");
+                var originStatus = SvgCssTransform.TryResolveReferenceOrigin(
+                    originText,
+                    boxText,
+                    viewport.Width,
+                    viewport.Height,
+                    inherited.FontSize,
+                    inherited.RootFontSize,
+                    fillBox,
+                    originUsesAttributeSyntax,
+                    out var origin);
+                if (originStatus == SvgCssTransformStatus.Unsupported)
                 {
                     _report.RequireFallback(
-                        $"SVG transform-origin '{originText.Trim()}' requires compatibility fallback");
+                        $"SVG transform origin/box requires compatibility fallback");
                     return;
                 }
                 if (origin.X != 0f || origin.Y != 0f)
@@ -506,53 +524,24 @@ namespace FenBrowser.FenEngine.Svg
             ViewportContext viewport,
             InheritedStyle inherited)
         {
-            string boxRaw = el.GetPresentationProperty("transform-box");
-            SKRect? fillBox = null;
-            bool isFillBox = false;
-            if (!string.IsNullOrWhiteSpace(boxRaw))
+            // transform-origin and transform-box have no visual effect while the
+            // transform computes to none. Do not force compatibility merely
+            // because an otherwise unsupported reference box is inert.
+            if (string.IsNullOrWhiteSpace(value) ||
+                value.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
             {
-                string box = boxRaw.Trim();
-                if (box.Equals("fill-box", StringComparison.OrdinalIgnoreCase))
-                {
-                    isFillBox = true;
-                }
-                else if (!box.Equals("view-box", StringComparison.OrdinalIgnoreCase))
-                {
-                    // stroke-box needs stroke geometry; content-box/border-box
-                    // need a CSS layout box the isolated renderer does not model.
-                    _report.RequireFallback(
-                        $"SVG CSS transform-box '{box}' requires compatibility fallback");
-                    return;
-                }
+                return;
+            }
+            string boxRaw = el.GetPresentationProperty("transform-box");
+            if (!TryBuildTransformFillBox(el, viewport, boxRaw, out SKRect? fillBox))
+            {
+                return;
             }
 
             string originRaw = el.GetPresentationProperty("transform-origin");
-            if (isFillBox)
-            {
-                switch (el.Name)
-                {
-                    case "path":
-                    case "rect":
-                    case "circle":
-                    case "ellipse":
-                    case "line":
-                    case "polyline":
-                    case "polygon":
-                        using (var geometry = BuildGeometry(el, viewport))
-                        {
-                            if (geometry == null)
-                            {
-                                return; // Invalid geometry: nothing would draw anyway.
-                            }
-                            fillBox = geometry.Bounds;
-                        }
-                        break;
-                    default:
-                        _report.RequireFallback(
-                            $"SVG CSS transform-box fill-box on '{el.Name}' requires compatibility fallback");
-                        return;
-                }
-            }
+            bool originUsesAttributeSyntax =
+                el.CascadedDeclarations == null ||
+                !el.CascadedDeclarations.ContainsKey("transform-origin");
 
             var status = SvgCssTransform.TryResolve(
                 value,
@@ -563,6 +552,7 @@ namespace FenBrowser.FenEngine.Svg
                 inherited.FontSize,
                 inherited.RootFontSize,
                 fillBox,
+                originUsesAttributeSyntax,
                 out var matrix,
                 out var _);
             switch (status)
@@ -581,6 +571,47 @@ namespace FenBrowser.FenEngine.Svg
             if (!matrix.IsIdentity)
             {
                 canvas.Concat(matrix);
+            }
+        }
+
+        private bool TryBuildTransformFillBox(
+            SvgElement element,
+            ViewportContext viewport,
+            string boxRaw,
+            out SKRect? fillBox)
+        {
+            fillBox = null;
+            if (string.IsNullOrWhiteSpace(boxRaw) ||
+                boxRaw.Trim().Equals("view-box", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            string box = boxRaw.Trim();
+            if (!box.Equals("fill-box", StringComparison.OrdinalIgnoreCase))
+            {
+                _report.RequireFallback(
+                    $"SVG CSS transform-box '{box}' requires compatibility fallback");
+                return false;
+            }
+            switch (element.Name)
+            {
+                case "path":
+                case "rect":
+                case "circle":
+                case "ellipse":
+                case "line":
+                case "polyline":
+                case "polygon":
+                    using (var geometry = BuildGeometry(element, viewport))
+                    {
+                        if (geometry == null) return false;
+                        fillBox = geometry.Bounds;
+                    }
+                    return true;
+                default:
+                    _report.RequireFallback(
+                        $"SVG CSS transform-box fill-box on '{element.Name}' requires compatibility fallback");
+                    return false;
             }
         }
 

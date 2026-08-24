@@ -46,7 +46,6 @@ namespace FenBrowser.FenEngine.Svg
         private const int MaxValueChars = 4096;
         private const int MaxFunctions = 32;
         private const int MaxArgsPerFunction = 8;
-        private const float DefaultFontSize = 16f;
 
         /// <summary>
         /// Resolves a CSS transform declaration chain against explicit context.
@@ -66,35 +65,35 @@ namespace FenBrowser.FenEngine.Svg
             out SKMatrix matrix,
             out SKPoint origin)
         {
-            matrix = SKMatrix.Identity;
-            origin = default;
-
-            if (!TryResolveBox(boxValue, fillBox, out bool isFillBox))
-            {
-                return SvgCssTransformStatus.Unsupported;
-            }
-            if (isFillBox)
-            {
-                // Reference box origin: percentages and lengths offset from the
-                // bounding box top-left instead of the user-space origin.
-                referenceWidth = fillBox.Value.Width;
-                referenceHeight = fillBox.Value.Height;
-            }
-
-            var originStatus = TryResolveOrigin(
+            return TryResolve(
+                transformValue,
                 originValue,
-                isFillBox ? fillBox.Value.Left : 0f,
-                isFillBox ? fillBox.Value.Top : 0f,
+                boxValue,
                 referenceWidth,
                 referenceHeight,
                 fontSize,
                 rootFontSize,
-                allowUserUnits: false,
+                fillBox,
+                allowOriginUserUnits: false,
+                out matrix,
                 out origin);
-            if (originStatus == SvgCssTransformStatus.Unsupported)
-            {
-                return SvgCssTransformStatus.Unsupported;
-            }
+        }
+
+        public static SvgCssTransformStatus TryResolve(
+            string transformValue,
+            string originValue,
+            string boxValue,
+            float referenceWidth,
+            float referenceHeight,
+            float fontSize,
+            float rootFontSize,
+            SKRect? fillBox,
+            bool allowOriginUserUnits,
+            out SKMatrix matrix,
+            out SKPoint origin)
+        {
+            matrix = SKMatrix.Identity;
+            origin = default;
 
             if (string.IsNullOrWhiteSpace(transformValue))
             {
@@ -108,6 +107,21 @@ namespace FenBrowser.FenEngine.Svg
             if (trimmed.Equals("none", StringComparison.OrdinalIgnoreCase))
             {
                 return SvgCssTransformStatus.Identity;
+            }
+
+            var originStatus = TryResolveReferenceOrigin(
+                originValue,
+                boxValue,
+                referenceWidth,
+                referenceHeight,
+                fontSize,
+                rootFontSize,
+                fillBox,
+                allowOriginUserUnits,
+                out origin);
+            if (originStatus == SvgCssTransformStatus.Unsupported)
+            {
+                return SvgCssTransformStatus.Unsupported;
             }
 
             matrix = SKMatrix.Identity;
@@ -185,31 +199,40 @@ namespace FenBrowser.FenEngine.Svg
             }
         }
 
-        /// <summary>
-        /// Resolves the SVG <c>transform-origin</c> presentation attribute that
-        /// accompanies a <c>transform</c> attribute list. Attribute syntax treats
-        /// bare numbers as user units (unlike the CSS property, which requires
-        /// explicit units); percentages resolve against the nearest viewport.
-        /// </summary>
-        public static bool TryResolveAttributeOrigin(
+        public static SvgCssTransformStatus TryResolveReferenceOrigin(
             string originValue,
+            string boxValue,
             float referenceWidth,
             float referenceHeight,
+            float fontSize,
+            float rootFontSize,
+            SKRect? fillBox,
+            bool allowUserUnits,
             out SKPoint origin)
         {
-            return TryResolveOrigin(
+            origin = default;
+            if (!TryResolveBox(boxValue, fillBox, out bool isFillBox))
+            {
+                return SvgCssTransformStatus.Unsupported;
+            }
+            if (isFillBox)
+            {
+                referenceWidth = fillBox.Value.Width;
+                referenceHeight = fillBox.Value.Height;
+            }
+            return TryResolveOriginCore(
                 originValue,
-                0f,
-                0f,
+                isFillBox ? fillBox.Value.Left : 0f,
+                isFillBox ? fillBox.Value.Top : 0f,
                 referenceWidth,
                 referenceHeight,
-                DefaultFontSize,
-                DefaultFontSize,
-                allowUserUnits: true,
-                out origin) != SvgCssTransformStatus.Unsupported;
+                fontSize,
+                rootFontSize,
+                allowUserUnits,
+                out origin);
         }
 
-        private static SvgCssTransformStatus TryResolveOrigin(
+        private static SvgCssTransformStatus TryResolveOriginCore(
             string originValue,
             float boxLeft,
             float boxTop,
@@ -236,59 +259,29 @@ namespace FenBrowser.FenEngine.Svg
                 return SvgCssTransformStatus.Unsupported;
             }
 
-            // Role assignment per css-transforms: horizontal keywords and bare
-            // lengths bind to x, vertical keywords to y; "top left" normalizes
-            // to "left top". A missing second component defaults y to center.
-            float x, y;
-            int consumed;
-            if (IsVerticalKeyword(parts[0]))
+            int positionComponents = parts.Length == 3 ? 2 : parts.Length;
+            if (!TryResolveOriginPosition(
+                    parts,
+                    positionComponents,
+                    boxLeft,
+                    boxTop,
+                    referenceWidth,
+                    referenceHeight,
+                    fontSize,
+                    rootFontSize,
+                    allowUserUnits,
+                    out float x,
+                    out float y))
             {
-                if (!TryOriginAxis(parts[0], boxTop, referenceHeight, fontSize,
-                        rootFontSize, allowUserUnits, out y))
-                    return SvgCssTransformStatus.Unsupported;
-                if (parts.Length > 1)
-                {
-                    if (IsVerticalKeyword(parts[1]) ||
-                        !TryOriginAxis(parts[1], boxLeft, referenceWidth, fontSize,
-                            rootFontSize, allowUserUnits, out x))
-                        return SvgCssTransformStatus.Unsupported;
-                    consumed = 2;
-                }
-                else
-                {
-                    if (!TryLength("50%", referenceWidth, fontSize, rootFontSize, out float xc))
-                        return SvgCssTransformStatus.Unsupported;
-                    x = boxLeft + xc;
-                    consumed = 1;
-                }
-            }
-            else
-            {
-                if (!TryOriginAxis(parts[0], boxLeft, referenceWidth, fontSize,
-                        rootFontSize, allowUserUnits, out x))
-                    return SvgCssTransformStatus.Unsupported;
-                if (parts.Length > 1 && !IsHorizontalKeyword(parts[1]))
-                {
-                    if (!TryOriginAxis(parts[1], boxTop, referenceHeight, fontSize,
-                            rootFontSize, allowUserUnits, out y))
-                        return SvgCssTransformStatus.Unsupported;
-                    consumed = 2;
-                }
-                else
-                {
-                    if (!TryLength("50%", referenceHeight, fontSize, rootFontSize, out float yc))
-                        return SvgCssTransformStatus.Unsupported;
-                    y = boxTop + yc;
-                    consumed = 1;
-                }
+                return SvgCssTransformStatus.Unsupported;
             }
 
-            if (parts.Length > consumed)
+            if (parts.Length == 3)
             {
-                // Optional z component must resolve to zero; any real depth is
-                // unsupported because there is no 3-D rendering here.
-                if (parts.Length != consumed + 1 ||
-                    !TryLength(parts[consumed], 1f, fontSize, rootFontSize, out float z) ||
+                // The optional z component is <length>, not
+                // <length-percentage>; even zero percent is the wrong CSS type.
+                if (parts[2].IndexOf('%') >= 0 ||
+                    !TryLength(parts[2], 1f, fontSize, rootFontSize, out float z) ||
                     z != 0f)
                 {
                     return SvgCssTransformStatus.Unsupported;
@@ -299,14 +292,85 @@ namespace FenBrowser.FenEngine.Svg
             return SvgCssTransformStatus.Matrix;
         }
 
-        private static bool IsHorizontalKeyword(string part) =>
+        private static bool TryResolveOriginPosition(
+            string[] parts,
+            int count,
+            float boxLeft,
+            float boxTop,
+            float referenceWidth,
+            float referenceHeight,
+            float fontSize,
+            float rootFontSize,
+            bool allowUserUnits,
+            out float x,
+            out float y)
+        {
+            x = boxLeft;
+            y = boxTop;
+            if (count == 1)
+            {
+                string first = parts[0];
+                if (IsVerticalOnlyKeyword(first))
+                {
+                    return TryCenterAxis(boxLeft, referenceWidth, out x) &&
+                           TryOriginAxis(first, boxTop, referenceHeight, fontSize,
+                               rootFontSize, allowUserUnits, out y);
+                }
+                return TryOriginAxis(first, boxLeft, referenceWidth, fontSize,
+                           rootFontSize, allowUserUnits, out x) &&
+                       TryCenterAxis(boxTop, referenceHeight, out y);
+            }
+
+            string a = parts[0];
+            string b = parts[1];
+            if (IsVerticalOnlyKeyword(a))
+            {
+                if (IsVerticalOnlyKeyword(b)) return false;
+                return TryOriginAxis(a, boxTop, referenceHeight, fontSize,
+                           rootFontSize, allowUserUnits, out y) &&
+                       TryOriginAxis(b, boxLeft, referenceWidth, fontSize,
+                           rootFontSize, allowUserUnits, out x);
+            }
+            if (IsHorizontalOnlyKeyword(a))
+            {
+                if (IsHorizontalOnlyKeyword(b)) return false;
+                return TryOriginAxis(a, boxLeft, referenceWidth, fontSize,
+                           rootFontSize, allowUserUnits, out x) &&
+                       TryOriginAxis(b, boxTop, referenceHeight, fontSize,
+                           rootFontSize, allowUserUnits, out y);
+            }
+            if (a.Equals("center", StringComparison.OrdinalIgnoreCase))
+            {
+                if (IsHorizontalOnlyKeyword(b))
+                {
+                    return TryOriginAxis(b, boxLeft, referenceWidth, fontSize,
+                               rootFontSize, allowUserUnits, out x) &&
+                           TryCenterAxis(boxTop, referenceHeight, out y);
+                }
+                return TryCenterAxis(boxLeft, referenceWidth, out x) &&
+                       TryOriginAxis(b, boxTop, referenceHeight, fontSize,
+                           rootFontSize, allowUserUnits, out y);
+            }
+
+            if (IsHorizontalOnlyKeyword(b)) return false;
+            return TryOriginAxis(a, boxLeft, referenceWidth, fontSize,
+                       rootFontSize, allowUserUnits, out x) &&
+                   TryOriginAxis(b, boxTop, referenceHeight, fontSize,
+                       rootFontSize, allowUserUnits, out y);
+        }
+
+        private static bool TryCenterAxis(float offset, float size, out float value)
+        {
+            value = offset + 0.5f * size;
+            return IsFinite(value);
+        }
+
+        private static bool IsHorizontalOnlyKeyword(string part) =>
             part.Equals("left", StringComparison.OrdinalIgnoreCase) ||
-            part.Equals("center", StringComparison.OrdinalIgnoreCase) ||
             part.Equals("right", StringComparison.OrdinalIgnoreCase);
 
-        private static bool IsVerticalKeyword(string part) =>
+        private static bool IsVerticalOnlyKeyword(string part) =>
             part.Equals("top", StringComparison.OrdinalIgnoreCase) ||
-            part.Equals("center", StringComparison.OrdinalIgnoreCase) ||
             part.Equals("bottom", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
@@ -371,9 +435,10 @@ namespace FenBrowser.FenEngine.Svg
                         if (!TryNumber(parts[0], out float a) || !TryNumber(parts[1], out float b) ||
                             !TryNumber(parts[2], out float c) || !TryNumber(parts[3], out float d))
                             return false;
-                        // e/f are <length-percentage>; plain numbers stay valid.
-                        if (!TryLength(parts[4], referenceWidth, fontSize, rootFontSize, out float e) ||
-                            !TryLength(parts[5], referenceHeight, fontSize, rootFontSize, out float f))
+                        // CSS matrix() accepts six numbers. Lengths and percentages
+                        // in e/f invalidate the function instead of translating.
+                        if (!TryNumber(parts[4], out float e) ||
+                            !TryNumber(parts[5], out float f))
                             return false;
                         matrix = SKMatrix.Concat(matrix, new SKMatrix(
                             a, c, e,
@@ -512,7 +577,9 @@ namespace FenBrowser.FenEngine.Svg
             if (!double.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture,
                     out double parsed) || !double.IsFinite(parsed))
                 return false;
-            value = SvgValues.ClampCoord((float)parsed);
+            float converted = (float)parsed;
+            if (!float.IsFinite(converted)) return false;
+            value = SvgValues.ClampCoord(converted);
             return true;
         }
 
@@ -552,7 +619,9 @@ namespace FenBrowser.FenEngine.Svg
                 _ => double.NaN
             };
             if (double.IsNaN(converted) || !double.IsFinite(converted)) return false;
-            radians = (float)converted;
+            float convertedRadians = (float)converted;
+            if (!float.IsFinite(convertedRadians)) return false;
+            radians = convertedRadians;
             return true;
         }
 
