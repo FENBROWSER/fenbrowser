@@ -11268,3 +11268,16 @@ Verification:
 - Release SVG verification passes 342/342. The 198-file static selection improves
   from 132 to 134 first-party documents and from 75 to 76 declared-reference
   passes, with 61 compatibility fallbacks and no renderer or worker failures.
+
+## 2.143 SVG-As-Image Box Properties (2026-08-24)
+
+- Margin and padding shorthands and physical longhands are classified with the
+  existing embedding-only CSS properties. They do not alter isolated SVG picture
+  pixels or intrinsic image dimensions; the embedding layout layer owns their
+  box-model effect.
+- The classification is inert for SVG graphics geometry and removes an incorrect
+  renderer fallback for root `padding-right` without introducing an SVG-local box
+  layout implementation.
+- Release SVG tests pass 343/343. The 198-file static selection is now 135
+  first-party, 60 compatibility fallbacks, and 91/135 direct legacy parity, with
+  all renderer and worker failure counters at zero.

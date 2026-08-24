@@ -45,7 +45,9 @@ namespace FenBrowser.FenEngine.Svg
         {
             "vertical-align", "border", "border-top", "border-right", "border-bottom", "border-left",
             "border-color", "border-style", "border-width", "outline", "cursor", "pointer-events",
-            "user-select", "touch-action"
+            "user-select", "touch-action",
+            "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+            "padding", "padding-top", "padding-right", "padding-bottom", "padding-left"
         };
 
         public static void Apply(

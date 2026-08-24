@@ -4743,3 +4743,18 @@ Verification:
 - Static CSS `zoom` is no longer a blocker. Remaining CSS-related entries are
   dynamic selector invalidation, margin/padding, and geometry `auto` around
   `foreignObject`; first-party remains non-default.
+
+## 6.208 SVG-As-Image Padding Classification (2026-08-24)
+
+- `styling/support/circle-padding-right.svg` is an image support resource whose
+  root padding must not contribute to intrinsic image size or picture pixels.
+  It now renders first-party with direct legacy pixel parity and no fallback.
+- Focused cascade tests pass 32/32 and the complete Release SVG namespace passes
+  343/343. The full 198-file static selection improves from 134 to 135
+  first-party and from 61 to 60 fallbacks; declared-reference counters remain
+  76/93 because this file is a support resource rather than a reftest target.
+- The captured-site gate remains 151/151 first-party with a validated manifest
+  and no fallback, rejection, renderer failure, timeout, skip, or truncation.
+- Margin and padding no longer constitute a static pixel-renderer blocker. CSSOM
+  interface behavior and external `@import` remain browser-level dynamic/resource
+  work; first-party remains non-default.

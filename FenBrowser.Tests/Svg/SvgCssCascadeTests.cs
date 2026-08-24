@@ -366,6 +366,25 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void SvgImageBoxMarginAndPadding_DoNotChangeIsolatedPicturePixels()
+        {
+            const string actualSvg =
+                "<svg width='100' height='100' style='padding-right:30px;margin:20px'>" +
+                "<style>circle{padding:10px;margin-left:5px}</style>" +
+                "<circle cx='50' cy='50' r='48'/></svg>";
+            const string referenceSvg =
+                "<svg width='100' height='100'><circle cx='50' cy='50' r='48'/></svg>";
+
+            using var actual = new FenSvgRenderer().Render(actualSvg);
+            using var expected = new FenSvgRenderer().Render(referenceSvg);
+            Assert.True(actual.Success, actual.ErrorMessage);
+            Assert.False(actual.RequiresFallback);
+            for (int y = 0; y < actual.Bitmap.Height; y++)
+            for (int x = 0; x < actual.Bitmap.Width; x++)
+                Assert.Equal(expected.Bitmap.GetPixel(x, y), actual.Bitmap.GetPixel(x, y));
+        }
+
+        [Fact]
         public void CssPathLengthZero_MakesDashedStrokeSolid()
         {
             const string actualSvg =
