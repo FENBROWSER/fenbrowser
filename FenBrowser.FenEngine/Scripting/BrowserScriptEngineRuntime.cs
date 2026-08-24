@@ -7499,7 +7499,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
                 var callback = args[0];
                 var host = new FenJsMutationObserverHost(callback, this);
-                return ToHostOrNull(host, HostObjectKind.Other);
+                var facade = ToHostOrNull(host, HostObjectKind.Other);
+                // Audit JSRT rooting family: the CLR host holds the JS callback
+                // where the tracer cannot see it. Route it through a host-defined
+                // property on the facade (traced by IHeapRootSource.TraceRoots) so
+                // the callback stays live exactly as long as the observer does.
+                _interpreter.DefineHostObjectRootProperty(facade, "__fenCallback", callback);
+                return facade;
             },
             length: 1);
 
@@ -10422,7 +10428,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
 
         // Convert records to JS objects. Each record is a plain object with the
-        // MutationRecord properties defined by the spec.
+        // MutationRecord properties defined by the spec. The construction window
+        // keeps partially built record facades (strings, node arrays, nested
+        // objects) alive across collections until the top-level array exists.
+        using var _ = _interpreter.Heap.BeginConstructionWindow();
+
         var jsRecords = new JsValue[records.Count];
         for (int i = 0; i < records.Count; i++)
         {
@@ -10523,6 +10533,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     "takeRecords",
                     (_, _) =>
                     {
+                        using var _ = _interpreter.Heap.BeginConstructionWindow();
                         var records = host.TakeRecords();
                         var jsRecords = new JsValue[records.Count];
                         for (int i = 0; i < records.Count; i++)

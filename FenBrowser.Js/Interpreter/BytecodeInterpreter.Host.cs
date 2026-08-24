@@ -91,6 +91,12 @@ public sealed partial class BytecodeInterpreter
             return value;
         }
 
+        // Audit JSRT rooting family: host hooks build facades lazily (node
+        // lists, record objects, bound methods) where intermediates have no
+        // incoming JS edge until the top-level value materializes. The
+        // construction window keeps every cell allocated inside the hook
+        // alive until the hook returns its final value.
+        using var _constructionWindow = _heap.BeginConstructionWindow();
         return _hostHooks.TryGetHostProperty(handle, key, out value)
             ? value
             : JsValue.Undefined;
@@ -184,6 +190,24 @@ public sealed partial class BytecodeInterpreter
         }
 
         properties[key] = descriptor;
+    }
+
+    // Host embedder seam: define a data property on a host-object facade whose
+    // value the GC must trace — _hostDefinedProperties is walked by
+    // IHeapRootSource.TraceRoots. Use this to root JS values a CLR wrapper holds
+    // invisibly to the tracer (e.g. MutationObserver callbacks).
+    public void DefineHostObjectRootProperty(JsValue facade, string key, JsValue value)
+    {
+        if (facade.Tag != JsValueTag.HostObject)
+        {
+            throw new ArgumentException("Facade must be a host object.", nameof(facade));
+        }
+
+        ArgumentException.ThrowIfNullOrEmpty(key);
+        DefineHostObjectProperty(
+            facade.AsHostObjectHandle(),
+            key,
+            new JsPropertyDescriptor(value, Writable: true, Enumerable: false, Configurable: false));
     }
 
     private void DefineHostPrivateField(

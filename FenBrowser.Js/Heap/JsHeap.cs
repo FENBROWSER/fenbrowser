@@ -12,7 +12,7 @@ public sealed class JsHeap
     private readonly List<(int Index, int Generation)> _nursery = new();
     private readonly RootSet _roots = new();
     private readonly List<IHeapRootSource> _rootSources = new();
-    private readonly GcStressMode _stressMode;
+    private GcStressMode _stressMode;
     private readonly List<(ObjectHandle Owner, ObjectHandle Child)>? _writeBarrierEdges;
     private int _writeBarrierCount;
     private int _gcCollectionCount;
@@ -88,6 +88,55 @@ public sealed class JsHeap
 
     public int RootCount => _roots.Count;
 
+    // Diagnostic/test hook: enables stress collection after engine construction so
+    // tests can exercise unrooted host-to-JS windows without stressing the whole
+    // boot sequence. Not a production configuration surface.
+    internal void SetStressModeForDiagnostics(GcStressMode mode) => _stressMode = mode;
+
+    // Construction window (audit JSRT rooting family): while open, every cell
+    // allocated through this heap is pushed as an explicit root, and the whole
+    // window's pins are popped together on close. Host builders create graphs
+    // bottom-up (record facades → element arrays → top-level object) where a
+    // freshly made cell has no incoming JS edge until its parent materializes;
+    // under automatic or stress collection those intermediates sweep and later
+    // resurface as stale handles. Over-retention is bounded by the window.
+    private int _constructionWindowDepth;
+    private int _constructionWindowMark;
+
+    public IDisposable BeginConstructionWindow()
+    {
+        if (++_constructionWindowDepth == 1)
+        {
+            _constructionWindowMark = _roots.Count;
+        }
+
+        return new ConstructionWindowScope(this);
+    }
+
+    private void EndConstructionWindow()
+    {
+        if (--_constructionWindowDepth == 0)
+        {
+            _roots.PopTo(_constructionWindowMark);
+        }
+    }
+
+    private sealed class ConstructionWindowScope : IDisposable
+    {
+        private JsHeap? _owner;
+
+        public ConstructionWindowScope(JsHeap owner)
+        {
+            _owner = owner;
+        }
+
+        public void Dispose()
+        {
+            _owner?.EndConstructionWindow();
+            _owner = null;
+        }
+    }
+
     // Audit §1: subsystems whose live JsValue Objects aren't visible through
     // the heap's RootSet (e.g. BytecodeInterpreter's active InterpreterFrame
     // Registers) register here so GC honours those references too.
@@ -119,6 +168,10 @@ public sealed class JsHeap
 
         var handle = AllocateCell(HeapCellKind.Object, obj);
         var objHandle = new ObjectHandle(handle.Index, handle.Generation);
+        if (_constructionWindowDepth > 0)
+        {
+            _roots.Push(objHandle);
+        }
         // Tier 4 #22: stamp the freshly-allocated object with its handle
         // and owning heap so JsObject.SetProperty / DefineOwnProperty can
         // emit write barriers centrally.
@@ -154,6 +207,10 @@ public sealed class JsHeap
 
         var handle = AllocateCell(HeapCellKind.String, new StringPayload(value));
         var stringHandle = new StringHandle(handle.Index, handle.Generation);
+        if (_constructionWindowDepth > 0)
+        {
+            _roots.Push(stringHandle);
+        }
 
         if (_stressMode == GcStressMode.AfterEveryAlloc)
         {
@@ -179,6 +236,10 @@ public sealed class JsHeap
 
         var handle = AllocateCell(HeapCellKind.Symbol, new SymbolPayload(description));
         var symbolHandle = new SymbolHandle(handle.Index, handle.Generation);
+        if (_constructionWindowDepth > 0)
+        {
+            _roots.Push(symbolHandle);
+        }
 
         if (_stressMode == GcStressMode.AfterEveryAlloc)
         {
