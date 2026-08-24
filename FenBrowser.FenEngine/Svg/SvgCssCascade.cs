@@ -115,8 +115,7 @@ namespace FenBrowser.FenEngine.Svg
                     if (supportedType && styleMediaApplies &&
                         !string.IsNullOrWhiteSpace(element.TextContent))
                     {
-                        if (SvgFeatureSupport.HasExternalUrlReference(element.TextContent) ||
-                            element.TextContent.Contains("@import", StringComparison.OrdinalIgnoreCase))
+                        if (element.TextContent.Contains("@import", StringComparison.OrdinalIgnoreCase))
                         {
                             report.RejectResource("SVG CSS external resource import rejected");
                         }

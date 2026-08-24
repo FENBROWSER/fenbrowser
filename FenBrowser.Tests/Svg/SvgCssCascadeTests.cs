@@ -496,6 +496,34 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void UnconsumedFontFaceUrl_DoesNotBecomeAResourceRejection()
+        {
+            const string svg =
+                "<svg width='80' height='30'><style>" +
+                "@font-face{font-family:Unused;src:url(https://example.invalid/font.woff)}" +
+                "text{font-family:sans-serif}</style><text x='2' y='20'>safe</text></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.False(result.HadResourceRejection);
+            Assert.False(result.RequiresFallback);
+        }
+
+        [Fact]
+        public void CssImport_RemainsAResourceRejection()
+        {
+            const string svg =
+                "<svg width='10' height='10'><style>@import url(https://example.invalid/a.css);" +
+                "rect{fill:red}</style><rect width='10' height='10'/></svg>";
+
+            using var result = new FenSvgRenderer().Render(svg);
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.HadResourceRejection);
+        }
+
+        [Fact]
         public void ExternalImage_IsRejectedAndCannotEnterLegacyFallback()
         {
             const string svg =

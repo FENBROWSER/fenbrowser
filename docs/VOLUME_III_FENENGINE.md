@@ -11301,3 +11301,18 @@ Verification:
 - Release SVG tests pass 347/347. The 198-file static selection improves from 135
   to 142 first-party documents and from 76 to 80 declared-reference passes, with
   53 compatibility fallbacks and no renderer or worker failures.
+
+## 2.145 SVG CSS Resource Classification At Consumption Boundaries (2026-08-24)
+
+- Embedded style sheets no longer reject a document merely because an ignored,
+  unconsumed at-rule such as `@font-face` contains an external URL. The static
+  SVG renderer performs no font fetch for that rule, so treating it as a loaded
+  resource was both inaccurate and needlessly blocked self-contained output.
+- External URLs in declarations that participate in the cascade remain rejected
+  at declaration consumption, and external `@import` remains rejected before
+  rule flattening. No network capability or implicit resource-loading path was
+  added.
+- Release SVG tests pass 349/349. The 198-file static selection reports 144
+  first-party documents, 53 explicit dynamic-content fallbacks, one external
+  `@import` rejection, and 81/93 declared-reference passes with zero comparable
+  reference failures, renderer failures, worker failures, or timeouts.

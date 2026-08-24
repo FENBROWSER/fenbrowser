@@ -4780,3 +4780,20 @@ Verification:
 - Basic same-document text-path is no longer a blocker. External font loading,
   transformed targets, nested content, and advanced text-path modes remain
   explicit work; first-party remains non-default.
+
+## 6.210 Unconsumed SVG Font-Face URL Classification (2026-08-24)
+
+- The two circular path-length reftests used an external URL only inside an
+  unconsumed `@font-face` rule. Focused verification now classifies both files
+  first-party and the declared reference passes at exact pixel equality; no
+  external resource is fetched.
+- Focused cascade tests pass 34/34 and the complete Release SVG namespace passes
+  349/349. The 198-file static selection improves from 142 to 144 first-party
+  documents and from 80 to 81 declared-reference passes; all 81 comparable
+  references pass, 12 remain explicitly blocked, and four HTML/XHTML targets
+  remain unresolved by the isolated SVG oracle.
+- The one remaining static resource rejection is the intentional external
+  `@import` in `styling/style-sheet-interfaces.svg`. The signed captured-site
+  gate remains 151/151 first-party with a validated manifest and no fallback,
+  rejection, renderer/worker failure, timeout, skip, or truncation. First-party
+  remains non-default while dynamic and browser-level conformance work remains.
