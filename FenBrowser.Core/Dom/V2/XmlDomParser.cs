@@ -91,9 +91,12 @@ public static class XmlDomParser
                 case XElement element:
                     doc.AppendChild(CreateElement(doc, element));
                     break;
-                case XText text:
-                    AppendText(doc, doc, text.Value);
+                case XText text when string.IsNullOrWhiteSpace(text.Value):
+                    // XML permits whitespace before and after the document
+                    // element, but the DOM Document cannot contain Text nodes.
                     break;
+                case XText:
+                    throw new XmlDomParseException("Character data is not allowed outside the document element.");
                 case XComment comment:
                     doc.AppendChild(doc.CreateComment(comment.Value));
                     break;
@@ -123,6 +126,10 @@ public static class XmlDomParser
             return Parse(xml, contentType);
         }
         catch (XmlDomParseException ex)
+        {
+            return CreateParserErrorDocument(ex.Message);
+        }
+        catch (DomException ex)
         {
             return CreateParserErrorDocument(ex.Message);
         }

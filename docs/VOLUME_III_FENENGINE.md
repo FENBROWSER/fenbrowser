@@ -11338,4 +11338,5 @@ Verification:
 
 - Top-level `image/svg+xml` responses now enter the namespace-aware XML DOM path. SVG URLs are fetched as documents rather than replaced pre-fetch with passive HTML image wrappers; raster image shortcuts are unchanged.
 - `data:image/svg+xml` follows the same XML-document path. The engine preserves the response content type and executes SVG/XHTML script elements through the normal bounded script pipeline.
+- CSSOM exposes the SVG2 geometry properties `x`, `y`, `cx`, `cy`, `r`, `rx`, and `ry`. Their shared declaration normalizer accepts bounded length-percentage/math values, canonicalizes unitless zero to `0px`, preserves valid deferred substitutions, rejects invalid or disallowed-negative literals, and removes declarations on empty assignment.
 - Script failure messages now carry bounded source and error summaries so process-forwarded diagnostics remain actionable without emitting unbounded source text.

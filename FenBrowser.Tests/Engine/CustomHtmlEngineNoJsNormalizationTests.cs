@@ -72,6 +72,35 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task RenderAsync_HtmlThenSvgXmlDocument_ReplacesRuntimeWithoutStalling()
+        {
+            using var engine = new CustomHtmlEngine { EnableJavaScript = true };
+            engine.ScriptFetcher = _ => Task.FromResult("window.externalReady = true;");
+
+            await engine.RenderAsync(
+                "<!doctype html><html><body><script>window.runnerReady=true;</script></body></html>",
+                new Uri("https://example.test/testharness_runner.html"),
+                _ => Task.FromResult(string.Empty),
+                _ => Task.FromResult<System.IO.Stream>(null),
+                _ => { },
+                forceJavascript: true).WaitAsync(TimeSpan.FromSeconds(5));
+
+            await engine.RenderAsync(
+                SvgDocument,
+                new Uri("https://example.test/conformance.svg"),
+                _ => Task.FromResult(string.Empty),
+                _ => Task.FromResult<System.IO.Stream>(null),
+                _ => { },
+                viewportWidth: 1200,
+                viewportHeight: 800,
+                forceJavascript: true,
+                documentContentType: "image/svg+xml").WaitAsync(TimeSpan.FromSeconds(5));
+
+            var root = Assert.IsType<Element>(engine.GetActiveDom());
+            Assert.Equal("svg", root.LocalName);
+        }
+
+        [Fact]
         public async Task RenderAsync_WithJavaScriptEnabled_PreservesAuthoredFeatureClasses()
         {
             const string html = @"<!DOCTYPE html>

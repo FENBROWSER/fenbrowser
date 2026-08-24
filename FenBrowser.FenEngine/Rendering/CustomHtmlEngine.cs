@@ -1562,6 +1562,9 @@ public void Dispose()
             var parseInput = html ?? string.Empty;
             if (XmlDomParser.IsXmlMimeType(documentContentType))
             {
+                EngineLogCompat.Info(
+                    $"[RenderAsync] XML document parse started contentType={documentContentType} chars={parseInput.Length}",
+                    LogCategory.Rendering);
                 var xmlDocument = await Task.Run(() =>
                     XmlDomParser.ParseWithErrorDocument(parseInput, documentContentType)).ConfigureAwait(false);
                 if (baseUri != null)
@@ -1573,6 +1576,9 @@ public void Dispose()
                 {
                     EmitDocumentCreatedTrace(xmlDocument, baseUri, null, null);
                 }
+                EngineLogCompat.Info(
+                    $"[RenderAsync] XML document parse completed root={xmlDocument.DocumentElement?.NodeName ?? "<none>"}",
+                    LogCategory.Rendering);
                 return new DomParseResult
                 {
                     Dom = (Node)xmlDocument.DocumentElement ?? xmlDocument

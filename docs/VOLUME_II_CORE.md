@@ -1943,3 +1943,4 @@ Verification:
 
 - `XmlDomParser` preserves qualified element and attribute names, including XHTML prefixes in SVG documents and `xlink`/`xmlns` attributes, instead of exposing LINQ-to-XML expanded-name syntax as DOM qualified names.
 - XML MIME detection uses the MIME essence, accepts parameters such as `charset`, and preserves the successful document content type. DTD processing remains prohibited and the XML resolver remains disabled.
+- Legal whitespace before and after the XML document element is ignored. Non-whitespace text outside the document element remains a hierarchy error and is converted to the normal XML parse-error document by the non-throwing entry point.

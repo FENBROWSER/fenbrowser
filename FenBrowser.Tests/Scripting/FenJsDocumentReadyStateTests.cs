@@ -78,11 +78,12 @@ namespace FenBrowser.Tests.Scripting
         [Fact]
         public void XmlDomParser_PreservesSvgXhtmlElementsAndNamespacedAttributes()
         {
-            const string xml = "<svg xmlns='http://www.w3.org/2000/svg' " +
+            const string xml = "<?xml version='1.0' encoding='UTF-8'?>\n" +
+                "<svg xmlns='http://www.w3.org/2000/svg' " +
                 "xmlns:h='http://www.w3.org/1999/xhtml' " +
                 "xmlns:xlink='http://www.w3.org/1999/xlink'>" +
                 "<h:script src='/resources/testharness.js'/>" +
-                "<use xlink:href='#shape'/></svg>";
+                "<use xlink:href='#shape'/></svg>\n";
 
             var parsed = XmlDomParser.Parse(xml, "image/svg+xml");
             var root = parsed.DocumentElement;

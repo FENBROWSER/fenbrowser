@@ -31,6 +31,7 @@ using FenBrowser.Js.Parser;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Rendering.Css;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Storage;
 using DomRange = FenBrowser.Core.Dom.V2.Range;
@@ -14026,6 +14027,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     }
                     return JsValue.Undefined;
                 }
+                var normalization = CssStyleDeclarationValueNormalizer.Normalize(prop, val, out var normalizedValue);
+                if (normalization == CssPropertyNormalizationResult.Invalid)
+                {
+                    return JsValue.Undefined;
+                }
+                if (normalization == CssPropertyNormalizationResult.Valid)
+                {
+                    val = normalizedValue;
+                }
                 // Replace or append the property in the existing style string.
                 // Never append duplicate declarations — deduplicate by property name.
                 var styleAttr = element.GetAttribute("style") ?? string.Empty;
@@ -14041,11 +14051,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     var name = trimmed.Substring(0, colonIdx).Trim();
                     if (string.Equals(name, prop, StringComparison.OrdinalIgnoreCase))
                     {
-                        // Replace the existing declaration with the new value.
                         var oldVal = trimmed.Substring(colonIdx + 1).Trim();
                         if (!string.Equals(oldVal, val, StringComparison.OrdinalIgnoreCase))
                             changed = true;
-                        sb.Append(prop).Append(':').Append(val).Append(';');
+                        if (val.Length > 0)
+                        {
+                            sb.Append(prop).Append(':').Append(val).Append(';');
+                        }
                         replaced = true;
                     }
                     else
@@ -14053,7 +14065,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         sb.Append(trimmed).Append(';');
                     }
                 }
-                if (!replaced)
+                if (!replaced && val.Length > 0)
                 {
                     // New property — always a change.
                     sb.Append(prop).Append(':').Append(val).Append(';');
@@ -14135,6 +14147,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             var cssProps = new[]
             {
                 "display", "opacity", "visibility", "width", "height",
+                "x", "y", "cx", "cy", "r", "rx", "ry",
                 "minWidth", "minHeight", "maxWidth", "maxHeight",
                 "color", "backgroundColor", "background", "backgroundImage",
                 "position", "top", "right", "bottom", "left",
