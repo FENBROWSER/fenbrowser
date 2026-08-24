@@ -213,31 +213,13 @@ namespace FenBrowser.FenEngine.Svg
         {
             if (string.IsNullOrWhiteSpace(raw)) return;
             string value = raw.Trim();
-            string lower = value.ToLowerInvariant();
             bool supportedCssSyntaxNotImplemented =
-                lower.StartsWith("calc(", System.StringComparison.Ordinal) ||
-                lower.StartsWith("min(", System.StringComparison.Ordinal) ||
-                lower.StartsWith("max(", System.StringComparison.Ordinal) ||
-                lower.StartsWith("clamp(", System.StringComparison.Ordinal) ||
                 (name is "width" or "height" &&
-                 lower.Equals("auto", System.StringComparison.Ordinal)) ||
-                HasUnsupportedCssLengthUnit(lower);
+                 value.Equals("auto", System.StringComparison.OrdinalIgnoreCase)) ||
+                SvgCssLengthEvaluator.RequiresUnsupportedUnitSupport(value);
             if (supportedCssSyntaxNotImplemented)
                 _report.RequireFallback(
                     $"SVG CSS geometry value '{name}: {value}' requires compatibility fallback");
-        }
-
-        private static bool HasUnsupportedCssLengthUnit(string value)
-        {
-            int end = value.Length;
-            while (end > 0 && char.IsWhiteSpace(value[end - 1])) end--;
-            int start = end;
-            while (start > 0 && char.IsLetter(value[start - 1])) start--;
-            if (start == end) return false;
-            string unit = value.Substring(start, end - start);
-            return unit is "q" or "rem" or "ch" or "ic" or "cap" or "lh" or "rlh" or
-                   "vw" or "vh" or "vi" or "vb" or "vmin" or "vmax" or
-                   "cqw" or "cqh" or "cqi" or "cqb" or "cqmin" or "cqmax";
         }
 
         private static string ResolvePathData(SvgElement element)

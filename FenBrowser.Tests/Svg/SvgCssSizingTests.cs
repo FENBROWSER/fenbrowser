@@ -179,6 +179,31 @@ namespace FenBrowser.Tests.Svg
                 "<circle cx='50' cy='50' r='40' fill='green'/></svg></svg>");
         }
 
+        [Theory]
+        [InlineData("calc(10%+10px)")]
+        [InlineData("calc(10%10px)")]
+        [InlineData("min(10px 20px)")]
+        [InlineData("clamp(1px, 2px)")]
+        [InlineData("calc(1ic 1px)")]
+        public void InvalidGeometryMath_IsIgnoredWithoutCompatibilityFallback(string declaration)
+        {
+            AssertIdenticalRender(
+                $"<svg width='100' height='100'><rect style=\"width:{declaration};height:{declaration}\" " +
+                "stroke='red' stroke-width='100'/></svg>",
+                "<svg width='100' height='100'/>");
+        }
+
+        [Fact]
+        public void UnsupportedValidGeometryUnit_RemainsExplicitCompatibilityFallback()
+        {
+            using var result = new FenSvgRenderer().Render(
+                "<svg width='100' height='100'><rect style='width:calc(1ic + 1px);height:10px'/></svg>");
+
+            Assert.True(result.Success, result.ErrorMessage);
+            Assert.True(result.RequiresFallback);
+            Assert.Contains("css-cascade", result.FallbackReasonCodes);
+        }
+
         [Fact]
         public void NestedSvgNegativeSizing_IsInvalidAndIgnored()
         {

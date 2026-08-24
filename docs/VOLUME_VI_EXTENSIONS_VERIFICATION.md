@@ -4702,3 +4702,25 @@ Verification:
   auto` behind foreignObject, malformed-calc invalid-value recovery, and the
   dynamic/testharness, SMIL, advanced-text-layout, and HTML/XHTML reference
   targets excluded by scope. First-party remains non-default.
+
+## 6.206 Invalid Geometry Math And RID-Neutral Bench Verification (2026-08-24)
+
+- `shapes/reftests/disabled-shapes-01.svg` exposed a routing defect: CSS token
+  serialization surfaced the invalid `calc(10%+10px)` form as
+  `calc(10%10px)`, and the geometry fallback classifier treated every failed
+  math function as an unimplemented valid feature. Invalid declarations now
+  remain first-party and render the declared empty reference.
+- Focused CSS sizing/cascade verification passes 60/60 and the complete Release
+  SVG namespace passes 337/337. The targeted WPT case is 1/1 first-party and
+  1/1 against its declared reference with no fallback or rejection.
+- Full static selection before -> after: first-party 131 -> 132; compatibility
+  fallback 64 -> 63; declared-reference passes 74 -> 75 of 93; blocked references
+  19 -> 18. Resource rejections stay at 3, unresolved non-SVG targets stay at 4,
+  and all renderer/worker/read/timeout failure counters remain zero.
+- Removing the accidentally committed `net10.0/linux-x64` lock section restores
+  the normal RID-neutral BenchSvg Release build: zero warnings and zero errors.
+  Cross-RID publish verification must use an isolated restore graph rather than
+  mutating the tracked platform-neutral lock file.
+- Remaining static CSS blockers are `zoom`, dynamic selector invalidation,
+  margin/padding, and `width`/`height: auto` around `foreignObject`; malformed
+  geometry math is no longer a blocker. First-party remains non-default.

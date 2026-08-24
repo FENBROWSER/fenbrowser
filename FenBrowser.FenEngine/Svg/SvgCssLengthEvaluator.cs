@@ -112,6 +112,23 @@ namespace FenBrowser.FenEngine.Svg
             return false;
         }
 
+        /// <summary>
+        /// Distinguishes a syntactically valid expression that uses a recognized but
+        /// unsupported length unit from an invalid declaration. Unsupported units are
+        /// assigned a validation-only scale; no resulting geometry is consumed.
+        /// </summary>
+        internal static bool RequiresUnsupportedUnitSupport(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || value.Length > SvgMarkupParser.MaxAttributeValueChars)
+                return false;
+            var parser = new Parser(value, 1f, 1f, 1f, 1f, 1f, allowUnsupportedUnits: true);
+            return parser.TryParseExpression(0, out Numeric numeric) &&
+                   parser.Read().Type == CssTokenType.EOF &&
+                   (numeric.Kind != NumericKind.Number || numeric.Value == 0d) &&
+                   double.IsFinite(numeric.Value) &&
+                   parser.EncounteredUnsupportedUnit;
+        }
+
         private static bool IsViewportUnit(string unit)
         {
             return unit.Length switch
@@ -140,10 +157,13 @@ namespace FenBrowser.FenEngine.Svg
             private readonly float _viewportWidth;
             private readonly float _viewportHeight;
             private readonly double _fillAvailable;
+            private readonly bool _allowUnsupportedUnits;
             private CssToken _lookahead;
             private bool _hasLookahead;
             private int _operations;
             private double _sizeBase = double.NaN;
+
+            public bool EncounteredUnsupportedUnit { get; private set; }
 
             public Parser(
                 string value,
@@ -152,7 +172,8 @@ namespace FenBrowser.FenEngine.Svg
                 float rootFontSize,
                 float viewportWidth,
                 float viewportHeight,
-                double fillAvailable = double.NaN)
+                double fillAvailable = double.NaN,
+                bool allowUnsupportedUnits = false)
             {
                 _tokens = new CssTokenizer(value);
                 _percentReference = percentReference;
@@ -161,6 +182,7 @@ namespace FenBrowser.FenEngine.Svg
                 _viewportWidth = viewportWidth;
                 _viewportHeight = viewportHeight;
                 _fillAvailable = fillAvailable;
+                _allowUnsupportedUnits = allowUnsupportedUnits;
             }
 
             public bool TryParseExpression(int depth, out Numeric result)
@@ -348,6 +370,11 @@ namespace FenBrowser.FenEngine.Svg
                     "rem" => _rootFontSize,
                     _ => double.NaN
                 };
+                if (!double.IsFinite(scale) && _allowUnsupportedUnits && IsUnsupportedLengthUnit(unit))
+                {
+                    EncounteredUnsupportedUnit = true;
+                    scale = 1d;
+                }
                 if (!double.IsFinite(scale))
                     return TryResolveViewportUnit(value, unit, out result);
                 result = new Numeric(value * scale, NumericKind.Length);
@@ -404,6 +431,12 @@ namespace FenBrowser.FenEngine.Svg
                 result = new Numeric((double)scaled, NumericKind.Length);
                 return true;
             }
+
+            private static bool IsUnsupportedLengthUnit(string unit) =>
+                unit.Equals("ic", StringComparison.OrdinalIgnoreCase) ||
+                unit.Equals("cap", StringComparison.OrdinalIgnoreCase) ||
+                unit.Equals("lh", StringComparison.OrdinalIgnoreCase) ||
+                unit.Equals("rlh", StringComparison.OrdinalIgnoreCase);
 
             private static char Lower(char c) => (char)(c | 0x20);
 

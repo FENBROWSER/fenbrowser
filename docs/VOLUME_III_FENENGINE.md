@@ -11235,3 +11235,20 @@ Verification:
   declared-reference passes (from 67) with zero declared-reference failures, zero
   renderer or worker failures, and zero timeouts; blocked reference tests drop
   from 26 to 19 and unresolved non-SVG targets stay at 4.
+
+## 2.141 Invalid SVG Geometry Math Recovery (2026-08-24)
+
+- Invalid CSS geometry math is an invalid declaration, not evidence that the
+  first-party renderer lacks a feature. Failed `calc()`, `min()`, `max()`, and
+  `clamp()` evaluation now leaves the SVG geometry property at its initial or
+  attribute-derived value without compatibility routing.
+- Valid but unsupported font-relative units remain distinguishable through a
+  bounded validation parse and continue to produce the `css-cascade` fallback
+  reason; invalid expressions containing those tokens are still ignored.
+- `scripts/BenchSvg/packages.lock.json` is RID-neutral again. A Linux-specific
+  restore graph had made an ordinary platform-neutral Release build fail with
+  NU1004 before any corpus verification could run.
+- Release verification passes 337/337 SVG tests. The 198-file static selection
+  improves to 132 first-party documents, 63 compatibility fallbacks, and 75/93
+  declared-reference passes; renderer, hybrid, worker, timeout, and read failures
+  remain zero.

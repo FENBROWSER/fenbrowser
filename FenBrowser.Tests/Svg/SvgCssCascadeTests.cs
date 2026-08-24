@@ -249,7 +249,7 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void CssGeometryMath_RejectsInvalidDimensionsAndExcessiveNesting()
+        public void CssGeometryMath_IgnoresInvalidDimensionsAndExcessiveNesting()
         {
             string nested = "10px";
             for (int i = 0; i < 20; i++) nested = $"calc({nested})";
@@ -260,8 +260,9 @@ namespace FenBrowser.Tests.Svg
             using var result = new FenSvgRenderer().Render(svg);
 
             Assert.True(result.Success, result.ErrorMessage);
-            Assert.True(result.RequiresFallback);
-            Assert.Contains(result.FallbackReasonCodes, code => code == "css-cascade");
+            Assert.False(result.RequiresFallback);
+            Assert.Empty(result.FallbackReasonCodes);
+            Assert.Equal(0, result.Bitmap.GetPixel(5, 5).Alpha);
         }
 
         [Fact]
