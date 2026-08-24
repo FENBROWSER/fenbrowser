@@ -292,7 +292,7 @@ namespace FenBrowser.Core
         public bool SafeBrowsing { get; set; } = true;
         public bool ImproveBrowser { get; set; } = false;
         public bool BlockPopups { get; set; } = true;
-        public bool AllowFileSchemeNavigation { get; set; } = true;
+        public bool AllowFileSchemeNavigation { get; set; } = false;
         public bool AllowAutomationFileNavigation { get; set; } = false;
 
         // Appearance Settings

@@ -558,7 +558,7 @@ public Uri LastTextResponseUri { get; private set; }
             return webdriverEnabled || automationMode;
         }
 
-        private static bool IsFileSchemeAccessAllowed()
+        private static bool IsFileSchemeAccessAllowed(FetchContext context)
         {
             var settings = BrowserSettings.Instance;
             if (!settings.AllowFileSchemeNavigation)
@@ -566,20 +566,23 @@ public Uri LastTextResponseUri { get; private set; }
                 return false;
             }
 
-            if (!IsAutomationContext())
+            if (IsAutomationContext() &&
+                !settings.AllowAutomationFileNavigation &&
+                !string.Equals(
+                    Environment.GetEnvironmentVariable("FEN_ALLOW_AUTOMATION_FILE_NAVIGATION"),
+                    "1",
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (context?.IsTopLevelNavigation == true && context.IsUserInitiated)
             {
                 return true;
             }
 
-            if (settings.AllowAutomationFileNavigation)
-            {
-                return true;
-            }
-
-            return string.Equals(
-                Environment.GetEnvironmentVariable("FEN_ALLOW_AUTOMATION_FILE_NAVIGATION"),
-                "1",
-                StringComparison.Ordinal);
+            var initiator = context?.InitiatorUri ?? context?.FrameDocumentUri;
+            return string.Equals(initiator?.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsSupportedFetchScheme(Uri url)
@@ -1114,7 +1117,7 @@ public Uri LastTextResponseUri { get; private set; }
             // Handle file scheme locally
             if (string.Equals(url.Scheme, "file", StringComparison.OrdinalIgnoreCase))
             {
-                if (!IsFileSchemeAccessAllowed())
+                if (!IsFileSchemeAccessAllowed(context))
                 {
                     return new FetchResult
                     {
@@ -1760,7 +1763,7 @@ public Uri LastTextResponseUri { get; private set; }
             // Handle file scheme locally
             if (string.Equals(url.Scheme, "file", StringComparison.OrdinalIgnoreCase))
             {
-                if (!IsFileSchemeAccessAllowed())
+                if (!IsFileSchemeAccessAllowed(context))
                 {
                     EngineLogCompat.Warn($"[FetchImage] Blocked file scheme load by policy: {url}", LogCategory.Security);
                     return null;

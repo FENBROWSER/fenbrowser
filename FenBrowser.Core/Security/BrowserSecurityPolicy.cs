@@ -41,6 +41,7 @@ namespace FenBrowser.Core.Security
 
         public static SecurityDecision EvaluateTopLevelNavigation(
             Uri uri,
+            Uri initiatorUri,
             bool isUserInput,
             bool automationContext,
             bool allowFileSchemeNavigation,
@@ -88,6 +89,16 @@ namespace FenBrowser.Core.Security
                             "top-level-navigation",
                             "automation-file-navigation-disabled",
                             "Blocked file:// navigation because automation file navigation is disabled.",
+                            data);
+                    }
+
+                    if (!isUserInput &&
+                        !string.Equals(initiatorUri?.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return SecurityDecision.Deny(
+                            "top-level-navigation",
+                            "remote-initiated-file-navigation",
+                            "Blocked file:// navigation because it was not initiated by user input or a local file document.",
                             data);
                     }
 

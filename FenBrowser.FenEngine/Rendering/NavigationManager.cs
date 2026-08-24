@@ -134,6 +134,7 @@ namespace FenBrowser.FenEngine.Rendering
             var automationContext = IsAutomationContext();
             var navigationDecision = BrowserSecurityPolicy.EvaluateTopLevelNavigation(
                 uri,
+                referer,
                 requestKind == NavigationRequestKind.UserInput,
                 automationContext,
                 BrowserSettings.Instance.AllowFileSchemeNavigation,

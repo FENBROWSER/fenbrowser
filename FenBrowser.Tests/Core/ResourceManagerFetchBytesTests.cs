@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Network;
+using FenBrowser.Core.Security;
 using SkiaSharp;
 using Xunit;
 using System.IO;
@@ -278,6 +279,80 @@ namespace FenBrowser.Tests.Core
 
                 using var stream = await manager.FetchImageAsync(new Uri(path));
                 Assert.Null(stream);
+            }
+            finally
+            {
+                BrowserSettings.Instance.AllowFileSchemeNavigation = originalAllowFile;
+                TryDelete(path);
+            }
+        }
+
+        [Fact]
+        public void TopLevelFileNavigation_RemoteProgrammaticInitiator_IsBlocked()
+        {
+            var decision = BrowserSecurityPolicy.EvaluateTopLevelNavigation(
+                new Uri("file:///C:/Users/example/private.html"),
+                new Uri("https://attacker.test/page"),
+                isUserInput: false,
+                automationContext: false,
+                allowFileSchemeNavigation: true,
+                allowAutomationFileNavigation: false);
+
+            Assert.False(decision.IsAllowed);
+            Assert.Equal("remote-initiated-file-navigation", decision.Code);
+        }
+
+        [Fact]
+        public void TopLevelFileNavigation_UserInputOrLocalInitiator_IsAllowed()
+        {
+            var target = new Uri("file:///C:/Users/example/local.html");
+
+            var userDecision = BrowserSecurityPolicy.EvaluateTopLevelNavigation(
+                target,
+                initiatorUri: null,
+                isUserInput: true,
+                automationContext: false,
+                allowFileSchemeNavigation: true,
+                allowAutomationFileNavigation: false);
+            var localDecision = BrowserSecurityPolicy.EvaluateTopLevelNavigation(
+                target,
+                new Uri("file:///C:/Users/example/index.html"),
+                isUserInput: false,
+                automationContext: false,
+                allowFileSchemeNavigation: true,
+                allowAutomationFileNavigation: false);
+
+            Assert.True(userDecision.IsAllowed);
+            Assert.True(localDecision.IsAllowed);
+        }
+
+        [Fact]
+        public async Task FileSubresource_RemoteInitiator_IsBlockedButLocalInitiatorIsAllowed()
+        {
+            var originalAllowFile = BrowserSettings.Instance.AllowFileSchemeNavigation;
+            var path = Path.GetTempFileName();
+            try
+            {
+                await File.WriteAllTextAsync(path, "window.localFixture = true;");
+                BrowserSettings.Instance.AllowFileSchemeNavigation = true;
+                using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)));
+                var manager = new ResourceManager(client, isPrivate: true);
+                var fileUri = new Uri(path);
+
+                var remoteResult = await manager.FetchTextDetailedAsync(
+                    fileUri,
+                    referer: new Uri("https://attacker.test/page"),
+                    secFetchDest: "script",
+                    isUserInitiatedNavigation: false);
+                var localResult = await manager.FetchTextDetailedAsync(
+                    fileUri,
+                    referer: new Uri("file:///C:/fixtures/page.html"),
+                    secFetchDest: "script",
+                    isUserInitiatedNavigation: false);
+
+                Assert.Equal(FetchStatus.UnknownError, remoteResult.Status);
+                Assert.Contains("Blocked by file scheme navigation policy", remoteResult.ErrorDetail);
+                Assert.Equal(FetchStatus.Success, localResult.Status);
             }
             finally
             {

@@ -1251,7 +1251,7 @@ So you want to add `border-radius`? Follow these steps:
     - `NavigationRequestKind.UserInput`
     - `NavigationRequestKind.Programmatic`
   - Rooted local-path auto-conversion is now limited to trusted user-input flow.
-  - Added `file://` capability gate with automation deny-by-default behavior.
+  - The `file://` capability gate is disabled by default. When enabled, user-input navigation and local-file-to-local-file navigation remain available, while remote/programmatic initiators are rejected before `ResourceManager` access.
 
 - `Rendering/BrowserApi.cs`
   - Added `NavigateUserInputAsync(...)` path to preserve address-bar normalization while keeping default navigation programmatic.

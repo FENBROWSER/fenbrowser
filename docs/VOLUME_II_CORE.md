@@ -73,7 +73,7 @@ The browser employs a **Sharded 2-Level Cache**:
 1.  **Input**: URL, Referer, Accept Headers.
 2.  **Checks**:
     - CSP (Content Security Policy) validation via `ActivePolicy`.
-    - Local Schemes (`data:`, `file:`).
+    - Local Schemes (`data:`, `file:`). File fetches are disabled by default; when explicitly enabled, subresources require a `file:` initiator and top-level loads require trusted user input or a `file:` initiator.
 3.  **Network**: Uses `System.Net.Http.HttpClient` wrapped in `NetworkClient` with handlers:
     - `TrackingPreventionHandler`
     - `AdBlockHandler`
