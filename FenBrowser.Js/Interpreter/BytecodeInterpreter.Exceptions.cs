@@ -87,10 +87,13 @@ public sealed partial class BytecodeInterpreter
 
     private void ThrowOrHandle(InterpreterFrame frame, JsValue value)
     {
-        // Pin the thrown value as a GC root so it survives until the catch
-        // block executes. Without this, user-created error objects (e.g.
-        // `throw new Test262Error()`) could be collected while the exception
-        // unwinds, surfacing as "thrown=undefined" or TypeError on instanceof.
+        // Audit JSRT-005: pin the thrown value while routing it, then hand
+        // ownership to GC-traced state. Catch routes store it into frame.Registers[0]
+        // and finally routes into frame.PendingException — both are traced by
+        // IHeapRootSource.TraceRoots — so the temporary pin is popped on those
+        // paths. Previously every throw pushed a root that was never popped,
+        // making each caught exception a permanent root-set entry.
+        var rootMark = _heap.RootCount;
         PinIfObject(value);
 
         if (frame.CatchHandlers.Count > 0)
@@ -110,6 +113,7 @@ public sealed partial class BytecodeInterpreter
             if (catchIp >= 0)
             {
                 frame.InstructionPointer = catchIp;
+                _heap.PopRootsTo(rootMark);
                 return;
             }
 
@@ -117,10 +121,16 @@ public sealed partial class BytecodeInterpreter
             {
                 frame.PendingException = value;
                 frame.InstructionPointer = finallyIp;
+                _heap.PopRootsTo(rootMark);
                 return;
             }
         }
 
+        // Uncaught: no FenJS collection can run between this method and the next
+        // C# catch. The exception itself carries the JsValue until an enclosing
+        // interpreter handler re-routes it or the host consumes it, so release the
+        // temporary pin here as well; retaining it leaked one root per escaping throw.
+        _heap.PopRootsTo(rootMark);
         throw new JsThrownException(value);
     }
 

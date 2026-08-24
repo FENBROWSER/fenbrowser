@@ -172,9 +172,17 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
     public bool IsMutableForTest(string name)
         => _bindings?.TryGetValue(name, out var b) == true && b.IsMutable;
 
-    public override void Trace(IHeapTracer tracer)
+    protected override void TraceOwnEdges(IHeapTracer tracer)
     {
-        base.Trace(tracer);
+        TraceDeclarativeBindings(tracer);
+    }
+
+    /// <summary>
+    /// Traces object edges held by THIS record's bindings only. Shared with
+    /// derived module records, which add their own import-target edges.
+    /// </summary>
+    protected void TraceDeclarativeBindings(IHeapTracer tracer)
+    {
         if (_bindings is null)
         {
             return;

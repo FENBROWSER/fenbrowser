@@ -708,19 +708,51 @@ public sealed class JsHeap
     // tracer for the recursive Trace call.
     private bool _currentMarkMinorMode;
 
+    // Explicit worklist backing the iterative object-mark traversal. Kept on
+    // the heap instance so nested Mark() re-entry (payload.Trace callbacks)
+    // shares one queue instead of growing the call stack.
+    private readonly Stack<ObjectHandle> _markWorklist = new();
+    private bool _isDrainingMarkWorklist;
+
     private void Mark(ObjectHandle handle)
     {
-        var cell = Validate(handle);
-        if (_currentMarkMinorMode && cell.Tier == GenerationTier.Old) return;
-        if (cell.Marked)
+        // Iterative depth-first marking with an explicit worklist. Object
+        // payloads are the only recursive edge (strings and symbols trace no
+        // children), and real-world bundles build graphs far deeper than the
+        // native stack can recurse over during GC. Push-and-drain keeps the
+        // reachable set identical to the previous recursive traversal while
+        // using constant call-stack depth; duplicate pushes are discarded by
+        // the Marked check on pop.
+        var worklist = _markWorklist;
+        worklist.Push(handle);
+        if (_isDrainingMarkWorklist)
         {
             return;
         }
 
-        cell.Marked = true;
-        if (_currentMarkMinorMode) _lastMinorMarked++;
-        else _lastGcMarkedCells++;
-        cell.Payload.Trace(new MarkingTracer(this, _currentMarkMinorMode));
+        _isDrainingMarkWorklist = true;
+        try
+        {
+            while (worklist.Count > 0)
+            {
+                var cell = Validate(worklist.Pop());
+                if (_currentMarkMinorMode && cell.Tier == GenerationTier.Old) continue;
+                if (cell.Marked)
+                {
+                    continue;
+                }
+
+                cell.Marked = true;
+                if (_currentMarkMinorMode) _lastMinorMarked++;
+                else _lastGcMarkedCells++;
+                cell.Payload.Trace(new MarkingTracer(this, _currentMarkMinorMode));
+            }
+        }
+        finally
+        {
+            worklist.Clear();
+            _isDrainingMarkWorklist = false;
+        }
     }
 
     private void Mark(StringHandle handle)

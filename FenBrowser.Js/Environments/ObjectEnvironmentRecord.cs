@@ -145,9 +145,8 @@ public sealed class ObjectEnvironmentRecord : EnvironmentRecord
 
     public IBindingObject BindingObjectForTest => _bindingObject;
 
-    public override void Trace(IHeapTracer tracer)
+    protected override void TraceOwnEdges(IHeapTracer tracer)
     {
-        base.Trace(tracer);
         if (_bindingObject.AsObjectHandle is { } handle)
         {
             tracer.Trace(handle);

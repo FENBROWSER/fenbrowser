@@ -1,3 +1,4 @@
+using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Environments;
@@ -90,4 +91,20 @@ public sealed class FunctionEnvironmentRecord : DeclarativeEnvironmentRecord
     }
 
     public JsValue ThisValueForTest => _thisValue;
+
+    // Audit JSRT-001: the base declarative trace covers bindings only. Without
+    // this override, _thisValue / FunctionObject / NewTarget / HomeObject are
+    // invisible to GC — after a collection they resurface as stale-handle fatal
+    // throws or slot-reuse corruption.
+    protected override void TraceOwnEdges(IHeapTracer tracer)
+    {
+        base.TraceOwnEdges(tracer);
+        EnvironmentRecord.TraceValue(tracer, _thisValue);
+        EnvironmentRecord.TraceValue(tracer, FunctionObject);
+        EnvironmentRecord.TraceValue(tracer, NewTarget);
+        if (HomeObject is { } home)
+        {
+            tracer.Trace(home);
+        }
+    }
 }

@@ -76,10 +76,29 @@ public abstract class EnvironmentRecord
     // Environment records are not heap cells, but closure function objects retain
     // them through [[Environment]]. Trace the chain so captured object values remain
     // live after captured-cell snapshots are removed.
-    public virtual void Trace(IHeapTracer tracer)
+    //
+    // The outer-environment chain is a plain linked list of non-heap-cell records
+    // carrying no mark bits, so a recursive walk cannot terminate through the heap's
+    // Marked checks and overflows the native stack on deep closure graphs built by
+    // real-world bundles. Walk the chain iteratively here and dispatch each record's
+    // own edges through <see cref="TraceOwnEdges"/>; subclasses must not re-walk
+    // <see cref="OuterEnv"/> themselves.
+    public void Trace(IHeapTracer tracer)
     {
         ArgumentNullException.ThrowIfNull(tracer);
-        OuterEnv?.Trace(tracer);
+        for (var current = this; current is not null; current = current.OuterEnv)
+        {
+            current.TraceOwnEdges(tracer);
+        }
+    }
+
+    /// <summary>
+    /// Traces the edges owned by THIS record only (bindings, backing objects,
+    /// import targets). The outer-environment walk is handled once by
+    /// <see cref="Trace"/>; overrides must not recurse into it.
+    /// </summary>
+    protected virtual void TraceOwnEdges(IHeapTracer tracer)
+    {
     }
 
     protected static void TraceValue(IHeapTracer tracer, JsValue value)

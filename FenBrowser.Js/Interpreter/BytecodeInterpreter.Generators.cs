@@ -59,8 +59,9 @@ public sealed partial class BytecodeInterpreter
 
 
     // Creates (or reuses) a NativeFunctionObject that resumes the given
-    // AsyncContext when the awaited promise settles. The callback captures
-    // the async context by its ObjectHandle so GC can trace it.
+    // AsyncContext when the awaited promise settles. The callback declares the
+    // context handle in capturedRoots so GC traces ctx → registers → environment
+    // for exactly as long as this reaction can fire (audit JSRT-004/JSRT-015).
     private NativeFunctionObject GetOrCreateAsyncResumeCallback(bool isReject, AsyncContext ctx)
     {
         // We always create a fresh callback, capturing the specific context.
@@ -74,7 +75,10 @@ public sealed partial class BytecodeInterpreter
                 // so we can safely resume.
                 return ResumeAsyncFunction(ctx, arg, isReject);
             },
-            length: 1);
+            length: 1,
+            capturedRoots: ctx.SelfHandle is { } self
+                ? new[] { JsValue.FromObject(self) }
+                : null);
     }
 
 }

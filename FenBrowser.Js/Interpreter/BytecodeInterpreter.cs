@@ -88,6 +88,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 tracer.Trace(pe.AsObjectHandle());
             if (frame.PendingReturn is { } pr && pr.Tag == JsValueTag.Object)
                 tracer.Trace(pr.AsObjectHandle());
+            // Audit JSRT-004: while an async frame is active, its context must be
+            // rooted even though no promise reaction holds it yet.
+            if (frame.AsyncContext?.SelfHandle is { } asyncCtxHandle)
+                tracer.Trace(asyncCtxHandle);
             frame.Environment?.Trace(tracer);
         }
 
@@ -626,17 +630,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 JsValue.FromObject(globalHandle),
                 frameEnvironment: EnsureGlobalEnvironment());
         }
-        catch (FenBrowser.Js.Heap.JsEngineFatalException fatal)
+        catch (FenBrowser.Js.Heap.JsEngineFatalException)
         {
-            // Heap consistency exceptions ("Stale heap handle.", "Invalid heap
-            // handle index.") indicate a latent GC root-tracking gap, not a
-            // user-visible JS condition. Reporting them as engine crashes loses
-            // a whole test for what may be a recoverable native path; convert
-            // them at the top level into an uncaught TypeError so test262
-            // wrappers like assert.throws(TypeError, ...) still observe the
-            // expected exception kind and the test grader sees a runtime error
-            // rather than a crash. The root cause is tracked separately.
-            throw new JsThrownException(CreateTypeError("Internal heap error: " + fatal.Message));
+            // Audit JSRT-018: heap consistency exceptions ("Stale heap handle.",
+            // "Invalid heap handle index.") indicate a GC root-tracking gap or
+            // corruption — not a user-visible JS condition. Converting them into
+            // catchable TypeErrors let pages keep executing on a corrupted heap
+            // (fail-open). Fail closed instead: surface the fatal to the embedder.
+            throw;
         }
         catch (JsThrownException thrown)
         {
@@ -12856,32 +12857,46 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var prototypeHandle = _heap.AllocateObject(functionInstancePrototype, AllocationSite.Current());
-        _ = fnObj.DefineOwnProperty(
-            "prototype",
-            new JsPropertyDescriptor(
-                JsValue.FromObject(prototypeHandle),
-                Writable: function.Kind != FunctionKind.Constructor,
-                Enumerable: false,
-                Configurable: false));
-        var handle = _heap.AllocateObject(fnObj, AllocationSite.Current());
-        fnObj.SelfHandle = handle;
-        // ECMA-262 25.2.4.2: GeneratorFunction instances have a `prototype`
-        // property that is a plain object with no own properties. The
-        // `constructor` back-link is NOT defined here — it is inherited
-        // from %GeneratorPrototype% (or %AsyncGeneratorPrototype%).
-        if (function.Kind != FunctionKind.Generator && function.Kind != FunctionKind.AsyncGenerator)
+        // The prototype cell is reachable only through fnObj, which carries no
+        // heap handle yet; the allocation below provokes stress/automatic
+        // collections that would sweep it mid-construction. Pin both in-flight
+        // handles across the remaining construction work.
+        var rootMark = _heap.RootCount;
+        _heap.PushRoot(prototypeHandle);
+        try
         {
-            _ = functionInstancePrototype.DefineOwnProperty(
-                "constructor",
+            _ = fnObj.DefineOwnProperty(
+                "prototype",
                 new JsPropertyDescriptor(
-                    JsValue.FromObject(handle),
-                    Writable: true,
+                    JsValue.FromObject(prototypeHandle),
+                    Writable: function.Kind != FunctionKind.Constructor,
                     Enumerable: false,
-                    Configurable: true));
+                    Configurable: false));
+            var handle = _heap.AllocateObject(fnObj, AllocationSite.Current());
+            _heap.PushRoot(handle);
+            fnObj.SelfHandle = handle;
+            // ECMA-262 25.2.4.2: GeneratorFunction instances have a `prototype`
+            // property that is a plain object with no own properties. The
+            // `constructor` back-link is NOT defined here — it is inherited
+            // from %GeneratorPrototype% (or %AsyncGeneratorPrototype%).
+            if (function.Kind != FunctionKind.Generator && function.Kind != FunctionKind.AsyncGenerator)
+            {
+                _ = functionInstancePrototype.DefineOwnProperty(
+                    "constructor",
+                    new JsPropertyDescriptor(
+                        JsValue.FromObject(handle),
+                        Writable: true,
+                        Enumerable: false,
+                        Configurable: true));
+            }
+            _heap.WriteBarrier(handle, prototypeHandle);
+            _heap.WriteBarrier(prototypeHandle, handle);
+            return JsValue.FromObject(handle);
         }
-        _heap.WriteBarrier(handle, prototypeHandle);
-        _heap.WriteBarrier(prototypeHandle, handle);
-        return JsValue.FromObject(handle);
+        finally
+        {
+            _heap.PopRootsTo(rootMark);
+        }
     }
 
     private JsValue CreateDynamicFunction(IReadOnlyList<JsValue> args, FunctionKind kind)

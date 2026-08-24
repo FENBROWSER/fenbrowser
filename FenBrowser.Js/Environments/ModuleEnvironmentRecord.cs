@@ -111,20 +111,20 @@ public sealed class ModuleEnvironmentRecord : DeclarativeEnvironmentRecord
     /// Module import bindings are CLR references to other EnvironmentRecord objects,
     /// not ordinary FenJS heap edges. Trace those target environments explicitly so
     /// object values reachable only through a live import are not reclaimed by JsHeap.
-    /// Cyclic module graphs are normal, so guard the whole module Trace call by
-    /// environment identity rather than recursing A -> B -> A indefinitely.
+    /// Cyclic module graphs are normal, so guard the import walk by environment
+    /// identity rather than recursing A -> B -> A indefinitely. The outer-scope
+    /// chain itself is walked iteratively by the base <see cref="EnvironmentRecord.Trace"/>.
     /// </summary>
-    public override void Trace(IHeapTracer tracer)
+    protected override void TraceOwnEdges(IHeapTracer tracer)
     {
         ArgumentNullException.ThrowIfNull(tracer);
 
         var guard = s_traceGuard ??= new HashSet<ModuleEnvironmentRecord>();
         if (!guard.Add(this))
             return;
-
         try
         {
-            base.Trace(tracer);
+            TraceDeclarativeBindings(tracer);
             foreach (var import in _importBindings.Values)
             {
                 import.TargetEnv.Trace(tracer);

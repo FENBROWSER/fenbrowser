@@ -29,6 +29,12 @@ public sealed class AsyncContext : JsObject
 	public ObjectHandle? CapabilityResolve { get; set; }
 	public ObjectHandle? CapabilityReject { get; set; }
 
+	// Heap handle of this context itself, assigned right after allocation.
+	// Await-resume callbacks declare it in their capturedRoots so a suspended
+	// context stays live exactly as long as some pending reaction can resume
+	// it (audit JSRT-004/015) instead of relying on a permanent root pin.
+	public ObjectHandle? SelfHandle { get; set; }
+
 	public AsyncContext(BytecodeFunction function, JsValue[] registers, EnvironmentRecord? environment)
 	{
 		Function = function;

@@ -318,9 +318,8 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
     public ObjectEnvironmentRecord ObjectRecordForTest => _objectRecord;
     public IReadOnlyCollection<string> VarNamesSnapshotForTest => _varNames;
 
-    public override void Trace(IHeapTracer tracer)
+    protected override void TraceOwnEdges(IHeapTracer tracer)
     {
-        base.Trace(tracer);
         TraceValue(tracer, GlobalThisValue);
         _declarativeRecord.Trace(tracer);
     }

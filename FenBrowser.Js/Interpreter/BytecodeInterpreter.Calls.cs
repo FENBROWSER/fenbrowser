@@ -160,6 +160,7 @@ public sealed partial class BytecodeInterpreter
                     ThisValue = thisValue
                 };
                 var ctxHandle = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
+                asyncCtx.SelfHandle = ctxHandle;
 
                 // Store capability handles so ResumeAsyncFunction can settle
                 // the outer promise when the body eventually completes.
@@ -179,9 +180,11 @@ public sealed partial class BytecodeInterpreter
 
                     if (asyncCtx.IsSuspended)
                     {
-                        // Body suspended at an await â€” resume callbacks already
-                        // attached. Root the context so GC doesn't collect it.
-                        _heap.PushRoot(ctxHandle);
+                        // Body suspended at an await — resume callbacks already
+                        // attached. Audit JSRT-004: do NOT push a permanent root
+                        // here. Liveness now flows through the awaited promise's
+                        // reactions → resume callback capturedRoots → ctxHandle,
+                        // and through frame.AsyncContext while a frame is active.
                         return capability.Promise;
                     }
 
@@ -193,7 +196,6 @@ public sealed partial class BytecodeInterpreter
                 {
                     if (asyncCtx.IsSuspended)
                     {
-                        _heap.PushRoot(ctxHandle);
                         _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
                         return capability.Promise;
                     }
@@ -313,17 +315,13 @@ public sealed partial class BytecodeInterpreter
                 for (var i = 0; i < args.Count; i++) PinIfObject(args[i]);
                 return native.Call(thisValue, args);
             }
-            catch (JsThrownException ex)
-            {
-                // Pin the thrown value and adjust rootMark so the finally
-                // block does not pop this pin — the value must survive GC
-                // until the catch block processes it.
-                PinIfObject(ex.Value);
-                rootMark = _heap.RootCount;
-                throw;
-            }
             finally
             {
+                // Audit JSRT-002: pop THIS call's pins on every path. A thrown
+                // JsThrownException must NOT re-anchor the window above fresh pins
+                // (that made this finally a no-op and leaked thisValue+args roots on
+                // every throwing native call). Ownership of the thrown value passes
+                // to ThrowOrHandle, which pins it before any allocation can run.
                 _heap.PopRootsTo(rootMark);
             }
         }
