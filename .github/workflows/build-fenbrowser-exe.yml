@@ -31,6 +31,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_rendering_loop:
+        description: "Run the focused rendering contract loop"
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: "0 3 * * *"
 
@@ -135,6 +140,39 @@ jobs:
           name: full-regression-test-results
           path: TestResults/
           if-no-files-found: ignore
+
+  rendering-loop:
+    name: Daily Rendering Loop (blocking)
+    needs: quality-gate
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_rendering_loop) }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK from global.json
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: "**/packages.lock.json"
+
+      - name: Build rendering test surface
+        run: dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Release --nologo
+
+      - name: Run focused rendering contracts
+        shell: pwsh
+        run: ./scripts/ci/run-daily-rendering-loop.ps1 -NoBuild
+
+      - name: Upload rendering loop results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-rendering-loop-results
+          path: TestResults/
+          if-no-files-found: error
 
   js-conformance:
     name: FenJS full suite (advisory)
