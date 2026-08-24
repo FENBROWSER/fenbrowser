@@ -788,6 +788,9 @@ public sealed class Test262Runner
                 continue;
             }
 
+            // Declared outside the try so the JsThrownException catch can inspect the
+            // thrown value's error type against the test's `negative.type` metadata.
+            BytecodeInterpreter? perTestInterpreter = null;
             try
             {
                 var runtimeInput = parserInput;
@@ -827,7 +830,6 @@ public sealed class Test262Runner
                 // the next opcode boundary. The task completes cleanly (no leak).
                 using var interruptTimer = new Timer(
                     _ => Volatile.Write(ref interruptRequested, 1), null, timeoutMs, Timeout.Infinite);
-                BytecodeInterpreter? perTestInterpreter = null;
                 var executeCompleted = RunWithPerTestTimeout(token =>
                 {
                     token.ThrowIfCancellationRequested();
@@ -951,17 +953,10 @@ public sealed class Test262Runner
             }
             catch (UnsupportedFeatureException ex)
             {
+                // T262-001: an engine feature-bailout is NOT a syntax or runtime throw
+                // produced by spec semantics. It must never satisfy a negative
+                // expectation; count it as an unsupported failure unconditionally.
                 testSw.Stop();
-                if (expectsSyntaxError || expectsRuntimeThrow)
-                {
-                    passed++;
-                    var passedTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
-                    passedTe.Status = "Passed";
-                    passedTe.DurationMs = testSw.ElapsedMilliseconds;
-                    tests.Add(passedTe);
-                    continue;
-                }
-
                 unsupported++;
                 var expected = FindMatchingExpectation(expectations, relativePath, "UnsupportedFeature");
                 if (expected is not null)
@@ -1031,7 +1026,9 @@ public sealed class Test262Runner
             catch (JsThrownException ex)
             {
                 testSw.Stop();
-                if (expectsRuntimeThrow)
+                // T262-001: a runtime-phase negative only passes when the engine threw
+                // a JS value whose error type matches the expected `negative.type`.
+                if (expectsRuntimeThrow && ThrownValueMatchesNegativeType(frontmatter, ex, perTestInterpreter))
                 {
                     passed++;
                     var passedTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
@@ -1069,21 +1066,14 @@ public sealed class Test262Runner
                 jteTe.Details = FormatThrownValue(ex.Value);
                 tests.Add(jteTe);
             }
-            catch (InvalidOperationException ex)
+            // T262-001: InvalidOperationException and any other managed engine
+            // fault is a crash, not a JS throw — it can never satisfy a runtime
+            // negative expectation. Both fall through to crash classification.
+            catch (Exception ex)
             {
                 testSw.Stop();
-                if (expectsRuntimeThrow)
-                {
-                    passed++;
-                    var passedTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
-                    passedTe.Status = "Passed";
-                    passedTe.DurationMs = testSw.ElapsedMilliseconds;
-                    tests.Add(passedTe);
-                    continue;
-                }
-
-                runtimeErrors++;
-                var expected = FindMatchingExpectation(expectations, relativePath, "RuntimeError");
+                crashes++;
+                var expected = FindMatchingExpectation(expectations, relativePath, "Crash");
                 if (expected is not null)
                 {
                     expectedFailures++;
@@ -1093,7 +1083,7 @@ public sealed class Test262Runner
                 {
                     Path = file,
                     RelativePath = relativePath,
-                    Classification = "runtime-error",
+                    Classification = "crash",
                     Message = ex.Message,
                     Expected = expected is not null,
                     ExpectedReason = expected?.Reason,
@@ -1101,52 +1091,13 @@ public sealed class Test262Runner
                     ExpectedArea = expected?.Area,
                     ExpiresAtMilestone = expected?.ExpiresAtMilestone
                 });
-                var ioeTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
-                ioeTe.Status = expected is null ? "Failed" : "ExpectedFailure";
-                ioeTe.DurationMs = testSw.ElapsedMilliseconds;
-                ioeTe.Category = "runtime-missing";
-                ioeTe.Message = ex.Message;
-                tests.Add(ioeTe);
+                var crTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                crTe.Status = expected is null ? "Crashed" : "ExpectedFailure";
+                crTe.DurationMs = testSw.ElapsedMilliseconds;
+                crTe.Category = "crash";
+                crTe.Message = ex.Message;
+                tests.Add(crTe);
             }
-                catch (Exception ex)
-                {
-                    testSw.Stop();
-                    if (expectsRuntimeThrow)
-                    {
-                        passed++;
-                        var passedTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
-                        passedTe.Status = "Passed";
-                        passedTe.DurationMs = testSw.ElapsedMilliseconds;
-                        tests.Add(passedTe);
-                        continue;
-                    }
-
-                    crashes++;
-                    var expected = FindMatchingExpectation(expectations, relativePath, "Crash");
-                    if (expected is not null)
-                    {
-                        expectedFailures++;
-                    }
-
-                    failures.Add(new Test262FailureEntry
-                    {
-                        Path = file,
-                        RelativePath = relativePath,
-                        Classification = "crash",
-                        Message = ex.Message,
-                        Expected = expected is not null,
-                        ExpectedReason = expected?.Reason,
-                        ExpectedOwner = expected?.Owner,
-                        ExpectedArea = expected?.Area,
-                        ExpiresAtMilestone = expected?.ExpiresAtMilestone
-                    });
-                    var crTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
-                    crTe.Status = expected is null ? "Crashed" : "ExpectedFailure";
-                    crTe.DurationMs = testSw.ElapsedMilliseconds;
-                    crTe.Category = "crash";
-                    crTe.Message = ex.Message;
-                    tests.Add(crTe);
-                }
             }
             finally
             {
@@ -1257,6 +1208,29 @@ public sealed class Test262Runner
 
         var phase = frontmatter.Negative.Phase?.Trim();
         return string.Equals(phase, "runtime", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // T262-001: a runtime-phase negative is satisfied only by a JS value whose error
+    // name matches the expected `negative.type` (e.g. TypeError). Managed engine
+    // faults and wrong-typed throws must fail the test instead of passing it.
+    private static bool ThrownValueMatchesNegativeType(
+        Test262FrontmatterMetadata frontmatter,
+        JsThrownException ex,
+        BytecodeInterpreter? interpreter)
+    {
+        var expectedType = frontmatter.Negative?.Type?.Trim();
+        if (string.IsNullOrWhiteSpace(expectedType) || interpreter is null)
+        {
+            return false;
+        }
+
+        if (!TryGetObjectProperty((IBuiltinContext)interpreter, ex.Value, "name", out var nameValue) ||
+            nameValue.Tag != JsValueTag.String)
+        {
+            return false;
+        }
+
+        return string.Equals(nameValue.AsString(), expectedType, StringComparison.Ordinal);
     }
 
     private static bool RunWithPerTestTimeout(Action<CancellationToken> action, int timeoutMs)

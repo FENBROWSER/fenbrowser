@@ -328,7 +328,7 @@ public sealed class Test262RunnerTests
             }
             """);
 
-            Test262Runner.ParseInvokerForTests = (_source, _isModule) => Task.Delay(100);
+            Test262Runner.ParseInvokerForTests = (_source, _isModule) => Task.Delay(2000);
 
             var runner = new Test262Runner();
             var exitCode = runner.Run(
@@ -341,7 +341,7 @@ public sealed class Test262RunnerTests
                 verifyGates: false,
                 outputPath: outputPath,
                 max: 1,
-                timeoutMs: 1,
+                timeoutMs: 20,
                 engine: "FenJS",
                 expectationsPath: expectationsPath,
                 inputPath: null,
@@ -400,7 +400,7 @@ public sealed class Test262RunnerTests
             }
             """);
 
-            Test262Runner.RuntimeInvokerForTests = (_input, _file, _isModule) => Task.Delay(100);
+            Test262Runner.RuntimeInvokerForTests = (_input, _file, _isModule) => Task.Delay(2000);
 
             var runner = new Test262Runner();
             var exitCode = runner.Run(
@@ -413,7 +413,7 @@ public sealed class Test262RunnerTests
                 verifyGates: false,
                 outputPath: outputPath,
                 max: 1,
-                timeoutMs: 1,
+                timeoutMs: 20,
                 engine: "FenJS",
                 expectationsPath: expectationsPath,
                 inputPath: null,
@@ -452,7 +452,7 @@ public sealed class Test262RunnerTests
         try
         {
             File.WriteAllText(testFile, "for(;;){}");
-            Test262Runner.ParseInvokerForTests = (_source, _isModule) => Task.Delay(100);
+            Test262Runner.ParseInvokerForTests = (_source, _isModule) => Task.Delay(2000);
 
             var runner = new Test262Runner();
             var exitCode = runner.Run(
@@ -465,7 +465,7 @@ public sealed class Test262RunnerTests
                 verifyGates: false,
                 outputPath: outputPath,
                 max: 1,
-                timeoutMs: 1,
+                timeoutMs: 20,
                 engine: "FenJS",
                 expectationsPath: null,
                 inputPath: null,
@@ -504,7 +504,7 @@ public sealed class Test262RunnerTests
         try
         {
             File.WriteAllText(testFile, "1+1;");
-            Test262Runner.RuntimeInvokerForTests = (_input, _file, _isModule) => Task.Delay(100);
+            Test262Runner.RuntimeInvokerForTests = (_input, _file, _isModule) => Task.Delay(2000);
 
             var runner = new Test262Runner();
             var exitCode = runner.Run(
@@ -517,7 +517,7 @@ public sealed class Test262RunnerTests
                 verifyGates: false,
                 outputPath: outputPath,
                 max: 1,
-                timeoutMs: 1,
+                timeoutMs: 20,
                 engine: "FenJS",
                 expectationsPath: null,
                 inputPath: null,
@@ -544,7 +544,7 @@ public sealed class Test262RunnerTests
     }
 
     [Fact]
-    public void Run_RuntimeSubset_RuntimeErrorCanBeClassifiedAsExpectedFailure()
+    public void Run_RuntimeSubset_InvalidOperationExceptionIsCrashEvenWithRuntimeErrorExpectation()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
@@ -603,11 +603,12 @@ public sealed class Test262RunnerTests
             Assert.Equal(0, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
-            Assert.Equal(1, summary.GetProperty("expectedFailures").GetInt32());
+            Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
+            Assert.Equal(1, summary.GetProperty("crashes").GetInt32());
 
             var tests = doc.RootElement.GetProperty("tests");
             var first = tests.EnumerateArray().First();
-            Assert.Equal("ExpectedFailure", first.GetProperty("status").GetString());
+            Assert.Equal("Crashed", first.GetProperty("status").GetString());
         }
         finally
         {
@@ -617,7 +618,7 @@ public sealed class Test262RunnerTests
     }
 
     [Fact]
-    public void Run_RuntimeSubset_RuntimeErrorWithoutExpectationRemainsFailed()
+    public void Run_RuntimeSubset_InvalidOperationExceptionWithoutExpectationRemainsCrashed()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
@@ -660,7 +661,8 @@ public sealed class Test262RunnerTests
 
             var tests = doc.RootElement.GetProperty("tests");
             var first = tests.EnumerateArray().First();
-            Assert.Equal("Failed", first.GetProperty("status").GetString());
+            Assert.Equal(1, summary.GetProperty("crashes").GetInt32());
+            Assert.Equal("Crashed", first.GetProperty("status").GetString());
         }
         finally
         {
@@ -3049,6 +3051,112 @@ public sealed class Test262RunnerTests
             {
                 // Best-effort cleanup for temporary runner fixtures.
             }
+        }
+    }
+
+    [Fact]
+    public void Run_RuntimeSubset_NegativeRuntimeMatchingJsErrorTypePasses()
+    {
+        var result = RunNegativeRuntimeFixture("TypeError", "throw new TypeError('expected');");
+
+        Assert.Equal(1, result.GetProperty("summary").GetProperty("passed").GetInt32());
+        Assert.Equal(0, result.GetProperty("summary").GetProperty("runtimeErrors").GetInt32());
+        Assert.Equal("Passed", result.GetProperty("tests")[0].GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public void Run_RuntimeSubset_NegativeRuntimeWrongJsErrorTypeFails()
+    {
+        var result = RunNegativeRuntimeFixture("TypeError", "throw new RangeError('wrong type');");
+
+        Assert.Equal(0, result.GetProperty("summary").GetProperty("passed").GetInt32());
+        Assert.Equal(1, result.GetProperty("summary").GetProperty("runtimeErrors").GetInt32());
+        Assert.Equal("Failed", result.GetProperty("tests")[0].GetProperty("status").GetString());
+        Assert.Equal("runtime-error", result.GetProperty("failures")[0].GetProperty("classification").GetString());
+    }
+
+    [Fact]
+    public void Run_RuntimeSubset_NegativeRuntimeManagedFaultIsCrash()
+    {
+        var result = RunNegativeRuntimeFixture(
+            "TypeError",
+            "1 + 1;",
+            (_input, _file, _isModule) => throw new InvalidOperationException("forced engine fault"));
+
+        Assert.Equal(0, result.GetProperty("summary").GetProperty("passed").GetInt32());
+        Assert.Equal(1, result.GetProperty("summary").GetProperty("crashes").GetInt32());
+        Assert.Equal("Crashed", result.GetProperty("tests")[0].GetProperty("status").GetString());
+        Assert.Equal("crash", result.GetProperty("failures")[0].GetProperty("classification").GetString());
+    }
+
+    [Fact]
+    public void Run_RuntimeSubset_NegativeRuntimeUnsupportedFeatureDoesNotPass()
+    {
+        var result = RunNegativeRuntimeFixture(
+            "TypeError",
+            "1 + 1;",
+            (_input, _file, _isModule) => throw new UnsupportedFeatureException(
+                "feature-x",
+                FeatureSupportLevel.Unsupported,
+                new SourceSpan(0, 1, 1, 1)));
+
+        Assert.Equal(0, result.GetProperty("summary").GetProperty("passed").GetInt32());
+        Assert.Equal(1, result.GetProperty("summary").GetProperty("unsupported").GetInt32());
+        Assert.Equal("UnsupportedFeature", result.GetProperty("tests")[0].GetProperty("status").GetString());
+        Assert.Equal("unsupported", result.GetProperty("failures")[0].GetProperty("classification").GetString());
+    }
+
+    private static JsonElement RunNegativeRuntimeFixture(
+        string expectedType,
+        string body,
+        Func<string, string, bool, Task>? runtimeInvoker = null)
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-negative-" + Guid.NewGuid().ToString("N"));
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var outputPath = Path.Combine(tempRoot, "result.json");
+
+        try
+        {
+            File.WriteAllText(Path.Combine(testDir, "negative-runtime.js"), $$"""
+            /*---
+            negative:
+              phase: runtime
+              type: {{expectedType}}
+            ---*/
+            {{body}}
+            """);
+
+            Test262Runner.RuntimeInvokerForTests = runtimeInvoker;
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: false,
+                runtimeSubset: true,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 2000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            return doc.RootElement.Clone();
+        }
+        finally
+        {
+            Test262Runner.RuntimeInvokerForTests = null;
+            Directory.Delete(tempRoot, recursive: true);
         }
     }
 }
