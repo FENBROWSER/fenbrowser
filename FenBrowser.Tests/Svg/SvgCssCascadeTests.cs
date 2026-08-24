@@ -305,6 +305,67 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
+        public void CssZoom_ScalesGeometryAndPathLengthTogether()
+        {
+            const string actualSvg =
+                "<svg width='480' height='480'><style>rect{zoom:2;path-length:10px}</style>" +
+                "<rect x='20' y='20' width='200' height='200' fill='none' stroke='black' " +
+                "stroke-width='5' stroke-dasharray='.25'/></svg>";
+            const string referenceSvg =
+                "<svg width='480' height='480'><rect x='20' y='20' width='200' height='200' " +
+                "style='zoom:200%' fill='none' stroke='black' stroke-width='5' stroke-dasharray='20'/></svg>";
+
+            using var actual = new FenSvgRenderer().Render(actualSvg);
+            using var expected = new FenSvgRenderer().Render(referenceSvg);
+
+            Assert.True(actual.Success, actual.ErrorMessage);
+            Assert.False(actual.RequiresFallback);
+            Assert.True(expected.Success, expected.ErrorMessage);
+            Assert.False(expected.RequiresFallback);
+            for (int y = 0; y < actual.Bitmap.Height; y++)
+            for (int x = 0; x < actual.Bitmap.Width; x++)
+                Assert.Equal(expected.Bitmap.GetPixel(x, y), actual.Bitmap.GetPixel(x, y));
+        }
+
+        [Theory]
+        [InlineData("normal")]
+        [InlineData("-1")]
+        [InlineData("invalid")]
+        public void CssZoom_InvalidOrNormalValuesDoNotChangeRendering(string zoom)
+        {
+            const string referenceSvg =
+                "<svg width='40' height='40'><rect x='5' y='5' width='10' height='10' fill='red'/></svg>";
+            string actualSvg =
+                $"<svg width='40' height='40'><rect style='zoom:{zoom}' x='5' y='5' " +
+                "width='10' height='10' fill='red'/></svg>";
+
+            using var actual = new FenSvgRenderer().Render(actualSvg);
+            using var expected = new FenSvgRenderer().Render(referenceSvg);
+            Assert.True(actual.Success, actual.ErrorMessage);
+            Assert.False(actual.RequiresFallback);
+            for (int y = 0; y < actual.Bitmap.Height; y++)
+            for (int x = 0; x < actual.Bitmap.Width; x++)
+                Assert.Equal(expected.Bitmap.GetPixel(x, y), actual.Bitmap.GetPixel(x, y));
+        }
+
+        [Fact]
+        public void CssZoom_OnRootSvgScalesItsUserCoordinateSystem()
+        {
+            const string actualSvg =
+                "<svg width='40' height='40' style='zoom:2'><rect x='5' y='5' width='10' height='10' fill='red'/></svg>";
+            const string referenceSvg =
+                "<svg width='40' height='40'><g style='zoom:2'><rect x='5' y='5' width='10' height='10' fill='red'/></g></svg>";
+
+            using var actual = new FenSvgRenderer().Render(actualSvg);
+            using var expected = new FenSvgRenderer().Render(referenceSvg);
+            Assert.True(actual.Success, actual.ErrorMessage);
+            Assert.False(actual.RequiresFallback);
+            for (int y = 0; y < actual.Bitmap.Height; y++)
+            for (int x = 0; x < actual.Bitmap.Width; x++)
+                Assert.Equal(expected.Bitmap.GetPixel(x, y), actual.Bitmap.GetPixel(x, y));
+        }
+
+        [Fact]
         public void CssPathLengthZero_MakesDashedStrokeSolid()
         {
             const string actualSvg =

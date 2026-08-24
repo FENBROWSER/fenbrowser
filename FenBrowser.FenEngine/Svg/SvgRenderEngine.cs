@@ -272,6 +272,7 @@ namespace FenBrowser.FenEngine.Svg
                 // vbY would push the clip entirely off-content).
                 canvas.ClipRect(new SKRect(0f, 0f, width, height));
                 ApplyViewportTransform(canvas, viewport, hasViewBox, vbX, vbY, vbW, vbH, root.GetAttribute("preserveAspectRatio"));
+                ApplyCssZoom(root, canvas);
                 if (!rootStyle.Visibility)
                 {
                     picture = recorder.EndRecording();

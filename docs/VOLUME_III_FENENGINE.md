@@ -11252,3 +11252,19 @@ Verification:
   improves to 132 first-party documents, 63 compatibility fallbacks, and 75/93
   declared-reference passes; renderer, hybrid, worker, timeout, and read failures
   remain zero.
+
+## 2.142 CSS Zoom In SVG User Coordinate Systems (2026-08-24)
+
+- The SVG cascade accepts `zoom` and applies valid non-negative number and
+  percentage values as a local user-coordinate-system scale on the root and
+  drawable descendants. Group propagation follows canvas state rather than
+  incorrectly treating `zoom` as an inherited property.
+- Zoom is composed before element transforms and before local clipping/painting,
+  so geometry, strokes, and `path-length` dash calibration scale together. The
+  path-length calibration itself remains in unzoomed local coordinates.
+- Invalid and negative values compute to no local scale. Scales above 4096 are
+  compatibility-routed instead of constructing an unbounded transform; CSS math
+  forms remain explicitly routed until the shared number evaluator supports them.
+- Release SVG verification passes 342/342. The 198-file static selection improves
+  from 132 to 134 first-party documents and from 75 to 76 declared-reference
+  passes, with 61 compatibility fallbacks and no renderer or worker failures.

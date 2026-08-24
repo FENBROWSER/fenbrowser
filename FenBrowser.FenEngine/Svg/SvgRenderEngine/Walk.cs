@@ -472,6 +472,7 @@ namespace FenBrowser.FenEngine.Svg
             ViewportContext viewport,
             InheritedStyle inherited)
         {
+            ApplyCssZoom(el, canvas);
             if (el.CascadedDeclarations != null &&
                 el.CascadedDeclarations.TryGetValue("transform", out string css) &&
                 !string.IsNullOrWhiteSpace(css))
@@ -481,6 +482,39 @@ namespace FenBrowser.FenEngine.Svg
                 return;
             }
             ApplyAttributeTransform(el, canvas, viewport, inherited);
+        }
+
+        private void ApplyCssZoom(SvgElement element, SKCanvas canvas)
+        {
+            string raw = element.GetPresentationProperty("zoom");
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            string value = raw.Trim();
+            if (value.Equals("normal", StringComparison.OrdinalIgnoreCase)) return;
+
+            float zoom;
+            if (value.EndsWith("%", StringComparison.Ordinal))
+            {
+                if (!SvgValues.TryParseNumber(value.AsSpan(0, value.Length - 1), out zoom)) return;
+                zoom *= 0.01f;
+            }
+            else if (!SvgValues.TryParseNumber(value.AsSpan(), out zoom))
+            {
+                if (value.StartsWith("calc(", StringComparison.OrdinalIgnoreCase) ||
+                    value.StartsWith("min(", StringComparison.OrdinalIgnoreCase) ||
+                    value.StartsWith("max(", StringComparison.OrdinalIgnoreCase) ||
+                    value.StartsWith("clamp(", StringComparison.OrdinalIgnoreCase))
+                    _report.RequireFallback("SVG CSS zoom math requires compatibility fallback");
+                return;
+            }
+
+            if (!float.IsFinite(zoom) || zoom < 0f) return;
+            if (zoom > 4096f)
+            {
+                _report.RequireFallback("SVG CSS zoom exceeds the bounded scale limit");
+                return;
+            }
+            if (zoom != 1f)
+                canvas.Concat(SKMatrix.CreateScale(zoom, zoom));
         }
 
         /// <summary>

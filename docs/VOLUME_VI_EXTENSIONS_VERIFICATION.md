@@ -4724,3 +4724,22 @@ Verification:
 - Remaining static CSS blockers are `zoom`, dynamic selector invalidation,
   margin/padding, and `width`/`height: auto` around `foreignObject`; malformed
   geometry math is no longer a blocker. First-party remains non-default.
+
+## 6.207 CSS Zoom And Path-Length Conformance (2026-08-24)
+
+- `path/distance/path-length-css-zoom.tentative.svg` and its declared reference
+  previously routed on the unsupported `zoom` declaration. The owning fix adds
+  bounded local-coordinate zoom while preserving path-length calibration before
+  the canvas scale.
+- The two-file targeted corpus is 2/2 first-party; the test is 1/1 against its
+  declared reference with zero fallback, rejection, or failure.
+- Complete Release SVG tests pass 342/342. The full 198-file static selection is
+  now 134 first-party, 61 compatibility fallbacks, 3 resource rejections, and
+  76/93 declared-reference passes; 17 references remain blocked and 4 non-SVG
+  targets remain unresolved. Renderer, hybrid, worker, timeout, and read failure
+  counters remain zero.
+- The signed captured-site gate remains 151/151 first-party with a validated
+  manifest and no fallback, rejection, failure, timeout, skip, or truncation.
+- Static CSS `zoom` is no longer a blocker. Remaining CSS-related entries are
+  dynamic selector invalidation, margin/padding, and geometry `auto` around
+  `foreignObject`; first-party remains non-default.
