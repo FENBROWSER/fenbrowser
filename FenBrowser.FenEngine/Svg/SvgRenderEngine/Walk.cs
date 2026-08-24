@@ -143,6 +143,7 @@ namespace FenBrowser.FenEngine.Svg
                         // Spec order: save -> element transform -> clip -> draw
                         // -> restore (unwinds via CanvasState on any exit).
                         ApplyElementTransform(el, canvas, viewport, inherited);
+                        ApplyInitialMotionTransform(el, canvas, viewport);
                         ApplyClipPath(el, canvas, viewport, inherited);
                         DrawShape(el, canvas, viewport, inherited);
                         return;

@@ -211,6 +211,7 @@ namespace FenBrowser.FenEngine.Svg
                 openStack.Add(child);
             }
 
+            SvgFeatureSupport.InspectHierarchy(root, state.Report);
             document = doc;
             return true;
         }

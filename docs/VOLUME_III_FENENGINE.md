@@ -11316,3 +11316,21 @@ Verification:
   first-party documents, 53 explicit dynamic-content fallbacks, one external
   `@import` rejection, and 81/93 declared-reference passes with zero comparable
   reference failures, renderer failures, worker failures, or timeouts.
+
+## 2.146 Deterministic Time-Zero SVG Motion Snapshots (2026-08-24)
+
+- The isolated renderer records a deterministic document-time-zero snapshot for
+  a bounded `animateMotion` subset on basic geometry. Inline paths and local
+  `mpath` references are measured across capped contours; the initial key point
+  supplies translation and optional numeric/auto rotation.
+- Timing lists are fully parsed and bounded before use. Malformed, mismatched,
+  event-based, composition, unsupported-target, and competing-path cases remain
+  explicit `smil-animation` fallbacks. Non-fragment `mpath` references are
+  resource-rejected and never enter the compatibility renderer.
+- Motion evaluation shares the render deadline, caps contour traversal at 1024,
+  deterministically disposes both path measures and geometry, and adds no clock,
+  global state, network access, or platform-specific API.
+- Release SVG tests pass 357/357. The 198-file static selection reports 145
+  first-party documents, 52 compatibility fallbacks, one resource rejection,
+  and 82/93 declared-reference passes with no comparable reference failures or
+  renderer/worker failures.

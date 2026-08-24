@@ -161,7 +161,8 @@ if (args.Contains("--stress-only"))
                 "<svg width='40' height='30'><defs><filter id='f'><feGaussianBlur stdDeviation='2'/></filter></defs><rect x='8' y='5' width='20' height='20' filter='url(#f)'/></svg>",
                 "<svg width='40' height='30'><defs><mask id='m' mask-type='alpha' maskContentUnits='objectBoundingBox'><rect width='.5' height='1'/></mask></defs><rect x='5' y='5' width='30' height='20' mask='url(#m)'/></svg>",
                 "<svg width='50' height='30'><defs><marker id='m' markerWidth='4' markerHeight='4' refX='2' refY='2' markerUnits='userSpaceOnUse'><circle cx='2' cy='2' r='2'/></marker></defs><line x1='5' y1='15' x2='40' y2='15' stroke='black' marker-end='url(#m)'/></svg>",
-                "<svg width='160' height='40'><defs><path id='p' d='M4 28 H156'/></defs><text font-size='18'><textPath href='#p'>FenBrowser</textPath></text></svg>"
+                "<svg width='160' height='40'><defs><path id='p' d='M4 28 H156'/></defs><text font-size='18'><textPath href='#p'>FenBrowser</textPath></text></svg>",
+                "<svg width='120' height='40'><path id='p' d='M10 20 H110'/><circle r='4'><animateMotion dur='1s' keyPoints='.5;.5' keyTimes='0;1'><mpath href='#p'/></animateMotion></circle></svg>"
             })
             .ToArray(),
         iterations: 10_000);

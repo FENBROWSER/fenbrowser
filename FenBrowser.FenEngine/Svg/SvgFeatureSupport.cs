@@ -12,7 +12,7 @@ namespace FenBrowser.FenEngine.Svg
     {
         private static readonly HashSet<string> FallbackElements = new(StringComparer.Ordinal)
         {
-            "foreignObject", "animation", "animate", "animateTransform", "animateMotion", "set"
+            "foreignObject", "animation", "animate", "animateTransform", "set"
         };
 
         private static readonly HashSet<string> FallbackProperties = new(StringComparer.OrdinalIgnoreCase)
@@ -71,6 +71,22 @@ namespace FenBrowser.FenEngine.Svg
                 {
                     report.RequireFallback($"SVG property '{attribute.Key}' requires compatibility fallback");
                 }
+            }
+        }
+
+        public static void InspectHierarchy(SvgElement root, SvgParseReport report)
+        {
+            var pending = new Stack<SvgElement>();
+            pending.Push(root);
+            while (pending.Count != 0)
+            {
+                SvgElement element = pending.Pop();
+                if (element.Name.Equals("animateMotion", StringComparison.Ordinal) &&
+                    element.Parent?.Name is not ("path" or "rect" or "circle" or "ellipse" or "line" or "polyline" or "polygon"))
+                {
+                    report.RequireFallback("SVG animateMotion target requires compatibility fallback");
+                }
+                for (int i = 0; i < element.Children.Count; i++) pending.Push(element.Children[i]);
             }
         }
 

@@ -4797,3 +4797,22 @@ Verification:
   gate remains 151/151 first-party with a validated manifest and no fallback,
   rejection, renderer/worker failure, timeout, skip, or truncation. First-party
   remains non-default while dynamic and browser-level conformance work remains.
+
+## 6.211 Bounded MPath Snapshot Conformance (2026-08-24)
+
+- `path/property/mpath.svg` previously carried the final static
+  `smil-animation` fallback. Its constant initial key point now renders
+  first-party and matches `mpath-ref.svg` exactly on Windows and Ubuntu 24.04
+  WSL using the same portable Release publish.
+- Focused motion/diagnostic tests pass 12/12 and the complete Release SVG
+  namespace passes 357/357. The full 198-file static selection improves from
+  144 to 145 first-party documents, from 53 to 52 fallbacks, and from 81 to 82
+  declared-reference passes; all 82 comparable references pass and 11 remain
+  blocked by browser-level dynamic/resource routing.
+- The signed captured-site gate remains 151/151 first-party. Native-ownership
+  stress includes motion-path measurement and completes 10,000 renders with
+  zero failures on both Windows and Ubuntu: retained private bytes are
+  10,571,776 and 10,010,624 respectively, both below the 67,108,864-byte limit.
+- General timeline advancement, event timing, animation composition, and
+  non-geometry motion targets remain explicit browser/runtime work; first-party
+  remains non-default.
