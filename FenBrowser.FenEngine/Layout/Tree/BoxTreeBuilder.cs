@@ -475,12 +475,22 @@ namespace FenBrowser.FenEngine.Layout.Tree
         {
             if (box.Children.Count == 0) return;
 
+            // Snapshot before any work. Reparenting an inline child into a fresh
+            // anonymous block calls LayoutBoxStore.AddChild(anon, child), which
+            // removes the child from this box's LIVE store-backed children list.
+            // Iterating that live list while it shrinks makes foreach silently skip
+            // every sibling that follows a moved inline child, dropping whole
+            // subtrees (e.g. the <form> after <br> on the Google /sorry CAPTCHA
+            // page) out of the layout tree. The snapshot keeps iteration stable;
+            // the store remains the single source of truth for the final relink.
+            var children = new List<LayoutBox>(box.Children);
+
             bool hasBlockChildren = false;
             bool hasInlineChildren = false;
             bool hasInFlowBlockChildren = false;
             bool hasFloatChildren = false;
 
-            foreach (var child in box.Children)
+            foreach (var child in children)
             {
                 if (IsBlockLevel(child)) hasBlockChildren = true;
                 if (IsInlineLevel(child)) hasInlineChildren = true;
@@ -499,7 +509,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
                 var floatChildren = new List<LayoutBox>();
                 AnonymousBlockBox inlineFlow = null;
 
-                foreach (var child in box.Children)
+                foreach (var child in children)
                 {
                     if (IsFloated(child))
                     {
@@ -540,7 +550,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
             var newChildren = new List<LayoutBox>();
             AnonymousBlockBox currentAnon = null;
 
-            foreach (var child in box.Children)
+            foreach (var child in children)
             {
                 if (IsInlineLevel(child))
                 {
@@ -552,7 +562,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     }
                     currentAnon.AddChild(child);
                     // Update parent to be the anon box
-                    child.Parent = currentAnon; 
+                    child.Parent = currentAnon;
                 }
                 else
                 {
@@ -561,7 +571,7 @@ namespace FenBrowser.FenEngine.Layout.Tree
                     newChildren.Add(child);
                 }
             }
-            
+
             // Replace children
             box.Children.Clear();
             foreach (var childBox in newChildren)
@@ -897,4 +907,3 @@ namespace FenBrowser.FenEngine.Layout.Tree
         }
     }
 }
-

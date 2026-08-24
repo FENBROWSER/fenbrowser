@@ -103,6 +103,10 @@
     <Compile Include="Engine\CustomHtmlEngineFallbackPromotionTests.cs" />
     <Compile Include="Engine\CustomHtmlEngineNoJsNormalizationTests.cs" />
     <Compile Include="Engine\MediaWikiDeduplicatedInlineStyleTests.cs" />
+    <!-- Google /sorry CAPTCHA page layout regression (br before block with
+         atomic replaced element collapses the form subtree). -->
+    <Compile Include="Engine\GoogleSorryPageLayoutRegressionTests.cs" />
+    <Compile Include="Engine\BrIsolationTests.cs" />
     <!-- PII-safe cookie diagnostics regression; NavigationGlobalsProbeTests stays
          excluded because the production probe type was removed. -->
     <Compile Include="Diagnostics\CookieDiagnosticsTests.cs" />

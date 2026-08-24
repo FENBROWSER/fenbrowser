@@ -93,6 +93,7 @@ flowchart TD
 ```
 
 1.  **Box Tree Construction**: The `BoxTreeBuilder` traverses the DOM and generates a `LayoutBox` tree.
+    - Mixed inline/block fixup snapshots the original store-backed child list before reparenting inline children into anonymous blocks. Reparenting can therefore no longer mutate the active enumeration and skip a following block subtree, including the form after `<br>` on Google `/sorry` pages.
     - _Note:_ One DOM node can generate multiple boxes (e.g., specific for `display: list-item` markers).
 2.  **Context Resolution**: The engine determines the **Formatting Context** for each box.
     - `BlockFormattingContext`: Vertical stacking.
