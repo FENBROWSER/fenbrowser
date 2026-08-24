@@ -71,7 +71,13 @@ public readonly record struct HitTestResult(
     /// <summary>
     /// The src attribute of an img element (if hit element is an img).
     /// </summary>
-    string? ImageSrc = null
+    string? ImageSrc = null,
+
+    /// <summary>
+    /// Helper text to show in a native hover tooltip. Resolved from the title
+    /// attribute, falling back to aria-label on interactive controls.
+    /// </summary>
+    string? Tooltip = null
 )
 {
     /// <summary>

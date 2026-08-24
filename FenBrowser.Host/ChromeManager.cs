@@ -45,6 +45,14 @@ namespace FenBrowser.Host
         private bool _isDragging = false;
         private System.Numerics.Vector2 _lastMousePos;
 
+        // Page-content hover tooltip (title/aria-label helper text)
+        private string _pageTooltipText;
+        private string _pageTooltipCandidate;
+        private object _pageTooltipCandidateElement;
+        private System.Threading.Timer _pageTooltipTimer;
+        private int _pageTooltipGeneration;
+        private const int PageTooltipDelayMs = 500;
+
         // DevTools
         private DevToolsController _devTools;
         private DevToolsHostAdapter _devToolsHost;
@@ -786,6 +794,7 @@ namespace FenBrowser.Host
 
         private void OnMouseDown(IMouse m, MouseButton b)
         {
+            ClearPageTooltip();
             _mouse = m; // Cache for other logic
             float dpi = WindowManager.Instance.DpiScale;
             float x = m.Position.X / dpi;
@@ -857,12 +866,16 @@ namespace FenBrowser.Host
              }
 
              var hit = _root?.HitTestDeep(x,y);
-             
+
              if (_hoveredWidget != hit) {
                  _hoveredWidget?.OnMouseMove(-9999, -9999); // Leave
                  _hoveredWidget = hit;
              }
-             
+
+             if (hit is not WebContentWidget) {
+                 ClearPageTooltip();
+             }
+
              if (hit != null) {
                  if (!(hit is WebContentWidget)) {
                      CursorManager.UpdateCursor(m, GetCursorForWidget(hit));
@@ -940,6 +953,7 @@ namespace FenBrowser.Host
                     pointerMove.ViewportTop);
                 CursorManager.UpdateFromHitTest(_mouse, result);
                 _statusBar?.UpdateFromHitTest(result);
+                UpdatePageTooltip(result);
             }
         }
         
@@ -960,11 +974,78 @@ namespace FenBrowser.Host
             _root?.HitTestDeep(x,y)?.OnMouseWheel(x,y, w.X, w.Y);
         }
         
+        private void UpdatePageTooltip(FenBrowser.FenEngine.Interaction.HitTestResult result)
+        {
+            if (_isDragging || (_mouse != null && _mouse.IsButtonPressed(MouseButton.Left)))
+            {
+                ClearPageTooltip();
+                return;
+            }
+
+            var text = result.Tooltip;
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                ClearPageTooltip();
+                return;
+            }
+
+            if (!ReferenceEquals(_pageTooltipCandidateElement, result.NativeElement) ||
+                !string.Equals(_pageTooltipCandidate, text, StringComparison.Ordinal))
+            {
+                ClearPageTooltip();
+                _pageTooltipCandidate = text;
+                _pageTooltipCandidateElement = result.NativeElement;
+                var generation = _pageTooltipGeneration;
+                var candidateElement = result.NativeElement;
+                _pageTooltipTimer = new System.Threading.Timer(
+                    _ => RunOnUiThread(() => ShowPageTooltipAfterDelay(text, candidateElement, generation)),
+                    null,
+                    PageTooltipDelayMs,
+                    System.Threading.Timeout.Infinite);
+            }
+        }
+
+        private void ShowPageTooltipAfterDelay(string text, object candidateElement, int generation)
+        {
+            if (generation != _pageTooltipGeneration ||
+                !ReferenceEquals(_pageTooltipCandidateElement, candidateElement) ||
+                !string.Equals(_pageTooltipCandidate, text, StringComparison.Ordinal) ||
+                _isDragging ||
+                (_mouse != null && _mouse.IsButtonPressed(MouseButton.Left)))
+            {
+                return;
+            }
+
+            _pageTooltipText = text;
+            _root?.Invalidate();
+        }
+
+        private void ClearPageTooltip()
+        {
+            var wasVisible = _pageTooltipText != null;
+            _pageTooltipGeneration++;
+            _pageTooltipTimer?.Dispose();
+            _pageTooltipTimer = null;
+            _pageTooltipText = null;
+            _pageTooltipCandidate = null;
+            _pageTooltipCandidateElement = null;
+            if (wasVisible)
+            {
+                _root?.Invalidate();
+            }
+        }
+
         private void DrawTooltip(SKCanvas canvas)
         {
-            if (_hoveredWidget == null || string.IsNullOrEmpty(_hoveredWidget.HelpText) || _isDragging || (_mouse != null && _mouse.IsButtonPressed(MouseButton.Left))) return;
-            
-            var text = _hoveredWidget.HelpText;
+            var widgetText = (_hoveredWidget != null && !_isDragging && !(_mouse != null && _mouse.IsButtonPressed(MouseButton.Left)))
+                ? _hoveredWidget.HelpText
+                : null;
+            var pageText = (_pageTooltipText != null && !_isDragging && !(_mouse != null && _mouse.IsButtonPressed(MouseButton.Left)))
+                ? _pageTooltipText
+                : null;
+            var text = !string.IsNullOrEmpty(widgetText) ? widgetText : pageText;
+            if (string.IsNullOrEmpty(text)) return;
+
             var theme = ThemeManager.Current;
             using var font = new SKFont(SKTypeface.Default, 12);
             using var paint = new SKPaint { Color = theme.Text, IsAntialias = true };
@@ -987,6 +1068,9 @@ namespace FenBrowser.Host
 
         private void Shutdown()
         {
+             _pageTooltipGeneration++;
+             _pageTooltipTimer?.Dispose();
+             _pageTooltipTimer = null;
              if (_root != null)
              {
                  _root.Invalidated -= OnRootInvalidated;

@@ -1609,6 +1609,11 @@ Verification:
 
 - `dotnet build FenBrowser.Host/FenBrowser.Host.csproj --nologo --verbosity minimal --no-restore`: passed with zero errors; three pre-existing Skia deprecation warnings remain.
 
-### Text Caret Compositing (2026-08-24)
+### Text Caret Compositing and Page-Content Tooltips (2026-08-24)
 
 - `SkiaDomRenderer` composites the focused editable's text caret after the cached page frame. `BrowserIntegration` and the renderer-child loop request only blink-phase frames for a caret owned by that renderer; cancellation follows the integration lifetime. Caret state is captured atomically, password width uses the painted bullet string, and visibility uses a 1060 ms cycle anchored to the last caret change.
+- `ChromeManager` shows native-style hover tooltips for page content. `HitTestResult.Tooltip` projects inherited `title` text or an interactive control's `aria-label`; a one-shot timer invalidates chrome after a stable 500 ms hover even when the pointer stops moving. Tooltips clear on web-content exit, pointer press, or shutdown.
+
+Verification:
+
+- Focused caret-state and hit-test tooltip contracts cover publish/clear/clamp/blink anchoring plus `title` and `aria-label` projection.

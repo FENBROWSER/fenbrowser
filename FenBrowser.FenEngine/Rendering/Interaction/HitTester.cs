@@ -313,6 +313,7 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
             bool isEditable = tagLow == "input" || tagLow == "textarea";
             string imageSrc = tagLow == "img" ? element.GetAttribute("src") : null;
             var resolvedCursor = ResolveCursor(element, tagLow, href, isClickable, isEditable);
+            var tooltip = ResolveTooltip(sourceElement, element);
 
             return new global::FenBrowser.FenEngine.Interaction.HitTestResult(
                 TagName: tagLow ?? "",
@@ -324,8 +325,52 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                 ElementId: elementId,
                 NativeElement: element,
                 BoundingBox: bounds,
-                ImageSrc: imageSrc
+                ImageSrc: imageSrc,
+                Tooltip: tooltip
             );
+        }
+
+        private static string ResolveTooltip(Element hitElement, Element resolvedElement)
+        {
+            for (var current = hitElement; current != null; current = current.ParentElement)
+            {
+                var title = current.GetAttribute("title");
+                if (!string.IsNullOrWhiteSpace(title))
+                {
+                    return NormalizeTooltip(title);
+                }
+            }
+
+            if (resolvedElement != null && IsTooltipControl(resolvedElement))
+            {
+                var label = resolvedElement.GetAttribute("aria-label");
+                if (!string.IsNullOrWhiteSpace(label))
+                {
+                    return NormalizeTooltip(label);
+                }
+            }
+
+            return null;
+        }
+
+        private static string NormalizeTooltip(string value)
+        {
+            const int maxTooltipChars = 512;
+            var text = value.Trim();
+            return text.Length <= maxTooltipChars ? text : text.Substring(0, maxTooltipChars);
+        }
+
+        private static bool IsTooltipControl(Element element)
+        {
+            var tag = element.TagName?.ToLowerInvariant();
+            if (tag == "button" || tag == "a" || tag == "input" || tag == "textarea" ||
+                tag == "select" || tag == "label" || tag == "summary")
+            {
+                return true;
+            }
+
+            var role = element.GetAttribute("role")?.ToLowerInvariant();
+            return role == "button" || role == "link" || role == "tab" || role == "checkbox" || role == "radio";
         }
 
         private static bool TryRetargetFrameResult(

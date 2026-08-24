@@ -134,5 +134,53 @@ namespace FenBrowser.Tests.Rendering
             var hit = HitTester.HitTest(ctx, 10, 10);
             Assert.Same(back, hit);
         }
+
+        [Fact]
+        public void HitTest_ProjectsTitleFromHitAncestorIntoTooltip()
+        {
+            var button = new Element("button");
+            button.SetAttribute("title", "Open settings");
+            var icon = new Element("span");
+            button.AppendChild(icon);
+
+            Assert.True(HitTester.HitTest(ContextFor(icon), 10, 10, out var hit));
+            Assert.Equal("Open settings", hit.Tooltip);
+        }
+
+        [Fact]
+        public void HitTest_UsesAriaLabelForInteractiveControlTooltip()
+        {
+            var button = new Element("button");
+            button.SetAttribute("aria-label", "Start voice search");
+
+            Assert.True(HitTester.HitTest(ContextFor(button), 10, 10, out var hit));
+            Assert.Equal("Start voice search", hit.Tooltip);
+        }
+
+        [Fact]
+        public void HitTest_BoundsUntrustedTooltipText()
+        {
+            var button = new Element("button");
+            button.SetAttribute("title", new string('x', 2_000));
+
+            Assert.True(HitTester.HitTest(ContextFor(button), 10, 10, out var hit));
+            Assert.Equal(512, hit.Tooltip.Length);
+        }
+
+        private static RenderContext ContextFor(Element element)
+        {
+            return new RenderContext
+            {
+                PaintTreeRoots = new List<PaintNodeBase>
+                {
+                    new BackgroundPaintNode
+                    {
+                        SourceNode = element,
+                        Bounds = new SKRect(0, 0, 100, 100),
+                        Color = SKColors.Transparent
+                    }
+                }
+            };
+        }
     }
 }
