@@ -152,12 +152,13 @@ namespace FenBrowser.FenEngine.Svg
         private float Attr(
             SvgElement el,
             string name,
+            ViewportContext viewport,
             float percentReference,
             float fontSize,
             float rootFontSize)
         {
             return TryResolveGeometryLength(
-                    el, name, percentReference, fontSize, rootFontSize, out float value)
+                    el, name, viewport, percentReference, fontSize, rootFontSize, out float value)
                 ? value
                 : 0f;
         }
@@ -165,6 +166,7 @@ namespace FenBrowser.FenEngine.Svg
         private bool TryResolveGeometryLength(
             SvgElement element,
             string name,
+            ViewportContext viewport,
             float percentReference,
             float fontSize,
             float rootFontSize,
@@ -185,6 +187,8 @@ namespace FenBrowser.FenEngine.Svg
                          percentReference,
                          fontSize,
                          rootFontSize,
+                         viewport.Width,
+                         viewport.Height,
                          out value))
             {
                 RequireFallbackForUnsupportedGeometryLength(element, name, raw);
@@ -275,10 +279,10 @@ namespace FenBrowser.FenEngine.Svg
             float fontSize,
             float rootFontSize)
         {
-            float x = Attr(el, "x", viewport.Width, fontSize, rootFontSize);
-            float y = Attr(el, "y", viewport.Height, fontSize, rootFontSize);
-            float w = Attr(el, "width", viewport.Width, fontSize, rootFontSize);
-            float h = Attr(el, "height", viewport.Height, fontSize, rootFontSize);
+            float x = Attr(el, "x", viewport, viewport.Width, fontSize, rootFontSize);
+            float y = Attr(el, "y", viewport, viewport.Height, fontSize, rootFontSize);
+            float w = Attr(el, "width", viewport, viewport.Width, fontSize, rootFontSize);
+            float h = Attr(el, "height", viewport, viewport.Height, fontSize, rootFontSize);
             if (w <= 0f || h <= 0f)
             {
                 return false; // Zero/negative extents disable rendering (spec).
@@ -287,9 +291,9 @@ namespace FenBrowser.FenEngine.Svg
             // P0.6: parse rx/ry once (previously Attr + HasPositiveAttr each
             // re-parsed the same attribute string).
             bool hasRx = TryParsePositive(
-                el, "rx", viewport.Width, fontSize, rootFontSize, out float rx);
+                el, "rx", viewport, viewport.Width, fontSize, rootFontSize, out float rx);
             bool hasRy = TryParsePositive(
-                el, "ry", viewport.Height, fontSize, rootFontSize, out float ry);
+                el, "ry", viewport, viewport.Height, fontSize, rootFontSize, out float ry);
             if (!hasRx) rx = 0f;
             if (!hasRy) ry = 0f;
 
@@ -316,13 +320,15 @@ namespace FenBrowser.FenEngine.Svg
         private bool TryParsePositive(
             SvgElement el,
             string name,
+            ViewportContext viewport,
             float percentReference,
             float fontSize,
             float rootFontSize,
             out float value)
         {
             return TryResolveGeometryLength(
-                       el, name, percentReference, fontSize, rootFontSize, out value) && value > 0f;
+                       el, name, viewport, percentReference, fontSize, rootFontSize, out value) &&
+                   value > 0f;
         }
 
         private bool AppendCircle(
@@ -334,14 +340,14 @@ namespace FenBrowser.FenEngine.Svg
         {
             float diagonal = MathF.Sqrt(
                 (viewport.Width * viewport.Width + viewport.Height * viewport.Height) / 2f);
-            float r = Attr(el, "r", diagonal, fontSize, rootFontSize);
+            float r = Attr(el, "r", viewport, diagonal, fontSize, rootFontSize);
             if (r <= 0f)
             {
                 return false;
             }
             path.AddCircle(
-                Attr(el, "cx", viewport.Width, fontSize, rootFontSize),
-                Attr(el, "cy", viewport.Height, fontSize, rootFontSize),
+                Attr(el, "cx", viewport, viewport.Width, fontSize, rootFontSize),
+                Attr(el, "cy", viewport, viewport.Height, fontSize, rootFontSize),
                 r);
             return true;
         }
@@ -353,12 +359,12 @@ namespace FenBrowser.FenEngine.Svg
             float fontSize,
             float rootFontSize)
         {
-            float cx = Attr(el, "cx", viewport.Width, fontSize, rootFontSize);
-            float cy = Attr(el, "cy", viewport.Height, fontSize, rootFontSize);
+            float cx = Attr(el, "cx", viewport, viewport.Width, fontSize, rootFontSize);
+            float cy = Attr(el, "cy", viewport, viewport.Height, fontSize, rootFontSize);
             float? rxValue = ResolveAutoRadius(
-                el, "rx", viewport.Width, fontSize, rootFontSize);
+                el, "rx", viewport, viewport.Width, fontSize, rootFontSize);
             float? ryValue = ResolveAutoRadius(
-                el, "ry", viewport.Height, fontSize, rootFontSize);
+                el, "ry", viewport, viewport.Height, fontSize, rootFontSize);
             if (!rxValue.HasValue && !ryValue.HasValue) return false;
             float rx = rxValue ?? ryValue.Value;
             float ry = ryValue ?? rxValue.Value;
@@ -374,6 +380,7 @@ namespace FenBrowser.FenEngine.Svg
         private float? ResolveAutoRadius(
             SvgElement element,
             string name,
+            ViewportContext viewport,
             float percentReference,
             float fontSize,
             float rootFontSize)
@@ -383,7 +390,8 @@ namespace FenBrowser.FenEngine.Svg
                 raw.Trim().Equals("auto", System.StringComparison.OrdinalIgnoreCase))
                 return null;
             if (!TryResolveGeometryLength(
-                    element, name, percentReference, fontSize, rootFontSize, out float value)) return null;
+                    element, name, viewport, percentReference, fontSize, rootFontSize, out float value))
+                return null;
             return value < 0f ? null : value;
         }
 
@@ -395,11 +403,11 @@ namespace FenBrowser.FenEngine.Svg
             float rootFontSize)
         {
             path.MoveTo(
-                Attr(el, "x1", viewport.Width, fontSize, rootFontSize),
-                Attr(el, "y1", viewport.Height, fontSize, rootFontSize));
+                Attr(el, "x1", viewport, viewport.Width, fontSize, rootFontSize),
+                Attr(el, "y1", viewport, viewport.Height, fontSize, rootFontSize));
             path.LineTo(
-                Attr(el, "x2", viewport.Width, fontSize, rootFontSize),
-                Attr(el, "y2", viewport.Height, fontSize, rootFontSize));
+                Attr(el, "x2", viewport, viewport.Width, fontSize, rootFontSize),
+                Attr(el, "y2", viewport, viewport.Height, fontSize, rootFontSize));
             return true;
         }
 

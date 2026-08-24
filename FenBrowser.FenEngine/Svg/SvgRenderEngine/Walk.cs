@@ -191,19 +191,27 @@ namespace FenBrowser.FenEngine.Svg
             ViewportContext outer,
             InheritedStyle inherited)
         {
-            RequireFallbackForNestedSvgLayoutSizing(el, "width");
-            RequireFallbackForNestedSvgLayoutSizing(el, "height");
-            // Nested <svg> viewport dimensions are XML geometry attributes, not
-            // CSS presentation properties. CSS width/height declarations must
-            // not override them; omitted dimensions default to 100%.
+            // CSS sizing participates on nested <svg> only for forms whose
+            // resolution requires the containing block or nearest viewport:
+            // fill/stretch sizing keywords, calc-size(), and viewport-unit
+            // lengths. Plain length/percentage/calc declarations never override
+            // XML geometry here; omitted dimensions default to 100%.
+            bool hasCssWidth = TryResolveNestedSvgCssSizing(
+                el, "width", outer.Width, outer.Height, out float cssWidth);
+            bool hasCssHeight = TryResolveNestedSvgCssSizing(
+                el, "height", outer.Width, outer.Height, out float cssHeight);
             string widthAttribute = el.GetAttribute("width");
             string heightAttribute = el.GetAttribute("height");
-            float w = string.IsNullOrWhiteSpace(widthAttribute)
-                ? outer.Width
-                : ResolveViewportLength(widthAttribute, outer.Width);
-            float h = string.IsNullOrWhiteSpace(heightAttribute)
-                ? outer.Height
-                : ResolveViewportLength(heightAttribute, outer.Height);
+            float w = hasCssWidth
+                ? cssWidth
+                : string.IsNullOrWhiteSpace(widthAttribute)
+                    ? outer.Width
+                    : ResolveViewportLength(widthAttribute, outer.Width);
+            float h = hasCssHeight
+                ? cssHeight
+                : string.IsNullOrWhiteSpace(heightAttribute)
+                    ? outer.Height
+                    : ResolveViewportLength(heightAttribute, outer.Height);
             if (w <= 0f || h <= 0f)
             {
                 return;
@@ -240,30 +248,55 @@ namespace FenBrowser.FenEngine.Svg
             });
         }
 
-        private void RequireFallbackForNestedSvgLayoutSizing(SvgElement element, string property)
+        /// <summary>
+        /// Resolves a cascaded CSS width/height declaration on a nested &lt;svg&gt;
+        /// when it is one of the supported viewport-dependent forms. Returns false
+        /// for every other value (including valid plain lengths and percentages),
+        /// leaving XML attribute/default sizing in charge. Negative results are
+        /// invalid per spec and likewise return false.
+        /// </summary>
+        private static bool TryResolveNestedSvgCssSizing(
+            SvgElement element,
+            string property,
+            float viewportWidth,
+            float viewportHeight,
+            out float value)
         {
+            value = 0f;
             if (element.CascadedDeclarations == null ||
-                !element.CascadedDeclarations.TryGetValue(property, out string value) ||
-                string.IsNullOrWhiteSpace(value))
-                return;
-            string lower = value.Trim().ToLowerInvariant();
-            bool requiresCssLayout = lower.StartsWith("calc-size(", System.StringComparison.Ordinal) ||
-                                     lower is "fit-content" or "min-content" or "max-content" or "stretch" ||
-                                     HasNestedSvgViewportUnit(lower);
-            if (requiresCssLayout)
-                _report.RequireFallback(
-                    $"nested SVG CSS {property} sizing requires compatibility layout fallback");
-        }
+                !element.CascadedDeclarations.ContainsKey(property))
+                return false;
+            string resolved = element.GetPresentationProperty(property);
+            if (string.IsNullOrWhiteSpace(resolved) ||
+                resolved.Length > SvgMarkupParser.MaxAttributeValueChars)
+                return false;
+            string trimmed = resolved.Trim();
+            float percentReference = property == "width" ? viewportWidth : viewportHeight;
 
-        private static bool HasNestedSvgViewportUnit(string value)
-        {
-            int end = value.Length;
-            while (end > 0 && char.IsWhiteSpace(value[end - 1])) end--;
-            int start = end;
-            while (start > 0 && char.IsLetter(value[start - 1])) start--;
-            string unit = value.Substring(start, end - start);
-            return unit is "vw" or "vh" or "vi" or "vb" or "vmin" or "vmax" or
-                   "cqw" or "cqh" or "cqi" or "cqb" or "cqmin" or "cqmax";
+            if (SvgCssLengthEvaluator.IsNestedSvgSizingKeyword(trimmed))
+            {
+                // Fill-available sizing: an SVG viewport has no intrinsic size,
+                // so stretch/fit-content/min-content/max-content all resolve to
+                // the containing viewport extent.
+                value = percentReference;
+                return true;
+            }
+
+            ResolveGeometryFontContext(element, out float fontSize, out float rootFontSize);
+            if (trimmed.StartsWith("calc-size(", System.StringComparison.OrdinalIgnoreCase))
+            {
+                return SvgCssLengthEvaluator.TryEvaluateCalcSize(
+                           trimmed, percentReference, fontSize, rootFontSize,
+                           viewportWidth, viewportHeight, out value) &&
+                       value >= 0f;
+            }
+
+            if (!SvgCssLengthEvaluator.HasViewportUnitDimension(trimmed))
+                return false;
+            return SvgCssLengthEvaluator.TryEvaluate(
+                       trimmed, percentReference, fontSize, rootFontSize,
+                       viewportWidth, viewportHeight, out value) &&
+                   value >= 0f;
         }
 
         private void DrawNestedSvgBody(

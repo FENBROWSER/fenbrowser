@@ -20,10 +20,32 @@ namespace FenBrowser.FenEngine.Svg
             float rootFontSize,
             out float result)
         {
+            return TryEvaluate(
+                value, percentReference, fontSize, rootFontSize,
+                float.NaN, float.NaN, out result);
+        }
+
+        /// <summary>
+        /// Evaluates a &lt;length-percentage&gt; with an explicit viewport context.
+        /// Viewport-unit dimensions resolve against the supplied nearest-SVG-viewport
+        /// dimensions using the same float operation order as the attribute percent
+        /// path, keeping CSS and attribute results bit-identical. Without a context
+        /// (NaN dimensions) viewport units are rejected.
+        /// </summary>
+        public static bool TryEvaluate(
+            string value,
+            float percentReference,
+            float fontSize,
+            float rootFontSize,
+            float viewportWidth,
+            float viewportHeight,
+            out float result)
+        {
             result = 0f;
             if (string.IsNullOrWhiteSpace(value) || value.Length > SvgMarkupParser.MaxAttributeValueChars)
                 return false;
-            var parser = new Parser(value, percentReference, fontSize, rootFontSize);
+            var parser = new Parser(
+                value, percentReference, fontSize, rootFontSize, viewportWidth, viewportHeight);
             if (!parser.TryParseExpression(0, out Numeric numeric) ||
                 parser.Read().Type != CssTokenType.EOF ||
                 (numeric.Kind == NumericKind.Number && numeric.Value != 0d) ||
@@ -31,6 +53,78 @@ namespace FenBrowser.FenEngine.Svg
                 return false;
             result = SvgValues.ClampCoord((float)numeric.Value);
             return float.IsFinite(result);
+        }
+
+        /// <summary>
+        /// Evaluates calc-size(&lt;base&gt;, &lt;calc-sum&gt;) where the base is a sizing
+        /// keyword or length-percentage and the identifier 'size' inside the sum
+        /// substitutes the resolved base length. Bounded by the same depth and
+        /// operation budgets as every other evaluation entry point.
+        /// </summary>
+        public static bool TryEvaluateCalcSize(
+            string value,
+            float fillAvailable,
+            float fontSize,
+            float rootFontSize,
+            float viewportWidth,
+            float viewportHeight,
+            out float result)
+        {
+            result = 0f;
+            if (string.IsNullOrWhiteSpace(value) || value.Length > SvgMarkupParser.MaxAttributeValueChars)
+                return false;
+            var parser = new Parser(
+                value, fillAvailable, fontSize, rootFontSize, viewportWidth, viewportHeight,
+                fillAvailable);
+            if (!parser.TryParseCalcSize(0, out Numeric numeric) ||
+                parser.Read().Type != CssTokenType.EOF ||
+                !double.IsFinite(numeric.Value))
+                return false;
+            result = SvgValues.ClampCoord((float)numeric.Value);
+            return float.IsFinite(result);
+        }
+
+        internal static bool IsNestedSvgSizingKeyword(string value) =>
+            value.Equals("stretch", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("fit-content", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("min-content", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("max-content", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsCalcSizeBaseKeyword(string value) =>
+            IsNestedSvgSizingKeyword(value) ||
+            value.Equals("auto", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>True when any dimension token carries a viewport-relative unit.</summary>
+        internal static bool HasViewportUnitDimension(string value)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length > SvgMarkupParser.MaxAttributeValueChars)
+                return false;
+            var tokenizer = new CssTokenizer(value);
+            int scanned = 0;
+            CssToken token;
+            do
+            {
+                token = tokenizer.Consume();
+                if (++scanned > MaxOperations * 4) return false;
+                if (token.Type == CssTokenType.Dimension && IsViewportUnit(token.Unit)) return true;
+            }
+            while (token.Type != CssTokenType.EOF);
+            return false;
+        }
+
+        private static bool IsViewportUnit(string unit)
+        {
+            return unit.Length switch
+            {
+                2 => Eq(unit, "vw") || Eq(unit, "vh") || Eq(unit, "vi") || Eq(unit, "vb"),
+                3 => Eq(unit, "cqw") || Eq(unit, "cqh") || Eq(unit, "cqi") || Eq(unit, "cqb"),
+                4 => Eq(unit, "vmin") || Eq(unit, "vmax"),
+                5 => Eq(unit, "cqmin") || Eq(unit, "cqmax"),
+                _ => false
+            };
+
+            static bool Eq(string raw, string canonical) =>
+                string.Equals(raw, canonical, StringComparison.OrdinalIgnoreCase);
         }
 
         private enum NumericKind { Number, Length }
@@ -43,16 +137,30 @@ namespace FenBrowser.FenEngine.Svg
             private readonly float _percentReference;
             private readonly float _fontSize;
             private readonly float _rootFontSize;
+            private readonly float _viewportWidth;
+            private readonly float _viewportHeight;
+            private readonly double _fillAvailable;
             private CssToken _lookahead;
             private bool _hasLookahead;
             private int _operations;
+            private double _sizeBase = double.NaN;
 
-            public Parser(string value, float percentReference, float fontSize, float rootFontSize)
+            public Parser(
+                string value,
+                float percentReference,
+                float fontSize,
+                float rootFontSize,
+                float viewportWidth,
+                float viewportHeight,
+                double fillAvailable = double.NaN)
             {
                 _tokens = new CssTokenizer(value);
                 _percentReference = percentReference;
                 _fontSize = fontSize;
                 _rootFontSize = rootFontSize;
+                _viewportWidth = viewportWidth;
+                _viewportHeight = viewportHeight;
+                _fillAvailable = fillAvailable;
             }
 
             public bool TryParseExpression(int depth, out Numeric result)
@@ -118,6 +226,11 @@ namespace FenBrowser.FenEngine.Svg
                         return double.IsFinite(result.Value);
                     case CssTokenType.Dimension:
                         return TryResolveDimension(token.NumericValue, token.Unit, out result);
+                    case CssTokenType.Ident
+                        when !double.IsNaN(_sizeBase) &&
+                             token.Value.Equals("size", StringComparison.OrdinalIgnoreCase):
+                        result = new Numeric(_sizeBase, NumericKind.Length);
+                        return true;
                     case CssTokenType.LeftParen:
                         return TryParseParenthesized(depth + 1, out result);
                     case CssTokenType.Function:
@@ -125,6 +238,43 @@ namespace FenBrowser.FenEngine.Svg
                     default:
                         return false;
                 }
+            }
+
+            /// <summary>Parses calc-size(base, sum) with 'size' substitution active
+            /// only inside the second argument. The base is a sizing keyword or any
+            /// bounded length-percentage expression.</summary>
+            internal bool TryParseCalcSize(int depth, out Numeric result)
+            {
+                result = default;
+                if (depth > MaxDepth) return false;
+                CssToken head = Read();
+                if (head.Type != CssTokenType.Function ||
+                    !head.Value.Equals("calc-size", StringComparison.OrdinalIgnoreCase))
+                    return false;
+
+                double sizeBase;
+                CssToken baseToken = Peek();
+                if (baseToken.Type == CssTokenType.Ident && IsCalcSizeBaseKeyword(baseToken.Value))
+                {
+                    Read();
+                    sizeBase = _fillAvailable;
+                }
+                else
+                {
+                    if (!TryParseValue(depth + 1, out Numeric baseValue) ||
+                        baseValue.Kind != NumericKind.Length ||
+                        !double.IsFinite(baseValue.Value))
+                        return false;
+                    sizeBase = baseValue.Value;
+                }
+
+                if (Read().Type != CssTokenType.Comma) return false;
+
+                _sizeBase = sizeBase;
+                bool ok = TryParseExpression(depth + 1, out result) &&
+                          Read().Type == CssTokenType.RightParen;
+                _sizeBase = double.NaN;
+                return ok && double.IsFinite(result.Value);
             }
 
             private bool TryParseParenthesized(int depth, out Numeric result)
@@ -198,10 +348,64 @@ namespace FenBrowser.FenEngine.Svg
                     "rem" => _rootFontSize,
                     _ => double.NaN
                 };
-                if (!double.IsFinite(scale)) return false;
+                if (!double.IsFinite(scale))
+                    return TryResolveViewportUnit(value, unit, out result);
                 result = new Numeric(value * scale, NumericKind.Length);
                 return double.IsFinite(result.Value);
             }
+
+            /// <summary>
+            /// Viewport-relative units resolve against the explicit nearest-SVG-viewport
+            /// dimensions. Container units fall back to the small viewport (no query
+            /// container exists in this engine); vi/vb follow the horizontal-tb inline
+            /// and block axes. The float multiply order matches the attribute percent
+            /// path so equal declared values produce bit-identical geometry.
+            /// </summary>
+            private bool TryResolveViewportUnit(double value, string unit, out Numeric result)
+            {
+                result = default;
+                if (!IsViewportUnit(unit)) return false;
+                if (float.IsNaN(_viewportWidth) || float.IsNaN(_viewportHeight)) return false;
+                float scalar;
+                switch (unit.Length)
+                {
+                    case 2:
+                        char axis = Lower(unit[1]);
+                        bool inlineAxis = axis == 'w' || axis == 'i';
+                        bool extreme = axis == 'n' || axis == 'x';
+                        scalar = !extreme
+                            ? (inlineAxis ? _viewportWidth : _viewportHeight)
+                            : axis == 'n'
+                                ? MathF.Min(_viewportWidth, _viewportHeight)
+                                : MathF.Max(_viewportWidth, _viewportHeight);
+                        break;
+                    case 3:
+                        char containerAxis = Lower(unit[2]);
+                        scalar = containerAxis == 'w' || containerAxis == 'i'
+                            ? _viewportWidth
+                            : _viewportHeight;
+                        break;
+                    case 4:
+                        scalar = Lower(unit[3]) == 'n'
+                            ? MathF.Min(_viewportWidth, _viewportHeight)
+                            : MathF.Max(_viewportWidth, _viewportHeight);
+                        break;
+                    case 5:
+                        scalar = Lower(unit[3]) == 'n'
+                            ? MathF.Min(_viewportWidth, _viewportHeight)
+                            : MathF.Max(_viewportWidth, _viewportHeight);
+                        break;
+                    default:
+                        return false;
+                }
+                if (!float.IsFinite(scalar)) return false;
+                float scaled = (float)value * 0.01f * scalar;
+                if (!float.IsFinite(scaled)) return false;
+                result = new Numeric((double)scaled, NumericKind.Length);
+                return true;
+            }
+
+            private static char Lower(char c) => (char)(c | 0x20);
 
             public CssToken Read()
             {

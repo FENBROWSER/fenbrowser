@@ -171,17 +171,23 @@ namespace FenBrowser.Tests.Svg
         }
 
         [Fact]
-        public void UnsupportedViewportGeometryLength_RequiresFallback()
+        public void ViewportUnitGeometryLength_ResolvesAgainstNearestViewport()
         {
-            const string svg =
-                "<svg width='30' height='10'><style>rect{width:10vw}</style>" +
-                "<rect height='10' fill='red'/></svg>";
+            const string actualSvg =
+                "<svg width='300' height='150'><style>rect{width:10vw}</style>" +
+                "<rect y='70' height='10' fill='red'/></svg>";
+            const string referenceSvg =
+                "<svg width='300' height='150'><rect width='30' y='70' height='10' fill='red'/></svg>";
 
-            using var result = new FenSvgRenderer().Render(svg);
+            using var actual = new FenSvgRenderer().Render(actualSvg);
+            using var expected = new FenSvgRenderer().Render(referenceSvg);
 
-            Assert.True(result.Success, result.ErrorMessage);
-            Assert.True(result.RequiresFallback);
-            Assert.Contains(result.FallbackReasonCodes, code => code == "css-cascade");
+            Assert.True(actual.Success, actual.ErrorMessage);
+            Assert.False(actual.RequiresFallback);
+            Assert.Empty(actual.FallbackReasonCodes);
+            for (int y = 0; y < actual.Bitmap.Height; y++)
+            for (int x = 0; x < actual.Bitmap.Width; x++)
+                Assert.Equal(expected.Bitmap.GetPixel(x, y), actual.Bitmap.GetPixel(x, y));
         }
 
         [Fact]

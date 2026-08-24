@@ -11195,3 +11195,43 @@ Verification:
   intentional compatibility cases on Windows x64 (10,039,296 retained private
   bytes) and Ubuntu 24.04 WSL (15,237,120 retained private bytes), both below the
   fixed 67,108,864-byte ceiling.
+
+## 2.140 Viewport Units And Nested-SVG CSS Sizing In The Static Selection (2026-08-24)
+
+- `SvgCssLengthEvaluator` resolves viewport-relative dimension units against an
+  explicitly supplied nearest-SVG-viewport context (`vw`, `vh`, `vi`, `vb`,
+  `vmin`, `vmax`; container units fall back to the small viewport because this
+  engine has no query container, and `vi`/`vb` follow the horizontal-tb axes).
+  Without a context the units remain rejected, so transform resolution is
+  unchanged. Viewport-unit scalars are computed with the same float operation
+  order as the attribute percentage path, making equal declared values
+  bit-identical between CSS declarations and XML attributes.
+- Shape geometry properties (`x`, `y`, `width`, `height`, `cx`, `cy`, `r`,
+  `rx`, `ry`) thread that explicit viewport context through the evaluator, so a
+  cascaded `width: 10vw` on a rect resolves exactly like `width="10%"`.
+- Nested `<svg>` elements participate in CSS sizing only for forms whose
+  resolution requires layout context, matching the tentative WPT interop
+  position: `stretch`, `fit-content`, `min-content`, and `max-content` resolve
+  to the containing viewport extent (an SVG viewport has no intrinsic size),
+  `calc-size(<base>, <calc-sum>)` evaluates with keyword bases and the `size`
+  substitution token, and viewport-unit-bearing values resolve against the
+  nearest viewport. Plain length, percentage, `calc()`, `auto`, `inherit`, and
+  `initial` declarations still never override nested-svg XML geometry.
+- Invalid or malformed sizing input stays distinct from compatibility routing:
+  malformed `calc-size()` grammar, negative results, depth/operation budget
+  overflow, values beyond the bounded attribute-value cap, and non-finite
+  results are ignored deterministically without fallback codes, keeping
+  first-party routing honest. All evaluation remains bounded by the existing
+  depth (16) and operation (128) ceilings plus per-call parsers; no shared
+  mutable state was added.
+
+Verification:
+
+- Complete Release SVG tests: 330 passed, 0 failed, 0 skipped (303 prior plus 27
+  new positive, invalid, malformed/adversarial, boundary, mixed-cascade,
+  var-indirection, clamp, zero-size, and concurrency cases).
+- The 198-file static WPT selection reports 131 first-party documents (from
+  124), 64 compatibility fallbacks (from 71), and 74/93 comparable
+  declared-reference passes (from 67) with zero declared-reference failures, zero
+  renderer or worker failures, and zero timeouts; blocked reference tests drop
+  from 26 to 19 and unresolved non-SVG targets stay at 4.

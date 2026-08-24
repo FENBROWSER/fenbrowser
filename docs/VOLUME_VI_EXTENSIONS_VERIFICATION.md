@@ -4654,3 +4654,51 @@ Verification:
   ordering, CSS `matrix()` number grammar, and non-finite angle rejection. The
   complete Release SVG slice passes 303/303; the static WPT and captured-site
   results above remain unchanged after these corrections.
+
+## 6.205 Viewport-Unit And Nested-SVG CSS Sizing Conformance (2026-08-24)
+
+- Seven static reftests shared one root cause in the earliest owning stage: the
+  bounded CSS geometry-value resolver accepted lengths, percentages, and
+  `calc()` but rejected viewport-relative units, and nested `<svg>` layout
+  ignored cascaded width/height entirely while hard-routing sizing keywords,
+  `calc-size()`, and viewport units to compatibility fallback. Reproduced
+  reason codes before the fix: `nested SVG CSS width/height sizing requires
+  compatibility layout fallback` on six `styling/nested-svg-sizing-*` files and
+  `SVG CSS geometry value 'width: 10vw'/'height: 10vh' requires compatibility
+  fallback` on `styling/rect-sizing-viewport-units.svg`, all classified
+  `css-cascade`.
+- The fix resolves viewport units against an explicit nearest-viewport context
+  with attribute-path float parity, applies fill/stretch sizing keywords and
+  `calc-size()` to nested `<svg>` per the tentative declared references, and
+  leaves plain length/percentage/calc/auto declarations non-applying so the
+  seven already-passing "do not apply" nested-svg sizing tests keep passing.
+- Targeted seven-file declared-reference oracle after the fix: 7/7 first-party,
+  7/7 comparable declared-reference passes, zero fallbacks, zero failures.
+- Full 198-file static selection (`path`, `shapes`, `geometry`, `styling`)
+  before → after: first-party 124 → 131; compatibility fallbacks 71 → 64;
+  declared-reference passes 67 → 74 of 93 comparable (zero failures); blocked
+  reference tests 26 → 19; resource rejections 3 → 3; renderer, hybrid, worker,
+  timeout, and read failure counters all zero; remaining css-cascade fallbacks
+  are the nine known out-of-scope items (`zoom` ×2, dynamic nth-child
+  invalidation ×2, margin/padding ×2, `auto` geometry behind foreignObject ×2,
+  malformed calc ×1) and four non-SVG reference targets remain unresolved for a
+  future browser-level reftest runner.
+- Signed captured-site gate under the same renderer build: 151/151 first-party,
+  zero fallback/rejection/failure/timeout/skip/truncation, manifest validated;
+  150 direct legacy differentials pass with the one existing chromatic-gradient
+  legacy reference defect still visible.
+- Complete Release SVG slice: 330 passed, 0 failed, 0 skipped (27 new tests in
+  `SvgCssSizingTests` plus the rewritten viewport-unit cascade case). The wider
+  Release suite retains pre-existing unrelated Core/WebDriver/Performance
+  failures verified identical at baseline; two order-sensitive cases that
+  differed between filtered runs pass repeatedly in isolation and are unrelated
+  to this change.
+- 10,000-render native-ownership stress: zero failures, 769 intended
+  compatibility cases, Windows x64 retained private bytes 8,716,288 and Ubuntu
+  24.04 WSL (portable framework-dependent publish, DejaVu Sans benchmark font)
+  10,567,680, both below the fixed 67,108,864-byte ceiling.
+- Remaining static blockers for later phases: CSS `zoom` (2 tentative
+  path/distance reftests), margin/padding box properties, `width`/`height:
+  auto` behind foreignObject, malformed-calc invalid-value recovery, and the
+  dynamic/testharness, SMIL, advanced-text-layout, and HTML/XHTML reference
+  targets excluded by scope. First-party remains non-default.
