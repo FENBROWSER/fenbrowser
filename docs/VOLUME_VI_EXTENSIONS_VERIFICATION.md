@@ -4428,3 +4428,13 @@ Addendum (same day, full-suite evidence):
 Verification:
 
 - `WebDriverContractTests`: pass (`52/52`, zero failed/skipped), including foreign-handle rejection, cookie isolation, closed-window lifecycle, and fail-closed BiDi capability handling.
+
+## 6.194 WebDriver Automation Process-Mode Pin (2026-08-24)
+
+- Tooling WebDriver runs force `FEN_PROCESS_ISOLATION=in-process` before host initialization because document-bound commands still execute against the driving process; brokered document/script IPC remains tracked as `WD-IPC-001`.
+- WPT summaries record the effective in-process automation mode and retain any explicitly requested mode as override diagnostics instead of incorrectly labeling the run brokered.
+
+Verification:
+
+- `WptToolRunnerRawLogTests.ResolveProcessMode_ReportsEffectiveAutomationMode`: pass (`3/3`).
+- `FenBrowser.Tooling` builds with zero errors through the focused test build.

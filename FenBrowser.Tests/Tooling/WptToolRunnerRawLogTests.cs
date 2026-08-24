@@ -7,6 +7,15 @@ namespace FenBrowser.Tests.Tooling;
 
 public sealed class WptToolRunnerRawLogTests
 {
+    [Theory]
+    [InlineData(null, "in-process (webdriver automation pin)")]
+    [InlineData("", "in-process (webdriver automation pin)")]
+    [InlineData("brokered", "in-process (webdriver override; requested brokered)")]
+    public void ResolveProcessMode_ReportsEffectiveAutomationMode(string? configured, string expected)
+    {
+        Assert.Equal(expected, WptToolRunner.ResolveProcessMode(configured));
+    }
+
     [Fact]
     public void ShardPlanner_BalancesTimeoutHeavyTestsAcrossIndependentShards()
     {

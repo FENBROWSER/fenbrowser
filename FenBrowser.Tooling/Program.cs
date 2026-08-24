@@ -3101,6 +3101,25 @@ namespace FenBrowser.Tooling
 
             using var lifecycle = WebDriverLifecycleDiagnostics.Start(driverPort);
 
+            // WebDriver document-bound commands (script execution, element lookup,
+            // title/URL reads backed by the live document) evaluate against the
+            // engine context owned by the driving process. Under brokered mode the
+            // document lives in a renderer child, so those commands would operate
+            // on a stale UI-process context (observed as execute/sync reporting
+            // about:blank after a committed http navigation). Until script
+            // execution is brokered over renderer IPC (task WD-IPC-001), pin the
+            // automation surface to in-process mode.
+            var requestedIsolation = Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION");
+            if (!string.IsNullOrWhiteSpace(requestedIsolation) &&
+                !requestedIsolation.Trim().Equals("in-process", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.Error.WriteLine(
+                    "[webdriver] FEN_PROCESS_ISOLATION='{0}' requested; overriding to 'in-process' because document-bound driver commands require the driving process to own the document until WD-IPC-001 lands.",
+                    requestedIsolation.Trim());
+            }
+
+            Environment.SetEnvironmentVariable("FEN_PROCESS_ISOLATION", "in-process");
+
             // WPT serves many fixtures on https://web-platform.test:* with local certs.
             // Automation mode should not fail navigation on certificate trust checks.
             NetworkConfiguration.Instance.IgnoreCertificateErrors = true;

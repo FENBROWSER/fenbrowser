@@ -954,10 +954,18 @@ namespace FenBrowser.Tooling
 
         private static string ResolveProcessMode()
         {
-            var configured = Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION");
-            // The isolation factory defaults to brokered when unset; keep the
-            // recorded label truthful about which mode the browser will use.
-            return string.IsNullOrWhiteSpace(configured) ? "brokered (default)" : configured.Trim();
+            return ResolveProcessMode(Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION"));
+        }
+
+        internal static string ResolveProcessMode(string? configured)
+        {
+            // The webdriver automation child pins itself to in-process mode
+            // regardless of the parent request until WD-IPC-001 lands. Keep the
+            // recorded summary truthful while retaining an explicit override for
+            // diagnostics.
+            return string.IsNullOrWhiteSpace(configured)
+                ? "in-process (webdriver automation pin)"
+                : $"in-process (webdriver override; requested {configured.Trim()})";
         }
 
         private static WptOptions ParseOptions(string[] args)
