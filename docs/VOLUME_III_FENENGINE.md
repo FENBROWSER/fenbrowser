@@ -579,6 +579,7 @@ Rendering is the process of converting the Layout Tree into Skia draw commands.
 The main entry point (`Render()` method).
 
 - Focused text controls publish an atomic element/offset/blink-anchor snapshot through `ElementStateManager`. `SkiaDomRenderer` resolves caret geometry from the current box/style snapshot and composites the caret after the cached page frame, including password bullet widths and content-box clipping.
+- Both retained paint-tree borders and direct `BoxPainter` borders resolve an unspecified `border-color` through the element's computed `color` (`currentColor`) instead of defaulting to literal black.
 
 ```mermaid
 sequenceDiagram

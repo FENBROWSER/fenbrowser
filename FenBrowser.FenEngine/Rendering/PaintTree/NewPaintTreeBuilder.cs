@@ -2401,7 +2401,11 @@ namespace FenBrowser.FenEngine.Rendering
                         Bounds = finalRect,
                         SourceNode = node,
                         Widths = new float[] { (float)bt.Top, rightW, (float)bt.Bottom, leftW },
-                        Colors = new SKColor[] { CssParser.ResolveCurrentColor(style.BorderBrushColor ?? SKColors.Black, style.ForegroundColor), CssParser.ResolveCurrentColor(style.BorderBrushColor ?? SKColors.Black, style.ForegroundColor), CssParser.ResolveCurrentColor(style.BorderBrushColor ?? SKColors.Black, style.ForegroundColor), CssParser.ResolveCurrentColor(style.BorderBrushColor ?? SKColors.Black, style.ForegroundColor) },
+                        Colors = Enumerable.Repeat(
+                            CssParser.ResolveCurrentColor(
+                                style.BorderBrushColor ?? CssParser.CurrentColorSentinel,
+                                style.ForegroundColor),
+                            4).ToArray(),
                         Styles = new string[] { style.BorderStyleTop, style.BorderStyleRight, style.BorderStyleBottom, style.BorderStyleLeft }, 
                         BorderRadius = sliceRadius,
                         IsFocused = isFocused,
@@ -3343,7 +3347,13 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (widths == null || widths.All(w => w <= 0)) return null;
             
-            SKColor borderColor = CssParser.ResolveCurrentColor((style?.BorderBrushColor) ?? SKColors.Black, style?.ForegroundColor);
+            // CSS Backgrounds & Borders §4.1: missing border-color computes to
+            // currentColor. Feed the sentinel so ResolveCurrentColor maps to the
+            // element's computed 'color' (falling back to black only when color
+            // itself is unset), never to literal black.
+            SKColor borderColor = CssParser.ResolveCurrentColor(
+                style?.BorderBrushColor ?? CssParser.CurrentColorSentinel,
+                style?.ForegroundColor);
             var colors = ResolveBorderColors(style, borderColor);
             
             string[] styles = new string[4]

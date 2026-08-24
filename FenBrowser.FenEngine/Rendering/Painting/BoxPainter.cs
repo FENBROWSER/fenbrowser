@@ -340,13 +340,12 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             if (thickness.Left <= 0 && thickness.Top <= 0 && thickness.Right <= 0 && thickness.Bottom <= 0)
                 return;
 
-            // Get border color
-            SKColor borderColor = SKColors.Black;
-            if (style.BorderBrushColor.HasValue)
-            {
-                var c = CssParser.ResolveCurrentColor(style.BorderBrushColor.Value, style.ForegroundColor);
-                borderColor = new SKColor(c.Red, c.Green, c.Blue, (byte)(c.Alpha * opacity / 255));
-            }
+            // CSS Backgrounds & Borders §4.1: missing border-color computes to
+            // currentColor. When no border color was declared anywhere in the
+            // cascade, resolve the element's computed 'color' instead of literal black.
+            var declaredBorderColor = style.BorderBrushColor ?? CssParser.CurrentColorSentinel;
+            var resolvedBorder = CssParser.ResolveCurrentColor(declaredBorderColor, style.ForegroundColor);
+            SKColor borderColor = new SKColor(resolvedBorder.Red, resolvedBorder.Green, resolvedBorder.Blue, (byte)(resolvedBorder.Alpha * opacity / 255));
 
             var radius = style.BorderRadius.ClampNonNegative();
             bool hasRadius = !radius.IsZero;
