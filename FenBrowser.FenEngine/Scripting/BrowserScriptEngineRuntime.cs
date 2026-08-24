@@ -34,6 +34,7 @@ using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Rendering.Css;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Storage;
+using FenBrowser.FenEngine.Svg;
 using DomRange = FenBrowser.Core.Dom.V2.Range;
 
 namespace FenBrowser.FenEngine.Scripting;
@@ -9755,6 +9756,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         if (cs.TextAlign.HasValue) props["textAlign"] = JsValue.FromString(cs.TextAlign.Value.ToString());
         if (cs.FontWeight.HasValue) props["fontWeight"] = JsValue.FromString(cs.FontWeight.Value.ToString(CultureInfo.InvariantCulture));
         if (cs.FontFamilyName != null) props["fontFamily"] = JsValue.FromString(cs.FontFamilyName);
+
+        var rootFontSize = (float)(element.OwnerDocument?.DocumentElement?.GetComputedStyle()?.FontSize ?? 16d);
+        var fontSize = ResolveSynchronousInlineFontSize(
+            element.GetAttribute("style"), (float)(cs.FontSize ?? 16d), rootFontSize);
+        foreach (var geometryProperty in SvgGeometryComputedProperties)
+        {
+            var initial = geometryProperty is "rx" or "ry" ? "auto" : "0px";
+            var specified = props.TryGetValue(geometryProperty, out var cascaded)
+                ? CoerceToHostString(cascaded)
+                : initial;
+            var computed = SerializeComputedSvgGeometryValue(
+                geometryProperty, specified, initial, fontSize, rootFontSize);
+            props[geometryProperty] = JsValue.FromString(computed);
+        }
         // Border from Thickness + Brush
         var bt = cs.BorderThickness;
         if (bt.Left != 0 || bt.Right != 0 || bt.Top != 0 || bt.Bottom != 0)
@@ -9813,12 +9828,114 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 inlineValue = inlineValue[..importantIndex].TrimEnd();
             }
 
+            if (IsSvgGeometryComputedProperty(name))
+            {
+                var initial = name.Equals("rx", StringComparison.OrdinalIgnoreCase) ||
+                              name.Equals("ry", StringComparison.OrdinalIgnoreCase)
+                    ? "auto"
+                    : "0px";
+                inlineValue = SerializeComputedSvgGeometryValue(
+                    name, inlineValue, initial, fontSize, rootFontSize);
+            }
+
             var jsValue = JsValue.FromString(inlineValue);
             props[name] = jsValue;
             props[CssPropToCamel(name)] = jsValue;
         }
 
         return CreateComputedStyleObject(props);
+    }
+
+    private static readonly string[] SvgGeometryComputedProperties =
+    {
+        "x", "y", "cx", "cy", "r", "rx", "ry"
+    };
+
+    private static bool IsSvgGeometryComputedProperty(string property) =>
+        SvgGeometryComputedProperties.Contains(property, StringComparer.OrdinalIgnoreCase);
+
+    private static float ResolveSynchronousInlineFontSize(
+        string styleAttribute,
+        float computedFontSize,
+        float rootFontSize)
+    {
+        if (string.IsNullOrWhiteSpace(styleAttribute))
+        {
+            return computedFontSize;
+        }
+
+        foreach (var declaration in styleAttribute.Split(';', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var colonIndex = declaration.IndexOf(':');
+            if (colonIndex <= 0 ||
+                !declaration[..colonIndex].Trim().Equals("font-size", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var value = declaration[(colonIndex + 1)..].Trim();
+            var importantIndex = value.LastIndexOf("!important", StringComparison.OrdinalIgnoreCase);
+            if (importantIndex >= 0)
+            {
+                value = value[..importantIndex].TrimEnd();
+            }
+
+            if (SvgCssLengthEvaluator.TryEvaluate(
+                    value, computedFontSize, computedFontSize, rootFontSize, out var resolved) &&
+                resolved > 0f)
+            {
+                computedFontSize = resolved;
+            }
+        }
+
+        return computedFontSize;
+    }
+
+    private static string SerializeComputedSvgGeometryValue(
+        string property,
+        string specified,
+        string initial,
+        float fontSize,
+        float rootFontSize)
+    {
+        var normalization = CssStyleDeclarationValueNormalizer.Normalize(property, specified, out var normalized);
+        if (normalization != CssPropertyNormalizationResult.Valid || normalized.Length == 0)
+        {
+            return initial;
+        }
+
+        if (normalized.Equals("initial", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("unset", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("revert", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("revert-layer", StringComparison.OrdinalIgnoreCase))
+        {
+            return initial;
+        }
+
+        // Percentages are intentionally retained at computed-value time for SVG
+        // positional/radius properties; their viewport basis is a used-value concern.
+        if (normalized.Contains('%') ||
+            normalized.Contains("var(", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Contains("env(", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
+            normalized.Equals("inherit", StringComparison.OrdinalIgnoreCase))
+        {
+            return normalized;
+        }
+
+        if (!SvgCssLengthEvaluator.TryEvaluate(normalized, 0f, fontSize, rootFontSize, out var pixels))
+        {
+            return normalized;
+        }
+
+        if ((property.Equals("r", StringComparison.OrdinalIgnoreCase) ||
+             property.Equals("rx", StringComparison.OrdinalIgnoreCase) ||
+             property.Equals("ry", StringComparison.OrdinalIgnoreCase)) && pixels < 0f)
+        {
+            pixels = 0f;
+        }
+
+        return pixels.ToString("0.###", CultureInfo.InvariantCulture) + "px";
     }
 
     private JsValue CreateComputedStyleObject(Dictionary<string, JsValue> props)
