@@ -61,7 +61,10 @@ namespace FenBrowser.Core.Parsing
         
         // List of Active Formatting Elements (for Adoption Agency Algorithm)
         private readonly List<Element> _activeFormattingElements = new List<Element>();
-        private readonly List<CharacterToken> _pendingTableCharacterTokens = new List<CharacterToken>();
+        // Buffered table-interstitial character data. Must hold copied text, not
+        // CharacterToken references: pooled tokens are recycled by the tokenizer's
+        // ring buffer and would be silently overwritten before flush.
+        private readonly StringBuilder _pendingTableText = new StringBuilder();
         
         // Current insertion mode
         private InsertionMode _insertionMode = InsertionMode.Initial;
@@ -1512,7 +1515,7 @@ namespace FenBrowser.Core.Parsing
         {
             if (token is CharacterToken ct)
             {
-                _pendingTableCharacterTokens.Clear();
+                _pendingTableText.Clear();
                 _originalInsertionMode = _insertionMode;
                 SwitchTo(InsertionMode.InTableText);
                 return false; // Reprocess in InTableText.
@@ -1644,27 +1647,30 @@ namespace FenBrowser.Core.Parsing
         {
             if (token is CharacterToken ct)
             {
-                _pendingTableCharacterTokens.Add(ct);
+                // Copy the data out immediately; the token instance is pool-owned and
+                // may be recycled (ResetWith) before this buffer is flushed.
+                _pendingTableText.Append(ct.Data);
                 return true;
             }
 
-            bool hasNonWhitespace = _pendingTableCharacterTokens.Any(t => !IsTableWhitespace(t));
-            if (hasNonWhitespace)
+            var pendingText = _pendingTableText.ToString();
+            _pendingTableText.Clear();
+            if (pendingText.Length == 0)
             {
-                foreach (var pending in _pendingTableCharacterTokens)
-                {
-                    FosterParent(pending);
-                }
+                SwitchTo(_originalInsertionMode);
+                return false; // Reprocess the non-character token.
+            }
+
+            var flushToken = new CharacterToken(pendingText);
+            if (!string.IsNullOrWhiteSpace(pendingText))
+            {
+                FosterParent(flushToken);
             }
             else
             {
-                foreach (var pending in _pendingTableCharacterTokens)
-                {
-                    InsertCharacter(pending);
-                }
+                InsertCharacter(flushToken);
             }
 
-            _pendingTableCharacterTokens.Clear();
             SwitchTo(_originalInsertionMode);
             return false; // Reprocess the non-character token.
         }
