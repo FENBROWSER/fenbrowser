@@ -51,6 +51,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         private readonly record struct BalancedTextLine(string Text, float Width);
 
+        private readonly record struct InlineWrapperFragment(int LineIndex, float XStart, float Width, float Height);
+
         private readonly record struct InlineTextMetrics(float Width, float LineHeight, float Baseline, float Descent);
 
         // Per-style font metrics cache. lineHeight/baseline/descent depend only on
@@ -223,48 +225,180 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 effectiveContentLimit = floatLimit;
             };
 
-            foreach (var child in flattenedChildren)
+            // --- Inline fragmentation support (LAYOUT-002) ---
+            // Styled inline wrappers (display:inline) no longer act as atomic units.
+            // Their descendant text leaves participate in word flow, and wrapper
+            // geometry is derived afterwards from the fragments they contributed.
+            var wrapperFragmentOrder = new List<LayoutBox>();
+            var wrapperFragments = new Dictionary<LayoutBox, List<InlineWrapperFragment>>();
+            var finalizedWrapperRects = new Dictionary<LayoutBox, SKRect>();
+            var activeWrapperStack = new List<LayoutBox>();
+
+            void RecordWrapperFragment(LayoutBox wrapperBox, int lineIndex, float xStart, float width, float height)
             {
-                state.Deadline?.Check();
-
-                if (child is TextLayoutBox textBox)
+                if (wrapperBox == null) return;
+                if (!wrapperFragments.TryGetValue(wrapperBox, out var list))
                 {
-                    // Ruby annotation (RT) text is painted by the ruby handler
-                    // above the base run; it must not consume inline space here.
-                    if (IsRubyAnnotationTextNode(textBox))
+                    list = new List<InlineWrapperFragment>();
+                    wrapperFragments[wrapperBox] = list;
+                    wrapperFragmentOrder.Add(wrapperBox);
+                }
+                list.Add(new InlineWrapperFragment(lineIndex, xStart, width, height));
+            }
+
+            bool HasDescendantTextBox(LayoutBox container)
+            {
+                foreach (var nested in container.Children)
+                {
+                    if (nested.IsOutOfFlow) continue;
+                    if (nested is TextLayoutBox) return true;
+                    if (HasDescendantTextBox(nested)) return true;
+                }
+                return false;
+            }
+
+            bool IsFragmentableInlineWrapper(LayoutBox candidate)
+            {
+                if (!(candidate.SourceNode is FenBrowser.Core.Dom.V2.Element el)) return false;
+                var display = candidate.ComputedStyle?.Display?.ToLowerInvariant();
+                if (display != "inline") return false;
+
+                // Replaced/media/form elements never fragment.
+                switch (el.TagName?.ToUpperInvariant())
+                {
+                    case "IMG": case "CANVAS": case "IFRAME": case "OBJECT": case "EMBED":
+                    case "INPUT": case "TEXTAREA": case "SELECT": case "BUTTON": case "SVG":
+                    case "VIDEO": case "AUDIO": case "PICTURE":
+                        return false;
+                }
+
+                return HasDescendantTextBox(candidate);
+            }
+
+            void SyncWrapperFragmentsForTextBox(TextLayoutBox tb, int segmentCountBefore)
+            {
+                if (activeWrapperStack.Count == 0) return;
+                var segments = textBoxLines[tb];
+                for (int i = segmentCountBefore; i < segments.Count; i++)
+                {
+                    var segment = segments[i];
+                    for (int w = 0; w < activeWrapperStack.Count; w++)
                     {
-                        ResetTextBoxGeometry(textBox);
-                        continue;
+                        RecordWrapperFragment(activeWrapperStack[w], segment.LineIndex, segment.X, segment.Width, segment.Height);
                     }
+                }
+            }
 
-                    string rawText = (textBox.SourceNode as Text)?.Data ?? "";
-                    string wsMode = (textBox.ComputedStyle?.WhiteSpace ?? box.ComputedStyle?.WhiteSpace ?? "normal").Trim().ToLowerInvariant();
-                    bool wsPreservesNewlines = wsMode == "pre" || wsMode == "pre-wrap" || wsMode == "pre-line";
-                    bool wsPreservesSpaces = wsMode == "pre" || wsMode == "pre-wrap";
+            void InsertForcedLineBreak(LayoutBox brBox)
+            {
+                // ECMA/HTML: <br> always forces a line break regardless of
+                // white-space mode. Use the inherited font metrics so
+                // consecutive <br><br> produces a visible blank line.
+                var brInfo = GetStyleFontInfo(brBox.ComputedStyle ?? box.ComputedStyle);
+                currentLine.Height = Math.Max(currentLine.Height, brInfo.LineHeight);
+                currentLine.IncludeMetrics(brInfo.Baseline, brInfo.Descent);
+                currentLine = new LineBox();
+                lines.Add(currentLine);
+                curX = 0;
+                previousEndedWithSpace = true;
+            }
 
-                    // CSS white-space: when newlines are preserved, treat each '\n'
-                    // as a forced line break and lay out each segment independently.
-                    var textSegments = wsPreservesNewlines
-                        ? rawText.Replace("\r\n", "\n").Split('\n')
-                        : new[] { rawText };
+            void PlaceAtomicInline(LayoutBox atomicChild)
+            {
+                nonTextChildren.Add(atomicChild);
+                SKSize childSize = MeasureInlineChild(atomicChild, state);
+                if (curX + childSize.Width > effectiveContentLimit && curX > 0)
+                {
+                    recomputeFloatAdjustedLine();
+                    currentLine = new LineBox();
+                    lines.Add(currentLine);
+                    curX = floatLineStartAdjust;
+                }
 
-                    if (!textBoxLines.ContainsKey(textBox))
-                        textBoxLines[textBox] = new List<TextLineInfo>();
+                if (atomicChild.Geometry == null) atomicChild.Geometry = new BoxModel();
+                var pad = atomicChild.ComputedStyle?.Padding ?? new Thickness();
+                var brd = atomicChild.ComputedStyle?.BorderThickness ?? new Thickness();
+                var mar = atomicChild.ComputedStyle?.Margin ?? new Thickness();
+                float nonContentW = (float)(pad.Left + pad.Right + brd.Left + brd.Right + mar.Left + mar.Right);
+                float nonContentH = (float)(pad.Top + pad.Bottom + brd.Top + brd.Bottom + mar.Top + mar.Bottom);
+                float contentW = Math.Max(0f, childSize.Width - nonContentW);
+                float contentH = Math.Max(0f, childSize.Height - nonContentH);
 
-                    for (int segIdx = 0; segIdx < textSegments.Length; segIdx++)
+                atomicChild.Geometry.ContentBox = new SKRect(curX, 0, curX + contentW, contentH);
+                atomicChild.Geometry.Padding = pad;
+                atomicChild.Geometry.Border = brd;
+                atomicChild.Geometry.Margin = mar;
+                LayoutBoxOps.SyncBoxes(atomicChild.Geometry);
+
+                for (int w = 0; w < activeWrapperStack.Count; w++)
+                {
+                    RecordWrapperFragment(
+                        activeWrapperStack[w],
+                        lines.Count - 1,
+                        atomicChild.Geometry.ContentBox.Left,
+                        childSize.Width,
+                        childSize.Height);
+                }
+
+                currentLine.Items.Add(atomicChild);
+                currentLine.Width = curX + childSize.Width;
+
+                float itemHeightForMetrics = Math.Max(0f, childSize.Height);
+                float itemBaselineForMetrics = ResolveInlineItemBaseline(atomicChild, itemHeightForMetrics);
+                ResolveInlineItemLineMetrics(
+                    currentLine,
+                    itemHeightForMetrics,
+                    itemBaselineForMetrics,
+                    atomicChild.ComputedStyle,
+                    out float itemAscentForLine,
+                    out float itemDescentForLine);
+                currentLine.IncludeMetrics(itemAscentForLine, itemDescentForLine);
+                curX += childSize.Width;
+                previousEndedWithSpace = false;
+            }
+
+            void LayoutTextBoxInFlow(TextLayoutBox textBox)
+            {
+                // Ruby annotation (RT) text is painted by the ruby handler
+                // above the base run; it must not consume inline space here.
+                if (IsRubyAnnotationTextNode(textBox))
+                {
+                    ResetTextBoxGeometry(textBox);
+                    return;
+                }
+
+                int segmentCountBefore = textBoxLines.TryGetValue(textBox, out var existingSegments)
+                    ? existingSegments.Count
+                    : 0;
+
+                string rawText = (textBox.SourceNode as Text)?.Data ?? "";
+                string wsMode = (textBox.ComputedStyle?.WhiteSpace ?? box.ComputedStyle?.WhiteSpace ?? "normal").Trim().ToLowerInvariant();
+                bool wsPreservesNewlines = wsMode == "pre" || wsMode == "pre-wrap" || wsMode == "pre-line";
+                bool wsPreservesSpaces = wsMode == "pre" || wsMode == "pre-wrap";
+
+                // CSS white-space: when newlines are preserved, treat each '\n'
+                // as a forced line break and lay out each segment independently.
+                var textSegments = wsPreservesNewlines
+                    ? rawText.Replace("\r\n", "\n").Split('\n')
+                    : new[] { rawText };
+
+                if (!textBoxLines.ContainsKey(textBox))
+                    textBoxLines[textBox] = new List<TextLineInfo>();
+
+                for (int segIdx = 0; segIdx < textSegments.Length; segIdx++)
+                {
+                    if (segIdx > 0)
                     {
-                        if (segIdx > 0)
-                        {
-                            // Forced line break from the preceding '\n'.
-                            var segInfo = GetStyleFontInfo(textBox.ComputedStyle);
-                            currentLine.Height = Math.Max(currentLine.Height, segInfo.LineHeight);
-                            currentLine.IncludeMetrics(segInfo.Baseline, segInfo.Descent);
-                            recomputeFloatAdjustedLine();
-                            currentLine = new LineBox();
-                            lines.Add(currentLine);
-                            curX = floatLineStartAdjust;
-                            previousEndedWithSpace = true;
-                        }
+                        // Forced line break from the preceding '\n'.
+                        var segInfo = GetStyleFontInfo(textBox.ComputedStyle);
+                        currentLine.Height = Math.Max(currentLine.Height, segInfo.LineHeight);
+                        currentLine.IncludeMetrics(segInfo.Baseline, segInfo.Descent);
+                        recomputeFloatAdjustedLine();
+                        currentLine = new LineBox();
+                        lines.Add(currentLine);
+                        curX = floatLineStartAdjust;
+                        previousEndedWithSpace = true;
+                    }
 
                     string fullText = textSegments[segIdx];
                     fullText = wsPreservesSpaces ? fullText : CollapseWhitespace(fullText);
@@ -399,7 +533,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     int startIdx = 0;
                     int currentLineStartIdx = 0;
                     float currentLineStartX = curX;
-
                     bool allowBreakAnywhere = AllowsBreakAnywhere(textBox.ComputedStyle) ||
                                                AllowsBreakAnywhere(box.ComputedStyle);
 
@@ -462,81 +595,104 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
 
                     previousEndedWithSpace = fullText.EndsWith(" ", StringComparison.Ordinal);
-                    } // end for textSegments
+                } // end for textSegments
 
-                    if (textBoxLines[textBox].Count == 0)
-                    {
-                        ResetTextBoxGeometry(textBox);
-                    }
-                }
-                else if (child.SourceNode is Element brEl &&
-                         string.Equals(brEl.TagName, "BR", StringComparison.OrdinalIgnoreCase))
+                if (textBoxLines[textBox].Count == 0)
                 {
-                    // ECMA/HTML: <br> always forces a line break regardless of
-                    // white-space mode. Use the inherited font metrics so
-                    // consecutive <br><br> produces a visible blank line.
-                    var brInfo = GetStyleFontInfo(child.ComputedStyle ?? box.ComputedStyle);
-                    currentLine.Height = Math.Max(currentLine.Height, brInfo.LineHeight);
-                    currentLine.IncludeMetrics(brInfo.Baseline, brInfo.Descent);
-                    currentLine = new LineBox();
-                    lines.Add(currentLine);
-                    curX = 0;
-                    previousEndedWithSpace = true;
+                    ResetTextBoxGeometry(textBox);
                 }
-                else
+
+                SyncWrapperFragmentsForTextBox(textBox, segmentCountBefore);
+            }
+
+            void LayoutInlineSubtreeFragments(LayoutBox container)
+            {
+                foreach (var nested in container.Children)
                 {
-                    // Ruby annotation (RT/RTC) wrappers are painted above the base
-                    // run by the ruby handler; they consume no inline space and
-                    // must not be measured or placed as atomic inlines.
-                    if (child.SourceNode is Element annotationElement &&
-                        IsRubyAnnotationElement(annotationElement))
+                    state.Deadline?.Check();
+
+                    if (nested.IsOutOfFlow) continue;
+
+                    if (nested is TextLayoutBox nestedTextBox)
                     {
-                        ResetInlineSubtreeGeometry(child);
+                        LayoutTextBoxInFlow(nestedTextBox);
                         continue;
                     }
 
-                    // Atomic Inline (inline-block, images, inputs, etc.)
-                    nonTextChildren.Add(child);
-                    SKSize childSize = MeasureInlineChild(child, state);
-                    if (curX + childSize.Width > effectiveContentLimit && curX > 0)
+                    if (nested.SourceNode is Element nestedAnnotation &&
+                        IsRubyAnnotationElement(nestedAnnotation))
                     {
-                        recomputeFloatAdjustedLine();
-                        currentLine = new LineBox();
-                        lines.Add(currentLine);
-                        curX = floatLineStartAdjust;
+                        ResetInlineSubtreeGeometry(nested);
+                        continue;
                     }
 
-                    if (child.Geometry == null) child.Geometry = new BoxModel();
-                    var pad = child.ComputedStyle?.Padding ?? new Thickness();
-                    var brd = child.ComputedStyle?.BorderThickness ?? new Thickness();
-                    var mar = child.ComputedStyle?.Margin ?? new Thickness();
-                    float nonContentW = (float)(pad.Left + pad.Right + brd.Left + brd.Right + mar.Left + mar.Right);
-                    float nonContentH = (float)(pad.Top + pad.Bottom + brd.Top + brd.Bottom + mar.Top + mar.Bottom);
-                    float contentW = Math.Max(0f, childSize.Width - nonContentW);
-                    float contentH = Math.Max(0f, childSize.Height - nonContentH);
+                    if (nested.SourceNode is Element nestedBr &&
+                        string.Equals(nestedBr.TagName, "BR", StringComparison.OrdinalIgnoreCase))
+                    {
+                        InsertForcedLineBreak(nested);
+                        continue;
+                    }
 
-                    child.Geometry.ContentBox = new SKRect(curX, 0, curX + contentW, contentH);
-                    child.Geometry.Padding = pad;
-                    child.Geometry.Border = brd;
-                    child.Geometry.Margin = mar;
-                    LayoutBoxOps.SyncBoxes(child.Geometry);
+                    if (IsFragmentableInlineWrapper(nested))
+                    {
+                        LayoutFragmentableInlineWrapper(nested);
+                        continue;
+                    }
 
-                    currentLine.Items.Add(child);
-                    currentLine.Width = curX + childSize.Width;
-
-                    float itemHeightForMetrics = Math.Max(0f, childSize.Height);
-                    float itemBaselineForMetrics = ResolveInlineItemBaseline(child, itemHeightForMetrics);
-                    ResolveInlineItemLineMetrics(
-                        currentLine,
-                        itemHeightForMetrics,
-                        itemBaselineForMetrics,
-                        child.ComputedStyle,
-                        out float itemAscentForLine,
-                        out float itemDescentForLine);
-                    currentLine.IncludeMetrics(itemAscentForLine, itemDescentForLine);
-                    curX += childSize.Width;
-                    previousEndedWithSpace = false;
+                    PlaceAtomicInline(nested);
                 }
+            }
+
+            void LayoutFragmentableInlineWrapper(LayoutBox wrapperBox)
+            {
+                activeWrapperStack.Add(wrapperBox);
+                try
+                {
+                    LayoutInlineSubtreeFragments(wrapperBox);
+                }
+                finally
+                {
+                    activeWrapperStack.RemoveAt(activeWrapperStack.Count - 1);
+                }
+            }
+
+            foreach (var child in flattenedChildren)
+            {
+                state.Deadline?.Check();
+
+                if (child is TextLayoutBox textBox)
+                {
+                    LayoutTextBoxInFlow(textBox);
+                    continue;
+                }
+
+                // Ruby annotation (RT/RTC) wrappers are painted above the base
+                // run by the ruby handler; they consume no inline space and
+                // must not be measured or placed as atomic inlines.
+                if (child.SourceNode is Element annotationElement &&
+                    IsRubyAnnotationElement(annotationElement))
+                {
+                    ResetInlineSubtreeGeometry(child);
+                    continue;
+                }
+
+                if (child.SourceNode is Element brEl &&
+                    string.Equals(brEl.TagName, "BR", StringComparison.OrdinalIgnoreCase))
+                {
+                    InsertForcedLineBreak(child);
+                    continue;
+                }
+
+                // Fragmentable styled inline: recurse so descendant text leaves
+                // flow across line boxes instead of the wrapper acting atomically.
+                if (IsFragmentableInlineWrapper(child))
+                {
+                    LayoutFragmentableInlineWrapper(child);
+                    continue;
+                }
+
+                // Atomic Inline (inline-block, images, inputs, etc.)
+                PlaceAtomicInline(child);
             }
 
             // CSS text-overflow: ellipsis (CSS Overflow 3 §5). After line construction,
@@ -809,6 +965,67 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         runningRight = Math.Max(runningRight, item.Geometry.MarginBox.Right);
                     }
                 }
+            }
+
+            // Derive geometry for fragmented inline wrappers from their recorded
+            // fragments. Deepest-first so parents can union finalized children.
+            for (int wrapperIdx = wrapperFragmentOrder.Count - 1; wrapperIdx >= 0; wrapperIdx--)
+            {
+                var wrapperBox = wrapperFragmentOrder[wrapperIdx];
+                if (!wrapperFragments.TryGetValue(wrapperBox, out var fragments) || fragments.Count == 0)
+                {
+                    continue;
+                }
+
+                float minX = float.MaxValue, minY = float.MaxValue;
+                float maxX = float.MinValue, maxY = float.MinValue;
+                foreach (var fragment in fragments)
+                {
+                    int lineIdx = Math.Min(fragment.LineIndex, lines.Count - 1);
+                    float lineY = lineIdx >= 0 && lineIdx < lineYPositions.Count ? lineYPositions[lineIdx] : 0f;
+                    float lineXOffset = lineIdx >= 0 && lineIdx < lineXOffsets.Count ? lineXOffsets[lineIdx] : 0f;
+                    minX = Math.Min(minX, fragment.XStart + lineXOffset);
+                    maxX = Math.Max(maxX, fragment.XStart + lineXOffset + fragment.Width);
+                    minY = Math.Min(minY, lineY);
+                    maxY = Math.Max(maxY, lineY + Math.Max(0f, fragment.Height));
+                }
+
+                // Union any finalized descendant wrappers (nested styled inlines).
+                foreach (var nestedPair in finalizedWrapperRects)
+                {
+                    if (!ReferenceEquals(nestedPair.Key.Parent, wrapperBox)) continue;
+                    minX = Math.Min(minX, nestedPair.Value.Left);
+                    minY = Math.Min(minY, nestedPair.Value.Top);
+                    maxX = Math.Max(maxX, nestedPair.Value.Right);
+                    maxY = Math.Max(maxY, nestedPair.Value.Bottom);
+                }
+
+                if (maxX <= minX || maxY <= minY)
+                {
+                    continue;
+                }
+
+                if (wrapperBox.Geometry == null) wrapperBox.Geometry = new BoxModel();
+                wrapperBox.Geometry.Padding = wrapperBox.ComputedStyle?.Padding ?? new Thickness();
+                wrapperBox.Geometry.Border = wrapperBox.ComputedStyle?.BorderThickness ?? new Thickness();
+                wrapperBox.Geometry.Margin = wrapperBox.ComputedStyle?.Margin ?? new Thickness();
+                wrapperBox.Geometry.ContentBox = new SKRect(0f, 0f, maxX - minX, maxY - minY);
+                LayoutBoxOps.SyncBoxes(wrapperBox.Geometry);
+
+                // Move only the wrapper itself: its descendants (text leaves,
+                // atomic items, nested wrappers) were already positioned at
+                // absolute IFC coordinates by the earlier passes above.
+                float preMoveLeft = wrapperBox.Geometry.MarginBox.Left;
+                float preMoveTop = wrapperBox.Geometry.MarginBox.Top;
+                LayoutBoxOps.PositionSubtree(wrapperBox, minX, minY, state);
+                float appliedDx = wrapperBox.Geometry.MarginBox.Left - preMoveLeft;
+                float appliedDy = wrapperBox.Geometry.MarginBox.Top - preMoveTop;
+                if (MathF.Abs(appliedDx) > 0.001f || MathF.Abs(appliedDy) > 0.001f)
+                {
+                    LayoutBoxOps.ShiftDescendants(wrapperBox, -appliedDx, -appliedDy);
+                }
+
+                finalizedWrapperRects[wrapperBox] = new SKRect(minX, minY, maxX, maxY);
             }
 
             // Keep original children (don't replace with fragments)
