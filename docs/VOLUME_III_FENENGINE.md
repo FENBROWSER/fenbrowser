@@ -10590,3 +10590,29 @@ Verification:
   non-cancelable `load` event.
 - Dispatch failures are logged without discarding the successfully attached child
   document, matching the existing frame-load error isolation boundary.
+
+## 2.406 FenJS Task Instruction Budget Alignment (2026-08-26)
+
+- Timer callbacks, `MessagePort` message delivery, and other event-loop task
+  work items previously ran with a 10M instruction budget while page scripts
+  and input dispatch used 100M. Real-site workloads that compute payloads
+  inside promise reactions pumped by a timer (Google reCAPTCHA's challenge
+  token builder) exceeded the task budget and died with
+  `RangeError: Maximum instruction budget exceeded`, silently terminating
+  the page's verification flow and stalling subsequent input dispatch.
+- `FenJsBrowserTaskInstructionBudget` now matches the script budget (100M),
+  and `FEN_FENJS_TASK_INSTRUCTION_BUDGET` overrides it for diagnostics and
+  tests, following the existing `FEN_FENJS_SCRIPT_TIMEOUT_MS` knob pattern.
+- Runaway-task protection is unchanged in kind: oversized tasks still abort
+  with a catchable `RangeError`, and the per-script wall-clock timeout
+  (`FEN_FENJS_SCRIPT_TIMEOUT_MS`, default 300s) remains the outer bound.
+
+Verification:
+
+- `debug-site https://www.google.com/search?q=test` (Google sorry/captcha
+  page): click-path event dispatch completes without
+  `Timed out waiting for FenJS worker` errors and without budget
+  `RangeError`s; `FEN_FENJS_TASK_INSTRUCTION_BUDGET=200000` reproduces the
+  budget abort, confirming the knob.
+- `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter
+  "FullyQualifiedName~SyntheticCaptchaFlow"`: pass.

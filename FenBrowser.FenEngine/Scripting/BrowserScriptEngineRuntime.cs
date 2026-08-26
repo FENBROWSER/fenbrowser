@@ -1555,6 +1555,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         return defaultTimeoutMs;
     }
 
+    private static int ResolveFenJsTaskInstructionBudget()
+    {
+        var raw = Environment.GetEnvironmentVariable("FEN_FENJS_TASK_INSTRUCTION_BUDGET");
+        if (!string.IsNullOrWhiteSpace(raw) &&
+            int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) &&
+            parsed > 0)
+        {
+            return parsed;
+        }
+
+        return FenJsBrowserTaskInstructionBudget;
+    }
+
     // Diagnostic knob: FEN_FENJS_GC_STRESS=before-every-alloc|after-every-alloc|random
     // drives the FenJs heap with the same stress modes the Js shell exposes, so
     // unrooted host-to-JS value windows reproduce deterministically in tests and
@@ -1687,7 +1700,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     // if even this is exceeded, rather than crashing the process.
     private const int FenJsLargeStackBytes = 256 * 1024 * 1024;
     private const int FenJsBrowserInstructionBudget = 100_000_000;
-    private const int FenJsBrowserTaskInstructionBudget = 10_000_000;
+    private const int FenJsBrowserTaskInstructionBudget = 100_000_000;
     private const int FenJsBrowserParserMaxRecursionDepth = 1024;
     private const int FenJsBoundaryGcAllocationThreshold = 4_096;
 
@@ -6912,7 +6925,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 }
 
                 return null;
-            }, waitForWorkerMs: -1, instructionBudget: FenJsBrowserTaskInstructionBudget);
+            }, waitForWorkerMs: -1, instructionBudget: ResolveFenJsTaskInstructionBudget());
         }
         catch (Exception ex)
         {
@@ -13071,7 +13084,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 _interpreter.PumpMicrotasks();
                             }
                             return null;
-                        }, waitForWorkerMs: -1, instructionBudget: FenJsBrowserTaskInstructionBudget);
+                        }, waitForWorkerMs: -1, instructionBudget: ResolveFenJsTaskInstructionBudget());
                     }
                     catch (Exception ex)
                     {
@@ -13856,7 +13869,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             }
 
                 return null;
-            }, waitForWorkerMs: -1, instructionBudget: FenJsBrowserTaskInstructionBudget);
+            }, waitForWorkerMs: -1, instructionBudget: ResolveFenJsTaskInstructionBudget());
                     }
                     catch (Exception ex)
                     {
