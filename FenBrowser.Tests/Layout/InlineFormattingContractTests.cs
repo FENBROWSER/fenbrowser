@@ -111,6 +111,37 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void LineBreakAnywhere_UsesRemainingLineSpace_InsteadOfOrphaningLabel()
+        {
+            var root = new Element("div");
+            var text = new Text("URL: https://www.google.com/search?q=test&sei=long-token-without-spaces");
+            root.AppendChild(text);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed
+                {
+                    Display = "block",
+                    Width = 240,
+                    FontSize = 13,
+                    LineHeight = 16,
+                    FontFamilyName = "Arial",
+                    LineBreak = "anywhere"
+                }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 240, 100);
+            var textBoxes = new List<TextLayoutBox>();
+            CollectTextBoxes(rootBox, textBoxes);
+            var textBox = FindTextBox(textBoxes, text);
+
+            Assert.NotNull(textBox);
+            Assert.True(textBox!.Geometry.Lines.Count >= 2);
+            Assert.StartsWith("URL: https://", textBox.Geometry.Lines[0].Text);
+            Assert.All(textBox.Geometry.Lines, line => Assert.True(line.Width <= 240.5f));
+        }
+
+        [Fact]
         public void OverflowHiddenBlock_WithInlineText_StillWrapsItsContents()
         {
             var root = new Element("div");

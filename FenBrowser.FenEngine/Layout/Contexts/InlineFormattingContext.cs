@@ -400,11 +400,16 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     int currentLineStartIdx = 0;
                     float currentLineStartX = curX;
 
+                    bool allowBreakAnywhere = AllowsBreakAnywhere(textBox.ComputedStyle) ||
+                                               AllowsBreakAnywhere(box.ComputedStyle);
+
                     while (startIdx < fullText.Length)
                     {
                         // Find next soft wrap boundary. Browsers allow a normal
                         // line break after hyphens, e.g. "background-color".
-                        int endIdx = FindNextSoftWrapEnd(fullText, startIdx);
+                        int endIdx = allowBreakAnywhere
+                            ? FindNextCodePointEnd(fullText, startIdx)
+                            : FindNextSoftWrapEnd(fullText, startIdx);
                         string word = fullText.Substring(startIdx, endIdx - startIdx);
                         float wordWidth = MeasureString(word, textBox.ComputedStyle).Width;
 
@@ -1022,6 +1027,24 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return nextHyphen > startIdx ? nextHyphen : text.Length;
+        }
+
+        private static bool AllowsBreakAnywhere(CssComputed style)
+        {
+            return string.Equals(style?.LineBreak, "anywhere", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(style?.OverflowWrap, "anywhere", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(style?.WordBreak, "break-all", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static int FindNextCodePointEnd(string text, int startIdx)
+        {
+            int endIdx = startIdx + 1;
+            if (endIdx < text.Length && char.IsHighSurrogate(text[startIdx]) && char.IsLowSurrogate(text[endIdx]))
+            {
+                endIdx++;
+            }
+
+            return endIdx;
         }
 
         private bool TryBuildBalancedTextLines(
