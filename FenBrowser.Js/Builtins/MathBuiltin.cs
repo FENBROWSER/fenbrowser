@@ -1,3 +1,4 @@
+using System;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Objects;
@@ -360,7 +361,22 @@ public sealed class MathBuiltin : IBuiltinModule
                     else state = StMinusInf;
                     continue;
                 }
-                if (state != StFinite) state = StFinite;
+                // Non-finite states are sticky: later finite values must not
+                // overwrite NaN or an infinity accumulated so far.
+                if (state == StNaN || state == StPlusInf || state == StMinusInf) continue;
+
+                if (n == 0d)
+                {
+                    // A -0 element preserves the initial minus-zero state; any
+                    // other zero (or a prior finite value) starts accumulation.
+                    bool isNegativeZero = BitConverter.DoubleToInt64Bits(n) == BitConverter.DoubleToInt64Bits(-0d);
+                    if (isNegativeZero && state == StMinusZero) continue;
+                    state = StFinite;
+                    finiteValues.Add(n);
+                    continue;
+                }
+
+                state = StFinite;
                 finiteValues.Add(n);
             }
 
