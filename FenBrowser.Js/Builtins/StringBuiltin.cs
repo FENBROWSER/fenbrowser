@@ -374,22 +374,27 @@ public sealed class StringBuiltin : IBuiltinModule
     private static JsValue CharAt(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
-        var pos = args.Count > 0 ? (int)ctx.ToNumber(args[0]) : 0;
-        return pos < 0 || pos >= s.Length ? JsValue.FromString(string.Empty) : JsValue.FromString(s[pos].ToString());
+        var pos = args.Count > 0 ? ToIntegerOrInfinity(ctx, args[0]) : 0d;
+        return pos < 0 || pos >= s.Length
+            ? JsValue.FromString(string.Empty)
+            : JsValue.FromString(s[(int)pos].ToString());
     }
 
     private static JsValue CharCodeAt(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
-        var pos = args.Count > 0 ? (int)ctx.ToNumber(args[0]) : 0;
-        return pos < 0 || pos >= s.Length ? JsValue.FromNumber(double.NaN) : JsValue.FromNumber(s[pos]);
+        var pos = args.Count > 0 ? ToIntegerOrInfinity(ctx, args[0]) : 0d;
+        return pos < 0 || pos >= s.Length
+            ? JsValue.FromNumber(double.NaN)
+            : JsValue.FromNumber(s[(int)pos]);
     }
 
     private static JsValue CodePointAt(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
-        var pos = args.Count > 0 ? (int)ctx.ToNumber(args[0]) : 0;
-        if (pos < 0 || pos >= s.Length) return JsValue.Undefined;
+        var numericPosition = args.Count > 0 ? ToIntegerOrInfinity(ctx, args[0]) : 0d;
+        if (numericPosition < 0 || numericPosition >= s.Length) return JsValue.Undefined;
+        var pos = (int)numericPosition;
         var high = s[pos];
         if (char.IsHighSurrogate(high) && pos + 1 < s.Length && char.IsLowSurrogate(s[pos + 1]))
             return JsValue.FromNumber(char.ConvertToUtf32(high, s[pos + 1]));
@@ -399,9 +404,11 @@ public sealed class StringBuiltin : IBuiltinModule
     private static JsValue At(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
-        var raw = args.Count > 0 ? (int)ctx.ToNumber(args[0]) : 0;
+        var raw = args.Count > 0 ? ToIntegerOrInfinity(ctx, args[0]) : 0d;
         var idx = raw < 0 ? s.Length + raw : raw;
-        return idx < 0 || idx >= s.Length ? JsValue.Undefined : JsValue.FromString(s[idx].ToString());
+        return idx < 0 || idx >= s.Length
+            ? JsValue.Undefined
+            : JsValue.FromString(s[(int)idx].ToString());
     }
 
     private static JsValue IndexOf(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -588,7 +595,9 @@ public sealed class StringBuiltin : IBuiltinModule
     private static JsValue Split(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
-        var limit = args.Count > 1 && args[1].Tag != JsValueTag.Undefined ? Math.Max(0, (int)ctx.ToNumber(args[1])) : int.MaxValue;
+        var limit = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
+            ? MathHelpers.ToUint32(ctx.ToNumber(args[1]))
+            : uint.MaxValue;
         var items = new List<JsValue>();
         if (limit == 0) return CreateArrayResult(ctx, items);
         if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined) { items.Add(JsValue.FromString(s)); return CreateArrayResult(ctx, items); }
@@ -599,21 +608,32 @@ public sealed class StringBuiltin : IBuiltinModule
         var sep = ctx.ToStringValue(args[0]);
         if (sep.Length == 0)
         {
-            for (var i = 0; i < s.Length && items.Count < limit; i++)
+            for (var i = 0; i < s.Length && (uint)items.Count < limit; i++)
                 items.Add(JsValue.FromString(s[i].ToString()));
             return CreateArrayResult(ctx, items);
         }
         var start = 0;
-        while (start <= s.Length && items.Count < limit)
+        while (start <= s.Length && (uint)items.Count < limit)
         {
             var idx = s.IndexOf(sep, start, StringComparison.Ordinal);
             if (idx < 0) break;
             items.Add(JsValue.FromString(s[start..idx]));
             start = idx + sep.Length;
         }
-        if (items.Count < limit)
+        if ((uint)items.Count < limit)
             items.Add(JsValue.FromString(s[start..]));
         return CreateArrayResult(ctx, items);
+    }
+
+    private static double ToIntegerOrInfinity(IBuiltinContext ctx, JsValue value)
+    {
+        var number = ctx.ToNumber(value);
+        if (double.IsNaN(number) || number == 0d)
+        {
+            return 0d;
+        }
+
+        return double.IsInfinity(number) ? number : Math.Truncate(number);
     }
 
     private static JsValue Replace(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
