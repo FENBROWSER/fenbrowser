@@ -837,6 +837,9 @@ namespace FenBrowser.Core.Accessibility
                 _disposed = true;
                 if (_tree != null && _treeInvalidationHandler != null)
                     _tree.TreeInvalidated -= _treeInvalidationHandler;
+                // Release the tree's static Node.OnMutation subscription so the
+                // document is fully detached on navigation teardown.
+                _tree?.Dispose();
                 _bridge?.Dispose();
             }
         }

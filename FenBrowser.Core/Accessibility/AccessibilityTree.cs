@@ -9,9 +9,11 @@ namespace FenBrowser.Core.Accessibility
 {
     /// <summary>
     /// Document-scoped accessibility tree. One instance per Document (GetOrCreate pattern).
-    /// The tree is built lazily and invalidated automatically when DOM mutations occur.
+    /// The tree is built lazily and invalidated automatically while DOM mutations occur.
+    /// The Node.OnMutation subscription is owned deterministically: it stays attached
+    /// until <see cref="Dispose"/> and is fully removed afterwards.
     /// </summary>
-    public sealed class AccessibilityTree
+    public sealed class AccessibilityTree : IDisposable
     {
         // ---- Static GetOrCreate cache ----
 
@@ -40,17 +42,33 @@ namespace FenBrowser.Core.Accessibility
         private AccessibilityTree(Document doc)
         {
             _doc = doc;
-            // Use a WeakReference so the static event does not root this instance.
-            // The ConditionalWeakTable keeps us alive only as long as `doc` is alive.
-            // Once `doc` is collected the table drops us, the WeakReference goes dead,
-            // and the lambda below becomes a harmless no-op — no memory leak.
-            var weakSelf = new WeakReference<AccessibilityTree>(this);
-            Node.OnMutation += (target, type, attrName, ns, added, removed) =>
-            {
-                if (!weakSelf.TryGetTarget(out var self)) return;
-                if (target?.OwnerDocument == self._doc || ReferenceEquals(target, self._doc))
-                    self.Invalidate();
-            };
+            // Deterministic subscription ownership: the handler is stored so
+            // Dispose() can remove the exact delegate from the static event.
+            _onMutationHandler = OnMutationRaised;
+            Node.OnMutation += _onMutationHandler;
+        }
+
+        private readonly Action<Node, string, string?, string?, List<Node>?, List<Node>?> _onMutationHandler;
+        private bool _disposed;
+
+        private void OnMutationRaised(Node target, string type, string? attrName, string? attrNamespace, List<Node>? addedNodes, List<Node>? removedNodes)
+        {
+            if (_disposed) return;
+            if (target?.OwnerDocument == _doc || ReferenceEquals(target, _doc))
+                Invalidate();
+        }
+
+        /// <summary>
+        /// Detaches from the static mutation event and releases document references.
+        /// After disposal the tree is never notified or rebuilt again.
+        /// </summary>
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            Node.OnMutation -= _onMutationHandler;
+            _root = null;
+            _nodeIndex.Clear();
         }
 
         // ---- Public API ----
@@ -96,6 +114,7 @@ namespace FenBrowser.Core.Accessibility
         /// <summary>Marks the entire tree as dirty so it will be rebuilt on next access.</summary>
         public void Invalidate()
         {
+            if (_disposed) return;
             _dirty = true;
             _root = null;
             _nodeIndex.Clear();
@@ -116,6 +135,12 @@ namespace FenBrowser.Core.Accessibility
 
         private void EnsureBuilt()
         {
+            if (_disposed)
+            {
+                _dirty = false;
+                _root = null;
+                return;
+            }
             if (!_dirty) return;
             _dirty = false;
             _nodeIndex.Clear();
