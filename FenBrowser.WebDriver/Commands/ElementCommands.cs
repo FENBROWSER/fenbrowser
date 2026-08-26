@@ -566,116 +566,22 @@ namespace FenBrowser.WebDriver.Commands
             return (strategy, selector);
         }
 
-        private async Task<string> RegisterElementReferenceAsync(Session session, object element)
+        private Task<string> RegisterElementReferenceAsync(Session session, object element)
         {
+            // W3C identity semantics: a reference maps to exactly one node. Only
+            // the same native element re-finds to an existing reference; distinct
+            // elements always register their own reference (no fingerprint aliasing).
             if (element is not string nativeId || string.IsNullOrWhiteSpace(nativeId))
             {
-                return session.RegisterElement(element);
+                return Task.FromResult(session.RegisterElement(element));
             }
 
             if (session.TryGetElementReferenceId(nativeId, out var existingRef))
             {
-                return existingRef;
+                return Task.FromResult(existingRef);
             }
 
-            var equivalentRef = await TryFindEquivalentElementReferenceAsync(session, nativeId);
-            if (!string.IsNullOrWhiteSpace(equivalentRef))
-            {
-                session.AssociateNativeReference(nativeId, equivalentRef);
-                return equivalentRef;
-            }
-
-            return session.RegisterElement(nativeId);
-        }
-
-        private async Task<string> TryFindEquivalentElementReferenceAsync(Session session, string nativeId)
-        {
-            if (_handler.Browser == null)
-            {
-                return null;
-            }
-
-            var target = await BuildFingerprintAsync(nativeId);
-            if (!target.IsValid)
-            {
-                return null;
-            }
-
-            var snapshot = session.GetNativeReferenceMapSnapshot();
-            foreach (var kvp in snapshot)
-            {
-                var candidateNativeId = kvp.Key;
-                var candidateRef = kvp.Value;
-                if (string.Equals(candidateNativeId, nativeId, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                var candidate = await BuildFingerprintAsync(candidateNativeId);
-                if (!candidate.IsValid)
-                {
-                    continue;
-                }
-
-                if (target.Equals(candidate))
-                {
-                    try
-                    {
-                        _ = session.GetElement(candidateRef, Session.ElementReferenceKind.Element);
-                    }
-                    catch
-                    {
-                        continue;
-                    }
-
-                    return candidateRef;
-                }
-            }
-
-            return null;
-        }
-
-        private async Task<ElementFingerprint> BuildFingerprintAsync(string nativeId)
-        {
-            try
-            {
-                var tag = await _handler.Browser.GetElementTagNameAsync(nativeId) ?? string.Empty;
-                var text = await _handler.Browser.GetElementTextAsync(nativeId) ?? string.Empty;
-                var idAttr = await _handler.Browser.GetElementAttributeAsync(nativeId, "id") ?? string.Empty;
-                var hrefAttr = await _handler.Browser.GetElementAttributeAsync(nativeId, "href") ?? string.Empty;
-                return new ElementFingerprint(tag, text, idAttr, hrefAttr);
-            }
-            catch
-            {
-                return ElementFingerprint.Invalid;
-            }
-        }
-
-        private readonly struct ElementFingerprint
-        {
-            public static ElementFingerprint Invalid => new ElementFingerprint(string.Empty, string.Empty, string.Empty, string.Empty);
-
-            public ElementFingerprint(string tag, string text, string idAttr, string hrefAttr)
-            {
-                Tag = tag ?? string.Empty;
-                Text = text ?? string.Empty;
-                IdAttr = idAttr ?? string.Empty;
-                HrefAttr = hrefAttr ?? string.Empty;
-            }
-
-            public string Tag { get; }
-            public string Text { get; }
-            public string IdAttr { get; }
-            public string HrefAttr { get; }
-            public bool IsValid => !string.IsNullOrWhiteSpace(Tag);
-
-            public bool Equals(ElementFingerprint other)
-            {
-                return string.Equals(Tag, other.Tag, StringComparison.OrdinalIgnoreCase) &&
-                       string.Equals(Text, other.Text, StringComparison.Ordinal) &&
-                       string.Equals(IdAttr, other.IdAttr, StringComparison.Ordinal) &&
-                       string.Equals(HrefAttr, other.HrefAttr, StringComparison.Ordinal);
-            }
+            return Task.FromResult(session.RegisterElement(nativeId));
         }
 
         private async Task<object> FindElementWithImplicitWaitAsync(
