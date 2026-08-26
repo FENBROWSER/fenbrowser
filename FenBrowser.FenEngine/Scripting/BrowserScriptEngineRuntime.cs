@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
@@ -31,6 +31,7 @@ using FenBrowser.Js.Parser;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Rendering;
+using SkiaSharp;
 using FenBrowser.FenEngine.Security;
 using FenBrowser.FenEngine.Storage;
 using DomRange = FenBrowser.Core.Dom.V2.Range;
@@ -46,7 +47,7 @@ public sealed record BrowserFrameExecutionOptions
     /// <summary>
     /// Nonce-aware external script fetcher. CSP 'strict-dynamic' policies reject
     /// URL-only re-validation at the resource layer, so the authorizing element's
-    /// nonce must travel with the fetch (CSP3 §6.2.2.9).
+    /// nonce must travel with the fetch (CSP3 Â§6.2.2.9).
     /// </summary>
     public Func<Uri, Uri, string, Task<string>> ExternalScriptFetcherWithNonce { get; init; }
     public Func<HttpRequestMessage, Task<HttpResponseMessage>> FetchHandler { get; init; }
@@ -331,6 +332,7 @@ public interface IBrowserScriptEngine
     void SetHistoryBridge(IHistoryBridge bridge);
     void NotifyPopState(object state);
     void NotifyFrameScrollChanged(Element frameElement);
+    bool IsEventDispatchBusy(Element element);
     bool DispatchEventForElement(Element element, string eventName, BrowserDomEventInit eventInit = null);
     /// <summary>
     /// Phase 12: non-blocking variant. Dispatches a JS event asynchronously so
@@ -387,7 +389,7 @@ internal sealed record BrowserHostLifetimeSnapshot(
     int ActiveWebSocketCount);
 
 /// <summary>
-/// FenJS browser script engine — the sole JS runtime for the browser pipeline.
+/// FenJS browser script engine â€” the sole JS runtime for the browser pipeline.
 /// All page scripts execute through FenJS; there is no legacy fallback.
 /// </summary>
 public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSource
@@ -519,6 +521,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private int _webSocketIdCounter;
     private ConditionalWeakTable<Element, List<BrowserEventListener>> _iframeWindowEventListeners = new();
     private ConditionalWeakTable<Element, FenJsBrowserScriptEngine> _iframeRealms = new();
+    private readonly ConditionalWeakTable<Element, FenJsCanvasRenderingContext2DHost> _canvasRenderingContexts =
+        new();
     private readonly Dictionary<long, MessagePortEndpoint> _messagePortEndpoints = new();
     private FenJsBrowserScriptEngine _parentRealmOwner;
     private Element _embeddingFrameElement;
@@ -1203,7 +1207,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     /// Phase 12: non-blocking variant of <see cref="DispatchEventForElement"/>.
     /// Dispatches a JS event to the given element and returns a Task that
     /// completes when JS execution finishes (or times out). The calling thread
-    /// is never blocked — the JS worker signals completion via TCS.
+    /// is never blocked â€” the JS worker signals completion via TCS.
     /// </summary>
     public async Task<bool> DispatchEventForElementAsync(Element element, string eventName, BrowserDomEventInit eventInit = null)
     {
@@ -1213,7 +1217,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         if (TryGetFrameRealm(element.OwnerDocument, out var frameRealm))
         {
             LogInputPipelineDispatch(element, eventName, "iframe");
-            var defaultAllowed = frameRealm.DispatchEventForElement(element, eventName, eventInit);
+            var defaultAllowed = await frameRealm.DispatchEventForElementAsync(element, eventName, eventInit)
+                .ConfigureAwait(false);
             SyncFrameRealmObservables(TryGetFrameElementForDocument(element.OwnerDocument), frameRealm);
             LogInputPipelineCompletion(element, eventName, defaultAllowed);
             return defaultAllowed;
@@ -1313,7 +1318,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     public void SyncDomContext(Node domRoot, Uri baseUri = null)
     {
-        // Lightweight DOM sync for recascades/re-renders — update the cached
+        // Lightweight DOM sync for recascades/re-renders â€” update the cached
         // DOM root WITHOUT recreating the interpreter, so pending timers,
         // promises, and async state survive.  The host hooks' document
         // reference is kept alive by BindFenJsDomContext on initial load.
@@ -1614,7 +1619,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 lock (_fenJsLock)
                 {
                     // If the session was reset between dispatch and now, the
-                    // compiler/interpreter are gone — bail cleanly.
+                    // compiler/interpreter are gone â€” bail cleanly.
                     if (dispatchGeneration != _fenJsSessionGeneration ||
                         _compiler == null || _interpreter == null)
                     {
@@ -1623,7 +1628,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             $"(dispatchGen={dispatchGeneration} currentGen={_fenJsSessionGeneration} " +
                             $"_compiler={_compiler != null} _interpreter={_interpreter != null}). " +
                             "This is expected when a page script triggers a navigation " +
-                            "(e.g. WAF challenge → location.reload).");
+                            "(e.g. WAF challenge â†’ location.reload).");
                     }
                     _fenJsEvaluationCount++;
                     var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-eval>"));
@@ -1636,7 +1641,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         catch (InvalidOperationException ex)
         {
             // Session-reset InvalidOperationException is expected after async
-            // navigation — surface it cleanly without a stack trace.
+            // navigation â€” surface it cleanly without a stack trace.
             LogScriptLoading(
                 "ScriptEvaluationSkipped",
                 LogSeverity.Warn,
@@ -1686,14 +1691,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     // The recursive-descent parser, the bytecode compiler, and the interpreter all
     // recurse with the AST/call depth. Real-world minified bundles (x.com's main.js is
     // 1.4 MB) nest expressions thousands deep and blow the ~1 MB stack of a threadpool
-    // thread — the path page scripts run on. FenBrowser.Host already re-enters its main
+    // thread â€” the path page scripts run on. FenBrowser.Host already re-enters its main
     // loop on a 16 MB thread for exactly this reason; mirror that here so every FenJS
     // compile/execute gets a fat stack. A ThreadStatic flag makes re-entrant calls (a
-    // native callback that evaluates more script) run inline instead of spawning — and,
+    // native callback that evaluates more script) run inline instead of spawning â€” and,
     // critically, avoids dead-locking on _fenJsLock which the outer worker already holds.
     [ThreadStatic] private static bool _onFenJsLargeStackThread;
     // 256 MB: real-world minified bundles nest very deeply. The parser builds
-    // operator chains iteratively, but the compiler's tree-walk recurses — and
+    // operator chains iteratively, but the compiler's tree-walk recurses â€” and
     // x.com's i18n bundle compiles an ~8800-deep left-associative chain (16 MB
     // overflowed at ~1550). Give the compile/execute thread a fat stack; the
     // compiler's TryEnsureSufficientExecutionStack guard still aborts catchably
@@ -1721,7 +1726,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         _fenJsAllocationCountAtLastBoundaryGc = heap.AllocationCount;
     }
 
-    // Persistent large-stack worker thread — created once per engine instance
+    // Persistent large-stack worker thread â€” created once per engine instance
     // and reused across all page-script evaluations.  Creating+joining a 256 MB
     // thread per script (60+ for a typical SPA) wastes ~500 ms per page load in
     // thread start/stop overhead alone; reusing the same thread cuts that to
@@ -1731,6 +1736,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private readonly ConcurrentQueue<FenJsWorkItem> _fenJsInputWorkQueue = new();
     private readonly ConcurrentQueue<FenJsWorkItem> _fenJsWorkQueue = new();
     private bool _fenJsWorkerRunning;
+    private int _fenJsWorkerActive;
 
     private sealed class FenJsWorkItem
     {
@@ -1777,6 +1783,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
                 try
                 {
+                    Interlocked.Exchange(ref _fenJsWorkerActive, 1);
                     var interpreter = _interpreter;
                     var result = interpreter == null
                         ? workItem.Work()
@@ -1790,8 +1797,23 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 {
                     workItem.Completion.TrySetException(ex);
                 }
+                finally
+                {
+                    Volatile.Write(ref _fenJsWorkerActive, 0);
+                }
             }
         }
+    }
+
+    public bool IsEventDispatchBusy(Element element)
+    {
+        if (element?.OwnerDocument != null &&
+            TryGetFrameRealm(element.OwnerDocument, out var frameRealm))
+        {
+            return frameRealm.IsEventDispatchBusy(element);
+        }
+
+        return Volatile.Read(ref _fenJsWorkerActive) != 0;
     }
 
     private bool TryDequeueFenJsWork(out FenJsWorkItem workItem)
@@ -1829,7 +1851,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         if (_onFenJsLargeStackThread)
         {
-            // Re-entrant call from within the large-stack thread itself —
+            // Re-entrant call from within the large-stack thread itself â€”
             // run inline to avoid deadlocking the persistent worker.
             return work();
         }
@@ -1854,7 +1876,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             {
                 var timeout = new FenBrowser.FenEngine.Errors.FenTimeoutError(
                     $"Timed out waiting for FenJS worker after {waitForWorkerMs} ms.");
-                workItem.Completion.TrySetException(timeout);
+                // Mark a queued item stale without leaving a faulted Task whose
+                // exception can later surface on the finalizer thread.
+                workItem.Completion.TrySetCanceled();
                 throw timeout;
             }
         }
@@ -2463,7 +2487,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 }
 
 
-                // Determine async/defer per WHATWG HTML §4.12.1
+                // Determine async/defer per WHATWG HTML Â§4.12.1
                 // - async: execute as soon as available (external only per spec)
                 // - defer: execute after parsing, before DOMContentLoaded (external only per spec)
                 // - Module scripts are deferred by default; async on modules = execute ASAP
@@ -2482,7 +2506,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 }
                 if (!string.IsNullOrEmpty(src))
                 {
-                    // External script — validate, then kick off fetch concurrently
+                    // External script â€” validate, then kick off fetch concurrently
                     UpdateScriptLoadingSnapshot(snapshot =>
                     {
                         snapshot.ExternalScripts++;
@@ -2536,12 +2560,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             FenBrowser.Core.Logging.LogCategory.JavaScript);
                     }
 
-                    // CSP Level 3 §6.2.2.9: under 'strict-dynamic' the resource layer's
+                    // CSP Level 3 Â§6.2.2.9: under 'strict-dynamic' the resource layer's
                     // URL-only re-validation cannot see this element, so carry the
                     // authorizing nonce with the fetch context.
                     var elementNonce = scriptElement.GetAttribute("nonce");
 
-                    // Deduplicate: same URL → same fetch task
+                    // Deduplicate: same URL â†’ same fetch task
                     var fetchKey = $"{scriptUri.AbsoluteUri}\n{elementNonce ?? string.Empty}";
                     if (!fetchTasks.TryGetValue(fetchKey, out var fetchTask))
                     {
@@ -2568,7 +2592,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 }
                 else
                 {
-                    // Inline script — validate now, code is already in DOM
+                    // Inline script â€” validate now, code is already in DOM
                     UpdateScriptLoadingSnapshot(snapshot =>
                     {
                         snapshot.InlineScripts++;
@@ -2624,7 +2648,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 }
             }
 
-            // Categorize scripts for phased execution per WHATWG HTML §4.12.1
+            // Categorize scripts for phased execution per WHATWG HTML Â§4.12.1
             var blockingItems = new List<ScriptExecutionItem>();
             var deferItems = new List<ScriptExecutionItem>();
             var asyncItems = new List<ScriptExecutionItem>();
@@ -2676,7 +2700,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             LogScriptLoading("ScriptBatchStarted", LogSeverity.Debug, "[FenJsBridge] Executing defer scripts", new Dictionary<string, object> { ["batch"] = "defer", ["count"] = deferItems.Count });
             await ExecuteScriptBatchAsync(deferItems, baseUri, "defer").ConfigureAwait(false);
 
-            // Phase 2c: Fire-and-forget async scripts. Per WHATWG HTML §4.12.1,
+            // Phase 2c: Fire-and-forget async scripts. Per WHATWG HTML Â§4.12.1,
             // async scripts execute as soon as they are available and must NOT
             // block DOMContentLoaded. We launch them as a background continuation
             // so the caller can fire DOMContentLoaded immediately.
@@ -2726,7 +2750,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             // Per-script errors are already caught inside the execution loop.
             // This outer catch only handles infrastructure failures (e.g.
             // null _interpreter after a session reset). Log and surface but
-            // do NOT re-throw — the page should render even if scripts fail.
+            // do NOT re-throw â€” the page should render even if scripts fail.
             if (ex is JsThrownException jte && string.IsNullOrEmpty(jte.Description))
             {
                 try { jte.Description = _interpreter.DescribeThrownValue(jte.Value); } catch { }
@@ -2812,7 +2836,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     /// <summary>
     /// Execute a batch of scripts (blocking, defer, or async) in document order.
     /// Each script's external fetch is awaited individually; execution errors are
-    /// logged but never re-thrown (per WHATWG HTML §8.1.3.2).
+    /// logged but never re-thrown (per WHATWG HTML Â§8.1.3.2).
     /// </summary>
     private async Task ExecuteScriptBatchAsync(
         List<ScriptExecutionItem> batch, Uri baseUri, string batchLabel)
@@ -2842,7 +2866,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
             if (item.FetchKey != null)
             {
-                // Await this individual fetch — it may already be complete since
+                // Await this individual fetch â€” it may already be complete since
                 // all fetches were kicked off concurrently in Phase 1.
                 try
                 {
@@ -2941,6 +2965,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 executionLogSeverity,
                 "[FenJsBridge] Script execution started",
                 executionStartedFields);
+            FenBrowser.Core.EngineLogCompat.Info($"[DEBUG] About to call EvaluateWithFenJsRaw for script {item.ScriptRecord.ScriptId} ({item.FetchKey ?? "inline"}) length {code?.Length}", FenBrowser.Core.Logging.LogCategory.JavaScript);
             RunFenJsWithLargeStack<object>(() =>
             {
                 try
@@ -3036,6 +3061,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 }
                 return null;
             });
+            FenBrowser.Core.EngineLogCompat.Info($"[DEBUG] Finished EvaluateWithFenJsRaw for script {item.ScriptRecord.ScriptId}", FenBrowser.Core.Logging.LogCategory.JavaScript);
         }
 
         if (string.Equals(batchLabel, "async", StringComparison.OrdinalIgnoreCase))
@@ -3572,7 +3598,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 // Instruction budget prevents truly-infinite loops from hanging
                 // the browser for the full wall-clock timeout (300 s).  100M
                 // instructions is ~5-10 s of interpreted bytecode on a modern
-                // CPU — enough for even the largest page bundles to finish.
+                // CPU â€” enough for even the largest page bundles to finish.
                 InstructionBudget = FenJsBrowserInstructionBudget,
                 // Fail closed while unassigned: the constructor runs this before the
                 // owner assigns Sandbox/DocumentSecurityContext; BindFenJsDomContext
@@ -4086,7 +4112,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         var navigator = CreateNavigatorHost();
         var location = new FenJsLocationHost(baseUri ?? TryCreateUri(document?.URL));
         var history = new FenJsHistoryHost(location);
-        // Always bind the host hooks so _owner is set — even if there's no
+        // Always bind the host hooks so _owner is set â€” even if there's no
         // document, host-property resolution must not NRE when it looks up
         // _owner._interpreter.  Without this, a page that triggers a recascade
         // before the DOM is fully attached leaves the hooks orphaned.
@@ -4182,7 +4208,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 },
                 length: 2));
 
-        // ── DOMParser parse bridge ──
+        // â”€â”€ DOMParser parse bridge â”€â”€
         // Parses XML (or HTML for the text/html MIME type) into a wrapped V2
         // Document host object. Malformed XML returns a <parsererror> error
         // document instead of throwing, matching browser-observable behavior.
@@ -4210,7 +4236,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 },
                 length: 2));
 
-        // ── IndexedDB persistence bridge ──
+        // â”€â”€ IndexedDB persistence bridge â”€â”€
         // Register C# native functions that the JS IDB implementation calls for
         // persistent storage. The JS side falls back to in-memory when these are
         // unavailable, so registration failures are non-fatal.
@@ -4339,7 +4365,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         // directly don't crash. Sites may also set it to their own function;
         // the TrySetHostProperty case for BrowserSurfaceProfile stores those.
         EvaluateBootstrapWithFenJsRaw(
-            // ── window.console ── Must come before alert/confirm/prompt stubs
+            // â”€â”€ window.console â”€â”€ Must come before alert/confirm/prompt stubs
             // since those call console.log.  Forwards to native __fenLog.
             "globalThis.console = {" +
             "  log:   function() { __fenLog('log',   Array.prototype.slice.call(arguments).join(' ')); }," +
@@ -4351,18 +4377,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             "  clear: function() {}," +
             "  dir:   function() { __fenLog('dir',   Array.prototype.slice.call(arguments).join(' ')); }" +
             "};" +
-            // ── navigator.sendBeacon ──
+            // â”€â”€ navigator.sendBeacon â”€â”€
             "navigator.sendBeacon = function(url, data) { return true; };" +
-            // Stub navigator.plugins and navigator.mimeTypes — real browsers
+            // Stub navigator.plugins and navigator.mimeTypes â€” real browsers
             // always have these (even if empty). Google's bot detection checks
             // their presence and shape.
             "navigator.plugins = { length: 0, item: function() { return null; }, namedItem: function() { return null; }, refresh: function() {} };" +
             "navigator.mimeTypes = { length: 0, item: function() { return null; }, namedItem: function() { return null; } };" +
-            // ── navigator.cookieDeprecationLabel ── https://wicg.github.io/cookie-deprecation-label/
+            // â”€â”€ navigator.cookieDeprecationLabel â”€â”€ https://wicg.github.io/cookie-deprecation-label/
             // Google reCAPTCHA enterprise.js checks this.  Must be an object with
             // getValue() that returns a Promise<string>.
             "navigator.cookieDeprecationLabel = { getValue: function() { return Promise.resolve('no-signal'); } };" +
-            // Stub window.chrome — Chromium-based browsers always expose this.
+            // Stub window.chrome â€” Chromium-based browsers always expose this.
             // Google's JS challenge checks for window.chrome.loadTimes() and
             // window.chrome.csi() as browser-authenticity signals.
             "globalThis.chrome = {" +
@@ -4409,7 +4435,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             // Sites expect these globals to exist and call them with commands
             // like __uspapi('getUSPData', 1, callback). Without these stubs,
             // code that accesses parent.__uspapiLocator or __tcfapiLocator
-            // on cross-origin frames throws TypeError → browser crash.
+            // on cross-origin frames throws TypeError â†’ browser crash.
             "globalThis.__uspapiLocator = function() {};" +
             "globalThis.__uspapi = function(cmd, version, callback) { if (callback) callback({ uspString: '1---' }, true); };" +
             "globalThis.__tcfapiLocator = function() {};" +
@@ -4577,7 +4603,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     }
                 },
                 length: 1));
-        // ── window.alert / confirm / prompt — fire-and-forget dialog display
+        // â”€â”€ window.alert / confirm / prompt â€” fire-and-forget dialog display
         // with immediate return of safe defaults.
         //
         // Synchronously blocking the JS worker for a modal dialog would require
@@ -4645,7 +4671,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 },
                 length: 2));
 
-        // ── window.open — calls into Host to create a new tab and returns a
+        // â”€â”€ window.open â€” calls into Host to create a new tab and returns a
         // host object representing the popup window with document.write/close etc.
         _interpreter.RegisterGlobalValue(
             "open",
@@ -4680,7 +4706,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     var bridge = JsDialogBridge.OpenWindow;
                     if (bridge == null)
                     {
-                        FenLogger.Warn("[open] JsDialogBridge not installed — returning null", LogCategory.JavaScript);
+                        FenLogger.Warn("[open] JsDialogBridge not installed â€” returning null", LogCategory.JavaScript);
                         return JsValue.Null;
                     }
 
@@ -4782,11 +4808,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     length: 0)
             }));
 
-        // navigator.serviceWorker — C# host property so it's available before JS runs
+        // navigator.serviceWorker â€” C# host property so it's available before JS runs
         // Returns resolved promises so apps that await registration don't hang.
         SetStoredHostProperty(navigator, "serviceWorker", CreateDefaultServiceWorkerStub());
 
-        // navigator.storage — C# host property
+        // navigator.storage â€” C# host property
         SetStoredHostProperty(navigator, "storage", CreateDefaultStorageStub());
     }
 
@@ -4908,7 +4934,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
                 globalThis.Notification = Notification;
 
-                // ── WebSocket ── https://websockets.spec.whatwg.org/
+                // â”€â”€ WebSocket â”€â”€ https://websockets.spec.whatwg.org/
                 if (typeof globalThis.WebSocket === 'undefined') {
                     globalThis.WebSocket = function WebSocket(url, protocols) {
                         if (!(this instanceof WebSocket)) {
@@ -5015,7 +5041,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                     }
                                 }
                             } catch (e) {
-                                // JSON parse failure — ignore
+                                // JSON parse failure â€” ignore
                             }
                         }, 50); // Poll every 50ms
                     };
@@ -5065,11 +5091,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     };
                 }
 
-                // ── indexedDB ── https://w3c.github.io/IndexedDB/
+                // â”€â”€ indexedDB â”€â”€ https://w3c.github.io/IndexedDB/
                 // Partial in-memory compatibility implementation with persistence hooks.
                 // Uses __fenIdb* C# native functions for persistence when available.
                 if (typeof globalThis.indexedDB === 'undefined') {
-                    // ── Helpers ──
+                    // â”€â”€ Helpers â”€â”€
                     var _idbStore = {}; // { "db\0store": { _data: {key: value}, _indexes: {name: {keyPath, _data: {key: value}}} } }
                     var _idbVersions = {};
                     function _idbInitEventTarget(target) {
@@ -5185,7 +5211,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             _idbDispatch(transaction, 'complete');
                         }, 0);
                     }
-                    // ── IDBRequest ──
+                    // â”€â”€ IDBRequest â”€â”€
                     function IDBRequest() {
                         this.result = undefined;
                         this.error = null;
@@ -5324,7 +5350,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         }
                         return new IDBIndex(name, objectStore, keyPath, options, indexRef, transaction);
                     }
-                    // ── IDBDatabase ──
+                    // â”€â”€ IDBDatabase â”€â”€
                     function IDBDatabase(name, version) {
                         this.name = String(name || 'default');
                         this.version = version || 1;
@@ -5400,13 +5426,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                 return k;
                             },
                             get: function (key) {
-                                __fenLog('warn', '[IDB] get(' + String(key) + ') from "' + String(storeName) + '" → ' + (storeRef._data.hasOwnProperty(key) ? 'hit' : 'miss'));
+                                __fenLog('warn', '[IDB] get(' + String(key) + ') from "' + String(storeName) + '" â†’ ' + (storeRef._data.hasOwnProperty(key) ? 'hit' : 'miss'));
                                 return storeRef._data.hasOwnProperty(key) ? storeRef._data[key] : undefined;
                             },
                             getAll: function () {
                                 var vals = []; var dk = Object.keys(storeRef._data);
                                 for (var i = 0; i < dk.length; i++) vals.push(storeRef._data[dk[i]]);
-                                __fenLog('warn', '[IDB] getAll() from "' + String(storeName) + '" → ' + vals.length + ' records');
+                                __fenLog('warn', '[IDB] getAll() from "' + String(storeName) + '" â†’ ' + vals.length + ' records');
                                 return vals;
                             },
                             getAllKeys: function () { return Object.keys(storeRef._data); },
@@ -5429,7 +5455,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                                     keyPath: idx.keyPath,
                                     get: function (k) {
                                         var r = idx._data.hasOwnProperty(k) ? idx._data[k] : undefined;
-                                        __fenLog('warn', '[IDB] idx.get(' + String(k) + ') → ' + (r !== undefined ? 'hit' : 'miss'));
+                                        __fenLog('warn', '[IDB] idx.get(' + String(k) + ') â†’ ' + (r !== undefined ? 'hit' : 'miss'));
                                         return r;
                                     },
                                     getKey: function (k) { return idx._data.hasOwnProperty(k) ? k : undefined; },
@@ -5723,7 +5749,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     };
                 }
 
-                // ── navigator.serviceWorker ──
+                // â”€â”€ navigator.serviceWorker â”€â”€
                 // C# host property is set before JS runs (CreateDefaultServiceWorkerStub),
                 // which returns resolved promises so apps that await registration don't hang.
                 // Only install the JS fallback if the C# property is not visible.
@@ -5746,7 +5772,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     };
                 }
 
-                // ── BroadcastChannel ── https://html.spec.whatwg.org/#broadcasting-to-other-browsing-contexts
+                // â”€â”€ BroadcastChannel â”€â”€ https://html.spec.whatwg.org/#broadcasting-to-other-browsing-contexts
                 // WhatsApp uses this for multi-tab coordination (e.g., "you have another tab open").
                 // In-process broadcast delivers messages to all channels with the same name.
                 if (typeof globalThis.BroadcastChannel === 'undefined') {
@@ -5801,7 +5827,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     };
                 }
 
-                // ── CacheStorage (caches) ── https://w3c.github.io/ServiceWorker/#cachestorage
+                // â”€â”€ CacheStorage (caches) â”€â”€ https://w3c.github.io/ServiceWorker/#cachestorage
                 // WhatsApp and many PWAs check for caches API availability.
                 if (typeof globalThis.caches === 'undefined') {
                     globalThis.CacheStorage = function CacheStorage() {};
@@ -5824,7 +5850,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     };
                 }
 
-                // ── navigator.storage ── https://storage.spec.whatwg.org/
+                // â”€â”€ navigator.storage â”€â”€ https://storage.spec.whatwg.org/
                 if (globalThis.navigator && !globalThis.navigator.storage) {
                     globalThis.navigator.storage = {
                         estimate: function () {
@@ -5840,7 +5866,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             "globalThis.window.isSecureContext = globalThis.isSecureContext;" +
             "globalThis.crossOriginIsolated = " + crossOriginIsolatedLiteral + ";" +
             "globalThis.window.crossOriginIsolated = globalThis.crossOriginIsolated;" +
-            // Diagnostic error overlay — surfaces unhandled JS errors visibly on the page
+            // Diagnostic error overlay â€” surfaces unhandled JS errors visibly on the page
             // so we can see what's failing without opening DevTools. Remove once stable.
             "(function(){" +
             "  var _errs=[];" +
@@ -5995,7 +6021,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     // HTML timers + animation frames, executed on the SAME FenJS interpreter as page
     // scripts. Without these, any script calling setTimeout threw "setTimeout is not
     // defined" in FenJS and fell back to the legacy engine, whose global state is
-    // disjoint — so deferred callbacks (every SPA bootstrap, incl. x.com) could not see
+    // disjoint â€” so deferred callbacks (every SPA bootstrap, incl. x.com) could not see
     // globals set by the page. Keeping callbacks on one interpreter preserves window
     // state across the whole page lifecycle. https://html.spec.whatwg.org/#timers
     private void InstallFenJsTimers()
@@ -7541,7 +7567,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         // JS does `new MutationObserver(callback)`.
         var mutationObserverCtor = _interpreter.AllocateNativeConstructor(
             "MutationObserver",
-            // [[Call]] — not construct; throw TypeError per spec § "MutationObserver()"
+            // [[Call]] â€” not construct; throw TypeError per spec Â§ "MutationObserver()"
             (_, _) =>
             {
                 ThrowDomException("TypeError",
@@ -7742,7 +7768,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return JsValue.FromString(Convert.ToBase64String(bytes));
                 }));
 
-        // ── TextEncoder / TextDecoder ──
+        // â”€â”€ TextEncoder / TextDecoder â”€â”€
         // Native UTF-8 encoding bridge for Web Crypto and binary data handling.
         _interpreter.RegisterGlobalValue(
             "__fenTextEncode",
@@ -7766,7 +7792,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return JsValue.FromString(System.Text.Encoding.UTF8.GetString(bytes));
                 }));
 
-        // ── crypto.subtle ──
+        // â”€â”€ crypto.subtle â”€â”€
         // Web Crypto API bridge for AES-CBC decrypt and SHA digest.
         _interpreter.RegisterGlobalValue(
             "__fenCryptoImportKey",
@@ -7784,7 +7810,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 "__fenCryptoDigest",
                 (_, args) => CryptoDigest(args)));
 
-        // ── WebSocket native bridge ──
+        // â”€â”€ WebSocket native bridge â”€â”€
         _interpreter.RegisterGlobalValue(
             "__fenWebSocketConnect",
             _interpreter.AllocateNativeFunction(
@@ -7838,7 +7864,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         EvaluateWithFenJsRaw(
             """
             (function () {
-                // ── Blob ── https://w3c.github.io/FileAPI/#blob-section
+                // â”€â”€ Blob â”€â”€ https://w3c.github.io/FileAPI/#blob-section
                 // Facebook uses new Blob([data], {type: ...}) with sendBeacon.
                 function blobPartSize(part) {
                     if (part instanceof globalThis.Blob) return part.size;
@@ -7870,7 +7896,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 globalThis.Blob.prototype.arrayBuffer = function () {
                     return Promise.resolve(new ArrayBuffer(0));
                 };
-                // ── trustedTypes ── https://w3c.github.io/trusted-types/dist/spec/
+                // â”€â”€ trustedTypes â”€â”€ https://w3c.github.io/trusted-types/dist/spec/
                 // Facebook creates a "comet-deferred-scripts" policy to safely
                 // create script URLs for deferred bundle loading.  Without this,
                 // the deferred-script processor silently skips all dynamic script
@@ -8163,7 +8189,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     emptyScriptURL: ''
                 };
 
-                // ── IntersectionObserver ── https://w3c.github.io/IntersectionObserver/
+                // â”€â”€ IntersectionObserver â”€â”€ https://w3c.github.io/IntersectionObserver/
                 // Facebook uses this for lazy-loading images and deferred content.
                 globalThis.IntersectionObserver = function IntersectionObserver(callback, options) {
                     this._callback = callback;
@@ -8209,7 +8235,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return [];
                 };
 
-                // ── ResizeObserver ── https://drafts.csswg.org/resize-observer/
+                // â”€â”€ ResizeObserver â”€â”€ https://drafts.csswg.org/resize-observer/
                 // Delivery is coalesced onto the timer queue so callbacks run after
                 // the style mutation that changed the observed box.
                 globalThis.__fenResizeObservers = [];
@@ -8258,7 +8284,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     this._targets.length = 0;
                 };
 
-                // ── Event ── https://dom.spec.whatwg.org/#interface-event
+                // â”€â”€ Event â”€â”€ https://dom.spec.whatwg.org/#interface-event
                 // GitHub uses new Event('click'), new Event('DOMContentLoaded'), etc.
                 // Minimal constructor: stores type + options, supports stopPropagation /
                 // preventDefault / stopImmediatePropagation.
@@ -8321,7 +8347,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 Event.AT_TARGET = 2;
                 Event.BUBBLING_PHASE = 3;
 
-                // ── CustomEvent ── https://dom.spec.whatwg.org/#interface-customevent
+                // â”€â”€ CustomEvent â”€â”€ https://dom.spec.whatwg.org/#interface-customevent
                 globalThis.CustomEvent = function CustomEvent(type, options) {
                     Event.call(this, type, options);
                     options = options || {};
@@ -8574,7 +8600,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     };
                 })();
 
-                // ── XMLHttpRequest ── https://xhr.spec.whatwg.org/
+                // â”€â”€ XMLHttpRequest â”€â”€ https://xhr.spec.whatwg.org/
                 // Amazon and many sites use XHR for API calls.  Stub that fires
                 // onerror immediately so callers can handle the failure gracefully.
                 if (typeof globalThis.Worker === 'undefined') {
@@ -8725,7 +8751,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 };
                 XMLHttpRequest.prototype.overrideMimeType = function (mime) {};
 
-                // ── AbortSignal / AbortController ── https://dom.spec.whatwg.org/#abortcontroller
+                // â”€â”€ AbortSignal / AbortController â”€â”€ https://dom.spec.whatwg.org/#abortcontroller
                 // GitHub uses fetch() with { signal: AbortSignal.timeout(...) }.
                 globalThis.AbortSignal = function AbortSignal() {
                     EventTarget.call(this);
@@ -8776,7 +8802,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     if (this.signal.onabort) this.signal.onabort(new Event('abort'));
                 };
 
-                // ── customElements ── https://html.spec.whatwg.org/#custom-elements
+                // â”€â”€ customElements â”€â”€ https://html.spec.whatwg.org/#custom-elements
                 // GitHub uses customElements.define() for web components.
                 var cryptoObject = globalThis.crypto || {};
                 cryptoObject.getRandomValues = function (array) {
@@ -9268,7 +9294,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 };
                 globalThis.customElements = new CustomElementRegistry();
 
-                // ── DOMException ──
+                // â”€â”€ DOMException â”€â”€
                 globalThis.DOMException = function DOMException(message, name) {
                     this.message = message || '';
                     this.name = name || 'Error';
@@ -9434,7 +9460,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 globalThis.ReadableStreamDefaultReader = ReadableStreamDefaultReader;
                 globalThis.ReadableStreamDefaultController = ReadableStreamDefaultController;
 
-                // ── fetch ── Minimal stub that rejects with a network error.
+                // â”€â”€ fetch â”€â”€ Minimal stub that rejects with a network error.
                 // GitHub and many sites use fetch() for API calls.
                 function normalizeHeaderName(name) {
                     return String(name).toLowerCase();
@@ -9594,7 +9620,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     }
                 };
 
-                // ── TextEncoder ── https://encoding.spec.whatwg.org/#textencoder
+                // â”€â”€ TextEncoder â”€â”€ https://encoding.spec.whatwg.org/#textencoder
                 globalThis.TextEncoder = function TextEncoder() {};
                 TextEncoder.prototype.encode = function (input) {
                     if (input == null) input = '';
@@ -9609,7 +9635,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return { read: source.length, written: written };
                 };
 
-                // ── TextDecoder ── https://encoding.spec.whatwg.org/#textdecoder
+                // â”€â”€ TextDecoder â”€â”€ https://encoding.spec.whatwg.org/#textdecoder
                 globalThis.TextDecoder = function TextDecoder(label, options) {
                     this.encoding = 'utf-8';
                     this.fatal = !!(options && options.fatal);
@@ -9620,7 +9646,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return __fenTextDecode(input);
                 };
 
-                // ── atob / btoa ── https://html.spec.whatwg.org/#atob
+                // â”€â”€ atob / btoa â”€â”€ https://html.spec.whatwg.org/#atob
                 globalThis.atob = function (data) {
                     if (typeof data !== 'string') throw new DOMException('atob: argument must be a string', 'InvalidCharacterError');
                     var arr = __fenAtob(data);
@@ -9641,7 +9667,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return __fenBtoa(bytes);
                 };
 
-                // ── crypto.subtle ── https://w3c.github.io/webcrypto/
+                // â”€â”€ crypto.subtle â”€â”€ https://w3c.github.io/webcrypto/
                 var subtle = {};
                 subtle.importKey = function (format, keyData, algorithm, extractable, keyUsages) {
                     return Promise.resolve(__fenCryptoImportKey(format, keyData, algorithm, extractable, keyUsages));
@@ -9734,7 +9760,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         _interpreter.RegisterGlobalValue("File", fileConstructor);
         _fenJsFileConstructor = fileConstructor;
 
-        // window.getComputedStyle(element) → returns a CSSStyleDeclaration-like object
+        // window.getComputedStyle(element) â†’ returns a CSSStyleDeclaration-like object
         // with the element's computed CSS properties.  React and other frameworks call
         // this during hydration to determine whether the server HTML matches the
         // client-side render.  Without it, hydration always fails and the app falls
@@ -10158,7 +10184,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         });
     }
 
-    // ── TextEncoder / TextDecoder helpers ──
+    // â”€â”€ TextEncoder / TextDecoder helpers â”€â”€
 
     private JsValue CreateUint8ArrayFromBytes(byte[] bytes)
     {
@@ -10199,7 +10225,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         catch { return Array.Empty<byte>(); }
     }
 
-    // ── crypto.subtle helpers ──
+    // â”€â”€ crypto.subtle helpers â”€â”€
 
     // Per-engine crypto key storage (keys imported via crypto.subtle.importKey).
     private readonly Dictionary<long, byte[]> _cryptoKeyStore = new();
@@ -10208,7 +10234,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     private JsValue ImportCryptoKey(IReadOnlyList<JsValue> args)
     {
         // args: [format, keyData, algorithm, extractable, keyUsages]
-        // format: "raw" — only format supported currently
+        // format: "raw" â€” only format supported currently
         // keyData: Uint8Array containing the key bytes
         // algorithm: { name: "AES-CBC" }
         try
@@ -10351,7 +10377,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         }
     }
 
-    // ── WebSocket bridge implementation ──────────────────────────────────────
+    // â”€â”€ WebSocket bridge implementation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private JsValue ConnectWebSocket(string url, string[] protocols)
     {
@@ -10473,7 +10499,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     /// <summary>
     /// Called by FenJsMutationObserverHost when its backing C# MutationObserver fires.
     /// Converts MutationRecord objects to JS and invokes the stored JS callback.
-    /// Must run under the interpreter lock — the caller (OnMutations on the mutation
+    /// Must run under the interpreter lock â€” the caller (OnMutations on the mutation
     /// callback thread) delegates here via RunFenJsWithLargeStack.
     /// </summary>
     internal void InvokeMutationObserverCallback(FenJsMutationObserverHost host, IReadOnlyList<MutationRecord> records)
@@ -10623,7 +10649,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         if (optionsValue.Tag != JsValueTag.Object)
         {
-            // If options is not an object, default all to false → observe() will throw.
+            // If options is not an object, default all to false â†’ observe() will throw.
             return init;
         }
 
@@ -11700,7 +11726,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             _interpreter.SetObjectProperty(eventValue, "srcElement", targetHost);
         }
 
-        // Build ancestor chain: target → parent → ... → rootmost element
+        // Build ancestor chain: target â†’ parent â†’ ... â†’ rootmost element
         var path = new List<Element>();
         var current = target;
         while (current != null)
@@ -11717,7 +11743,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         var docHost = document == null ? JsValue.Undefined : ToHostOrNull(document, HostObjectKind.DomDocument);
         var windowTarget = GetActiveWindowEventTarget();
 
-        // 1. CAPTURE PHASE — fire capture listeners on ancestors from root down to target's parent
+        // 1. CAPTURE PHASE â€” fire capture listeners on ancestors from root down to target's parent
         _interpreter.SetObjectProperty(eventValue, "eventPhase", JsValue.FromInt32(1)); // Event.CAPTURING_PHASE
         if (windowTarget.Tag != JsValueTag.Undefined)
         {
@@ -11739,14 +11765,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             DispatchEventToElementWithPhase(path[i], type, eventValue, dispatchState, capture: true);
         }
 
-        // 2. TARGET PHASE — fire all listeners on the target (both capture and non-capture)
+        // 2. TARGET PHASE â€” fire all listeners on the target (both capture and non-capture)
         if (!ReadPropagationStopped(eventValue, dispatchState))
         {
             _interpreter.SetObjectProperty(eventValue, "eventPhase", JsValue.FromInt32(2)); // Event.AT_TARGET
             DispatchEventToElementWithPhase(target, type, eventValue, dispatchState, capture: null);
         }
 
-        // 3. BUBBLE PHASE — fire non-capture listeners up the ancestor chain, then document, then window
+        // 3. BUBBLE PHASE â€” fire non-capture listeners up the ancestor chain, then document, then window
         if (bubbles && !ReadPropagationStopped(eventValue, dispatchState))
         {
             _interpreter.SetObjectProperty(eventValue, "eventPhase", JsValue.FromInt32(3)); // Event.BUBBLING_PHASE
@@ -12131,6 +12157,125 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         return string.Equals(element?.TagName, "iframe", StringComparison.OrdinalIgnoreCase);
     }
 
+    internal static bool IsCanvasElement(Element element)
+    {
+        return string.Equals(element?.TagName, "canvas", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal FenJsCanvasRenderingContext2DHost GetOrCreateCanvasContext(Element canvas, string contextKind)
+    {
+        if (!string.Equals(contextKind, "2d", StringComparison.OrdinalIgnoreCase))
+        {
+            // webgl/webgl2 contexts are not bridged yet; returning null surfaces
+            // as JS null so feature checks fail cleanly instead of throwing.
+            return null;
+        }
+
+        if (_canvasRenderingContexts.TryGetValue(canvas, out var existing))
+        {
+            return existing;
+        }
+
+        var created = new FenJsCanvasRenderingContext2DHost(canvas, () => RequestRender?.Invoke());
+        _canvasRenderingContexts.Add(canvas, created);
+        return created;
+    }
+
+    internal string CanvasToDataUrl(Element canvas, string mediaType)    {
+        if (!_canvasRenderingContexts.TryGetValue(canvas, out var context) || context.Bitmap == null)
+        {
+            return "data:,";
+        }
+
+        var encoded = mediaType.Contains("jpeg", StringComparison.OrdinalIgnoreCase)
+            ? SKImage.FromBitmap(context.Bitmap).Encode(SKEncodedImageFormat.Jpeg, 90)
+            : SKImage.FromBitmap(context.Bitmap).Encode(SKEncodedImageFormat.Png, 100);
+        if (encoded == null)
+        {
+            return "data:,";
+        }
+
+        return "data:image/" +
+            (mediaType.Contains("jpeg", StringComparison.OrdinalIgnoreCase) ? "jpeg" : "png") +
+            ";base64," +
+            Convert.ToBase64String(encoded.ToArray());
+    }
+
+    /// <summary>
+    /// document.hasFocus(): true when the document belongs to the active
+    /// browsing-context tree (the current top document or one of its attached
+    /// descendant frame documents).
+    /// </summary>
+    /// <summary>
+    /// document.hasFocus(): FenBrowser exposes a single active browsing context
+    /// per engine, and the JS `document` global resolves to a facade instance
+    /// that is not reference-identical to the parsed document tree, so focus is
+    /// reported for any live document the engine serves (matching a focused
+    /// user browser; headless has no window-focus concept).
+    /// </summary>
+    internal bool DocumentHasFocus(Document document)
+    {
+        return document != null;
+    }
+
+    internal int GetCanvasContextSizeOrAttribute(Element canvas, string dimension)    {
+        var raw = canvas.GetAttribute(dimension);
+        if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed > 0)
+        {
+            return parsed;
+        }
+
+        return string.Equals(dimension, "width", StringComparison.OrdinalIgnoreCase) ? 300 : 150;
+    }
+
+    private void ResizeCanvasContext(Element canvas)
+    {
+        if (!_canvasRenderingContexts.TryGetValue(canvas, out var context))
+        {
+            return;
+        }
+
+        var width = 300;
+        var height = 150;
+        if (int.TryParse(canvas.GetAttribute("width"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedWidth) && parsedWidth > 0)
+        {
+            width = parsedWidth;
+        }
+
+        if (int.TryParse(canvas.GetAttribute("height"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedHeight) && parsedHeight > 0)
+        {
+            height = parsedHeight;
+        }
+
+        context.Resize(width, height);
+    }
+
+    private SKBitmap ResolveCanvasImageSource(JsValue source)
+    {
+        var element = ResolveHostObjectOrNull<Element>(source);
+        if (element == null)
+        {
+            return null;
+        }
+
+        if (IsCanvasElement(element) && _canvasRenderingContexts.TryGetValue(element, out var context))
+        {
+            return context.Bitmap;
+        }
+
+        if (string.Equals(element.TagName, "img", StringComparison.OrdinalIgnoreCase))
+        {
+            var src = element.GetAttribute("src");
+            if (!string.IsNullOrWhiteSpace(src))
+            {
+                var absolute = ResolveElementUrlProperty(element, "src");
+                return ImageLoader.GetImage(absolute ?? src);
+            }
+        }
+
+        return null;
+    }
+
     private HttpContent CreateRequestContent(JsValue bodyValue, bool isBinaryBody)
     {
         if (isBinaryBody)
@@ -12239,7 +12384,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     /// <summary>
     /// Parses srcdoc HTML content and loads it as the iframe's subdocument.
     /// The srcdoc content is treated as an HTML document with the parent page's
-    /// base URI (per HTML spec §4.8.5 — srcdoc documents have the parent's URL
+    /// base URI (per HTML spec Â§4.8.5 â€” srcdoc documents have the parent's URL
     /// for same-origin purposes).
     /// </summary>
     private async Task LoadFrameSrcdocAsync(Element frameElement, string srcdocHtml)
@@ -12322,6 +12467,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             case "height" when IsIFrameElement(element):
                 element.SetAttribute(property, CoerceToHostString(value));
                 NotifyResizeObservers(element);
+                break;
+            case "width" when IsCanvasElement(element):
+            case "height" when IsCanvasElement(element):
+                element.SetAttribute(property, CoerceToHostString(value));
+                ResizeCanvasContext(element);
                 break;
             case "src":
             case "srcdoc":
@@ -12820,7 +12970,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 },
                 length: 1));
 
-        // ── Forward standard browser globals onto the iframe contentWindow ──
+        // â”€â”€ Forward standard browser globals onto the iframe contentWindow â”€â”€
         // In a real browser, window === globalThis, so window.setTimeout etc. work.
         // FenBrowser uses a plain JS object for iframe contentWindow, so we must
         // explicitly copy all standard browser APIs from the interpreter's globals
@@ -14086,7 +14236,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return JsValue.Undefined;
                 }
                 // Replace or append the property in the existing style string.
-                // Never append duplicate declarations — deduplicate by property name.
+                // Never append duplicate declarations â€” deduplicate by property name.
                 var styleAttr = element.GetAttribute("style") ?? string.Empty;
                 bool replaced = false;
                 bool changed = false;
@@ -14114,7 +14264,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 }
                 if (!replaced)
                 {
-                    // New property — always a change.
+                    // New property â€” always a change.
                     sb.Append(prop).Append(':').Append(val).Append(';');
                     changed = true;
                 }
@@ -14572,7 +14722,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     lock (_fenJsLock)
                     {
                         // Wrap the attribute value in a function that receives
-                        // `event` as its parameter — matches what real browsers
+                        // `event` as its parameter â€” matches what real browsers
                         // do for inline handlers.
                         var source = new SourceText(
                             "(function(event){" + attrValue + "\n})",
@@ -15176,7 +15326,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             return ToHostNodeOrNull(scriptElement);
         }
 
-        // Data: URLs contain inline code — decode and execute directly.
+        // Data: URLs contain inline code â€” decode and execute directly.
         if (src.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
         {
             var dataCode = DecodeDataUrl(src);
@@ -15780,7 +15930,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         }
                     }
 
-                    // Plain object → dictionary
+                    // Plain object â†’ dictionary
                     var dict = new Dictionary<string, object>(StringComparer.Ordinal);
                     foreach (var kv in obj.EnumerateOwnProperties())
                     {
@@ -16102,7 +16252,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     /// <summary>
     /// Converts a JS camelCase property name to a CSS kebab-case property name.
-    /// e.g. "backgroundColor" → "background-color", "zIndex" → "z-index".
+    /// e.g. "backgroundColor" â†’ "background-color", "zIndex" â†’ "z-index".
     /// </summary>
     private static string CamelToCssProp(string camel)
     {
@@ -16759,7 +16909,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
         var bridge = JsDialogBridge.ShowDialog;
         if (bridge == null)
         {
-            FenLogger.Warn($"[{type}] JsDialogBridge not installed — dialog suppressed", LogCategory.JavaScript);
+            FenLogger.Warn($"[{type}] JsDialogBridge not installed â€” dialog suppressed", LogCategory.JavaScript);
             return;
         }
 
@@ -16795,7 +16945,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
     {
         var obj = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
 
-        // closed — read-only getter
+        // closed â€” read-only getter
         _interpreter.SetObjectProperty(obj, "closed",
             _interpreter.AllocateNativeFunction("get closed", (_, _2) =>
             {
@@ -16824,7 +16974,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 return JsValue.Undefined;
             }, length: 0));
 
-        // document — popup document with open/write/writeln/close
+        // document â€” popup document with open/write/writeln/close
         var document = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
         var htmlBuffer = new System.Text.StringBuilder();
 
@@ -17097,6 +17247,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case FenStorageAreaHost storageArea:
                     found = TryGetStorageProperty(storageArea, property, out value);
                     break;
+                case FenJsCanvasRenderingContext2DHost canvasContext:
+                    found = TryGetCanvasContextProperty(canvasContext, property, out value);
+                    break;
+                case FenJsCanvasGradientHost canvasGradient:
+                    found = TryGetCanvasGradientProperty(canvasGradient, property, out value);
+                    break;
+                case FenJsTextMetricsHost textMetrics:
+                    found = TryGetTextMetricsProperty(textMetrics, property, out value);
+                    break;
+                case FenJsImageDataHost imageData:
+                    found = TryGetImageDataProperty(imageData, property, out value);
+                    break;
                 case BrowserSurfaceProfile navigator:
                     if (TryGetNavigatorProperty(navigator, property, out value))
                     {
@@ -17288,6 +17450,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                 case Element element when string.Equals(property, "name", StringComparison.Ordinal):
                     element.SetAttribute("name", CoerceToHostString(value));
                     return true;
+                case Element element when
+                    IsCanvasElement(element) &&
+                    (string.Equals(property, "width", StringComparison.Ordinal) ||
+                     string.Equals(property, "height", StringComparison.Ordinal)):
+                    element.SetAttribute(property, CoerceToHostString(value));
+                    _owner.ResizeCanvasContext(element);
+                    return true;
                 case Element element when string.Equals(property, "content", StringComparison.Ordinal):
                     element.SetAttribute("content", CoerceToHostString(value));
                     return true;
@@ -17391,11 +17560,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     var setError = storageArea.SetItem(property, CoerceToHostString(value));
                     if (setError != null)
                     {
-                        // QuotaExceededError — the JS side should throw.
+                        // QuotaExceededError â€” the JS side should throw.
                         // For now we silently ignore quota errors; a full
                         // implementation would throw a DOMException.
                     }
                     return true;
+                case FenJsCanvasRenderingContext2DHost canvasContext:
+                    return TrySetCanvasContextProperty(canvasContext, property, value);
                 case FenJsTreeWalkerHost treeWalker when string.Equals(property, "currentNode", StringComparison.Ordinal):
                     var currentNode = _owner.ResolveHostObjectOrNull<Node>(value);
                     if (currentNode == null)
@@ -17444,7 +17615,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
         public JsValue CallHostFunction(int functionId, JsValue thisValue, ReadOnlySpan<JsValue> args)
         {
-            // Host function invocation not yet wired — the interpreter does not
+            // Host function invocation not yet wired â€” the interpreter does not
             // currently emit CallHostFunction opcodes. When it does, map functionId
             // to a registered host callable and invoke it here.
             _ = functionId;
@@ -17527,6 +17698,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                     return true;
                 case "compatMode":
                     value = JsValue.FromString("CSS1Compat");
+                    return true;
+                case "hasFocus":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "hasFocus",
+                        (_, _) => JsValue.FromBoolean(_owner.DocumentHasFocus(document)),
+                        length: 0);
                     return true;
                 case "styleSheets":
                     value = _owner.CreateEmptyStyleSheetListObject();
@@ -18202,6 +18380,37 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         ? _owner.GetOrCreateDomTokenListView(element.SandboxList)
                         : JsValue.Undefined;
                     return true;
+                case "getContext" when FenJsBrowserScriptEngine.IsCanvasElement(element):
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "getContext",
+                        (_, args) =>
+                        {
+                            var kind = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            var context = _owner.GetOrCreateCanvasContext(element, kind);
+                            return context != null
+                                ? _owner.ToHostOrNull(context, HostObjectKind.Other)
+                                : JsValue.Null;
+                        },
+                        length: 1);
+                    return true;
+                case "toDataURL" when FenJsBrowserScriptEngine.IsCanvasElement(element):
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "toDataURL",
+                        (_, args) =>
+                        {
+                            var mediaType = args.Count > 0 ? CoerceToHostString(args[0]) : "image/png";
+                            return JsValue.FromString(_owner.CanvasToDataUrl(element, mediaType));
+                        },
+                        length: 0);
+                    return true;
+                case "width" when FenJsBrowserScriptEngine.IsCanvasElement(element):
+                    value = JsValue.FromInt32(_owner.GetCanvasContextSizeOrAttribute(element, "width"));
+                    return true;
+                case "height" when FenJsBrowserScriptEngine.IsCanvasElement(element):
+                    value = JsValue.FromInt32(_owner.GetCanvasContextSizeOrAttribute(element, "height"));
+                    return true;
                 case "scrolling" when IsIFrameElement(element):
                     value = JsValue.FromString(element.GetAttribute("scrolling") ?? string.Empty);
                     return true;
@@ -18248,7 +18457,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                             // If the element was obtained via getElementById in a FenJS
                             // host-object context, the CLR parent chain is intact and
                             // OwnerDocument is non-null.  If it is null (e.g. detached
-                            // element), skip the TopLayer path — the dialog will still
+                            // element), skip the TopLayer path â€” the dialog will still
                             // render as a normal positioned element via CSS.
                             var doc = element.OwnerDocument;
                             if (doc != null)
@@ -18490,7 +18699,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
                         });
                     return true;
                 case "submit":
-                    // HTMLFormElement.submit() — reCAPTCHA calls form.submit() programmatically.
+                    // HTMLFormElement.submit() â€” reCAPTCHA calls form.submit() programmatically.
                     if (string.Equals(element.TagName, "FORM", StringComparison.OrdinalIgnoreCase))
                     {
                         value = _owner.GetOrCreateHostCallable(
@@ -20737,6 +20946,641 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
             }
         }
 
+        private static bool TrySetCanvasContextProperty(
+            FenJsCanvasRenderingContext2DHost context,
+            string property,
+            JsValue value)
+        {
+            switch (property)
+            {
+                case "fillStyle":
+                    context.SetFillStyle(CoerceToHostString(value));
+                    return true;
+                case "strokeStyle":
+                    context.SetStrokeStyle(CoerceToHostString(value));
+                    return true;
+                case "lineWidth":
+                    context.SetLineWidth((float)CoerceToFiniteNumber(value, 1d));
+                    return true;
+                case "globalAlpha":
+                    context.SetGlobalAlpha((float)CoerceToFiniteNumber(value, 1d));
+                    return true;
+                case "lineCap":
+                    context.SetLineCap(CoerceToHostString(value));
+                    return true;
+                case "lineJoin":
+                    context.SetLineJoin(CoerceToHostString(value));
+                    return true;
+                case "miterLimit":
+                    context.SetMiterLimit((float)CoerceToFiniteNumber(value, 10d));
+                    return true;
+                case "font":
+                    context.SetFont(CoerceToHostString(value));
+                    return true;
+                case "textAlign":
+                    context.SetTextAlign(CoerceToHostString(value));
+                    return true;
+                case "textBaseline":
+                    context.SetTextBaseline(CoerceToHostString(value));
+                    return true;
+                case "lineDashOffset":
+                    context.SetLineDashOffset((float)CoerceToFiniteNumber(value, 0d));
+                    return true;
+                case "imageSmoothingEnabled":
+                    context.ImageSmoothingEnabled = CoerceToHostBoolean(value);
+                    return true;
+                case "globalCompositeOperation":
+                    context.GlobalCompositeOperation = CoerceToHostString(value);
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static double CanvasArg(IReadOnlyList<JsValue> args, int index, double fallback)
+        {
+            return args != null && args.Count > index
+                ? CoerceToFiniteNumber(args[index], fallback)
+                : fallback;
+        }
+
+        private bool TryGetTextMetricsProperty(
+            FenJsTextMetricsHost textMetrics,
+            string property,
+            out JsValue value)
+        {
+            if (string.Equals(property, "width", StringComparison.Ordinal))
+            {
+                value = JsValue.FromNumber(textMetrics.Width);
+                return true;
+            }
+
+            value = JsValue.Undefined;
+            return false;
+        }
+
+        private bool TryGetImageDataProperty(
+            FenJsImageDataHost imageData,
+            string property,
+            out JsValue value)
+        {
+            switch (property)
+            {
+                case "width":
+                    value = JsValue.FromInt32(imageData.Width);
+                    return true;
+                case "height":
+                    value = JsValue.FromInt32(imageData.Height);
+                    return true;
+                case "data":
+                    var pixels = new JsValue[imageData.Pixels.Length];
+                    for (var i = 0; i < imageData.Pixels.Length; i++)
+                    {
+                        pixels[i] = JsValue.FromInt32(imageData.Pixels[i]);
+                    }
+
+                    value = _owner._interpreter.AllocateArray(pixels);
+                    return true;
+                default:
+                    value = JsValue.Undefined;
+                    return false;
+            }
+        }
+
+        private bool TryGetCanvasContextProperty(
+            FenJsCanvasRenderingContext2DHost context,
+            string property,
+            out JsValue value)
+        {
+            switch (property)
+            {
+                case "canvas":
+                    value = _owner.ToHostOrNull(context.CanvasElement, HostObjectKind.DomElement);
+                    return true;
+                case "fillStyle":
+                    value = JsValue.FromString(context.GetFillStyle());
+                    return true;
+                case "strokeStyle":
+                    value = JsValue.FromString(context.GetStrokeStyle());
+                    return true;
+                case "lineWidth":
+                    value = JsValue.FromNumber(context.GetLineWidth());
+                    return true;
+                case "globalAlpha":
+                    value = JsValue.FromNumber(context.GetGlobalAlpha());
+                    return true;
+                case "lineCap":
+                    value = JsValue.FromString(context.GetLineCap());
+                    return true;
+                case "lineJoin":
+                    value = JsValue.FromString(context.GetLineJoin());
+                    return true;
+                case "miterLimit":
+                    value = JsValue.FromNumber(context.GetMiterLimit());
+                    return true;
+                case "font":
+                    value = JsValue.FromString(context.GetFont());
+                    return true;
+                case "textAlign":
+                    value = JsValue.FromString(context.GetTextAlign());
+                    return true;
+                case "textBaseline":
+                    value = JsValue.FromString(context.GetTextBaseline());
+                    return true;
+                case "lineDashOffset":
+                    value = JsValue.FromNumber(context.GetLineDashOffset());
+                    return true;
+                case "imageSmoothingEnabled":
+                    value = JsValue.FromBoolean(context.ImageSmoothingEnabled);
+                    return true;
+                case "globalCompositeOperation":
+                    value = JsValue.FromString(context.GlobalCompositeOperation);
+                    return true;
+                case "setFillStyle":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "setFillStyle",
+                        (_, args) =>
+                        {
+                            if (args.Count > 0)
+                            {
+                                context.SetFillStyle(CoerceToHostString(args[0]));
+                            }
+
+                            return JsValue.Undefined;
+                        },
+                        length: 1);
+                    return true;
+                case "save":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "save", (_, _) => { context.Save(); return JsValue.Undefined; }, length: 0);
+                    return true;
+                case "restore":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "restore", (_, _) => { context.Restore(); return JsValue.Undefined; }, length: 0);
+                    return true;
+                case "scale":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "scale",
+                        (_, args) =>
+                        {
+                            context.Scale(
+                                (float)CanvasArg(args, 0, 1d),
+                                (float)CanvasArg(args, 1, 1d));
+                            return JsValue.Undefined;
+                        },
+                        length: 2);
+                    return true;
+                case "rotate":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "rotate",
+                        (_, args) =>
+                        {
+                            context.Rotate((float)CanvasArg(args, 0, 0d));
+                            return JsValue.Undefined;
+                        },
+                        length: 1);
+                    return true;
+                case "translate":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "translate",
+                        (_, args) =>
+                        {
+                            context.Translate(
+                                (float)CanvasArg(args, 0, 0d),
+                                (float)CanvasArg(args, 1, 0d));
+                            return JsValue.Undefined;
+                        },
+                        length: 2);
+                    return true;
+                case "transform":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "transform",
+                        (_, args) =>
+                        {
+                            context.Transform(
+                                (float)CanvasArg(args, 0, 1d),
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                (float)CanvasArg(args, 3, 1d),
+                                (float)CanvasArg(args, 4, 0d),
+                                (float)CanvasArg(args, 5, 0d));
+                            return JsValue.Undefined;
+                        },
+                        length: 6);
+                    return true;
+                case "setTransform":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "setTransform",
+                        (_, args) =>
+                        {
+                            context.SetTransform(
+                                (float)CanvasArg(args, 0, 1d),
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                (float)CanvasArg(args, 3, 1d),
+                                (float)CanvasArg(args, 4, 0d),
+                                (float)CanvasArg(args, 5, 0d));
+                            return JsValue.Undefined;
+                        },
+                        length: 6);
+                    return true;
+                case "resetTransform":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "resetTransform",
+                        (_, _) => { context.ResetTransform(); return JsValue.Undefined; }, length: 0);
+                    return true;
+                case "beginPath":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "beginPath", (_, _) => { context.BeginPath(); return JsValue.Undefined; }, length: 0);
+                    return true;
+                case "closePath":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "closePath", (_, _) => { context.ClosePath(); return JsValue.Undefined; }, length: 0);
+                    return true;
+                case "moveTo":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "moveTo",
+                        (_, args) =>
+                        {
+                            context.MoveTo(
+                                (float)CanvasArg(args, 0, 0d),
+                                (float)CanvasArg(args, 1, 0d));
+                            return JsValue.Undefined;
+                        },
+                        length: 2);
+                    return true;
+                case "lineTo":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "lineTo",
+                        (_, args) =>
+                        {
+                            context.LineTo(
+                                (float)CanvasArg(args, 0, 0d),
+                                (float)CanvasArg(args, 1, 0d));
+                            return JsValue.Undefined;
+                        },
+                        length: 2);
+                    return true;
+                case "rect":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "rect",
+                        (_, args) =>
+                        {
+                            context.Rect(
+                                (float)CanvasArg(args, 0, 0d),
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                (float)CanvasArg(args, 3, 0d));
+                            return JsValue.Undefined;
+                        },
+                        length: 4);
+                    return true;
+                case "arc":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "arc",
+                        (_, args) =>
+                        {
+                            context.Arc(
+                                (float)CanvasArg(args, 0, 0d),
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                (float)CanvasArg(args, 3, 0d),
+                                (float)CanvasArg(args, 4, 0d),
+                                args.Count > 5 && CoerceToHostBoolean(args[5]));
+                            return JsValue.Undefined;
+                        },
+                        length: 5);
+                    return true;
+                case "ellipse":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "ellipse",
+                        (_, args) =>
+                        {
+                            context.Ellipse(
+                                (float)CanvasArg(args, 0, 0d),
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                (float)CanvasArg(args, 3, 0d),
+                                (float)CanvasArg(args, 4, 0d),
+                                (float)CanvasArg(args, 5, 0d),
+                                (float)CanvasArg(args, 6, 0d),
+                                args.Count > 7 && CoerceToHostBoolean(args[7]));
+                            return JsValue.Undefined;
+                        },
+                        length: 7);
+                    return true;
+                case "quadraticCurveTo":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "quadraticCurveTo",
+                        (_, args) =>
+                        {
+                            context.QuadraticCurveTo(
+                                (float)CanvasArg(args, 0, 0d),
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                (float)CanvasArg(args, 3, 0d));
+                            return JsValue.Undefined;
+                        },
+                        length: 4);
+                    return true;
+                case "bezierCurveTo":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "bezierCurveTo",
+                        (_, args) =>
+                        {
+                            context.BezierCurveTo(
+                                (float)CanvasArg(args, 0, 0d),
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                (float)CanvasArg(args, 3, 0d),
+                                (float)CanvasArg(args, 4, 0d),
+                                (float)CanvasArg(args, 5, 0d));
+                            return JsValue.Undefined;
+                        },
+                        length: 6);
+                    return true;
+                case "fill":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "fill", (_, _) => { context.Fill(); return JsValue.Undefined; }, length: 0);
+                    return true;
+                case "stroke":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "stroke", (_, _) => { context.Stroke(); return JsValue.Undefined; }, length: 0);
+                    return true;
+                case "clip":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "clip", (_, _) => { context.Clip(); return JsValue.Undefined; }, length: 0);
+                    return true;
+                case "fillRect":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "fillRect",
+                        (_, args) =>
+                        {
+                            context.FillRect(
+                                (float)CanvasArg(args, 0, 0d),
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                (float)CanvasArg(args, 3, 0d));
+                            return JsValue.Undefined;
+                        },
+                        length: 4);
+                    return true;
+                case "strokeRect":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "strokeRect",
+                        (_, args) =>
+                        {
+                            context.StrokeRect(
+                                (float)CanvasArg(args, 0, 0d),
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                (float)CanvasArg(args, 3, 0d));
+                            return JsValue.Undefined;
+                        },
+                        length: 4);
+                    return true;
+                case "clearRect":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "clearRect",
+                        (_, args) =>
+                        {
+                            context.ClearRect(
+                                (float)CanvasArg(args, 0, 0d),
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                (float)CanvasArg(args, 3, 0d));
+                            return JsValue.Undefined;
+                        },
+                        length: 4);
+                    return true;
+                case "drawImage":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "drawImage",
+                        (_, args) =>
+                        {
+                            if (args.Count == 0)
+                            {
+                                return JsValue.Undefined;
+                            }
+
+                            var bitmap = _owner.ResolveCanvasImageSource(args[0]);
+                            if (bitmap == null)
+                            {
+                                return JsValue.Undefined;
+                            }
+
+                            float? destWidth = args.Count >= 5 ? (float)CanvasArg(args, 3, 0d) : null;
+                            float? destHeight = args.Count >= 5 ? (float)CanvasArg(args, 4, 0d) : null;
+                            context.DrawImageFromBitmap(
+                                bitmap,
+                                args.Count >= 3 ? (float)CanvasArg(args, 1, 0d) : 0f,
+                                args.Count >= 3 ? (float)CanvasArg(args, 2, 0d) : 0f,
+                                destWidth,
+                                destHeight);
+                            return JsValue.Undefined;
+                        },
+                        length: 3);
+                    return true;
+                case "setLineDash":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "setLineDash",
+                        (_, args) =>
+                        {
+                            var segments = Array.Empty<float>();
+                            if (args.Count > 0 && TryReadNumberList(args[0], ref segments))
+                            {
+                                context.SetLineDash(segments);
+                            }
+
+                            return JsValue.Undefined;
+                        },
+                        length: 1);
+                    return true;
+                case "getLineDash":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "getLineDash",
+                        (_, _) => _owner._interpreter.AllocateArray(
+                            context.GetLineDash().Select(s => JsValue.FromNumber((double)s)).ToArray()),
+                        length: 0);
+                    return true;
+                case "measureText":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "measureText",
+                        (_, args) =>
+                        {
+                            var text = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            return _owner.ToHostOrNull(
+                                new FenJsTextMetricsHost(context.MeasureTextWidth(text)),
+                                HostObjectKind.Other);
+                        },
+                        length: 1);
+                    return true;
+                case "fillText":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "fillText",
+                        (_, args) =>
+                        {
+                            context.FillText(
+                                args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty,
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                args.Count > 3 ? (float)CanvasArg(args, 3, 0d) : null);
+                            return JsValue.Undefined;
+                        },
+                        length: 3);
+                    return true;
+                case "strokeText":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "strokeText",
+                        (_, args) =>
+                        {
+                            context.StrokeText(
+                                args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty,
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                args.Count > 3 ? (float)CanvasArg(args, 3, 0d) : null);
+                            return JsValue.Undefined;
+                        },
+                        length: 3);
+                    return true;
+                case "getImageData":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "getImageData",
+                        (_, args) =>
+                        {
+                            var data = context.GetImageData(
+                                (int)CanvasArg(args, 0, 0d),
+                                (int)CanvasArg(args, 1, 0d),
+                                (int)CanvasArg(args, 2, 1d),
+                                (int)CanvasArg(args, 3, 1d));
+                            return _owner.ToHostOrNull(
+                                new FenJsImageDataHost(data.Width, data.Height, data.Pixels),
+                                HostObjectKind.Other);
+                        },
+                        length: 4);
+                    return true;
+                case "putImageData":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "putImageData",
+                        (_, args) =>
+                        {
+                            if (args.Count > 0 &&
+                                _owner.ResolveHostObjectOrNull<FenJsImageDataHost>(args[0]) is { } imageData)
+                            {
+                                context.PutImageData(
+                                    imageData.Pixels,
+                                    imageData.Width,
+                                    imageData.Height,
+                                    (int)CanvasArg(args, 1, 0d),
+                                    (int)CanvasArg(args, 2, 0d));
+                            }
+
+                            return JsValue.Undefined;
+                        },
+                        length: 3);
+                    return true;
+                case "createLinearGradient":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "createLinearGradient",
+                        (_, args) =>
+                        {
+                            var gradient = new FenJsCanvasGradientHost(
+                                (float)CanvasArg(args, 0, 0d),
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                (float)CanvasArg(args, 3, 0d));
+                            return _owner.ToHostOrNull(gradient, HostObjectKind.Other);
+                        },
+                        length: 4);
+                    return true;
+                case "createRadialGradient":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "createRadialGradient",
+                        (_, args) =>
+                        {
+                            var gradient = new FenJsCanvasGradientHost(
+                                (float)CanvasArg(args, 0, 0d),
+                                (float)CanvasArg(args, 1, 0d),
+                                (float)CanvasArg(args, 2, 0d),
+                                (float)CanvasArg(args, 3, 0d),
+                                (float)CanvasArg(args, 4, 0d),
+                                (float)CanvasArg(args, 5, 0d));
+                            return _owner.ToHostOrNull(gradient, HostObjectKind.Other);
+                        },
+                        length: 6);
+                    return true;
+                case "isPointInPath":
+                    value = _owner.GetOrCreateHostCallable(
+                        context, "isPointInPath",
+                        (_, args) => JsValue.FromBoolean(context.IsPointInPath(
+                            (float)CanvasArg(args, 0, 0d),
+                            (float)CanvasArg(args, 1, 0d))),
+                        length: 2);
+                    return true;
+                default:
+                    value = JsValue.Undefined;
+                    return false;
+            }
+        }
+
+        private bool TryReadNumberList(JsValue value, ref float[] segments)
+        {
+            var numbers = new List<float>();
+            if (value.Tag == JsValueTag.Object)
+            {
+                var lengthValue = _owner.ReadJsProperty(value, "length");
+                if (lengthValue.Tag == JsValueTag.Number)
+                {
+                    var count = (int)lengthValue.AsNumber();
+                    for (var i = 0; i < count; i++)
+                    {
+                        var item = _owner.ReadJsProperty(value, i.ToString(CultureInfo.InvariantCulture));
+                        if (item.Tag == JsValueTag.Number)
+                        {
+                            numbers.Add((float)item.AsNumber());
+                        }
+                    }
+                }
+            }
+
+            segments = numbers.ToArray();
+            return numbers.Count > 0;
+        }
+
+        private bool TryGetCanvasGradientProperty(
+            FenJsCanvasGradientHost gradient,
+            string property,
+            out JsValue value)
+        {
+            if (string.Equals(property, "addColorStop", StringComparison.Ordinal))
+            {
+                value = _owner.GetOrCreateHostCallable(
+                    gradient, "addColorStop",
+                    (_, args) =>
+                    {
+                        var offset = (float)CanvasArg(args, 0, 0d);
+                        var color = args.Count > 1 ? CoerceToHostString(args[1]) : "#000000";
+                        try
+                        {
+                            gradient.AddColorStop(offset, color);
+                        }
+                        catch (ArgumentOutOfRangeException)
+                        {
+                            _owner.ThrowDomException(
+                                "SyntaxError",
+                                "Failed to execute 'addColorStop': invalid color stop offset.");
+                        }
+
+                        return JsValue.Undefined;
+                    },
+                    length: 2);
+                return true;
+            }
+
+            value = JsValue.Undefined;
+            return false;
+        }
+
         private bool TryGetStorageProperty(FenStorageAreaHost storageArea, string property, out JsValue value)
         {
             switch (property)
@@ -21204,7 +22048,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 /// FenEngine runtime remains reachable only as an explicit escape hatch via
 /// <summary>
 /// Static factory for browser script engine instances.
-/// FenJS is the only runtime — no legacy fallback.
+/// FenJS is the only runtime â€” no legacy fallback.
 /// </summary>
 public static class BrowserScriptEngineRuntime
 {

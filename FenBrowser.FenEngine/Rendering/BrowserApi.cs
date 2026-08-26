@@ -2099,6 +2099,12 @@ pre {{
                 {
                     if (await TryResolveWebDriverClickPointViaScriptAsync(elementId).ConfigureAwait(false))
                     {
+                        // getBoundingClientRect inside a switched-to frame returns
+                        // frame-local client coordinates, but the input pipeline
+                        // hit-tests in top-document viewport space. Translate the
+                        // point by the frame element's content origin (minus the
+                        // frame's own scroll) before dispatching.
+                        TranslateWebDriverClickPointIntoFrame(_currentFrameElement);
                     }
                     else if (FenBrowser.FenEngine.Scripting.JavaScriptEngine.TryGetVisualRect(element, out var vx, out var vy, out var vw, out var vh) &&
                         vw > 0 &&
@@ -2371,6 +2377,24 @@ pre {{
             }
 
             return false;
+        }
+
+        private void TranslateWebDriverClickPointIntoFrame(Element frameElement)
+        {
+            if (frameElement == null || !_pendingWebDriverClickPointValid)
+            {
+                return;
+            }
+
+            var layout = _engine?.LastLayout;
+            if (layout == null || !layout.TryGetElementRect(frameElement, out var frameRect))
+            {
+                return;
+            }
+
+            var scroll = _activeRenderer?.ScrollManager?.GetScrollOffset(frameElement) ?? (0f, 0f);
+            _pendingWebDriverClickClientX += (int)Math.Round(frameRect.X - scroll.x);
+            _pendingWebDriverClickClientY += (int)Math.Round(frameRect.Y - scroll.y);
         }
 
         private static bool TryReadIntPair(object value, out int x, out int y)
@@ -3357,7 +3381,7 @@ pre {{
             _lastMouseMoveX = x;
             _lastMouseMoveY = y;
             _hasLastMouseMovePosition = true;
-            QueueInputTask("mousemove", x, y, 0);
+            QueueMouseMoveTask(x, y);
         }
 
         public void OnDoubleClick(float x, float y, int button)
@@ -3497,6 +3521,61 @@ pre {{
              // Input must feel immediate; dispatch directly to avoid coordinator latency
              // or dropped interaction when event-loop pumping is delayed.
              return DispatchInputEvent(type, x, y, button);
+        }
+
+        private void QueueMouseMoveTask(float x, float y)
+        {
+            lock (_mouseMoveDispatchLock)
+            {
+                _pendingMouseMoveX = x;
+                _pendingMouseMoveY = y;
+                _hasPendingMouseMoveDispatch = true;
+                if (_mouseMoveDispatchRunning)
+                {
+                    return;
+                }
+
+                _mouseMoveDispatchRunning = true;
+            }
+
+            // The async pump runs synchronously through hit testing and the
+            // immediate :hover update, then yields while page JavaScript runs.
+            // Further movement is coalesced to the latest coordinates.
+            _ = PumpMouseMoveDispatchAsync();
+        }
+
+        private async Task PumpMouseMoveDispatchAsync()
+        {
+            while (true)
+            {
+                float x;
+                float y;
+                lock (_mouseMoveDispatchLock)
+                {
+                    if (!_hasPendingMouseMoveDispatch)
+                    {
+                        _mouseMoveDispatchRunning = false;
+                        return;
+                    }
+
+                    x = _pendingMouseMoveX;
+                    y = _pendingMouseMoveY;
+                    _hasPendingMouseMoveDispatch = false;
+                }
+
+                try
+                {
+                    await DispatchInputEventAsync("mousemove", x, y, 0).ConfigureAwait(false);
+                }
+                catch (FenBrowser.FenEngine.Errors.FenTimeoutError timeoutEx)
+                {
+                    TryLogWarn($"[BrowserHost] Timed out dispatching 'mousemove' input event: {timeoutEx.Message}", LogCategory.Events);
+                }
+                catch (Exception ex)
+                {
+                    TryLogError($"[BrowserHost] Unhandled exception dispatching 'mousemove' input event: {ex.Message}", LogCategory.Events);
+                }
+            }
         }
 
         private bool DispatchInputEvent(
@@ -3699,6 +3778,9 @@ pre {{
             };
 
             _inputManager.ProcessEvent(inputEvent, renderContext, context);
+            if (type == "click" || type == "mousedown" || type == "mouseup" || type == "mousemove") {
+                TryLogInfo($"[InputPipeline-DEBUG] {type} @ {inputEvent.X},{inputEvent.Y} -> target: {(inputEvent.Target?.TagName??"null")}#{(inputEvent.Target?.Id??"")}", LogCategory.Events);
+            }
 
             if (inputEvent.Target == null && fallbackTarget != null)
             {
@@ -3740,8 +3822,9 @@ pre {{
 
             if (string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase))
             {
-                await DispatchPointerBoundaryEventsAsync(_lastPointerEventTarget, inputEvent.Target, eventInit).ConfigureAwait(false);
+                var previousTarget = _lastPointerEventTarget;
                 _lastPointerEventTarget = inputEvent.Target;
+                await DispatchPointerBoundaryEventsAsync(previousTarget, inputEvent.Target, eventInit).ConfigureAwait(false);
             }
 
             var isClick = string.Equals(type, "click", StringComparison.OrdinalIgnoreCase);
@@ -7751,6 +7834,11 @@ pre {{
         private float _lastMouseMoveX;
         private float _lastMouseMoveY;
         private bool _hasLastMouseMovePosition;
+        private readonly object _mouseMoveDispatchLock = new();
+        private bool _mouseMoveDispatchRunning;
+        private bool _hasPendingMouseMoveDispatch;
+        private float _pendingMouseMoveX;
+        private float _pendingMouseMoveY;
 
         // Storage for async script callback result
         private readonly object _asyncScriptLock = new object();

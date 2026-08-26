@@ -70,6 +70,20 @@
   - Browser click dispatch now carries the FenJS `preventDefault()` result forward into `HandleElementClick(...)` default activation and suppresses the duplicate legacy DOM click for ordinary pointer-originated clicks.
   - Browser iframe loading now keys script hydration by the loaded frame URL, so script-driven `iframe.src` navigations replace stale subdocuments and run the next frame document's scripts instead of treating the reused frame element as already initialized.
 
+### 1.3 Programmatic Navigation Fetch Metadata Fix (2026-08-25)
+
+- Page-initiated top-level navigations (meta refresh, `location.href`/`assign`/`replace`/`reload`, script form GET, history traversal) now carry the initiating document into `NavigationManager.NavigateAsync(...)` as the referer (`FenBrowser.FenEngine/Rendering/BrowserApi.cs`).
+- `BrowserHost.NavigateAsync(...)` passes the current document URI (`_current`, still the outgoing document at fetch time) for `NavigationRequestKind.Programmatic` navigations; user-input (omnibox) navigations keep initiator `null`.
+- Outgoing requests for page-driven navigations now send `Sec-Fetch-Site: same-origin|same-site|cross-site` (computed from the initiating document) and a `Referer` header per referrer policy, instead of the previously impossible `Sec-Fetch-Site: none` with no `Referer` — a Fetch Metadata spec violation and a deterministic anti-bot signal (Google served its hallmonitor captcha for the Google search retry navigation).
+- Verified on the wire: JS `location.replace` navigation between two local origins produces `Sec-Fetch-Site: same-origin` + `Referer` on the second request (`logs/meta_refresh_headers.log`, `scripts/meta_refresh_header_server.py`).
+
+### 1.4 Document ReadyState Advancement Fix (2026-08-25)
+
+- The HTML pipeline never advanced `Document.ReadyState` (only the XML parser set it), so every HTML-parsed document — top and iframe — reported `readyState === "loading"` forever to any cross-document reader (`FenBrowser.Core/Dom/V2/Document.cs`, `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`).
+- `DispatchStartupLifecycleEvents` now advances the shared document through `MarkReadyState(Interactive)` at DOMContentLoaded and `MarkReadyState(Complete)` at load, alongside the existing realm-internal ready-state field and `readystatechange` dispatch.
+- Cross-document readiness polling (e.g. `iframe.contentDocument.readyState`, `window.parent.document.readyState`) now observes real state; realm-internal `document.readyState` behavior is unchanged.
+- Found while diagnosing the Google reCAPTCHA challenge stall: the anchor iframe's checkbox is left `disabled`+`loading` by reCAPTCHA's own init because its anchor↔parent handshake never completes; all handshake primitives (postMessage duplex with origins, MessageChannel port transfer, timers, XHR, iframe `load` events) were verified working in isolation (`scripts/frame_realm_probe_server.py`). The remaining bail point inside `recaptcha__en.js` is a follow-up investigation.
+
 ## 2. The Layout Engine (`FenBrowser.FenEngine.Layout`)
 
 The layout engine acts as a pure function: `(DOM Tree + Styles + Viewport) -> Geometry`.
@@ -614,6 +628,8 @@ Unlike the Layout Tree (which is about geometry), the Paint Tree is about **Z-Or
 
 - `SkiaDomRenderer` now treats paint-only invalidation as a real hot path. After an initial committed frame exists, converged animation frames can stay out of layout and commit through damage rasterization instead of repeated full-frame work.
 - `CssAnimationEngine.DetermineInvalidationKind(...)` now separates paint-only animation properties from geometry-changing properties. The focused regression slice explicitly proves that opacity-class animation churn does not force layout while width-affecting changes still escalate correctly.
+- CSS animation completion retains the final effect for `animation-fill-mode: forwards|both` without keeping the frame timer active or repeating `animationend`; removing the declaration clears the retained effect. An omitted `animation-delay` resolves to `0s` while omitted duration keeps its existing one-second engine default (`Rendering/Css/CssAnimationEngine.cs`).
+- Paint and layout completion clear only the invalidation they consumed. `StyleDirty` remains owned by the cascade worker, preventing animation frames from erasing a newer DOM mutation before incremental recascade publishes the matching computed-style snapshot (`Rendering/SkiaDomRenderer.cs`, `Layout/LayoutEngine.cs`).
 - Google-class input-latency hardening (2026-07-05): `CssAnimationEngine` now treats keyframe progress arguments as percentages and suppresses `OnAnimationFrame` notifications when the computed animated property set did not change. This prevents unchanged animation ticks from continuously dirtying DOM/paint state and starving host input; the live Google repro dropped from multi-second UI watchdog stalls to a max `145ms` stall with zero stalls over `1s`.
 - `SkiaTextMeasurer` now caches stable width and line-height inputs, and `SkiaFontService` now reuses metrics, width, and glyph-run results for repeated text requests. This reduces repeated shaping/measurement cost in small interactive frames.
 - `ImageLoader.PrewarmImageAsync(...)` now batches burst relayout signals so image-heavy warmup does not emit one host relayout per decoded asset.
@@ -633,6 +649,7 @@ Unlike the Layout Tree (which is about geometry), the Paint Tree is about **Z-Or
 - Raster traversal skips zero-opacity subtrees before allocating a save-layer. Filtered stacking contexts are culled only when their conservative visual bounds are outside the viewport; blur support expands both the context bounds and descendant culling viewport so near-edge filtered pixels remain visible.
 - Stacking contexts now carry `filter`/`backdrop-filter`; `SkiaRenderer` parses them via `CssFilterParser` and applies Skia save-layers (`SkiaRenderer.cs:198-245`, `SkiaRenderer.cs:275-286`).
 - Input placeholders honor `::placeholder` computed color/opacity when rendering (`NewPaintTreeBuilder.cs:2290-2335`).
+- Overflow `auto`/`scroll` containers publish scrollbar paint above their clipped, translated content. Scroll bounds remain owned by `ScrollManager`, while `ScrollbarRenderer` now participates in the paint tree even when the current scroll offset is zero (`Rendering/PaintTree/NewPaintTreeBuilder.cs`, `Rendering/Interaction/ScrollbarRenderer.cs`).
 - Animated GIFs are decoded frame-by-frame with `SKCodec` (including `RequiredFrame` compositing) and cached in `ImageLoader` (`FenBrowser.FenEngine/Rendering/ImageLoader.cs:650-870`). A 50ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¯ms timer calls `RequestRepaint` directly, and `SkiaDomRenderer.Render` forces paint-dirty whenever `HasActiveAnimatedImages` is true (`SkiaDomRenderer.cs:280-302`), enabling in-paint GIF animation without re-layout.
 - Engine targets `net8.0` (solution unified via global.json).
 - Web-compat guardrail: site/domain/class-specific styling hooks are prohibited in UA/layout/cascade paths; fixes must land as generic standards behavior with regression coverage (`Rendering/Css/CssLoader.cs`, `Rendering/UserAgent/UAStyleProvider.cs`, `Layout/MinimalLayoutComputer.cs`).
@@ -765,6 +782,7 @@ Because drawing text inputs via Skia is complex (cursor, selection, IME), the en
 - Cursor initialization and typing now handle `contenteditable="true"` elements using `TextContent`, in addition to `<input>/<textarea>`, reducing "click but cannot type" regressions on modern DOM structures.
 - Textarea state now flows through shared BrowserHost helpers plus synchronized JavaScriptEngine.Dom / SkiaDomRenderer handling, so typing, clipboard edits, JS element.value, form submission, and overlay text all observe the same live <textarea> value on Google-style search boxes.
 - Pointer input dispatch now executes immediately (instead of being queued), and `mousemove` updates `ElementStateManager` hover chain with repaint trigger, restoring `:hover` visual feedback and interactive responsiveness.
+- Mouse movement now treats render-critical hover state separately from page-script availability: hit testing updates `ElementStateManager` immediately, interaction recascades use the engine's one-frame coalescer instead of a restartable 75 ms debounce, and movement JavaScript is coalesced when the owning top-level or frame FenJS worker is already executing a script task. Continuous cursor movement therefore cannot postpone `:hover` paint until the cursor stops or add the worker's two-second input timeout, while ordinary synchronous event order remains intact whenever the worker is available (`FenBrowser.FenEngine/Rendering/BrowserApi.cs`, `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`).
 - FenJS-era pointer dispatch now resolves `InputEvent.Target` through the active render context, falls back from paint-tree misses to layout boxes, full-recascades dynamic pseudo-class state changes, dispatches element `addEventListener(...)` / `on*` handlers through the active browser script runtime, and lets brokered hover wait for the renderer child's hover-updated frame instead of queuing a competing local input repaint; `FenBrowser.Tests/ProcessIsolation/HoverClickJavaScriptRegressionTests.cs` covers JavaScript detection, `:hover`, and button click handlers together.
 - `Rendering/Interaction/ScrollManager` now guards null element access in scroll-state APIs, preventing `ArgumentNullException (Parameter 'key')` during paint-tree build when scroll queries receive a transient null element.
 - `Rendering/BrowserApi.HandleElementClick(...)` performs native control default activation only when the dispatched click remains uncanceled; `preventDefault()` suppresses the related activation instead of being ignored.
@@ -10616,3 +10634,35 @@ Verification:
   budget abort, confirming the knob.
 - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter
   "FullyQualifiedName~SyntheticCaptchaFlow"`: pass.
+
+## 2.407 Canvas 2D Context, document.hasFocus, WebDriver Frame Click (2026-08-26)
+
+- `HTMLCanvasElement.getContext("2d")` now returns a working
+  `CanvasRenderingContext2D` backed by SkiaSharp
+  (`Scripting/FenJsCanvasRenderingContext2DHost.cs`): path construction
+  (moveTo/lineTo/arc/ellipse/rect/bezier), fill/stroke/clear/fillRect,
+  transforms, save/restore, dash state, gradients, `measureText`/`fillText`,
+  `getImageData`/`putImageData`, and `toDataURL` PNG/JPEG encoding.
+  `getContext("webgl"|"webgl2")` still returns null (not bridged).
+- Canvas `width`/`height` attribute writes reallocate the drawing surface and
+  clear it, matching the canvas spec.
+- `document.hasFocus` is now exposed and returns true for the engine's active
+  browsing context (single-active-context model; the JS `document` global is a
+  facade not reference-identical to the parsed tree, so focus is not tracked
+  per-instance). reCAPTCHA-style feature checks rely on it.
+- WebDriver `element.click` after `SwitchToFrame` translated frame-local
+  `getBoundingClientRect` coordinates as top-document viewport coordinates,
+  clicking the wrong element (the Google captcha anchor click landed on the
+  page body). The click point is now offset by the frame element's content
+  origin minus the frame scroll before dispatching
+  (`Rendering/BrowserApi.cs`).
+
+Verification:
+
+- `dotnet test FenBrowser.Tests --filter
+  "FullyQualifiedName~CanvasRenderingContextTests|FullyQualifiedName~DocumentHasFocusTests|FullyQualifiedName~SyntheticCaptchaFlow"`:
+  pass (`8/8`).
+- Real Google sorry/captcha page via WebDriver: `canvas.getContext("2d")`
+  returns a context, `toDataURL` produces a PNG data URL, and the
+  frame-switched anchor click now reaches the anchor (worker activity starts)
+  instead of the page body.
