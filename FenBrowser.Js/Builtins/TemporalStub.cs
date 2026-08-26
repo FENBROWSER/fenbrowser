@@ -4993,6 +4993,11 @@ public sealed class TemporalStub : IBuiltinModule
                 options = options with { Year = "numeric", Month = "numeric", Day = "numeric", Hour = "numeric", Minute = "numeric", Second = "numeric", TimeZoneName = "short" };
             var culture = IntlDateTimeFormatting.ResolveCulture(locale);
             System.Numerics.BigInteger epochNs = DecodeInstantNanosBig(h, o);
+            // The CLR culture formatter cannot represent the full Temporal instant
+            // range; beyond long range, raise the specification-required JS error
+            // instead of letting a BigInteger-to-long cast escape as OverflowException.
+            if (epochNs > long.MaxValue || epochNs < long.MinValue)
+                throw new JsThrownException(ctx.CreateRangeError("ZonedDateTime is outside the range supported by toLocaleString."));
             // Use the ZonedDateTime's timezone, not the options timezone
             string tz = GetVStr(h, o, "tz");
             var instant = new DateTimeOffset(InstantToDateTime((long)epochNs));
@@ -5178,7 +5183,11 @@ public sealed class TemporalStub : IBuiltinModule
             if (!slotsObj.TryGetOwnProperty("ensBig", out _) && !slotsObj.TryGetOwnProperty("ens", out _))
                 throw new JsThrownException(ctx.CreateTypeError("getOffsetNanosecondsFor: instant is not a valid Temporal.Instant."));
             var epochNsBig = DecodeInstantNanosBig(h, instantObj);
-            long ens = (long)epochNsBig;
+            // Legal instants exceed long range; saturate instead of casting so no
+            // CLR OverflowException escapes (zone offsets are tiny regardless).
+            long ens = epochNsBig >= long.MinValue && epochNsBig <= long.MaxValue
+                ? (long)epochNsBig
+                : (epochNsBig < 0 ? long.MinValue : long.MaxValue);
             string tz = GetTimeZoneId(h, o);
             long offsetNs = TemporalTimeZones.GetOffsetNs(tz, ens);
             return JsValue.FromNumber(offsetNs);
