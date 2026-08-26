@@ -342,9 +342,9 @@ public static class EngineLog
         EnsureInitialized();
         return EngineFailureBundleExporter.CreateBundle(
             GetCompatibilityRecentEntries(maxEntries),
-            testId,
-            url,
-            summary);
+            LogFieldRedactor.RedactStringContent(testId),
+            LogFieldRedactor.RedactStringContent(url),
+            LogFieldRedactor.RedactStringContent(summary));
     }
 
     public static void PublishExternalEvent(in EngineLogEvent evt)

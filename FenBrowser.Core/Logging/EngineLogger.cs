@@ -87,7 +87,7 @@ internal sealed class EngineLogger : IEngineLogger, IDisposable
             SourceMember = sourceMember
         };
 
-        var evt = new EngineLogEvent(header, payload);
+        var evt = LogFieldRedactor.Redact(new EngineLogEvent(header, payload));
         if (!_dispatcher.TryEnqueue(evt))
         {
             _ringBuffer?.Write(evt);
@@ -110,14 +110,15 @@ internal sealed class EngineLogger : IEngineLogger, IDisposable
             return;
         }
 
-        if (!_dispatcher.TryEnqueue(evt))
+        var redactedEvent = LogFieldRedactor.Redact(evt);
+        if (!_dispatcher.TryEnqueue(redactedEvent))
         {
-            _ringBuffer?.Write(evt);
+            _ringBuffer?.Write(redactedEvent);
         }
 
         try
         {
-            EventWritten?.Invoke(evt);
+            EventWritten?.Invoke(redactedEvent);
         }
         catch
         {

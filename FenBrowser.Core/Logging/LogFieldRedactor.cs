@@ -31,13 +31,12 @@ public static class LogFieldRedactor
         new(@"Authorization:\s*Basic\s+\S+", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         new(@"Proxy-Authorization:\s*\S+", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         // Cookie values
-        new(@"Cookie:\s*[^=]+=[^;]+", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        new(@"Set-Cookie:\s*[^=]+=[^;]+", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        // Token patterns in URLs/query strings
-        new(@"[?&](access_token|api_key|api-key|token|secret|password)=[^&\s]+", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        // Bearer tokens in bodies
-        new(@"""access_token""\s*:\s*""[^""]+""", RegexOptions.IgnoreCase | RegexOptions.Compiled),
-        new(@"""api_key""\s*:\s*""[^""]+""", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new(@"Cookie:\s*[^\r\n]*", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new(@"Set-Cookie:\s*[^\r\n]*", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        // Token patterns in URLs, query strings, and key=value diagnostics
+        new(@"(?:^|[?&;\s])(access_token|api_key|api-key|token|secret|password|passwd|client_secret|client-secret)\s*=\s*[^&;\s]+", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        // Secret-bearing JSON fragments embedded in messages or fields
+        new(@"""(access_token|api_key|api-key|token|secret|password|passwd|client_secret|client-secret)""\s*:\s*""[^""]*""", RegexOptions.IgnoreCase | RegexOptions.Compiled),
     };
 
     /// <summary>
@@ -127,9 +126,14 @@ public static class LogFieldRedactor
     /// </summary>
     public static string RedactStringContent(string value)
     {
+        if (value == null)
+        {
+            return null;
+        }
+
         if (string.IsNullOrWhiteSpace(value))
         {
-            return value ?? string.Empty;
+            return value;
         }
 
         var result = value;
@@ -170,5 +174,54 @@ public static class LogFieldRedactor
         }
 
         return RedactStringContent(message);
+    }
+
+    /// <summary>
+    /// Redacts page-controlled strings carried in structured event context.
+    /// </summary>
+    public static EngineLogContext Redact(in EngineLogContext context)
+    {
+        return context with
+        {
+            BrowserSessionId = RedactStringContent(context.BrowserSessionId),
+            NavigationId = RedactStringContent(context.NavigationId),
+            DocumentId = RedactStringContent(context.DocumentId),
+            FrameId = RedactStringContent(context.FrameId),
+            TabId = RedactStringContent(context.TabId),
+            Url = RedactStringContent(context.Url),
+            Referrer = RedactStringContent(context.Referrer),
+            TestId = RedactStringContent(context.TestId),
+            RequestId = RedactStringContent(context.RequestId),
+            RealmId = RedactStringContent(context.RealmId),
+            ScriptId = RedactStringContent(context.ScriptId),
+            TaskId = RedactStringContent(context.TaskId),
+            NodeDescription = RedactStringContent(context.NodeDescription),
+            CssSelector = RedactStringContent(context.CssSelector),
+            ResourceUrl = RedactStringContent(context.ResourceUrl),
+            SpecArea = RedactStringContent(context.SpecArea),
+            Source = RedactStringContent(context.Source)
+        };
+    }
+
+    /// <summary>
+    /// Creates a sanitized event without mutating caller-owned payload fields.
+    /// </summary>
+    public static EngineLogEvent Redact(in EngineLogEvent evt)
+    {
+        var payload = evt.Payload;
+        var redactedPayload = payload == null
+            ? null
+            : new EngineLogPayload
+            {
+                MessageTemplate = RedactMessageTemplate(payload.MessageTemplate),
+                Fields = Redact(payload.Fields),
+                SourceFile = payload.SourceFile,
+                SourceLine = payload.SourceLine,
+                SourceMember = payload.SourceMember
+            };
+
+        return new EngineLogEvent(
+            evt.Header with { Context = Redact(evt.Header.Context) },
+            redactedPayload);
     }
 }
