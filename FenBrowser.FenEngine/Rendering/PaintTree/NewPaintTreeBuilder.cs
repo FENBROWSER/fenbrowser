@@ -1724,7 +1724,15 @@ namespace FenBrowser.FenEngine.Rendering
                         var iframeNode = BuildIframePlaceholder(elem, box, style);
                         if (iframeNode != null) nodes.Add(iframeNode);
                     }
-                }
+                    else
+                    {
+                        nodes.Add(new CustomPaintNode
+                        {
+                            Bounds = box.BorderBox,
+                            SourceNode = elem,
+                            PaintAction = (canvas, renderBounds) => { /* Invisible hit-test proxy */ }
+                        });
+                    }                }
                 else if (tagUpper == "PROGRESS")
                 {
                     var progressNode = BuildProgressBar(elem, box, style);
