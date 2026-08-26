@@ -358,11 +358,11 @@ namespace FenBrowser.Core.Parsing
             if (!_inputSizeLimitReached &&
                 !_input.IsStreaming &&
                 MaxInputLengthChars > 0 &&
-                _length > MaxInputLengthChars)
+                (_input.LimitExceeded || _length > MaxInputLengthChars))
             {
                 _inputSizeLimitReached = true;
                 LastReasonCode = HtmlParsingReasonCode.InputSizeLimitExceeded;
-                LastReasonDetail = $"Tokenizer input length {_length} exceeded configured limit {MaxInputLengthChars}.";
+                LastReasonDetail = $"Tokenizer input length {_input.SourceLength} exceeded configured limit {MaxInputLengthChars}.";
                 EmitError(LastReasonDetail);
                 yield return new EofToken();
                 yield break;

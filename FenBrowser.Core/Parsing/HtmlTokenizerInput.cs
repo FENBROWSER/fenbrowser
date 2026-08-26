@@ -10,15 +10,21 @@ namespace FenBrowser.Core.Parsing
         private readonly string _text;
         private readonly TextReader _reader;
         private char[] _buffer;
+        private char[] _rawBuffer;
         private int _bufferStart;
         private int _bufferCount;
         private int _totalRead;
+        private int _sourceRead;
+        private int _sourceLength;
+        private bool _pendingCarriageReturn;
         private bool _eof;
         private int _maxLength = int.MaxValue;
 
         public HtmlTokenizerInput(string text)
         {
-            _text = text ?? string.Empty;
+            var source = text ?? string.Empty;
+            _sourceLength = source.Length;
+            _text = NormalizeLineEndings(source);
             _eof = true;
             _totalRead = _text.Length;
         }
@@ -27,15 +33,24 @@ namespace FenBrowser.Core.Parsing
         {
             _reader = reader ?? throw new ArgumentNullException(nameof(reader));
             _buffer = new char[ReadChunkSize];
+            _rawBuffer = new char[ReadChunkSize];
         }
 
         public bool IsStreaming => _reader != null;
         public bool LimitExceeded { get; private set; }
         public int KnownLength => _eof ? _totalRead : int.MaxValue;
+        public int SourceLength => _text != null ? _sourceLength : _sourceRead;
 
         public int MaxLength
         {
-            set => _maxLength = value > 0 ? value : int.MaxValue;
+            set
+            {
+                _maxLength = value > 0 ? value : int.MaxValue;
+                if (_text != null)
+                {
+                    LimitExceeded = _sourceLength > _maxLength;
+                }
+            }
         }
 
         public char this[int position]
@@ -101,24 +116,115 @@ namespace FenBrowser.Core.Parsing
         {
             while (!_eof && position >= _totalRead)
             {
-                if (_totalRead >= _maxLength)
+                if (_sourceRead >= _maxLength)
                 {
-                    LimitExceeded = _reader.Read() >= 0;
-                    _eof = true;
+                    CompleteInput(limitReached: true);
                     break;
                 }
 
-                var readSize = Math.Min(ReadChunkSize, _maxLength - _totalRead);
-                EnsureCapacity(_bufferCount + readSize);
-                var read = _reader.Read(_buffer, _bufferCount, readSize);
+                var readSize = Math.Min(ReadChunkSize, _maxLength - _sourceRead);
+                var read = _reader.Read(_rawBuffer, 0, readSize);
                 if (read <= 0)
                 {
-                    _eof = true;
+                    CompleteInput(limitReached: false);
                     break;
                 }
-                _bufferCount += read;
-                _totalRead += read;
+
+                _sourceRead += read;
+                AppendNormalized(_rawBuffer, read);
             }
+        }
+
+        private void AppendNormalized(char[] source, int length)
+        {
+            EnsureCapacity(_bufferCount + length + 1);
+            var sourceIndex = 0;
+
+            if (_pendingCarriageReturn)
+            {
+                _buffer[_bufferCount++] = '\n';
+                _totalRead++;
+                _pendingCarriageReturn = false;
+                if (length > 0 && source[0] == '\n')
+                {
+                    sourceIndex = 1;
+                }
+            }
+
+            for (; sourceIndex < length; sourceIndex++)
+            {
+                var ch = source[sourceIndex];
+                if (ch == '\r')
+                {
+                    if (sourceIndex + 1 >= length)
+                    {
+                        _pendingCarriageReturn = true;
+                        continue;
+                    }
+
+                    _buffer[_bufferCount++] = '\n';
+                    _totalRead++;
+                    if (source[sourceIndex + 1] == '\n')
+                    {
+                        sourceIndex++;
+                    }
+                    continue;
+                }
+
+                _buffer[_bufferCount++] = ch;
+                _totalRead++;
+            }
+        }
+
+        private void CompleteInput(bool limitReached)
+        {
+            if (limitReached)
+            {
+                LimitExceeded = _reader.Read() >= 0;
+                if (LimitExceeded)
+                {
+                    _sourceRead++;
+                }
+            }
+
+            if (_pendingCarriageReturn)
+            {
+                EnsureCapacity(_bufferCount + 1);
+                _buffer[_bufferCount++] = '\n';
+                _totalRead++;
+                _pendingCarriageReturn = false;
+            }
+
+            _eof = true;
+        }
+
+        private static string NormalizeLineEndings(string source)
+        {
+            var firstCarriageReturn = source.IndexOf('\r');
+            if (firstCarriageReturn < 0)
+            {
+                return source;
+            }
+
+            var normalized = new StringBuilder(source.Length);
+            normalized.Append(source, 0, firstCarriageReturn);
+            for (var i = firstCarriageReturn; i < source.Length; i++)
+            {
+                var ch = source[i];
+                if (ch != '\r')
+                {
+                    normalized.Append(ch);
+                    continue;
+                }
+
+                normalized.Append('\n');
+                if (i + 1 < source.Length && source[i + 1] == '\n')
+                {
+                    i++;
+                }
+            }
+
+            return normalized.ToString();
         }
 
         private void EnsureCapacity(int required)
