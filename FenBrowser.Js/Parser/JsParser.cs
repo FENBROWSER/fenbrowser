@@ -6614,7 +6614,7 @@ public sealed class JsParser
                 }
 
                 var expressionText = raw[expressionStart..expressionEnd];
-                expressions.Add(ParseTemplateSubstitutionExpression(expressionText, token.Span));
+                expressions.Add(ParseTemplateSubstitutionExpression(expressionText, token, expressionStart));
                 index = expressionEnd + 1;
                 segmentStart = index;
                 continue;
@@ -6627,30 +6627,51 @@ public sealed class JsParser
         return new TemplateLiteralExpressionNode(quasis, expressions, token.Span);
     }
 
-    private ExpressionNode ParseTemplateSubstitutionExpression(string expressionText, SourceSpan templateSpan)
+    private ExpressionNode ParseTemplateSubstitutionExpression(string expressionText, Token templateToken, int expressionStart)
     {
         if (string.IsNullOrWhiteSpace(expressionText))
         {
             throw new JsParserException("Template substitution expression cannot be empty.");
         }
 
-        var source = new SourceText(expressionText, "<template>");
+        var absoluteStart = templateToken.Span.Start + expressionStart;
+        var source = new SourceText(CreateTemplateSourcePrefix(absoluteStart) + expressionText, _source.Path);
         var tokens = new JsLexer(source).LexAll();
-        var parser = new JsParser(source, tokens)
+        var parser = new JsParser(source, tokens, _maxRecursionDepth)
         {
             _strictMode = _strictMode,
             _moduleMode = _moduleMode,
             _inDirectivePrologue = false,
             _allowYieldExpression = _allowYieldExpression,
-            _allowAwaitExpression = _allowAwaitExpression
+            _allowAwaitExpression = _allowAwaitExpression,
+            _classStaticBlockDepth = _classStaticBlockDepth,
+            _functionBodyDepth = _functionBodyDepth
         };
         var expression = parser.ParseExpression(0);
         if (!parser.Is(TokenKind.EndOfFile))
         {
-            throw new JsParserException($"Unexpected token in template substitution at {templateSpan.Line}:{templateSpan.Column}.");
+            throw new JsParserException($"Unexpected token in template substitution at {templateToken.Span.Line}:{templateToken.Span.Column}.");
+        }
+
+        if (_classStaticBlockDepth > 0 && ContainsIdentifierReferenceInExpression(expression, "await"))
+        {
+            throw new JsParserException("'await' may not be used as an identifier reference inside a class static block.");
         }
 
         return expression;
+    }
+
+    private string CreateTemplateSourcePrefix(int length)
+    {
+        return string.Create(length, _source.Text, static (destination, original) =>
+        {
+            for (var i = 0; i < destination.Length; i++)
+            {
+                destination[i] = original[i] is '\r' or '\n' or '\u2028' or '\u2029'
+                    ? original[i]
+                    : ' ';
+            }
+        });
     }
 
     private static int FindTemplateExpressionEnd(string raw, int start)
