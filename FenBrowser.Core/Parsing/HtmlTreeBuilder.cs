@@ -2428,10 +2428,14 @@ namespace FenBrowser.Core.Parsing
                      }
                      return;
                 }
-                if (tagName.Equals("head", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InBody); return; } 
+                if (tagName.Equals("head", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InHead); return; }
                 if (tagName.Equals("body", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InBody); return; }
                 if (tagName.Equals("frameset", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InFrameset); return; }
-                if (tagName.Equals("html", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InBody); return; }
+                if (tagName.Equals("html", StringComparison.OrdinalIgnoreCase))
+                {
+                    SwitchTo(_headElement == null ? InsertionMode.BeforeHead : InsertionMode.AfterHead);
+                    return;
+                }
             }
              SwitchTo(InsertionMode.InBody);
         }
