@@ -637,7 +637,7 @@ namespace FenBrowser.Core
                     }
 
                     if (!string.IsNullOrEmpty(name) && !element.HasAttribute(name))
-                        element.SetAttribute(name, value);
+                        element.SetAttributeUnsafe(name, value);
                 }
             }
         }

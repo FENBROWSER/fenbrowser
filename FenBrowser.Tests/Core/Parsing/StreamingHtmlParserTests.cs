@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Parsing;
 
 namespace FenBrowser.Tests.Core.Parsing
 {
@@ -92,6 +93,28 @@ namespace FenBrowser.Tests.Core.Parsing
             Assert.Equal(2, paragraphs.Count);
             Assert.Equal("hello", paragraphs[0].TextContent);
             Assert.Equal("world", paragraphs[1].TextContent);
+        }
+
+        [Fact]
+        public async Task ParseIncrementallyAsync_PreservesParserAcceptedFrameworkAttributes()
+        {
+            const string html = "<html><body><div @click='submit' :prop=value data-ok=yes>ready</div></body></html>";
+            using var parser = new StreamingHtmlParser(html);
+
+            Document? incremental = null;
+            await parser.ParseIncrementallyAsync(document => incremental = document);
+            Document canonical = HtmlParser.ParseDocument(html);
+
+            Assert.NotNull(incremental);
+            Element incrementalDiv = incremental!.Descendants().OfType<Element>()
+                .Single(element => element.LocalName == "div");
+            Element canonicalDiv = canonical.Descendants().OfType<Element>()
+                .Single(element => element.LocalName == "div");
+
+            Assert.Equal("submit", incrementalDiv.GetAttribute("@click"));
+            Assert.Equal("value", incrementalDiv.GetAttribute(":prop"));
+            Assert.Equal("yes", incrementalDiv.GetAttribute("data-ok"));
+            Assert.Equal(canonicalDiv.OuterHTML, incrementalDiv.OuterHTML);
         }
 
         [Fact]
