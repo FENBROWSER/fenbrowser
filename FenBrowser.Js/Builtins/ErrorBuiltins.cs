@@ -167,6 +167,8 @@ public sealed class ErrorBuiltins : IBuiltinModule
                 }
                 return JsValue.Undefined;
             }, length: 1);
+            stackGetter.SetPrototype(ctx.GetFunctionPrototype());
+            stackSetter.SetPrototype(ctx.GetFunctionPrototype());
             var getterHandle = ctx.Heap.AllocateObject(stackGetter, AllocationSite.Current());
             var setterHandle = ctx.Heap.AllocateObject(stackSetter, AllocationSite.Current());
             prototype.DefineOwnProperty("stack",
@@ -317,11 +319,8 @@ public sealed class ErrorBuiltins : IBuiltinModule
     {
         var captured = ctx;
         var fn = new NativeFunctionObject(name, (thisValue, args) => method(captured, thisValue, args), length: length);
+        fn.SetPrototype(ctx.GetFunctionPrototype());
         var fnHandle = heap.AllocateObject(fn, AllocationSite.Current());
-        var callHandle = ctx.GetFunctionCallMethod();
-        fn.SetPrototype(ctx.GetObjectPrototype());
-        fn.SetProperty("call", JsValue.FromObject(callHandle));
-        heap.WriteBarrier(fnHandle, callHandle);
         proto.DefineOwnProperty(name, new JsPropertyDescriptor(JsValue.FromObject(fnHandle), Writable: true, Enumerable: false, Configurable: true));
         heap.WriteBarrier(protoHandle, fnHandle);
     }

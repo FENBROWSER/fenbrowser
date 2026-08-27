@@ -73,10 +73,7 @@ public sealed class StringBuiltin : IBuiltinModule
         var trimStartFn = new NativeFunctionObject("trimStart",
             (thisValue, _) => JsValue.FromString(RequireString(capturedCtx, thisValue).TrimStart()), length: 0);
         var trimStartFnHandle = heap.AllocateObject(trimStartFn, AllocationSite.Current());
-        trimStartFn.SetPrototype(capturedCtx.GetObjectPrototype());
-        var callHandle = capturedCtx.GetFunctionCallMethod();
-        trimStartFn.SetProperty("call", JsValue.FromObject(callHandle));
-        heap.WriteBarrier(trimStartFnHandle, callHandle);
+        trimStartFn.SetPrototype(capturedCtx.GetFunctionPrototype());
         protoObj.DefineOwnProperty("trimStart", new JsPropertyDescriptor(JsValue.FromObject(trimStartFnHandle), Writable: true, Enumerable: false, Configurable: true));
         heap.WriteBarrier(prototypeHandle, trimStartFnHandle);
         protoObj.DefineOwnProperty("trimLeft", new JsPropertyDescriptor(JsValue.FromObject(trimStartFnHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -85,9 +82,7 @@ public sealed class StringBuiltin : IBuiltinModule
         var trimEndFn = new NativeFunctionObject("trimEnd",
             (thisValue, _) => JsValue.FromString(RequireString(capturedCtx, thisValue).TrimEnd()), length: 0);
         var trimEndFnHandle = heap.AllocateObject(trimEndFn, AllocationSite.Current());
-        trimEndFn.SetPrototype(capturedCtx.GetObjectPrototype());
-        trimEndFn.SetProperty("call", JsValue.FromObject(callHandle));
-        heap.WriteBarrier(trimEndFnHandle, callHandle);
+        trimEndFn.SetPrototype(capturedCtx.GetFunctionPrototype());
         protoObj.DefineOwnProperty("trimEnd", new JsPropertyDescriptor(JsValue.FromObject(trimEndFnHandle), Writable: true, Enumerable: false, Configurable: true));
         heap.WriteBarrier(prototypeHandle, trimEndFnHandle);
         protoObj.DefineOwnProperty("trimRight", new JsPropertyDescriptor(JsValue.FromObject(trimEndFnHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -258,11 +253,8 @@ public sealed class StringBuiltin : IBuiltinModule
     {
         var captured = ctx;
         var fn = new NativeFunctionObject(name, (thisValue, args) => method(captured, thisValue, args), length: length);
+        fn.SetPrototype(ctx.GetFunctionPrototype());
         var fnHandle = heap.AllocateObject(fn, AllocationSite.Current());
-        var callHandle = ctx.GetFunctionCallMethod();
-        fn.SetPrototype(ctx.GetObjectPrototype());
-        fn.SetProperty("call", JsValue.FromObject(callHandle));
-        heap.WriteBarrier(fnHandle, callHandle);
         proto.DefineOwnProperty(name, new JsPropertyDescriptor(JsValue.FromObject(fnHandle), Writable: true, Enumerable: false, Configurable: true));
         heap.WriteBarrier(protoHandle, fnHandle);
     }
@@ -276,12 +268,9 @@ public sealed class StringBuiltin : IBuiltinModule
         heap.PushRoot(stringIteratorPrototypeHandle);
         heap.WriteBarrier(stringIteratorPrototypeHandle, iteratorPrototypeHandle);
 
-        var callHandle = ctx.GetFunctionCallMethod();
         var next = new NativeFunctionObject("next", (thisValue, _) => StringIteratorNext(ctx, thisValue), length: 0);
+        next.SetPrototype(ctx.GetFunctionPrototype());
         var nextHandle = heap.AllocateObject(next, AllocationSite.Current());
-        next.SetPrototype(ctx.GetObjectPrototype());
-        next.SetProperty("call", JsValue.FromObject(callHandle));
-        heap.WriteBarrier(nextHandle, callHandle);
         _ = stringIteratorPrototype.DefineOwnProperty(
             "next",
             new JsPropertyDescriptor(JsValue.FromObject(nextHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -300,10 +289,8 @@ public sealed class StringBuiltin : IBuiltinModule
             heap.WriteBarrier(iteratorHandle, stringIteratorPrototypeHandle);
             return JsValue.FromObject(iteratorHandle);
         }, length: 0);
+        iteratorMethod.SetPrototype(ctx.GetFunctionPrototype());
         var iteratorMethodHandle = heap.AllocateObject(iteratorMethod, AllocationSite.Current());
-        iteratorMethod.SetPrototype(ctx.GetObjectPrototype());
-        iteratorMethod.SetProperty("call", JsValue.FromObject(callHandle));
-        heap.WriteBarrier(iteratorMethodHandle, callHandle);
 
         var iteratorSymbol = ctx.CreateWellKnownSymbol("iterator");
         _ = proto.DefineOwnSymbolProperty(
