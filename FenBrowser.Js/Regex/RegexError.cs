@@ -3,6 +3,9 @@
 
 namespace FenBrowser.Js.Regex;
 
+using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Runtime;
+
 /// <summary>
 /// Thrown when regex pattern or flags contain a syntax error.
 /// Callers in the builtin layer catch this and convert to a JS SyntaxError.
@@ -18,7 +21,10 @@ public class RegexSyntaxError : Exception
 /// Thrown when matching is aborted by the engine's resource limits. This must
 /// not be reported as an ordinary failed match.
 /// </summary>
-public sealed class RegexExecutionLimitException : Exception
+public sealed class RegexExecutionLimitException : JsThrownException
 {
-    public RegexExecutionLimitException(string message) : base(message) { }
+    public RegexExecutionLimitException(string message) : base(JsValue.FromString(message))
+    {
+        Description = message;
+    }
 }

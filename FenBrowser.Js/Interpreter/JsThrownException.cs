@@ -2,7 +2,7 @@ using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Interpreter;
 
-public sealed class JsThrownException : Exception
+public class JsThrownException : Exception
 {
     public JsThrownException(JsValue value)
     {
