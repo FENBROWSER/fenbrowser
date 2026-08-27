@@ -376,6 +376,14 @@ namespace FenBrowser.Core.Dom.V2
 
         // --- Factory Methods ---
 
+        internal Element CreateElementForParser(string localName, string namespaceUri)
+        {
+            return string.Equals(namespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
+                   string.Equals(localName, "template", StringComparison.OrdinalIgnoreCase)
+                ? new HtmlTemplateElement(this)
+                : new Element(localName, this, namespaceUri);
+        }
+
         /// <summary>
         /// Creates a new element with the given local name.
         /// https://dom.spec.whatwg.org/#dom-document-createelement

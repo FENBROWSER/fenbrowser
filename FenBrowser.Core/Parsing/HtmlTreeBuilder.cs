@@ -88,6 +88,7 @@ namespace FenBrowser.Core.Parsing
         public HtmlParsingOutcome LastParsingOutcome { get; private set; } = new HtmlParsingOutcome();
         private bool _openElementsDepthLimitLogged;
         private bool _openElementUnderflowLogged;
+        private bool _fosterParenting;
         private bool _deferParsingCheckpointCallbacks;
         private readonly List<HtmlParseCheckpoint> _deferredParsingCheckpointCallbacks = new List<HtmlParseCheckpoint>();
 
@@ -1219,7 +1220,7 @@ namespace FenBrowser.Core.Parsing
              
               if (token is CommentToken comment)
             {
-                CurrentInsertionTarget.AppendChild(new Comment(comment.Data));
+                InsertNodeAtAppropriatePlace(new Comment(comment.Data));
                 return true;
             }
             
@@ -2073,134 +2074,16 @@ namespace FenBrowser.Core.Parsing
                 return HandleInBody(token);
             }
 
-            // Find the table element in the stack
-            Element table = null;
-            // Iterate reverse?
-            foreach (var el in _openElements)
+            var previous = _fosterParenting;
+            _fosterParenting = true;
+            try
             {
-                if (string.Equals(el.TagName, "table", StringComparison.OrdinalIgnoreCase)) 
-                {
-                    table = el;
-                    break; 
-                }
+                return HandleInBody(token);
             }
-            if (table == null) return HandleInBody(token); // Should not happen in InTable mode
-
-            Node parent = table.ParentNode;
-            Node nextSibling = table; // We insert before table
-            
-            if (parent == null)
+            finally
             {
-                // Table popped off stack? fallback to previous element in stack.
-                // Spec says: use element before table in stack.
-                parent = _openElements.SkipWhile(e => e != table).Skip(1).FirstOrDefault(); 
-                if (parent == null) parent = _document; // Fallback
-                nextSibling = null; // Append
+                _fosterParenting = previous;
             }
-            
-            // Temporary divert inserts to parent
-            var originalNode = CurrentNode;
-            
-            // How to implement redirect? Code uses `InsertHtmlElement` which uses `CurrentNode`.
-            // We can't easily change `CurrentNode` (it's peek of stack).
-            // We have to manual insert.
-            
-            if (token is CharacterToken ct)
-            {
-                // Attempt to coalesce with previous text node
-                Node prev = null;
-                if (parent is ContainerNode parentContainer && nextSibling != null)
-                {
-                    var idx = -1;
-                    for (int i = 0; i < parentContainer.ChildNodes.Length; i++)
-                    {
-                        if (ReferenceEquals(parentContainer.ChildNodes[i], nextSibling))
-                        {
-                            idx = i;
-                            break;
-                        }
-                    }
-                    if (idx > 0) prev = parentContainer.ChildNodes[idx - 1];
-                }
-                else if (parent is ContainerNode appendContainer)
-                {
-                    prev = appendContainer.ChildNodes.LastOrDefault();
-                }
-
-                if (prev is Text txt)
-                {
-                    txt.Data += ct.Data;
-                    return true;
-                }
-
-                var text = new Text(ct.Data);
-                if (nextSibling != null && parent != null)
-                    ((ContainerNode)parent).InsertBefore(text, nextSibling);
-                else
-                    ((ContainerNode)parent)?.AppendChild(text);
-                return true;
-            }
-            
-            if (token is StartTagToken st)
-            {
-                // Create element but don't push to stack?
-                // Wait, if it's a start tag, we might enter a new mode or push to stack.
-                // Spec says: "Process token using In Body... with foster parenting flag"
-                // This means when InBody inserts an element, it should foster parent it.
-                // This arch is hard to retrofit.
-                
-                // SIMPLIFIED FOSTER PARENTING:
-                // Only handle text and basic void elements. 
-                // Complex elements inside improper table context are hard.
-                if (DebugConfig.LogHtmlParse)
-                     FenBrowser.Core.EngineLogCompat.Warn($"[HTML] Simple Foster Parent for {st.TagName}", LogCategory.HtmlParsing);
-                     
-                var el = new Element(st.TagName);
-                if (st.HasAttributes)
-                {
-                    foreach (var a in st.Attributes)
-                    {
-                        el.SetAttributeUnsafe(a.Name, a.Value);
-                    }
-                }
-                
-                 if (nextSibling != null && parent != null)
-                    ((ContainerNode)parent).InsertBefore(el, nextSibling);
-                else
-                    ((ContainerNode)parent)?.AppendChild(el);
-                    
-                // If not void, we should push it to stack?
-                // But then it's in stack but its parent is ouside table.
-                if (!HtmlParser.IsVoid(st.TagName))
-                {
-                    _openElements.Push(el);
-                    if (IsFormattingElement(st.TagName))
-                    {
-                        PushActiveFormattingElement(el);
-                    }
-                }
-                return true;
-            }
-
-            if (token is EndTagToken fosterEndTag)
-            {
-                // Foster-parenting still processes end tags with InBody semantics.
-                // If we foster-parented a non-void element (for example <div> inside <table>),
-                // we must honor its explicit end tag to avoid leaking stack state past </table>.
-                if (StackHas(fosterEndTag.TagName))
-                {
-                    if (string.Equals(fosterEndTag.TagName, "form", StringComparison.OrdinalIgnoreCase))
-                    {
-                        _formElement = null;
-                    }
-
-                    PopUntil(fosterEndTag.TagName);
-                }
-
-                return true;
-            }
-            
-            return true;
         }
 
         private static bool IsCharacterFosterBoundaryElement(string tagName)
@@ -2463,6 +2346,22 @@ namespace FenBrowser.Core.Parsing
         private ContainerNode CurrentInsertionTarget => CurrentNode is HtmlTemplateElement template
             ? template.Content
             : CurrentNode;
+
+        private (ContainerNode Parent, Node Before) GetAppropriateInsertionLocation()
+        {
+            return _fosterParenting
+                ? GetFosterParentInsertionLocation()
+                : (CurrentInsertionTarget, null);
+        }
+
+        private void InsertNodeAtAppropriatePlace(Node node)
+        {
+            var (parent, before) = GetAppropriateInsertionLocation();
+            if (before != null)
+                parent.InsertBefore(node, before);
+            else
+                parent.AppendChild(node);
+        }
         
         private void SwitchTo(InsertionMode mode)
         {
@@ -2515,7 +2414,7 @@ namespace FenBrowser.Core.Parsing
         private Element CreateElement(StartTagToken token)
         {
             var namespaceUri = DetermineElementNamespace(token);
-            var el = _document.CreateElementNS(namespaceUri, token.TagName);
+            var el = _document.CreateElementForParser(token.TagName, namespaceUri);
             if (token.SourceOffset >= 0)
             {
                 el.SourceOffset = token.SourceOffset;
@@ -2876,7 +2775,7 @@ namespace FenBrowser.Core.Parsing
         private Element InsertHtmlElement(StartTagToken token)
         {
             var el = CreateElement(token);
-            CurrentInsertionTarget.AppendChild(el);
+            InsertNodeAtAppropriatePlace(el);
             // EngineLogCompat.Debug($"[Parser] Pushing {el.TagName}_{el.GetHashCode()} to stack (Depth: {_openElements.Count})", LogCategory.HtmlParsing);
             _openElements.Push(el);
 
@@ -2886,15 +2785,19 @@ namespace FenBrowser.Core.Parsing
         private void InsertCharacter(CharacterToken token)
         {
             // Optimize: if current node's last child is text, append
-            var target = CurrentInsertionTarget;
-            var last = target.LastChild;
+            var (target, before) = GetAppropriateInsertionLocation();
+            var last = before?.PreviousSibling ?? target.LastChild;
             if (last != null && UnsafeIsText(last))
             {
                 last.NodeValue += token.Data;
             }
             else
             {
-                target.AppendChild(new Text(token.Data));
+                var text = new Text(token.Data);
+                if (before != null)
+                    target.InsertBefore(text, before);
+                else
+                    target.AppendChild(text);
             }
         }
 
@@ -3077,7 +2980,7 @@ namespace FenBrowser.Core.Parsing
 
                 // Create a new element with the same identity and parser metadata.
                 var newElement = CloneElementForTreeConstruction(entry);
-                CurrentInsertionTarget.AppendChild(newElement);
+                InsertNodeAtAppropriatePlace(newElement);
                 _openElements.Push(newElement);
                 _activeFormattingElements[i] = newElement;
             }
@@ -3341,7 +3244,7 @@ namespace FenBrowser.Core.Parsing
         private Element CloneElementForTreeConstruction(Element source)
         {
             var owner = source.OwnerDocument ?? _document;
-            var clone = owner.CreateElementNS(source.NamespaceUri ?? Namespaces.Html, source.LocalName);
+            var clone = owner.CreateElementForParser(source.LocalName, source.NamespaceUri ?? Namespaces.Html);
             clone.Prefix = source.Prefix;
             clone.SourceOffset = source.SourceOffset;
             clone.SourceLine = source.SourceLine;
@@ -3355,33 +3258,48 @@ namespace FenBrowser.Core.Parsing
 
         private void InsertAtFosterParent(Node node)
         {
-            Element table = null;
-            foreach (var element in _openElements)
+            var (parent, before) = GetFosterParentInsertionLocation();
+            if (before != null)
+                parent.InsertBefore(node, before);
+            else
+                parent.AppendChild(node);
+        }
+
+        private (ContainerNode Parent, Node Before) GetFosterParentInsertionLocation()
+        {
+            var stack = _openElements.ToArray();
+            var tableIndex = Array.FindIndex(
+                stack,
+                element => string.Equals(element.LocalName, "table", StringComparison.OrdinalIgnoreCase));
+            var templateIndex = Array.FindIndex(
+                stack,
+                element => string.Equals(element.LocalName, "template", StringComparison.OrdinalIgnoreCase));
+
+            if (templateIndex >= 0 &&
+                (tableIndex < 0 || templateIndex == tableIndex + 1))
             {
-                if (string.Equals(element.LocalName, "table", StringComparison.OrdinalIgnoreCase))
-                {
-                    table = element;
-                    break;
-                }
+                var template = (HtmlTemplateElement)stack[templateIndex];
+                return (template.Content, null);
             }
 
-            if (table?.ParentNode is ContainerNode tableParent)
+            if (tableIndex < 0)
             {
-                tableParent.InsertBefore(node, table);
-                return;
+                var firstOpenElement = stack.LastOrDefault();
+                return (firstOpenElement is HtmlTemplateElement rootTemplate
+                    ? rootTemplate.Content
+                    : firstOpenElement ?? CurrentInsertionTarget, null);
             }
 
-            if (table != null)
+            var table = stack[tableIndex];
+            if (table.ParentNode is ContainerNode tableParent)
             {
-                var previous = _openElements.SkipWhile(element => !ReferenceEquals(element, table)).Skip(1).FirstOrDefault();
-                if (previous != null)
-                {
-                    previous.AppendChild(node);
-                    return;
-                }
+                return (tableParent, table);
             }
 
-            CurrentNode.AppendChild(node);
+            var previous = tableIndex + 1 < stack.Length ? stack[tableIndex + 1] : null;
+            return (previous is HtmlTemplateElement previousTemplate
+                ? previousTemplate.Content
+                : previous ?? CurrentInsertionTarget, null);
         }
 
         /// <summary>
