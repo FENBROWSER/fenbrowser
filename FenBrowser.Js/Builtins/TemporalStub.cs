@@ -2255,6 +2255,9 @@ public sealed class TemporalStub : IBuiltinModule
     private static System.Numerics.BigInteger DurationDayTimeNs((double years, double months, double weeks, double days, double hours, double minutes, double seconds, double millis, double micros, double nanos) d)
         => DurationToNanos(d.days, d.hours, d.minutes, d.seconds, d.millis, d.micros, d.nanos);
 
+    private static double DurationWholeDays((double years, double months, double weeks, double days, double hours, double minutes, double seconds, double millis, double micros, double nanos) duration)
+        => (double)(DurationDayTimeNs(duration) / NsPerDay);
+
     private static double DivideBigIntegerToDouble(System.Numerics.BigInteger value, long divisor)
     {
         bool negative = value.Sign < 0;
@@ -3556,7 +3559,7 @@ public sealed class TemporalStub : IBuiltinModule
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             bool constrain = GetOverflowOption(ctx, h, a, 1) == "constrain";
             var result = AddDateInCalendar(CalId(h, o), DecodeIsoDate(h, o), dur.years, dur.months, dur.weeks,
-                dur.days + (dur.hours * 3600L + dur.minutes * 60L + dur.seconds) / 86_400.0, constrain, out var invalid);
+                DurationWholeDays(dur), constrain, out var invalid);
             if (invalid || !IsoMath.IsoDateWithinLimits(result))
                 throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range or invalid under overflow=reject."));
             return AttachPrototype(h, MakePlainDateYmd(ctx, h, result.Year, result.Month, result.Day, GetVStr(h, o, "calendarId")), pH);
@@ -3565,7 +3568,7 @@ public sealed class TemporalStub : IBuiltinModule
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             bool constrain = GetOverflowOption(ctx, h, a, 1) == "constrain";
             var result = AddDateInCalendar(CalId(h, o), DecodeIsoDate(h, o), -dur.years, -dur.months, -dur.weeks,
-                -(dur.days + (dur.hours * 3600L + dur.minutes * 60L + dur.seconds) / 86_400.0), constrain, out var invalid);
+                -DurationWholeDays(dur), constrain, out var invalid);
             if (invalid || !IsoMath.IsoDateWithinLimits(result))
                 throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range or invalid under overflow=reject."));
             return AttachPrototype(h, MakePlainDateYmd(ctx, h, result.Year, result.Month, result.Day, GetVStr(h, o, "calendarId")), pH);
