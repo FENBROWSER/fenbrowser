@@ -125,35 +125,13 @@ public sealed class BigIntBuiltin : IBuiltinModule
             return value.ToString(CultureInfo.InvariantCulture);
         }
 
-        var radix = (int)context.ToNumber(args[0]);
-        if (radix < 2 || radix > 36)
+        var radixNumber = MathHelpers.ToIntegerOrInfinity(context.ToNumber(args[0]));
+        if (radixNumber < 2d || radixNumber > 36d)
         {
             throw new JsThrownException(context.CreateRangeError("BigInt.prototype.toString radix must be between 2 and 36."));
         }
 
-        return BigIntegerToRadixString(value, radix);
-    }
-
-    private static string BigIntegerToRadixString(BigInteger value, int radix)
-    {
-        if (value.IsZero)
-        {
-            return "0";
-        }
-
-        var negative = value.Sign < 0;
-        var remaining = BigInteger.Abs(value);
-        var digits = new List<char>();
-        while (remaining > BigInteger.Zero)
-        {
-            remaining = BigInteger.DivRem(remaining, radix, out var remainder);
-            var digit = (int)remainder;
-            digits.Add((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
-        }
-
-        digits.Reverse();
-        var result = new string(digits.ToArray());
-        return negative ? "-" + result : result;
+        return MathHelpers.BigIntegerToRadixString(value, (int)radixNumber);
     }
 
     internal static BigInteger ToBigIntValue(IBuiltinContext context, JsValue input)

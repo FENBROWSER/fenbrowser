@@ -10,6 +10,14 @@ namespace FenBrowser.Js.Builtins;
 
 internal static class MathHelpers
 {
+    // ECMA-262 ToIntegerOrInfinity.
+    internal static double ToIntegerOrInfinity(double value)
+    {
+        if (double.IsNaN(value) || value == 0d) return 0d;
+        if (double.IsInfinity(value)) return value;
+        return Math.Truncate(value);
+    }
+
     internal static bool IsNegativeZero(double value)
     {
         return value == 0d && BitConverter.DoubleToInt64Bits(value) < 0;
@@ -91,6 +99,23 @@ internal static class MathHelpers
         var sb = new System.Text.StringBuilder();
         while (n > 0) { sb.Insert(0, DigitToChar((int)(n % radix))); n /= radix; }
         return sb.ToString();
+    }
+
+    internal static string BigIntegerToRadixString(BigInteger value, int radix)
+    {
+        if (value.IsZero) return "0";
+
+        var remaining = BigInteger.Abs(value);
+        var chars = new List<char>();
+        while (remaining > BigInteger.Zero)
+        {
+            remaining = BigInteger.DivRem(remaining, radix, out var remainder);
+            chars.Add(DigitToChar((int)remainder));
+        }
+
+        if (value.Sign < 0) chars.Add('-');
+        chars.Reverse();
+        return new string(chars.ToArray());
     }
 
     // ECMA-262 21.1.3.2 / 21.1.3.5: normalise exponent to canonical form

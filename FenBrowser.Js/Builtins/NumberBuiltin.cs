@@ -183,9 +183,12 @@ public sealed class NumberBuiltin : IBuiltinModule
     private static JsValue NumberPrototypeToString(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var value = NumberThisValue(ctx, thisValue);
-        var radix = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? (int)ctx.ToNumber(args[0]) : 10;
-        if (radix < 2 || radix > 36)
+        var radixNumber = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
+            ? MathHelpers.ToIntegerOrInfinity(ctx.ToNumber(args[0]))
+            : 10d;
+        if (radixNumber < 2d || radixNumber > 36d)
             throw new JsThrownException(ctx.CreateRangeError("toString() radix argument must be between 2 and 36."));
+        var radix = (int)radixNumber;
         if (double.IsNaN(value)) return JsValue.FromString("NaN");
         if (double.IsInfinity(value)) return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
         if (value == 0d) return JsValue.FromString("0");
@@ -193,10 +196,11 @@ public sealed class NumberBuiltin : IBuiltinModule
 
         var negative = value < 0;
         var absolute = negative ? -value : value;
-        var integerPart = (long)absolute;
-        var fractionPart = absolute - integerPart;
+        var truncated = Math.Truncate(absolute);
+        var integerPart = new System.Numerics.BigInteger(truncated);
+        var fractionPart = absolute - truncated;
 
-        var intText = MathHelpers.LongToRadixString(integerPart, radix);
+        var intText = MathHelpers.BigIntegerToRadixString(integerPart, radix);
         if (fractionPart == 0d)
             return JsValue.FromString(negative ? "-" + intText : intText);
 
@@ -226,9 +230,10 @@ public sealed class NumberBuiltin : IBuiltinModule
     private static JsValue NumberPrototypeToFixed(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var value = NumberThisValue(ctx, thisValue);
-        var digits = args.Count > 0 ? (int)ctx.ToNumber(args[0]) : 0;
-        if (digits < 0 || digits > 100)
+        var digitsNumber = args.Count > 0 ? MathHelpers.ToIntegerOrInfinity(ctx.ToNumber(args[0])) : 0d;
+        if (digitsNumber < 0d || digitsNumber > 100d)
             throw new JsThrownException(ctx.CreateRangeError("toFixed() digits argument must be between 0 and 100."));
+        var digits = (int)digitsNumber;
         if (double.IsNaN(value)) return JsValue.FromString("NaN");
         if (double.IsInfinity(value)) return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
         if (Math.Abs(value) >= 1e21) return JsValue.FromString(MathHelpers.FormatNumberForString(value));
@@ -259,11 +264,12 @@ public sealed class NumberBuiltin : IBuiltinModule
             return JsValue.FromString(sign + MathHelpers.FormatToExponential(absValue, 17));
         }
 
-        var digits = (int)ctx.ToNumber(args[0]);
+        var digitsNumber = MathHelpers.ToIntegerOrInfinity(ctx.ToNumber(args[0]));
         if (double.IsNaN(value)) return JsValue.FromString("NaN");
         if (double.IsInfinity(value)) return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
-        if (digits < 0 || digits > 100)
+        if (digitsNumber < 0d || digitsNumber > 100d)
             throw new JsThrownException(ctx.CreateRangeError("toExponential() digits argument must be between 0 and 100."));
+        var digits = (int)digitsNumber;
 
         var abs2 = Math.Abs(value);
         var sig2 = value < 0d ? "-" : "";
@@ -276,12 +282,13 @@ public sealed class NumberBuiltin : IBuiltinModule
         if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
             return JsValue.FromString(MathHelpers.FormatNumberForString(value));
 
-        var precision = (int)ctx.ToNumber(args[0]);
+        var precisionNumber = MathHelpers.ToIntegerOrInfinity(ctx.ToNumber(args[0]));
         if (double.IsNaN(value)) return JsValue.FromString("NaN");
         if (double.IsInfinity(value)) return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
 
-        if (precision < 1 || precision > 100)
+        if (precisionNumber < 1d || precisionNumber > 100d)
             throw new JsThrownException(ctx.CreateRangeError("toPrecision() precision argument must be between 1 and 100."));
+        var precision = (int)precisionNumber;
 
         var absValue = Math.Abs(value);
         var negative = value < 0d;
