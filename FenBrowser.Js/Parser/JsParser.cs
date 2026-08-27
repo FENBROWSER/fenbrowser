@@ -309,6 +309,137 @@ public sealed class JsParser
     private static bool IsSyntheticPatternBinding(string name) =>
         name.StartsWith("__pattern", StringComparison.Ordinal);
 
+    private static bool ContainsArgumentsInClassStaticBlock(IReadOnlyList<StatementNode> statements) =>
+        statements.Any(ContainsArgumentsInClassStaticBlockStatement);
+
+    private static bool ContainsArgumentsInClassStaticBlockStatement(StatementNode statement)
+    {
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            return false;
+        }
+
+        return statement switch
+        {
+            BlockStatementNode block => ContainsArgumentsInClassStaticBlock(block.Statements),
+            ExpressionStatementNode expression => ContainsArgumentsInClassStaticBlockExpression(expression.Expression),
+            LabeledStatementNode labeled => ContainsArgumentsInClassStaticBlockStatement(labeled.Body),
+            VariableDeclarationStatementNode declaration => declaration.Declarators.Any(declarator =>
+                (declarator.BindingPattern is not null && ContainsArgumentsInBindingPattern(declarator.BindingPattern)) ||
+                (declarator.Initializer is not null && ContainsArgumentsInClassStaticBlockExpression(declarator.Initializer))),
+            IfStatementNode conditional => ContainsArgumentsInClassStaticBlockExpression(conditional.Test) ||
+                ContainsArgumentsInClassStaticBlockStatement(conditional.Consequent) ||
+                (conditional.Alternate is not null && ContainsArgumentsInClassStaticBlockStatement(conditional.Alternate)),
+            WhileStatementNode loop => ContainsArgumentsInClassStaticBlockExpression(loop.Test) ||
+                ContainsArgumentsInClassStaticBlockStatement(loop.Body),
+            DoWhileStatementNode loop => ContainsArgumentsInClassStaticBlockStatement(loop.Body) ||
+                ContainsArgumentsInClassStaticBlockExpression(loop.Test),
+            ForStatementNode loop =>
+                (loop.Initializer is not null && ContainsArgumentsInClassStaticBlockStatement(loop.Initializer)) ||
+                (loop.Test is not null && ContainsArgumentsInClassStaticBlockExpression(loop.Test)) ||
+                (loop.Update is not null && ContainsArgumentsInClassStaticBlockExpression(loop.Update)) ||
+                ContainsArgumentsInClassStaticBlockStatement(loop.Body),
+            ForInStatementNode loop => ContainsArgumentsInClassStaticBlockStatement(loop.Initializer) ||
+                ContainsArgumentsInClassStaticBlockExpression(loop.Iterable) ||
+                ContainsArgumentsInClassStaticBlockStatement(loop.Body),
+            ForOfStatementNode loop => ContainsArgumentsInClassStaticBlockStatement(loop.Initializer) ||
+                ContainsArgumentsInClassStaticBlockExpression(loop.Iterable) ||
+                ContainsArgumentsInClassStaticBlockStatement(loop.Body),
+            ForAwaitOfStatementNode loop => ContainsArgumentsInClassStaticBlockStatement(loop.Initializer) ||
+                ContainsArgumentsInClassStaticBlockExpression(loop.Iterable) ||
+                ContainsArgumentsInClassStaticBlockStatement(loop.Body),
+            WithStatementNode withStatement => ContainsArgumentsInClassStaticBlockExpression(withStatement.Object) ||
+                ContainsArgumentsInClassStaticBlockStatement(withStatement.Body),
+            ReturnStatementNode returnStatement => returnStatement.Argument is not null &&
+                ContainsArgumentsInClassStaticBlockExpression(returnStatement.Argument),
+            ThrowStatementNode throwStatement => ContainsArgumentsInClassStaticBlockExpression(throwStatement.Argument),
+            TryCatchStatementNode tryCatch => ContainsArgumentsInClassStaticBlockStatement(tryCatch.TryBlock) ||
+                (tryCatch.CatchPattern is not null && ContainsArgumentsInBindingPattern(tryCatch.CatchPattern)) ||
+                ContainsArgumentsInClassStaticBlockStatement(tryCatch.CatchBlock),
+            TryFinallyStatementNode tryFinally => ContainsArgumentsInClassStaticBlockStatement(tryFinally.TryBlock) ||
+                ContainsArgumentsInClassStaticBlockStatement(tryFinally.FinallyBlock),
+            TryCatchFinallyStatementNode tryCatchFinally => ContainsArgumentsInClassStaticBlockStatement(tryCatchFinally.TryBlock) ||
+                (tryCatchFinally.CatchPattern is not null && ContainsArgumentsInBindingPattern(tryCatchFinally.CatchPattern)) ||
+                ContainsArgumentsInClassStaticBlockStatement(tryCatchFinally.CatchBlock) ||
+                ContainsArgumentsInClassStaticBlockStatement(tryCatchFinally.FinallyBlock),
+            SwitchStatementNode switchStatement => ContainsArgumentsInClassStaticBlockExpression(switchStatement.Discriminant) ||
+                switchStatement.Cases.Any(@case =>
+                    (@case.Test is not null && ContainsArgumentsInClassStaticBlockExpression(@case.Test)) ||
+                    ContainsArgumentsInClassStaticBlock(@case.Consequent)),
+            FunctionDeclarationNode or ClassDeclarationNode => false,
+            _ => false
+        };
+    }
+
+    private static bool ContainsArgumentsInClassStaticBlockExpression(ExpressionNode expression)
+    {
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            return false;
+        }
+
+        return expression switch
+        {
+            IdentifierExpressionNode { Name: "arguments" } => true,
+            ParenthesizedExpressionNode parenthesized => ContainsArgumentsInClassStaticBlockExpression(parenthesized.Expression),
+            BinaryExpressionNode binary => ContainsArgumentsInClassStaticBlockExpression(binary.Left) ||
+                ContainsArgumentsInClassStaticBlockExpression(binary.Right),
+            AssignmentExpressionNode assignment => ContainsArgumentsInClassStaticBlockExpression(assignment.Left) ||
+                ContainsArgumentsInClassStaticBlockExpression(assignment.Right),
+            LogicalAssignmentExpressionNode assignment => ContainsArgumentsInClassStaticBlockExpression(assignment.Target) ||
+                ContainsArgumentsInClassStaticBlockExpression(assignment.Value),
+            CallExpressionNode call => ContainsArgumentsInClassStaticBlockExpression(call.Callee) ||
+                call.Arguments.Any(ContainsArgumentsInClassStaticBlockExpression),
+            OptionalCallExpressionNode call => ContainsArgumentsInClassStaticBlockExpression(call.Callee) ||
+                call.Arguments.Any(ContainsArgumentsInClassStaticBlockExpression),
+            ObjectLiteralExpressionNode obj => obj.Properties.Any(property =>
+                (property.ComputedKey is not null && ContainsArgumentsInClassStaticBlockExpression(property.ComputedKey)) ||
+                ContainsArgumentsInClassStaticBlockExpression(property.Value)),
+            ArrayLiteralExpressionNode array => array.Elements.Any(ContainsArgumentsInClassStaticBlockExpression),
+            SpreadElementExpressionNode spread => ContainsArgumentsInClassStaticBlockExpression(spread.Argument),
+            MemberExpressionNode member => ContainsArgumentsInClassStaticBlockExpression(member.Object) ||
+                (member.PropertyExpression is not null && ContainsArgumentsInClassStaticBlockExpression(member.PropertyExpression)),
+            OptionalMemberExpressionNode member => ContainsArgumentsInClassStaticBlockExpression(member.Object) ||
+                (member.PropertyExpression is not null && ContainsArgumentsInClassStaticBlockExpression(member.PropertyExpression)),
+            UnaryExpressionNode unary => ContainsArgumentsInClassStaticBlockExpression(unary.Operand),
+            ConditionalExpressionNode conditional => ContainsArgumentsInClassStaticBlockExpression(conditional.Test) ||
+                ContainsArgumentsInClassStaticBlockExpression(conditional.Consequent) ||
+                ContainsArgumentsInClassStaticBlockExpression(conditional.Alternate),
+            NewExpressionNode @new => ContainsArgumentsInClassStaticBlockExpression(@new.Callee) ||
+                @new.Arguments.Any(ContainsArgumentsInClassStaticBlockExpression),
+            TemplateLiteralExpressionNode template => template.Expressions.Any(ContainsArgumentsInClassStaticBlockExpression),
+            TaggedTemplateExpressionNode tagged => ContainsArgumentsInClassStaticBlockExpression(tagged.Tag) ||
+                ContainsArgumentsInClassStaticBlockExpression(tagged.Template),
+            ImportCallExpressionNode import => ContainsArgumentsInClassStaticBlockExpression(import.Specifier) ||
+                (import.Options is not null && ContainsArgumentsInClassStaticBlockExpression(import.Options)),
+            ImportSourceExpressionNode import => ContainsArgumentsInClassStaticBlockExpression(import.Specifier) ||
+                (import.Options is not null && ContainsArgumentsInClassStaticBlockExpression(import.Options)),
+            ImportDeferExpressionNode import => ContainsArgumentsInClassStaticBlockExpression(import.Specifier) ||
+                (import.Options is not null && ContainsArgumentsInClassStaticBlockExpression(import.Options)),
+            ArrowFunctionExpressionNode arrow =>
+                (arrow.ParameterBindings?.Any(pattern => pattern is not null && ContainsArgumentsInBindingPattern(pattern)) ?? false) ||
+                (arrow.ParameterDefaults?.Any(initializer => initializer is not null && ContainsArgumentsInClassStaticBlockExpression(initializer)) ?? false) ||
+                (arrow.BlockBody is not null && ContainsArgumentsInClassStaticBlock(arrow.BlockBody.Statements)) ||
+                (arrow.ExpressionBody is not null && ContainsArgumentsInClassStaticBlockExpression(arrow.ExpressionBody)),
+            FunctionExpressionNode or ClassExpressionNode => false,
+            _ => false
+        };
+    }
+
+    private static bool ContainsArgumentsInBindingPattern(BindingPatternNode pattern) => pattern switch
+    {
+        MemberBindingPatternNode member => ContainsArgumentsInClassStaticBlockExpression(member.Member),
+        ArrayBindingPatternNode array => array.Elements.Any(element =>
+            (element.Target is not null && ContainsArgumentsInBindingPattern(element.Target)) ||
+            (element.Initializer is not null && ContainsArgumentsInClassStaticBlockExpression(element.Initializer))),
+        ObjectBindingPatternNode obj => obj.Properties.Any(property =>
+            (property.ComputedKey is not null && ContainsArgumentsInClassStaticBlockExpression(property.ComputedKey)) ||
+            ContainsArgumentsInBindingPattern(property.Target) ||
+            (property.Initializer is not null && ContainsArgumentsInClassStaticBlockExpression(property.Initializer))) ||
+            (obj.Rest is not null && ContainsArgumentsInBindingPattern(obj.Rest)),
+        _ => false
+    };
+
     private static bool ContainsSuperCallInStatements(IReadOnlyList<StatementNode> statements)
     {
         foreach (var statement in statements)
@@ -3633,6 +3764,16 @@ public sealed class JsParser
                 finally
                 {
                     _classStaticBlockDepth--;
+                }
+
+                if (ContainsSuperCallOnlyInStatements(block.Statements))
+                {
+                    throw new JsParserException("super() is not allowed in a class static block.");
+                }
+
+                if (ContainsArgumentsInClassStaticBlock(block.Statements))
+                {
+                    throw new JsParserException("arguments is not allowed in a class static block.");
                 }
 
                 var staticFn = new FunctionExpressionNode(
