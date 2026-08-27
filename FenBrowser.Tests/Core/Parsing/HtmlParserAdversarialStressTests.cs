@@ -19,11 +19,11 @@ public sealed class HtmlParserAdversarialStressTests
     }
 
     [Theory]
-    [InlineData("a\0b", "ab")]
-    [InlineData("\0ab", "ab")]
-    [InlineData("ab\0", "ab")]
-    [InlineData("a\0\0b", "ab")]
-    public void EmbeddedNullInBody_IsIgnoredWithoutDroppingAdjacentText(
+    [InlineData("a\0b", "a\uFFFDb")]
+    [InlineData("\0ab", "\uFFFDab")]
+    [InlineData("ab\0", "ab\uFFFD")]
+    [InlineData("a\0\0b", "a\uFFFD\uFFFDb")]
+    public void EmbeddedNullInBody_IsReplacedWithoutDroppingAdjacentText(
         string sourceText,
         string expectedText)
     {
@@ -37,12 +37,12 @@ public sealed class HtmlParserAdversarialStressTests
     }
 
     [Theory]
-    [InlineData("&\0auml;", "&auml;")]
-    [InlineData("&a\0uml;", "&auml;")]
-    [InlineData("&au\0ml;", "&auml;")]
-    [InlineData("&aum\0l;", "&auml;")]
-    [InlineData("&auml\0;", "\u00E4;")]
-    [InlineData("&notin\0;", "\u00ACin;")]
+    [InlineData("&\0auml;", "&\uFFFDauml;")]
+    [InlineData("&a\0uml;", "&a\uFFFDuml;")]
+    [InlineData("&au\0ml;", "&au\uFFFDml;")]
+    [InlineData("&aum\0l;", "&aum\uFFFDl;")]
+    [InlineData("&auml\0;", "\u00E4\uFFFD;")]
+    [InlineData("&notin\0;", "\u00ACin\uFFFD;")]
     public void NullInsideTextNamedReference_MatchesLocalWpt(
         string sourceText,
         string expectedText)
@@ -177,7 +177,7 @@ public sealed class HtmlParserAdversarialStressTests
     }
 
     [Fact]
-    public void DataState_EmitsNullAsAnIndependentRecoveryToken()
+    public void DataState_EmitsReplacementAsAnIndependentRecoveryToken()
     {
         string[] characterTokens = new HtmlTokenizer("a\0b")
             .Tokenize()
@@ -185,7 +185,7 @@ public sealed class HtmlParserAdversarialStressTests
             .Select(token => token.Data)
             .ToArray();
 
-        Assert.Equal(new[] { "a", "\0", "b" }, characterTokens);
+        Assert.Equal(new[] { "a", "\uFFFD", "b" }, characterTokens);
     }
 
     [Theory]

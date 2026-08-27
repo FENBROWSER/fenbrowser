@@ -438,7 +438,7 @@ namespace FenBrowser.Core.Parsing
                         {
                             Consume();
                             EmitError("Unexpected Null Character In Data");
-                            return EmitCharacter('\0');
+                            return EmitCharacter('\uFFFD');
                         }
                         else
                         {
