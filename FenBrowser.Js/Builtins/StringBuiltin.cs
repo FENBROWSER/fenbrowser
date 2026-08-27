@@ -68,12 +68,13 @@ public sealed class StringBuiltin : IBuiltinModule
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "repeat", Repeat, length: 1);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "padStart", PadStart, length: 1);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "padEnd", PadEnd, length: 1);
-        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "trim", (ctx, tv, _) => JsValue.FromString(RequireString(ctx, tv).Trim()));
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "trim", (ctx, tv, _) =>
+            JsValue.FromString(TrimEcmaWhitespace(RequireString(ctx, tv), trimStart: true, trimEnd: true)));
 
         // trimStart / trimLeft and trimEnd / trimRight: Annex B.2.2.1 aliases
         // sharing the same function object per spec.
         var trimStartFn = new NativeFunctionObject("trimStart",
-            (thisValue, _) => JsValue.FromString(RequireString(capturedCtx, thisValue).TrimStart()), length: 0);
+            (thisValue, _) => JsValue.FromString(TrimEcmaWhitespace(RequireString(capturedCtx, thisValue), trimStart: true, trimEnd: false)), length: 0);
         var trimStartFnHandle = heap.AllocateObject(trimStartFn, AllocationSite.Current());
         trimStartFn.SetPrototype(capturedCtx.GetFunctionPrototype());
         protoObj.DefineOwnProperty("trimStart", new JsPropertyDescriptor(JsValue.FromObject(trimStartFnHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -82,7 +83,7 @@ public sealed class StringBuiltin : IBuiltinModule
         heap.WriteBarrier(prototypeHandle, trimStartFnHandle);
 
         var trimEndFn = new NativeFunctionObject("trimEnd",
-            (thisValue, _) => JsValue.FromString(RequireString(capturedCtx, thisValue).TrimEnd()), length: 0);
+            (thisValue, _) => JsValue.FromString(TrimEcmaWhitespace(RequireString(capturedCtx, thisValue), trimStart: false, trimEnd: true)), length: 0);
         var trimEndFnHandle = heap.AllocateObject(trimEndFn, AllocationSite.Current());
         trimEndFn.SetPrototype(capturedCtx.GetFunctionPrototype());
         protoObj.DefineOwnProperty("trimEnd", new JsPropertyDescriptor(JsValue.FromObject(trimEndFnHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -1095,6 +1096,27 @@ public sealed class StringBuiltin : IBuiltinModule
             _ => throw new JsThrownException(ctx.CreateRangeError($"Invalid normalization form: {form}."))
         };
     }
+
+    private static string TrimEcmaWhitespace(string value, bool trimStart, bool trimEnd)
+    {
+        var start = 0;
+        var end = value.Length;
+        if (trimStart)
+        {
+            while (start < end && IsEcmaWhitespace(value[start])) start++;
+        }
+        if (trimEnd)
+        {
+            while (end > start && IsEcmaWhitespace(value[end - 1])) end--;
+        }
+        return start == 0 && end == value.Length ? value : value[start..end];
+    }
+
+    private static bool IsEcmaWhitespace(char value)
+        => value is >= '\u0009' and <= '\u000D'
+            or '\u0020' or '\u00A0' or '\u1680'
+            or >= '\u2000' and <= '\u200A'
+            or '\u2028' or '\u2029' or '\u202F' or '\u205F' or '\u3000' or '\uFEFF';
 
     private static JsValue CreateArrayResult(IBuiltinContext ctx, List<JsValue> items)
     {
