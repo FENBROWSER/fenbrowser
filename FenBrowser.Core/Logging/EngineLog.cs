@@ -10,7 +10,7 @@ namespace FenBrowser.Core.Logging;
 public static class EngineLog
 {
     private static readonly object Sync = new();
-    private static EngineLogger _logger;
+    private static volatile EngineLogger _logger;
     private static EngineLoggingOptions _options;
     private static readonly ConcurrentQueue<LogEntry> CompatibilityBuffer = new();
     private static readonly ConcurrentDictionary<string, MutableDocumentCounter> DocumentCounters = new(StringComparer.Ordinal);
@@ -360,7 +360,13 @@ public static class EngineLog
             return;
         }
 
-        InitializeFromSettings();
+        lock (Sync)
+        {
+            if (_logger == null)
+            {
+                InitializeFromSettings();
+            }
+        }
     }
 
     private static EngineLogger BuildLogger(EngineLoggingOptions options)
