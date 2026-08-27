@@ -861,7 +861,10 @@ public static class JitCompiler
             JsValueTag.Boolean => a.AsBoolean() == b.AsBoolean(),
             JsValueTag.Int32 => a.AsInt32() == b.AsInt32(),
             JsValueTag.Number => a.AsNumber() == b.AsNumber(),
+            JsValueTag.BigInt => a.AsBigInt() == b.AsBigInt(),
             JsValueTag.String => string.Equals(a.AsString(), b.AsString(), StringComparison.Ordinal),
+            JsValueTag.Symbol => a.AsSymbolId() == b.AsSymbolId(),
+            JsValueTag.Object => a.AsObjectHandle().Equals(b.AsObjectHandle()),
             JsValueTag.HostObject => a.AsHostObjectHandle().Equals(b.AsHostObjectHandle()),
             _ => false,
         };
