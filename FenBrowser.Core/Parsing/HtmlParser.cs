@@ -294,6 +294,8 @@ namespace FenBrowser.Core.Parsing
                         ["url"] = baseUri?.AbsoluteUri,
                         ["outcomeClass"] = outcome?.OutcomeClass.ToString(),
                         ["reasonCode"] = outcome?.ReasonCode.ToString(),
+                        ["tokenizerErrorCount"] = Math.Max(0, outcome?.TokenizerErrorCount ?? 0),
+                        ["tokenizerErrorsTruncated"] = outcome?.TokenizerErrorsTruncated ?? false,
                         ["tokenCount"] = Math.Max(0, metrics?.TokenCount ?? 0),
                         ["tokenizingMs"] = Math.Max(0, metrics?.TokenizingMs ?? 0),
                         ["parsingMs"] = Math.Max(0, metrics?.ParsingMs ?? 0),
@@ -374,7 +376,12 @@ namespace FenBrowser.Core.Parsing
                 OutcomeClass = outcome.OutcomeClass,
                 ReasonCode = outcome.ReasonCode,
                 Detail = outcome.Detail,
-                IsRetryable = outcome.IsRetryable
+                IsRetryable = outcome.IsRetryable,
+                TokenizerErrors = outcome.TokenizerErrors == null
+                    ? System.Array.Empty<HtmlTokenizerError>()
+                    : new List<HtmlTokenizerError>(outcome.TokenizerErrors),
+                TokenizerErrorCount = outcome.TokenizerErrorCount,
+                TokenizerErrorsTruncated = outcome.TokenizerErrorsTruncated
             };
         }
 

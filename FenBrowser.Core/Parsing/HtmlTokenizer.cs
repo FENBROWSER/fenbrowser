@@ -220,6 +220,9 @@ namespace FenBrowser.Core.Parsing
         private const int HardMaxTokenEmissions = 2_000_000;
         private const int HardMaxInputLengthChars = 8_000_000;
         private const int HardMaxAttributesPerTag = 4096;
+        private const int MaxRecordedErrors = 256;
+        private readonly List<HtmlTokenizerError> _errors = new List<HtmlTokenizerError>();
+        private int _errorCount;
         private int _maxTokenEmissions = HardMaxTokenEmissions;
         private int _maxInputLengthChars = HardMaxInputLengthChars;
         private int _maxAttributesPerTag = HardMaxAttributesPerTag;
@@ -243,6 +246,9 @@ namespace FenBrowser.Core.Parsing
         }
         public HtmlParsingReasonCode LastReasonCode { get; private set; } = HtmlParsingReasonCode.None;
         public string LastReasonDetail { get; private set; }
+        public IReadOnlyList<HtmlTokenizerError> Errors => _errors;
+        public int ErrorCount => _errorCount;
+        public bool ErrorsTruncated => _errorCount > _errors.Count;
 
         public HtmlTokenizer(string input)
         {
@@ -352,6 +358,8 @@ namespace FenBrowser.Core.Parsing
         {
             LastReasonCode = HtmlParsingReasonCode.None;
             LastReasonDetail = null;
+            _errors.Clear();
+            _errorCount = 0;
             _attributeLimitReached = false;
             _input.MaxLength = MaxInputLengthChars;
 
@@ -2491,7 +2499,11 @@ namespace FenBrowser.Core.Parsing
 
         private void EmitError(string message)
         {
-            // EngineLogCompat.Debug($"[HtmlTokenizer] Error: {message}");
+            _errorCount++;
+            if (_errors.Count < MaxRecordedErrors)
+            {
+                _errors.Add(new HtmlTokenizerError(message, _position, _line, _column));
+            }
         }
 
         private HtmlToken EmitCharacter(char c)

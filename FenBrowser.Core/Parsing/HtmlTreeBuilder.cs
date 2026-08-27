@@ -345,6 +345,10 @@ namespace FenBrowser.Core.Parsing
                     };
                 }
 
+                LastParsingOutcome.TokenizerErrors = _tokenizer.Errors.ToArray();
+                LastParsingOutcome.TokenizerErrorCount = _tokenizer.ErrorCount;
+                LastParsingOutcome.TokenizerErrorsTruncated = _tokenizer.ErrorsTruncated;
+
                 return _document;
             }
             catch (Exception ex)

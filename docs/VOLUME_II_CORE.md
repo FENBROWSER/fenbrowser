@@ -163,6 +163,9 @@ Based strictly on the **HTML5 Parsing Specification**.
   - legacy prefix behavior is preserved for compatibility (`&notanentity;` -> `Â¬anentity;`).
 - **Tokenizer Safety Limits (2026-02-26)**:
   - `HtmlTokenizer` now exposes `MaxTokenEmissions` (default `2,000,000`) and force-emits EOF when the cap is reached to prevent pathological unbounded token streams.
+- **Recoverable Error Diagnostics (2026-08-27)**:
+  - `HtmlTokenizer.Errors` exposes message and input-cursor location for tokenizer recovery errors instead of discarding them; retained entries are capped at 256 while `ErrorCount` and `ErrorsTruncated` preserve total-volume visibility.
+  - Canonical parser entrypoints snapshot these diagnostics into `HtmlParsingOutcome` without classifying ordinary malformed-markup recovery as a failed parse.
 - `HtmlParser` now accepts centralized `ParserSecurityPolicy` and applies tokenizer/open-elements limits at parser entrypoints.
 - `HtmlParser` now aligns parsed document URL state by setting both `Document.URL` and `Document.BaseURI` from the active parser base URI, so detached nodes created from that document inherit correct URL-resolution context.
 - `Document.CreateElementNS(...)` now validates qualified names and namespace/prefix combinations closely enough to reject malformed names and illegal namespace usage with the correct DOMException class for the Acid3 namespace tranche.
