@@ -43,6 +43,8 @@ public static class RegexCompiler
 
     private sealed class CompilerState
     {
+        private const int MaxExpandedQuantifierRepetitions = 100_000;
+
         private readonly RegexFlags _flags;
         private readonly int _captureCount;
         internal readonly List<RegexInstruction> _instructions = new();
@@ -369,6 +371,7 @@ public static class RegexCompiler
 
         private void EmitQuantifier(QuantifierNode q)
         {
+            EnsureQuantifierExpansionIsBounded(q);
             var body = q.Body;
             var isBounded = q.Max != int.MaxValue;
 
@@ -1569,6 +1572,7 @@ public static class RegexCompiler
 
         private void EmitQuantifierReverse(QuantifierNode q)
         {
+            EnsureQuantifierExpansionIsBounded(q);
             var body = q.Body;
             var isBounded = q.Max != int.MaxValue;
 
@@ -1652,6 +1656,18 @@ public static class RegexCompiler
                 PatchSplit(splitPos, bodyStart, skipPos);
             else
                 PatchSplit(splitPos, skipPos, bodyStart);
+        }
+
+        private static void EnsureQuantifierExpansionIsBounded(QuantifierNode quantifier)
+        {
+            var expandedRepetitions = quantifier.Max == int.MaxValue
+                ? quantifier.Min
+                : quantifier.Max;
+            if (expandedRepetitions > MaxExpandedQuantifierRepetitions)
+            {
+                throw new RegexSyntaxError(
+                    $"Quantifier exceeds the implementation limit of {MaxExpandedQuantifierRepetitions} expanded repetitions.");
+            }
         }
 
         private void AddNamedGroup(string name, int groupNumber)
