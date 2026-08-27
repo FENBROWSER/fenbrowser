@@ -77,23 +77,25 @@ internal static class PrivateNameRewriter
             case ThrowStatementNode th:
                 return new ThrowStatementNode(RewriteExpression(th.Argument, m), th.Span);
             case TryCatchStatementNode tc:
-                return new TryCatchStatementNode(
-                    (BlockStatementNode)RewriteStatement(tc.TryBlock, m),
-                    tc.CatchIdentifier,
-                    (BlockStatementNode)RewriteStatement(tc.CatchBlock, m),
-                    tc.Span);
+                return tc with
+                {
+                    TryBlock = (BlockStatementNode)RewriteStatement(tc.TryBlock, m),
+                    CatchBlock = (BlockStatementNode)RewriteStatement(tc.CatchBlock, m),
+                    CatchPattern = tc.CatchPattern is null ? null : RewriteBindingPattern(tc.CatchPattern, m)
+                };
             case TryFinallyStatementNode tf:
                 return new TryFinallyStatementNode(
                     (BlockStatementNode)RewriteStatement(tf.TryBlock, m),
                     (BlockStatementNode)RewriteStatement(tf.FinallyBlock, m),
                     tf.Span);
             case TryCatchFinallyStatementNode tcf:
-                return new TryCatchFinallyStatementNode(
-                    (BlockStatementNode)RewriteStatement(tcf.TryBlock, m),
-                    tcf.CatchIdentifier,
-                    (BlockStatementNode)RewriteStatement(tcf.CatchBlock, m),
-                    (BlockStatementNode)RewriteStatement(tcf.FinallyBlock, m),
-                    tcf.Span);
+                return tcf with
+                {
+                    TryBlock = (BlockStatementNode)RewriteStatement(tcf.TryBlock, m),
+                    CatchBlock = (BlockStatementNode)RewriteStatement(tcf.CatchBlock, m),
+                    FinallyBlock = (BlockStatementNode)RewriteStatement(tcf.FinallyBlock, m),
+                    CatchPattern = tcf.CatchPattern is null ? null : RewriteBindingPattern(tcf.CatchPattern, m)
+                };
             case LabeledStatementNode ls:
                 return new LabeledStatementNode(ls.Label, RewriteStatement(ls.Body, m), ls.Span);
             case SwitchStatementNode sw:
@@ -108,14 +110,12 @@ internal static class PrivateNameRewriter
                 }
                 return new SwitchStatementNode(RewriteExpression(sw.Discriminant, m), cases, sw.Span);
             case FunctionDeclarationNode fd:
-                return new FunctionDeclarationNode(
-                    fd.Name,
-                    fd.Parameters,
-                    new BlockStatementNode(RewriteStatements(fd.Body.Statements, m), fd.Body.Span),
-                    fd.Span,
-                    IsAsync: fd.IsAsync,
-                    IsGenerator: fd.IsGenerator,
-                    RestParameterIndex: fd.RestParameterIndex);
+                return fd with
+                {
+                    Body = new BlockStatementNode(RewriteStatements(fd.Body.Statements, m), fd.Body.Span),
+                    ParameterBindings = RewriteParameterBindings(fd.ParameterBindings, m),
+                    ParameterDefaults = RewriteParameterDefaults(fd.ParameterDefaults, m)
+                };
             default:
                 return stmt;
         }
@@ -127,10 +127,11 @@ internal static class PrivateNameRewriter
         for (int i = 0; i < vd.Declarators.Count; i++)
         {
             var d = vd.Declarators[i];
-            newDecls[i] = new VariableDeclaratorNode(
-                d.Identifier,
-                d.Initializer is null ? null : RewriteExpression(d.Initializer, m),
-                d.Span);
+            newDecls[i] = d with
+            {
+                Initializer = d.Initializer is null ? null : RewriteExpression(d.Initializer, m),
+                BindingPattern = d.BindingPattern is null ? null : RewriteBindingPattern(d.BindingPattern, m)
+            };
         }
         return new VariableDeclarationStatementNode(vd.Kind, newDecls, vd.Span);
     }
@@ -229,14 +230,13 @@ internal static class PrivateNameRewriter
                 for (int i = 0; i < ol.Properties.Count; i++)
                 {
                     var p = ol.Properties[i];
-                    props[i] = new ObjectPropertyNode(
-                        p.Key,
-                        p.ComputedKey is null ? null : RewriteExpression(p.ComputedKey, m),
-                        p.IsComputed,
-                        RewriteExpression(p.Value, m),
-                        p.Span);
+                    props[i] = p with
+                    {
+                        ComputedKey = p.ComputedKey is null ? null : RewriteExpression(p.ComputedKey, m),
+                        Value = RewriteExpression(p.Value, m)
+                    };
                 }
-                return new ObjectLiteralExpressionNode(props, ol.Span);
+                return ol with { Properties = props };
 
             case ArrowFunctionExpressionNode af:
                 BlockStatementNode? newBlock = af.BlockBody is null
@@ -245,22 +245,22 @@ internal static class PrivateNameRewriter
                 ExpressionNode? newExprBody = af.ExpressionBody is null
                     ? null
                     : RewriteExpression(af.ExpressionBody, m);
-                return new ArrowFunctionExpressionNode(
-                    af.Parameters,
-                    newBlock,
-                    newExprBody,
-                    af.Span,
-                    IsAsync: af.IsAsync);
+                return af with
+                {
+                    BlockBody = newBlock,
+                    ExpressionBody = newExprBody,
+                    ParameterBindings = RewriteParameterBindings(af.ParameterBindings, m),
+                    ParameterDefaults = RewriteParameterDefaults(af.ParameterDefaults, m)
+                };
 
             case FunctionExpressionNode fn:
                 var newFnBody = new BlockStatementNode(RewriteStatements(fn.Body.Statements, m), fn.Body.Span);
-                return new FunctionExpressionNode(
-                    fn.Name,
-                    fn.Parameters,
-                    newFnBody,
-                    fn.Span,
-                    IsAsync: fn.IsAsync,
-                    IsGenerator: fn.IsGenerator);
+                return fn with
+                {
+                    Body = newFnBody,
+                    ParameterBindings = RewriteParameterBindings(fn.ParameterBindings, m),
+                    ParameterDefaults = RewriteParameterDefaults(fn.ParameterDefaults, m)
+                };
 
             case TemplateLiteralExpressionNode tl:
                 var tlExprs = new ExpressionNode[tl.Expressions.Count];
@@ -274,4 +274,59 @@ internal static class PrivateNameRewriter
                 return expr;
         }
     }
+
+    private static IReadOnlyList<BindingPatternNode?>? RewriteParameterBindings(
+        IReadOnlyList<BindingPatternNode?>? bindings,
+        IReadOnlyDictionary<string, string> m)
+    {
+        if (bindings is null) return null;
+        var rewritten = new BindingPatternNode?[bindings.Count];
+        for (var i = 0; i < bindings.Count; i++)
+        {
+            rewritten[i] = bindings[i] is null ? null : RewriteBindingPattern(bindings[i]!, m);
+        }
+        return rewritten;
+    }
+
+    private static IReadOnlyList<ExpressionNode?>? RewriteParameterDefaults(
+        IReadOnlyList<ExpressionNode?>? defaults,
+        IReadOnlyDictionary<string, string> m)
+    {
+        if (defaults is null) return null;
+        var rewritten = new ExpressionNode?[defaults.Count];
+        for (var i = 0; i < defaults.Count; i++)
+        {
+            rewritten[i] = defaults[i] is null ? null : RewriteExpression(defaults[i]!, m);
+        }
+        return rewritten;
+    }
+
+    private static BindingPatternNode RewriteBindingPattern(
+        BindingPatternNode pattern,
+        IReadOnlyDictionary<string, string> m) => pattern switch
+        {
+            MemberBindingPatternNode member => member with
+            {
+                Member = (MemberExpressionNode)RewriteExpression(member.Member, m)
+            },
+            ArrayBindingPatternNode array => array with
+            {
+                Elements = array.Elements.Select(element => element with
+                {
+                    Target = element.Target is null ? null : RewriteBindingPattern(element.Target, m),
+                    Initializer = element.Initializer is null ? null : RewriteExpression(element.Initializer, m)
+                }).ToArray()
+            },
+            ObjectBindingPatternNode obj => obj with
+            {
+                Properties = obj.Properties.Select(property => property with
+                {
+                    ComputedKey = property.ComputedKey is null ? null : RewriteExpression(property.ComputedKey, m),
+                    Target = RewriteBindingPattern(property.Target, m),
+                    Initializer = property.Initializer is null ? null : RewriteExpression(property.Initializer, m)
+                }).ToArray(),
+                Rest = obj.Rest is null ? null : RewriteBindingPattern(obj.Rest, m)
+            },
+            _ => pattern
+        };
 }
