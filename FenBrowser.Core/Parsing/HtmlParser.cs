@@ -20,6 +20,7 @@ namespace FenBrowser.Core.Parsing
         public int? InterleavedTokenBatchSize { get; set; }
         public Action<HtmlParseCheckpoint> ParseCheckpointCallback { get; set; }
         public Action<Document, HtmlParseCheckpoint> ParseDocumentCheckpointCallback { get; set; }
+        public bool ScriptingEnabled { get; set; } = true;
     }
 
     public sealed class HtmlParseDocumentResult
@@ -226,6 +227,7 @@ namespace FenBrowser.Core.Parsing
             builder.MaxTokenizerEmissions = policy.HtmlMaxTokenEmissions;
             builder.MaxAttributesPerTag = policy.HtmlMaxAttributesPerElement;
             builder.MaxOpenElementsDepth = policy.HtmlMaxOpenElementsDepth;
+            builder.ScriptingEnabled = options.ScriptingEnabled;
 
             if (options.MaxInputLengthChars is > 0)
             {
@@ -346,7 +348,8 @@ namespace FenBrowser.Core.Parsing
                 ParseCheckpointTokenInterval = options.ParseCheckpointTokenInterval,
                 InterleavedTokenBatchSize = options.InterleavedTokenBatchSize,
                 ParseCheckpointCallback = options.ParseCheckpointCallback,
-                ParseDocumentCheckpointCallback = options.ParseDocumentCheckpointCallback
+                ParseDocumentCheckpointCallback = options.ParseDocumentCheckpointCallback,
+                ScriptingEnabled = options.ScriptingEnabled
             };
         }
 
@@ -366,6 +369,7 @@ namespace FenBrowser.Core.Parsing
                      tag.Equals("meta", StringComparison.OrdinalIgnoreCase),
                 5 => tag.Equals("embed", StringComparison.OrdinalIgnoreCase) ||
                      tag.Equals("input", StringComparison.OrdinalIgnoreCase) ||
+                     tag.Equals("param", StringComparison.OrdinalIgnoreCase) ||
                      tag.Equals("track", StringComparison.OrdinalIgnoreCase),
                 6 => tag.Equals("source", StringComparison.OrdinalIgnoreCase),
                 _ => false

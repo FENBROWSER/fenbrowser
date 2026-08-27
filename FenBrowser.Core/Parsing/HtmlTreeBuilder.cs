@@ -84,6 +84,7 @@ namespace FenBrowser.Core.Parsing
         public int MaxInputLengthChars { get; set; } = 8_000_000;
         public int MaxAttributesPerTag { get; set; } = 4096;
         public int MaxOpenElementsDepth { get; set; } = 4096;
+        public bool ScriptingEnabled { get; set; } = true;
         public HtmlParsingOutcome LastParsingOutcome { get; private set; } = new HtmlParsingOutcome();
         private bool _openElementsDepthLimitLogged;
         private bool _openElementUnderflowLogged;
@@ -1062,9 +1063,15 @@ namespace FenBrowser.Core.Parsing
                 }
                  if (tagLower == "noscript")
                 {
-                    // If scripting enabled -> Generic raw text. else -> normal implementation.
-                    // Assuming enabled:
-                    InsertGenericRawTextElement(st);
+                    if (ScriptingEnabled)
+                    {
+                        InsertGenericRawTextElement(st);
+                    }
+                    else
+                    {
+                        InsertHtmlElement(st);
+                        SwitchTo(InsertionMode.InHeadNoscript);
+                    }
                     return true;
                 }
                 
@@ -1294,16 +1301,16 @@ namespace FenBrowser.Core.Parsing
                 
                 if (st.TagName == "a")
                 {
-                    // Adoption Agency Algorithm - Active Formatting Elements
-                    // Strict non-nesting: if stack has 'a', pop until it's closed
-                    if (StackHas("a"))
+                    var activeAnchor = FindLastActiveFormattingElement("a");
+                    if (activeAnchor != null)
                     {
-                        EngineLogCompat.Debug("[Parser] Closing nested <a>", LogCategory.HtmlParsing);
-                        PopUntil("a");
+                        RunAdoptionAgencyAlgorithm("a");
+                        _activeFormattingElements.Remove(activeAnchor);
+                        RemoveOpenElement(activeAnchor);
                     }
+                    ReconstructActiveFormattingElements();
                     InsertHtmlElement(st);
-                    // Push to active formatting elements
-                    _activeFormattingElements.Add((Element)CurrentNode);
+                    PushActiveFormattingElement((Element)CurrentNode);
                     return true;
                 }
                 
@@ -1313,7 +1320,7 @@ namespace FenBrowser.Core.Parsing
                      // Reconstruct active formatting elements per spec
                      ReconstructActiveFormattingElements();
                      InsertHtmlElement(st);
-                     _activeFormattingElements.Add((Element)CurrentNode);
+                     PushActiveFormattingElement((Element)CurrentNode);
                      return true;
                 }
                 
@@ -1356,7 +1363,7 @@ namespace FenBrowser.Core.Parsing
                     st.TagName = "img";
                 }
 
-                if (st.TagName == "img" || st.TagName == "br" || st.TagName == "embed" || st.TagName == "hr" || st.TagName == "input" || st.TagName == "source" || st.TagName == "area" ||
+                if (st.TagName == "img" || st.TagName == "br" || st.TagName == "embed" || st.TagName == "hr" || st.TagName == "input" || st.TagName == "param" || st.TagName == "source" || st.TagName == "area" ||
                     // FIX: Treat SVG common shapes as void to prevent incorrect nesting
                     st.TagName == "path" || st.TagName == "rect" || st.TagName == "circle" || st.TagName == "line" || st.TagName == "polyline" || st.TagName == "polygon" || st.TagName == "ellipse" || st.TagName == "stop" || st.TagName == "use")
                 {
@@ -2041,6 +2048,12 @@ namespace FenBrowser.Core.Parsing
         // --- Foster Parenting Logic ---
         private bool FosterParent(HtmlToken token)
         {
+            if (CurrentNode is Element currentElement &&
+                !IsCharacterFosterBoundaryElement(currentElement.TagName))
+            {
+                return HandleInBody(token);
+            }
+
             // Find the table element in the stack
             Element table = null;
             // Iterate reverse?
@@ -2075,16 +2088,6 @@ namespace FenBrowser.Core.Parsing
             
             if (token is CharacterToken ct)
             {
-                // If we're currently inside a non-table element that was foster-parented
-                // (for example <b> inside <table>), text should continue flowing into that
-                // element rather than always being re-fostered before the table.
-                if (CurrentNode is Element currentElement &&
-                    !IsCharacterFosterBoundaryElement(currentElement.TagName))
-                {
-                    InsertCharacter(ct);
-                    return true;
-                }
-
                 // Attempt to coalesce with previous text node
                 Node prev = null;
                 if (parent is ContainerNode parentContainer && nextSibling != null)
@@ -2152,6 +2155,10 @@ namespace FenBrowser.Core.Parsing
                 if (!HtmlParser.IsVoid(st.TagName))
                 {
                     _openElements.Push(el);
+                    if (IsFormattingElement(st.TagName))
+                    {
+                        PushActiveFormattingElement(el);
+                    }
                 }
                 return true;
             }
@@ -2754,6 +2761,87 @@ namespace FenBrowser.Core.Parsing
             }
         }
 
+        private Element FindLastActiveFormattingElement(string localName)
+        {
+            for (var i = _activeFormattingElements.Count - 1; i >= 0; i--)
+            {
+                var entry = _activeFormattingElements[i];
+                if (entry == null)
+                {
+                    break;
+                }
+
+                if (string.Equals(entry.LocalName, localName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return entry;
+                }
+            }
+
+            return null;
+        }
+
+        private void PushActiveFormattingElement(Element element)
+        {
+            var matchingIndices = new List<int>(3);
+            for (var i = _activeFormattingElements.Count - 1; i >= 0; i--)
+            {
+                var entry = _activeFormattingElements[i];
+                if (entry == null)
+                {
+                    break;
+                }
+
+                if (FormattingElementsMatch(entry, element))
+                {
+                    matchingIndices.Add(i);
+                }
+            }
+
+            if (matchingIndices.Count >= 3)
+            {
+                _activeFormattingElements.RemoveAt(matchingIndices[^1]);
+            }
+
+            _activeFormattingElements.Add(element);
+        }
+
+        private static bool FormattingElementsMatch(Element left, Element right)
+        {
+            if (!string.Equals(left.LocalName, right.LocalName, StringComparison.Ordinal) ||
+                !string.Equals(left.NamespaceUri, right.NamespaceUri, StringComparison.Ordinal) ||
+                left.Attributes.Length != right.Attributes.Length)
+            {
+                return false;
+            }
+
+            foreach (var attribute in left.Attributes)
+            {
+                var candidate = right.Attributes.GetNamedItemNS(attribute.NamespaceUri, attribute.LocalName);
+                if (candidate == null ||
+                    !string.Equals(candidate.Value, attribute.Value, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private void RemoveOpenElement(Element target)
+        {
+            if (!_openElements.Contains(target))
+            {
+                return;
+            }
+
+            var retained = _openElements.Where(element => !ReferenceEquals(element, target)).Reverse().ToArray();
+            _openElements.Clear();
+            foreach (var element in retained)
+            {
+                _openElements.Push(element);
+            }
+        }
+
         /// <summary>
         /// Reconstruct active formatting elements per WHATWG Â§13.2.4.3.
         /// Called before inserting character data and certain start tags.
@@ -3008,16 +3096,7 @@ namespace FenBrowser.Core.Parsing
                 string caTag = commonAncestor.LocalName;
                 if (caTag == "table" || caTag == "tbody" || caTag == "tfoot" || caTag == "thead" || caTag == "tr")
                 {
-                    // Foster parenting: insert before the table in its parent
-                    var tableParent = commonAncestor.ParentNode as ContainerNode;
-                    if (tableParent != null)
-                    {
-                        tableParent.InsertBefore(lastNode, commonAncestor);
-                    }
-                    else
-                    {
-                        commonAncestor.AppendChild(lastNode);
-                    }
+                    InsertAtFosterParent(lastNode);
                 }
                 else
                 {
@@ -3068,6 +3147,37 @@ namespace FenBrowser.Core.Parsing
                     _openElements.Push(el);
                 }
             }
+        }
+
+        private void InsertAtFosterParent(Node node)
+        {
+            Element table = null;
+            foreach (var element in _openElements)
+            {
+                if (string.Equals(element.LocalName, "table", StringComparison.OrdinalIgnoreCase))
+                {
+                    table = element;
+                    break;
+                }
+            }
+
+            if (table?.ParentNode is ContainerNode tableParent)
+            {
+                tableParent.InsertBefore(node, table);
+                return;
+            }
+
+            if (table != null)
+            {
+                var previous = _openElements.SkipWhile(element => !ReferenceEquals(element, table)).Skip(1).FirstOrDefault();
+                if (previous != null)
+                {
+                    previous.AppendChild(node);
+                    return;
+                }
+            }
+
+            CurrentNode.AppendChild(node);
         }
 
         /// <summary>
