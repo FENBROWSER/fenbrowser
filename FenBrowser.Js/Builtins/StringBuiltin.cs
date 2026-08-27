@@ -9,6 +9,8 @@ namespace FenBrowser.Js.Builtins;
 [EcmaSpecReference("22.1", AbstractOperation = "String", Url = "https://tc39.es/ecma262/#sec-string-objects")]
 public sealed class StringBuiltin : IBuiltinModule
 {
+    private const int MaxStringLength = 16 * 1024 * 1024;
+
     public string Name => "String";
 
     public IReadOnlyList<BuiltinBinding> GetBindings(IBuiltinContext context)
@@ -544,17 +546,19 @@ public sealed class StringBuiltin : IBuiltinModule
     private static JsValue Repeat(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
-        var n = args.Count > 0 ? ctx.ToNumber(args[0]) : 0;
+        var n = args.Count > 0 ? ToIntegerOrInfinity(ctx, args[0]) : 0d;
         // ECMA-262 21.1.3.13: ToIntegerOrInfinity(count). NaN → 0, ±∞ → throw.
         // The check must happen AFTER integer coercion per spec.
         if (double.IsInfinity(n))
             throw new JsThrownException(ctx.CreateRangeError("Invalid repeat count."));
-        if (double.IsNaN(n)) n = 0;
-        var count = (int)n;
-        if (count < 0)
+        if (n < 0d)
             throw new JsThrownException(ctx.CreateRangeError("Invalid repeat count."));
-        if (count == 0 || s.Length == 0) return JsValue.FromString(string.Empty);
-        var sb = new System.Text.StringBuilder(s.Length * count);
+        if (n == 0d || s.Length == 0) return JsValue.FromString(string.Empty);
+        var resultLength = s.Length * n;
+        if (resultLength > MaxStringLength)
+            throw new JsThrownException(ctx.CreateRangeError("Repeated string exceeds the implementation length limit."));
+        var count = (int)n;
+        var sb = new System.Text.StringBuilder((int)resultLength);
         for (var i = 0; i < count; i++) sb.Append(s);
         return JsValue.FromString(sb.ToString());
     }
@@ -562,20 +566,26 @@ public sealed class StringBuiltin : IBuiltinModule
     private static JsValue PadStart(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
-        var targetLen = args.Count > 0 ? (int)ctx.ToNumber(args[0]) : 0;
-        if (targetLen <= s.Length) return JsValue.FromString(s);
+        var targetLength = args.Count > 0 ? ToIntegerOrInfinity(ctx, args[0]) : 0d;
+        if (targetLength <= s.Length) return JsValue.FromString(s);
         var pad = args.Count > 1 && args[1].Tag != JsValueTag.Undefined ? ctx.ToStringValue(args[1]) : " ";
         if (pad.Length == 0) return JsValue.FromString(s);
+        if (targetLength > MaxStringLength)
+            throw new JsThrownException(ctx.CreateRangeError("Padded string exceeds the implementation length limit."));
+        var targetLen = (int)targetLength;
         return JsValue.FromString(BuildPadding(pad, targetLen - s.Length) + s);
     }
 
     private static JsValue PadEnd(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
-        var targetLen = args.Count > 0 ? (int)ctx.ToNumber(args[0]) : 0;
-        if (targetLen <= s.Length) return JsValue.FromString(s);
+        var targetLength = args.Count > 0 ? ToIntegerOrInfinity(ctx, args[0]) : 0d;
+        if (targetLength <= s.Length) return JsValue.FromString(s);
         var pad = args.Count > 1 && args[1].Tag != JsValueTag.Undefined ? ctx.ToStringValue(args[1]) : " ";
         if (pad.Length == 0) return JsValue.FromString(s);
+        if (targetLength > MaxStringLength)
+            throw new JsThrownException(ctx.CreateRangeError("Padded string exceeds the implementation length limit."));
+        var targetLen = (int)targetLength;
         return JsValue.FromString(s + BuildPadding(pad, targetLen - s.Length));
     }
 
