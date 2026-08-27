@@ -3075,12 +3075,8 @@ namespace FenBrowser.Core.Parsing
                 var entry = _activeFormattingElements[i];
                 if (entry == null) continue;
 
-                // Create a new element with same tag and attributes
-                var newElement = new Element(entry.LocalName);
-                foreach (var attr in entry.Attributes)
-                {
-                    newElement.SetAttributeUnsafe(attr.Name, attr.Value);
-                }
+                // Create a new element with the same identity and parser metadata.
+                var newElement = CloneElementForTreeConstruction(entry);
                 CurrentInsertionTarget.AppendChild(newElement);
                 _openElements.Push(newElement);
                 _activeFormattingElements[i] = newElement;
@@ -3253,11 +3249,7 @@ namespace FenBrowser.Core.Parsing
                     }
 
                     // Create replacement element
-                    var replacement = new Element(node.LocalName);
-                    foreach (var attr in node.Attributes)
-                    {
-                        replacement.SetAttributeUnsafe(attr.Name, attr.Value);
-                    }
+                    var replacement = CloneElementForTreeConstruction(node);
 
                     // Replace in active formatting list
                     _activeFormattingElements[nodeActiveIndex] = replacement;
@@ -3275,8 +3267,8 @@ namespace FenBrowser.Core.Parsing
                     }
                     stackArray = _openElements.ToArray();
 
-                    // If node was the furthest block, update bookmark
-                    if (node == furthestBlock)
+                    // If this is the first replacement, move the bookmark after it.
+                    if (lastNode == furthestBlock)
                     {
                         bookmark = nodeActiveIndex + 1;
                     }
@@ -3305,11 +3297,7 @@ namespace FenBrowser.Core.Parsing
                 }
 
                 // Step 14: Create new element for formatting element
-                var newFormatting = new Element(formattingElement.LocalName);
-                foreach (var attr in formattingElement.Attributes)
-                {
-                    newFormatting.SetAttributeUnsafe(attr.Name, attr.Value);
-                }
+                var newFormatting = CloneElementForTreeConstruction(formattingElement);
 
                 // Step 15: Move children of furthest block to new formatting element
                 while (furthestBlock.FirstChild != null)
@@ -3348,6 +3336,21 @@ namespace FenBrowser.Core.Parsing
                     _openElements.Push(el);
                 }
             }
+        }
+
+        private Element CloneElementForTreeConstruction(Element source)
+        {
+            var owner = source.OwnerDocument ?? _document;
+            var clone = owner.CreateElementNS(source.NamespaceUri ?? Namespaces.Html, source.LocalName);
+            clone.Prefix = source.Prefix;
+            clone.SourceOffset = source.SourceOffset;
+            clone.SourceLine = source.SourceLine;
+            clone.SourceColumn = source.SourceColumn;
+            foreach (var attribute in source.Attributes)
+            {
+                clone.SetAttributeUnsafe(attribute.Name, attribute.Value);
+            }
+            return clone;
         }
 
         private void InsertAtFosterParent(Node node)
