@@ -40,6 +40,7 @@ public sealed class JsParser
     private readonly SourceText _source;
     private int _index;
     private int _syntheticBindingCounter;
+    private HashSet<string> _activeLabels = new(StringComparer.Ordinal);
     private bool _strictMode;
     private bool _moduleMode;
     // True only while parsing a statement that sits directly at the top level of
@@ -1437,9 +1438,21 @@ public sealed class JsParser
             }
 
             var labelToken = Advance();
-            ExpectPunctuator(":");
-            var body = ParseStatement(StatementBodyContext.IfClauseOrLabel);
-            return new LabeledStatementNode(labelToken.Text, body, MergeSpan(labelToken.Span, body.Span));
+            if (!_activeLabels.Add(labelToken.Text))
+            {
+                throw new JsParserException($"Duplicate label '{labelToken.Text}'.");
+            }
+
+            try
+            {
+                ExpectPunctuator(":");
+                var body = ParseStatement(StatementBodyContext.IfClauseOrLabel);
+                return new LabeledStatementNode(labelToken.Text, body, MergeSpan(labelToken.Span, body.Span));
+            }
+            finally
+            {
+                _activeLabels.Remove(labelToken.Text);
+            }
         }
 
         if (IsPunctuator(";"))
@@ -2724,13 +2737,16 @@ public sealed class JsParser
         // ECMA-262 15.1: directive prologue restarts for each function body
         // so "use strict" inside a function is recognised by the parser.
         var savedDirectivePrologue = _inDirectivePrologue;
+        var savedActiveLabels = _activeLabels;
         _inDirectivePrologue = true;
+        _activeLabels = new HashSet<string>(StringComparer.Ordinal);
         try
         {
             return parse();
         }
         finally
         {
+            _activeLabels = savedActiveLabels;
             _inDirectivePrologue = savedDirectivePrologue;
             _functionBodyDepth--;
         }
@@ -3756,6 +3772,8 @@ public sealed class JsParser
             if (isStatic && IsPunctuator("{"))
             {
                 _classStaticBlockDepth++;
+                var savedActiveLabels = _activeLabels;
+                _activeLabels = new HashSet<string>(StringComparer.Ordinal);
                 BlockStatementNode block;
                 try
                 {
@@ -3763,6 +3781,7 @@ public sealed class JsParser
                 }
                 finally
                 {
+                    _activeLabels = savedActiveLabels;
                     _classStaticBlockDepth--;
                 }
 
