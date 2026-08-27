@@ -510,7 +510,7 @@ namespace FenBrowser.Core.Parsing
                         if (char.IsDigit(c))
                         {
                             Consume();
-                            _charRefValue = (_charRefValue * 10) + (uint)(c - '0');
+                            AccumulateCharacterReference(10, (uint)(c - '0'));
                         }
                         else if (c == ';')
                         {
@@ -544,7 +544,7 @@ namespace FenBrowser.Core.Parsing
                         if (IsHexDigit(c))
                         {
                             Consume();
-                            _charRefValue = (_charRefValue * 16) + (uint)GetHexValue(c);
+                            AccumulateCharacterReference(16, (uint)GetHexValue(c));
                         }
                         else if (c == ';')
                         {
@@ -1413,7 +1413,7 @@ namespace FenBrowser.Core.Parsing
                         {
                             EmitError("Eof Before Tag Name");
                             SwitchTo(TokenizerState.Data);
-                            return EmitCharacter('<'); // and / ?
+                            return EmitCharacter("</");
                         }
                         else
                         {
@@ -1505,6 +1505,14 @@ namespace FenBrowser.Core.Parsing
                         else if (IsEof())
                         {
                             return EmitCurrentTag(); // Or error
+                        }
+                        else if (c == '=')
+                        {
+                            Consume();
+                            EmitError("Unexpected Equals Sign Before Attribute Name");
+                            PrepareForAttributeName();
+                            _buffer.Append('=');
+                            SwitchTo(TokenizerState.AttributeName);
                         }
                         else
                         {
@@ -2466,6 +2474,19 @@ namespace FenBrowser.Core.Parsing
                 EmitError(LastReasonDetail);
             }
             return isEof;
+        }
+
+        private void AccumulateCharacterReference(uint radix, uint digit)
+        {
+            const uint invalidCodePoint = 0x110000;
+            if (_charRefValue >= invalidCodePoint ||
+                _charRefValue > (invalidCodePoint - digit) / radix)
+            {
+                _charRefValue = invalidCodePoint;
+                return;
+            }
+
+            _charRefValue = (_charRefValue * radix) + digit;
         }
 
         private void EmitError(string message)

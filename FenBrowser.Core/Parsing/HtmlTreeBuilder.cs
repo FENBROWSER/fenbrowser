@@ -117,10 +117,12 @@ namespace FenBrowser.Core.Parsing
             _tokenizer = new HtmlTokenizer(html, _pool);
             _document = contextElement.OwnerDocument ?? Document.CreateHtmlDocument();
             _fragment = _document.CreateDocumentFragment();
-            _fragmentRoot = _document.CreateElement(contextElement.LocalName ?? "div");
+            _fragmentRoot = _document.CreateElementNS(
+                contextElement.NamespaceUri ?? Namespaces.Html,
+                contextElement.LocalName ?? "div");
             _fragment.AppendChild(_fragmentRoot);
             _openElements.Push(_fragmentRoot);
-            ConfigureFragmentContext(contextElement.LocalName);
+            ConfigureFragmentContext(contextElement);
         }
 
         public Document Build()
@@ -464,11 +466,13 @@ namespace FenBrowser.Core.Parsing
             }
         }
 
-        private void ConfigureFragmentContext(string localName)
+        private void ConfigureFragmentContext(Element contextElement)
         {
-            var name = localName?.ToLowerInvariant() ?? "div";
+            var name = contextElement.LocalName?.ToLowerInvariant() ?? "div";
             _tokenizer.LastStartTagName = name;
-            _tokenizer.SetState(name switch
+            _tokenizer.SetState(!string.Equals(contextElement.NamespaceUri, Namespaces.Html, StringComparison.Ordinal)
+                ? HtmlTokenizer.TokenizerState.Data
+                : name switch
             {
                 "title" or "textarea" => HtmlTokenizer.TokenizerState.RcData,
                 "style" or "xmp" or "iframe" or "noembed" or "noframes" => HtmlTokenizer.TokenizerState.RawText,
@@ -1347,9 +1351,14 @@ namespace FenBrowser.Core.Parsing
                     return true;
                 }
 
+                if (st.TagName == "image")
+                {
+                    st.TagName = "img";
+                }
+
                 if (st.TagName == "img" || st.TagName == "br" || st.TagName == "embed" || st.TagName == "hr" || st.TagName == "input" || st.TagName == "source" || st.TagName == "area" ||
                     // FIX: Treat SVG common shapes as void to prevent incorrect nesting
-                    st.TagName == "path" || st.TagName == "rect" || st.TagName == "circle" || st.TagName == "line" || st.TagName == "polyline" || st.TagName == "polygon" || st.TagName == "ellipse" || st.TagName == "stop" || st.TagName == "use" || st.TagName == "image")
+                    st.TagName == "path" || st.TagName == "rect" || st.TagName == "circle" || st.TagName == "line" || st.TagName == "polyline" || st.TagName == "polygon" || st.TagName == "ellipse" || st.TagName == "stop" || st.TagName == "use")
                 {
                      // Void elements
                      if (st.TagName == "hr" && HasOpenParagraphElement()) ClosePElement();
@@ -1479,7 +1488,7 @@ namespace FenBrowser.Core.Parsing
              if (token is CommentToken)
              {
                  // Append to html element
-                 _openElements.First().AppendChild(new Comment(((CommentToken)token).Data)); // _openElements bottom is html
+                 _document.DocumentElement?.AppendChild(new Comment(((CommentToken)token).Data));
                  return true;
              }
              
