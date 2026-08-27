@@ -11,12 +11,6 @@ namespace FenBrowser.Core
     /// </summary>
     public static class DomSerializer
     {
-        private static readonly HashSet<string> VoidElements = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "area", "base", "br", "col", "embed", "hr", "img", "input",
-            "link", "meta", "param", "source", "track", "wbr"
-        };
-
         /// <summary>
         /// Serialize a Element tree to an HTML string.
         /// </summary>
@@ -110,7 +104,8 @@ namespace FenBrowser.Core
             }
 
             // Void elements (self-closing)
-            if (VoidElements.Contains(node.NodeName ?? ""))
+            if (node is Element voidCandidate &&
+                HtmlElementSemantics.IsVoid(voidCandidate.LocalName, voidCandidate.NamespaceUri))
             {
                 sb.Append(" />");
                 sb.Append(newline);

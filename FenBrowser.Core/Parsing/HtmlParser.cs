@@ -355,25 +355,7 @@ namespace FenBrowser.Core.Parsing
 
         public static bool IsVoid(string tag)
         {
-            if (string.IsNullOrEmpty(tag)) return false;
-            return tag.Length switch
-            {
-                2 => tag.Equals("br", StringComparison.OrdinalIgnoreCase) ||
-                     tag.Equals("hr", StringComparison.OrdinalIgnoreCase),
-                3 => tag.Equals("col", StringComparison.OrdinalIgnoreCase) ||
-                     tag.Equals("img", StringComparison.OrdinalIgnoreCase) ||
-                     tag.Equals("wbr", StringComparison.OrdinalIgnoreCase),
-                4 => tag.Equals("area", StringComparison.OrdinalIgnoreCase) ||
-                     tag.Equals("base", StringComparison.OrdinalIgnoreCase) ||
-                     tag.Equals("link", StringComparison.OrdinalIgnoreCase) ||
-                     tag.Equals("meta", StringComparison.OrdinalIgnoreCase),
-                5 => tag.Equals("embed", StringComparison.OrdinalIgnoreCase) ||
-                     tag.Equals("input", StringComparison.OrdinalIgnoreCase) ||
-                     tag.Equals("param", StringComparison.OrdinalIgnoreCase) ||
-                     tag.Equals("track", StringComparison.OrdinalIgnoreCase),
-                6 => tag.Equals("source", StringComparison.OrdinalIgnoreCase),
-                _ => false
-            };
+            return HtmlElementSemantics.IsVoid(tag);
         }
 
         private static HtmlParsingOutcome CloneOutcome(HtmlParsingOutcome outcome)

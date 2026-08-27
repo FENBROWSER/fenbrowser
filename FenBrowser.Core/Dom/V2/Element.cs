@@ -1012,7 +1012,7 @@ namespace FenBrowser.Core.Dom.V2
             }
 
             // Void elements
-            if (IsVoidElement())
+            if (HtmlElementSemantics.IsVoid(LocalName, NamespaceUri))
             {
                 sb.Append(" />");
             }
@@ -1039,16 +1039,6 @@ namespace FenBrowser.Core.Dom.V2
                     sb.Append("<!--").Append(c.Data).Append("-->");
             }
             return sb.ToString();
-        }
-
-        private bool IsVoidElement()
-        {
-            return LocalName switch
-            {
-                "area" or "base" or "br" or "col" or "embed" or "hr" or "img" or
-                "input" or "link" or "meta" or "param" or "source" or "track" or "wbr" => true,
-                _ => false
-            };
         }
 
         private static string EscapeAttribute(string value)

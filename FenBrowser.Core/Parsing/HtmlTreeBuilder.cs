@@ -592,6 +592,15 @@ namespace FenBrowser.Core.Parsing
             // Loop for re-processing tokens (mode switching without consuming)
             while (!processed)
             {
+                if (ShouldProcessUsingForeignContent(token))
+                {
+                    processed = HandleForeignContent(token);
+                    if (processed)
+                    {
+                        continue;
+                    }
+                }
+
                 switch (_insertionMode)
                 {
                     case InsertionMode.Initial:
@@ -1363,9 +1372,7 @@ namespace FenBrowser.Core.Parsing
                     st.TagName = "img";
                 }
 
-                if (st.TagName == "img" || st.TagName == "br" || st.TagName == "embed" || st.TagName == "hr" || st.TagName == "input" || st.TagName == "param" || st.TagName == "source" || st.TagName == "area" ||
-                    // FIX: Treat SVG common shapes as void to prevent incorrect nesting
-                    st.TagName == "path" || st.TagName == "rect" || st.TagName == "circle" || st.TagName == "line" || st.TagName == "polyline" || st.TagName == "polygon" || st.TagName == "ellipse" || st.TagName == "stop" || st.TagName == "use")
+                if (HtmlElementSemantics.IsVoid(st.TagName, DetermineElementNamespace(st)))
                 {
                      // Void elements
                      if (st.TagName == "hr" && HasOpenParagraphElement()) ClosePElement();
@@ -1396,7 +1403,12 @@ namespace FenBrowser.Core.Parsing
 
                 // Any other start tag: reconstruct active formatting elements, then insert
                 ReconstructActiveFormattingElements();
-                InsertHtmlElement(st);
+                var inserted = InsertHtmlElement(st);
+                if (st.SelfClosing &&
+                    !string.Equals(inserted.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+                {
+                    SafePopOpenElement();
+                }
                 return true;
             }
             
@@ -2589,7 +2601,7 @@ namespace FenBrowser.Core.Parsing
         private static bool IsHtmlIntegrationPoint(Element element)
         {
             if (string.Equals(element.NamespaceUri, Namespaces.MathML, StringComparison.Ordinal) &&
-                element.LocalName == "annotation-xml")
+                string.Equals(element.LocalName, "annotation-xml", StringComparison.OrdinalIgnoreCase))
             {
                 var encoding = element.GetAttribute("encoding");
                 if (string.Equals(encoding, "text/html", StringComparison.OrdinalIgnoreCase) ||
@@ -2602,11 +2614,181 @@ namespace FenBrowser.Core.Parsing
             if (string.Equals(element.NamespaceUri, Namespaces.Svg, StringComparison.Ordinal))
             {
                 var tag = element.LocalName;
-                return tag == "foreignobject" || tag == "desc" || tag == "title";
+                return string.Equals(tag, "foreignObject", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(tag, "desc", StringComparison.OrdinalIgnoreCase) ||
+                       string.Equals(tag, "title", StringComparison.OrdinalIgnoreCase);
             }
 
             return false;
         }
+
+        private bool ShouldProcessUsingForeignContent(HtmlToken token)
+        {
+            if (token is EofToken || CurrentNode is not Element current ||
+                string.Equals(current.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (token is CharacterToken)
+            {
+                return !IsMathMlTextIntegrationPoint(current) && !IsHtmlIntegrationPoint(current);
+            }
+
+            if (token is StartTagToken startTag)
+            {
+                if (IsMathMlTextIntegrationPoint(current) &&
+                    !string.Equals(startTag.TagName, "mglyph", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(startTag.TagName, "malignmark", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                if (string.Equals(current.NamespaceUri, Namespaces.MathML, StringComparison.Ordinal) &&
+                    string.Equals(current.LocalName, "annotation-xml", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(startTag.TagName, "svg", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                return !IsHtmlIntegrationPoint(current);
+            }
+
+            return true;
+        }
+
+        private bool HandleForeignContent(HtmlToken token)
+        {
+            if (token is CharacterToken characters)
+            {
+                InsertCharacter(characters);
+                return true;
+            }
+
+            if (token is CommentToken comment)
+            {
+                CurrentNode.AppendChild(new Comment(comment.Data));
+                return true;
+            }
+
+            if (token is DoctypeToken)
+            {
+                return true;
+            }
+
+            if (token is StartTagToken startTag)
+            {
+                if (IsForeignContentBreakoutTag(startTag.TagName) ||
+                    string.Equals(startTag.TagName, "font", StringComparison.OrdinalIgnoreCase) &&
+                    startTag.Attributes.Any(attribute =>
+                        attribute.Name.Equals("color", StringComparison.OrdinalIgnoreCase) ||
+                        attribute.Name.Equals("face", StringComparison.OrdinalIgnoreCase) ||
+                        attribute.Name.Equals("size", StringComparison.OrdinalIgnoreCase)))
+                {
+                    PopForeignContentToHtmlContext();
+                    return false;
+                }
+
+                if (CurrentNode is Element current &&
+                    string.Equals(current.NamespaceUri, Namespaces.Svg, StringComparison.Ordinal))
+                {
+                    AdjustSvgTagName(startTag);
+                }
+                var element = InsertHtmlElement(startTag);
+                if (startTag.SelfClosing)
+                {
+                    SafePopOpenElement();
+                }
+                return true;
+            }
+
+            if (token is EndTagToken endTag)
+            {
+                foreach (var element in _openElements.ToArray())
+                {
+                    if (string.Equals(element.NamespaceUri, Namespaces.Html, StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+
+                    if (string.Equals(element.LocalName, endTag.TagName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        while (_openElements.Count > 0)
+                        {
+                            if (ReferenceEquals(SafePopOpenElement(), element))
+                            {
+                                break;
+                            }
+                        }
+                        return true;
+                    }
+
+                }
+                return true;
+            }
+
+            return false;
+        }
+
+        private void PopForeignContentToHtmlContext()
+        {
+            while (_openElements.Count > 0 && CurrentNode is Element current &&
+                   !string.Equals(current.NamespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
+                   !IsMathMlTextIntegrationPoint(current) &&
+                   !IsHtmlIntegrationPoint(current))
+            {
+                SafePopOpenElement();
+            }
+        }
+
+        private static void AdjustSvgTagName(StartTagToken token)
+        {
+            if (_svgTagNameMap.TryGetValue(token.TagName, out var adjustedName))
+            {
+                token.TagName = adjustedName;
+            }
+        }
+
+        private static readonly Dictionary<string, string> _svgTagNameMap = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["altglyph"] = "altGlyph",
+            ["altglyphdef"] = "altGlyphDef",
+            ["altglyphitem"] = "altGlyphItem",
+            ["animatecolor"] = "animateColor",
+            ["animatemotion"] = "animateMotion",
+            ["animatetransform"] = "animateTransform",
+            ["clippath"] = "clipPath",
+            ["feblend"] = "feBlend",
+            ["fecolormatrix"] = "feColorMatrix",
+            ["fecomponenttransfer"] = "feComponentTransfer",
+            ["fecomposite"] = "feComposite",
+            ["feconvolvematrix"] = "feConvolveMatrix",
+            ["fediffuselighting"] = "feDiffuseLighting",
+            ["fedisplacementmap"] = "feDisplacementMap",
+            ["fedistantlight"] = "feDistantLight",
+            ["fedropshadow"] = "feDropShadow",
+            ["feflood"] = "feFlood",
+            ["fefunca"] = "feFuncA",
+            ["fefuncb"] = "feFuncB",
+            ["fefuncg"] = "feFuncG",
+            ["fefuncr"] = "feFuncR",
+            ["fegaussianblur"] = "feGaussianBlur",
+            ["feimage"] = "feImage",
+            ["femerge"] = "feMerge",
+            ["femergenode"] = "feMergeNode",
+            ["femorphology"] = "feMorphology",
+            ["feoffset"] = "feOffset",
+            ["fepointlight"] = "fePointLight",
+            ["fespecularlighting"] = "feSpecularLighting",
+            ["fespotlight"] = "feSpotLight",
+            ["fetile"] = "feTile",
+            ["feturbulence"] = "feTurbulence",
+            ["foreignobject"] = "foreignObject",
+            ["glyphref"] = "glyphRef",
+            ["lineargradient"] = "linearGradient",
+            ["radialgradient"] = "radialGradient",
+            ["textpath"] = "textPath"
+        };
         private bool IsSvgOrMathDescendant(Node node)
         {
              foreach (var el in _openElements)

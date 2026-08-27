@@ -122,6 +122,8 @@ Based strictly on the **HTML5 Parsing Specification**.
   - Expanded `HtmlParserOptions` so document callers can optionally route through `PipelineContext` and parse checkpoint callbacks without bypassing the canonical parser API.
   - `ParseFragment(...)` now inherits base URI from the owner document when no explicit parser base is supplied, keeping fragment URL resolution consistent.
   - Removed non-spec SVG void/self-closing shortcuts from `HtmlParser.IsVoid(...)`.
+  - HTML void-element classification is centralized in the namespace-aware `HtmlElementSemantics`; SVG and MathML names never inherit HTML void behavior.
+  - Tree construction dispatches tokens through foreign-content rules while the adjusted current node is SVG or MathML, including self-closing foreign elements, SVG tag-name adjustment, integration points, and breakout back to HTML parsing.
   - `HtmlParserOptions.ScriptingEnabled` now controls `noscript` tree construction (enabled by default); active-formatting reconstruction, Noah's Ark limits, nested-anchor adoption, and table foster placement share the canonical tree-builder state.
 - `FenBrowser.Core/StreamingHtmlParser.cs`
   - Primary async/incremental APIs now route through canonical parser entrypoints (`ParseDocument` / `ParseStream`) instead of bypass instance parsing paths.
