@@ -25,6 +25,7 @@ public sealed class AstValidator
     /// </summary>
     private static bool WalkStatement(StatementNode statement, bool inFieldInit)
     {
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack()) return false;
         switch (statement)
         {
             case ClassDeclarationNode classDecl:
@@ -262,6 +263,7 @@ public sealed class AstValidator
     /// </summary>
     private static bool WalkExpression(ExpressionNode expression, bool inFieldInit)
     {
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack()) return false;
         switch (expression)
         {
             // ECMA-262 15.7.10: super cannot appear in class field initializers.

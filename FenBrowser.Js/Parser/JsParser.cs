@@ -655,8 +655,10 @@ public sealed class JsParser
             _ => false
         };
 
-    private static bool ContainsIdentifierReferenceInExpression(ExpressionNode expression, string name) =>
-        expression switch
+    private static bool ContainsIdentifierReferenceInExpression(ExpressionNode expression, string name)
+    {
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack()) return false;
+        return expression switch
         {
             IdentifierExpressionNode identifier => string.Equals(identifier.Name, name, StringComparison.Ordinal),
             ParenthesizedExpressionNode parenthesized => ContainsIdentifierReferenceInExpression(parenthesized.Expression, name),
@@ -688,9 +690,12 @@ public sealed class JsParser
                                                            ContainsIdentifierReferenceInExpression(taggedTemplate.Template, name),
             _ => false
         };
+    }
 
-    private static bool ContainsYieldReferenceInExpression(ExpressionNode expression) =>
-        expression switch
+    private static bool ContainsYieldReferenceInExpression(ExpressionNode expression)
+    {
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack()) return false;
+        return expression switch
         {
             IdentifierExpressionNode identifier => string.Equals(identifier.Name, "yield", StringComparison.Ordinal),
             UnaryExpressionNode unary when unary.Operator is "yield" or "yield*" => true,
@@ -716,12 +721,14 @@ public sealed class JsParser
                                                            ContainsYieldReferenceInExpression(taggedTemplate.Template),
             _ => false
         };
+    }
 
     // ECMA-262 14.2.1: arrow parameter defaults must not contain YieldExpression.
     // Only matches actual YieldExpression nodes (UnaryExpression with operator
     // "yield" or "yield*"), not identifier references named "yield".
     private static bool ContainsYieldExpressionInDefault(ExpressionNode expression)
     {
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack()) return false;
         return expression switch
         {
             UnaryExpressionNode unary when unary.Operator is "yield" or "yield*" => true,
@@ -3469,6 +3476,7 @@ public sealed class JsParser
     // reference that is not in the declared set.
     private static void ValidateNoUndeclaredPrivateNames(ExpressionNode expr, HashSet<string> declared)
     {
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack()) return;
         switch (expr)
         {
             case MemberExpressionNode { Property: { } prop } when prop.StartsWith('#'):

@@ -138,6 +138,7 @@ internal static class PrivateNameRewriter
 
     private static ExpressionNode RewriteExpression(ExpressionNode expr, IReadOnlyDictionary<string, string> m)
     {
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack()) return expr;
         switch (expr)
         {
             case MemberExpressionNode me:

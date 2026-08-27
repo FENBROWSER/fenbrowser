@@ -376,6 +376,7 @@ internal static class ModuleDeclarationChecker
 
     private static void CheckExpressionForModuleRestrictions(ExpressionNode expr)
     {
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack()) return;
         switch (expr)
         {
             case SuperExpressionNode:
