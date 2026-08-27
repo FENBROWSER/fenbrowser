@@ -13,3 +13,12 @@ public class RegexSyntaxError : Exception
     public RegexSyntaxError(string message, int position)
         : base($"{message} at position {position}") { }
 }
+
+/// <summary>
+/// Thrown when matching is aborted by the engine's resource limits. This must
+/// not be reported as an ordinary failed match.
+/// </summary>
+public sealed class RegexExecutionLimitException : Exception
+{
+    public RegexExecutionLimitException(string message) : base(message) { }
+}

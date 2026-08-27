@@ -88,7 +88,10 @@ public sealed class RegexVM
             if (++_backtrackCount > _maxBacktracks || _stackExhausted)
             {
                 _stack = null;
-                return RegexMatchResult.Empty(_input);
+                throw new RegexExecutionLimitException(
+                    _stackExhausted
+                        ? "Regular expression backtracking stack limit exceeded."
+                        : "Regular expression backtracking budget exceeded.");
             }
             var state = stack.Pop();
             var pc = state.PC;
