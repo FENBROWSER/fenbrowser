@@ -514,8 +514,8 @@ namespace FenBrowser.Tests.Engine
                     var second = document.createElement('b');
                     first.setAttribute('id', 'first');
                     second.setAttribute('id', 'second');
-                    template.appendChild(second);
                     var content = template.content;
+                    content.appendChild(second);
                     var inserted = content.insertBefore(first, content.firstChild);
                     var cloned = content.cloneNode(true);
                     return [

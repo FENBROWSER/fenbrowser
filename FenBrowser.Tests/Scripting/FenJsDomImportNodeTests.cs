@@ -150,7 +150,8 @@ namespace FenBrowser.Tests.Scripting
                     var imported = target.importNode(content, true);
                     imported.__noInsertionPoint = true;
 
-                    if (content.firstChild.ownerDocument !== document) {
+                    if (content.ownerDocument === document ||
+                        content.firstChild.ownerDocument !== content.ownerDocument) {
                         return 'source-owner';
                     }
 

@@ -147,9 +147,12 @@ namespace FenBrowser.Core.Parsing
                 throw new InvalidOperationException("This tree builder was not created for fragment parsing.");
 
             BuildInternal(null);
-            while (_fragmentRoot.FirstChild != null)
+            var parsedContents = _fragmentRoot is HtmlTemplateElement templateRoot
+                ? (ContainerNode)templateRoot.Content
+                : _fragmentRoot;
+            while (parsedContents.FirstChild != null)
             {
-                _fragment.AppendChild(_fragmentRoot.FirstChild);
+                _fragment.AppendChild(parsedContents.FirstChild);
             }
             _fragment.RemoveChild(_fragmentRoot);
             return _fragment;
@@ -1216,7 +1219,7 @@ namespace FenBrowser.Core.Parsing
              
               if (token is CommentToken comment)
             {
-                CurrentNode.AppendChild(new Comment(comment.Data));
+                CurrentInsertionTarget.AppendChild(new Comment(comment.Data));
                 return true;
             }
             
@@ -2457,6 +2460,9 @@ namespace FenBrowser.Core.Parsing
         }
         
         private ContainerNode CurrentNode => _openElements.Count > 0 ? (ContainerNode)_openElements.Peek() : (ContainerNode)_document;
+        private ContainerNode CurrentInsertionTarget => CurrentNode is HtmlTemplateElement template
+            ? template.Content
+            : CurrentNode;
         
         private void SwitchTo(InsertionMode mode)
         {
@@ -2509,7 +2515,7 @@ namespace FenBrowser.Core.Parsing
         private Element CreateElement(StartTagToken token)
         {
             var namespaceUri = DetermineElementNamespace(token);
-            var el = new Element(token.TagName, _document, namespaceUri);
+            var el = _document.CreateElementNS(namespaceUri, token.TagName);
             if (token.SourceOffset >= 0)
             {
                 el.SourceOffset = token.SourceOffset;
@@ -2675,7 +2681,7 @@ namespace FenBrowser.Core.Parsing
 
             if (token is CommentToken comment)
             {
-                CurrentNode.AppendChild(new Comment(comment.Data));
+                CurrentInsertionTarget.AppendChild(new Comment(comment.Data));
                 return true;
             }
 
@@ -2870,7 +2876,7 @@ namespace FenBrowser.Core.Parsing
         private Element InsertHtmlElement(StartTagToken token)
         {
             var el = CreateElement(token);
-            CurrentNode.AppendChild(el);
+            CurrentInsertionTarget.AppendChild(el);
             // EngineLogCompat.Debug($"[Parser] Pushing {el.TagName}_{el.GetHashCode()} to stack (Depth: {_openElements.Count})", LogCategory.HtmlParsing);
             _openElements.Push(el);
 
@@ -2880,14 +2886,15 @@ namespace FenBrowser.Core.Parsing
         private void InsertCharacter(CharacterToken token)
         {
             // Optimize: if current node's last child is text, append
-            var last = CurrentNode.LastChild;
+            var target = CurrentInsertionTarget;
+            var last = target.LastChild;
             if (last != null && UnsafeIsText(last))
             {
                 last.NodeValue += token.Data;
             }
             else
             {
-                CurrentNode.AppendChild(new Text(token.Data));
+                target.AppendChild(new Text(token.Data));
             }
         }
 
@@ -3074,7 +3081,7 @@ namespace FenBrowser.Core.Parsing
                 {
                     newElement.SetAttributeUnsafe(attr.Name, attr.Value);
                 }
-                CurrentNode.AppendChild(newElement);
+                CurrentInsertionTarget.AppendChild(newElement);
                 _openElements.Push(newElement);
                 _activeFormattingElements[i] = newElement;
             }

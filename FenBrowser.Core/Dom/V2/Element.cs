@@ -913,7 +913,9 @@ namespace FenBrowser.Core.Dom.V2
 
         public override Node CloneNode(bool deep = false)
         {
-            var clone = new Element(LocalName, _ownerDocument, NamespaceUri);
+            var clone = this is HtmlTemplateElement
+                ? new HtmlTemplateElement(_ownerDocument)
+                : new Element(LocalName, _ownerDocument, NamespaceUri);
 
             // Clone is an internal DOM copy operation; preserve parser-produced names verbatim.
             if (_attributes != null)
@@ -924,8 +926,14 @@ namespace FenBrowser.Core.Dom.V2
 
             if (deep)
             {
-                for (var child = FirstChild; child != null; child = child._nextSibling)
-                    clone.AppendChild(child.CloneNode(true));
+                var source = this is HtmlTemplateElement sourceTemplate
+                    ? (ContainerNode)sourceTemplate.Content
+                    : this;
+                var destination = clone is HtmlTemplateElement cloneTemplate
+                    ? (ContainerNode)cloneTemplate.Content
+                    : clone;
+                for (var child = source.FirstChild; child != null; child = child._nextSibling)
+                    destination.AppendChild(child.CloneNode(true));
             }
 
             return clone;
@@ -966,8 +974,9 @@ namespace FenBrowser.Core.Dom.V2
             get => SerializeChildren();
             set
             {
-                while (FirstChild != null)
-                    RemoveChild(FirstChild);
+                var contents = GetHtmlContentsContainer();
+                while (contents.FirstChild != null)
+                    contents.RemoveChild(contents.FirstChild);
 
                 if (string.IsNullOrEmpty(value))
                     return;
@@ -976,14 +985,14 @@ namespace FenBrowser.Core.Dom.V2
                 {
                     var parsedFragment = Parsing.HtmlParser.ParseFragment(this, value, options: null, out _);
                     while (parsedFragment.FirstChild != null)
-                        AppendChild(parsedFragment.FirstChild);
+                        contents.AppendChild(parsedFragment.FirstChild);
 
                     MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                 }
                 catch
                 {
                     // Keep behavior safe and non-throwing for malformed HTML fragments.
-                    AppendChild(new Text(value, _ownerDocument));
+                    contents.AppendChild(new Text(value, _ownerDocument));
                     MarkDirty(InvalidationKind.Layout | InvalidationKind.Paint);
                 }
             }
@@ -1029,7 +1038,8 @@ namespace FenBrowser.Core.Dom.V2
         private string SerializeChildren()
         {
             var sb = new StringBuilder();
-            for (var child = FirstChild; child != null; child = child._nextSibling)
+            var contents = GetHtmlContentsContainer();
+            for (var child = contents.FirstChild; child != null; child = child._nextSibling)
             {
                 if (child is Element el)
                     sb.Append(el.SerializeElement());
@@ -1039,6 +1049,11 @@ namespace FenBrowser.Core.Dom.V2
                     sb.Append("<!--").Append(c.Data).Append("-->");
             }
             return sb.ToString();
+        }
+
+        private ContainerNode GetHtmlContentsContainer()
+        {
+            return this is HtmlTemplateElement template ? template.Content : this;
         }
 
         private static string EscapeAttribute(string value)

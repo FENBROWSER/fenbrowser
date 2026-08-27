@@ -18,6 +18,19 @@ namespace FenBrowser.Core.Dom.V2
     /// </summary>
     public sealed class Document : ContainerNode, INonElementParentNode
     {
+        private Document _templateContentsOwnerDocument;
+
+        internal Document GetTemplateContentsOwnerDocument()
+        {
+            if (_templateContentsOwnerDocument != null)
+                return _templateContentsOwnerDocument;
+
+            var owner = new Document("about:blank", ContentType, CharacterSet);
+            owner._templateContentsOwnerDocument = owner;
+            _templateContentsOwnerDocument = owner;
+            return owner;
+        }
+
         public override NodeType NodeType => NodeType.Document;
         public override string NodeName => "#document";
 
@@ -377,7 +390,9 @@ namespace FenBrowser.Core.Dom.V2
             // NameStartChar ::= ":" | [A-Z] | "_" | [a-z] | [#xC0-#xD6] | ...
             if (!IsValidXmlName(localName))
                 throw new DomException("InvalidCharacterError", $"'{localName}' is not a valid element name");
-            var el = new Element(localName, this);
+            var el = string.Equals(localName, "template", StringComparison.OrdinalIgnoreCase)
+                ? new HtmlTemplateElement(this)
+                : new Element(localName, this);
             return el;
         }
 
@@ -450,7 +465,10 @@ namespace FenBrowser.Core.Dom.V2
                 throw new DomException("NamespaceError", "XMLNS namespace requires xmlns-qualified names");
             }
 
-            var el = new Element(localName, this, namespaceUri);
+            Element el = string.Equals(namespaceUri, Namespaces.Html, StringComparison.Ordinal) &&
+                         string.Equals(localName, "template", StringComparison.OrdinalIgnoreCase)
+                ? new HtmlTemplateElement(this)
+                : new Element(localName, this, namespaceUri);
             if (prefix != null)
                 el.Prefix = prefix;
 
@@ -533,6 +551,11 @@ namespace FenBrowser.Core.Dom.V2
         private static void SetOwnerDocumentRecursive(Node node, Document ownerDocument)
         {
             node._ownerDocument = ownerDocument;
+
+            if (node is HtmlTemplateElement template)
+            {
+                SetOwnerDocumentRecursive(template.Content, ownerDocument.GetTemplateContentsOwnerDocument());
+            }
 
             for (var child = node.FirstChild; child != null; child = child._nextSibling)
             {

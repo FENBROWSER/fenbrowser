@@ -641,6 +641,10 @@ namespace FenBrowser.Core.Dom.V2
         private static void AdoptNodeRecursive(Node node, Document newOwner)
         {
             node._ownerDocument = newOwner;
+            if (node is HtmlTemplateElement template)
+            {
+                AdoptNodeRecursive(template.Content, newOwner.GetTemplateContentsOwnerDocument());
+            }
             for (var child = node.FirstChild; child != null; child = child._nextSibling)
             {
                 AdoptNodeRecursive(child, newOwner);

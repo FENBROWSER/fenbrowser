@@ -12796,6 +12796,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine, IHeapRootSo
 
     private JsValue GetOrCreateTemplateContent(Element template)
     {
+        if (template is HtmlTemplateElement htmlTemplate)
+        {
+            return ToHostNodeOrNull(htmlTemplate.Content);
+        }
+
         var cached = GetStoredHostPropertyOrUndefined(template, "__fenTemplateContent");
         if (cached.Tag != JsValueTag.Undefined)
         {
