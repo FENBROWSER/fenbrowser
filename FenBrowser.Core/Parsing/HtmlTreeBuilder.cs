@@ -2494,7 +2494,11 @@ namespace FenBrowser.Core.Parsing
 
             while (_openElements.Count > MaxOpenElementsDepth)
             {
-                SafePopOpenElement();
+                var popped = SafePopOpenElement();
+                if (popped != null)
+                {
+                    _activeFormattingElements.Remove(popped);
+                }
             }
         }
         
