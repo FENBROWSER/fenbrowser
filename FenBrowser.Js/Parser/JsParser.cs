@@ -871,6 +871,12 @@ public sealed class JsParser
             throw new JsParserException("super() is not allowed in method parameter initializers.");
         }
 
+        if (!allowSuperProperty && parameterInfo.ParameterDefaults.Any(
+                initializer => initializer is not null && ContainsSuperCallInExpression(initializer)))
+        {
+            throw new JsParserException("super.property access is not allowed in method parameter initializers in this context.");
+        }
+
         if (forbidYieldIdentifier && parameterInfo.HasYieldReferenceInInitializers)
         {
             throw new JsParserException("yield is not allowed in method parameter initializers in this method context.");
@@ -1855,7 +1861,7 @@ public sealed class JsParser
             else if (Is(TokenKind.String) || Is(TokenKind.Number))
             {
                 keyToken = Advance();
-                key = keyToken.Kind == TokenKind.String ? keyToken.Text : NormalizeNumericPropertyName(keyToken);
+                key = keyToken.Kind == TokenKind.String ? DecodeStringPropertyName(keyToken) : NormalizeNumericPropertyName(keyToken);
             }
             else
             {
@@ -1920,6 +1926,13 @@ public sealed class JsParser
         }
 
         return token.Text;
+    }
+
+    private static string DecodeStringPropertyName(Token token)
+    {
+        var raw = token.Text;
+        var body = raw.Length >= 2 ? raw[1..^1] : string.Empty;
+        return DecodeStringLiteralBody(body);
     }
 
     private static bool TryParseUnsignedIntegerLiteral(string digits, int radix, out ulong value)
@@ -2678,6 +2691,11 @@ public sealed class JsParser
     private ThrowStatementNode ParseThrowStatement()
     {
         var start = Advance(); // throw
+        if (HasLineTerminatorBetween(start, Current()))
+        {
+            throw new JsParserException($"A line terminator is not allowed after 'throw'{Where()}.");
+        }
+
         var argument = ParseExpression(0);
         if (IsPunctuator(";"))
         {
@@ -2811,12 +2829,17 @@ public sealed class JsParser
             Advance();
             while (!IsPunctuator("}") && !Is(TokenKind.EndOfFile))
             {
-                var importName = ExpectIdentifier().Text;
+                var importToken = Current();
+                var importName = ParseModuleExportName();
                 var localName = importName;
                 if (IsIdentifierLike(Current()) && Current().Text == "as")
                 {
                     Advance();
                     localName = ExpectIdentifier().Text;
+                }
+                else if (!IsIdentifierLike(importToken))
+                {
+                    throw new JsParserException("An imported name that is not a binding identifier must specify a local binding with 'as'.");
                 }
                 ValidateBindingIdentifier(localName);
                 entries.Add(new FenBrowser.Js.Modules.ImportEntry(
@@ -2869,7 +2892,7 @@ public sealed class JsParser
         if (PeekKeyword(0, "default"))
         {
             Advance();
-            var expr = ParseExpression(0);
+            var expr = ParseExpression(2);
             ConsumeSemicolon();
             entries.Add(new FenBrowser.Js.Modules.ExportEntry(
                 ExportName: FenBrowser.Js.Modules.ImportEntry.DefaultImport,
@@ -2889,7 +2912,7 @@ public sealed class JsParser
             if (IsIdentifierLike(Current()) && Current().Text == "as")
             {
                 Advance();
-                exportName = ExpectIdentifier().Text;
+                exportName = ParseModuleExportName();
                 importName = FenBrowser.Js.Modules.ExportEntry.AllButDefaultExports;
             }
             ExpectKeyword("from");
@@ -2907,12 +2930,17 @@ public sealed class JsParser
             var names = new List<(string Local, string Exported)>();
             while (!IsPunctuator("}") && !Is(TokenKind.EndOfFile))
             {
-                var local = ExpectIdentifier().Text;
+                var localToken = Current();
+                var local = ParseModuleExportName();
                 var exported = local;
                 if (IsIdentifierLike(Current()) && Current().Text == "as")
                 {
                     Advance();
-                    exported = ExpectIdentifier().Text;
+                    exported = ParseModuleExportName();
+                }
+                else if (localToken.Kind == TokenKind.String)
+                {
+                    throw new JsParserException("A string-named export must use an 'as' clause.");
                 }
                 names.Add((local, exported));
                 if (IsPunctuator(","))
@@ -2976,6 +3004,21 @@ public sealed class JsParser
         var tok = Advance();
         var raw = tok.Text.Length >= 2 ? tok.Text[1..^1] : string.Empty;
         return DecodeStringLiteralBody(raw);
+    }
+
+    private string ParseModuleExportName()
+    {
+        if (Current().Kind == TokenKind.String)
+        {
+            return ParseStringLiteralValue();
+        }
+
+        if (Current().Kind is TokenKind.Identifier or TokenKind.Keyword)
+        {
+            return Advance().Text;
+        }
+
+        throw new JsParserException($"Expected module export name, found '{Current().Text}'{Where()}.");
     }
 
     private void ExpectKeyword(string text)
@@ -3880,11 +3923,12 @@ public sealed class JsParser
         if (double.IsPositiveInfinity(n)) return "Infinity";
         if (double.IsNegativeInfinity(n)) return "-Infinity";
         if (n == 0d) return "0";
+        var s = n.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
         if (n == Math.Truncate(n) && Math.Abs(n) < 1e21)
         {
-            return ((long)n).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var integerExponentIndex = s.IndexOfAny(new[] { 'e', 'E' });
+            return integerExponentIndex < 0 ? s : ExpandExponentialToFixed(s, integerExponentIndex);
         }
-        var s = n.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
         var eIdx = s.IndexOfAny(new[] { 'e', 'E' });
         if (eIdx < 0) return s;
         var mantissa = s.Substring(0, eIdx);
@@ -3900,6 +3944,30 @@ public sealed class JsParser
         var expDigits = expPart.Substring(j);
         var expStr = sign < 0 ? "-" + expDigits : expDigits;
         return mantissa + "e" + expStr;
+    }
+
+    private static string ExpandExponentialToFixed(string value, int exponentIndex)
+    {
+        var negative = value[0] == '-';
+        var mantissaStart = negative ? 1 : 0;
+        var mantissa = value[mantissaStart..exponentIndex];
+        var exponent = int.Parse(value[(exponentIndex + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture);
+        var decimalIndex = mantissa.IndexOf('.');
+        var integerDigits = (decimalIndex < 0 ? mantissa.Length : decimalIndex) + exponent;
+        var digits = mantissa.Replace(".", string.Empty);
+        var sign = negative ? "-" : string.Empty;
+
+        if (integerDigits <= 0)
+        {
+            return sign + "0." + new string('0', -integerDigits) + digits;
+        }
+
+        if (integerDigits >= digits.Length)
+        {
+            return sign + digits + new string('0', integerDigits - digits.Length);
+        }
+
+        return sign + digits[..integerDigits] + "." + digits[integerDigits..];
     }
 
     private static string ToJsNumberString(long n) =>
@@ -4259,7 +4327,7 @@ public sealed class JsParser
                     parameterDefaults[parameterDefaults.Count - 1] = initializer;
                 }
 
-                if (ContainsSuperCallInExpression(initializer))
+                if (ContainsSuperCallOnlyInExpression(initializer))
                 {
                     hasSuperCallInInitializers = true;
                 }
@@ -5344,8 +5412,7 @@ public sealed class JsParser
                 }
                 else if (accessorKeyToken.Kind == TokenKind.String)
                 {
-                    var raw = Advance().Text;
-                    accessorKey = raw.Length >= 2 ? raw[1..^1] : string.Empty;
+                    accessorKey = DecodeStringPropertyName(Advance());
                 }
                 else if (accessorKeyToken.Kind == TokenKind.Number)
                 {
@@ -5405,8 +5472,7 @@ public sealed class JsParser
                 }
                 else if (methodKeyToken.Kind == TokenKind.String)
                 {
-                    var raw = Advance().Text;
-                    methodKey = raw.Length >= 2 ? raw[1..^1] : string.Empty;
+                    methodKey = DecodeStringPropertyName(Advance());
                 }
                 else if (methodKeyToken.Kind == TokenKind.Number)
                 {
@@ -5475,8 +5541,7 @@ public sealed class JsParser
                 }
                 else if (methodKeyToken.Kind == TokenKind.String)
                 {
-                    var raw = Advance().Text;
-                    methodKey = raw.Length >= 2 ? raw[1..^1] : string.Empty;
+                    methodKey = DecodeStringPropertyName(Advance());
                 }
                 else if (methodKeyToken.Kind == TokenKind.Number)
                 {
@@ -5540,8 +5605,7 @@ public sealed class JsParser
                 }
                 else if (methodKeyToken.Kind == TokenKind.String)
                 {
-                    var raw = Advance().Text;
-                    methodKey = raw.Length >= 2 ? raw[1..^1] : string.Empty;
+                    methodKey = DecodeStringPropertyName(Advance());
                 }
                 else if (methodKeyToken.Kind == TokenKind.Number)
                 {
@@ -5615,8 +5679,7 @@ public sealed class JsParser
             }
             else if (keyToken.Kind == TokenKind.String)
             {
-                var raw = Advance().Text;
-                key = raw.Length >= 2 ? raw[1..^1] : string.Empty;
+                key = DecodeStringPropertyName(Advance());
             }
             else if (keyToken.Kind == TokenKind.Number)
             {
