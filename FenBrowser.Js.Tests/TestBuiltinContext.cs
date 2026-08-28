@@ -89,6 +89,9 @@ internal sealed class TestBuiltinContext : IBuiltinContext
     public int GetArrayLength(JsObject obj)
         => throw new NotSupportedException("GetArrayLength is not supported in TestBuiltinContext.");
 
+    public JsValue ToObjectValue(JsValue value)
+        => throw new NotSupportedException("ToObjectValue is not supported in TestBuiltinContext.");
+
     public JsValue CreateTypeError(string message)
         => throw new NotSupportedException("CreateTypeError is not supported in TestBuiltinContext.");
 

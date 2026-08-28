@@ -177,6 +177,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     bool IBuiltinContext.IteratorStepValue(JsValue iterator, out JsValue value) => IteratorStepValueBuiltin(iterator, out value);
     void IBuiltinContext.IteratorClose(JsValue iterator) => IteratorRecordCloseNormal(iterator);
     int IBuiltinContext.GetArrayLength(JsObject obj) => GetArrayLength(obj);
+    JsValue IBuiltinContext.ToObjectValue(JsValue value) => ToObjectValue(value);
     JsValue IBuiltinContext.CreateTypeError(string message) => CreateTypeError(message);
     JsValue IBuiltinContext.CreateRangeError(string message) => CreateRangeError(message);
     JsValue IBuiltinContext.CreateSyntaxError(string message) => CreateSyntaxError(message);

@@ -45,10 +45,56 @@ public sealed class StringRawTests
         Assert.Throws<JsThrownException>(() => Run("String.raw();"));
     }
 
+    // ToObject(template.raw) boxes every non-null/undefined primitive; a Number
+    // wrapper has no length, so the result is the empty string.
     [Fact]
-    public void NonObjectRawThrows()
+    public void PrimitiveNumberRawReturnsEmptyString()
     {
-        Assert.Throws<JsThrownException>(() => Run("String.raw({raw:5});"));
+        Assert.Equal(string.Empty, Run("String.raw({raw: 5});").AsString());
+    }
+
+    [Fact]
+    public void PrimitiveStringRawYieldsItsCharacters()
+    {
+        Assert.Equal("ab", Run("String.raw({raw: 'ab'});").AsString());
+    }
+
+    [Fact]
+    public void PrimitiveBooleanRawReturnsEmptyString()
+    {
+        Assert.Equal(string.Empty, Run("String.raw({raw: true});").AsString());
+    }
+
+    [Fact]
+    public void PrimitiveTemplateObservesWrapperPrototypeRawGetter()
+    {
+        Assert.Equal("n", Run(
+            "Object.defineProperty(Number.prototype, 'raw', { get: function () { return { 0: 'n', length: 1 }; }, configurable: true });" +
+            "String.raw(5);").AsString());
+    }
+
+    [Fact]
+    public void PrimitiveRawObservesWrapperPrototypeLengthGetter()
+    {
+        // The Number wrapper's length resolves through Number.prototype, so the
+        // getter runs once and supplies the literal-segment count.
+        Assert.Equal("true:undefined", Run(
+            "var calls = 0;" +
+            "Object.defineProperty(Number.prototype, 'length', { get: function () { calls++; return 1; }, configurable: true });" +
+            "var out = String.raw({raw: 7});" +
+            "String(calls === 1) + ':' + out;").AsString());
+    }
+
+    [Fact]
+    public void NullRawThrowsTypeError()
+    {
+        Assert.True(Run("var threw = false; try { String.raw({raw: null}); } catch (e) { threw = e instanceof TypeError; } threw;").AsBoolean());
+    }
+
+    [Fact]
+    public void UndefinedRawThrowsTypeError()
+    {
+        Assert.True(Run("var threw = false; try { String.raw({raw: undefined}); } catch (e) { threw = e instanceof TypeError; } threw;").AsBoolean());
     }
 
     // JSLIB-003: a primitive template must flow through ToObject/Get and surface

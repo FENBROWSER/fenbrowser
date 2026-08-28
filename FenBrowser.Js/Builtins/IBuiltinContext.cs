@@ -62,6 +62,11 @@ public interface IBuiltinContext
     // iterator's "return" method (if present). Used for early termination.
     void IteratorClose(JsValue iterator);
 
+    // ECMA-262 7.1.18 ToObject: boxes a primitive into its wrapper object.
+    // Null and undefined throw a TypeError; Object and HostObject values pass
+    // through unchanged.
+    JsValue ToObjectValue(JsValue value);
+
     // ECMA-262 10.4.2.2 length of an Array exotic object.
     int GetArrayLength(JsObject obj);
 

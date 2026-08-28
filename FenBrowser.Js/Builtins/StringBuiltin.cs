@@ -173,22 +173,16 @@ public sealed class StringBuiltin : IBuiltinModule
         // String.raw
         context.DefineIntrinsicFunction(constructorHandle, constructor, "raw", (_, args) =>
         {
-            // ECMA-262 22.1.2.4 steps 2-5: ToObject(template) then Get(cooked, "raw").
-            // A primitive string template boxes into a String wrapper instead of
-            // failing, so every invalid receiver surfaces as a catchable TypeError
-            // from the object check — never a CLR exception from a tag mismatch.
+            // ECMA-262 22.1.2.4 steps 2-5: cooked = ToObject(template), then
+            // raw = ToObject(Get(cooked, "raw")). Every non-null/undefined value
+            // boxes into its primitive wrapper, so wrapper-prototype getters are
+            // observed and only null/undefined surface as catchable TypeErrors.
             if (args.Count == 0 || args[0].Tag is JsValueTag.Undefined or JsValueTag.Null)
                 throw new JsThrownException(context.CreateTypeError("String.raw: template must be coercible to Object."));
-            var template = args[0];
-            if (template.Tag == JsValueTag.String)
-            {
-                var wrapper = new StringObject(template.AsString());
-                wrapper.SetPrototype(capturedProto);
-                template = JsValue.FromObject(heap.AllocateObject(wrapper, AllocationSite.Current()));
-            }
-            if (template.Tag != JsValueTag.Object)
-                throw new JsThrownException(context.CreateTypeError("String.raw: template.raw must be an object."));
-            var templateHandle = template.AsObjectHandle();
+            var templateValue = context.ToObjectValue(args[0]);
+            if (templateValue.Tag != JsValueTag.Object)
+                throw new JsThrownException(context.CreateTypeError("String.raw: template must be coercible to Object."));
+            var templateHandle = templateValue.AsObjectHandle();
             var rootMark = heap.RootCount;
             try
             {
@@ -196,18 +190,25 @@ public sealed class StringBuiltin : IBuiltinModule
                 // (accessors, toString), so pin both handles against GC until done.
                 heap.PushRoot(templateHandle);
                 var templateObj = heap.GetObject(templateHandle);
-                if (!context.TryGetPropertyValue(templateObj, template, "raw", out var rawValue) || rawValue.Tag != JsValueTag.Object)
-                    throw new JsThrownException(context.CreateTypeError("String.raw: template.raw must be an object."));
-                heap.PushRoot(rawValue.AsObjectHandle());
-                var rawObj = heap.GetObject(rawValue.AsObjectHandle());
+                if (!context.TryGetPropertyValue(templateObj, templateValue, "raw", out var rawValue) ||
+                    rawValue.Tag is JsValueTag.Undefined or JsValueTag.Null)
+                    throw new JsThrownException(context.CreateTypeError("String.raw: template.raw must be coercible to Object."));
+                var rawObjectValue = context.ToObjectValue(rawValue);
+                if (rawObjectValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(context.CreateTypeError("String.raw: template.raw must be coercible to Object."));
+                var rawHandle = rawObjectValue.AsObjectHandle();
+                heap.PushRoot(rawHandle);
+                var rawObj = heap.GetObject(rawHandle);
                 var rawLen = context.GetArrayLength(rawObj);
                 if (rawLen == 0) return JsValue.FromString(string.Empty);
                 var sb = new System.Text.StringBuilder();
                 for (var i = 0; i < rawLen; i++)
                 {
-                    var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    if (context.TryGetPropertyValue(rawObj, rawValue, key, out var seg))
-                        sb.Append(context.ToStringValue(seg));
+                    // Step 12b: nextSeg = ToString(Get(raw, nextKey)) — a missing
+                    // element is Get returning undefined, coerced to "undefined",
+                    // not a skipped segment.
+                    context.TryGetPropertyValue(rawObj, rawObjectValue, i.ToString(System.Globalization.CultureInfo.InvariantCulture), out var seg);
+                    sb.Append(context.ToStringValue(seg));
                     if (i + 1 == rawLen) break;
                     if (i + 1 < args.Count)
                         sb.Append(context.ToStringValue(args[i + 1]));
