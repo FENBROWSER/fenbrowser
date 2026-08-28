@@ -141,6 +141,25 @@ namespace FenBrowser.Tests.DevTools
             Assert.Equal(2, router.DomainGateCount);
         }
 
+        [Fact]
+        public async Task ClearHandlers_RemovesDomainGatesAndRecovers()
+        {
+            var router = new MessageRouter();
+            router.RegisterHandler(new StubHandler("DOM"));
+
+            await router.DispatchAsync(new ProtocolRequest { Id = 1, Method = "DOM.getDocument" });
+            Assert.Equal(1, router.DomainGateCount);
+
+            router.ClearHandlers();
+            Assert.Equal(0, router.DomainGateCount);
+
+            // Re-registration after a clear allocates fresh gates and dispatches.
+            router.RegisterHandler(new StubHandler("DOM"));
+            var response = await router.DispatchAsync(new ProtocolRequest { Id = 2, Method = "DOM.getDocument" });
+            Assert.True(response.IsSuccess);
+            Assert.Equal(1, router.DomainGateCount);
+        }
+
         private sealed class ScriptedHandler : IProtocolHandler
         {
             private readonly Func<int, Task> _script;

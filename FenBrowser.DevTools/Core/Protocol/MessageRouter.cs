@@ -68,6 +68,9 @@ public class MessageRouter
 
     /// <summary>
     /// Remove all registered domain handlers while preserving event subscriptions.
+    /// The per-domain gates are dropped together with the handlers. They are not
+    /// disposed: an in-flight dispatch holds its own gate reference and releases
+    /// it safely, and re-registered domains simply allocate fresh gates on demand.
     /// </summary>
     public void ClearHandlers()
     {
@@ -75,6 +78,8 @@ public class MessageRouter
         {
             _handlers.Clear();
         }
+
+        _domainGates.Clear();
     }
     
     /// <summary>
