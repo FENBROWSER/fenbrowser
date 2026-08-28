@@ -640,8 +640,18 @@ namespace FenBrowser.Core.Parsing
                         }
                         else
                         {
-                            Consume();
-                            return EmitCharacter(c);
+                            var runStart = _position;
+                            var runEnd = _position;
+                            var runLimit = Math.Min(_length, runStart + 16 * 1024);
+                            while (runEnd < runLimit)
+                            {
+                                var current = _input[runEnd];
+                                if (current == '<' || current == '&' || current == '\0')
+                                    break;
+                                runEnd++;
+                            }
+                            AdvanceTo(runEnd);
+                            return EmitCharacter(_input.Substring(runStart, runEnd - runStart));
                         }
                         break;
                         

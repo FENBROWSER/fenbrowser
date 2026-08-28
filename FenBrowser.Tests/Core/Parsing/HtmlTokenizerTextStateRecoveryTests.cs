@@ -8,6 +8,19 @@ namespace FenBrowser.Tests.Core.Parsing;
 
 public sealed class HtmlTokenizerTextStateRecoveryTests
 {
+    [Fact]
+    public void RcDataBatchesOrdinaryCharacterRuns()
+    {
+        var source = new string('a', 32_000) + "&amp;tail";
+        var tokenizer = new HtmlTokenizer(source);
+        tokenizer.SetState(HtmlTokenizer.TokenizerState.RcData);
+
+        var characterTokens = tokenizer.Tokenize().OfType<CharacterToken>().ToArray();
+
+        Assert.Equal(new string('a', 32_000) + "&tail", string.Concat(characterTokens.Select(token => token.Data)));
+        Assert.InRange(characterTokens.Length, 2, 4);
+    }
+
     [Theory]
     [InlineData(HtmlTokenizer.TokenizerState.RcData)]
     [InlineData(HtmlTokenizer.TokenizerState.RawText)]
