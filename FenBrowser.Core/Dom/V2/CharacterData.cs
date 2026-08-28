@@ -50,6 +50,12 @@ namespace FenBrowser.Core.Dom.V2
                 return $"<!--{Data}-->";
             }
 
+            if (ParentNode is Element parent &&
+                HtmlElementSemantics.IsRawTextSerializationParent(parent.LocalName, parent.NamespaceUri))
+            {
+                return Data;
+            }
+
             return System.Net.WebUtility.HtmlEncode(Data);
         }
 

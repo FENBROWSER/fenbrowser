@@ -268,6 +268,7 @@ Represents HTML tags.
 - **Lines 413-503**: **Mutation Hooks**: `OnAttributeValueChanged` notifies the engine of style changes.
 - **Lines 509-527**: **Style Invalidation**: Manages `UpdateAncestorFilter` for CSS optimization.
 - **InnerHTML Setter**: `InnerHTML` now parses HTML fragments and replaces child nodes with parsed DOM content (instead of text-only assignment), improving DOM/script interoperability.
+- **Raw-text serialization (2026-08-28)**: text children of HTML `script`, `style`, `xmp`, `iframe`, `noembed`, `noframes`, and `plaintext` elements serialize verbatim rather than as escaped normal text. Element, text-node, and diagnostic DOM serialization share the same namespace-aware classification.
 
 #### `Document.cs` (Lines 1-654)
 

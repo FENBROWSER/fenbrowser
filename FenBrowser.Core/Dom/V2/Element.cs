@@ -1039,12 +1039,13 @@ namespace FenBrowser.Core.Dom.V2
         {
             var sb = new StringBuilder();
             var contents = GetHtmlContentsContainer();
+            var preserveText = HtmlElementSemantics.IsRawTextSerializationParent(LocalName, NamespaceUri);
             for (var child = contents.FirstChild; child != null; child = child._nextSibling)
             {
                 if (child is Element el)
                     sb.Append(el.SerializeElement());
                 else if (child is Text t)
-                    sb.Append(EscapeText(t.Data));
+                    sb.Append(preserveText ? t.Data : EscapeText(t.Data));
                 else if (child is Comment c)
                     sb.Append("<!--").Append(c.Data).Append("-->");
             }

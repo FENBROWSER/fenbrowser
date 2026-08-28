@@ -34,6 +34,13 @@ namespace FenBrowser.Core
             if (node.NodeType == NodeType.Text)
             {
                 var text = node.NodeValue ?? string.Empty;
+                if (node.ParentNode is Element parent &&
+                    HtmlElementSemantics.IsRawTextSerializationParent(parent.LocalName, parent.NamespaceUri))
+                {
+                    sb.Append(text);
+                    return;
+                }
+
                 if (prettyPrint)
                 {
                     if (string.IsNullOrWhiteSpace(text))
@@ -148,7 +155,9 @@ namespace FenBrowser.Core
                     var child = children[i];
                     if (child.NodeType == NodeType.Text && !string.IsNullOrEmpty(child.NodeValue))
                     {
-                        sb.Append(EscapeHtml(child.NodeValue));
+                        var preserveText = node is Element parent &&
+                            HtmlElementSemantics.IsRawTextSerializationParent(parent.LocalName, parent.NamespaceUri);
+                        sb.Append(preserveText ? child.NodeValue : EscapeHtml(child.NodeValue));
                     }
                 }
             }

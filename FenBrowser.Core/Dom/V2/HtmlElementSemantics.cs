@@ -7,6 +7,25 @@ namespace FenBrowser.Core.Dom.V2;
 /// </summary>
 public static class HtmlElementSemantics
 {
+    public static bool IsRawTextSerializationParent(
+        string localName,
+        string namespaceUri = Namespaces.Html)
+    {
+        if (!string.Equals(namespaceUri ?? Namespaces.Html, Namespaces.Html, StringComparison.Ordinal) ||
+            string.IsNullOrEmpty(localName))
+        {
+            return false;
+        }
+
+        return localName.Equals("style", StringComparison.OrdinalIgnoreCase) ||
+               localName.Equals("script", StringComparison.OrdinalIgnoreCase) ||
+               localName.Equals("xmp", StringComparison.OrdinalIgnoreCase) ||
+               localName.Equals("iframe", StringComparison.OrdinalIgnoreCase) ||
+               localName.Equals("noembed", StringComparison.OrdinalIgnoreCase) ||
+               localName.Equals("noframes", StringComparison.OrdinalIgnoreCase) ||
+               localName.Equals("plaintext", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static bool IsVoid(string localName, string namespaceUri = Namespaces.Html)
     {
         if (!string.Equals(namespaceUri ?? Namespaces.Html, Namespaces.Html, StringComparison.Ordinal) ||
