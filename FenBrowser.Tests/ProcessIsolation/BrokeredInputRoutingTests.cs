@@ -17,6 +17,7 @@ using Xunit;
 
 namespace FenBrowser.Tests.ProcessIsolation;
 
+[Collection("Host Process Isolation State")]
 public sealed class BrokeredInputRoutingTests
 {
     [Theory]

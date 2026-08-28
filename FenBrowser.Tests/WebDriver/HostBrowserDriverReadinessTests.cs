@@ -10,6 +10,8 @@ using Xunit;
 
 namespace FenBrowser.Tests.WebDriver;
 
+[Collection("Host Process Isolation State")]
+
 // WD-004 out-of-process: with a brokered renderer the navigation (and its
 // lifecycle) runs in the renderer child, so the WebDriver readiness wait must
 // consume the coordinator's renderer-forwarded lifecycle stream instead of the

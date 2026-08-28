@@ -8,6 +8,7 @@ using Xunit;
 
 namespace FenBrowser.Tests.WebDriver;
 
+[Collection("Host Process Isolation State")]
 public sealed class HostBrowserDriverCurrentUrlTests
 {
     [Fact]
