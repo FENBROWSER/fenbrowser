@@ -151,6 +151,64 @@ namespace FenBrowser.Tests.WebDriver
             Assert.True(driver.ReadinessWaitCalled);
         }
 
+        // One page-load budget: navigate + commit + readiness must share the
+        // session's timeouts.pageLoad, each wait receiving only the remainder.
+        [Fact]
+        public async Task TimeoutBudget_NavigateTimeIsDeductedFromReadinessWait()
+        {
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start")
+            {
+                NavigateDelayMs = 300,
+                OnReadinessWait = () => Task.FromResult(WdReadinessWaitStatus.Reached)
+            };
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 1500);
+
+            var response = await navigation.NavigateToAsync(session.Id, Body("https://example.test/a"));
+
+            Assert.IsNotType<WebDriverError>(response.Value);
+            // The readiness wait must see roughly 1200ms, not the full 1500ms.
+            Assert.InRange(driver.RequestedTimeoutMs, 1000, 1300);
+        }
+
+        [Fact]
+        public async Task TimeoutBudget_CommitWaitReceivesRemainingNotFullBudget()
+        {
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start")
+            {
+                NavigateDelayMs = 300,
+                CommitDelayMs = 900
+            };
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 800);
+
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            await Assert.ThrowsAsync<WebDriverException>(
+                () => navigation.NavigateToAsync(session.Id, Body("https://example.test/a")));
+            clock.Stop();
+
+            // Commit never happens (900ms after a 300ms navigate against an 800ms
+            // budget): the command must give up at the budget (~800ms), not after a
+            // full extra commit wait (which would push the total past 1100ms).
+            Assert.True(clock.ElapsedMilliseconds < 1000,
+                $"command took {clock.ElapsedMilliseconds}ms, exceeding the 800ms page-load budget");
+        }
+
+        [Fact]
+        public async Task TimeoutBudget_ExhaustedBudgetStillChecksCommitOnceThenTimesOut()
+        {
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start")
+            {
+                NavigateDelayMs = 400,
+                OnReadinessWait = () => Task.FromResult(WdReadinessWaitStatus.TimedOut)
+            };
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 200);
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(
+                () => navigation.NavigateToAsync(session.Id, Body("https://example.test/a")));
+
+            Assert.Equal(ErrorCodes.Timeout, ex.ErrorCode);
+            Assert.Equal(0, driver.RequestedTimeoutMs);
+        }
+
         private static (CommandHandler Handler, NavigationCommands Navigation, Session Session) CreateHarness(
             ReadinessFakeDriver driver,
             string pageLoadStrategy,
@@ -174,15 +232,21 @@ namespace FenBrowser.Tests.WebDriver
         private sealed class ReadinessFakeDriver : IBrowserDriver
         {
             private readonly string _startingUrl;
-            private string _currentUrl;
+            private long _navigateStartTicks = -1;
+            private string _pendingUrl;
 
             public ReadinessFakeDriver(string startingUrl)
             {
                 _startingUrl = startingUrl;
-                _currentUrl = startingUrl;
             }
 
             public string RedirectTarget { get; init; }
+
+            /// <summary>Time NavigateAsync spends before the navigation is initiated.</summary>
+            public int NavigateDelayMs { get; init; }
+
+            /// <summary>Time after initiation before the new URL is reported committed.</summary>
+            public int CommitDelayMs { get; init; }
 
             public bool ReadinessWaitCalled { get; private set; }
 
@@ -195,28 +259,42 @@ namespace FenBrowser.Tests.WebDriver
 
             public Func<Task<WdReadinessWaitStatus>>? OnReadinessWait { get; init; }
 
-            public Task<WdReadinessWaitStatus> WaitForDocumentReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs)
+            public async Task<WdReadinessWaitStatus> WaitForDocumentReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs)
             {
                 ReadinessWaitCalled = true;
                 RequestedStage = stage;
                 RequestedTimeoutMs = timeoutMs;
                 if (OnReadinessWait != null)
                 {
-                    return OnReadinessWait();
+                    return await OnReadinessWait();
                 }
 
-                return ReadinessGate.Task;
+                return await ReadinessGate.Task;
             }
 
-            public Task NavigateAsync(string url)
+            public async Task NavigateAsync(string url)
             {
-                // A redirect: the browser commits to a URL that differs from the
-                // requested one and from the previous document.
-                _currentUrl = RedirectTarget ?? url;
-                return Task.CompletedTask;
+                _pendingUrl = RedirectTarget ?? url;
+                if (NavigateDelayMs > 0)
+                {
+                    await Task.Delay(NavigateDelayMs);
+                }
+
+                _navigateStartTicks = Environment.TickCount64;
             }
 
-            public Task<string> GetCurrentUrlAsync() => Task.FromResult(_currentUrl);
+            public Task<string> GetCurrentUrlAsync()
+            {
+                if (_pendingUrl == null)
+                {
+                    return Task.FromResult(_startingUrl);
+                }
+
+                var elapsedMs = _navigateStartTicks >= 0
+                    ? Environment.TickCount64 - _navigateStartTicks
+                    : long.MaxValue;
+                return Task.FromResult(elapsedMs >= CommitDelayMs ? _pendingUrl : _startingUrl);
+            }
 
             private static NotSupportedException Unsupported(string member) =>
                 new($"{member} is not used by this stub.");

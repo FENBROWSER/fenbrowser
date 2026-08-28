@@ -62,10 +62,12 @@ namespace FenBrowser.WebDriver.Commands
             }
 
             var strategy = Capabilities.NormalizePageLoadStrategy(session.Capabilities?.PageLoadStrategy);
+            var timeoutMs = ResolvePageLoadTimeoutMs(session.Timeouts?.PageLoad);
             string startingUrl = await _handler.Browser.GetCurrentUrlAsync();
 
-            // The page-load timeout budgets the whole navigation: initiation, URL
-            // commit, and the document readiness stage demanded by the strategy.
+            // The page-load timeout is a single budget covering everything from
+            // navigation initiation through URL commit to the readiness stage:
+            // each wait receives only the time still left on it.
             var navigationClock = System.Diagnostics.Stopwatch.StartNew();
 
             await _handler.Browser.NavigateAsync(absoluteUri.AbsoluteUri);
@@ -76,8 +78,8 @@ namespace FenBrowser.WebDriver.Commands
                 return WebDriverResponse.Success(null);
             }
 
-            var timeoutMs = ResolvePageLoadTimeoutMs(session.Timeouts?.PageLoad);
-            var settledUrl = await WaitForNavigationCommitAsync(startingUrl, absoluteUri.AbsoluteUri, timeoutMs);
+            var remainingAfterNavigateMs = RemainingMs(timeoutMs, navigationClock.ElapsedMilliseconds);
+            var settledUrl = await WaitForNavigationCommitAsync(startingUrl, absoluteUri.AbsoluteUri, remainingAfterNavigateMs);
             if (IsAboutBlank(settledUrl) && !IsAboutBlank(absoluteUri.AbsoluteUri))
             {
                 throw new WebDriverException(
@@ -90,17 +92,22 @@ namespace FenBrowser.WebDriver.Commands
             var readinessStage = string.Equals(strategy, "eager", StringComparison.Ordinal)
                 ? WdDocumentReadinessStage.Interactive
                 : WdDocumentReadinessStage.Complete;
-            var readiness = await WaitForReadinessAsync(readinessStage, timeoutMs, navigationClock.ElapsedMilliseconds);
+            await WaitForReadinessAsync(readinessStage, timeoutMs, navigationClock.ElapsedMilliseconds);
 
             return WebDriverResponse.Success(null);
+        }
+
+        private static int RemainingMs(int timeoutMs, long elapsedMs)
+        {
+            return timeoutMs - (int)Math.Min(elapsedMs, timeoutMs);
         }
 
         private async Task<WdReadinessWaitStatus> WaitForReadinessAsync(
             WdDocumentReadinessStage stage,
             int timeoutMs,
-            long elapsedCommitMs)
+            long elapsedMs)
         {
-            var remainingMs = timeoutMs - (int)Math.Min(elapsedCommitMs, int.MaxValue);
+            var remainingMs = RemainingMs(timeoutMs, elapsedMs);
             WdReadinessWaitStatus readiness;
             try
             {
@@ -250,10 +257,13 @@ namespace FenBrowser.WebDriver.Commands
             return WebDriverResponse.Success(title ?? "");
         }
 
-        private async Task<string> WaitForNavigationCommitAsync(string previousUrl, string requestedUrl, int timeoutMs)
+        private async Task<string> WaitForNavigationCommitAsync(string previousUrl, string requestedUrl, int budgetMs)
         {
-            using var cts = new CancellationTokenSource(timeoutMs);
-            while (!cts.IsCancellationRequested)
+            // Single shared budget: poll intervals are clamped so the loop cannot
+            // outlive the remaining page-load time, and an exhausted budget still
+            // gets one immediate URL check before timing out.
+            var deadline = Environment.TickCount64 + Math.Max(0, budgetMs);
+            while (true)
             {
                 var currentUrl = await _handler.Browser.GetCurrentUrlAsync();
                 if (IsNavigationCommitted(previousUrl, requestedUrl, currentUrl))
@@ -261,19 +271,18 @@ namespace FenBrowser.WebDriver.Commands
                     return currentUrl;
                 }
 
-                try
-                {
-                    await Task.Delay(NavigationPollInterval, cts.Token);
-                }
-                catch (TaskCanceledException)
+                var remainingMs = (int)Math.Min(deadline - Environment.TickCount64, (long)int.MaxValue);
+                if (remainingMs <= 0)
                 {
                     break;
                 }
+
+                await Task.Delay(Math.Min((int)NavigationPollInterval.TotalMilliseconds, remainingMs));
             }
 
             throw new WebDriverException(
                 ErrorCodes.Timeout,
-                $"Timed out after {timeoutMs}ms waiting for navigation to commit to {requestedUrl}");
+                $"Timed out waiting for navigation to commit to {requestedUrl} within the page-load budget");
         }
 
         private static bool IsNavigationCommitted(string previousUrl, string requestedUrl, string currentUrl)
