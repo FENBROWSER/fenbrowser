@@ -64,6 +64,10 @@ namespace FenBrowser.WebDriver.Commands
             var strategy = Capabilities.NormalizePageLoadStrategy(session.Capabilities?.PageLoadStrategy);
             string startingUrl = await _handler.Browser.GetCurrentUrlAsync();
 
+            // The page-load timeout budgets the whole navigation: initiation, URL
+            // commit, and the document readiness stage demanded by the strategy.
+            var navigationClock = System.Diagnostics.Stopwatch.StartNew();
+
             await _handler.Browser.NavigateAsync(absoluteUri.AbsoluteUri);
 
             // pageLoadStrategy=none returns as soon as navigation is initiated.
@@ -81,7 +85,47 @@ namespace FenBrowser.WebDriver.Commands
                     $"Navigation did not commit a non-blank URL within {timeoutMs}ms: {absoluteUri.AbsoluteUri}");
             }
 
+            // WD-004: eager waits through interactive (DOMContentLoaded); normal
+            // waits through complete (load). URL commit alone is not completion.
+            var readinessStage = string.Equals(strategy, "eager", StringComparison.Ordinal)
+                ? WdDocumentReadinessStage.Interactive
+                : WdDocumentReadinessStage.Complete;
+            var readiness = await WaitForReadinessAsync(readinessStage, timeoutMs, navigationClock.ElapsedMilliseconds);
+
             return WebDriverResponse.Success(null);
+        }
+
+        private async Task<WdReadinessWaitStatus> WaitForReadinessAsync(
+            WdDocumentReadinessStage stage,
+            int timeoutMs,
+            long elapsedCommitMs)
+        {
+            var remainingMs = timeoutMs - (int)Math.Min(elapsedCommitMs, int.MaxValue);
+            WdReadinessWaitStatus readiness;
+            try
+            {
+                readiness = await _handler.Browser.WaitForDocumentReadinessAsync(stage, Math.Max(0, remainingMs));
+            }
+            catch (InvalidOperationException ex) when (ex.Message.IndexOf("browsing context", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                throw new WebDriverException(ErrorCodes.NoSuchWindow, "Current browsing context is no longer open");
+            }
+
+            if (readiness == WdReadinessWaitStatus.TimedOut)
+            {
+                throw new WebDriverException(
+                    ErrorCodes.Timeout,
+                    $"Timed out after {timeoutMs}ms waiting for document readiness '{stage}' during navigation");
+            }
+
+            if (readiness == WdReadinessWaitStatus.NavigationAborted)
+            {
+                throw new WebDriverException(
+                    ErrorCodes.UnknownError,
+                    $"Navigation failed or was cancelled before the document reached readiness '{stage}'");
+            }
+
+            return readiness;
         }
         
         /// <summary>

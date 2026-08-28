@@ -155,6 +155,91 @@ namespace FenBrowser.Host.WebDriver
             });
         }
 
+        // WD-004: pageLoadStrategy eager/normal waits on the engine's explicit
+        // navigation lifecycle (Interactive = DOMContentLoaded, Complete = load)
+        // instead of inferring completion from a changed URL.
+        private sealed class ReadinessWait
+        {
+            public TaskCompletionSource<WdReadinessWaitStatus> Completion { get; } =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public BrowserHost Host { get; init; }
+            public EventHandler<FenBrowser.Core.Engine.NavigationLifecycleTransition> Handler { get; set; }
+
+            public void Unsubscribe() => Host.NavigationLifecycleChanged -= Handler;
+        }
+
+        public async Task<WdReadinessWaitStatus> WaitForDocumentReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs)
+        {
+            // Snapshot and subscribe on the main thread, then await off it: the
+            // engine raises lifecycle transitions on the main thread, so blocking
+            // there would deadlock the wait.
+            var wait = await RunOnMainThread(() => BeginReadinessWait(stage)).ConfigureAwait(false);
+            try
+            {
+                if (wait.Completion.Task.IsCompleted)
+                {
+                    return await wait.Completion.Task.ConfigureAwait(false);
+                }
+
+                if (timeoutMs <= 0)
+                {
+                    return WdReadinessWaitStatus.TimedOut;
+                }
+
+                var finished = await Task.WhenAny(wait.Completion.Task, Task.Delay(timeoutMs)).ConfigureAwait(false);
+                if (finished != wait.Completion.Task)
+                {
+                    return WdReadinessWaitStatus.TimedOut;
+                }
+
+                return await wait.Completion.Task.ConfigureAwait(false);
+            }
+            finally
+            {
+                await RunOnMainThread(() => wait.Unsubscribe()).ConfigureAwait(false);
+            }
+        }
+
+        private ReadinessWait BeginReadinessWait(WdDocumentReadinessStage stage)
+        {
+            var host = GetActiveHostOrThrow();
+            var targetPhase = stage == WdDocumentReadinessStage.Interactive
+                ? FenBrowser.Core.Engine.NavigationLifecyclePhase.Interactive
+                : FenBrowser.Core.Engine.NavigationLifecyclePhase.Complete;
+
+            var wait = new ReadinessWait { Host = host };
+            var snapshot = host.NavigationLifecycleState;
+            if (snapshot.Phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Failed ||
+                snapshot.Phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Cancelled)
+            {
+                wait.Completion.TrySetResult(WdReadinessWaitStatus.NavigationAborted);
+            }
+            else if (snapshot.Phase >= targetPhase &&
+                     snapshot.Phase <= FenBrowser.Core.Engine.NavigationLifecyclePhase.Complete)
+            {
+                wait.Completion.TrySetResult(WdReadinessWaitStatus.Reached);
+            }
+            else
+            {
+                wait.Handler = (_, transition) =>
+                {
+                    if (transition.Phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Failed ||
+                        transition.Phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Cancelled)
+                    {
+                        wait.Completion.TrySetResult(WdReadinessWaitStatus.NavigationAborted);
+                    }
+                    else if (transition.Phase >= targetPhase &&
+                             transition.Phase <= FenBrowser.Core.Engine.NavigationLifecyclePhase.Complete)
+                    {
+                        wait.Completion.TrySetResult(WdReadinessWaitStatus.Reached);
+                    }
+                };
+                host.NavigationLifecycleChanged += wait.Handler;
+            }
+
+            return wait;
+        }
+
         public async Task<object> FindElementAsync(string strategy, string selector, object parentElement = null)
         {
             var parentId = parentElement as string;

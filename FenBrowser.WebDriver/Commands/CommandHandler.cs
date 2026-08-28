@@ -1474,6 +1474,26 @@ namespace FenBrowser.WebDriver.Commands
     }
     
     /// <summary>
+    /// Document readiness stages for the W3C page load strategy (WebDriver §9):
+    /// Interactive corresponds to DOMContentLoaded, Complete to the load event.
+    /// </summary>
+    public enum WdDocumentReadinessStage
+    {
+        Interactive,
+        Complete
+    }
+
+    /// <summary>
+    /// Result of waiting for document readiness on the browser seam.
+    /// </summary>
+    public enum WdReadinessWaitStatus
+    {
+        Reached,
+        TimedOut,
+        NavigationAborted
+    }
+
+    /// <summary>
     /// Interface for browser integration.
     /// </summary>
     public interface IBrowserDriver
@@ -1541,5 +1561,17 @@ namespace FenBrowser.WebDriver.Commands
         void SetUnhandledPromptBehavior(string behavior) { }
         bool HasValidCurrentBrowsingContext();
         bool SupportsSessionStorageIsolation() => false;
+
+        /// <summary>
+        /// WD-004: waits until the current document of the selected browsing context
+        /// reaches the requested readiness stage (W3C page load strategy). Returns
+        /// Reached, TimedOut when the deadline passes first, or NavigationAborted
+        /// when the navigation fails or is cancelled while waiting. A closed context
+        /// surfaces through the same InvalidOperationException convention as
+        /// GetCurrentUrlAsync. Implementors that cannot observe document readiness
+        /// keep the legacy URL-commit-only semantics by returning Reached.
+        /// </summary>
+        Task<WdReadinessWaitStatus> WaitForDocumentReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs)
+            => Task.FromResult(WdReadinessWaitStatus.Reached);
     }
 }

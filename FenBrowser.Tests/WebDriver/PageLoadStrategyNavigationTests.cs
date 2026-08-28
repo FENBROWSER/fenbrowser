@@ -1,0 +1,279 @@
+using System;
+using System.Collections.Generic;
+using System.Text.Json;
+using System.Threading.Tasks;
+using FenBrowser.WebDriver;
+using FenBrowser.WebDriver.Commands;
+using FenBrowser.WebDriver.Protocol;
+using Xunit;
+
+namespace FenBrowser.Tests.WebDriver
+{
+    // WD-004: pageLoadStrategy eager/normal must wait for the document readiness
+    // stage reported by the browser seam, not return at URL commit.
+    public class PageLoadStrategyNavigationTests
+    {
+        [Fact]
+        public async Task NormalStrategy_DoesNotReturnBeforeDocumentCompletes()
+        {
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start");
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 2000);
+
+            var navigationTask = navigation.NavigateToAsync(session.Id, Body("https://example.test/a"));
+
+            // The URL commits instantly, but the fake's document never fires load
+            // until the gate is released: a success here means the command returned
+            // on URL commit alone.
+            var returnedEarly = await Task.WhenAny(navigationTask, Task.Delay(500)) == navigationTask;
+            Assert.False(returnedEarly, "normal strategy returned before document completion");
+
+            driver.ReadinessGate.TrySetResult(WdReadinessWaitStatus.Reached);
+            var response = await navigationTask;
+            Assert.IsNotType<WebDriverError>(response.Value);
+            Assert.True(driver.ReadinessWaitCalled);
+            Assert.Equal(WdDocumentReadinessStage.Complete, driver.RequestedStage);
+            Assert.True(driver.RequestedTimeoutMs <= 2000);
+        }
+
+        [Fact]
+        public async Task EagerStrategy_WaitsForInteractiveStage()
+        {
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start");
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "eager", pageLoadTimeoutMs: 2000);
+
+            var navigationTask = navigation.NavigateToAsync(session.Id, Body("https://example.test/a"));
+            var returnedEarly = await Task.WhenAny(navigationTask, Task.Delay(500)) == navigationTask;
+            Assert.False(returnedEarly, "eager strategy returned before document interactivity");
+
+            driver.ReadinessGate.TrySetResult(WdReadinessWaitStatus.Reached);
+            var response = await navigationTask;
+
+            Assert.IsNotType<WebDriverError>(response.Value);
+            Assert.Equal(WdDocumentReadinessStage.Interactive, driver.RequestedStage);
+        }
+
+        [Fact]
+        public async Task NoneStrategy_ReturnsWithoutReadinessWait()
+        {
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start");
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "none", pageLoadTimeoutMs: 2000);
+
+            var response = await navigation.NavigateToAsync(session.Id, Body("https://example.test/a"));
+
+            Assert.IsNotType<WebDriverError>(response.Value);
+            Assert.False(driver.ReadinessWaitCalled);
+        }
+
+        [Fact]
+        public async Task NormalStrategy_ReadinessTimeoutThrowsTimeoutError()
+        {
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start")
+            {
+                OnReadinessWait = () => Task.FromResult(WdReadinessWaitStatus.TimedOut)
+            };
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 2000);
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(
+                () => navigation.NavigateToAsync(session.Id, Body("https://example.test/a")));
+
+            Assert.Equal(ErrorCodes.Timeout, ex.ErrorCode);
+        }
+
+        [Fact]
+        public async Task NormalStrategy_NavigationFailureThrowsUnknownError()
+        {
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start")
+            {
+                OnReadinessWait = () => Task.FromResult(WdReadinessWaitStatus.NavigationAborted)
+            };
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 2000);
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(
+                () => navigation.NavigateToAsync(session.Id, Body("https://example.test/a")));
+
+            Assert.Equal(ErrorCodes.UnknownError, ex.ErrorCode);
+        }
+
+        [Fact]
+        public async Task NormalStrategy_ClosedContextDuringWaitThrowsNoSuchWindow()
+        {
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start")
+            {
+                OnReadinessWait = () => throw new InvalidOperationException("Current browsing context is no longer open")
+            };
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 2000);
+
+            var ex = await Assert.ThrowsAsync<WebDriverException>(
+                () => navigation.NavigateToAsync(session.Id, Body("https://example.test/a")));
+
+            Assert.Equal(ErrorCodes.NoSuchWindow, ex.ErrorCode);
+        }
+
+        [Fact]
+        public async Task NormalStrategy_SameUrlNavigationStillWaitsForReadiness()
+        {
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/a");
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 2000);
+
+            // Requested URL equals the current URL: commit detection returns
+            // immediately, so only the readiness wait can serialize completion.
+            var navigationTask = navigation.NavigateToAsync(session.Id, Body("https://example.test/a"));
+            var returnedEarly = await Task.WhenAny(navigationTask, Task.Delay(500)) == navigationTask;
+            Assert.False(returnedEarly, "same-URL navigation returned before document completion");
+
+            driver.ReadinessGate.TrySetResult(WdReadinessWaitStatus.Reached);
+            var response = await navigationTask;
+
+            Assert.IsNotType<WebDriverError>(response.Value);
+            Assert.True(driver.ReadinessWaitCalled);
+        }
+
+        [Fact]
+        public async Task NormalStrategy_RedirectCommitProceedsToReadinessWait()
+        {
+            // The browser lands on a redirect target that differs from both the
+            // previous URL and the requested URL; commit detection accepts it and
+            // the readiness stage still gates completion.
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start")
+            {
+                RedirectTarget = "https://example.test/redirected"
+            };
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 2000);
+
+            var navigationTask = navigation.NavigateToAsync(session.Id, Body("https://example.test/a"));
+            var returnedEarly = await Task.WhenAny(navigationTask, Task.Delay(500)) == navigationTask;
+            Assert.False(returnedEarly, "redirected navigation returned before document completion");
+
+            driver.ReadinessGate.TrySetResult(WdReadinessWaitStatus.Reached);
+            var response = await navigationTask;
+
+            Assert.IsNotType<WebDriverError>(response.Value);
+            Assert.True(driver.ReadinessWaitCalled);
+        }
+
+        private static (CommandHandler Handler, NavigationCommands Navigation, Session Session) CreateHarness(
+            ReadinessFakeDriver driver,
+            string pageLoadStrategy,
+            int pageLoadTimeoutMs)
+        {
+            var manager = new SessionManager();
+            var session = manager.CreateSession(new Capabilities
+            {
+                PageLoadStrategy = pageLoadStrategy,
+                Timeouts = new Timeouts { PageLoad = pageLoadTimeoutMs }
+            });
+            var handler = new CommandHandler(manager) { Browser = driver };
+            return (handler, new NavigationCommands(handler), session);
+        }
+
+        private static JsonElement Body(string url)
+        {
+            return JsonDocument.Parse($"{{\"url\":\"{url}\"}}").RootElement.Clone();
+        }
+
+        private sealed class ReadinessFakeDriver : IBrowserDriver
+        {
+            private readonly string _startingUrl;
+            private string _currentUrl;
+
+            public ReadinessFakeDriver(string startingUrl)
+            {
+                _startingUrl = startingUrl;
+                _currentUrl = startingUrl;
+            }
+
+            public string RedirectTarget { get; init; }
+
+            public bool ReadinessWaitCalled { get; private set; }
+
+            public WdDocumentReadinessStage? RequestedStage { get; private set; }
+
+            public int RequestedTimeoutMs { get; private set; } = -1;
+
+            public TaskCompletionSource<WdReadinessWaitStatus> ReadinessGate { get; } =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public Func<Task<WdReadinessWaitStatus>>? OnReadinessWait { get; init; }
+
+            public Task<WdReadinessWaitStatus> WaitForDocumentReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs)
+            {
+                ReadinessWaitCalled = true;
+                RequestedStage = stage;
+                RequestedTimeoutMs = timeoutMs;
+                if (OnReadinessWait != null)
+                {
+                    return OnReadinessWait();
+                }
+
+                return ReadinessGate.Task;
+            }
+
+            public Task NavigateAsync(string url)
+            {
+                // A redirect: the browser commits to a URL that differs from the
+                // requested one and from the previous document.
+                _currentUrl = RedirectTarget ?? url;
+                return Task.CompletedTask;
+            }
+
+            public Task<string> GetCurrentUrlAsync() => Task.FromResult(_currentUrl);
+
+            private static NotSupportedException Unsupported(string member) =>
+                new($"{member} is not used by this stub.");
+
+            public Task<string> GetTitleAsync() => throw Unsupported(nameof(GetTitleAsync));
+            public Task<string> GetWindowHandleAsync() => Task.FromResult("win-1");
+            public Task<IReadOnlyList<string>> GetWindowHandlesAsync() =>
+                Task.FromResult<IReadOnlyList<string>>(new[] { "win-1" });
+            public Task CloseWindowAsync() => throw Unsupported(nameof(CloseWindowAsync));
+            public Task GoBackAsync() => throw Unsupported(nameof(GoBackAsync));
+            public Task GoForwardAsync() => throw Unsupported(nameof(GoForwardAsync));
+            public Task RefreshAsync() => throw Unsupported(nameof(RefreshAsync));
+            public Task<object> FindElementAsync(string strategy, string selector, object parentElement = null) => throw Unsupported(nameof(FindElementAsync));
+            public Task<object[]> FindElementsAsync(string strategy, string selector, object parentElement = null) => throw Unsupported(nameof(FindElementsAsync));
+            public Task<object> GetActiveElementAsync() => throw Unsupported(nameof(GetActiveElementAsync));
+            public Task<object> GetShadowRootAsync(object element) => throw Unsupported(nameof(GetShadowRootAsync));
+            public Task<bool> IsElementSelectedAsync(object element) => throw Unsupported(nameof(IsElementSelectedAsync));
+            public Task<object> GetElementPropertyAsync(object element, string name) => throw Unsupported(nameof(GetElementPropertyAsync));
+            public Task<string> GetElementCssValueAsync(object element, string propertyName) => throw Unsupported(nameof(GetElementCssValueAsync));
+            public Task<string> GetElementTextAsync(object element) => throw Unsupported(nameof(GetElementTextAsync));
+            public Task<string> GetElementTagNameAsync(object element) => throw Unsupported(nameof(GetElementTagNameAsync));
+            public Task<WdElementRect> GetElementRectAsync(object element) => throw Unsupported(nameof(GetElementRectAsync));
+            public Task<bool> IsElementEnabledAsync(object element) => throw Unsupported(nameof(IsElementEnabledAsync));
+            public Task<string> GetElementComputedRoleAsync(object element) => throw Unsupported(nameof(GetElementComputedRoleAsync));
+            public Task<string> GetElementComputedLabelAsync(object element) => throw Unsupported(nameof(GetElementComputedLabelAsync));
+            public Task ClickElementAsync(object element) => throw Unsupported(nameof(ClickElementAsync));
+            public Task ClearElementAsync(object element) => throw Unsupported(nameof(ClearElementAsync));
+            public Task SendKeysAsync(object element, string text, bool strictFileInteractability = false) => throw Unsupported(nameof(SendKeysAsync));
+            public Task<string> GetElementAttributeAsync(object element, string name) => throw Unsupported(nameof(GetElementAttributeAsync));
+            public Task<string> GetPageSourceAsync() => throw Unsupported(nameof(GetPageSourceAsync));
+            public Task<object> ExecuteScriptAsync(string script, object[] args) => throw Unsupported(nameof(ExecuteScriptAsync));
+            public Task<object> ExecuteAsyncScriptAsync(string script, object[] args, int timeout) => throw Unsupported(nameof(ExecuteAsyncScriptAsync));
+            public Task<string> TakeScreenshotAsync() => throw Unsupported(nameof(TakeScreenshotAsync));
+            public Task<string> TakeElementScreenshotAsync(object element) => throw Unsupported(nameof(TakeElementScreenshotAsync));
+            public Task<string> PrintPageAsync(WdPrintOptions options) => throw Unsupported(nameof(PrintPageAsync));
+            public (int x, int y, int width, int height) GetWindowRect() => throw Unsupported(nameof(GetWindowRect));
+            public void SetWindowRect(int? x, int? y, int? width, int? height) => throw Unsupported(nameof(SetWindowRect));
+            public (int x, int y, int width, int height) MaximizeWindow() => throw Unsupported(nameof(MaximizeWindow));
+            public (int x, int y, int width, int height) MinimizeWindow() => throw Unsupported(nameof(MinimizeWindow));
+            public (int x, int y, int width, int height) FullscreenWindow() => throw Unsupported(nameof(FullscreenWindow));
+            public Task<string> NewWindowAsync(string typeHint) => throw Unsupported(nameof(NewWindowAsync));
+            public Task SwitchToWindowAsync(string windowHandle) => throw Unsupported(nameof(SwitchToWindowAsync));
+            public Task SwitchToFrameAsync(object frameReference) => throw Unsupported(nameof(SwitchToFrameAsync));
+            public Task SwitchToParentFrameAsync() => throw Unsupported(nameof(SwitchToParentFrameAsync));
+            public Task<IReadOnlyList<WdCookie>> GetAllCookiesAsync() => throw Unsupported(nameof(GetAllCookiesAsync));
+            public Task<WdCookie> GetNamedCookieAsync(string name) => throw Unsupported(nameof(GetNamedCookieAsync));
+            public Task AddCookieAsync(WdCookie cookie) => throw Unsupported(nameof(AddCookieAsync));
+            public Task DeleteCookieAsync(string name) => throw Unsupported(nameof(DeleteCookieAsync));
+            public Task DeleteAllCookiesAsync() => throw Unsupported(nameof(DeleteAllCookiesAsync));
+            public Task PerformActionsAsync(IReadOnlyList<WdActionSequence> actions) => throw Unsupported(nameof(PerformActionsAsync));
+            public Task ReleaseActionsAsync() => throw Unsupported(nameof(ReleaseActionsAsync));
+            public Task<bool> HasAlertAsync() => Task.FromResult(false);
+            public Task DismissAlertAsync() => throw Unsupported(nameof(DismissAlertAsync));
+            public Task AcceptAlertAsync() => throw Unsupported(nameof(AcceptAlertAsync));
+            public Task<string> GetAlertTextAsync() => throw Unsupported(nameof(GetAlertTextAsync));
+            public Task SendAlertTextAsync(string text) => throw Unsupported(nameof(SendAlertTextAsync));
+            public bool HasValidCurrentBrowsingContext() => true;
+        }
+    }
+}

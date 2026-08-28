@@ -4446,3 +4446,14 @@ Verification:
   - Parse results for this family are now classified like every other parser-subset test: a real `JsParserException` satisfies the negative, a successful parse is a parser-bug failure, and a managed engine fault is a crash — never a negative-test pass.
 - `FenBrowser.Js.Tests/Test262RunnerTests.cs`
   - Added parser-subset negative fixtures: real-parser SyntaxError pass, non-throwing parse failure, forced `JsParserException` pass, managed-fault crash classification, and invalid-configuration handling for parse-phase negatives with a non-`SyntaxError` type.
+
+## 6.196 WebDriver: Page Load Strategy Waits For Document Readiness (2026-08-28)
+
+- `FenBrowser.WebDriver/Commands/CommandHandler.cs`
+  - `IBrowserDriver` gains `WaitForDocumentReadinessAsync(stage, timeoutMs)` with readiness stages `Interactive` (DOMContentLoaded) and `Complete` (load). The default implementation returns `Reached` so drivers that cannot observe readiness keep the legacy URL-commit-only semantics.
+- `FenBrowser.WebDriver/Commands/NavigationCommands.cs`
+  - `POST /session/{id}/url` for `pageLoadStrategy=eager` waits through the `Interactive` stage and `normal` waits through the `Complete` stage; `none` still returns at navigation initiation. The wait runs after URL commit with the remaining `timeouts.pageLoad` budget. Readiness `TimedOut` maps to the `timeout` error, `NavigationAborted` maps to `unknown error`, and a closed context maps to `no such window`.
+- `FenBrowser.Host/WebDriver/HostBrowserDriver.cs`
+  - The production adapter implements the readiness wait on the engine's explicit navigation lifecycle signal (`BrowserHost.NavigationLifecycleChanged` / `NavigationLifecycleState`, phases `Interactive`/`Complete`/`Failed`/`Cancelled`) instead of inferring completion from a changed URL. Snapshot-and-subscribe runs on the main thread; the await happens off it so engine-raised transitions can complete the wait.
+- `FenBrowser.Tests/WebDriver/PageLoadStrategyNavigationTests.cs`
+  - Deterministic fake-driver coverage: normal/eager gate on the requested stage, `none` never waits, readiness timeout/failure/closed-context error mapping, same-URL navigation, and redirect commit.
