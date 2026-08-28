@@ -173,26 +173,51 @@ public sealed class StringBuiltin : IBuiltinModule
         // String.raw
         context.DefineIntrinsicFunction(constructorHandle, constructor, "raw", (_, args) =>
         {
-            if (args.Count == 0 || (args[0].Tag != JsValueTag.Object && args[0].Tag != JsValueTag.String))
+            // ECMA-262 22.1.2.4 steps 2-5: ToObject(template) then Get(cooked, "raw").
+            // A primitive string template boxes into a String wrapper instead of
+            // failing, so every invalid receiver surfaces as a catchable TypeError
+            // from the object check — never a CLR exception from a tag mismatch.
+            if (args.Count == 0 || args[0].Tag is JsValueTag.Undefined or JsValueTag.Null)
                 throw new JsThrownException(context.CreateTypeError("String.raw: template must be coercible to Object."));
             var template = args[0];
-            var templateObj = heap.GetObject(template.AsObjectHandle());
-            if (!context.TryGetPropertyValue(templateObj, template, "raw", out var rawValue) || rawValue.Tag != JsValueTag.Object)
-                throw new JsThrownException(context.CreateTypeError("String.raw: template.raw must be an object."));
-            var rawObj = heap.GetObject(rawValue.AsObjectHandle());
-            var rawLen = context.GetArrayLength(rawObj);
-            if (rawLen == 0) return JsValue.FromString(string.Empty);
-            var sb = new System.Text.StringBuilder();
-            for (var i = 0; i < rawLen; i++)
+            if (template.Tag == JsValueTag.String)
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                if (context.TryGetPropertyValue(rawObj, rawValue, key, out var seg))
-                    sb.Append(context.ToStringValue(seg));
-                if (i + 1 == rawLen) break;
-                if (i + 1 < args.Count)
-                    sb.Append(context.ToStringValue(args[i + 1]));
+                var wrapper = new StringObject(template.AsString());
+                wrapper.SetPrototype(capturedProto);
+                template = JsValue.FromObject(heap.AllocateObject(wrapper, AllocationSite.Current()));
             }
-            return JsValue.FromString(sb.ToString());
+            if (template.Tag != JsValueTag.Object)
+                throw new JsThrownException(context.CreateTypeError("String.raw: template.raw must be an object."));
+            var templateHandle = template.AsObjectHandle();
+            var rootMark = heap.RootCount;
+            try
+            {
+                // Get(cooked, "raw") and the per-segment coercion can run user code
+                // (accessors, toString), so pin both handles against GC until done.
+                heap.PushRoot(templateHandle);
+                var templateObj = heap.GetObject(templateHandle);
+                if (!context.TryGetPropertyValue(templateObj, template, "raw", out var rawValue) || rawValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(context.CreateTypeError("String.raw: template.raw must be an object."));
+                heap.PushRoot(rawValue.AsObjectHandle());
+                var rawObj = heap.GetObject(rawValue.AsObjectHandle());
+                var rawLen = context.GetArrayLength(rawObj);
+                if (rawLen == 0) return JsValue.FromString(string.Empty);
+                var sb = new System.Text.StringBuilder();
+                for (var i = 0; i < rawLen; i++)
+                {
+                    var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    if (context.TryGetPropertyValue(rawObj, rawValue, key, out var seg))
+                        sb.Append(context.ToStringValue(seg));
+                    if (i + 1 == rawLen) break;
+                    if (i + 1 < args.Count)
+                        sb.Append(context.ToStringValue(args[i + 1]));
+                }
+                return JsValue.FromString(sb.ToString());
+            }
+            finally
+            {
+                heap.PopRootsTo(rootMark);
+            }
         }, length: 1);
 
         return new[] { BuiltinBinding.NonEnumerable("String", JsValue.FromObject(constructorHandle)) };
