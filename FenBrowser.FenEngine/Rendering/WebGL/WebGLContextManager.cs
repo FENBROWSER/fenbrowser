@@ -8,7 +8,11 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
 {
     /// <summary>
     /// Manages WebGL contexts for canvas elements.
-    /// Provides the bridge between JavaScript canvas.getContext("webgl") and our WebGL implementation.
+    /// RENDER-005: this module is a software placeholder that cannot execute
+    /// WebGL shaders, and it is not wired into the page scripting surface
+    /// (canvas.getContext("webgl"/"webgl2") resolves to null). Support probes
+    /// therefore report unsupported until a real conforming implementation is
+    /// wired, so feature-detecting sites take the clean unsupported path.
     /// </summary>
     public class WebGLContextManager
     {
@@ -95,14 +99,16 @@ namespace FenBrowser.FenEngine.Rendering.WebGL
         }
         
         /// <summary>
-        /// Check if WebGL is supported (always true in our implementation)
+        /// Check if WebGL is supported. The software placeholder cannot execute
+        /// shaders, so this reports unsupported honestly (RENDER-005).
         /// </summary>
-        public static bool IsWebGLSupported() => true;
-        
+        public static bool IsWebGLSupported() => false;
+
         /// <summary>
-        /// Check if WebGL 2.0 is supported (always true in our implementation)
+        /// Check if WebGL 2.0 is supported. The software placeholder cannot
+        /// execute shaders, so this reports unsupported honestly (RENDER-005).
         /// </summary>
-        public static bool IsWebGL2Supported() => true;
+        public static bool IsWebGL2Supported() => false;
         
         /// <summary>
         /// Get context attributes for context creation

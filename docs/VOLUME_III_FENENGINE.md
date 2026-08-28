@@ -10691,3 +10691,17 @@ Verification:
 Verification:
 
 - Focused span-limit and adjacent table-layout integration tests pass (`11/11`).
+
+## 2.410 WebGL Feature Honesty (2026-08-28)
+
+- `Rendering/WebGL/WebGLContextManager.cs`: `IsWebGLSupported()` and
+  `IsWebGL2Supported()` now return `false`. The module is a software placeholder
+  that cannot execute WebGL shaders and is not wired into the page scripting
+  surface, so support probes must not advertise support (RENDER-005);
+  feature-detecting sites now take the clean unsupported path.
+- `canvas.getContext("webgl"|"webgl2"|"experimental-webgl")` continues to
+  resolve to `null`; Canvas 2D remains fully operational.
+- Verification: `FenBrowser.Tests/Scripting/WebGLFeatureHonestyTests.cs`
+  (probe results, scripting-surface nulls for all WebGL context kinds, Canvas 2D
+  fillRect + toDataURL smoke) and the existing
+  `CanvasRenderingContextTests` suite.
