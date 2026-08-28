@@ -69,6 +69,7 @@ namespace FenBrowser.Core.Parsing
         // Current insertion mode
         private InsertionMode _insertionMode = InsertionMode.Initial;
         private InsertionMode _originalInsertionMode; // For "In Text" etc
+        private bool _atStartOfInput = true;
         
         // Pointers
         private Element _headElement;
@@ -693,8 +694,28 @@ namespace FenBrowser.Core.Parsing
         
         private bool HandleInitial(HtmlToken token)
         {
-            if (token is CharacterToken ct && string.IsNullOrWhiteSpace(ct.Data))
-                return true; // Ignore whitespace
+            if (token is CharacterToken ct)
+            {
+                if (_atStartOfInput)
+                {
+                    _atStartOfInput = false;
+                    if (_fragment == null &&
+                        !string.IsNullOrEmpty(ct.Data) &&
+                        ct.Data[0] == '\uFEFF')
+                    {
+                        ct.Data = ct.Data.Substring(1);
+                        if (ct.Data.Length == 0)
+                            return true;
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(ct.Data))
+                    return true; // Ignore whitespace
+            }
+            else
+            {
+                _atStartOfInput = false;
+            }
             
             if (token is CommentToken comment)
             {
