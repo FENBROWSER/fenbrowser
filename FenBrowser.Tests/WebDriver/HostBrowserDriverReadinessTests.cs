@@ -166,6 +166,35 @@ public sealed class HostBrowserDriverReadinessTests
         Assert.Equal(WdReadinessWaitStatus.NavigationAborted, await wait);
     }
 
+    // Renderer lifecycle transitions are transient: a Complete that fires while
+    // the command is still URL-commit polling (before the readiness wait begins)
+    // must be retained by the navigation record, not lost to a late subscription.
+    [Fact]
+    public async Task LifecycleEventFiredBeforeWaitBeginsIsRetained()
+    {
+        var coordinator = new LifecycleCoordinator();
+        using var scope = UseCoordinator(coordinator);
+        using var tabScope = CreateActiveTab();
+
+        var driver = new HostBrowserDriver();
+        var navigationId = await driver.NavigateTrackedAsync("https://example.test/a");
+        var correlationId = Assert.Single(coordinator.Navigations).CorrelationId;
+
+        // The renderer finishes the whole navigation before the command reaches
+        // its readiness wait.
+        coordinator.RaiseLifecycle(tabScope.Tab.Id, nameof(NavigationLifecyclePhase.Interactive), correlationId: correlationId);
+        coordinator.RaiseLifecycle(tabScope.Tab.Id, nameof(NavigationLifecyclePhase.Complete), correlationId: correlationId);
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var result = await driver.WaitForDocumentReadinessAsync(
+            WdDocumentReadinessStage.Complete, timeoutMs: 2000, navigationId);
+        clock.Stop();
+
+        Assert.Equal(WdReadinessWaitStatus.Reached, result);
+        Assert.True(clock.ElapsedMilliseconds < 1000,
+            $"retained Complete was not observed: wait took {clock.ElapsedMilliseconds}ms instead of returning immediately");
+    }
+
     private static IDisposable UseCoordinator(LifecycleCoordinator coordinator)
     {
         var previousAutoStart = Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");

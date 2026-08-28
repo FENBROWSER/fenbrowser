@@ -163,8 +163,87 @@ namespace FenBrowser.Host.WebDriver
         // carry a driver-issued identifier so lifecycle events belonging to other
         // navigations (a later user or script navigation) cannot complete a wait.
         private long _nextTrackedNavigationId;
-        private readonly ConcurrentDictionary<long, (int TabId, string CorrelationId)> _pendingRendererNavigations = new();
+        private readonly ConcurrentDictionary<long, RendererNavigationRecord> _pendingRendererNavigations = new();
         private readonly ConcurrentDictionary<long, (long TrackerId, FenBrowser.Core.Engine.NavigationLifecyclePhase InitialPhase)> _pendingLocalNavigations = new();
+
+        /// <summary>
+        /// Retains the latest lifecycle phase of a tracked renderer navigation.
+        /// The record is created and its coordinator handler attached BEFORE the
+        /// navigation is dispatched, so Interactive/Complete/Failed/Cancelled
+        /// transitions that arrive while the command is still URL-commit polling
+        /// are retained instead of being lost to a late subscription.
+        /// </summary>
+        private sealed class RendererNavigationRecord
+        {
+            private readonly object _sync = new();
+            private TaskCompletionSource<bool> _signal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public int TabId { get; init; }
+            public string CorrelationId { get; init; }
+            public Action<int, RendererNavigationLifecyclePayload> Handler { get; set; }
+
+            private FenBrowser.Core.Engine.NavigationLifecyclePhase Phase { get; set; }
+                = FenBrowser.Core.Engine.NavigationLifecyclePhase.Idle;
+
+            public void Update(FenBrowser.Core.Engine.NavigationLifecyclePhase phase)
+            {
+                TaskCompletionSource<bool> releasedSignal = null;
+                lock (_sync)
+                {
+                    if (ShouldReplace(Phase, phase))
+                    {
+                        Phase = phase;
+                        releasedSignal = _signal;
+                        _signal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    }
+                }
+
+                releasedSignal?.TrySetResult(true);
+            }
+
+            public FenBrowser.Core.Engine.NavigationLifecyclePhase Snapshot
+            {
+                get
+                {
+                    lock (_sync)
+                    {
+                        return Phase;
+                    }
+                }
+            }
+
+            public Task WaitChangeAsync()
+            {
+                lock (_sync)
+                {
+                    return _signal.Task;
+                }
+            }
+
+            private static bool ShouldReplace(
+                FenBrowser.Core.Engine.NavigationLifecyclePhase current,
+                FenBrowser.Core.Engine.NavigationLifecyclePhase next)
+            {
+                if (current == next)
+                {
+                    return false;
+                }
+
+                if (next == FenBrowser.Core.Engine.NavigationLifecyclePhase.Failed ||
+                    next == FenBrowser.Core.Engine.NavigationLifecyclePhase.Cancelled)
+                {
+                    return true;
+                }
+
+                if (current == FenBrowser.Core.Engine.NavigationLifecyclePhase.Failed ||
+                    current == FenBrowser.Core.Engine.NavigationLifecyclePhase.Cancelled)
+                {
+                    return false;
+                }
+
+                return next > current;
+            }
+        }
 
         public async Task<long> NavigateTrackedAsync(string url)
         {
@@ -172,10 +251,48 @@ namespace FenBrowser.Host.WebDriver
 
             if (ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
             {
+                var coordinator = ProcessIsolation.ProcessIsolationRuntime.Current;
                 var correlationId = Guid.NewGuid().ToString("N");
                 var trackedId = NextTrackedNavigationId();
-                _pendingRendererNavigations[trackedId] = (tab.Id, correlationId);
-                await RunOnMainThread(() => tab.NavigateProgrammaticAsync(url, navigationCorrelationId: correlationId)).ConfigureAwait(false);
+                var record = new RendererNavigationRecord
+                {
+                    TabId = tab.Id,
+                    CorrelationId = correlationId
+                };
+                record.Handler = (reportedTabId, payload) =>
+                {
+                    if (reportedTabId != record.TabId || payload == null)
+                    {
+                        return;
+                    }
+
+                    if (!string.Equals(payload.NavigationCorrelationId, record.CorrelationId, StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+
+                    if (Enum.TryParse<FenBrowser.Core.Engine.NavigationLifecyclePhase>(
+                            payload.Phase, ignoreCase: true, out var phase))
+                    {
+                        record.Update(phase);
+                    }
+                };
+
+                _pendingRendererNavigations[trackedId] = record;
+                // Subscribe before dispatching: transitions emitted while the
+                // command is still waiting for URL commit must be retained.
+                coordinator.NavigationLifecycleReceived += record.Handler;
+                try
+                {
+                    await RunOnMainThread(() => tab.NavigateProgrammaticAsync(url, navigationCorrelationId: correlationId)).ConfigureAwait(false);
+                }
+                catch
+                {
+                    coordinator.NavigationLifecycleReceived -= record.Handler;
+                    _pendingRendererNavigations.TryRemove(trackedId, out _);
+                    throw;
+                }
+
                 return trackedId;
             }
 
@@ -225,19 +342,26 @@ namespace FenBrowser.Host.WebDriver
         {
             // Out-of-process renderer: navigation (and its lifecycle) runs in the
             // renderer child, so waiting on the local BrowserHost tracker would
-            // never complete. Consume the coordinator's renderer-forwarded
-            // lifecycle stream instead, filtered to this navigation's correlation.
+            // never complete. Consume the retained lifecycle record for this
+            // navigation — events that arrived before the wait began are already
+            // in the record — and keep evaluating until the deadline.
             if (ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
             {
-                string correlation = null;
-                var tabId = _tabs.ActiveTab?.Id ?? -1;
-                if (navigationId != 0 && _pendingRendererNavigations.TryRemove(navigationId, out var pending))
+                if (navigationId != 0 && _pendingRendererNavigations.TryRemove(navigationId, out var record))
                 {
-                    correlation = pending.CorrelationId;
-                    tabId = pending.TabId;
+                    try
+                    {
+                        return await AwaitRendererRecordReadiness(record, stage, timeoutMs).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        DetachRendererRecord(record);
+                    }
                 }
 
-                return await WaitForRendererReadinessAsync(stage, timeoutMs, tabId, correlation).ConfigureAwait(false);
+                // Untracked: legacy ephemeral subscription, any correlation.
+                var tabId = _tabs.ActiveTab?.Id ?? -1;
+                return await WaitForRendererReadinessAsync(stage, timeoutMs, tabId, null).ConfigureAwait(false);
             }
 
             if (navigationId != 0 && _pendingLocalNavigations.TryRemove(navigationId, out var local))
@@ -247,6 +371,47 @@ namespace FenBrowser.Host.WebDriver
 
             // Untracked (id 0): legacy semantics on the local tracker.
             return await WaitForLocalUntrackedReadinessAsync(stage, timeoutMs).ConfigureAwait(false);
+        }
+
+        private static async Task<WdReadinessWaitStatus> AwaitRendererRecordReadiness(
+            RendererNavigationRecord record,
+            WdDocumentReadinessStage stage,
+            int timeoutMs)
+        {
+            var targetPhase = TargetLifecyclePhase(stage);
+            var deadline = Environment.TickCount64 + Math.Max(0, timeoutMs);
+            while (true)
+            {
+                // The record already holds every transition forwarded since the
+                // navigation was dispatched, so a Complete that fired during URL
+                // commit polling resolves immediately here.
+                if (TryClassifyPhase(record.Snapshot.ToString(), targetPhase, out var status))
+                {
+                    return status;
+                }
+
+                var remainingMs = (int)Math.Min(deadline - Environment.TickCount64, (long)int.MaxValue);
+                if (remainingMs <= 0)
+                {
+                    return WdReadinessWaitStatus.TimedOut;
+                }
+
+                var signal = record.WaitChangeAsync();
+                var finished = await Task.WhenAny(signal, Task.Delay(remainingMs)).ConfigureAwait(false);
+                if (finished != signal)
+                {
+                    return WdReadinessWaitStatus.TimedOut;
+                }
+            }
+        }
+
+        private void DetachRendererRecord(RendererNavigationRecord record)
+        {
+            var coordinator = ProcessIsolation.ProcessIsolationRuntime.Current;
+            if (coordinator != null && record.Handler != null)
+            {
+                coordinator.NavigationLifecycleReceived -= record.Handler;
+            }
         }
 
         private async Task<WdReadinessWaitStatus> WaitForRendererReadinessAsync(
