@@ -58,6 +58,25 @@ public sealed class CanvasRenderingContextTests : IDisposable
             "String(document.createElement('canvas').getContext('webgl') === null)"));
     }
 
+    // The canvas 2D context is a host object. ToObject passes host objects
+    // through unchanged and builtins read properties through JsObject [[Get]]
+    // only, so using one as a String.raw receiver must surface a catchable
+    // TypeError — never a CLR InvalidOperationException.
+    [Fact]
+    public void StringRaw_OnHostObjectReceiver_IsCatchableTypeError()
+    {
+        Assert.Equal("true", EvaluateOnCanvasPage(
+            "var ctx = document.createElement('canvas').getContext('2d');" +
+            "var caught = false; var wrong = false;" +
+            "try { String.raw.call({}, ctx); } catch (e) { caught = true; wrong = !(e instanceof TypeError); }" +
+            "String(caught && !wrong)"));
+        Assert.Equal("true", EvaluateOnCanvasPage(
+            "var ctx = document.createElement('canvas').getContext('2d');" +
+            "var caught = false; var wrong = false;" +
+            "try { String.raw({raw: ctx}); } catch (e) { caught = true; wrong = !(e instanceof TypeError); }" +
+            "String(caught && !wrong)"));
+    }
+
     [Fact]
     public void FillRect_ToDataURL_ProducesPngDataUrl()
     {

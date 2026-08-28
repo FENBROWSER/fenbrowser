@@ -63,8 +63,11 @@ public interface IBuiltinContext
     void IteratorClose(JsValue iterator);
 
     // ECMA-262 7.1.18 ToObject: boxes a primitive into its wrapper object.
-    // Null and undefined throw a TypeError; Object and HostObject values pass
-    // through unchanged.
+    // Null and undefined throw a TypeError. Object values pass through
+    // unchanged. HostObject values also pass through unchanged (spec identity),
+    // but builtins cannot read properties from them yet: any builtin consuming
+    // the result must reject a HostObject result with an explicit, catchable
+    // TypeError instead of letting a tag mismatch escape as a CLR exception.
     JsValue ToObjectValue(JsValue value);
 
     // ECMA-262 10.4.2.2 length of an Array exotic object.

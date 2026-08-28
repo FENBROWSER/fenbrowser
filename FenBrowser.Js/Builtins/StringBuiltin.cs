@@ -181,7 +181,14 @@ public sealed class StringBuiltin : IBuiltinModule
                 throw new JsThrownException(context.CreateTypeError("String.raw: template must be coercible to Object."));
             var templateValue = context.ToObjectValue(args[0]);
             if (templateValue.Tag != JsValueTag.Object)
+            {
+                // ToObject passes a HostObject through unchanged and builtins
+                // read properties through JsObject [[Get]] only, so a host
+                // object template is rejected here — as a catchable TypeError,
+                // never a CLR exception.
                 throw new JsThrownException(context.CreateTypeError("String.raw: template must be coercible to Object."));
+            }
+
             var templateHandle = templateValue.AsObjectHandle();
             var rootMark = heap.RootCount;
             try
@@ -195,7 +202,13 @@ public sealed class StringBuiltin : IBuiltinModule
                     throw new JsThrownException(context.CreateTypeError("String.raw: template.raw must be coercible to Object."));
                 var rawObjectValue = context.ToObjectValue(rawValue);
                 if (rawObjectValue.Tag != JsValueTag.Object)
+                {
+                    // Same HostObject caveat as the template above: the engine
+                    // does not expose host-object [[Get]] to builtins yet, so a
+                    // host-object raw surfaces as a catchable TypeError.
                     throw new JsThrownException(context.CreateTypeError("String.raw: template.raw must be coercible to Object."));
+                }
+
                 var rawHandle = rawObjectValue.AsObjectHandle();
                 heap.PushRoot(rawHandle);
                 var rawObj = heap.GetObject(rawHandle);
