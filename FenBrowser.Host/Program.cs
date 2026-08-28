@@ -633,12 +633,15 @@ namespace FenBrowser.Host
             browser.FaviconChanged += (_, favicon) => SendMetadata(favicon: favicon, faviconChanged: true);
 
             // Forward page-visible navigation lifecycle transitions to the broker.
-            // The correlation id comes from the Navigate envelope currently being
-            // processed, so the host can attribute each transition to the
-            // navigation that caused it.
-            string currentNavigationCorrelationId = null;
+            // Transitions are attributed to their navigation via the binder: the
+            // correlation of the Navigate envelope being processed binds to the
+            // engine navigation id it starts, so a navigation initiated inside
+            // the child (script, input) forwards an empty correlation instead of
+            // inheriting the previous WebDriver one.
+            var correlationBinder = new RendererNavigationCorrelationBinder();
             browser.NavigationLifecycleChanged += (_, transition) =>
             {
+                var transitionCorrelation = correlationBinder.Observe(transition.NavigationId, transition.Phase);
                 if (!handshakeComplete || !ShouldForwardRendererLifecyclePhase(transition.Phase))
                 {
                     return;
@@ -651,7 +654,7 @@ namespace FenBrowser.Host
                     CorrelationId = Guid.NewGuid().ToString("N"),
                     Payload = RendererIpc.SerializePayload(new RendererNavigationLifecyclePayload
                     {
-                        NavigationCorrelationId = currentNavigationCorrelationId ?? string.Empty,
+                        NavigationCorrelationId = transitionCorrelation ?? string.Empty,
                         NavigationId = transition.NavigationId,
                         Phase = transition.Phase.ToString(),
                         EffectiveUrl = transition.EffectiveUrl,
@@ -773,7 +776,7 @@ namespace FenBrowser.Host
                     {
                         var payload = RendererIpc.DeserializePayload<RendererNavigatePayload>(envelope);
                         var url = payload?.Url ?? string.Empty;
-                        currentNavigationCorrelationId = payload?.NavigationCorrelationId;
+                        correlationBinder.BeginNavigation(payload?.NavigationCorrelationId);
                         if (!string.IsNullOrWhiteSpace(url))
                         {
                             if (payload.ViewportWidth > 1f && payload.ViewportHeight > 1f)
@@ -787,6 +790,10 @@ namespace FenBrowser.Host
                                 await browser.NavigateAsync(url).ConfigureAwait(false);
                         }
 
+                        // The envelope's navigation has been initiated: a later
+                        // engine navigation started inside the child (script,
+                        // input) binds no correlation.
+                        correlationBinder.EndNavigation();
                         SendRendererEnvelope(writer, new RendererIpcEnvelope
                         {
                             Type = RendererIpcMessageType.Ack.ToString(),
