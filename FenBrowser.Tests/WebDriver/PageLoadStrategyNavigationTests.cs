@@ -200,15 +200,15 @@ namespace FenBrowser.Tests.WebDriver
                 NavigateDelayMs = 60,
                 OnReadinessWait = () => Task.FromResult(WdReadinessWaitStatus.TimedOut)
             };
-            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 70);
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 250);
 
             var ex = await Assert.ThrowsAsync<WebDriverException>(
                 () => navigation.NavigateToAsync(session.Id, Body("https://example.test/a")));
 
             Assert.Equal(ErrorCodes.Timeout, ex.ErrorCode);
-            // Initiation consumed the bulk of the budget, so the readiness wait
-            // receives almost none of it.
-            Assert.InRange(driver.RequestedTimeoutMs, 0, 15);
+            // Initiation consumed part of the budget, so the readiness wait
+            // receives roughly 190ms, never the full 250ms.
+            Assert.InRange(driver.RequestedTimeoutMs, 140, 200);
         }
 
         // Correlation: the readiness wait must receive the navigation identifier
