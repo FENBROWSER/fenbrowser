@@ -11,9 +11,11 @@ namespace FenBrowser.Host.Tabs;
 /// </summary>
 public class TabManager
 {
+    private sealed record ClosedTabState(string Url);
+
     private readonly List<BrowserTab> _tabs = new();
     private int _activeIndex = -1;
-    private readonly Stack<BrowserTab> _closedTabs = new();
+    private readonly Stack<ClosedTabState> _closedTabs = new();
     private IProcessIsolationCoordinator _subscribedCoordinator;
     
     private static TabManager _instance;
@@ -176,7 +178,7 @@ public class TabManager
         if (index < 0 || index >= _tabs.Count) return;
         
         var tab = _tabs[index];
-        _closedTabs.Push(tab);
+        _closedTabs.Push(new ClosedTabState(tab.DisplayUrl));
         _tabs.RemoveAt(index);
         
         TabRemoved?.Invoke(tab);
@@ -247,15 +249,9 @@ public class TabManager
     public BrowserTab ReopenClosedTab()
     {
         if (_closedTabs.Count == 0) return null;
-        
-        var tab = _closedTabs.Pop();
-        _tabs.Add(tab);
-        _activeIndex = _tabs.Count - 1;
-        
-        TabAdded?.Invoke(tab);
-        ActiveTabChanged?.Invoke(tab);
-        
-        return tab;
+
+        var closed = _closedTabs.Pop();
+        return CreateTab(closed.Url);
     }
     
     /// <summary>

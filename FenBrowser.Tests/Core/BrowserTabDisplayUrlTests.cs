@@ -49,6 +49,30 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public void ReopenClosedTab_CreatesFreshTabAtClosedUrl()
+        {
+            var manager = new TabManager();
+            var closed = manager.CreateTab("fen://newtab");
+
+            manager.CloseTab(0);
+            var reopened = manager.ReopenClosedTab();
+
+            try
+            {
+                Assert.NotNull(reopened);
+                Assert.NotSame(closed, reopened);
+                Assert.Equal("fen://newtab", reopened.DisplayUrl);
+            }
+            finally
+            {
+                if (manager.Tabs.Count > 0)
+                {
+                    manager.CloseTab(0);
+                }
+            }
+        }
+
+        [Fact]
         public async Task NavigateAsync_PreservesDisplayUrlBeforeCommit()
         {
             var tab = new BrowserTab();

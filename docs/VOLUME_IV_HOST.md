@@ -1617,3 +1617,15 @@ Verification:
 Verification:
 
 - Focused caret-state and hit-test tooltip contracts cover publish/clear/clamp/blink anchoring plus `title` and `aria-label` projection.
+
+
+### Closed Tab Restoration Lifecycle (2026-08-28)
+
+- Closed-tab history retains the last displayed navigation URL, not the disposed
+  `BrowserTab` and its released engine resources.
+- Reopening constructs a fresh tab and starts navigation to that retained URL,
+  so restored tabs have a live engine and normal process-isolation lifecycle.
+
+Verification:
+
+- Focused tab display-URL and Host WebDriver URL tests pass (`6/6`).
