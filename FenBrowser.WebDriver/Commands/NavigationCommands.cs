@@ -70,7 +70,7 @@ namespace FenBrowser.WebDriver.Commands
             // each wait receives only the time still left on it.
             var navigationClock = System.Diagnostics.Stopwatch.StartNew();
 
-            var navigationId = await _handler.Browser.NavigateTrackedAsync(absoluteUri.AbsoluteUri);
+            var navigationId = await NavigateTrackedWithinBudgetAsync(absoluteUri.AbsoluteUri, timeoutMs, navigationClock);
 
             // pageLoadStrategy=none returns as soon as navigation is initiated.
             if (string.Equals(strategy, "none", StringComparison.Ordinal))
@@ -100,6 +100,29 @@ namespace FenBrowser.WebDriver.Commands
         private static int RemainingMs(int timeoutMs, long elapsedMs)
         {
             return timeoutMs - (int)Math.Min(elapsedMs, timeoutMs);
+        }
+
+        private async Task<long> NavigateTrackedWithinBudgetAsync(string url, int timeoutMs, System.Diagnostics.Stopwatch navigationClock)
+        {
+            // Navigation initiation itself is bounded by the page-load budget: a
+            // driver that takes longer than the remaining time to initiate the
+            // navigation surfaces a timeout instead of stalling the command. The
+            // abandoned initiation is still observed so its result cannot escape
+            // as an unobserved task exception.
+            var initiationTask = _handler.Browser.NavigateTrackedAsync(url);
+            var initiationRemainingMs = RemainingMs(timeoutMs, navigationClock.ElapsedMilliseconds);
+            var finished = await Task.WhenAny(initiationTask, Task.Delay(Math.Max(0, initiationRemainingMs)));
+            if (finished != initiationTask)
+            {
+                _ = initiationTask.ContinueWith(
+                    static abandoned => _ = abandoned.Exception,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
+                throw new WebDriverException(
+                    ErrorCodes.Timeout,
+                    $"Timed out after {timeoutMs}ms waiting for navigation initiation");
+            }
+
+            return initiationTask.Result;
         }
 
         private async Task WaitForReadinessAsync(

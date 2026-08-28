@@ -193,20 +193,22 @@ namespace FenBrowser.Tests.WebDriver
         }
 
         [Fact]
-        public async Task TimeoutBudget_ExhaustedBudgetStillChecksCommitOnceThenTimesOut()
+        public async Task TimeoutBudget_NearlyExhaustedBudgetLeavesAlmostNoReadinessTime()
         {
             var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start")
             {
-                NavigateDelayMs = 400,
+                NavigateDelayMs = 60,
                 OnReadinessWait = () => Task.FromResult(WdReadinessWaitStatus.TimedOut)
             };
-            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 200);
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 70);
 
             var ex = await Assert.ThrowsAsync<WebDriverException>(
                 () => navigation.NavigateToAsync(session.Id, Body("https://example.test/a")));
 
             Assert.Equal(ErrorCodes.Timeout, ex.ErrorCode);
-            Assert.Equal(0, driver.RequestedTimeoutMs);
+            // Initiation consumed the bulk of the budget, so the readiness wait
+            // receives almost none of it.
+            Assert.InRange(driver.RequestedTimeoutMs, 0, 15);
         }
 
         // Correlation: the readiness wait must receive the navigation identifier
@@ -240,6 +242,33 @@ namespace FenBrowser.Tests.WebDriver
             await navigation.NavigateToAsync(session.Id, Body("https://example.test/a"));
 
             Assert.Equal(4242, driver.RequestedNavigationId);
+        }
+
+        // The page-load budget bounds navigation initiation itself: a driver that
+        // takes longer than the remaining budget to initiate surfaces a timeout
+        // instead of stalling the command for the whole initiation.
+        [Fact]
+        public async Task TimeoutBudget_BoundsNavigationInitiation()
+        {
+            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start")
+            {
+                OnNavigateTracked = async _ =>
+                {
+                    await Task.Delay(1500);
+                    return 7L;
+                },
+                OnReadinessWait = () => Task.FromResult(WdReadinessWaitStatus.Reached)
+            };
+            var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 300);
+
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var ex = await Assert.ThrowsAsync<WebDriverException>(
+                () => navigation.NavigateToAsync(session.Id, Body("https://example.test/a")));
+            clock.Stop();
+
+            Assert.Equal(ErrorCodes.Timeout, ex.ErrorCode);
+            Assert.True(clock.ElapsedMilliseconds < 1000,
+                $"initiation deadline not enforced: command took {clock.ElapsedMilliseconds}ms against a 300ms budget");
         }
 
         private static (CommandHandler Handler, NavigationCommands Navigation, Session Session) CreateHarness(
