@@ -380,6 +380,7 @@ Represents text content.
 - **`Security/AttributeSanitizer.cs`**: Validates attribute names/values; inline `on*` handler values are preserved by default for browser compatibility, with opt-in strict blocking via `BlockInlineEventHandlersInStrictMode`.
 - **`FenBrowser.FenEngine/Rendering/Css/CssModel.cs`**: Internal CSS selector representation.
 - **`Selectors/SelectorParser.cs`**: recursive descent parser for CSS selectors.
+  - Unknown pseudo-classes and arguments supplied to non-functional pseudo-classes raise `SyntaxError` instead of compiling into selectors that can never match.
 - **`Selectors/SimpleSelector.cs`**: selector primitive implementations (`:not/:is/:has/:nth-*`, attribute/type/id/class matching).
 - **`HtmlToken.cs`**: Data class for the Tokenizer output.
 - **`ICssParser.cs`**: Interface definition for the CSS engine.

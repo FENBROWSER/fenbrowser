@@ -669,7 +669,8 @@ namespace FenBrowser.Core.Dom.V2.Selectors
 
         private static SimpleSelector CreatePseudoClassSelector(string name, string arg)
         {
-            return name.ToLowerInvariant() switch
+            var normalizedName = name.ToLowerInvariant();
+            SimpleSelector selector = normalizedName switch
             {
                 "not" => new NegationSelector(Parse(arg ?? "")),
                 "is" or "where" => new IsWhereSelector(name, Parse(arg ?? "")),
@@ -693,8 +694,17 @@ namespace FenBrowser.Core.Dom.V2.Selectors
                 "required" or "optional" or "valid" or "invalid" or
                 "in-range" or "out-of-range" or "read-only" or "read-write" or
                 "default" or "defined" => new StatePseudoClassSelector(name),
-                _ => new StatePseudoClassSelector(name) // Fallback
+                _ => throw new DomException("SyntaxError", $"Unknown pseudo-class :{name}")
             };
+
+            if (arg != null && normalizedName is not (
+                    "not" or "is" or "where" or "has" or "nth-child" or
+                    "nth-last-child" or "nth-of-type" or "nth-last-of-type" or "host"))
+            {
+                throw new DomException("SyntaxError", $"Pseudo-class :{name} does not accept arguments");
+            }
+
+            return selector;
         }
     }
 
