@@ -832,6 +832,7 @@ public sealed class BrokeredInputRoutingTests
 #pragma warning disable CS0067
         public event System.Action<int, RendererFrameReadyPayload> FrameReceived;
         public event System.Action<int, RendererMetadataChangedPayload> MetadataChanged;
+        public event System.Action<int, RendererNavigationLifecyclePayload> NavigationLifecycleReceived;
         public event System.Action<int, string> RendererCrashed;
 #pragma warning restore CS0067
     }

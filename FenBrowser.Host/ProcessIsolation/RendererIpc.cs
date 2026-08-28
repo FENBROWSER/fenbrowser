@@ -32,6 +32,7 @@ namespace FenBrowser.Host.ProcessIsolation
         FrameRequest,
         FrameReady,
         MetadataChanged,
+        NavigationLifecycle,
         TabActivated,
         TabClosed,
         Shutdown,
@@ -57,6 +58,26 @@ namespace FenBrowser.Host.ProcessIsolation
         public bool IsUserInput { get; set; }
         public float ViewportWidth { get; set; }
         public float ViewportHeight { get; set; }
+        /// <summary>
+        /// Correlation for the navigation this envelope initiates. The renderer
+        /// child tags every lifecycle transition it forwards with the correlation
+        /// of the Navigate envelope it is currently processing, so the host can
+        /// tell which navigation a transition belongs to.
+        /// </summary>
+        public string NavigationCorrelationId { get; set; }
+    }
+
+    /// <summary>
+    /// A navigation lifecycle transition forwarded from the renderer child
+    /// (Interactive = DOMContentLoaded, Complete = load, Failed, Cancelled).
+    /// </summary>
+    public sealed class RendererNavigationLifecyclePayload
+    {
+        public string NavigationCorrelationId { get; set; }
+        public long NavigationId { get; set; }
+        public string Phase { get; set; }
+        public string EffectiveUrl { get; set; }
+        public string Detail { get; set; }
     }
 
     public sealed class RendererFrameRequestPayload
@@ -231,6 +252,7 @@ namespace FenBrowser.Host.ProcessIsolation
             return messageType == RendererIpcMessageType.Ready ||
                    messageType == RendererIpcMessageType.FrameReady ||
                    messageType == RendererIpcMessageType.MetadataChanged ||
+                   messageType == RendererIpcMessageType.NavigationLifecycle ||
                    messageType == RendererIpcMessageType.Error ||
                    messageType == RendererIpcMessageType.LogBatch ||
                    messageType == RendererIpcMessageType.Ack ||
@@ -363,6 +385,7 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public event Action<int, RendererFrameReadyPayload> FrameReceived;
         public event Action<int, RendererMetadataChangedPayload> MetadataChanged;
+        public event Action<int, RendererNavigationLifecyclePayload> NavigationLifecycleReceived;
 
         public int TabId { get; }
         public string PipeName { get; }
@@ -429,14 +452,15 @@ namespace FenBrowser.Host.ProcessIsolation
             return false;
         }
 
-        public void SendNavigate(string url, bool isUserInput, float viewportWidth = 0f, float viewportHeight = 0f)
+        public void SendNavigate(string url, bool isUserInput, float viewportWidth = 0f, float viewportHeight = 0f, string navigationCorrelationId = null)
         {
             var payload = new RendererNavigatePayload
             {
                 Url = url ?? string.Empty,
                 IsUserInput = isUserInput,
                 ViewportWidth = viewportWidth,
-                ViewportHeight = viewportHeight
+                ViewportHeight = viewportHeight,
+                NavigationCorrelationId = navigationCorrelationId ?? string.Empty
             };
 
             Send(new RendererIpcEnvelope
@@ -646,6 +670,14 @@ namespace FenBrowser.Host.ProcessIsolation
                         if (payload != null)
                         {
                             MetadataChanged?.Invoke(TabId, payload);
+                        }
+                    }
+                    else if (messageType == RendererIpcMessageType.NavigationLifecycle)
+                    {
+                        var payload = RendererIpc.DeserializePayload<RendererNavigationLifecyclePayload>(envelope);
+                        if (payload != null)
+                        {
+                            NavigationLifecycleReceived?.Invoke(TabId, payload);
                         }
                     }
                     else if (messageType == RendererIpcMessageType.Error)

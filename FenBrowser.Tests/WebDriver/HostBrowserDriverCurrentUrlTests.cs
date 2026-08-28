@@ -87,6 +87,7 @@ public sealed class HostBrowserDriverCurrentUrlTests
 #pragma warning disable CS0067
         public event Action<int, RendererFrameReadyPayload> FrameReceived;
         public event Action<int, RendererMetadataChangedPayload> MetadataChanged;
+        public event Action<int, RendererNavigationLifecyclePayload> NavigationLifecycleReceived;
         public event Action<int, string> RendererCrashed;
 #pragma warning restore CS0067
     }

@@ -631,6 +631,34 @@ namespace FenBrowser.Host
             browser.Navigated += (_, _) => SendMetadata(urlChanged: true);
             browser.TitleChanged += (_, title) => SendMetadata(title: title);
             browser.FaviconChanged += (_, favicon) => SendMetadata(favicon: favicon, faviconChanged: true);
+
+            // Forward page-visible navigation lifecycle transitions to the broker.
+            // The correlation id comes from the Navigate envelope currently being
+            // processed, so the host can attribute each transition to the
+            // navigation that caused it.
+            string currentNavigationCorrelationId = null;
+            browser.NavigationLifecycleChanged += (_, transition) =>
+            {
+                if (!handshakeComplete || !ShouldForwardRendererLifecyclePhase(transition.Phase))
+                {
+                    return;
+                }
+
+                SendRendererEnvelope(writer, new RendererIpcEnvelope
+                {
+                    Type = RendererIpcMessageType.NavigationLifecycle.ToString(),
+                    TabId = tabId,
+                    CorrelationId = Guid.NewGuid().ToString("N"),
+                    Payload = RendererIpc.SerializePayload(new RendererNavigationLifecyclePayload
+                    {
+                        NavigationCorrelationId = currentNavigationCorrelationId ?? string.Empty,
+                        NavigationId = transition.NavigationId,
+                        Phase = transition.Phase.ToString(),
+                        EffectiveUrl = transition.EffectiveUrl,
+                        Detail = transition.Detail
+                    })
+                });
+            };
             browser.RepaintReady += (_, __) =>
             {
                 if (!handshakeComplete || !hasFrameViewport)
@@ -745,6 +773,7 @@ namespace FenBrowser.Host
                     {
                         var payload = RendererIpc.DeserializePayload<RendererNavigatePayload>(envelope);
                         var url = payload?.Url ?? string.Empty;
+                        currentNavigationCorrelationId = payload?.NavigationCorrelationId;
                         if (!string.IsNullOrWhiteSpace(url))
                         {
                             if (payload.ViewportWidth > 1f && payload.ViewportHeight > 1f)
@@ -2107,6 +2136,19 @@ var typeface = fontService.ResolveTypeface(payload.FontFamily, payload.FontWeigh
 
         internal static bool ShouldPublishRendererMetadata(string title, bool faviconChanged, bool urlChanged) =>
             !string.IsNullOrWhiteSpace(title) || faviconChanged || urlChanged;
+
+        /// <summary>
+        /// Only terminal or page-visible lifecycle transitions cross the renderer
+        /// IPC boundary: the WebDriver page-load strategy waits for Interactive
+        /// (DOMContentLoaded) or Complete (load) and must observe Failed or
+        /// Cancelled promptly; intermediate fetch phases stay local diagnostics.
+        /// </summary>
+        internal static bool ShouldForwardRendererLifecyclePhase(
+            FenBrowser.Core.Engine.NavigationLifecyclePhase phase) =>
+            phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Interactive ||
+            phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Complete ||
+            phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Failed ||
+            phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Cancelled;
 
         private static string MapRendererKey(string key)
         {

@@ -170,6 +170,16 @@ namespace FenBrowser.Host.WebDriver
 
         public async Task<WdReadinessWaitStatus> WaitForDocumentReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs)
         {
+            // Out-of-process renderer: navigation (and its lifecycle) runs in the
+            // renderer child, so waiting on the local BrowserHost tracker would
+            // never complete. Consume the coordinator's renderer-forwarded
+            // lifecycle stream instead. (Navigation correlation filtering arrives
+            // with tracked navigations.)
+            if (ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+            {
+                return await WaitForRendererReadinessAsync(stage, timeoutMs).ConfigureAwait(false);
+            }
+
             // Snapshot and subscribe on the main thread, then await off it: the
             // engine raises lifecycle transitions on the main thread, so blocking
             // there would deadlock the wait.
@@ -197,6 +207,61 @@ namespace FenBrowser.Host.WebDriver
             finally
             {
                 await RunOnMainThread(() => wait.Unsubscribe()).ConfigureAwait(false);
+            }
+        }
+
+        private async Task<WdReadinessWaitStatus> WaitForRendererReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs)
+        {
+            var coordinator = ProcessIsolation.ProcessIsolationRuntime.Current;
+            if (coordinator == null || timeoutMs <= 0)
+            {
+                return WdReadinessWaitStatus.TimedOut;
+            }
+
+            var tabId = _tabs.ActiveTab?.Id ?? -1;
+            var targetPhase = stage == WdDocumentReadinessStage.Interactive
+                ? FenBrowser.Core.Engine.NavigationLifecyclePhase.Interactive
+                : FenBrowser.Core.Engine.NavigationLifecyclePhase.Complete;
+            var completion = new TaskCompletionSource<WdReadinessWaitStatus>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            void OnLifecycle(int reportedTabId, RendererNavigationLifecyclePayload payload)
+            {
+                if (reportedTabId != tabId || payload?.Phase == null)
+                {
+                    return;
+                }
+
+                if (!Enum.TryParse<FenBrowser.Core.Engine.NavigationLifecyclePhase>(
+                        payload.Phase, ignoreCase: true, out var phase))
+                {
+                    return;
+                }
+
+                if (phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Failed ||
+                    phase == FenBrowser.Core.Engine.NavigationLifecyclePhase.Cancelled)
+                {
+                    completion.TrySetResult(WdReadinessWaitStatus.NavigationAborted);
+                }
+                else if (phase >= targetPhase && phase <= FenBrowser.Core.Engine.NavigationLifecyclePhase.Complete)
+                {
+                    completion.TrySetResult(WdReadinessWaitStatus.Reached);
+                }
+            }
+
+            coordinator.NavigationLifecycleReceived += OnLifecycle;
+            try
+            {
+                var finished = await Task.WhenAny(completion.Task, Task.Delay(timeoutMs)).ConfigureAwait(false);
+                if (finished != completion.Task)
+                {
+                    return WdReadinessWaitStatus.TimedOut;
+                }
+
+                return await completion.Task.ConfigureAwait(false);
+            }
+            finally
+            {
+                coordinator.NavigationLifecycleReceived -= OnLifecycle;
             }
         }
 

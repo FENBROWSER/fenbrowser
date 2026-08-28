@@ -38,6 +38,7 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public event Action<int, RendererFrameReadyPayload> FrameReceived;
         public event Action<int, RendererMetadataChangedPayload> MetadataChanged;
+        public event Action<int, RendererNavigationLifecyclePayload> NavigationLifecycleReceived;
         public event Action<int, string> RendererCrashed;
 
         internal bool TryGetSessionSnapshot(int tabId, out BrokeredRendererSessionSnapshot snapshot)
@@ -134,7 +135,7 @@ namespace FenBrowser.Host.ProcessIsolation
         /// Starts a renderer session and then sends the navigation URL once ready.
         /// Used by OnNavigationRequested when no session exists for the tab.
         /// </summary>
-        private async Task DispatchNavigationAsync(TabProcessState state, string url, bool isUserInput)
+        private async Task DispatchNavigationAsync(TabProcessState state, string url, bool isUserInput, string navigationCorrelationId)
         {
             await state.NavigationGate.WaitAsync().ConfigureAwait(false);
             try
@@ -177,7 +178,7 @@ namespace FenBrowser.Host.ProcessIsolation
                     // Now that the session is ready, send the pending navigation.
                     var viewportWidth = state.LastViewportWidth > 1f ? state.LastViewportWidth : 1024f;
                     var viewportHeight = state.LastViewportHeight > 1f ? state.LastViewportHeight : 768f;
-                    session.SendNavigate(url, isUserInput, viewportWidth, viewportHeight);
+                    session.SendNavigate(url, isUserInput, viewportWidth, viewportHeight, navigationCorrelationId);
                 }
             }
             catch (Exception ex)
@@ -212,6 +213,14 @@ namespace FenBrowser.Host.ProcessIsolation
 
         public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput)
         {
+            // Every navigation gets a correlation id so renderer-forwarded
+            // lifecycle transitions can be attributed to the navigation that
+            // caused them (WebDriver page-load waits rely on this).
+            OnNavigationRequested(tab, url, isUserInput, Guid.NewGuid().ToString("N"));
+        }
+
+        public void OnNavigationRequested(BrowserTab tab, string url, bool isUserInput, string navigationCorrelationId)
+        {
             if (tab == null || string.IsNullOrWhiteSpace(url))
                 return;
 
@@ -227,7 +236,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 state.LastViewportHeight = viewport.Height;
             }
 
-            _ = DispatchNavigationAsync(state, url, isUserInput);
+            _ = DispatchNavigationAsync(state, url, isUserInput, navigationCorrelationId ?? Guid.NewGuid().ToString("N"));
         }
 
         private void RecycleSessionForAssignmentChange(TabProcessState state, string newAssignment)
@@ -361,6 +370,7 @@ namespace FenBrowser.Host.ProcessIsolation
                         // Remap pooled session tab ids back to the owning host tab id.
                         pooledSession.FrameReceived += (_, payload) => FrameReceived?.Invoke(state.TabId, payload);
                         pooledSession.MetadataChanged += (_, payload) => MetadataChanged?.Invoke(state.TabId, payload);
+                        pooledSession.NavigationLifecycleReceived += (_, payload) => NavigationLifecycleReceived?.Invoke(state.TabId, payload);
 
                         state.Sandbox?.Dispose();
                         state.Sandbox = null;
@@ -391,6 +401,7 @@ namespace FenBrowser.Host.ProcessIsolation
             var session = new RendererChildSession(state.TabId, pipeName, token);
             session.FrameReceived += (_, payload) => FrameReceived?.Invoke(state.TabId, payload);
             session.MetadataChanged += (_, payload) => MetadataChanged?.Invoke(state.TabId, payload);
+            session.NavigationLifecycleReceived += (_, payload) => NavigationLifecycleReceived?.Invoke(state.TabId, payload);
 
             var process = StartRendererChildWithSandbox(
                 state.TabId,
@@ -518,7 +529,8 @@ namespace FenBrowser.Host.ProcessIsolation
                             exitDecision.ReplayUrl,
                             exitDecision.ReplayIsUserInput,
                             state.LastViewportWidth,
-                            state.LastViewportHeight);
+                            state.LastViewportHeight,
+                            Guid.NewGuid().ToString("N"));
                     }
                 }
                 finally

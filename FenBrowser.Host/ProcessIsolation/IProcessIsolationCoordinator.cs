@@ -22,6 +22,7 @@ namespace FenBrowser.Host.ProcessIsolation
         // Server-to-Host events for pushing back state
         event Action<int, RendererFrameReadyPayload> FrameReceived;
         event Action<int, RendererMetadataChangedPayload> MetadataChanged;
+        event Action<int, RendererNavigationLifecyclePayload> NavigationLifecycleReceived;
         
         // Fired when the renderer crashes and cannot be automatically restarted
         event Action<int, string> RendererCrashed;
