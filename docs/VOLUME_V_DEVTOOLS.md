@@ -532,6 +532,6 @@ Net effect:
   - Dispatch ordering is now enforced per domain: same-domain requests remain serialized (handlers are not guaranteed reentrant), while requests to distinct domains may execute concurrently.
   - Per-domain gates are allocated only for domains that resolve to a registered handler, so the gate set is bounded by registration and never grows per request.
   - Regression coverage (`FenBrowser.Tests/DevTools/MessageRouterTests.cs`, re-included in the test project) proves same-domain serialization, cross-domain overlap, gate release on handler exceptions, and bounded gate lifecycle.
+  - `ClearHandlers()` drops the per-domain gates with the handlers; gates are not disposed, so in-flight dispatches release their own reference safely and re-registered domains allocate fresh gates on demand.
 
 _End of Volume V_
-  - `ClearHandlers()` drops the per-domain gates with the handlers; gates are not disposed, so in-flight dispatches release their own reference safely and re-registered domains allocate fresh gates on demand.
