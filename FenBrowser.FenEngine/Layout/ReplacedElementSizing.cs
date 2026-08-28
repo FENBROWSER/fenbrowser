@@ -336,16 +336,11 @@ namespace FenBrowser.FenEngine.Layout
                    normalized.StartsWith("data:application/pdf", StringComparison.Ordinal);
         }
 
-        private static string ResolveElementResourceUrl(Element element, string resourceUrl)
+        internal static string ResolveElementResourceUrl(Element element, string resourceUrl)
         {
             if (string.IsNullOrWhiteSpace(resourceUrl))
             {
                 return resourceUrl;
-            }
-
-            if (Uri.TryCreate(resourceUrl, UriKind.Absolute, out var absolute))
-            {
-                return absolute.ToString();
             }
 
             string baseUrl = element?.OwnerDocument?.BaseURI;
@@ -359,9 +354,36 @@ namespace FenBrowser.FenEngine.Layout
                 baseUrl = element?.OwnerDocument?.URL;
             }
 
-            if (!string.IsNullOrWhiteSpace(baseUrl) &&
-                Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri) &&
-                Uri.TryCreate(baseUri, resourceUrl, out var resolved))
+            Uri.TryCreate(baseUrl, UriKind.Absolute, out var baseUri);
+
+            // Protocol-relative URLs must be resolved before absolute parsing:
+            // on Windows, Uri.TryCreate("//host/path", UriKind.Absolute) succeeds
+            // by treating the string as a UNC path and returns a file:// URL,
+            // which downstream image loading rejects as non-HTTP. Resolve the
+            // network-path reference against the document's base scheme instead,
+            // defaulting to https — the same guard CustomHtmlEngine.ResolveUri,
+            // NewPaintTreeBuilder.BuildImageOrSvgNode, and FontRegistry apply.
+            if (resourceUrl.StartsWith("//", StringComparison.Ordinal))
+            {
+                // Only network base schemes carry an authority worth preserving;
+                // non-network documents (about:blank, file:, data:) resolve
+                // against the https default so a protocol-relative URL can never
+                // collapse back into a file:// path.
+                var scheme = baseUri is { } uri &&
+                             (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+                    ? uri.Scheme
+                    : Uri.UriSchemeHttps;
+                return Uri.TryCreate(scheme + ":" + resourceUrl, UriKind.Absolute, out var protocolRelative)
+                    ? protocolRelative.ToString()
+                    : resourceUrl;
+            }
+
+            if (Uri.TryCreate(resourceUrl, UriKind.Absolute, out var absolute))
+            {
+                return absolute.ToString();
+            }
+
+            if (baseUri != null && Uri.TryCreate(baseUri, resourceUrl, out var resolved))
             {
                 return resolved.ToString();
             }

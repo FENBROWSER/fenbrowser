@@ -322,6 +322,115 @@ namespace FenBrowser.Tests.Layout
             }
         }
 
+        // Protocol-relative URLs ("//host/path") must resolve against the owning
+        // document's base scheme. On Windows, Uri.TryCreate(url, Absolute) parses
+        // them as UNC paths and returns file:// URLs, which image loading rejects
+        // (32k skip events on en.wikipedia.org, every Wikimedia image missing).
+        [Fact]
+        public void ResolveElementResourceUrl_ProtocolRelative_ResolvesAgainstHttpsDocumentBase()
+        {
+            var doc = Document.CreateHtmlDocument();
+            doc.URL = "https://en.wikipedia.org/wiki/Main_Page";
+            doc.BaseURI = doc.URL;
+            var img = doc.CreateElement("img");
+
+            var resolved = ReplacedElementSizing.ResolveElementResourceUrl(img, "//upload.wikimedia.org/example.png");
+
+            Assert.Equal("https://upload.wikimedia.org/example.png", resolved);
+        }
+
+        [Fact]
+        public void ResolveElementResourceUrl_ProtocolRelative_ResolvesAgainstHttpDocumentBase()
+        {
+            var doc = Document.CreateHtmlDocument();
+            doc.URL = "http://en.wikipedia.org/wiki/Main_Page";
+            doc.BaseURI = doc.URL;
+            var img = doc.CreateElement("img");
+
+            var resolved = ReplacedElementSizing.ResolveElementResourceUrl(img, "//upload.wikimedia.org/example.png");
+
+            Assert.Equal("http://upload.wikimedia.org/example.png", resolved);
+        }
+
+        [Fact]
+        public void ResolveElementResourceUrl_ProtocolRelative_NeverProducesFileUrl()
+        {
+            var httpsDoc = Document.CreateHtmlDocument();
+            httpsDoc.URL = "https://en.wikipedia.org/wiki/Main_Page";
+            httpsDoc.BaseURI = httpsDoc.URL;
+
+            var httpDoc = Document.CreateHtmlDocument();
+            httpDoc.URL = "http://en.wikipedia.org/wiki/Main_Page";
+            httpDoc.BaseURI = httpDoc.URL;
+
+            // A document whose base URI is unavailable defaults to https.
+            var baselessDoc = Document.CreateHtmlDocument();
+            baselessDoc.URL = "about:blank";
+            baselessDoc.BaseURI = null;
+
+            foreach (var doc in new[] { httpsDoc, httpDoc, baselessDoc })
+            {
+                var img = doc.CreateElement("img");
+                var resolved = ReplacedElementSizing.ResolveElementResourceUrl(img, "//upload.wikimedia.org/example.png");
+                Assert.DoesNotContain("file://", resolved, StringComparison.OrdinalIgnoreCase);
+                Assert.StartsWith("http", resolved, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+
+        [Fact]
+        public void ResolveElementResourceUrl_AbsoluteHttpAndHttpsUrls_RemainUnchanged()
+        {
+            var doc = Document.CreateHtmlDocument();
+            doc.URL = "https://en.wikipedia.org/wiki/Main_Page";
+            doc.BaseURI = doc.URL;
+            var img = doc.CreateElement("img");
+
+            Assert.Equal(
+                "https://upload.wikimedia.org/example.png",
+                ReplacedElementSizing.ResolveElementResourceUrl(img, "https://upload.wikimedia.org/example.png"));
+            Assert.Equal(
+                "http://upload.wikimedia.org/example.png",
+                ReplacedElementSizing.ResolveElementResourceUrl(img, "http://upload.wikimedia.org/example.png"));
+        }
+
+        [Fact]
+        public void ResolveElementResourceUrl_RelativePath_ResolvesAgainstDocumentBase()
+        {
+            var doc = Document.CreateHtmlDocument();
+            doc.URL = "https://en.wikipedia.org/wiki/Main_Page";
+            doc.BaseURI = doc.URL;
+            var img = doc.CreateElement("img");
+
+            var resolved = ReplacedElementSizing.ResolveElementResourceUrl(img, "static/example.png");
+
+            Assert.Equal("https://en.wikipedia.org/wiki/static/example.png", resolved);
+        }
+
+        [Fact]
+        public void ResolveElementResourceUrl_RootRelativePath_ResolvesAgainstDocumentOrigin()
+        {
+            var doc = Document.CreateHtmlDocument();
+            doc.URL = "https://en.wikipedia.org/wiki/Main_Page";
+            doc.BaseURI = doc.URL;
+            var img = doc.CreateElement("img");
+
+            var resolved = ReplacedElementSizing.ResolveElementResourceUrl(img, "/w/load.php");
+
+            Assert.Equal("https://en.wikipedia.org/w/load.php", resolved);
+        }
+
+        [Fact]
+        public void ResolveElementResourceUrl_DataUrl_RemainsUnchanged()
+        {
+            var doc = Document.CreateHtmlDocument();
+            doc.URL = "https://en.wikipedia.org/wiki/Main_Page";
+            doc.BaseURI = doc.URL;
+            var img = doc.CreateElement("img");
+            const string dataUrl = "data:image/png;base64,AAAA";
+
+            Assert.Equal(dataUrl, ReplacedElementSizing.ResolveElementResourceUrl(img, dataUrl));
+        }
+
         private static string CreatePngDataUrl(int width, int height, SKColor color)
         {
             using var surface = SKSurface.Create(new SKImageInfo(width, height));
