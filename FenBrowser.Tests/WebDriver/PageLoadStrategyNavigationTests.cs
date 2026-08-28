@@ -232,9 +232,8 @@ namespace FenBrowser.Tests.WebDriver
         [Fact]
         public async Task TrackedNavigate_PassesNavigationIdToReadinessWait()
         {
-            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start")
+            var driver = new TrackedFakeDriver(startingUrl: "https://example.test/start")
             {
-                OnNavigateTracked = _ => Task.FromResult(4242L),
                 OnReadinessWait = () => Task.FromResult(WdReadinessWaitStatus.Reached)
             };
             var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 2000);
@@ -250,13 +249,9 @@ namespace FenBrowser.Tests.WebDriver
         [Fact]
         public async Task TimeoutBudget_BoundsNavigationInitiation()
         {
-            var driver = new ReadinessFakeDriver(startingUrl: "https://example.test/start")
+            var driver = new TrackedFakeDriver(startingUrl: "https://example.test/start")
             {
-                OnNavigateTracked = async _ =>
-                {
-                    await Task.Delay(1500);
-                    return 7L;
-                },
+                TrackedDelayMs = 1500,
                 OnReadinessWait = () => Task.FromResult(WdReadinessWaitStatus.Reached)
             };
             var (handler, navigation, session) = CreateHarness(driver, pageLoadStrategy: "normal", pageLoadTimeoutMs: 300);
@@ -269,6 +264,17 @@ namespace FenBrowser.Tests.WebDriver
             Assert.Equal(ErrorCodes.Timeout, ex.ErrorCode);
             Assert.True(clock.ElapsedMilliseconds < 1000,
                 $"initiation deadline not enforced: command took {clock.ElapsedMilliseconds}ms against a 300ms budget");
+        }
+
+        // The default NavigateTrackedAsync must preserve the original navigation
+        // fault instead of masking it as a cancelled continuation.
+        [Fact]
+        public async Task NavigateTrackedAsync_DefaultSeam_PreservesOriginalFault()
+        {
+            IBrowserDriver driver = new FaultingNavigateDriver();
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => driver.NavigateTrackedAsync("https://example.test/a"));
+            Assert.Equal("navigation initiation failed", ex.Message);
         }
 
         private static (CommandHandler Handler, NavigationCommands Navigation, Session Session) CreateHarness(
@@ -291,7 +297,37 @@ namespace FenBrowser.Tests.WebDriver
             return JsonDocument.Parse($"{{\"url\":\"{url}\"}}").RootElement.Clone();
         }
 
-        private sealed class ReadinessFakeDriver : IBrowserDriver
+        private sealed class TrackedFakeDriver : ReadinessFakeDriver, IBrowserDriver
+        {
+            public TrackedFakeDriver(string startingUrl) : base(startingUrl)
+            {
+            }
+
+            public int TrackedDelayMs { get; init; }
+
+            public async Task<long> NavigateTrackedAsync(string url)
+            {
+                if (TrackedDelayMs > 0)
+                {
+                    await Task.Delay(TrackedDelayMs);
+                }
+
+                await NavigateAsync(url);
+                return 4242;
+            }
+        }
+
+        private sealed class FaultingNavigateDriver : ReadinessFakeDriver
+        {
+            public FaultingNavigateDriver() : base("https://example.test/start")
+            {
+            }
+
+            public override async Task NavigateAsync(string url) =>
+                throw new InvalidOperationException("navigation initiation failed");
+        }
+
+        private class ReadinessFakeDriver : IBrowserDriver
         {
             private readonly string _startingUrl;
             private long _navigateStartTicks = -1;
@@ -323,8 +359,6 @@ namespace FenBrowser.Tests.WebDriver
 
             public long RequestedNavigationId { get; private set; } = -1;
 
-            public Func<string, Task<long>>? OnNavigateTracked { get; init; }
-
             public async Task<WdReadinessWaitStatus> WaitForDocumentReadinessAsync(WdDocumentReadinessStage stage, int timeoutMs, long navigationId)
             {
                 ReadinessWaitCalled = true;
@@ -339,14 +373,7 @@ namespace FenBrowser.Tests.WebDriver
                 return await ReadinessGate.Task;
             }
 
-            public async Task<long> NavigateTrackedAsync(string url)
-            {
-                var id = OnNavigateTracked != null ? await OnNavigateTracked(url) : 0;
-                await NavigateAsync(url);
-                return id;
-            }
-
-            public async Task NavigateAsync(string url)
+            public virtual async Task NavigateAsync(string url)
             {
                 _pendingUrl = RedirectTarget ?? url;
                 if (NavigateDelayMs > 0)

@@ -1581,10 +1581,12 @@ namespace FenBrowser.WebDriver.Commands
         /// Initiates a navigation and returns the driver's navigation identifier
         /// that subsequent WaitForDocumentReadinessAsync calls correlate against.
         /// Zero means the driver cannot attribute the navigation to an identifier.
+        /// A faulted NavigateAsync propagates its original exception to the caller.
         /// </summary>
-        Task<long> NavigateTrackedAsync(string url)
+        async Task<long> NavigateTrackedAsync(string url)
         {
-            return NavigateAsync(url).ContinueWith(static t => 0L, TaskContinuationOptions.OnlyOnRanToCompletion);
+            await NavigateAsync(url);
+            return 0;
         }
     }
 }
