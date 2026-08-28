@@ -4,6 +4,7 @@
 // FallbackPolicy: clean-unsupported
 using System;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using FenBrowser.Core.Logging;
 using FenBrowser.Core;
 
@@ -23,6 +24,8 @@ namespace FenBrowser.FenEngine.Rendering
     {
         [ThreadStatic]
         private static RenderPipelineState t_state;
+
+        private static readonly ConditionalWeakTable<object, RenderMilestoneState> s_documentMilestones = new();
 
         public static bool StrictInvariants { get; set; } = true;
         public static TimeSpan FrameBudget { get; set; } = TimeSpan.FromMilliseconds(16.67);
@@ -102,7 +105,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        public static void EndLayout()
+        public static void EndLayout(object milestoneOwner = null)
         {
             var state = GetState();
             lock (state.SyncRoot)
@@ -110,11 +113,7 @@ namespace FenBrowser.FenEngine.Rendering
                 EnsureThreadAffinity(state, nameof(EndLayout));
                 RequirePhase(state, RenderPhase.Layout, nameof(EndLayout));
                 state.CurrentPhase = RenderPhase.LayoutFrozen;
-                if (!state.FirstLayoutLogged)
-                {
-                    state.FirstLayoutLogged = true;
-                    EngineLogCompat.Info("[DOC][INFO] First layout complete", LogCategory.Layout);
-                }
+                LogFirstLayout(state, milestoneOwner);
             }
         }
 
@@ -129,7 +128,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        public static void EndPaint()
+        public static void EndPaint(object milestoneOwner = null)
         {
             var state = GetState();
             lock (state.SyncRoot)
@@ -137,11 +136,7 @@ namespace FenBrowser.FenEngine.Rendering
                 EnsureThreadAffinity(state, nameof(EndPaint));
                 RequirePhase(state, RenderPhase.Paint, nameof(EndPaint));
                 state.CurrentPhase = RenderPhase.Composite;
-                if (!state.FirstPaintLogged)
-                {
-                    state.FirstPaintLogged = true;
-                    EngineLogCompat.Info("[DOC][INFO] First paint submitted", LogCategory.Paint);
-                }
+                LogFirstPaint(state, milestoneOwner);
             }
         }
 
@@ -219,6 +214,44 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static RenderPipelineState GetState() => t_state ??= new RenderPipelineState();
 
+        private static void LogFirstLayout(RenderPipelineState state, object milestoneOwner)
+        {
+            if (milestoneOwner == null)
+            {
+                if (state.FirstLayoutLogged) return;
+                state.FirstLayoutLogged = true;
+                EngineLogCompat.Info("[DOC][INFO] First layout complete", LogCategory.Layout);
+                return;
+            }
+
+            var milestones = s_documentMilestones.GetValue(milestoneOwner, static _ => new RenderMilestoneState());
+            lock (milestones.SyncRoot)
+            {
+                if (milestones.FirstLayoutLogged) return;
+                milestones.FirstLayoutLogged = true;
+                EngineLogCompat.Info("[DOC][INFO] First layout complete", LogCategory.Layout);
+            }
+        }
+
+        private static void LogFirstPaint(RenderPipelineState state, object milestoneOwner)
+        {
+            if (milestoneOwner == null)
+            {
+                if (state.FirstPaintLogged) return;
+                state.FirstPaintLogged = true;
+                EngineLogCompat.Info("[DOC][INFO] First paint submitted", LogCategory.Paint);
+                return;
+            }
+
+            var milestones = s_documentMilestones.GetValue(milestoneOwner, static _ => new RenderMilestoneState());
+            lock (milestones.SyncRoot)
+            {
+                if (milestones.FirstPaintLogged) return;
+                milestones.FirstPaintLogged = true;
+                EngineLogCompat.Info("[DOC][INFO] First paint submitted", LogCategory.Paint);
+            }
+        }
+
         private static void RequirePhase(RenderPipelineState state, RenderPhase expected, string operation)
         {
             if (state.CurrentPhase != expected)
@@ -280,6 +313,13 @@ namespace FenBrowser.FenEngine.Rendering
             public bool FirstLayoutLogged { get; set; }
             public bool FirstPaintLogged { get; set; }
             public int OwnerThreadId { get; set; }
+        }
+
+        private sealed class RenderMilestoneState
+        {
+            public object SyncRoot { get; } = new object();
+            public bool FirstLayoutLogged { get; set; }
+            public bool FirstPaintLogged { get; set; }
         }
     }
 

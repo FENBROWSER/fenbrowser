@@ -231,6 +231,8 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 _awaitingPostScriptSnapshot = true;
+                _postScriptRecascadeDeferred = false;
+                _postScriptFullRecascadeDeferred = false;
                 _renderSnapshotVersion++;
             }
         }
@@ -246,6 +248,43 @@ namespace FenBrowser.FenEngine.Rendering
 
                 _awaitingPostScriptSnapshot = false;
                 _renderSnapshotVersion++;
+            }
+        }
+
+        private void ClearDeferredPostScriptRecascade(long renderGeneration)
+        {
+            lock (_renderStateLock)
+            {
+                if (_renderGeneration != renderGeneration)
+                {
+                    return;
+                }
+
+                _postScriptRecascadeDeferred = false;
+                _postScriptFullRecascadeDeferred = false;
+            }
+        }
+
+        private void ResumeDeferredPostScriptRecascade(long renderGeneration)
+        {
+            bool requested;
+            bool fullRecascade;
+            lock (_renderStateLock)
+            {
+                if (_renderGeneration != renderGeneration)
+                {
+                    return;
+                }
+
+                requested = _postScriptRecascadeDeferred;
+                fullRecascade = _postScriptFullRecascadeDeferred;
+                _postScriptRecascadeDeferred = false;
+                _postScriptFullRecascadeDeferred = false;
+            }
+
+            if (requested)
+            {
+                ScheduleRecascade(fullRecascade);
             }
         }
 
@@ -441,6 +480,8 @@ namespace FenBrowser.FenEngine.Rendering
         private long _renderSnapshotVersion;
         private bool _hasStableStyles;
         private bool _awaitingPostScriptSnapshot;
+        private bool _postScriptRecascadeDeferred;
+        private bool _postScriptFullRecascadeDeferred;
         private string _lastRawHtml;
         private object _lastRenderedControl;
         private Uri _activeBaseUri;
@@ -1868,6 +1909,21 @@ public void Dispose()
             if (_activeDom == null || _activeBaseUri == null || _activeFetchCss == null)
                 return;
 
+            lock (_renderStateLock)
+            {
+                // Initial script execution already owns one post-script style refresh.
+                // Starting mutation-driven workers before that snapshot is published
+                // makes every startup mutation recascade the still-dirty full document,
+                // and each mutation observed during that expensive pass queues another.
+                // The post-script refresh consumes all mutations made in this window.
+                if (_awaitingPostScriptSnapshot)
+                {
+                    _postScriptRecascadeDeferred = true;
+                    _postScriptFullRecascadeDeferred |= fullRecascade;
+                    return;
+                }
+            }
+
             lock (_recascadeScheduleLock)
             {
                 _recascadeRequested = true;
@@ -2764,6 +2820,7 @@ public void Dispose()
 
                 // 2. Helper: Load CSS
                 await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, renderGeneration, cancellationToken);
+                ClearDeferredPostScriptRecascade(renderGeneration);
                 if (!IsCurrentRenderGeneration(renderGeneration))
                 {
                     return null;
@@ -2779,6 +2836,7 @@ public void Dispose()
                 if (renderJs == null && deferStableSnapshotUntilPostScript)
                 {
                     EndAwaitingPostScriptSnapshot(renderGeneration);
+                    ResumeDeferredPostScriptRecascade(renderGeneration);
                     deferStableSnapshotUntilPostScript = false;
                 }
                 EngineLogCompat.Debug($"[PERF] JS Setup: {_pageLoadStopwatch.ElapsedMilliseconds}ms", LogCategory.Rendering);
@@ -2862,6 +2920,7 @@ public void Dispose()
                             {
                                 EngineLogCompat.Debug("[RenderAsync] Recomputing CSS after script-driven DOM/style mutations", LogCategory.Rendering);
                                 await LoadCssAsync((capturedDom as Element) ?? (capturedDom as Document)?.DocumentElement, capturedBaseUri, capturedCssFetcher, capturedViewportWidth, capturedViewportHeight, renderGeneration, cancellationToken).ConfigureAwait(false);
+                                ClearDeferredPostScriptRecascade(renderGeneration);
                                 if (!IsCurrentRenderGeneration(renderGeneration))
                                 {
                                     return;
@@ -2888,6 +2947,7 @@ public void Dispose()
                             if (capturedDeferSnapshot)
                             {
                                 EndAwaitingPostScriptSnapshot(renderGeneration);
+                                ResumeDeferredPostScriptRecascade(renderGeneration);
                             }
                             if (IsCurrentRenderGeneration(renderGeneration))
                             {
@@ -2901,6 +2961,7 @@ public void Dispose()
                      if (deferStableSnapshotUntilPostScript)
                      {
                          EndAwaitingPostScriptSnapshot(renderGeneration);
+                         ResumeDeferredPostScriptRecascade(renderGeneration);
                      }
                      EngineLogCompat.Debug($"[RenderAsync] Scripts SKIPPED (allowJs={allowJs}) element={control!=null}", LogCategory.Rendering);
                 }

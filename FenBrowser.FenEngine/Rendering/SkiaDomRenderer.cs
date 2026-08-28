@@ -763,7 +763,7 @@ namespace FenBrowser.FenEngine.Rendering
                             RecursivelyClearDirty(root, InvalidationKind.Layout);
                         }
                     }
-                    RenderPipeline.EndLayout(); // State -> LayoutFrozen
+                    RenderPipeline.EndLayout(root); // State -> LayoutFrozen
                     pipelineContext.SetLayoutSnapshot(_lastLayout);
                     layoutStageWatchdog.Stop();
                 }
@@ -1231,7 +1231,7 @@ namespace FenBrowser.FenEngine.Rendering
                         }
                     }
                     _lastCommittedCaret = (caretElementNow, caretOffsetNow, caretElementNow != null && caretVisibleNow);
-                    RenderPipeline.EndPaint(); // State -> Composite
+                    RenderPipeline.EndPaint(root); // State -> Composite
                     rasterStageWatchdog.Stop();
 
                     if (SafetyPolicy?.EnableWatchdog == true)
