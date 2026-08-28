@@ -257,6 +257,7 @@ Base for nodes capable of having children (Document, Element).
 - **Lines 95-103**: **Child Cache**: Invalidates optimizations (`ChildElementCount`) on mutation.
 - **Lines 393-493**: **Mutation Logic**: Verified insertion/removal (`AppendChildInternal`, `RemoveChildInternal`).
 - **Document hierarchy validation (2026-08-28)**: public append/insert/replace operations validate the complete prospective child sequence before mutation. `DocumentFragment` children cannot bypass the one-element, one-doctype, no-text, or doctype-before-root constraints, and rejected operations leave both trees unchanged.
+- **Live descendant collections (2026-08-28)**: `getElementsByTagName` and `getElementsByClassName` on elements and other containers return live `HTMLCollection` views, matching the existing document-level contract across child and attribute mutations.
 - **Lines 528-547**: **Observer Notification**: Triggers `MutationObserver` callbacks for child list changes.
 
 #### `Element.cs` (Lines 1-901)

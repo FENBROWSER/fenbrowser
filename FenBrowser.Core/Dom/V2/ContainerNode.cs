@@ -757,19 +757,7 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrEmpty(tagName))
                 return HTMLCollection.Empty;
 
-            bool isWildcard = tagName == "*";
-            var results = new List<Element>();
-
-            foreach (var node in Descendants())
-            {
-                if (node is Element el)
-                {
-                    if (isWildcard || string.Equals(el.LocalName, tagName, StringComparison.OrdinalIgnoreCase))
-                        results.Add(el);
-                }
-            }
-
-            return new StaticHTMLCollection(results);
+            return new TagNameHTMLCollection(this, tagName);
         }
 
         /// <summary>
@@ -781,31 +769,7 @@ namespace FenBrowser.Core.Dom.V2
             if (string.IsNullOrWhiteSpace(classNames))
                 return HTMLCollection.Empty;
 
-            var classes = classNames.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-            if (classes.Length == 0)
-                return HTMLCollection.Empty;
-
-            var results = new List<Element>();
-
-            foreach (var node in Descendants())
-            {
-                if (node is Element el)
-                {
-                    bool hasAllClasses = true;
-                    foreach (var cls in classes)
-                    {
-                        if (!el.ClassList.Contains(cls))
-                        {
-                            hasAllClasses = false;
-                            break;
-                        }
-                    }
-                    if (hasAllClasses)
-                        results.Add(el);
-                }
-            }
-
-            return new StaticHTMLCollection(results);
+            return new ClassNameHTMLCollection(this, classNames);
         }
 
         // --- Internal Child Enumeration ---
